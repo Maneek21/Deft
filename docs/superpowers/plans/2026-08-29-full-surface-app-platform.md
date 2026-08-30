@@ -2,12 +2,19 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Phases 1–2 merged; Phase 3 dormant foundation (Loops 0–2) implemented for review on `9ba7b7c8` |
-| **Date** | 2026-08-29; Phase 2 rebaseline 2026-08-30 |
-| **Baseline inspected** | Phase 2 starts from `origin/master` at `bdb137ee`, the squash merge of Phase 1 PR #269 |
+| **Status** | Canonical capability map and threat model; Phases 0–2 merged and Phase 3 closeout pending |
+| **Date** | 2026-08-29; execution rebaseline 2026-08-30 |
+| **Baseline inspected** | `origin/master` at `399cd030`; local Phase 3 closeout baseline `5050b0f1` is unreleased |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
 | **First delivery principle** | Build one safe participation protocol in stages; do not turn `deft.module.json` into an arbitrary plugin runtime. |
 | **Relationship to earlier work** | Supersedes the provisional App Protocol v2 implementation sequence while retaining its certified Module, Capability, App Run, and approval-boundary decisions as design input. Absorbs the useful resource-graph and solution-composition ideas from the modular work-management proposal. |
+| **Current delivery plan** | `docs/superpowers/plans/2026-08-30-full-surface-app-platform-delivery-plan.md` supersedes only the linear execution sequence; this document remains authoritative for the destination architecture and security boundaries. |
+
+> **Execution note (2026-08-30):** the baseline assessment and phase
+> checklists below preserve the architectural requirements captured on
+> 2026-08-29; they are not the live execution tracker. Use the revised delivery
+> plan for completed-work status, Phase 3 closeout, the Phase 4–6 connected
+> kernel, and the independently selectable privileged-plane tracks.
 
 ## Executive decision
 

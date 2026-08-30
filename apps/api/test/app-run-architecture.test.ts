@@ -61,3 +61,46 @@ test('the governed engine stays unwired from production entrances', async () => 
     assert.doesNotMatch(source, /\b(?:AppRunService|AppRunAttemptRunner|createAppRunAttemptJobHandler)\b/);
   }
 });
+
+test('Run submission has one repository writer behind the advisory-lock service', async () => {
+  const violations: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    if (sourcePath === 'lib/app-run-repository.ts') continue;
+    const source = await readFile(path, 'utf8');
+    if (/\.insert\(appRuns\)/.test(source)) violations.push(sourcePath);
+  }
+  assert.deepEqual(violations, []);
+});
+
+test('the App Run approval bridge has one safe compatibility writer and no executor', async () => {
+  const adapter = await readFile(join(sourceRoot, 'lib/app-run-approval-adapter.ts'), 'utf8');
+  const service = await readFile(join(sourceRoot, 'lib/app-run-service.ts'), 'utf8');
+  const resolver = await readFile(join(sourceRoot, 'lib/agent-approval-resolver.ts'), 'utf8');
+
+  assert.match(adapter, /\.insert\(agentActions\)/);
+  assert.match(adapter, /action:\s*APP_RUN_APPROVAL_ACTION/);
+  assert.match(adapter, /approval_tier:\s*'full'/);
+  assert.match(adapter, /resource_ids/);
+  assert.match(adapter, /safe_preview/);
+  assert.doesNotMatch(adapter, /\b(?:executeTool|AppRunAttemptRunner|idempotency_key|raw_input|raw_output)\b/);
+  assert.match(service, /approvalAdapter\.create/);
+  assert.match(resolver, /row\.action === APP_RUN_APPROVAL_ACTION/);
+});
+
+test('Run operations can repair projections but cannot call a provider', async () => {
+  const operations = await readFile(join(sourceRoot, 'lib/app-run-operations.ts'), 'utf8');
+  const receipts = await readFile(join(sourceRoot, 'lib/app-run-receipts.ts'), 'utf8');
+  const attention = await readFile(join(sourceRoot, 'lib/app-run-attention.ts'), 'utf8');
+
+  for (const source of [operations, receipts, attention]) {
+    assert.doesNotMatch(source, /\b(?:executeTool|AppRunProviderExecutor|provider_idempotency_key|claim_token)\b/);
+  }
+  assert.match(operations, /safeRunSelection/);
+  assert.match(operations, /Math\.max\(1, Math\.min\(limit \?\? 50, 100\)\)/);
+  assert.match(operations, /receipt_kind:\s*'repair'/);
+  assert.match(operations, /event_type:\s*'repair_gap'/);
+  assert.doesNotMatch(operations, /\b(?:authorization_snapshot|idempotency_fingerprint|input_fingerprint)\b/);
+  assert.match(receipts, /parseAppRunReceiptEnvelope/);
+  assert.match(attention, /sourceType:\s*'app_run'/);
+});

@@ -1,11 +1,13 @@
 # App Platform Phase 3: Governed App Runs and Secret Service loops
 
-**Status:** accepted and in progress; PR A implements the dormant Loops 0–2
-foundation on Phase 2 squash merge `9ba7b7c8`
+**Status:** accepted and in progress; PR A (#271) and PR B (#272) merged the
+dormant Loops 0–4 foundation and fake-provider engine. C0 is complete at local
+checkpoint `4c4f48c1`; C1 live authorization/budget, C2 approval compatibility,
+and C3 operational safety are stacked on it pending review and publication.
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
-the current upgrade manifest ends at `0.3.0-preview.16`, making `.17` the
-candidate first Phase 3 schema slot. Loop 2 re-confirmed and selected `.17`.
+the foundation selected `.17`, PR B selected `.18`, and the post-engine audit
+re-confirmed `.19` as the additive C0 cutover-gate slot.
 
 **Outcome:** Deft has an opt-in, actor-neutral, durable execution envelope with
 encrypted retained inputs, governed approvals, explicit attempts and unknown
@@ -34,6 +36,99 @@ off. Existing execution and existing ciphertext writes do not change.
 
 Loops 3–4 implement lifecycle, idempotency, attempts, recovery, and retention
 against fake providers. There is still no production cutover.
+
+### C0 hardening gate before compatibility integration
+
+The merged engine remains dormant, but its audit found boundaries that must be
+fixed before any production ingress exists. C0 is a separate additive merge:
+
+- persist a write-once execution release and refuse attempt creation, claim, or
+  `running` transition while it is absent;
+- keep a default-deny live execution-authorizer seam even after release;
+- persist write-once budget-reservation evidence for the C1 budget adapter;
+- pin every worker job to one exact attempt and heartbeat that attempt's lease;
+- distinguish `not_attempted`, determinate provider return, and indeterminate
+  dispatch, retaining bounded encrypted success or provider-error responses;
+- make the idempotency index non-unique so the advisory-lock writer can create
+  exactly one new Run after the fixed horizon; and
+- constrain the future `agent_actions` compatibility row to
+  `action = app_run_invoke`, the same safe Run ID, and a bounded allowlist.
+
+C0 does not register a worker, call MCP, add an ingress route or flag, alter UI,
+or reserve a live employee budget. Its evidence uses fake providers and the
+disposable database only.
+
+### C1 live authorization and budget gate
+
+C1 adds upgrade `.20` and a host-owned authorization snapshot builder/verifier:
+
+- security-relevant membership, employee, connector, override, MCP-token, and
+  OAuth-token changes advance monotonic authority versions, including a
+  revoke-then-restore cycle; ordinary counters, heartbeats, caches, and
+  last-used timestamps do not;
+- live authorization rederives membership, initiating/execution actor health,
+  employee budget policy, token binding, connector activity, employee
+  assignment, provider schema, and the bound host-policy version before an
+  approval or attempt;
+- agent action budget is reserved once in the same Run-locked transaction that
+  creates the first attempt, and later claim/provider-call checks require that
+  durable evidence; and
+- system/automation actors remain fail-closed until a later host-owned
+  authority source is explicitly designed.
+
+C1 remains production-unwired. It adds no route, worker registration, provider
+call, flag, UI, environment variable, or deployment dependency.
+
+### C2 safe approval compatibility adapter
+
+C2 creates exactly one `app_run_invoke` compatibility action in the same
+transaction as every `pending_approval` Run. The row contains only Run ID,
+bounded capability/provider labels, resource identities, and the validated safe
+preview; it never contains invocation input, retry identity, provider output,
+credentials, or ciphertext.
+
+The existing approve/reject entrance delegates only this action kind to a
+Run-native resolver. Human requester/owner/admin review is required and the
+legacy internal bypass is explicitly refused. Resolution locks both rows,
+rechecks C1 live authority, and atomically either records the write-once
+approval release or cancels/expires the Run. The Run repairs the compatibility
+row if they ever disagree, approval/rejection races append one resolution
+event, and user-supplied rejection prose is not copied into the safe ledger.
+
+C2 still does not enqueue an attempt or call a provider. C4 owns worker
+scheduling after the remaining receipt and runtime boundaries exist.
+
+### C3 lineage and operational safety
+
+C3 adds additive upgrade `.21`, which validates every child Run insert against
+its tenant-bound parent and root. A child must be created while its parent is
+running, remain within depth eight, preserve initiating/execution actors and
+origin, stay below the parent's risk/review/retry/retention ceilings, reuse only
+ambient membership/token/employee authorities already present above it, and
+inherit the root agent-budget reservation without incrementing it. Synchronous
+service checks reject capability cycles before insert; the database independently
+guards lineage, policy, and budget continuity.
+
+App-native approval, attempt-terminal, reconciliation, and repair receipts now
+use deterministic identities and validated safe envelopes. Each envelope signs
+immutable operation/policy/input-fingerprint facts plus an optional digest of
+the encrypted result envelope; it never stores the result or ciphertext.
+Verification survives signing-key rotation, detects envelope tampering, and the
+key inventory refuses retirement while any retained receipt still references a
+version.
+
+The existing Attention service receives idempotent approval, failure,
+`unknown_outcome`, reconciliation, and repair-gap projections. A bounded,
+tenant-scoped operations service lists safe Run views, emits only fixed-cardinality
+state/risk/provider-kind metrics, reports missing terminal events, receipts,
+approval rows, or Attention, and repairs projections without a provider port.
+Operator resolution of an unknown outcome appends its event and signed receipt
+in one transaction; Attention remains a post-commit projection and is itself
+repairable.
+
+C3 remains production-unwired. C4 owns the single runtime composition that
+injects these receipt and Attention implementations into the resolver, runner,
+worker, and Capability Service entrance.
 
 ### Milestone C: compatibility integration
 
@@ -389,12 +484,17 @@ service interface. They do not receive decrypted input or a provider callback.
    schema, no execution cutover.
 2. **PR B — engine:** Loops 3–4; lifecycle, idempotency, retention, attempts, fake
    providers, and recovery.
-3. **PR C — integration:** Loops 5–7; approval adapter, Capability Service flag,
-   compatibility, ancestry, receipts, Attention, and operator surfaces.
-4. **PR D — certification:** Loops 8–9; release/rotation/rollback evidence and the
+3. **PR C0 — engine cutover gate:** additive `.19`, execution-release and budget
+   evidence, exact-attempt jobs, lease heartbeat, provider-result taxonomy, and
+   horizon-safe replay; the engine remains unwired.
+4. **C1–C5 — integration train:** live authorization/budget, safe approval
+   adapter, receipts/Attention/operator/ancestry, pinned provider runtime and
+   worker, then an explicit guarded cutover. Each slice must be independently
+   green and may be its own PR.
+5. **D1–D2 — certification:** release/rotation/rollback evidence and the
    explicit opt-in decision.
 
-Do not hold all four PRs for one final merge. Merge each independently green,
+Do not hold all merge trains for one final merge. Merge each independently green,
 then rebase the next train onto its merge commit. This preserves reviewability,
 forward-only migration order, and rollback diagnosis.
 

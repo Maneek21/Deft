@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   appRunAttempts,
   appRunEvents,
@@ -16,7 +16,7 @@ import { db } from './db.js';
 
 export type AppRunTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-const safeRunSelection = {
+export const safeRunSelection = {
   id: appRuns.id,
   org_id: appRuns.org_id,
   contract_version: appRuns.contract_version,
@@ -43,6 +43,8 @@ const safeRunSelection = {
   result_expires_at: appRuns.result_expires_at,
   idempotency_expires_at: appRuns.idempotency_expires_at,
   attempt_limit: appRuns.attempt_limit,
+  execution_release_kind: appRuns.execution_release_kind,
+  execution_released_at: appRuns.execution_released_at,
   input_purged_at: appRuns.input_purged_at,
   result_purged_at: appRuns.result_purged_at,
   started_at: appRuns.started_at,
@@ -72,6 +74,24 @@ function actorColumns(actor: AppRunActor) {
 
 export type FingerprintCandidate = Readonly<{ key_version: string; fingerprint: string }>;
 
+export type AppRunChildLineage = Readonly<{
+  parent: AppRunSafeView;
+  ancestors: readonly AppRunSafeView[];
+  parent_authorization_snapshot: Record<string, unknown>;
+  root_budget_reserved_at: Date | null;
+  root_budget_reserved_count: number | null;
+  root_budget_limit_at_reservation: number | null;
+}>;
+
+export type AppRunLineageInsert = Readonly<{
+  root_run_id: string;
+  parent_run_id: string;
+  depth: number;
+  budget_reserved_at: Date | null;
+  budget_reserved_count: number | null;
+  budget_limit_at_reservation: number | null;
+}>;
+
 export class PostgresAppRunRepository {
   async transaction<T>(work: (tx: AppRunTransaction) => Promise<T>): Promise<T> {
     return db.transaction(work);
@@ -96,6 +116,7 @@ export class PostgresAppRunRepository {
     submission: AppRunSubmission,
     candidates: readonly FingerprintCandidate[],
     now: Date,
+    parentRunId: string | null = null,
   ): Promise<(AppRunSafeView & {
     input_fingerprint_key_version: string;
     input_fingerprint: string;
@@ -117,9 +138,60 @@ export class PostgresAppRunRepository {
       eq(appRuns.provider_instance_id, submission.operation.provider.provider_instance_id),
       eq(appRuns.operation_name, submission.operation.operation_name),
       gt(appRuns.idempotency_expires_at, now),
+      parentRunId === null
+        ? isNull(appRuns.parent_run_id)
+        : eq(appRuns.parent_run_id, parentRunId),
       or(...candidateFilters),
     )).limit(1);
     return row ?? null;
+  }
+
+  async loadChildLineage(
+    tx: AppRunTransaction,
+    orgId: string,
+    parentRunId: string,
+  ): Promise<AppRunChildLineage | null> {
+    const ancestors: AppRunSafeView[] = [];
+    let cursor: string | null = parentRunId;
+    while (cursor !== null && ancestors.length <= 8) {
+      const run = await this.lockRun(tx, orgId, cursor);
+      if (!run) return null;
+      ancestors.push(run);
+      cursor = run.parent_run_id;
+    }
+    if (cursor !== null || ancestors.length === 0) return null;
+
+    const parent = ancestors[0]!;
+    const root = ancestors.at(-1)!;
+    if (
+      root.id !== parent.root_run_id
+      || root.id !== root.root_run_id
+      || root.depth !== 0
+    ) return null;
+
+    const [internal] = await tx.select({
+      authorization_snapshot: appRuns.authorization_snapshot,
+    }).from(appRuns).where(and(
+      eq(appRuns.org_id, orgId),
+      eq(appRuns.id, parent.id),
+    )).limit(1);
+    const [rootBudget] = await tx.select({
+      budget_reserved_at: appRuns.budget_reserved_at,
+      budget_reserved_count: appRuns.budget_reserved_count,
+      budget_limit_at_reservation: appRuns.budget_limit_at_reservation,
+    }).from(appRuns).where(and(
+      eq(appRuns.org_id, orgId),
+      eq(appRuns.id, root.id),
+    )).limit(1);
+    if (!internal || !rootBudget) return null;
+    return Object.freeze({
+      parent,
+      ancestors: Object.freeze(ancestors),
+      parent_authorization_snapshot: internal.authorization_snapshot,
+      root_budget_reserved_at: rootBudget.budget_reserved_at,
+      root_budget_reserved_count: rootBudget.budget_reserved_count,
+      root_budget_limit_at_reservation: rootBudget.budget_limit_at_reservation,
+    });
   }
 
   async insertRun(
@@ -134,6 +206,7 @@ export class PostgresAppRunRepository {
       result_expires_at: Date;
       idempotency_expires_at: Date;
       attempt_limit: number;
+      lineage?: AppRunLineageInsert;
       now: Date;
     }>,
   ): Promise<AppRunSafeView> {
@@ -152,7 +225,7 @@ export class PostgresAppRunRepository {
       provider_instance_id: input.submission.operation.provider.provider_instance_id,
       operation_name: input.submission.operation.operation_name,
       provider_snapshot_id: input.provider_snapshot_id,
-      state: 'pending',
+      state: input.submission.policy.review_requirement === 'always' ? 'pending_approval' : 'pending',
       risk_class: input.submission.policy.risk_class,
       review_requirement: input.submission.policy.review_requirement,
       review_scope: input.submission.policy.review_scope,
@@ -164,12 +237,22 @@ export class PostgresAppRunRepository {
       input_fingerprint: input.input_fingerprint.fingerprint,
       authorization_snapshot: input.submission.authorization_snapshot,
       safe_preview: input.submission.safe_preview,
-      root_run_id: input.id,
-      depth: 0,
+      root_run_id: input.lineage?.root_run_id ?? input.id,
+      parent_run_id: input.lineage?.parent_run_id ?? null,
+      depth: input.lineage?.depth ?? 0,
       input_expires_at: input.input_expires_at,
       result_expires_at: input.result_expires_at,
       idempotency_expires_at: input.idempotency_expires_at,
       attempt_limit: input.attempt_limit,
+      budget_reserved_at: input.lineage?.budget_reserved_at ?? null,
+      budget_reserved_count: input.lineage?.budget_reserved_count ?? null,
+      budget_limit_at_reservation: input.lineage?.budget_limit_at_reservation ?? null,
+      execution_release_kind: input.submission.policy.review_requirement === 'policy'
+        ? 'policy_satisfied'
+        : null,
+      execution_released_at: input.submission.policy.review_requirement === 'policy'
+        ? input.now
+        : null,
       created_at: input.now,
       updated_at: input.now,
     }).returning(safeRunSelection);
@@ -284,6 +367,38 @@ export class PostgresAppRunRepository {
     return updated;
   }
 
+  async recordApprovedExecutionRelease(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    actor: AppRunActor,
+    now: Date,
+  ): Promise<AppRunSafeView> {
+    if (run.execution_release_kind) {
+      if (run.execution_release_kind === 'approved') return run;
+      throw new Error('APP_RUN_ILLEGAL_TRANSITION');
+    }
+    const [updated] = await tx.update(appRuns).set({
+      execution_release_kind: 'approved',
+      execution_released_at: now,
+      updated_at: now,
+    }).where(and(
+      eq(appRuns.org_id, run.org_id),
+      eq(appRuns.id, run.id),
+      eq(appRuns.state, 'pending_approval'),
+    )).returning(safeRunSelection);
+    if (!updated) throw new Error('APP_RUN_ILLEGAL_TRANSITION');
+    await this.appendEvent(tx, {
+      id: crypto.randomUUID(),
+      org_id: run.org_id,
+      run_id: run.id,
+      event_type: 'approval_resolved',
+      actor,
+      payload: { resolution: 'approved', execution_release_kind: 'approved' },
+      now,
+    });
+    return updated;
+  }
+
   async activeKeyReferences(now: Date): Promise<readonly { purpose: 'fingerprint'; key_id: string }[]> {
     const rows = await db.select({
       idempotency: appRuns.idempotency_key_version,
@@ -302,11 +417,12 @@ export class PostgresAppRunRepository {
     return rows.map((row) => row.id);
   }
 
-  async latestSuccessfulAttemptId(orgId: string, runId: string): Promise<string | null> {
+  async latestRetainedAttemptId(orgId: string, runId: string): Promise<string | null> {
     const [row] = await db.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
       eq(appRunAttempts.org_id, orgId),
       eq(appRunAttempts.run_id, runId),
-      eq(appRunAttempts.state, 'succeeded'),
+      sql`${appRunAttempts.provider_call_finished_at} IS NOT NULL`,
+      sql`${appRunAttempts.safe_outcome}->>'result_status' = 'retained'`,
     )).orderBy(sql`${appRunAttempts.attempt_number} DESC`).limit(1);
     return row?.id ?? null;
   }

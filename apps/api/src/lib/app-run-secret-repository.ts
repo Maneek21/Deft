@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { and, asc, eq, lte, sql } from 'drizzle-orm';
-import { appRunEvents, appRuns, appRunSecretPayloads } from '@deft/db/schema';
-import type { CapabilityJsonValue } from '@deft/shared';
+import { appRunEvents, appRunReceipts, appRuns, appRunSecretPayloads } from '@deft/db/schema';
+import { canonicalCapabilityJson, type CapabilityJsonValue } from '@deft/shared';
 import { db } from './db.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import {
@@ -119,11 +120,44 @@ export class AppRunSecretRepository {
     });
   }
 
+  async outputEnvelopeDigest(
+    tx: AppRunTransaction,
+    orgId: string,
+    runId: string,
+    attemptId: string,
+  ): Promise<string | undefined> {
+    const [row] = await tx.select({
+      envelope_version: appRunSecretPayloads.envelope_version,
+      algorithm: appRunSecretPayloads.algorithm,
+      key_version: appRunSecretPayloads.key_version,
+      nonce_b64: appRunSecretPayloads.nonce_b64,
+      ciphertext_b64: appRunSecretPayloads.ciphertext_b64,
+      auth_tag_b64: appRunSecretPayloads.auth_tag_b64,
+    }).from(appRunSecretPayloads).where(and(
+      eq(appRunSecretPayloads.org_id, orgId),
+      eq(appRunSecretPayloads.run_id, runId),
+      eq(appRunSecretPayloads.attempt_id, attemptId),
+      eq(appRunSecretPayloads.payload_kind, 'output'),
+    )).limit(1);
+    return row
+      ? `sha256:${createHash('sha256').update(canonicalCapabilityJson(row)).digest('hex')}`
+      : undefined;
+  }
+
   async retainedKeyReferences(now: Date): Promise<readonly { purpose: 'run_encryption'; key_id: string }[]> {
     const rows = await db.selectDistinct({ key_id: appRunSecretPayloads.key_version })
       .from(appRunSecretPayloads)
       .where(sql`${appRunSecretPayloads.expires_at} > ${now}`);
     return rows.map((row) => ({ purpose: 'run_encryption' as const, key_id: row.key_id }));
+  }
+
+  async receiptSigningKeyReferences(): Promise<readonly {
+    purpose: 'receipt_signing';
+    key_id: string;
+  }[]> {
+    const rows = await db.selectDistinct({ key_id: appRunReceipts.signing_key_version })
+      .from(appRunReceipts);
+    return rows.map((row) => ({ purpose: 'receipt_signing' as const, key_id: row.key_id }));
   }
 
   async purgeExpiredBatch(now = new Date(), limit = 100): Promise<number> {

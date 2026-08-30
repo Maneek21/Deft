@@ -51,6 +51,18 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appRunEngineHardeningFile), 'utf8'));
     console.log(`[apply-extras] applied ${appRunEngineHardeningFile}`);
 
+    const appRunCutoverGateFile = '0.3.0-preview.19-governed-app-run-cutover-gate.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunCutoverGateFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunCutoverGateFile}`);
+
+    const appRunLiveAuthorityFile = '0.3.0-preview.20-app-run-live-authority-versions.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunLiveAuthorityFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunLiveAuthorityFile}`);
+
+    const appRunAncestryGuardFile = '0.3.0-preview.21-app-run-ancestry-guard.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunAncestryGuardFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunAncestryGuardFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -93,6 +105,8 @@ async function main() {
       'app_runs_idempotency_expiry_check',
       'app_runs_attempt_limit_check',
       'app_runs_cancel_request_check',
+      'app_runs_execution_release_shape_check',
+      'app_runs_budget_reservation_shape_check',
       'app_run_attempts_retry_shape_check',
       'app_run_secret_payloads_org_run_fk',
       'app_run_secret_payloads_org_attempt_fk',
@@ -100,6 +114,13 @@ async function main() {
       'app_run_receipts_org_run_fk',
       'app_run_receipts_org_attempt_fk',
       'agent_actions_org_app_run_fk',
+      'agent_actions_app_run_shape_check',
+      'org_members_app_run_authorization_version_check',
+      'agent_employees_app_run_authorization_version_check',
+      'mcp_connections_app_run_authorization_version_check',
+      'mcp_tool_overrides_app_run_authorization_version_check',
+      'mcp_tokens_app_run_authorization_version_check',
+      'oauth_access_tokens_app_run_authorization_version_check',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -131,7 +152,7 @@ async function main() {
       'app_developer_pairings_code_hash_unique',
       'app_developer_pairings_session_hash_unique',
       'capability_provider_snapshots_identity_digest_unique',
-      'app_runs_idempotency_unique',
+      'app_runs_idempotency_lookup_idx',
       'app_run_attempts_number_unique',
       'app_run_attempts_one_active_unique',
       'app_runs_idempotency_expiry_idx',
@@ -175,6 +196,15 @@ async function main() {
       'app_run_secret_payloads_append_only_trigger',
       'app_run_events_append_only_trigger',
       'app_run_receipts_append_only_trigger',
+      'app_runs_cutover_gate_trigger',
+      'app_run_attempts_execution_release_trigger',
+      'app_runs_ancestry_insert_trigger',
+      'org_members_app_run_authorization_version_trigger',
+      'agent_employees_app_run_authorization_version_trigger',
+      'mcp_connections_app_run_authorization_version_trigger',
+      'mcp_tool_overrides_app_run_authorization_version_trigger',
+      'mcp_tokens_app_run_authorization_version_trigger',
+      'oauth_access_tokens_app_run_authorization_version_trigger',
     ];
     const installedAppRunTriggers = await client.query<{ tgname: string }>(
       `SELECT tgname

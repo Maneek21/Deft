@@ -5,13 +5,14 @@ import type { AppRunAttemptRunner } from './app-run-attempt-runner.js';
 const AppRunJobSchema = z.object({
   orgId: z.string().min(1).max(512),
   runId: z.string().min(1).max(512),
+  attemptId: z.string().min(1).max(512),
 }).strict();
 
-// PR B deliberately exports an injectable factory without registering it in
-// the production worker registry. PR C owns the cutover decision.
+// C0 deliberately keeps this injectable factory out of the production worker
+// registry. C4 owns provider/queue wiring and C5 owns the cutover decision.
 export function createAppRunAttemptJobHandler(runner: AppRunAttemptRunner): JobHandler {
   return async (job) => {
     const payload = AppRunJobSchema.parse(job.data);
-    await runner.run(payload.orgId, payload.runId, `job:${job.id}`, job.signal);
+    await runner.run(payload.orgId, payload.runId, payload.attemptId, `job:${job.id}`, job.signal);
   };
 }

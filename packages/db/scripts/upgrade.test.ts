@@ -13,6 +13,7 @@ import {
 import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
   attachmentDerivatives,
+  agentEmployees,
   agentChannelEvents,
   agentChannelConnections,
   appInstallations,
@@ -34,6 +35,10 @@ import {
   files,
   messageAttachments,
   messages,
+  mcpConnections,
+  mcpTokens,
+  mcpToolOverrides,
+  oauthAccessTokens,
   orgMembers,
   taskAttachments,
   tasks,
@@ -97,6 +102,8 @@ test('governed App Run fresh schema is tenant-bound and keeps ciphertext separat
   ));
   assert.ok(run.uniqueConstraints.some((item) => item.name === 'app_runs_org_id_id_unique'));
   assert.ok(foreignKeyNames(run).includes('app_runs_org_provider_snapshot_fk'));
+  assert.ok(foreignKeyNames(run).includes('app_runs_org_root_run_fk'));
+  assert.ok(foreignKeyNames(run).includes('app_runs_org_parent_run_fk'));
   assert.ok(foreignKeyNames(attempt).includes('app_run_attempts_org_run_fk'));
   assert.ok(attempt.indexes.some((item) => item.config.name === 'app_run_attempts_one_active_unique'));
   assert.deepEqual(
@@ -187,6 +194,112 @@ test('governed App Run engine hardening is additive and fences replay and attemp
   }
   assert.doesNotMatch(sql, /ALTER TABLE agent_actions/i);
   assert.match(applyExtrasSource, /0\.3\.0-preview\.18-governed-app-run-engine-hardening\.sql/);
+});
+
+test('governed App Run cutover gate is additive and fails closed before integration', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.19');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  const run = getTableConfig(appRuns);
+  const action = getTableConfig(agentActions);
+
+  for (const boundary of [
+    'execution_release_kind',
+    'execution_released_at',
+    'budget_reserved_at',
+    'budget_reserved_count',
+    'budget_limit_at_reservation',
+    'app_runs_execution_release_shape_check',
+    'app_runs_budget_reservation_shape_check',
+    'app_run_attempts_execution_release_trigger',
+    'APP_RUN_EXECUTION_NOT_RELEASED',
+    'agent_actions_app_run_shape_check',
+    'app_runs_idempotency_lookup_idx',
+  ]) {
+    assert.match(sql, new RegExp(boundary, 'i'));
+  }
+  assert.match(sql, /DROP INDEX IF EXISTS app_runs_idempotency_unique/i);
+  assert.doesNotMatch(sql, /CREATE UNIQUE INDEX[^;]+app_runs_idempotency_lookup_idx/is);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+app_runs/im);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+agent_actions/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.19-governed-app-run-cutover-gate\.sql/);
+  assert.match(applyExtrasSource, /'app_runs_idempotency_lookup_idx'/);
+  assert.match(applyExtrasSource, /'app_run_attempts_execution_release_trigger'/);
+  assert.doesNotMatch(applyExtrasSource, /'app_runs_idempotency_unique'/);
+  for (const column of [
+    'execution_release_kind',
+    'execution_released_at',
+    'budget_reserved_at',
+    'budget_reserved_count',
+    'budget_limit_at_reservation',
+  ]) {
+    assert.ok(run.columns.some((item) => item.name === column));
+  }
+  assert.ok(run.indexes.some((item) => item.config.name === 'app_runs_idempotency_lookup_idx'));
+  assert.equal(run.indexes.some((item) => item.config.name === 'app_runs_idempotency_unique'), false);
+  assert.ok(run.checks.some((item) => item.name === 'app_runs_execution_release_shape_check'));
+  assert.ok(run.checks.some((item) => item.name === 'app_runs_budget_reservation_shape_check'));
+  assert.ok(action.checks.some((item) => item.name === 'agent_actions_app_run_shape_check'));
+});
+
+test('App Run live authority versions are additive, monotonic, and ignore ordinary counters', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.20');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+
+  for (const boundary of [
+    'org_members_app_run_authorization_version_trigger',
+    'agent_employees_app_run_authorization_version_trigger',
+    'mcp_connections_app_run_authorization_version_trigger',
+    'mcp_tool_overrides_app_run_authorization_version_trigger',
+    'mcp_tokens_app_run_authorization_version_trigger',
+    'oauth_access_tokens_app_run_authorization_version_trigger',
+  ]) assert.match(sql, new RegExp(boundary, 'i'));
+
+  assert.match(sql, /NEW\.max_daily_actions/i);
+  assert.match(sql, /NEW\.revoked_at/i);
+  assert.doesNotMatch(sql, /NEW\.daily_action_count/i);
+  assert.doesNotMatch(sql, /NEW\.daily_cost_cents/i);
+  assert.doesNotMatch(sql, /NEW\.last_used_at/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+(?:org_members|agent_employees|mcp_connections|mcp_tool_overrides|mcp_tokens|oauth_access_tokens)/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.20-app-run-live-authority-versions\.sql/);
+
+  for (const table of [
+    orgMembers,
+    agentEmployees,
+    mcpConnections,
+    mcpToolOverrides,
+    mcpTokens,
+    oauthAccessTokens,
+  ]) {
+    const config = getTableConfig(table);
+    assert.ok(config.columns.some((column) => column.name === 'app_run_authorization_version'));
+  }
+});
+
+test('App Run ancestry upgrade guards lineage, ceilings, and root budget continuity', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.21');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+
+  for (const invariant of [
+    'app_runs_ancestry_insert_trigger',
+    'APP_RUN_ANCESTRY_INVALID',
+    'APP_RUN_AUTHORIZATION_CEILING',
+    'APP_RUN_POLICY_CEILING',
+    'APP_RUN_BUDGET_CONTINUITY',
+  ]) assert.match(sql, new RegExp(invariant, 'i'));
+  assert.match(sql, /parent_row\.state NOT IN \('running', 'waiting_external'\)/i);
+  assert.match(sql, /jsonb_array_elements\(NEW\.authorization_snapshot->'authority_refs'\)/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+app_runs/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.21-app-run-ancestry-guard\.sql/);
+  assert.match(applyExtrasSource, /'app_runs_ancestry_insert_trigger'/);
 });
 
 test('parseUpgradeArgs recognizes status and dry run', () => {

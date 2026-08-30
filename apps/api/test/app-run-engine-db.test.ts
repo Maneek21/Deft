@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
-import { APP_RUN_CONTRACT_VERSIONS } from '@deft/shared';
+import {
+  APP_RUN_CONTRACT_VERSIONS,
+  createCapabilityProviderDiscoverySnapshot,
+} from '@deft/shared';
 import { AppRunAttemptRunner } from '../src/lib/app-run-attempt-runner.js';
 import type {
   AppRunProviderExecutionRequest,
@@ -13,8 +16,21 @@ import { PostgresAppRunRepository } from '../src/lib/app-run-repository.js';
 import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
+import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
+import {
+  PostgresAppRunApprovalResolver,
+  postgresAppRunApprovalAdapter,
+} from '../src/lib/app-run-approval-adapter.js';
+import { PostgresAppRunAttentionProjector } from '../src/lib/app-run-attention.js';
+import { AppRunOperationsService } from '../src/lib/app-run-operations.js';
+import { PostgresAppRunReceiptWriter } from '../src/lib/app-run-receipts.js';
+import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
 import { createAppRunAttemptJobHandler } from '../src/lib/app-run-worker-handler.js';
-import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from '../src/lib/app-run-keyrings.js';
+import {
+  assertAppRunReferencedKeysAvailable,
+  parseEnvironmentAppRunKeyrings,
+  type EnvironmentAppRunKeyProvider,
+} from '../src/lib/app-run-keyrings.js';
 import { closeDb } from '../src/lib/db.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
@@ -56,6 +72,7 @@ function keyProvider(
 }
 
 const allowAll = { async authorize() { return true; } };
+const allowExecution = { async authorizeExecution() { return true; } };
 
 function service(
   now: () => Date = () => new Date(),
@@ -88,7 +105,7 @@ function submission(overrides: Record<string, unknown> = {}) {
     provider_snapshot_digest: digest,
     policy: {
       risk_class: 'external_write',
-      review_requirement: 'always',
+      review_requirement: 'policy',
       review_scope: 'per_invocation',
       retry_class: 'unsafe_or_unknown',
     },
@@ -123,6 +140,10 @@ before(async () => {
   await client.connect();
   await client.query('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)', [ORG_ID, 'App Run Test', ORG_ID]);
   await client.query(
+    'INSERT INTO users (id, email, name) VALUES ($1, $2, $3)',
+    [USER_ID, `${USER_ID}@example.test`, 'App Run Test User'],
+  );
+  await client.query(
     `INSERT INTO capability_provider_snapshots
       (id, org_id, provider_kind, provider_instance_id, adapter_contract_version,
        snapshot_digest, safe_snapshot, captured_at)
@@ -133,7 +154,11 @@ before(async () => {
 
 after(async () => {
   if (client) {
+    await client.query('DELETE FROM agent_actions WHERE user_id = $1', [USER_ID]);
+    await client.query('DELETE FROM agent_employees WHERE user_id = $1', [USER_ID]);
+    await client.query('DELETE FROM mcp_connections WHERE created_by = $1', [USER_ID]);
     await client.query('DELETE FROM orgs WHERE id = $1', [ORG_ID]);
+    await client.query('DELETE FROM users WHERE id = $1', [USER_ID]);
     await client.end();
   }
   for (const provider of providers) provider.destroy();
@@ -186,6 +211,30 @@ test('submission is atomic, rotation-safe, tenant-scoped, and replay-conflict aw
   );
 });
 
+test('idempotency keys can be reused once their host-owned horizon expires', async () => {
+  let clock = new Date('2026-01-01T00:00:00.000Z');
+  const setup = service(() => clock);
+  const request = submission({
+    idempotency_key: `horizon-${suffix}`,
+    retention_class: 'ephemeral',
+  });
+  const first = await setup.service.submit(trusted, request);
+  clock = new Date('2026-01-09T00:00:00.000Z');
+  const replacements = await Promise.all(
+    Array.from({ length: 20 }, () => setup.service.submit(trusted, request)),
+  );
+  assert.equal(new Set(replacements.map((run) => run.id)).size, 1);
+  assert.notEqual(replacements[0]!.id, first.id);
+  const count = await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_runs
+      WHERE org_id = $1 AND idempotency_fingerprint = (
+        SELECT idempotency_fingerprint FROM app_runs WHERE id = $2
+      )`,
+    [ORG_ID, first.id],
+  );
+  assert.equal(count.rows[0]!.count, '2');
+});
+
 class CountingExecutor implements AppRunProviderExecutor {
   calls: AppRunProviderExecutionRequest[] = [];
   results: AppRunProviderExecutionResult[] = [];
@@ -196,9 +245,406 @@ class CountingExecutor implements AppRunProviderExecutor {
     this.calls.push(request);
     this.entered?.();
     if (this.wait) await this.wait;
-    return this.results.shift() ?? { status: 'succeeded', output: { message_id: 'message-1' } };
+    return this.results.shift() ?? {
+      status: 'returned', provider_succeeded: true, output: { message_id: 'message-1' },
+    };
   }
 }
+
+function receiptRotationKeyProvider(
+  current: 'sig-v1' | 'sig-v2',
+  includeV1 = true,
+): EnvironmentAppRunKeyProvider {
+  const provider = parseEnvironmentAppRunKeyrings(JSON.stringify({
+    schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
+    run_encryption: { current: 'enc-v1', keys: { 'enc-v1': key(1) } },
+    receipt_signing: {
+      current,
+      keys: includeV1
+        ? { 'sig-v1': key(2), 'sig-v2': key(5) }
+        : { 'sig-v2': key(5) },
+    },
+    fingerprint: { current: 'fp-v1', keys: { 'fp-v1': key(3), 'fp-old': key(4) } },
+  }));
+  providers.push(provider);
+  return provider;
+}
+
+test('live authority revocation is sticky and the execution budget is reserved exactly once', async () => {
+  const providerId = `live-provider-${suffix}`;
+  const snapshotId = `live-snapshot-${suffix}`;
+  const employeeId = `live-employee-${suffix}`;
+  const operationName = 'send_email';
+  const policy = {
+    risk_class: 'external_write' as const,
+    review_requirement: 'policy' as const,
+    review_scope: 'per_invocation' as const,
+    retry_class: 'unsafe_or_unknown' as const,
+  };
+  await client.query(
+    `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+     VALUES ($1, $2, $3, 'owner', true)
+     ON CONFLICT (org_id, user_id) DO UPDATE SET is_active = true`,
+    [`live-member-${suffix}`, ORG_ID, USER_ID],
+  );
+  await client.query(
+    `INSERT INTO mcp_connections
+      (id, org_id, name, slug, server_url, transport, auth_type, is_active,
+       default_trust_tier, enabled_tools, created_by)
+     VALUES ($1, $2, 'Live provider', $3, 'https://example.test/mcp',
+       'streamable-http', 'none', true, 'full', $4, $5)`,
+    [providerId, ORG_ID, providerId, [operationName], USER_ID],
+  );
+  await client.query(
+    `INSERT INTO agent_employees
+      (id, org_id, user_id, name, slug, role, system_prompt, mcp_connection_ids,
+       trust_level, max_daily_actions, daily_action_count, unhealthy, is_active,
+       is_deleted, created_by)
+     VALUES ($1, $2, $3, 'Live employee', $4, 'custom', 'Test', $5,
+       'autonomous', 5, 0, false, true, false, $3)`,
+    [employeeId, ORG_ID, USER_ID, employeeId, [providerId]],
+  );
+  const snapshot = await createCapabilityProviderDiscoverySnapshot({
+    adapter_contract_version: 'deft.capability.mcp-adapter.v1',
+    provider: {
+      org_id: ORG_ID,
+      provider_kind: 'mcp',
+      provider_instance_id: providerId,
+    },
+    captured_at: new Date().toISOString(),
+    operations: [{
+      identity: {
+        provider: {
+          org_id: ORG_ID,
+          provider_kind: 'mcp',
+          provider_instance_id: providerId,
+        },
+        operation_name: operationName,
+      },
+      description: 'Send one test email',
+      input_schema: { type: 'object' },
+    }],
+  });
+  await client.query(
+    `INSERT INTO capability_provider_snapshots
+      (id, org_id, provider_kind, provider_instance_id, adapter_contract_version,
+       snapshot_digest, safe_snapshot, captured_at)
+     VALUES ($1, $2, 'mcp', $3, $4, $5, $6::jsonb, $7)`,
+    [snapshotId, ORG_ID, providerId, snapshot.adapter_contract_version,
+      snapshot.snapshot_digest, JSON.stringify(snapshot), snapshot.captured_at],
+  );
+
+  const live = new PostgresAppRunLiveAuthorization();
+  const executionActor = { actor_type: 'agent_employee' as const, agent_employee_id: employeeId };
+  const capture = (effectivePolicy = policy) => live.capture({
+    org_id: ORG_ID,
+    authenticated_subject: trusted.initiating_actor,
+    execution_actor: executionActor,
+    provider_instance_id: providerId,
+    provider_snapshot_id: snapshotId,
+    operation_name: operationName,
+    policy: effectivePolicy,
+  });
+  const liveSubmission = async (key: string, effectivePolicy = policy) => ({
+    ...submission({
+      idempotency_key: key,
+      execution_actor: executionActor,
+      origin: { origin_kind: 'legacy_connector', connection_id: providerId },
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: providerId },
+        operation_name: operationName,
+      },
+      provider_snapshot_digest: snapshot.snapshot_digest,
+      policy: effectivePolicy,
+      authorization_snapshot: await capture(effectivePolicy),
+    }),
+  });
+  const liveTrusted = { ...trusted, execution_actor: executionActor };
+  const setup = service();
+  const alwaysPolicy = {
+    ...policy,
+    review_requirement: 'always' as const,
+  };
+  const staleApproval = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-stale-approval-${suffix}`, alwaysPolicy),
+  );
+  const staleApprovalAction = await client.query<{ id: string; params: unknown }>(
+    `SELECT id, params FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, staleApproval.id],
+  );
+  assert.equal(staleApprovalAction.rowCount, 1);
+  assert.doesNotMatch(
+    JSON.stringify(staleApprovalAction.rows[0]!.params),
+    new RegExp(`raw-marker-${suffix}|live-stale-approval-${suffix}|recipient|body`),
+  );
+  const stale = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-stale-${suffix}`),
+  );
+
+  // Restoring the same visible membership state still bumps the monotonic
+  // version, so a proposal captured before revocation cannot revive.
+  await client.query(
+    `UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`,
+    [ORG_ID, USER_ID],
+  );
+  await client.query(
+    `UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`,
+    [ORG_ID, USER_ID],
+  );
+  const staleApprovalResult = await approveAction(staleApprovalAction.rows[0]!.id, USER_ID);
+  assert.equal(staleApprovalResult.status, 'error');
+  const staleApprovalState = await client.query<{
+    run_state: string;
+    action_state: string;
+    execution_release_kind: string | null;
+  }>(
+    `SELECT r.state AS run_state, a.approval_status AS action_state,
+            r.execution_release_kind
+       FROM app_runs r JOIN agent_actions a
+         ON a.org_id = r.org_id AND a.app_run_id = r.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, staleApproval.id],
+  );
+  assert.deepEqual(staleApprovalState.rows[0], {
+    run_state: 'expired',
+    action_state: 'expired',
+    execution_release_kind: null,
+  });
+  const executor = new CountingExecutor();
+  const runner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor, live,
+  );
+  assert.equal(await runner.prepareAttempt(ORG_ID, stale.id), null);
+
+  const fresh = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-fresh-${suffix}`),
+  );
+  const attempts = await Promise.all(
+    Array.from({ length: 12 }, () => runner.prepareAttempt(ORG_ID, fresh.id)),
+  );
+  assert.equal(new Set(attempts).size, 1);
+  assert.ok(attempts[0]);
+  const reservation = await client.query<{
+    daily_action_count: number;
+    budget_reserved_count: number;
+    budget_limit_at_reservation: number;
+  }>(
+    `SELECT e.daily_action_count, r.budget_reserved_count, r.budget_limit_at_reservation
+       FROM agent_employees e JOIN app_runs r
+         ON r.org_id = e.org_id AND r.execution_actor_id = e.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, fresh.id],
+  );
+  assert.deepEqual(reservation.rows[0], {
+    daily_action_count: 1,
+    budget_reserved_count: 1,
+    budget_limit_at_reservation: 5,
+  });
+
+  // Ordinary budget consumption does not change the bound authority version,
+  // while the Run's own reservation remains write-once.
+  await client.query(
+    `UPDATE agent_employees SET daily_action_count = daily_action_count + 1 WHERE id = $1`,
+    [employeeId],
+  );
+  assert.equal(await runner.prepareAttempt(ORG_ID, fresh.id), attempts[0]);
+
+  await client.query(`UPDATE mcp_connections SET is_active = false WHERE id = $1`, [providerId]);
+  await client.query(`UPDATE mcp_connections SET is_active = true WHERE id = $1`, [providerId]);
+  const stopped = await runner.run(ORG_ID, fresh.id, attempts[0]!, 'live-worker');
+  assert.equal(stopped.state, 'pending');
+  assert.equal(executor.calls.length, 0);
+  const versions = await client.query<{ member: number; connector: number }>(
+    `SELECT m.app_run_authorization_version AS member,
+            c.app_run_authorization_version AS connector
+       FROM org_members m CROSS JOIN mcp_connections c
+      WHERE m.org_id = $1 AND m.user_id = $2 AND c.id = $3`,
+    [ORG_ID, USER_ID, providerId],
+  );
+  assert.equal(versions.rows[0]!.member, 3);
+  assert.equal(versions.rows[0]!.connector, 3);
+
+  const raced = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-approval-race-${suffix}`, alwaysPolicy),
+  );
+  const raceAction = await client.query<{ id: string; params: unknown }>(
+    `SELECT id, params FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, raced.id],
+  );
+  assert.equal(raceAction.rowCount, 1);
+  assert.equal(await runner.prepareAttempt(ORG_ID, raced.id), null);
+  const internalBypass = await approveAction(raceAction.rows[0]!.id, USER_ID, { internal: true });
+  assert.deepEqual(internalBypass, {
+    status: 'error',
+    code: 'FORBIDDEN',
+    message: 'only the requester or an org owner/admin may approve this action',
+  });
+  await Promise.all(Array.from({ length: 20 }, (_, index) => (
+    index % 2 === 0
+      ? approveAction(raceAction.rows[0]!.id, USER_ID)
+      : rejectAction(raceAction.rows[0]!.id, USER_ID, `ignored raw reason ${index}`)
+  )));
+  const raceState = await client.query<{
+    run_state: string;
+    execution_release_kind: string | null;
+    action_state: string;
+    approval_events: string;
+    attempts: string;
+    error: string | null;
+  }>(
+    `SELECT r.state AS run_state, r.execution_release_kind,
+            a.approval_status AS action_state, a.error,
+            (SELECT count(*) FROM app_run_events e
+              WHERE e.org_id = r.org_id AND e.run_id = r.id
+                AND e.event_type = 'approval_resolved') AS approval_events,
+            (SELECT count(*) FROM app_run_attempts ra
+              WHERE ra.org_id = r.org_id AND ra.run_id = r.id) AS attempts
+       FROM app_runs r JOIN agent_actions a
+         ON a.org_id = r.org_id AND a.app_run_id = r.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, raced.id],
+  );
+  const resolution = raceState.rows[0]!;
+  assert.equal(resolution.approval_events, '1');
+  assert.equal(resolution.attempts, '0');
+  assert.doesNotMatch(resolution.error ?? '', /ignored raw reason/);
+  if (resolution.execution_release_kind === 'approved') {
+    assert.equal(resolution.run_state, 'pending_approval');
+    assert.equal(resolution.action_state, 'approved');
+    assert.ok(await runner.prepareAttempt(ORG_ID, raced.id));
+  } else {
+    assert.equal(resolution.execution_release_kind, null);
+    assert.equal(resolution.run_state, 'cancelled');
+    assert.equal(resolution.action_state, 'rejected');
+    assert.equal(await runner.prepareAttempt(ORG_ID, raced.id), null);
+  }
+});
+
+async function prepareAttempt(runner: AppRunAttemptRunner, runId: string): Promise<string> {
+  const attemptId = await runner.prepareAttempt(ORG_ID, runId);
+  assert.ok(attemptId);
+  return attemptId;
+}
+
+test('approval release and live execution authorization both fail closed', async () => {
+  const setup = service();
+  const approvalRequired = await setup.service.submit(trusted, submission({
+    idempotency_key: `approval-gate-${suffix}`,
+    policy: {
+      risk_class: 'external_write', review_requirement: 'always',
+      review_scope: 'per_invocation', retry_class: 'unsafe_or_unknown',
+    },
+  }));
+  assert.equal(approvalRequired.state, 'pending_approval');
+  assert.equal(approvalRequired.execution_released_at, null);
+
+  const executor = new CountingExecutor();
+  const allowedRunner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
+  );
+  assert.equal(await allowedRunner.prepareAttempt(ORG_ID, approvalRequired.id), null);
+  await allowedRunner.run(ORG_ID, approvalRequired.id, randomUUID(), 'unreleased-worker');
+  assert.equal(executor.calls.length, 0);
+  await assert.rejects(
+    client.query(
+      `UPDATE app_runs SET state = 'running', started_at = now()
+       WHERE org_id = $1 AND id = $2`,
+      [ORG_ID, approvalRequired.id],
+    ),
+    /APP_RUN_EXECUTION_NOT_RELEASED/,
+  );
+  await assert.rejects(
+    client.query(
+      `INSERT INTO app_run_attempts (id, org_id, run_id, attempt_number, state)
+       VALUES ($1, $2, $3, 1, 'pending')`,
+      [randomUUID(), ORG_ID, approvalRequired.id],
+    ),
+    /APP_RUN_EXECUTION_NOT_RELEASED/,
+  );
+
+  const policyReleased = await setup.service.submit(trusted, submission({
+    idempotency_key: `execution-authorizer-${suffix}`,
+  }));
+  await client.query(
+    `UPDATE app_runs
+        SET budget_reserved_at = now(), budget_reserved_count = 1, budget_limit_at_reservation = 10
+      WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, policyReleased.id],
+  );
+  await assert.rejects(
+    client.query(
+      `UPDATE app_runs SET budget_reserved_count = 2 WHERE org_id = $1 AND id = $2`,
+      [ORG_ID, policyReleased.id],
+    ),
+    /APP_RUN_IMMUTABLE_FIELD/,
+  );
+  const deniedRunner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor,
+  );
+  assert.equal(policyReleased.execution_release_kind, 'policy_satisfied');
+  assert.equal(await deniedRunner.prepareAttempt(ORG_ID, policyReleased.id), null);
+
+  const approved = await setup.repository.transaction(async (tx) => {
+    const run = await setup.repository.lockRun(tx, ORG_ID, approvalRequired.id);
+    assert.ok(run);
+    return setup.repository.recordApprovedExecutionRelease(
+      tx, run, trusted.initiating_actor, new Date(),
+    );
+  });
+  assert.equal(approved.execution_release_kind, 'approved');
+  await assert.rejects(
+    client.query(
+      `UPDATE app_runs SET execution_release_kind = 'policy_satisfied'
+       WHERE org_id = $1 AND id = $2`,
+      [ORG_ID, approvalRequired.id],
+    ),
+    /APP_RUN_IMMUTABLE_FIELD/,
+  );
+  const attemptId = await prepareAttempt(allowedRunner, approvalRequired.id);
+  assert.equal((await allowedRunner.run(
+    ORG_ID, approvalRequired.id, attemptId, 'approved-worker',
+  )).state, 'succeeded');
+  assert.equal(executor.calls.length, 1);
+  const events = await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_run_events
+      WHERE org_id = $1 AND run_id = $2 AND event_type = 'approval_resolved'`,
+    [ORG_ID, approvalRequired.id],
+  );
+  assert.equal(events.rows[0]!.count, '1');
+});
+
+test('approval compatibility links are exact, bounded, and safe-key allowlisted', async () => {
+  const setup = service();
+  const created = await setup.service.submit(trusted, submission({
+    idempotency_key: `approval-link-${suffix}`,
+  }));
+  await client.query(
+    `INSERT INTO agent_actions
+      (id, org_id, user_id, app_run_id, action, params, approval_tier, approval_status)
+     VALUES ($1, $2, $3, $4, 'app_run_invoke', $5::jsonb, 'quick', 'pending')`,
+    [randomUUID(), ORG_ID, USER_ID, created.id, JSON.stringify({ run_id: created.id })],
+  );
+  for (const [action, appRunId, params] of [
+    ['create_task', created.id, { run_id: created.id }],
+    ['app_run_invoke', null, { run_id: created.id }],
+    ['app_run_invoke', created.id, { safe_preview: { title: 'Missing identity' } }],
+    ['app_run_invoke', created.id, { run_id: created.id, input: { secret: true } }],
+  ] as const) {
+    await assert.rejects(
+      client.query(
+        `INSERT INTO agent_actions
+          (id, org_id, user_id, app_run_id, action, params, approval_tier, approval_status)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'quick', 'pending')`,
+        [randomUUID(), ORG_ID, USER_ID, appRunId, action, JSON.stringify(params)],
+      ),
+      /agent_actions_app_run_shape_check/,
+    );
+  }
+});
 
 test('concurrent runners call once, commit the call boundary, and replay retained output with authorization', async () => {
   const setup = service();
@@ -208,13 +654,14 @@ test('concurrent runners call once, commit the call boundary, and replay retaine
   executor.wait = new Promise<void>((resolve) => { release = resolve; });
   const entered = new Promise<void>((resolve) => { executor.entered = resolve; });
   const runner = new AppRunAttemptRunner(
-    setup.repository, setup.secretRepository, setup.secrets, executor,
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
   );
 
-  const firstExecution = runner.run(ORG_ID, created.id, 'worker-0');
+  const attemptId = await prepareAttempt(runner, created.id);
+  const firstExecution = runner.run(ORG_ID, created.id, attemptId, 'worker-0');
   await entered;
   const competitors = Array.from({ length: 15 }, (_, index) =>
-    runner.run(ORG_ID, created.id, `worker-${index + 1}`));
+    runner.run(ORG_ID, created.id, attemptId, `worker-${index + 1}`));
   await Promise.all(competitors);
   const boundary = await client.query<{ state: string; run_state: string }>(
     `SELECT a.state, r.state AS run_state
@@ -239,7 +686,9 @@ test('concurrent runners call once, commit the call boundary, and replay retaine
   const finished = await setup.service.inspect(ORG_ID, created.id, trusted.initiating_actor);
   assert.equal(finished.state, 'succeeded');
   assert.deepEqual((await setup.service.result(ORG_ID, created.id, trusted.initiating_actor)).value, {
-    message_id: 'message-1',
+    schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+    provider_succeeded: true,
+    output: { message_id: 'message-1' },
   });
   const attemptCounts = await client.query<{ attempts: string; outputs: string }>(
     `SELECT
@@ -262,37 +711,153 @@ test('concurrent runners call once, commit the call boundary, and replay retaine
   assert.equal(touchedSecret, false);
 });
 
+test('provider-reported failures retain an authorized exact response without recalling the provider', async () => {
+  const setup = service();
+  const created = await setup.service.submit(trusted, submission({
+    idempotency_key: `known-provider-error-${suffix}`,
+  }));
+  const privateMarker = `provider-private-${suffix}`;
+  const executor = new CountingExecutor();
+  executor.results.push({
+    status: 'returned',
+    provider_succeeded: false,
+    output: { is_error: true, code: 'recipient_rejected', detail: privateMarker },
+  });
+  const runner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
+  );
+  const attemptId = await prepareAttempt(runner, created.id);
+  const finished = await runner.run(ORG_ID, created.id, attemptId, 'known-error-worker');
+  assert.equal(finished.state, 'failed');
+  assert.deepEqual(finished.safe_outcome, {
+    success: false,
+    provider_call_attempted: true,
+    result_status: 'retained',
+    error_code: 'APP_RUN_PROVIDER_ERROR',
+  });
+  assert.deepEqual((await setup.service.result(
+    ORG_ID, created.id, trusted.initiating_actor,
+  )).value, {
+    schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+    provider_succeeded: false,
+    output: { is_error: true, code: 'recipient_rejected', detail: privateMarker },
+  });
+  await runner.run(ORG_ID, created.id, attemptId, 'known-error-duplicate');
+  assert.equal(executor.calls.length, 1);
+  const safeResidue = await client.query<{ row: string }>(
+    `SELECT row_to_json(safe)::text AS row FROM (
+       SELECT state, safe_preview, safe_outcome FROM app_runs WHERE id = $1
+     ) safe`,
+    [created.id],
+  );
+  assert.doesNotMatch(safeResidue.rows[0]!.row, new RegExp(privateMarker));
+});
+
+test('a provider call known not to have started fails without an indeterminate outcome', async () => {
+  const setup = service();
+  const created = await setup.service.submit(trusted, submission({
+    idempotency_key: `not-attempted-${suffix}`,
+  }));
+  const executor = new CountingExecutor();
+  executor.results.push({ status: 'not_attempted' });
+  const runner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
+  );
+  const attemptId = await prepareAttempt(runner, created.id);
+  const finished = await runner.run(ORG_ID, created.id, attemptId, 'not-attempted-worker');
+  assert.equal(finished.state, 'failed');
+  assert.deepEqual(finished.safe_outcome, {
+    success: false,
+    provider_call_attempted: false,
+    result_status: 'unavailable',
+    error_code: 'APP_RUN_PROVIDER_UNAVAILABLE',
+  });
+  await runner.run(ORG_ID, created.id, attemptId, 'not-attempted-duplicate');
+  assert.equal(executor.calls.length, 1);
+  await assert.rejects(
+    setup.service.result(ORG_ID, created.id, trusted.initiating_actor),
+    (error: any) => error?.code === 'APP_RUN_RESULT_EXPIRED',
+  );
+});
+
+test('attempt heartbeats keep a long provider call fenced across lease intervals', async () => {
+  const setup = service();
+  const created = await setup.service.submit(trusted, submission({
+    idempotency_key: `heartbeat-${suffix}`,
+  }));
+  const executor = new CountingExecutor();
+  let release!: () => void;
+  executor.wait = new Promise<void>((resolve) => { release = resolve; });
+  const entered = new Promise<void>((resolve) => { executor.entered = resolve; });
+  let clock = new Date('2026-04-01T00:00:00.000Z');
+  const runner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor,
+    allowExecution, () => clock, 1_000, 50,
+  );
+  const originalRenew = runner.renewLease.bind(runner);
+  let renewals = 0;
+  const waiters: Array<{ target: number; resolve: () => void }> = [];
+  runner.renewLease = async (...args: Parameters<AppRunAttemptRunner['renewLease']>) => {
+    const renewed = await originalRenew(...args);
+    if (renewed) {
+      renewals += 1;
+      for (const waiter of waiters.filter((item) => item.target <= renewals)) waiter.resolve();
+    }
+    return renewed;
+  };
+  const waitForRenewals = async (target: number) => {
+    if (renewals >= target) return;
+    await new Promise<void>((resolve) => { waiters.push({ target, resolve }); });
+  };
+
+  const attemptId = await prepareAttempt(runner, created.id);
+  const inFlight = runner.run(ORG_ID, created.id, attemptId, 'heartbeat-worker');
+  await entered;
+  clock = new Date('2026-04-01T00:00:00.900Z');
+  await waitForRenewals(1);
+  clock = new Date('2026-04-01T00:00:01.800Z');
+  await waitForRenewals(2);
+  assert.equal(await runner.recoverRun(ORG_ID, created.id), 0);
+  release();
+  assert.equal((await inFlight).state, 'succeeded');
+  assert.ok(renewals >= 2);
+});
+
 test('unsafe indeterminate effects never retry while safe and idempotent effects use new attempts', async () => {
   const unsafeSetup = service();
   const unsafe = await unsafeSetup.service.submit(trusted, submission({ idempotency_key: `unsafe-${suffix}` }));
   const unsafeExecutor = new CountingExecutor();
   unsafeExecutor.results.push({ status: 'indeterminate' });
   const unsafeRunner = new AppRunAttemptRunner(
-    unsafeSetup.repository, unsafeSetup.secretRepository, unsafeSetup.secrets, unsafeExecutor,
+    unsafeSetup.repository, unsafeSetup.secretRepository, unsafeSetup.secrets, unsafeExecutor, allowExecution,
   );
-  assert.equal((await unsafeRunner.run(ORG_ID, unsafe.id, 'unsafe-1')).state, 'unknown_outcome');
-  await unsafeRunner.run(ORG_ID, unsafe.id, 'unsafe-2');
+  const unsafeAttempt = await prepareAttempt(unsafeRunner, unsafe.id);
+  assert.equal((await unsafeRunner.run(ORG_ID, unsafe.id, unsafeAttempt, 'unsafe-1')).state, 'unknown_outcome');
+  await unsafeRunner.run(ORG_ID, unsafe.id, unsafeAttempt, 'unsafe-2');
   assert.equal(unsafeExecutor.calls.length, 1);
 
   const idempotentSetup = service();
   const idempotent = await idempotentSetup.service.submit(trusted, submission({
     idempotency_key: `idempotent-${suffix}`,
     policy: {
-      risk_class: 'external_write', review_requirement: 'always',
+      risk_class: 'external_write', review_requirement: 'policy',
       review_scope: 'per_invocation', retry_class: 'idempotent_with_key',
     },
   }));
   const idempotentExecutor = new CountingExecutor();
   idempotentExecutor.results.push(
     { status: 'indeterminate' },
-    { status: 'succeeded', output: { delivered: true } },
+    { status: 'returned', provider_succeeded: true, output: { delivered: true } },
   );
   const idempotentRunner = new AppRunAttemptRunner(
     idempotentSetup.repository, idempotentSetup.secretRepository, idempotentSetup.secrets,
-    idempotentExecutor,
+    idempotentExecutor, allowExecution,
   );
-  assert.equal((await idempotentRunner.run(ORG_ID, idempotent.id, 'idempotent-1')).state, 'running');
-  assert.equal((await idempotentRunner.run(ORG_ID, idempotent.id, 'idempotent-2')).state, 'succeeded');
+  const firstAttempt = await prepareAttempt(idempotentRunner, idempotent.id);
+  assert.equal((await idempotentRunner.run(ORG_ID, idempotent.id, firstAttempt, 'idempotent-1')).state, 'running');
+  const secondAttempt = await prepareAttempt(idempotentRunner, idempotent.id);
+  assert.notEqual(secondAttempt, firstAttempt);
+  assert.equal((await idempotentRunner.run(ORG_ID, idempotent.id, secondAttempt, 'idempotent-2')).state, 'succeeded');
   assert.equal(idempotentExecutor.calls.length, 2);
   assert.equal(idempotentExecutor.calls[0]!.provider_idempotency_key, idempotentExecutor.calls[1]!.provider_idempotency_key);
   const attempts = await client.query<{ attempt_number: number; retry_of_attempt_id: string | null }>(
@@ -303,6 +868,44 @@ test('unsafe indeterminate effects never retry while safe and idempotent effects
   assert.equal(attempts.rows.length, 2);
   assert.equal(attempts.rows[0]!.retry_of_attempt_id, null);
   assert.ok(attempts.rows[1]!.retry_of_attempt_id);
+});
+
+test('a stale exact-attempt job cannot claim a later retry', async () => {
+  const setup = service();
+  const created = await setup.service.submit(trusted, submission({
+    idempotency_key: `stale-job-${suffix}`,
+    policy: {
+      risk_class: 'external_write', review_requirement: 'policy',
+      review_scope: 'per_invocation', retry_class: 'idempotent_with_key',
+    },
+  }));
+  const executor = new CountingExecutor();
+  executor.results.push(
+    { status: 'indeterminate' },
+    { status: 'returned', provider_succeeded: true, output: { delivered: true } },
+  );
+  const runner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
+  );
+  const handler = createAppRunAttemptJobHandler(runner);
+  const firstAttempt = await prepareAttempt(runner, created.id);
+  await handler({
+    id: 'first-attempt-job', name: 'app-run-attempt', attempts: 1,
+    data: { orgId: ORG_ID, runId: created.id, attemptId: firstAttempt },
+  });
+  const secondAttempt = await prepareAttempt(runner, created.id);
+  assert.notEqual(secondAttempt, firstAttempt);
+  await handler({
+    id: 'stale-attempt-job', name: 'app-run-attempt', attempts: 2,
+    data: { orgId: ORG_ID, runId: created.id, attemptId: firstAttempt },
+  });
+  assert.equal(executor.calls.length, 1);
+  await handler({
+    id: 'second-attempt-job', name: 'app-run-attempt', attempts: 1,
+    data: { orgId: ORG_ID, runId: created.id, attemptId: secondAttempt },
+  });
+  assert.equal(executor.calls.length, 2);
+  assert.equal((await setup.repository.inspect(ORG_ID, created.id))?.state, 'succeeded');
 });
 
 test('retention purge is one-way, audited, and leaves only safe terminal residue', async () => {
@@ -334,9 +937,10 @@ test('a hard crash after the call boundary recovers unsafe work as unknown and f
   const entered = new Promise<void>((resolve) => { executor.entered = resolve; });
   let clock = new Date();
   const runner = new AppRunAttemptRunner(
-    setup.repository, setup.secretRepository, setup.secrets, executor, () => clock, 1_000,
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution, () => clock, 1_000, 60_000,
   );
-  const inFlight = runner.run(ORG_ID, created.id, 'crash-worker');
+  const attemptId = await prepareAttempt(runner, created.id);
+  const inFlight = runner.run(ORG_ID, created.id, attemptId, 'crash-worker');
   await entered;
   clock = new Date(clock.getTime() + 2_000);
   assert.equal(await runner.recoverRun(ORG_ID, created.id), 1);
@@ -361,9 +965,13 @@ test('a durable known result survives finalization failure and repair never reca
     return originalTransition(tx, input);
   };
   const runner = new AppRunAttemptRunner(
-    setup.repository, setup.secretRepository, setup.secrets, executor,
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
   );
-  await assert.rejects(runner.run(ORG_ID, created.id, 'repair-worker'), /injected finalization failure/);
+  const attemptId = await prepareAttempt(runner, created.id);
+  await assert.rejects(
+    runner.run(ORG_ID, created.id, attemptId, 'repair-worker'),
+    /injected finalization failure/,
+  );
   assert.equal(executor.calls.length, 1);
   const marker = await client.query<{ state: string; provider_call_finished_at: Date | null }>(
     'SELECT state, provider_call_finished_at FROM app_run_attempts WHERE org_id = $1 AND run_id = $2',
@@ -378,7 +986,7 @@ test('a durable known result survives finalization failure and repair never reca
   };
   const future = new Date(Date.now() + 2 * 60_000);
   const repairRunner = new AppRunAttemptRunner(
-    setup.repository, setup.secretRepository, setup.secrets, repairExecutor, () => future,
+    setup.repository, setup.secretRepository, setup.secrets, repairExecutor, allowExecution, () => future,
   );
   assert.equal(await repairRunner.recoverRun(ORG_ID, created.id), 1);
   assert.equal((await setup.repository.inspect(ORG_ID, created.id))?.state, 'succeeded');
@@ -389,14 +997,17 @@ test('oversized post-effect output remains known success without exact result or
   const setup = service();
   const created = await setup.service.submit(trusted, submission({ idempotency_key: `oversized-${suffix}` }));
   const executor = new CountingExecutor();
-  executor.results.push({ status: 'succeeded', output: { value: 'x'.repeat(1024 * 1024 + 1) } });
+  executor.results.push({
+    status: 'returned', provider_succeeded: true, output: { value: 'x'.repeat(1024 * 1024 + 1) },
+  });
   const runner = new AppRunAttemptRunner(
-    setup.repository, setup.secretRepository, setup.secrets, executor,
+    setup.repository, setup.secretRepository, setup.secrets, executor, allowExecution,
   );
-  const finished = await runner.run(ORG_ID, created.id, 'oversized-worker');
+  const attemptId = await prepareAttempt(runner, created.id);
+  const finished = await runner.run(ORG_ID, created.id, attemptId, 'oversized-worker');
   assert.equal(finished.state, 'succeeded');
   assert.equal(finished.safe_outcome?.result_status, 'unavailable');
-  await runner.run(ORG_ID, created.id, 'oversized-worker-2');
+  await runner.run(ORG_ID, created.id, attemptId, 'oversized-worker-2');
   assert.equal(executor.calls.length, 1);
   await assert.rejects(
     setup.service.result(ORG_ID, created.id, trusted.initiating_actor),
@@ -444,19 +1055,408 @@ test('database fencing rejects a second active attempt and mutable ownership', a
   );
 });
 
-test('the worker adapter accepts ID-only jobs and remains dependency injected', async () => {
+test('child Runs enforce cycle, depth, authority, policy, and root-budget ceilings', async () => {
+  const setup = service();
+  const root = await setup.service.submit(trusted, submission({
+    idempotency_key: `lineage-root-${suffix}`,
+  }));
+  await client.query(
+    `UPDATE app_runs SET state = 'running', started_at = now(), updated_at = now()
+     WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, root.id],
+  );
+
+  await assert.rejects(
+    setup.service.submitChild(trusted, root.id, submission({
+      idempotency_key: `lineage-cycle-${suffix}`,
+    })),
+    (error: any) => error?.code === 'APP_RUN_CAPABILITY_CYCLE',
+  );
+  await assert.rejects(
+    setup.service.submitChild(trusted, root.id, submission({
+      idempotency_key: `lineage-policy-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: 'privileged_child',
+      },
+      policy: {
+        risk_class: 'privileged',
+        review_requirement: 'policy',
+        review_scope: 'per_invocation',
+        retry_class: 'unsafe_or_unknown',
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
+  );
+  await assert.rejects(
+    setup.service.submitChild(trusted, root.id, submission({
+      idempotency_key: `lineage-authority-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: 'authority_child',
+      },
+      authorization_snapshot: {
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        authenticated_subject: trusted.initiating_actor,
+        authority_refs: [
+          { authority_kind: 'membership', authority_id: USER_ID, version: '1' },
+          { authority_kind: 'token_scope', authority_id: 'new-token', version: '1' },
+          { authority_kind: 'connector', authority_id: PROVIDER_ID, version: '1' },
+        ],
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
+  );
+
+  let parent = root;
+  for (let depth = 1; depth <= 8; depth += 1) {
+    const child = await setup.service.submitChild(trusted, parent.id, submission({
+      idempotency_key: `lineage-depth-${depth}-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: `child_operation_${depth}`,
+      },
+    }));
+    assert.equal(child.root_run_id, root.id);
+    assert.equal(child.parent_run_id, parent.id);
+    assert.equal(child.depth, depth);
+    assert.ok(child.input_expires_at <= parent.input_expires_at);
+    if (depth < 8) {
+      await client.query(
+        `UPDATE app_runs SET state = 'running', started_at = now(), updated_at = now()
+         WHERE org_id = $1 AND id = $2`,
+        [ORG_ID, child.id],
+      );
+    }
+    parent = child;
+  }
+  await assert.rejects(
+    setup.service.submitChild(trusted, parent.id, submission({
+      idempotency_key: `lineage-too-deep-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: 'too_deep',
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ANCESTRY_LIMIT',
+  );
+
+  const employeeId = `lineage-agent-${suffix}`;
+  const agentTrusted = {
+    org_id: ORG_ID,
+    initiating_actor: { actor_type: 'agent_employee' as const, agent_employee_id: employeeId },
+    execution_actor: { actor_type: 'agent_employee' as const, agent_employee_id: employeeId },
+  };
+  const agentSubmission = (operationName: string, idempotencyKey: string) => submission({
+    initiating_actor: agentTrusted.initiating_actor,
+    execution_actor: agentTrusted.execution_actor,
+    idempotency_key: idempotencyKey,
+    operation: {
+      provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+      operation_name: operationName,
+    },
+    authorization_snapshot: {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      authenticated_subject: agentTrusted.initiating_actor,
+      authority_refs: [
+        { authority_kind: 'membership', authority_id: USER_ID, version: '1' },
+        { authority_kind: 'employee_health', authority_id: employeeId, version: '1' },
+        { authority_kind: 'employee_budget', authority_id: employeeId, version: '1' },
+        { authority_kind: 'connector', authority_id: PROVIDER_ID, version: '1' },
+      ],
+    },
+  });
+  const agentRoot = await setup.service.submit(
+    agentTrusted,
+    agentSubmission('agent_root', `lineage-agent-root-${suffix}`),
+  );
+  await client.query(
+    `UPDATE app_runs SET state = 'running', started_at = now(),
+       budget_reserved_at = now(), budget_reserved_count = 1,
+       budget_limit_at_reservation = 25, updated_at = now()
+     WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, agentRoot.id],
+  );
+  const agentChild = await setup.service.submitChild(
+    agentTrusted,
+    agentRoot.id,
+    agentSubmission('agent_child', `lineage-agent-child-${suffix}`),
+  );
+  const inheritedBudget = await client.query<{
+    budget_reserved_count: number | null;
+    budget_limit_at_reservation: number | null;
+  }>(
+    `SELECT budget_reserved_count, budget_limit_at_reservation
+       FROM app_runs WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, agentChild.id],
+  );
+  assert.deepEqual(inheritedBudget.rows[0], {
+    budget_reserved_count: 1,
+    budget_limit_at_reservation: 25,
+  });
+});
+
+test('native receipts, Attention, operator reconciliation, and repair stay safe and idempotent', async () => {
+  await client.query(
+    `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+     VALUES ($1, $2, $3, 'owner', true)
+     ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'owner', is_active = true`,
+    [`ops-member-${suffix}`, ORG_ID, USER_ID],
+  );
+  const keys = receiptRotationKeyProvider('sig-v1');
+  const secrets = new AppRunSecretService(keys);
+  const repository = new PostgresAppRunRepository();
+  const secretRepository = new AppRunSecretRepository(secrets);
+  const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
+  const attention = new PostgresAppRunAttentionProjector(false);
+  const runs = new AppRunService(
+    repository,
+    secretRepository,
+    secrets,
+    keys,
+    allowAll,
+    () => new Date(),
+    postgresAppRunApprovalAdapter,
+    receipts,
+    attention,
+  );
+
+  const approvalRun = await runs.submit(trusted, submission({
+    idempotency_key: `native-approval-${suffix}`,
+    policy: {
+      risk_class: 'external_write',
+      review_requirement: 'always',
+      review_scope: 'per_invocation',
+      retry_class: 'unsafe_or_unknown',
+    },
+  }));
+  const action = await client.query<{ id: string }>(
+    `SELECT id FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, approvalRun.id],
+  );
+  assert.equal(action.rowCount, 1);
+  const approvalAttention = await client.query<{ state: string }>(
+    `SELECT state FROM attention_items
+      WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`,
+    [ORG_ID, action.rows[0]!.id],
+  );
+  assert.equal(approvalAttention.rows[0]?.state, 'open_unseen');
+
+  const resolver = new PostgresAppRunApprovalResolver(
+    repository,
+    { async authorizeApprovalInTransaction() { return true; } },
+    () => new Date(),
+    receipts,
+    attention,
+  );
+  assert.equal((await resolver.approve(action.rows[0]!.id, USER_ID)).status, 'approved');
+  assert.equal(await receipts.verifyStored(
+    ORG_ID,
+    approvalRun.id,
+    `approval:${action.rows[0]!.id}`,
+  ), true);
+  const resolvedAttention = await client.query<{ state: string }>(
+    `SELECT state FROM attention_items
+      WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`,
+    [ORG_ID, action.rows[0]!.id],
+  );
+  assert.equal(resolvedAttention.rows[0]?.state, 'resolved');
+
+  const executor = new CountingExecutor();
+  const runner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    executor,
+    allowExecution,
+    () => new Date(),
+    60_000,
+    20_000,
+    receipts,
+    attention,
+  );
+  const approvalAttempt = await prepareAttempt(runner, approvalRun.id);
+  assert.equal((await runner.run(
+    ORG_ID,
+    approvalRun.id,
+    approvalAttempt,
+    'native-receipt-worker',
+  )).state, 'succeeded');
+  assert.equal(await receipts.verifyStored(
+    ORG_ID,
+    approvalRun.id,
+    `attempt-terminal:${approvalAttempt}`,
+  ), true);
+  const storedReceipt = await client.query<{
+    envelope: Record<string, unknown>;
+    signing_key_version: string;
+    signature_hmac: string;
+  }>(
+    `SELECT envelope, signing_key_version, signature_hmac FROM app_run_receipts
+      WHERE org_id = $1 AND run_id = $2 AND receipt_key = $3`,
+    [ORG_ID, approvalRun.id, `attempt-terminal:${approvalAttempt}`],
+  );
+  assert.equal(secrets.verifyReceipt(
+    { ...storedReceipt.rows[0]!.envelope, run_state: 'failed' },
+    storedReceipt.rows[0]!.signing_key_version,
+    storedReceipt.rows[0]!.signature_hmac,
+  ), false);
+  const rotatedKeys = receiptRotationKeyProvider('sig-v2');
+  const rotatedSecrets = new AppRunSecretService(rotatedKeys);
+  const rotatedWriter = new PostgresAppRunReceiptWriter(
+    rotatedSecrets,
+    new AppRunSecretRepository(rotatedSecrets),
+  );
+  assert.equal(await rotatedWriter.verifyStored(
+    ORG_ID,
+    approvalRun.id,
+    `attempt-terminal:${approvalAttempt}`,
+  ), true);
+  const retiredKeys = receiptRotationKeyProvider('sig-v2', false);
+  await assert.rejects(
+    async () => assertAppRunReferencedKeysAvailable(
+      retiredKeys,
+      await secretRepository.receiptSigningKeyReferences(),
+    ),
+    (error: any) => error?.code === 'APP_RUN_KEY_VERSION_UNAVAILABLE',
+  );
+
+  const unknownExecutor = new CountingExecutor();
+  unknownExecutor.results.push({ status: 'indeterminate' });
+  const unknownRun = await runs.submit(trusted, submission({
+    idempotency_key: `native-unknown-${suffix}`,
+  }));
+  const unknownRunner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    unknownExecutor,
+    allowExecution,
+    () => new Date(),
+    60_000,
+    20_000,
+    receipts,
+    attention,
+  );
+  const unknownAttempt = await prepareAttempt(unknownRunner, unknownRun.id);
+  assert.equal((await unknownRunner.run(
+    ORG_ID,
+    unknownRun.id,
+    unknownAttempt,
+    'unknown-worker',
+  )).state, 'unknown_outcome');
+  assert.equal(unknownExecutor.calls.length, 1);
+  assert.equal((await runs.reconcileUnknown(
+    ORG_ID,
+    unknownRun.id,
+    trusted.initiating_actor,
+    'succeeded',
+  )).state, 'succeeded');
+  assert.equal(unknownExecutor.calls.length, 1);
+  const reconciliationReceipts = await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_run_receipts
+      WHERE org_id = $1 AND run_id = $2 AND receipt_kind = 'reconciliation'`,
+    [ORG_ID, unknownRun.id],
+  );
+  assert.equal(reconciliationReceipts.rows[0]!.count, '1');
+
+  const missingProjectionRun = await runs.submit(trusted, submission({
+    idempotency_key: `native-repair-${suffix}`,
+  }));
+  const failedExecutor = new CountingExecutor();
+  failedExecutor.results.push({
+    status: 'returned',
+    provider_succeeded: false,
+    output: { provider_error: 'safe-code' },
+  });
+  const unprojectedRunner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    failedExecutor,
+    allowExecution,
+  );
+  const missingAttempt = await prepareAttempt(unprojectedRunner, missingProjectionRun.id);
+  assert.equal((await unprojectedRunner.run(
+    ORG_ID,
+    missingProjectionRun.id,
+    missingAttempt,
+    'unprojected-worker',
+  )).state, 'failed');
+
+  const allowOperations = { async authorize() { return true; } };
+  const operations = new AppRunOperationsService(
+    repository,
+    allowOperations,
+    receipts,
+    attention,
+  );
+  const beforeRepair = await operations.auditGaps({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+    run_id: missingProjectionRun.id,
+  });
+  assert.ok(beforeRepair.some((gap) => gap.gap === 'missing_receipt'));
+  assert.ok(beforeRepair.some((gap) => gap.gap === 'missing_attention'));
+  await operations.repair({
+    org_id: ORG_ID,
+    run_id: missingProjectionRun.id,
+    actor: trusted.initiating_actor,
+  });
+  assert.deepEqual(await operations.auditGaps({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+    run_id: missingProjectionRun.id,
+  }), []);
+  const safeList = await operations.list({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+    states: ['failed'],
+    limit: 10,
+  });
+  assert.ok(safeList.some((run) => run.id === missingProjectionRun.id));
+  assert.doesNotMatch(
+    JSON.stringify(safeList),
+    /raw-marker|idempotency_key|ciphertext|nonce_b64|auth_tag_b64|claim_token/i,
+  );
+  const metrics = await operations.metrics({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+  });
+  assert.ok(metrics.every((metric) =>
+    Object.keys(metric).every((key) => ['state', 'risk_class', 'provider_kind', 'count'].includes(key))));
+  assert.deepEqual(await operations.list({
+    org_id: `other-${suffix}`,
+    actor: trusted.initiating_actor,
+  }), []);
+  const denied = new AppRunOperationsService();
+  await assert.rejects(
+    denied.list({ org_id: ORG_ID, actor: trusted.initiating_actor }),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
+  );
+});
+
+test('the worker adapter accepts exact identity-only jobs and remains dependency injected', async () => {
   const calls: unknown[] = [];
   const runner = {
-    async run(orgId: string, runId: string, workerId: string, signal?: AbortSignal) {
-      calls.push({ orgId, runId, workerId, signal });
+    async run(orgId: string, runId: string, attemptId: string, workerId: string, signal?: AbortSignal) {
+      calls.push({ orgId, runId, attemptId, workerId, signal });
       return {} as never;
     },
   } as AppRunAttemptRunner;
   const handler = createAppRunAttemptJobHandler(runner);
   const signal = new AbortController().signal;
-  await handler({ id: 'job-1', name: 'app-run-attempt', data: { orgId: ORG_ID, runId: 'run-1' }, attempts: 1, signal });
-  assert.deepEqual(calls, [{ orgId: ORG_ID, runId: 'run-1', workerId: 'job:job-1', signal }]);
+  await handler({
+    id: 'job-1', name: 'app-run-attempt',
+    data: { orgId: ORG_ID, runId: 'run-1', attemptId: 'attempt-1' }, attempts: 1, signal,
+  });
+  assert.deepEqual(calls, [{
+    orgId: ORG_ID, runId: 'run-1', attemptId: 'attempt-1', workerId: 'job:job-1', signal,
+  }]);
   await assert.rejects(
-    handler({ id: 'job-2', name: 'app-run-attempt', data: { orgId: ORG_ID, runId: 'run-1', input: 'secret' }, attempts: 1 }),
+    handler({
+      id: 'job-2', name: 'app-run-attempt',
+      data: { orgId: ORG_ID, runId: 'run-1', attemptId: 'attempt-1', input: 'secret' }, attempts: 1,
+    }),
   );
 });

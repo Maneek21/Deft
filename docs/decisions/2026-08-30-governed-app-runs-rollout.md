@@ -193,6 +193,82 @@ planning branch is now rebased onto the exact squash merge. The upgrade manifest
 ends at `0.3.0-preview.16` on that baseline, so `.17` is the current candidate;
 Loop 0 must re-confirm it immediately before the first schema implementation.
 
+### Post-engine cutover gate
+
+PR B remained dormant, but its pre-integration audit found that release,
+dispatch, and replay needed stronger enforceable identities. Before any live
+Capability Service path is selected, additive upgrade `0.3.0-preview.19` adds
+write-once execution-release and budget-reservation evidence. The database
+rejects attempts and a `running` transition without execution release, while
+the runner independently retains a default-deny live execution authorizer.
+`review_requirement: always` starts unreleased in `pending_approval`; policy
+submissions record `policy_satisfied` atomically but still cannot execute until
+the live authorizer allows them.
+
+Queue work identifies `(org_id, run_id, attempt_id)`. A stale job can inspect or
+repair only that attempt and cannot claim a later retry. Claimed provider calls
+heartbeat their lease and every post-call write is fenced by the immutable
+claim token.
+
+Provider execution distinguishes a call that was not attempted, a determinate
+provider response (success or error), and an indeterminate dispatch. Every
+bounded JSON determinate response is stored only as a versioned encrypted
+provider-result envelope; generic Run projections retain only the safe outcome.
+Oversized or non-JSON determinate responses remain known but unavailable and
+never cause a second provider call.
+
+The fixed idempotency horizon is enforced by lookup plus the App Run service's
+transaction-scoped advisory lock, not an unbounded unique index. The unique
+index is therefore replaced by a non-unique lookup index, and architecture
+tests keep Run insertion behind that single service/repository writer.
+
+### Live authority revisions
+
+Additive upgrade `.20` gives each existing live authority row a monotonic App
+Run authorization version. Table-specific triggers advance it only when fields
+that can change execution authority change. This prevents a revoke-then-restore
+cycle from reviving an old Run without making action counters, heartbeat data,
+provider caches, or last-used timestamps invalidate valid approvals.
+
+The host captures opaque versions and rederives them from tenant-scoped live
+rows before approval, attempt preparation, claim, and the final provider-call
+boundary. For agent execution, the daily action slot is reserved exactly once
+inside the locked first-attempt transaction and recorded as write-once Run
+evidence. No production entrance uses this gate until the later guarded
+Capability Service cutover.
+
+### Approval compatibility ownership
+
+For `review_requirement: always`, Run submission atomically creates one linked
+`app_run_invoke` action with a strict safe-field allowlist. `app_runs` remains
+the source of truth: the compatibility row cannot execute a tool, carry raw
+params, release itself, or override a terminal Run state.
+
+The existing reviewer API delegates that one action kind to a Run-native
+resolver. The requester or an owner/admin must be an active human member;
+legacy internal approval bypasses are rejected. Approval rechecks live
+authority and commits the action decision plus write-once Run release together.
+Rejection commits the compatibility decision plus Run cancellation together.
+Concurrent or replayed resolutions converge on the Run and never create an
+attempt or provider call in the approval transaction.
+
+### Child lineage and operational projections
+
+Child Runs are host-created only. The service rejects repeated capability
+identity, depth beyond eight, actor/origin changes, ambient-authority expansion,
+or a weaker policy ceiling before insert. Upgrade `.21` independently verifies
+the parent/root chain and copies the root budget evidence, so orchestration can
+neither reset an agent quota nor manufacture a broader child through direct
+database writes.
+
+Receipts and Attention are projections over the Run ledger, not alternate
+execution authorities. Native receipts contain only validated safe facts and a
+digest of any encrypted result envelope; signing-key references are inventoried
+inside the secret boundary. Operator list/metrics/audit surfaces select an
+explicit safe field set, are tenant-scoped and bounded, and have no provider
+executor dependency. Repair may append missing events, receipts, and Attention,
+but never invokes or retries an external effect.
+
 ## Consequences
 
 - Phase 3 is larger than a local refactor and may span more than one release.

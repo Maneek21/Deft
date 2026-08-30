@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto';
 import {
   APP_RUN_DEFAULT_ATTEMPT_LIMIT,
+  APP_RUN_LIMITS,
+  AppRunAuthorizationSnapshotSchema,
   AppRunSafeOutcomeSchema,
   idempotencyDeadline,
   parseAppRunSubmission,
   retentionDeadline,
   type AppRunActor,
   type AppRunErrorCode,
+  type AppRunRetentionClass,
+  type AppRunRetryClass,
+  type AppRunRiskClass,
   type AppRunSubmission,
 } from '@deft/shared';
 import {
@@ -23,9 +28,23 @@ import { AppRunError, asAppRunError } from './app-run-errors.js';
 import {
   PostgresAppRunRepository,
   appRunActorId,
+  type AppRunChildLineage,
+  type AppRunLineageInsert,
   type AppRunSafeView,
 } from './app-run-repository.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
+import {
+  postgresAppRunApprovalAdapter,
+  type AppRunApprovalAdapter,
+} from './app-run-approval-adapter.js';
+import {
+  noOpAppRunReceiptWriter,
+  type AppRunReceiptWriter,
+} from './app-run-receipts.js';
+import {
+  noOpAppRunAttentionProjector,
+  type AppRunAttentionProjector,
+} from './app-run-attention.js';
 
 export type AppRunTrustedContext = Readonly<{
   org_id: string;
@@ -37,7 +56,7 @@ function sameActor(left: AppRunActor, right: AppRunActor): boolean {
   return left.actor_type === right.actor_type && appRunActorId(left) === appRunActorId(right);
 }
 
-function derivedSubmissionLock(submission: AppRunSubmission): string {
+function derivedSubmissionLock(submission: AppRunSubmission, parentRunId: string | null): string {
   const actor = appRunActorId(submission.initiating_actor);
   const digest = createHash('sha256');
   digest.update('deft.app_run.submit_lock.v1\0');
@@ -49,11 +68,92 @@ function derivedSubmissionLock(submission: AppRunSubmission): string {
     submission.operation.provider.provider_instance_id,
     submission.operation.operation_name,
     submission.idempotency_key,
+    parentRunId ?? 'root',
   ]) {
     digest.update(value);
     digest.update('\0');
   }
   return digest.digest('hex');
+}
+
+const AMBIENT_AUTHORITY_KINDS = new Set([
+  'membership',
+  'token_scope',
+  'employee_health',
+  'employee_budget',
+]);
+
+function riskRank(value: AppRunRiskClass): number {
+  return ['read', 'internal_write', 'external_write', 'destructive', 'privileged'].indexOf(value);
+}
+
+function retryPermissionRank(value: AppRunRetryClass): number {
+  return ['unsafe_or_unknown', 'idempotent_with_key', 'safe'].indexOf(value);
+}
+
+function retentionRank(value: AppRunRetentionClass): number {
+  return ['ephemeral', 'standard', 'extended'].indexOf(value);
+}
+
+function childLineageInsert(
+  lineage: AppRunChildLineage,
+  submission: AppRunSubmission,
+): AppRunLineageInsert {
+  const parent = lineage.parent;
+  if (
+    (parent.state !== 'running' && parent.state !== 'waiting_external')
+    || parent.depth >= APP_RUN_LIMITS.max_child_depth
+  ) throw new AppRunError('APP_RUN_ANCESTRY_LIMIT');
+  if (
+    parent.initiating_actor_type !== submission.initiating_actor.actor_type
+    || parent.initiating_actor_id !== appRunActorId(submission.initiating_actor)
+    || parent.execution_actor_type !== submission.execution_actor.actor_type
+    || parent.execution_actor_id !== appRunActorId(submission.execution_actor)
+    || parent.origin_kind !== submission.origin.origin_kind
+  ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+
+  if (lineage.ancestors.some((ancestor) =>
+    ancestor.provider_kind === submission.operation.provider.provider_kind
+    && ancestor.provider_instance_id === submission.operation.provider.provider_instance_id
+    && ancestor.operation_name === submission.operation.operation_name)) {
+    throw new AppRunError('APP_RUN_CAPABILITY_CYCLE');
+  }
+
+  const parentAuthorization = AppRunAuthorizationSnapshotSchema.parse(
+    lineage.parent_authorization_snapshot,
+  );
+  const parentRefs = new Set(parentAuthorization.authority_refs.map((ref) =>
+    `${ref.authority_kind}\0${ref.authority_id}\0${ref.version}`));
+  const ambientExpanded = submission.authorization_snapshot.authority_refs.some((ref) =>
+    AMBIENT_AUTHORITY_KINDS.has(ref.authority_kind)
+    && !parentRefs.has(`${ref.authority_kind}\0${ref.authority_id}\0${ref.version}`));
+  if (ambientExpanded) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+
+  if (
+    riskRank(submission.policy.risk_class) > riskRank(parent.risk_class)
+    || (parent.review_requirement === 'always' && submission.policy.review_requirement !== 'always')
+    || submission.policy.review_scope !== parent.review_scope
+    || retryPermissionRank(submission.policy.retry_class) > retryPermissionRank(parent.retry_class)
+    || retentionRank(submission.retention_class) > retentionRank(parent.retention_class)
+  ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+
+  if (
+    submission.execution_actor.actor_type === 'agent_employee'
+    && (
+      lineage.root_budget_reserved_at === null
+      || lineage.root_budget_reserved_count !== 1
+      || lineage.root_budget_limit_at_reservation === null
+    )
+  ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+
+  return Object.freeze({
+    root_run_id: parent.root_run_id,
+    parent_run_id: parent.id,
+    depth: parent.depth + 1,
+    budget_reserved_at: lineage.root_budget_reserved_at,
+    budget_reserved_count: lineage.root_budget_reserved_count,
+    budget_limit_at_reservation: lineage.root_budget_limit_at_reservation,
+  });
 }
 
 function replayExecutionMatches(run: AppRunSafeView, submission: AppRunSubmission): boolean {
@@ -70,9 +170,31 @@ export class AppRunService {
     private readonly keys: AppRunKeyProvider,
     private readonly authorizer: AppRunAuthorizer = denyAllAppRunAuthorizer,
     private readonly now: () => Date = () => new Date(),
+    private readonly approvalAdapter: AppRunApprovalAdapter = postgresAppRunApprovalAdapter,
+    private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
+    private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
   ) {}
 
   async submit(context: AppRunTrustedContext, rawSubmission: unknown): Promise<AppRunSafeView> {
+    return this.#submit(context, rawSubmission, null);
+  }
+
+  async submitChild(
+    context: AppRunTrustedContext,
+    parentRunId: string,
+    rawSubmission: unknown,
+  ): Promise<AppRunSafeView> {
+    if (!parentRunId || parentRunId !== parentRunId.trim()) {
+      throw new AppRunError('APP_RUN_INPUT_INVALID');
+    }
+    return this.#submit(context, rawSubmission, parentRunId);
+  }
+
+  async #submit(
+    context: AppRunTrustedContext,
+    rawSubmission: unknown,
+    parentRunId: string | null,
+  ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
       submission = parseAppRunSubmission(rawSubmission);
@@ -97,15 +219,21 @@ export class AppRunService {
     const replayCandidates = this.secrets.fingerprintTextCandidates('idempotency', submission.idempotency_key);
     const inputFingerprint = this.secrets.fingerprintJson('input', submission.input);
     const inputCandidates = this.secrets.fingerprintJsonCandidates('input', submission.input);
-    const lock = derivedSubmissionLock(submission);
+    const lock = derivedSubmissionLock(submission, parentRunId);
     const runId = crypto.randomUUID();
     const inputExpiresAt = retentionDeadline(submission.retention_class, now);
     const resultExpiresAt = retentionDeadline(submission.retention_class, now);
     const idempotencyExpiresAt = idempotencyDeadline(submission.retention_class, now);
 
-    return this.repository.transaction(async (tx) => {
+    const submitted = await this.repository.transaction(async (tx) => {
       await this.repository.acquireSubmissionLock(tx, lock);
-      const replay = await this.repository.findReplay(tx, submission, replayCandidates, now);
+      const replay = await this.repository.findReplay(
+        tx,
+        submission,
+        replayCandidates,
+        now,
+        parentRunId,
+      );
       if (replay) {
         const sameInput = inputCandidates.some((candidate) =>
           candidate.key_version === replay.input_fingerprint_key_version
@@ -116,33 +244,81 @@ export class AppRunService {
         const { input_fingerprint: _fingerprint, input_fingerprint_key_version: _version, ...safe } = replay;
         return safe;
       }
+      const lineage = parentRunId === null
+        ? undefined
+        : await this.repository.loadChildLineage(tx, submission.org_id, parentRunId);
+      if (parentRunId !== null && !lineage) {
+        throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      }
+      const lineageInsert = lineage ? childLineageInsert(lineage, submission) : undefined;
       const snapshot = await this.repository.findProviderSnapshot(tx, submission);
       if (!snapshot) throw new AppRunError('APP_RUN_PROVIDER_UNAVAILABLE');
+      const boundedInputExpiry = lineage
+        ? new Date(Math.min(inputExpiresAt.getTime(), lineage.parent.input_expires_at.getTime()))
+        : inputExpiresAt;
+      const boundedResultExpiry = lineage
+        ? new Date(Math.min(resultExpiresAt.getTime(), lineage.parent.result_expires_at.getTime()))
+        : resultExpiresAt;
+      const boundedIdempotencyExpiry = lineage
+        ? new Date(Math.min(idempotencyExpiresAt.getTime(), lineage.parent.idempotency_expires_at.getTime()))
+        : idempotencyExpiresAt;
+      if (boundedInputExpiry <= now || boundedResultExpiry <= now || boundedIdempotencyExpiry <= now) {
+        throw new AppRunError('APP_RUN_EXPIRED');
+      }
       const run = await this.repository.insertRun(tx, {
         id: runId,
         submission,
         provider_snapshot_id: snapshot.id,
         idempotency,
         input_fingerprint: inputFingerprint,
-        input_expires_at: inputExpiresAt,
-        result_expires_at: resultExpiresAt,
-        idempotency_expires_at: idempotencyExpiresAt,
-        attempt_limit: APP_RUN_DEFAULT_ATTEMPT_LIMIT,
+        input_expires_at: boundedInputExpiry,
+        result_expires_at: boundedResultExpiry,
+        idempotency_expires_at: boundedIdempotencyExpiry,
+        attempt_limit: lineage
+          ? Math.min(APP_RUN_DEFAULT_ATTEMPT_LIMIT, lineage.parent.attempt_limit)
+          : APP_RUN_DEFAULT_ATTEMPT_LIMIT,
+        lineage: lineageInsert,
         now,
       });
       await this.secretRepository.insertInput(tx, {
         org_id: submission.org_id,
         run_id: runId,
         value: submission.input,
-        expires_at: inputExpiresAt,
+        expires_at: boundedInputExpiry,
       });
       await this.repository.appendEvent(tx, {
         id: crypto.randomUUID(), org_id: submission.org_id, run_id: runId,
         event_type: 'run_created', actor: submission.initiating_actor,
-        payload: { state: 'pending' }, now,
+        payload: { state: run.state }, now,
       });
+      if (run.state === 'pending_approval') {
+        const actionId = await this.approvalAdapter.create({
+          tx,
+          run,
+          submission,
+          now,
+        });
+        await this.repository.appendEvent(tx, {
+          id: crypto.randomUUID(),
+          org_id: submission.org_id,
+          run_id: runId,
+          event_type: 'approval_requested',
+          actor: submission.initiating_actor,
+          payload: { action_id: actionId },
+          now,
+        });
+      }
       return run;
     });
+    if (submitted.state === 'pending_approval') {
+      try {
+        await this.attention.projectApprovalRequested(submitted.org_id, submitted.id);
+      } catch (error) {
+        console.warn('[app-runs] approval Attention projection failed:',
+          error instanceof Error ? error.message : 'unknown error');
+      }
+    }
+    return submitted;
   }
 
   async inspect(orgId: string, runId: string, actor: AppRunActor): Promise<AppRunSafeView> {
@@ -196,7 +372,7 @@ export class AppRunService {
   ): Promise<AppRunSafeView> {
     const visible = await this.requiredRun(orgId, runId);
     await this.assertAuthorized('reconcile', orgId, actor, visible);
-    return this.repository.transaction(async (tx) => {
+    const reconciled = await this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
       if (!run || run.state !== 'unknown_outcome') {
         throw new AppRunError('APP_RUN_ILLEGAL_TRANSITION');
@@ -204,7 +380,7 @@ export class AppRunService {
       const errorCode: AppRunErrorCode | undefined = resolution === 'failed'
         ? 'APP_RUN_PROVIDER_ERROR'
         : undefined;
-      return this.repository.transition(tx, {
+      const resolved = await this.repository.transition(tx, {
         run, state: resolution, actor, now: this.now(), error_code: errorCode,
         event_type: 'reconciliation_recorded',
         safe_outcome: AppRunSafeOutcomeSchema.parse({
@@ -214,7 +390,23 @@ export class AppRunService {
           ...(errorCode ? { error_code: errorCode } : {}),
         }),
       });
+      await this.receiptWriter.write(tx, {
+        receipt_key: `reconciliation:${run.id}:${resolved.reconciled_at?.toISOString() ?? 'recorded'}`,
+        receipt_kind: 'reconciliation',
+        run: resolved,
+        actor,
+        facts: { resolution },
+        occurred_at: resolved.reconciled_at ?? this.now(),
+      });
+      return resolved;
     });
+    try {
+      await this.attention.projectRunState(reconciled, 'reconciled');
+    } catch (error) {
+      console.warn('[app-runs] reconciliation Attention projection failed:',
+        error instanceof Error ? error.message : 'unknown error');
+    }
+    return reconciled;
   }
 
   async result(orgId: string, runId: string, actor: AppRunActor): Promise<Readonly<{
@@ -226,7 +418,7 @@ export class AppRunService {
     if (run.result_purged_at || run.result_expires_at <= this.now()) {
       throw new AppRunError('APP_RUN_RESULT_EXPIRED');
     }
-    const attemptId = await this.repository.latestSuccessfulAttemptId(orgId, runId);
+    const attemptId = await this.repository.latestRetainedAttemptId(orgId, runId);
     if (!attemptId) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
     const value = await this.secretRepository.readOutput(orgId, runId, attemptId);
     if (value === null) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
@@ -241,6 +433,7 @@ export class AppRunService {
     const references = [
       ...await this.repository.activeKeyReferences(now),
       ...await this.secretRepository.retainedKeyReferences(now),
+      ...await this.secretRepository.receiptSigningKeyReferences(),
     ];
     assertAppRunReferencedKeysAvailable(this.keys, references);
   }
