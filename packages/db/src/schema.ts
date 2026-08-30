@@ -991,6 +991,158 @@ export const moduleVersions = pgTable('module_versions', {
   ),
 ]);
 
+// ═══ APPS (DECLARATIVE APP PROTOCOL V0) ═══
+// Apps are tenant-local lifecycle owners for exact immutable Module versions.
+// The first protocol is deliberately JSON-only and carries no grants, secrets,
+// runtime, connector, public-ingress, automation, sync, or entitlement state.
+export const appInstallations = pgTable('app_installations', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  app_id: text('app_id').notNull(),
+  lineage_key: text('lineage_key').notNull(),
+  lineage_authority_type: text('lineage_authority_type').$type<'local_user'>().notNull(),
+  lineage_authority_id: text('lineage_authority_id').notNull(),
+  source: text('source').$type<'local'>().default('local').notNull(),
+  state: text('state').$type<'staged' | 'active' | 'disabled' | 'failed'>().default('staged').notNull(),
+  active_version_id: text('active_version_id'),
+  lifecycle_epoch: integer('lifecycle_epoch').default(0).notNull(),
+  installed_by_user_id: text('installed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  installed_by_actor_type: text('installed_by_actor_type').notNull(),
+  installed_by_actor_id: text('installed_by_actor_id').notNull(),
+  updated_by_actor_type: text('updated_by_actor_type').notNull(),
+  updated_by_actor_id: text('updated_by_actor_id').notNull(),
+  disabled_at: timestamp('disabled_at'),
+  ...timestamps(),
+}, (t) => [
+  unique('app_installations_org_id_id_unique').on(t.org_id, t.id),
+  uniqueIndex('app_installations_org_app_id_unique').on(t.org_id, t.app_id),
+  uniqueIndex('app_installations_org_lineage_unique').on(t.org_id, t.lineage_key),
+  index('app_installations_org_state_idx').on(t.org_id, t.state),
+  check('app_installations_source_check', sql`${t.source} = 'local'`),
+  check('app_installations_lineage_authority_check', sql`${t.lineage_authority_type} = 'local_user'`),
+  check('app_installations_state_check', sql`${t.state} IN ('staged', 'active', 'disabled', 'failed')`),
+  check('app_installations_epoch_nonnegative_check', sql`${t.lifecycle_epoch} >= 0`),
+  check(
+    'app_installations_active_pointer_check',
+    sql`(${t.state} = 'staged' AND ${t.active_version_id} IS NULL AND ${t.disabled_at} IS NULL)
+      OR (${t.state} = 'active' AND ${t.active_version_id} IS NOT NULL AND ${t.disabled_at} IS NULL)
+      OR (${t.state} = 'disabled' AND ${t.active_version_id} IS NOT NULL AND ${t.disabled_at} IS NOT NULL)
+      OR (${t.state} = 'failed' AND ${t.active_version_id} IS NULL)`,
+  ),
+]);
+
+export const appVersions = pgTable('app_versions', {
+  ...id(),
+  ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  version: text('version').notNull(),
+  protocol_version: text('protocol_version').notNull(),
+  manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull(),
+  manifest_digest: text('manifest_digest').notNull(),
+  package_digest: text('package_digest').notNull(),
+  package: jsonb('package').$type<Record<string, unknown>>().notNull(),
+  provenance: jsonb('provenance').$type<Record<string, unknown> | null>(),
+  state: text('state').$type<'staged' | 'active' | 'failed'>().default('staged').notNull(),
+  staged_at: timestamp('staged_at').defaultNow().notNull(),
+  activated_at: timestamp('activated_at'),
+  failed_at: timestamp('failed_at'),
+  created_by_actor_type: text('created_by_actor_type').notNull(),
+  created_by_actor_id: text('created_by_actor_id').notNull(),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.installation_id],
+    foreignColumns: [appInstallations.org_id, appInstallations.id],
+    name: 'app_versions_org_installation_fk',
+  }).onDelete('restrict'),
+  unique('app_versions_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
+  uniqueIndex('app_versions_org_installation_version_unique').on(t.org_id, t.installation_id, t.version),
+  uniqueIndex('app_versions_package_digest_unique').on(t.org_id, t.installation_id, t.package_digest),
+  uniqueIndex('app_versions_one_active_unique')
+    .on(t.org_id, t.installation_id)
+    .where(sql`${t.state} = 'active'`),
+  check('app_versions_protocol_v0_check', sql`${t.protocol_version} = '0'`),
+  check('app_versions_state_check', sql`${t.state} IN ('staged', 'active', 'failed')`),
+  check('app_versions_manifest_object_check', sql`jsonb_typeof(${t.manifest}) = 'object'`),
+  check('app_versions_package_object_check', sql`jsonb_typeof(${t.package}) = 'object'`),
+  check('app_versions_manifest_digest_check', sql`${t.manifest_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_versions_package_digest_check', sql`${t.package_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check(
+    'app_versions_lifecycle_check',
+    sql`(${t.state} = 'staged' AND ${t.activated_at} IS NULL AND ${t.failed_at} IS NULL)
+      OR (${t.state} = 'active' AND ${t.activated_at} IS NOT NULL AND ${t.failed_at} IS NULL)
+      OR (${t.state} = 'failed' AND ${t.activated_at} IS NULL AND ${t.failed_at} IS NOT NULL)`,
+  ),
+]);
+
+export const appModuleBindings = pgTable('app_module_bindings', {
+  ...id(),
+  ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  module_installation_id: text('module_installation_id').notNull(),
+  module_version_id: text('module_version_id').notNull(),
+  module_id: text('module_id').notNull(),
+  ownership: text('ownership').$type<'app'>().default('app').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id],
+    foreignColumns: [appInstallations.org_id, appInstallations.id],
+    name: 'app_module_bindings_app_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
+    name: 'app_module_bindings_app_version_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.module_installation_id],
+    foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
+    name: 'app_module_bindings_module_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.module_installation_id, t.module_version_id],
+    foreignColumns: [moduleVersions.org_id, moduleVersions.installation_id, moduleVersions.id],
+    name: 'app_module_bindings_module_version_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('app_module_bindings_app_module_unique').on(t.org_id, t.app_version_id, t.module_id),
+  uniqueIndex('app_module_bindings_owned_module_unique').on(t.org_id, t.module_installation_id),
+  check('app_module_bindings_ownership_check', sql`${t.ownership} = 'app'`),
+]);
+
+export const appDeveloperPairings = pgTable('app_developer_pairings', {
+  ...id(),
+  ...orgId(),
+  code_hash: text('code_hash').notNull(),
+  created_by_user_id: text('created_by_user_id').notNull(),
+  expires_at: timestamp('expires_at').notNull(),
+  consumed_at: timestamp('consumed_at'),
+  revoked_at: timestamp('revoked_at'),
+  session_token_hash: text('session_token_hash'),
+  session_expires_at: timestamp('session_expires_at'),
+  install_used_at: timestamp('install_used_at'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.created_by_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_developer_pairings_creator_member_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('app_developer_pairings_code_hash_unique').on(t.code_hash),
+  uniqueIndex('app_developer_pairings_session_hash_unique')
+    .on(t.session_token_hash)
+    .where(sql`${t.session_token_hash} IS NOT NULL`),
+  index('app_developer_pairings_org_idx').on(t.org_id, t.created_at),
+  check('app_developer_pairings_code_hash_check', sql`${t.code_hash} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_developer_pairings_session_hash_check', sql`${t.session_token_hash} IS NULL OR ${t.session_token_hash} ~ '^sha256:[a-f0-9]{64}$'`),
+  check(
+    'app_developer_pairings_exchange_state_check',
+    sql`(${t.consumed_at} IS NULL AND ${t.session_token_hash} IS NULL AND ${t.session_expires_at} IS NULL)
+      OR (${t.consumed_at} IS NOT NULL AND ${t.session_token_hash} IS NOT NULL AND ${t.session_expires_at} IS NOT NULL)`,
+  ),
+]);
+
 export const moduleRecords = pgTable('module_records', {
   ...id(),
   ...orgId(),

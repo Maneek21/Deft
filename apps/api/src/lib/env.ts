@@ -106,3 +106,9 @@ export const env = {
   VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY || '',
   VAPID_SUBJECT: process.env.VAPID_SUBJECT || '',
 };
+
+// App Protocol v0 is opt-in while the first vertical slice is certified.
+// Absence and every value except the exact string "true" fail closed.
+export const APPS_ENABLED = process.env.DEFT_APPS_ENABLED === 'true';
+export const APP_DEVELOPER_PAIRING_ENABLED =
+  APPS_ENABLED && process.env.DEFT_APP_DEVELOPER_PAIRING_ENABLED === 'true';

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, type MouseEvent as ReactMouse
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
-import { HUDDLES_ENABLED } from '@/lib/feature-flags';
+import { APPS_ENABLED, HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { agentConnectionStatus } from '@/lib/agent-employee-status';
 import { registerOpenCreateSpace } from '@/lib/quick-actions';
 import { getSettingsNavGroups, isSettingsItemActive } from '@/lib/settings-navigation';
@@ -14,6 +14,8 @@ import {
   type ModuleNavigationItem,
 } from '@/lib/module-navigation';
 import { useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
+import { useAppNavigation, useAppRealtime } from '@/hooks/use-apps';
+import { getAppNavigationItems, type AppNavigationItem } from '@/lib/app-navigation';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
 import { ModuleIcon } from './modules/module-primitives';
@@ -47,6 +49,7 @@ import {
   Smile,
   Inbox,
   ChevronDown,
+  AppWindow,
   type LucideIcon,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
@@ -100,7 +103,7 @@ type CoreNavigationItem = {
   icon: LucideIcon;
 };
 
-type PrimaryNavigationItem = CoreNavigationItem | ModuleNavigationItem;
+type PrimaryNavigationItem = CoreNavigationItem | ModuleNavigationItem | AppNavigationItem;
 
 const navItems: CoreNavigationItem[] = [
   { kind: 'core', name: 'Chat', href: '/chat', icon: MessageSquare },
@@ -113,6 +116,7 @@ const navItems: CoreNavigationItem[] = [
 
 function PrimaryNavigationIcon({ item }: { item: PrimaryNavigationItem }) {
   if (item.kind === 'module') return <ModuleIcon token={item.icon} size={18} />;
+  if (item.kind === 'app') return <AppWindow size={18} strokeWidth={1.5} />;
   const Icon = item.icon;
   return <Icon size={18} strokeWidth={1.5} />;
 }
@@ -748,10 +752,15 @@ export function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const installedModules = useInstalledModules(Boolean(user && user.role !== 'guest'));
+  const appNavigation = useAppNavigation(Boolean(user && user.role !== 'guest'));
   useModuleRealtime();
-  const moduleNavItems = getModuleNavigationItems(installedModules.modules, user?.role);
+  useAppRealtime();
+  const appNavItems = APPS_ENABLED ? getAppNavigationItems(appNavigation.navigation) : [];
+  const moduleNavItems = getModuleNavigationItems(installedModules.modules, user?.role)
+    .filter((module) => !appNavItems.some((app) => app.href.startsWith(`${module.href}/`)));
   const visibleNavItems: PrimaryNavigationItem[] = [
     ...navItems.slice(0, -1),
+    ...appNavItems,
     ...moduleNavItems,
     navItems[navItems.length - 1],
   ];

@@ -97,6 +97,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.15-attachment-processing.sql',
       description: 'Add bounded attachment processing metadata and permission-inheriting derivatives',
     },
+    {
+      version: '0.3.0-preview.16',
+      file: '0.3.0-preview.16-declarative-apps-v0.sql',
+      description: 'Add declarative App v0 installations, immutable versions, and owned Module bindings',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

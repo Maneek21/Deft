@@ -32,6 +32,7 @@ export const settingsNavGroups: SettingsNavGroup[] = [
     items: [
       { name: 'People', href: '/settings/members', description: 'Invite people and manage workspace access.', roles: ADMIN_ROLES },
       { name: 'Teams', href: '/settings/teams', description: 'Organize people around ownership and linked work.', roles: ADMIN_ROLES },
+      ...(APPS_ENABLED ? [{ name: 'Apps', href: '/settings/apps', description: 'Install and govern workspace Apps.', roles: ADMIN_ROLES }] : []),
       { name: 'Modules', href: '/settings/modules', description: 'Install and govern workspace modules.', roles: ADMIN_ROLES },
       { name: 'Calendar', href: '/settings/calendar', description: 'Connect calendars with self-hostable ICS feeds.' },
     ],
@@ -77,3 +78,4 @@ export function isSettingsItemActive(pathname: string, href: string) {
   if (href === '/settings') return pathname === href;
   return pathname === href || pathname.startsWith(`${href}/`);
 }
+import { APPS_ENABLED } from './feature-flags';

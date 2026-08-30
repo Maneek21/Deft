@@ -1,0 +1,26 @@
+{
+  "schema_version": "0",
+  "id": "org.deft.hello-workspace-app",
+  "version": "1.0.0",
+  "name": "Hello Workspace",
+  "description": "A minimal reference App built entirely through Deft's public declarative contract.",
+  "license": "AGPL-3.0-only",
+  "compatibility": { "app_protocol": "0" },
+  "modules": [
+    {
+      "module_id": "org.deft.hello-workspace",
+      "version": "1.0.0",
+      "manifest_path": "modules/hello-workspace/deft.module.json",
+      "manifest_digest": "sha256:7c581cd5f4d1036d339e7ab5eb062253eade4702ee6cb3693f635bcf9fe789c1"
+    }
+  ],
+  "navigation": [
+    {
+      "key": "greetings",
+      "label": "Greetings",
+      "module_id": "org.deft.hello-workspace",
+      "collection_key": "greetings",
+      "view_key": "all"
+    }
+  ]
+}
