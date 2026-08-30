@@ -8,7 +8,9 @@ import { createTransport } from "./transports.js";
 import { ToolCache } from "./cache.js";
 import type {
   MCPConnectionConfig,
+  MCPProviderTool,
   MCPTool,
+  MCPToolDiscovery,
   MCPToolOverride,
   MCPResult,
 } from "./types.js";
@@ -299,6 +301,12 @@ export class MCPClientManager {
    * Returns the list of discovered tools on success.
    */
   async testConnection(config: MCPConnectionConfig): Promise<MCPTool[]> {
+    return (await this.testToolDiscovery(config)).tools;
+  }
+
+  /** Test a connection once and retain a policy-free provider projection from
+   * the same listTools response. */
+  async testToolDiscovery(config: MCPConnectionConfig): Promise<MCPToolDiscovery> {
     const client = await this.connectFreshClient(
       config,
       `deft-mcp-test-${config.connectionSlug}`
@@ -306,9 +314,10 @@ export class MCPClientManager {
 
     try {
       const result = await client.listTools();
-      return result.tools.map((tool) =>
-        this.mapTool(tool, config, [])
-      );
+      return {
+        tools: result.tools.map((tool) => this.mapTool(tool, config, [])),
+        providerTools: result.tools.map((tool) => this.mapProviderTool(tool)),
+      };
     } finally {
       try {
         await client.close();
@@ -326,6 +335,15 @@ export class MCPClientManager {
     config: MCPConnectionConfig,
     overrides: MCPToolOverride[] = []
   ): Promise<MCPTool[]> {
+    return (await this.discoverToolDiscovery(config, overrides)).tools;
+  }
+
+  /** Discover once, returning both the exact legacy projection and a raw
+   * provider projection captured before overrides/filtering/classification. */
+  async discoverToolDiscovery(
+    config: MCPConnectionConfig,
+    overrides: MCPToolOverride[] = []
+  ): Promise<MCPToolDiscovery> {
     let result;
     try {
       const client = await this.connect(config);
@@ -337,6 +355,7 @@ export class MCPClientManager {
       throw error;
     }
 
+    const providerTools = result.tools.map((tool) => this.mapProviderTool(tool));
     const tools = result.tools
       .map((tool) => this.mapTool(tool, config, overrides))
       .filter((tool) => {
@@ -344,8 +363,9 @@ export class MCPClientManager {
         return !override?.disabled;
       });
 
-    this.toolCache.set(config.connectionId, tools);
-    return tools;
+    const discovery = { tools, providerTools };
+    this.toolCache.setDiscovery(config.connectionId, discovery);
+    return discovery;
   }
 
   /**
@@ -359,6 +379,17 @@ export class MCPClientManager {
     if (cached) return cached;
 
     return this.discoverTools(config, overrides);
+  }
+
+  /** Get the paired legacy/provider projections from cache, or produce both
+   * from one fresh provider request. */
+  async getCachedToolDiscovery(
+    config: MCPConnectionConfig,
+    overrides: MCPToolOverride[] = []
+  ): Promise<MCPToolDiscovery> {
+    const cached = this.toolCache.getDiscovery(config.connectionId);
+    if (cached) return cached;
+    return this.discoverToolDiscovery(config, overrides);
   }
 
   /**
@@ -508,6 +539,18 @@ export class MCPClientManager {
       approvalTier: override?.approvalTier ?? classified.approvalTier,
       annotations,
       rawTool: tool as unknown as Record<string, unknown>,
+    };
+  }
+
+  private mapProviderTool(tool: Tool): MCPProviderTool {
+    return {
+      name: tool.name,
+      description: tool.description ?? "",
+      inputSchema: (tool.inputSchema as Record<string, unknown>) ?? {},
+      ...(tool.outputSchema
+        ? { outputSchema: tool.outputSchema as Record<string, unknown> }
+        : {}),
+      ...(tool.title ? { title: tool.title } : {}),
     };
   }
 

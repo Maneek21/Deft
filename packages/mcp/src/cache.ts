@@ -1,7 +1,8 @@
-import type { MCPTool } from "./types.js";
+import type { MCPTool, MCPToolDiscovery } from "./types.js";
 
 interface CacheEntry {
   tools: MCPTool[];
+  providerTools?: MCPToolDiscovery["providerTools"];
   cachedAt: number;
 }
 
@@ -32,12 +33,30 @@ export class ToolCache {
     return entry.tools;
   }
 
+  /** Get the paired legacy/provider projection when this cache entry was
+   * populated from one listTools response. */
+  getDiscovery(connectionId: string): MCPToolDiscovery | undefined {
+    const tools = this.get(connectionId);
+    if (!tools) return undefined;
+    const entry = this.cache.get(connectionId);
+    if (!entry?.providerTools) return undefined;
+    return { tools, providerTools: entry.providerTools };
+  }
+
   /**
    * Cache tools for a connection.
    */
   set(connectionId: string, tools: MCPTool[]): void {
     this.cache.set(connectionId, {
       tools,
+      cachedAt: Date.now(),
+    });
+  }
+
+  setDiscovery(connectionId: string, discovery: MCPToolDiscovery): void {
+    this.cache.set(connectionId, {
+      tools: discovery.tools,
+      providerTools: discovery.providerTools,
       cachedAt: Date.now(),
     });
   }

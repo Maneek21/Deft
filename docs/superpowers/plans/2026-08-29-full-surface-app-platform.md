@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Phase 1 declarative alpha implemented; Phase 2 is next |
-| **Date** | 2026-08-29 |
-| **Baseline inspected** | `origin/master` at `e05471f1`, after native Hermes integration and cleanup |
+| **Status** | Phase 1 declarative alpha merged; Phase 2 Capability Service extraction complete; Phase 3 ready to plan |
+| **Date** | 2026-08-29; Phase 2 rebaseline 2026-08-30 |
+| **Baseline inspected** | Phase 2 starts from `origin/master` at `bdb137ee`, the squash merge of Phase 1 PR #269 |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
 | **First delivery principle** | Build one safe participation protocol in stages; do not turn `deft.module.json` into an arbitrary plugin runtime. |
 | **Relationship to earlier work** | Supersedes the provisional App Protocol v2 implementation sequence while retaining its certified Module, Capability, App Run, and approval-boundary decisions as design input. Absorbs the useful resource-graph and solution-composition ideas from the modular work-management proposal. |
@@ -58,6 +58,9 @@ The current repository already provides important parts of the substrate:
 - org-scoped Module installations, records, generic views, search projections, relations, saved views, audit, idempotency, receipts, and Task links;
 - Module records in global search and permission-filtered agent context;
 - eight frozen Module operations shared across Defty, employee MCP, and human MCP;
+- a strict declarative App v0 package, immutable installation/version lineage,
+  zero-rights staging, atomic App/Module activation, disable lifecycle, local
+  developer pairing, Settings management, and the publishable App Kit alpha;
 - outbound MCP connections with encryption, target validation, tool discovery, assignment controls, and approval-tier policy;
 - agent identities, health, budgets, scopes, approvals, signed receipts, and persistent Hermes delivery state;
 - a durable job queue, product-specific automation ledgers, notifications, WebSockets, files, and audit logging;
@@ -67,9 +70,10 @@ The current repository already provides important parts of the substrate:
 
 The current implementation does not yet provide:
 
-- an actor-neutral Capability Service; outbound MCP still has two direct execution seams;
+- App-facing capability bindings to the internal provider-neutral Capability Service;
 - actor-neutral Governed App Runs for capability and delegated execution sources;
-- an App installation/package/grant model;
+- generalized App grants, capability/provider bindings, dependencies, and
+  connected upgrade/drain behavior beyond Phase 1's exact Module bindings;
 - a generic Resource Service for core, Module, and specialized providers;
 - cross-provider resource relations and permission-aware search projections;
 - isolated custom experiences or an app SDK;
@@ -77,7 +81,8 @@ The current implementation does not yet provide:
 - a generic event/outbox/trigger/workflow contract;
 - app synchronization cursors, conflict policy, or freshness state;
 - governed public pages, forms, or webhook ingress;
-- app authoring, local development, permission-diff, and conformance tooling.
+- connected/full-surface authoring templates, permission diff, host simulators,
+  SDKs, and native-equivalence conformance tooling beyond the declarative alpha.
 
 ### Important constraint from the self-hosted contract
 
@@ -722,20 +727,39 @@ These are dependency and certification gates, not promises that each phase is on
 
 **Acceptance evidence:** a clean external project can be scaffolded, built twice to identical digests, inspected, staged with zero effective rights, activated locally, opened, and disabled; injected failure after Module preparation but before App-pointer swap commits neither change; a different unsigned lineage cannot replace it; dev credentials cannot authenticate as MCP/shell tokens; no generalized grant, new provider call, or executable-code path exists.
 
-**Implementation evidence (2026-08-29):** the clean packed-kit authoring/install loop, API inspection, disposable-Postgres lifecycle and pairing tests, schema/upgrade parity tests, desktop/mobile UI inspection, lint, repository typecheck, and production build pass. A full fresh `db:push-full` bootstrap remains environment-gated on this Windows host because its PostgreSQL installation lacks the repository-required `vector` extension; the additive App migration and its transactional behavior were applied and tested directly on a disposable database.
+**Implementation evidence (2026-08-29/30):** the clean packed-kit authoring/install loop, API inspection, disposable-Postgres lifecycle and pairing tests, schema/upgrade parity tests, desktop/mobile UI inspection, lint, repository typecheck, and production build pass. Phase 1 was squash-merged through PR #269 at `bdb137ee`; its post-merge CI then passed a fresh pgvector-backed schema push, seed, complete API suite, versioned upgrade, production image, self-host Agent Channel/MCP smoke, browser smoke, vulnerability gate, web build, Hermes release gate, and security workflow. The earlier local Windows PostgreSQL installation still lacks pgvector, but that host limitation is no longer a Phase 1 bootstrap evidence gap.
 
 ### Phase 2: Capability Service extraction
 
 **Outcome:** one deep internal provider seam exists with no visible behavior change.
 
-- [ ] Add strict shared capability/provider/interface schemas.
-- [ ] Add immutable provider discovery snapshots with tuple uniqueness and safe projections.
-- [ ] Implement MCP as the first provider adapter.
-- [ ] Route discovery and both direct outbound MCP execution paths through CapabilityService.
-- [ ] Preserve names, payload bytes, errors, approval tiers, assignments, budgets, and connector behavior.
-- [ ] Add a grep/architecture test proving only provider adapters call `mcpClientManager.executeTool`.
+- [x] Add strict shared capability/provider identities and provider-neutral
+  invocation contracts. Defer public interface registries until connected Apps
+  have real lineage, provenance, and policy consumers.
+- [x] Add strict immutable provider discovery snapshot values with tenant-bound
+  operation tuple uniqueness, deterministic digests, and safe projections.
+  Keep them non-durable until Phase 3 Runs provide a concrete reference,
+  retention policy, and schema-drift consumer.
+- [x] Implement MCP as the first provider adapter for discovery and invocation.
+- [x] Route discovery and both direct outbound MCP execution paths through CapabilityService.
+- [x] Preserve names, payload bytes, errors, approval tiers, assignments, budgets, and connector behavior.
+- [x] Add a grep/architecture test proving only provider adapters call `mcpClientManager.executeTool`.
 
-**Acceptance evidence:** current connector/trust tests plus new auto/reviewed parity tests pass; one provider call occurs per invocation; no UI, scope, token, receipt, or error-shape change.
+**Acceptance evidence:** current connector/trust tests plus new immediate,
+auto-direct, and human-reviewed parity tests pass; one provider call occurs per
+invocation; discovery snapshots are deterministic and contain no credentials,
+targets, invocation data, raw provider object, or effective policy; no database
+migration, UI, scope, token, receipt, or error-shape change occurs.
+
+**Implementation evidence (2026-08-30):** shared capability contracts passed
+15/15 and the focused API matrix passed 94/94 against a disposable PostgreSQL
+database, covering Capability Service, immediate/action parity, connector,
+trust, approval, and architecture behavior. Repository typecheck and one
+production build passed. The final diff introduced no migration, UI,
+environment-contract, token, or deployment change. Per the narrowed Phase 2
+certification scope, browser testing, a Docker image, another fresh-schema
+bootstrap, self-host smoke, and upgrade certification were not repeated; the
+known missing local pgvector extension was not retried.
 
 ### Phase 3: Governed App Runs and Secret Service
 

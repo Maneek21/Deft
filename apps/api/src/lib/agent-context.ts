@@ -26,8 +26,8 @@ import {
   agentEmployees,
   agentActions,
 } from '@deft/db/schema';
-import { getExecutableMcpConnection, mcpResultPayload, parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
-import { mcpClientManager } from '@deft/mcp';
+import { parseMCPToolName } from './mcp-tools.js';
+import { capabilityService } from './capability-service.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { retrieveContext } from './retrieve-context.js';
 import { isManager } from '../middleware/privacy-guard.js';
@@ -163,18 +163,34 @@ export async function executeToolCall(
 
   const citations: Citation[] = [];
 
-  // Route MCP tool calls to the MCP client manager
+  // Route MCP tool calls through the provider-neutral execution seam.
   if (toolName.startsWith('mcp__')) {
     const { connectionSlug, toolName: actualToolName } = parseMCPToolName(toolName);
-    const resolved = await getExecutableMcpConnection(orgId, connectionSlug, actualToolName, agentEmployeeId);
-    if (!resolved.connection) return { result: { error: resolved.error }, citations: [] };
-
-    const config = toConnectionConfig(resolved.connection);
-    const mcpResult = await mcpClientManager.executeTool(config, actualToolName, params);
+    const invocation = await capabilityService.invoke({
+      org_id: orgId,
+      actor: {
+        user_id: _userId,
+        ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}),
+      },
+      provider: {
+        provider_kind: 'mcp',
+        connection_slug: connectionSlug,
+        operation_name: actualToolName,
+      },
+      input: params,
+    });
+    const resolvedProvider = invocation.provider.resolved_provider;
+    const mcpCitations = resolvedProvider && invocation.provider_display_name !== undefined
+      ? [{
+          type: 'mcp',
+          id: resolvedProvider.provider_instance_id,
+          title: `${invocation.provider_display_name}: ${actualToolName}`,
+        }]
+      : [];
 
     return {
-      result: mcpResultPayload(mcpResult),
-      citations: [{ type: 'mcp', id: resolved.connection.id, title: `${resolved.connection.name}: ${actualToolName}` }],
+      result: invocation.legacy_output,
+      citations: mcpCitations,
     };
   }
 
