@@ -1,6 +1,6 @@
 # App Platform Phase 2: Capability Service loops
 
-**Status:** in progress; Loops 0–4 completed on 2026-08-30, Loop 5 next
+**Status:** complete; Loops 0–5 certified on 2026-08-30
 
 **Implementation baseline:** `origin/master` at `bdb137ee33a047a39b73d5f08ea958efb1fcbf35`
 
@@ -199,13 +199,15 @@ violate the Phase 2 parity boundary.
 
 ### Work
 
-- Add an architecture test that permits `executeTool` only inside the MCP
+- [x] Add an architecture test that permits `executeTool` only inside the MCP
   provider adapter in production source.
-- Remove obsolete direct execution imports and duplicated mapping code only
+- [x] Remove obsolete direct execution imports and duplicated mapping code only
   after both callers are certified.
-- Run focused tests, repository typecheck, API suite, production build/image,
-  browser/MCP smoke, security workflows, and versioned-upgrade preservation.
-- Inspect the final diff and package output for unintended authority, schema,
+- [x] Run the focused certification matrix: shared capability contracts,
+  Capability Service, immediate/action parity, relevant connector, trust,
+  approval and architecture tests, repository typecheck, and one production
+  build.
+- [x] Inspect the final diff and package output for unintended authority, schema,
   migration, UI, env, or self-hosting changes.
 
 ### Exit evidence
@@ -215,6 +217,20 @@ violate the Phase 2 parity boundary.
 - There is one provider call per invocation and no visible behavior change.
 - No database migration, new feature flag, token scope, App field, route, or UI
   is introduced.
+
+### Certification record
+
+- Shared capability contracts: 15/15 passing.
+- Focused API matrix: 94/94 passing against the disposable Phase 2 PostgreSQL
+  database.
+- Repository typecheck and the single production build completed successfully.
+- The architecture guard and final branch diff confirm that only the MCP adapter
+  performs low-level execution and that Phase 2 did not touch migrations, UI,
+  environment contracts, tokens, or deployment configuration.
+- Browser testing, a Docker image, another fresh-schema bootstrap, self-host
+  smoke, and upgrade certification were intentionally not repeated because the
+  final diff did not touch those surfaces. The known local pgvector absence was
+  not retried.
 
 ## Compatibility matrix
 

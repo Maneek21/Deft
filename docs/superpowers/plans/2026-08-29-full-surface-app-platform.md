@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Phase 1 declarative alpha merged; Phase 2 Capability Service extraction in progress |
+| **Status** | Phase 1 declarative alpha merged; Phase 2 Capability Service extraction complete; Phase 3 ready to plan |
 | **Date** | 2026-08-29; Phase 2 rebaseline 2026-08-30 |
 | **Baseline inspected** | Phase 2 starts from `origin/master` at `bdb137ee`, the squash merge of Phase 1 PR #269 |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
@@ -70,7 +70,7 @@ The current repository already provides important parts of the substrate:
 
 The current implementation does not yet provide:
 
-- an actor-neutral Capability Service; outbound MCP still has two direct execution seams;
+- App-facing capability bindings to the internal provider-neutral Capability Service;
 - actor-neutral Governed App Runs for capability and delegated execution sources;
 - generalized App grants, capability/provider bindings, dependencies, and
   connected upgrade/drain behavior beyond Phase 1's exact Module bindings;
@@ -742,7 +742,7 @@ These are dependency and certification gates, not promises that each phase is on
   retention policy, and schema-drift consumer.
 - [x] Implement MCP as the first provider adapter for discovery and invocation.
 - [x] Route discovery and both direct outbound MCP execution paths through CapabilityService.
-- [ ] Preserve names, payload bytes, errors, approval tiers, assignments, budgets, and connector behavior.
+- [x] Preserve names, payload bytes, errors, approval tiers, assignments, budgets, and connector behavior.
 - [x] Add a grep/architecture test proving only provider adapters call `mcpClientManager.executeTool`.
 
 **Acceptance evidence:** current connector/trust tests plus new immediate,
@@ -750,6 +750,16 @@ auto-direct, and human-reviewed parity tests pass; one provider call occurs per
 invocation; discovery snapshots are deterministic and contain no credentials,
 targets, invocation data, raw provider object, or effective policy; no database
 migration, UI, scope, token, receipt, or error-shape change occurs.
+
+**Implementation evidence (2026-08-30):** shared capability contracts passed
+15/15 and the focused API matrix passed 94/94 against a disposable PostgreSQL
+database, covering Capability Service, immediate/action parity, connector,
+trust, approval, and architecture behavior. Repository typecheck and one
+production build passed. The final diff introduced no migration, UI,
+environment-contract, token, or deployment change. Per the narrowed Phase 2
+certification scope, browser testing, a Docker image, another fresh-schema
+bootstrap, self-host smoke, and upgrade certification were not repeated; the
+known missing local pgvector extension was not retried.
 
 ### Phase 3: Governed App Runs and Secret Service
 
