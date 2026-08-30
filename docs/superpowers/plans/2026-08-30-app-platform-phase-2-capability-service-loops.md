@@ -1,6 +1,6 @@
 # App Platform Phase 2: Capability Service loops
 
-**Status:** in progress; Loop 0 completed on 2026-08-30, Loop 1 next
+**Status:** in progress; Loops 0–1 completed on 2026-08-30, Loop 2 next
 
 **Implementation baseline:** `origin/master` at `bdb137ee33a047a39b73d5f08ea958efb1fcbf35`
 
@@ -98,8 +98,8 @@ Rejected alternatives:
   internal error codes.
 - Start with the closed provider kind `mcp`; adding a provider kind requires an
   explicit adapter and tests.
-- Canonicalize safe JSON deterministically: object keys sorted, strings NFC
-  normalized, and provider array order preserved.
+- Canonicalize safe JSON deterministically: object keys sorted while exact
+  strings, property keys, and provider array order remain unchanged.
 - Digest executable input/output schemas and the complete safe discovery
   projection with ordinary SHA-256 and explicit domain/version prefixes.
 - Reject duplicate provider-operation tuples and tenant mismatches.

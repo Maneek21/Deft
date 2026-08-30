@@ -57,8 +57,11 @@ The value contains:
 - a complete safe-projection digest; and
 - capture time.
 
-Canonical JSON sorts object keys, normalizes strings to NFC, and preserves array
-order. Digests use ordinary SHA-256 with explicit domain/version separation.
+Canonical JSON sorts object keys while preserving exact string values, property
+keys, and array order. This keeps behaviorally distinct JSON Schema `const`,
+`enum`, and property values distinct. Digests use ordinary SHA-256 with explicit
+domain/version separation. Executable-schema digests exclude provider identity;
+the enclosing snapshot digest binds schemas to the provider and operation tuple.
 Credentials, transport targets, auth configuration, invocation arguments and
 results, raw MCP tool objects, and effective Deft policy are excluded.
 
@@ -117,7 +120,9 @@ a non-idempotent effect.
 - Exactly two baseline production execution seams are recorded and cut over one
   at a time.
 - Strict contract tests prove deterministic digests, tenant binding, operation
-  uniqueness, schema-drift sensitivity, and exclusion of unsafe fields.
+  uniqueness, schema-drift sensitivity, and exclusion of authority-bearing or
+  transport fields from the snapshot envelope. Provider descriptions and JSON
+  Schemas remain untrusted and may contain sensitive provider-supplied values.
 - Golden discovery tests preserve legacy tools and admin cache behavior.
 - Immediate, auto-direct action, and human-reviewed tests preserve result,
   citation, action-row, budget, approval, and receipt behavior.
