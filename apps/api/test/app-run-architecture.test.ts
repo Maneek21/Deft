@@ -72,3 +72,18 @@ test('Run submission has one repository writer behind the advisory-lock service'
   }
   assert.deepEqual(violations, []);
 });
+
+test('the App Run approval bridge has one safe compatibility writer and no executor', async () => {
+  const adapter = await readFile(join(sourceRoot, 'lib/app-run-approval-adapter.ts'), 'utf8');
+  const service = await readFile(join(sourceRoot, 'lib/app-run-service.ts'), 'utf8');
+  const resolver = await readFile(join(sourceRoot, 'lib/agent-approval-resolver.ts'), 'utf8');
+
+  assert.match(adapter, /\.insert\(agentActions\)/);
+  assert.match(adapter, /action:\s*APP_RUN_APPROVAL_ACTION/);
+  assert.match(adapter, /approval_tier:\s*'full'/);
+  assert.match(adapter, /resource_ids/);
+  assert.match(adapter, /safe_preview/);
+  assert.doesNotMatch(adapter, /\b(?:executeTool|AppRunAttemptRunner|idempotency_key|raw_input|raw_output)\b/);
+  assert.match(service, /approvalAdapter\.create/);
+  assert.match(resolver, /row\.action === APP_RUN_APPROVAL_ACTION/);
+});

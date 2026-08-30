@@ -79,6 +79,10 @@ import {
   sanitizeModuleTaskLinkActionParamsForHistory,
 } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
+import {
+  APP_RUN_APPROVAL_ACTION,
+  postgresAppRunApprovalResolver,
+} from './app-run-approval-adapter.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
 import {
   MODULE_OPERATION_DEFINITIONS,
@@ -127,7 +131,11 @@ async function publishApprovalResolution(actionId: string, actorUserId: string):
       .from(agentActions)
       .where(eq(agentActions.id, actionId))
       .limit(1);
-    if (!row?.agent_employee_id || !['approved', 'rejected'].includes(row.approval_status)) return;
+    if (
+      !row?.agent_employee_id
+      || row.action === APP_RUN_APPROVAL_ACTION
+      || !['approved', 'rejected'].includes(row.approval_status)
+    ) return;
 
     const [employee] = await db
       .select({ runtime_kind: agentEmployees.runtime_kind })
@@ -756,7 +764,14 @@ async function approveActionLocked(
   // terminal retry may create missing receipts/attention artifacts, so it is
   // not a side-effect-free read and must not be reachable cross-org.
   const membership = await loadReviewMembership(approverUserId, row.org_id);
-  const canReview = options.internal || (
+  const humanCanReview = membership !== null && (
+    actionRequesterId(row) === approverUserId
+    || membership.role === 'owner'
+    || membership.role === 'admin'
+  );
+  const canReview = row.action === APP_RUN_APPROVAL_ACTION
+    ? !options.internal && humanCanReview
+    : options.internal || (
     membership !== null && (
       actionRequesterId(row) === approverUserId ||
       membership.role === 'owner' ||
@@ -769,6 +784,10 @@ async function approveActionLocked(
       code: 'FORBIDDEN',
       message: 'only the requester or an org owner/admin may approve this action',
     };
+  }
+
+  if (row.action === APP_RUN_APPROVAL_ACTION) {
+    return postgresAppRunApprovalResolver.approve(actionId, approverUserId);
   }
 
   const resumesApprovedModule = isModuleMutation
@@ -1224,6 +1243,10 @@ async function rejectActionOnce(
       code: 'FORBIDDEN',
       message: 'only the requester or an org owner/admin may reject this action',
     };
+  }
+
+  if (row.action === APP_RUN_APPROVAL_ACTION) {
+    return postgresAppRunApprovalResolver.reject(actionId, rejecterUserId);
   }
 
   if (row.approval_status === 'rejected') {

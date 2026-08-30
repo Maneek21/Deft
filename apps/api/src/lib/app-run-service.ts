@@ -26,6 +26,10 @@ import {
   type AppRunSafeView,
 } from './app-run-repository.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
+import {
+  postgresAppRunApprovalAdapter,
+  type AppRunApprovalAdapter,
+} from './app-run-approval-adapter.js';
 
 export type AppRunTrustedContext = Readonly<{
   org_id: string;
@@ -70,6 +74,7 @@ export class AppRunService {
     private readonly keys: AppRunKeyProvider,
     private readonly authorizer: AppRunAuthorizer = denyAllAppRunAuthorizer,
     private readonly now: () => Date = () => new Date(),
+    private readonly approvalAdapter: AppRunApprovalAdapter = postgresAppRunApprovalAdapter,
   ) {}
 
   async submit(context: AppRunTrustedContext, rawSubmission: unknown): Promise<AppRunSafeView> {
@@ -141,6 +146,23 @@ export class AppRunService {
         event_type: 'run_created', actor: submission.initiating_actor,
         payload: { state: run.state }, now,
       });
+      if (run.state === 'pending_approval') {
+        const actionId = await this.approvalAdapter.create({
+          tx,
+          run,
+          submission,
+          now,
+        });
+        await this.repository.appendEvent(tx, {
+          id: crypto.randomUUID(),
+          org_id: submission.org_id,
+          run_id: runId,
+          event_type: 'approval_requested',
+          actor: submission.initiating_actor,
+          payload: { action_id: actionId },
+          now,
+        });
+      }
       return run;
     });
   }

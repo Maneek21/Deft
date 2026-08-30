@@ -17,6 +17,7 @@ import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js'
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
+import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
 import { createAppRunAttemptJobHandler } from '../src/lib/app-run-worker-handler.js';
 import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from '../src/lib/app-run-keyrings.js';
 import { closeDb } from '../src/lib/db.js';
@@ -305,16 +306,16 @@ test('live authority revocation is sticky and the execution budget is reserved e
 
   const live = new PostgresAppRunLiveAuthorization();
   const executionActor = { actor_type: 'agent_employee' as const, agent_employee_id: employeeId };
-  const capture = () => live.capture({
+  const capture = (effectivePolicy = policy) => live.capture({
     org_id: ORG_ID,
     authenticated_subject: trusted.initiating_actor,
     execution_actor: executionActor,
     provider_instance_id: providerId,
     provider_snapshot_id: snapshotId,
     operation_name: operationName,
-    policy,
+    policy: effectivePolicy,
   });
-  const liveSubmission = async (key: string) => ({
+  const liveSubmission = async (key: string, effectivePolicy = policy) => ({
     ...submission({
       idempotency_key: key,
       execution_actor: executionActor,
@@ -324,12 +325,29 @@ test('live authority revocation is sticky and the execution budget is reserved e
         operation_name: operationName,
       },
       provider_snapshot_digest: snapshot.snapshot_digest,
-      policy,
-      authorization_snapshot: await capture(),
+      policy: effectivePolicy,
+      authorization_snapshot: await capture(effectivePolicy),
     }),
   });
   const liveTrusted = { ...trusted, execution_actor: executionActor };
   const setup = service();
+  const alwaysPolicy = {
+    ...policy,
+    review_requirement: 'always' as const,
+  };
+  const staleApproval = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-stale-approval-${suffix}`, alwaysPolicy),
+  );
+  const staleApprovalAction = await client.query<{ id: string; params: unknown }>(
+    `SELECT id, params FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, staleApproval.id],
+  );
+  assert.equal(staleApprovalAction.rowCount, 1);
+  assert.doesNotMatch(
+    JSON.stringify(staleApprovalAction.rows[0]!.params),
+    new RegExp(`raw-marker-${suffix}|live-stale-approval-${suffix}|recipient|body`),
+  );
   const stale = await setup.service.submit(
     liveTrusted,
     await liveSubmission(`live-stale-${suffix}`),
@@ -345,6 +363,25 @@ test('live authority revocation is sticky and the execution budget is reserved e
     `UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`,
     [ORG_ID, USER_ID],
   );
+  const staleApprovalResult = await approveAction(staleApprovalAction.rows[0]!.id, USER_ID);
+  assert.equal(staleApprovalResult.status, 'error');
+  const staleApprovalState = await client.query<{
+    run_state: string;
+    action_state: string;
+    execution_release_kind: string | null;
+  }>(
+    `SELECT r.state AS run_state, a.approval_status AS action_state,
+            r.execution_release_kind
+       FROM app_runs r JOIN agent_actions a
+         ON a.org_id = r.org_id AND a.app_run_id = r.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, staleApproval.id],
+  );
+  assert.deepEqual(staleApprovalState.rows[0], {
+    run_state: 'expired',
+    action_state: 'expired',
+    execution_release_kind: null,
+  });
   const executor = new CountingExecutor();
   const runner = new AppRunAttemptRunner(
     setup.repository, setup.secretRepository, setup.secrets, executor, live,
@@ -399,6 +436,62 @@ test('live authority revocation is sticky and the execution budget is reserved e
   );
   assert.equal(versions.rows[0]!.member, 3);
   assert.equal(versions.rows[0]!.connector, 3);
+
+  const raced = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-approval-race-${suffix}`, alwaysPolicy),
+  );
+  const raceAction = await client.query<{ id: string; params: unknown }>(
+    `SELECT id, params FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, raced.id],
+  );
+  assert.equal(raceAction.rowCount, 1);
+  assert.equal(await runner.prepareAttempt(ORG_ID, raced.id), null);
+  const internalBypass = await approveAction(raceAction.rows[0]!.id, USER_ID, { internal: true });
+  assert.deepEqual(internalBypass, {
+    status: 'error',
+    code: 'FORBIDDEN',
+    message: 'only the requester or an org owner/admin may approve this action',
+  });
+  await Promise.all(Array.from({ length: 20 }, (_, index) => (
+    index % 2 === 0
+      ? approveAction(raceAction.rows[0]!.id, USER_ID)
+      : rejectAction(raceAction.rows[0]!.id, USER_ID, `ignored raw reason ${index}`)
+  )));
+  const raceState = await client.query<{
+    run_state: string;
+    execution_release_kind: string | null;
+    action_state: string;
+    approval_events: string;
+    attempts: string;
+    error: string | null;
+  }>(
+    `SELECT r.state AS run_state, r.execution_release_kind,
+            a.approval_status AS action_state, a.error,
+            (SELECT count(*) FROM app_run_events e
+              WHERE e.org_id = r.org_id AND e.run_id = r.id
+                AND e.event_type = 'approval_resolved') AS approval_events,
+            (SELECT count(*) FROM app_run_attempts ra
+              WHERE ra.org_id = r.org_id AND ra.run_id = r.id) AS attempts
+       FROM app_runs r JOIN agent_actions a
+         ON a.org_id = r.org_id AND a.app_run_id = r.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, raced.id],
+  );
+  const resolution = raceState.rows[0]!;
+  assert.equal(resolution.approval_events, '1');
+  assert.equal(resolution.attempts, '0');
+  assert.doesNotMatch(resolution.error ?? '', /ignored raw reason/);
+  if (resolution.execution_release_kind === 'approved') {
+    assert.equal(resolution.run_state, 'pending_approval');
+    assert.equal(resolution.action_state, 'approved');
+    assert.ok(await runner.prepareAttempt(ORG_ID, raced.id));
+  } else {
+    assert.equal(resolution.execution_release_kind, null);
+    assert.equal(resolution.run_state, 'cancelled');
+    assert.equal(resolution.action_state, 'rejected');
+    assert.equal(await runner.prepareAttempt(ORG_ID, raced.id), null);
+  }
 });
 
 async function prepareAttempt(runner: AppRunAttemptRunner, runId: string): Promise<string> {

@@ -237,6 +237,21 @@ inside the locked first-attempt transaction and recorded as write-once Run
 evidence. No production entrance uses this gate until the later guarded
 Capability Service cutover.
 
+### Approval compatibility ownership
+
+For `review_requirement: always`, Run submission atomically creates one linked
+`app_run_invoke` action with a strict safe-field allowlist. `app_runs` remains
+the source of truth: the compatibility row cannot execute a tool, carry raw
+params, release itself, or override a terminal Run state.
+
+The existing reviewer API delegates that one action kind to a Run-native
+resolver. The requester or an owner/admin must be an active human member;
+legacy internal approval bypasses are rejected. Approval rechecks live
+authority and commits the action decision plus write-once Run release together.
+Rejection commits the compatibility decision plus Run cancellation together.
+Concurrent or replayed resolutions converge on the Run and never create an
+attempt or provider call in the approval transaction.
+
 ## Consequences
 
 - Phase 3 is larger than a local refactor and may span more than one release.

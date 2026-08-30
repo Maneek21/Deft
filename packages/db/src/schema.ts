@@ -1003,8 +1003,8 @@ export const agentActions = pgTable('agent_actions', {
   agent_employee_id: text('agent_employee_id'),
   tool_use_id: text('tool_use_id'), // Anthropic tool_use block id (toolu_*)
   source: text('source').default('native'),
-  // Nullable compatibility link only. App Runs are dormant and never created
-  // by the current action paths in the foundation phase.
+  // Nullable compatibility link only. Governed Run submission owns the one
+  // app_run_invoke row; the action is never the execution source of truth.
   app_run_id: text('app_run_id'),
   mcp_connection_id: text('mcp_connection_id'),
   plan_id: text('plan_id'),

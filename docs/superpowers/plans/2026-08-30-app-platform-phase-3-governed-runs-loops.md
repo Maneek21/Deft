@@ -2,8 +2,8 @@
 
 **Status:** accepted and in progress; PR A (#271) and PR B (#272) merged the
 dormant Loops 0–4 foundation and fake-provider engine. C0 is complete at local
-checkpoint `4c4f48c1`; C1 live authorization and budget integration is stacked
-on it pending review and publication.
+checkpoint `4c4f48c1`; C1 live authorization/budget and C2 approval
+compatibility are stacked on it pending review and publication.
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
 the foundation selected `.17`, PR B selected `.18`, and the post-engine audit
@@ -78,6 +78,25 @@ C1 adds upgrade `.20` and a host-owned authorization snapshot builder/verifier:
 
 C1 remains production-unwired. It adds no route, worker registration, provider
 call, flag, UI, environment variable, or deployment dependency.
+
+### C2 safe approval compatibility adapter
+
+C2 creates exactly one `app_run_invoke` compatibility action in the same
+transaction as every `pending_approval` Run. The row contains only Run ID,
+bounded capability/provider labels, resource identities, and the validated safe
+preview; it never contains invocation input, retry identity, provider output,
+credentials, or ciphertext.
+
+The existing approve/reject entrance delegates only this action kind to a
+Run-native resolver. Human requester/owner/admin review is required and the
+legacy internal bypass is explicitly refused. Resolution locks both rows,
+rechecks C1 live authority, and atomically either records the write-once
+approval release or cancels/expires the Run. The Run repairs the compatibility
+row if they ever disagree, approval/rejection races append one resolution
+event, and user-supplied rejection prose is not copied into the safe ledger.
+
+C2 still does not enqueue an attempt or call a provider. C4 owns worker
+scheduling after the remaining receipt and runtime boundaries exist.
 
 ### Milestone C: compatibility integration
 

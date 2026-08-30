@@ -112,6 +112,18 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     }
   }
 
+  async authorizeApprovalInTransaction(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+  ): Promise<boolean> {
+    try {
+      const internal = await this.#loadInternalRun(tx, run.org_id, run.id);
+      return internal !== null && await this.#matchesLiveState(tx, run, internal);
+    } catch {
+      return false;
+    }
+  }
+
   async authorizeExecution(input: Parameters<AppRunExecutionAuthorizer['authorizeExecution']>[0]): Promise<boolean> {
     try {
       if (input.org_id !== input.run.org_id) return false;
