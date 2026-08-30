@@ -17,11 +17,11 @@ import { closeDb } from '../src/lib/db.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../src/lib/agent-actions.js';
 import { approveAction } from '../src/lib/agent-approval-resolver.js';
-import { APP_RUNS_ENABLED } from '../src/lib/env.js';
+import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from '../src/lib/env.js';
 import { shutdownAppRunRuntime } from '../src/lib/app-run-runtime.js';
 
-const legacyTest = APP_RUNS_ENABLED ? test.skip : test;
-const governedTest = APP_RUNS_ENABLED ? test : test.skip;
+const legacyTest = APP_RUN_LEGACY_MCP_CUTOVER_ENABLED ? test.skip : test;
+const governedTest = APP_RUN_LEGACY_MCP_CUTOVER_ENABLED ? test : test.skip;
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
@@ -30,9 +30,9 @@ if (!DATABASE_URL) {
 }
 if (
   process.env.CI !== 'true'
-  && !/(?:test|ci|acceptance|phase2)/i.test(new URL(DATABASE_URL).pathname)
+  && !/(?:test|ci|acceptance|phase[23])/i.test(new URL(DATABASE_URL).pathname)
 ) {
-  throw new Error('Capability execution DB tests refuse a database without a test/CI/phase2 name');
+  throw new Error('Capability execution DB tests refuse a database without a test/CI/phase name');
 }
 const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const ORG_ID = `capability-immediate-org-${suffix}`;

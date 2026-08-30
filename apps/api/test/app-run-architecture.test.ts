@@ -37,21 +37,34 @@ test('only the App Run secret boundary handles ciphertext and signing material',
   assert.deepEqual(violations, []);
 });
 
-test('App Run flag and key material stay confined to environment and the composition root', async () => {
-  const allowedConsumers = new Set([
-    'lib/agent-actions.ts',
-    'lib/capability-service.ts',
-  ]);
+test('App Run engine flag and key material stay confined to environment and Run composition', async () => {
   const consumers: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
     const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
     if (sourcePath.startsWith('lib/app-run-') || sourcePath === 'lib/env.ts') continue;
     const source = await readFile(path, 'utf8');
     if (/\b(?:AppRunSecretService|DEFT_APP_RUNS_ENABLED|APP_RUNS_ENABLED)\b/.test(source)) {
-      if (!allowedConsumers.has(sourcePath)) consumers.push(sourcePath);
+      consumers.push(sourcePath);
     }
   }
   assert.deepEqual(consumers, []);
+});
+
+test('legacy MCP cutover flag has only the two intake-boundary consumers', async () => {
+  const expectedConsumers = [
+    'lib/agent-actions.ts',
+    'lib/capability-service.ts',
+  ];
+  const consumers: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    if (sourcePath === 'lib/env.ts') continue;
+    const source = await readFile(path, 'utf8');
+    if (/\b(?:DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED|APP_RUN_LEGACY_MCP_CUTOVER_ENABLED)\b/.test(source)) {
+      consumers.push(sourcePath);
+    }
+  }
+  assert.deepEqual(consumers.sort(), expectedConsumers);
 });
 
 test('C5 selects one composed worker-owned attempt entrance through Capability Service', async () => {
@@ -62,7 +75,7 @@ test('C5 selects one composed worker-owned attempt entrance through Capability S
   const bridge = await readFile(join(sourceRoot, 'lib/app-run-capability-bridge.ts'), 'utf8');
   const legacyActions = await readFile(join(sourceRoot, 'lib/agent-actions.ts'), 'utf8');
 
-  assert.match(capabilityService, /governedEnabled\(\)/);
+  assert.match(capabilityService, /legacyMcpCutoverEnabled\(\)/);
   assert.match(capabilityService, /await this\.governed\.invoke/);
   assert.match(capabilityService, /await this\.mcpProvider\.invoke/);
   assert.doesNotMatch(capabilityService, /\b(?:AppRunService|getAppRunRuntime|AppRunAttemptRunner)\b/);
@@ -75,8 +88,10 @@ test('C5 selects one composed worker-owned attempt entrance through Capability S
   assert.match(bridge, /attemptRunner\.runImmediate/);
   assert.match(bridge, /legacy_action_id/);
   assert.doesNotMatch(bridge, /\.invoke\(request\)/);
-  assert.match(legacyActions, /APP_RUNS_ENABLED && action\.startsWith\('mcp__'\)/);
+  assert.match(legacyActions, /APP_RUN_LEGACY_MCP_CUTOVER_ENABLED && action\.startsWith\('mcp__'\)/);
   assert.match(legacyActions, /legacy_action_id:\s*actionId/);
+  assert.doesNotMatch(runtime, /APP_RUN_LEGACY_MCP_CUTOVER_ENABLED/);
+  assert.doesNotMatch(handler, /APP_RUN_LEGACY_MCP_CUTOVER_ENABLED/);
 });
 
 test('only the MCP adapter calls the low-level client and governed execution is pinned by provider id', async () => {

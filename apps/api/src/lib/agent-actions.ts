@@ -31,7 +31,7 @@ import {
   parseMCPToolName,
 } from './mcp-tools.js';
 import { capabilityService } from './capability-service.js';
-import { APP_RUNS_ENABLED } from './env.js';
+import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from './env.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
@@ -1133,7 +1133,7 @@ export async function executeAction(
       }
       return { success: false, result: null, error: policyError };
     }
-    if (agentEmployeeId && !(APP_RUNS_ENABLED && action.startsWith('mcp__'))) {
+    if (agentEmployeeId && !(APP_RUN_LEGACY_MCP_CUTOVER_ENABLED && action.startsWith('mcp__'))) {
       const budget = await consumeAgentDailyActionBudget(
         orgId,
         agentEmployeeId,

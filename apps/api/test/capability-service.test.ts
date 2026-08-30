@@ -848,7 +848,7 @@ test('pinned App Run execution fails closed for unbound idempotency and ambiguou
   assert.equal(calls, 2);
 });
 
-test('Capability Service selects exactly one flag path and never shadow-calls or falls back', async () => {
+test('engine-on MCP intake modes select exactly one Capability Service path without fallback', async () => {
   const request = {
     org_id: connection.org_id,
     actor: { user_id: 'user_ada' },
@@ -892,12 +892,12 @@ test('Capability Service selects exactly one flag path and never shadow-calls or
     },
   };
 
-  const disabled = new CapabilityService(legacyPort, governedPort, () => false);
-  assert.deepEqual((await disabled.invoke(request)).legacy_output, { path: 'legacy' });
+  const engineOnIntakeOff = new CapabilityService(legacyPort, governedPort, () => false);
+  assert.deepEqual((await engineOnIntakeOff.invoke(request)).legacy_output, { path: 'legacy' });
   assert.deepEqual({ legacyCalls, governedCalls }, { legacyCalls: 1, governedCalls: 0 });
 
-  const enabled = new CapabilityService(legacyPort, governedPort, () => true);
-  assert.deepEqual((await enabled.invoke(request, {
+  const engineOnIntakeOn = new CapabilityService(legacyPort, governedPort, () => true);
+  assert.deepEqual((await engineOnIntakeOn.invoke(request, {
     legacy_action_id: 'action-1',
     idempotency_key: 'occurrence-1',
   })).legacy_output, { path: 'governed' });

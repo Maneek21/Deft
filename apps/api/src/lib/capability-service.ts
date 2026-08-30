@@ -13,7 +13,7 @@ import {
   type McpCapabilityInvocationRequest,
 } from './capability-providers/mcp.js';
 import type { GovernedCapabilityInvocationOptions } from './app-run-capability-bridge.js';
-import { APP_RUNS_ENABLED } from './env.js';
+import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from './env.js';
 
 export type CapabilityDiscoveryRequest = McpCapabilityDiscoveryRequest;
 export type CapabilityDiscoveryResult = McpCapabilityDiscoveryResult;
@@ -60,7 +60,8 @@ export class CapabilityService {
   constructor(
     private readonly mcpProvider: McpCapabilityProviderPort = mcpCapabilityProvider,
     private readonly governed: GovernedCapabilityInvocationPort = lazyGovernedCapabilityPort,
-    private readonly governedEnabled: () => boolean = () => APP_RUNS_ENABLED,
+    private readonly legacyMcpCutoverEnabled: () => boolean =
+      () => APP_RUN_LEGACY_MCP_CUTOVER_ENABLED,
   ) {}
 
   async discover(request: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult> {
@@ -82,7 +83,7 @@ export class CapabilityService {
     let adapterResult: McpCapabilityInvocationAdapterResult;
     switch (request.provider.provider_kind) {
       case 'mcp':
-        adapterResult = this.governedEnabled()
+        adapterResult = this.legacyMcpCutoverEnabled()
           ? await this.governed.invoke(request, options)
           : await this.mcpProvider.invoke(request);
         break;

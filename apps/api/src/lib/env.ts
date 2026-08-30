@@ -118,4 +118,22 @@ export const APP_DEVELOPER_PAIRING_ENABLED =
 // Exact "true" plus valid purpose-separated keyrings is required. A normal
 // legacy self-host boot never needs or parses the new secret document.
 export const APP_RUNS_ENABLED = process.env.DEFT_APP_RUNS_ENABLED === 'true';
+export const APP_RUN_LEGACY_MCP_CUTOVER_ENABLED =
+  process.env.DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED === 'true';
+
+export function validateAppRunRolloutConfiguration(
+  appRunsEnabled: boolean,
+  legacyMcpCutoverEnabled: boolean,
+): void {
+  if (legacyMcpCutoverEnabled && !appRunsEnabled) {
+    throw new Error(
+      'DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=true requires DEFT_APP_RUNS_ENABLED=true',
+    );
+  }
+}
+
+validateAppRunRolloutConfiguration(
+  APP_RUNS_ENABLED,
+  APP_RUN_LEGACY_MCP_CUTOVER_ENABLED,
+);
 validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYRINGS);
