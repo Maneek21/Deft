@@ -8,11 +8,24 @@ const AppRunJobSchema = z.object({
   attemptId: z.string().min(1).max(512),
 }).strict();
 
-// C0 deliberately keeps this injectable factory out of the production worker
-// registry. C4 owns provider/queue wiring and C5 owns the cutover decision.
 export function createAppRunAttemptJobHandler(runner: AppRunAttemptRunner): JobHandler {
   return async (job) => {
     const payload = AppRunJobSchema.parse(job.data);
     await runner.run(payload.orgId, payload.runId, payload.attemptId, `job:${job.id}`, job.signal);
   };
 }
+
+/** Production handler resolves the single composition root lazily. Queue data
+ * carries exact durable identity only; decrypted input never enters a job. */
+export const handleAppRunAttempt: JobHandler = async (job) => {
+  const payload = AppRunJobSchema.parse(job.data);
+  const { getAppRunRuntime } = await import('./app-run-runtime.js');
+  const runtime = await getAppRunRuntime();
+  await runtime.attemptRunner.run(
+    payload.orgId,
+    payload.runId,
+    payload.attemptId,
+    `job:${job.id}`,
+    job.signal,
+  );
+};

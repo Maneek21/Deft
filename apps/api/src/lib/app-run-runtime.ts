@@ -1,0 +1,121 @@
+import { AppRunAttemptRunner } from './app-run-attempt-runner.js';
+import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from './app-run-approval-adapter.js';
+import { PostgresAppRunAttentionProjector } from './app-run-attention.js';
+import { denyAllAppRunAuthorizer } from './app-run-authorization.js';
+import { AppRunError } from './app-run-errors.js';
+import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
+import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
+import { AppRunOperationsService } from './app-run-operations.js';
+import { PinnedMcpAppRunProviderExecutor } from './app-run-provider-executor.js';
+import { PostgresAppRunReceiptWriter } from './app-run-receipts.js';
+import { PostgresAppRunRepository } from './app-run-repository.js';
+import { postgresAppRunAttemptQueue } from './app-run-scheduler.js';
+import { AppRunSecretRepository } from './app-run-secret-repository.js';
+import { AppRunSecretService } from './app-run-secrets.js';
+import { AppRunService } from './app-run-service.js';
+import { APP_RUNS_ENABLED } from './env.js';
+
+export type AppRunRuntime = Readonly<{
+  keys: EnvironmentAppRunKeyProvider;
+  repository: PostgresAppRunRepository;
+  secretRepository: AppRunSecretRepository;
+  liveAuthorization: PostgresAppRunLiveAuthorization;
+  service: AppRunService;
+  attemptRunner: AppRunAttemptRunner;
+  approvalResolver: PostgresAppRunApprovalResolver;
+  operations: AppRunOperationsService;
+}>;
+
+let runtimePromise: Promise<AppRunRuntime> | null = null;
+
+async function createAppRunRuntime(): Promise<AppRunRuntime> {
+  const keys = parseEnvironmentAppRunKeyrings(process.env.DEFT_APP_RUN_KEYRINGS);
+  const secrets = new AppRunSecretService(keys);
+  const repository = new PostgresAppRunRepository();
+  const secretRepository = new AppRunSecretRepository(secrets);
+  const liveAuthorization = new PostgresAppRunLiveAuthorization();
+  const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
+  const attention = new PostgresAppRunAttentionProjector();
+  const clock = () => new Date();
+  const attemptRunner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    new PinnedMcpAppRunProviderExecutor(),
+    liveAuthorization,
+    clock,
+    60_000,
+    20_000,
+    receipts,
+    attention,
+    postgresAppRunAttemptQueue,
+  );
+  const service = new AppRunService(
+    repository,
+    secretRepository,
+    secrets,
+    keys,
+    denyAllAppRunAuthorizer,
+    clock,
+    postgresAppRunApprovalAdapter,
+    receipts,
+    attention,
+    attemptRunner,
+  );
+  const approvalResolver = new PostgresAppRunApprovalResolver(
+    repository,
+    liveAuthorization,
+    clock,
+    receipts,
+    attention,
+    attemptRunner,
+  );
+  const operations = new AppRunOperationsService(
+    repository,
+    undefined,
+    receipts,
+    attention,
+    clock,
+  );
+
+  try {
+    await service.assertReferencedKeysAvailable();
+  } catch (error) {
+    keys.destroy();
+    throw error;
+  }
+
+  return Object.freeze({
+    keys,
+    repository,
+    secretRepository,
+    liveAuthorization,
+    service,
+    attemptRunner,
+    approvalResolver,
+    operations,
+  });
+}
+
+/** One process-wide composition root. The exact flag is checked again at the
+ * call boundary so imports alone cannot activate governed execution. */
+export async function getAppRunRuntime(): Promise<AppRunRuntime> {
+  if (!APP_RUNS_ENABLED) throw new AppRunError('APP_RUNS_DISABLED');
+  runtimePromise ??= createAppRunRuntime().catch((error) => {
+    runtimePromise = null;
+    throw error;
+  });
+  return runtimePromise;
+}
+
+export async function shutdownAppRunRuntime(): Promise<void> {
+  const pending = runtimePromise;
+  runtimePromise = null;
+  if (!pending) return;
+  try {
+    const runtime = await pending;
+    runtime.keys.destroy();
+  } catch {
+    // A failed composition already destroys any parsed key material.
+  }
+}

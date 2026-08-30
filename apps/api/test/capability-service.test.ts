@@ -10,6 +10,7 @@ import type {
   MCPToolOverride,
 } from '@deft/mcp';
 import { CapabilityService } from '../src/lib/capability-service.js';
+import { PinnedMcpAppRunProviderExecutor } from '../src/lib/app-run-provider-executor.js';
 import {
   discoverMcpToolsForConnections,
   mcpProviderDescriptionForAgent,
@@ -752,4 +753,92 @@ test('strict invocation inputs fail before resolution and pre-call/runtime throw
     /Invalid MCP connection target:/,
   );
   assert.equal(executeCalls, 1);
+});
+
+test('pinned App Run execution resolves the exact provider once and preserves returned MCP payloads', async () => {
+  const resolutionCalls: unknown[][] = [];
+  const executionCalls: unknown[][] = [];
+  const rawResult = {
+    content: [{ type: 'text', text: 'sent' }],
+    structuredContent: { message_id: 'message-pinned' },
+  };
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async () => ({ connection }),
+    resolvePinnedExecutable: async (...args) => {
+      resolutionCalls.push(args);
+      return { connection };
+    },
+    executeTool: async (...args) => {
+      executionCalls.push(args);
+      return {
+        success: true,
+        content: rawResult.content,
+        structuredContent: rawResult.structuredContent,
+        rawResult,
+        durationMs: 9,
+      };
+    },
+  };
+  const executor = new PinnedMcpAppRunProviderExecutor(providerForRuntime(runtime));
+  const result = await executor.execute({
+    org_id: connection.org_id,
+    provider_kind: 'mcp',
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    input: { recipient: 'ada@example.test' },
+  });
+
+  assert.deepEqual(resolutionCalls, [[connection.org_id, connection.id, 'send_email']]);
+  assert.equal(executionCalls.length, 1);
+  assert.deepEqual(result, {
+    status: 'returned',
+    provider_succeeded: true,
+    output: rawResult,
+  });
+});
+
+test('pinned App Run execution fails closed for unbound idempotency and ambiguous transport outcomes', async () => {
+  let resolutions = 0;
+  let calls = 0;
+  let release: (() => void) | null = null;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async () => ({ connection }),
+    resolvePinnedExecutable: async () => {
+      resolutions++;
+      return { connection };
+    },
+    executeTool: async () => {
+      calls++;
+      if (calls === 1) {
+        return { success: false, content: null, error: 'socket reset', durationMs: 2 };
+      }
+      await pending;
+      return { success: true, content: [], rawResult: { content: [] }, durationMs: 2 };
+    },
+  };
+  const executor = new PinnedMcpAppRunProviderExecutor(providerForRuntime(runtime));
+  const base = {
+    org_id: connection.org_id,
+    provider_kind: 'mcp' as const,
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    input: {},
+  };
+
+  assert.deepEqual(await executor.execute({ ...base, provider_idempotency_key: 'unbound' }), {
+    status: 'not_attempted',
+    error_code: 'APP_RUN_PROVIDER_UNAVAILABLE',
+  });
+  assert.equal(resolutions, 0);
+  assert.equal(calls, 0);
+  assert.deepEqual(await executor.execute(base), { status: 'indeterminate' });
+
+  const controller = new AbortController();
+  const aborted = executor.execute({ ...base, signal: controller.signal });
+  while (calls < 2) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  assert.deepEqual(await aborted, { status: 'indeterminate' });
+  release!();
+  assert.equal(calls, 2);
 });

@@ -254,6 +254,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/workflow-execute.js');
       return mod.handleWorkflowExecute;
     }
+    case 'app-run-attempt': {
+      const mod = await import('../lib/app-run-worker-handler.js');
+      return mod.handleAppRunAttempt;
+    }
     case 'certification-noop': {
       // Synthetic 60-person certification intentionally measures queue claim,
       // completion, and recovery without invoking a product side effect.
@@ -360,6 +364,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
 
 export async function _getScheduledJobHandlerForTest(jobName: string): Promise<JobHandler | null> {
   return getScheduledJobHandler(jobName);
+}
+
+export async function _getAgentJobHandlerForTest(jobName: string): Promise<JobHandler | null> {
+  return getAgentJobHandler(jobName);
 }
 
 async function getHandler(queueName: string, jobName: string): Promise<JobHandler | null> {

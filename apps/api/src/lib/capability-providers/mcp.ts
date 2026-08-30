@@ -21,6 +21,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   getExecutableMcpConnection,
+  getExecutableMcpConnectionById,
   mcpResultPayload,
   toConnectionConfig,
   type ExecutableMcpConnectionResult,
@@ -98,7 +99,17 @@ export interface McpCapabilityRuntime {
     operationName: string,
     input: Record<string, unknown>,
   ): Promise<MCPResult>;
+  resolvePinnedExecutable?(
+    orgId: string,
+    connectionId: string,
+    operationName: string,
+  ): Promise<ExecutableMcpConnectionResult>;
 }
+
+export type McpPinnedExecutionResult =
+  | Readonly<{ status: 'not_attempted' }>
+  | Readonly<{ status: 'returned'; provider_succeeded: boolean; output: unknown }>
+  | Readonly<{ status: 'indeterminate' }>;
 
 export interface CapabilitySnapshotWarning {
   code: 'CAPABILITY_SNAPSHOT_UNAVAILABLE';
@@ -126,6 +137,7 @@ const databaseMcpConnectionSource: McpConnectionSource = {
 
 const databaseMcpCapabilityRuntime: McpCapabilityRuntime = {
   resolveExecutable: getExecutableMcpConnection,
+  resolvePinnedExecutable: getExecutableMcpConnectionById,
   executeTool: (config, operationName, input) => (
     mcpClientManager.executeTool(config, operationName, input)
   ),
@@ -248,6 +260,63 @@ export class McpCapabilityProvider {
       error: mcpResult.error || 'MCP tool error',
       error_code: 'CAPABILITY_PROVIDER_ERROR',
     };
+  }
+
+  /** Execute one App Run attempt against the immutable provider identity.
+   * Resolution and target materialization happen before the low-level call;
+   * once that call is launched, an abort or transport-only failure is
+   * conservatively indeterminate. */
+  async executePinned(request: Readonly<{
+    org_id: string;
+    provider_instance_id: string;
+    operation_name: string;
+    input: Record<string, unknown>;
+    signal?: AbortSignal;
+  }>): Promise<McpPinnedExecutionResult> {
+    if (request.signal?.aborted) return { status: 'not_attempted' };
+    const resolvePinned = this.runtime.resolvePinnedExecutable;
+    if (!resolvePinned) return { status: 'not_attempted' };
+    const resolved = await resolvePinned(
+      request.org_id,
+      request.provider_instance_id,
+      request.operation_name,
+    );
+    if (!resolved.connection) return { status: 'not_attempted' };
+
+    let config: MCPConnectionConfig;
+    try {
+      config = toConnectionConfig(resolved.connection);
+    } catch {
+      return { status: 'not_attempted' };
+    }
+    if (request.signal?.aborted) return { status: 'not_attempted' };
+
+    const call = Promise.resolve()
+      .then(() => this.runtime.executeTool(config, request.operation_name, request.input))
+      .then(
+        (result) => ({ kind: 'result' as const, result }),
+        () => ({ kind: 'failed' as const }),
+      );
+    let removeAbortListener = () => {};
+    const aborted = new Promise<{ kind: 'aborted' }>((resolve) => {
+      const listener = () => resolve({ kind: 'aborted' });
+      request.signal?.addEventListener('abort', listener, { once: true });
+      removeAbortListener = () => request.signal?.removeEventListener('abort', listener);
+    });
+    try {
+      const settled = request.signal ? await Promise.race([call, aborted]) : await call;
+      if (settled.kind !== 'result') return { status: 'indeterminate' };
+      if (!settled.result.success && settled.result.rawResult === undefined) {
+        return { status: 'indeterminate' };
+      }
+      return {
+        status: 'returned',
+        provider_succeeded: settled.result.success,
+        output: mcpResultPayload(settled.result),
+      };
+    } finally {
+      removeAbortListener();
+    }
   }
 
   private async snapshotFor(

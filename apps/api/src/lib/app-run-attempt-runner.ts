@@ -28,6 +28,11 @@ import {
 } from './app-run-attention.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import type { AppRunSecretService } from './app-run-secrets.js';
+import {
+  noOpAppRunAttemptQueue,
+  type AppRunAttemptQueue,
+  type AppRunAttemptScheduler,
+} from './app-run-scheduler.js';
 
 type ClaimedAttempt = Readonly<{
   run: AppRunSafeView;
@@ -45,7 +50,7 @@ function boundedLeaseMs(value: number): number {
   return Math.max(1_000, Math.min(value, 15 * 60_000));
 }
 
-export class AppRunAttemptRunner {
+export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   constructor(
     private readonly repository: PostgresAppRunRepository,
     private readonly secretRepository: AppRunSecretRepository,
@@ -57,6 +62,7 @@ export class AppRunAttemptRunner {
     private readonly heartbeatIntervalMs = Math.max(250, Math.floor(boundedLeaseMs(leaseMs) / 3)),
     private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
+    private readonly attemptQueue: AppRunAttemptQueue = noOpAppRunAttemptQueue,
   ) {}
 
   async run(
@@ -135,23 +141,36 @@ export class AppRunAttemptRunner {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
-      if (
-        !run
-        || !run.execution_released_at
-        || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
-        || !await this.executionAuthorizer.authorizeExecution({
-          org_id: orgId, run, tx, stage: 'prepare', now,
-        })
-      ) return null;
-      if (run.input_expires_at <= now) return null;
-      const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
-        eq(appRunAttempts.org_id, orgId),
-        eq(appRunAttempts.run_id, runId),
-        inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
-      )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
-      if (existing) return existing.id;
-      return (await this.#createAttempt(tx, run, now))?.id ?? null;
+      return run ? this.scheduleInTransaction(tx, run, now) : null;
     });
+  }
+
+  /** Schedule against a Run already locked by the caller. Queue insertion is
+   * in the same transaction as attempt creation/release, closing the crash gap
+   * between durable authority and worker ownership. */
+  async scheduleInTransaction(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    now: Date,
+  ): Promise<string | null> {
+    if (
+      !run.execution_released_at
+      || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
+      || !await this.executionAuthorizer.authorizeExecution({
+        org_id: run.org_id, run, tx, stage: 'prepare', now,
+      })
+      || run.input_expires_at <= now
+    ) return null;
+    const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, run.org_id),
+      eq(appRunAttempts.run_id, run.id),
+      inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
+    )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
+    if (existing) {
+      await this.attemptQueue.enqueue(tx, run.org_id, run.id, existing.id);
+      return existing.id;
+    }
+    return (await this.#createAttempt(tx, run, now))?.id ?? null;
   }
 
   async renewLease(orgId: string, attemptId: string, claimToken: string): Promise<boolean> {
@@ -345,6 +364,7 @@ export class AppRunAttemptRunner {
       id: crypto.randomUUID(), org_id: run.org_id, run_id: run.id,
       event_type: 'attempt_created', payload: { attempt_id: attempt.id, attempt_number: attemptNumber }, now,
     });
+    await this.attemptQueue.enqueue(tx, run.org_id, run.id, attempt.id);
     return attempt;
   }
 

@@ -20,6 +20,10 @@ import {
 } from './app-run-keyrings.js';
 import type { AppRunSecretService } from './app-run-secrets.js';
 import {
+  noOpAppRunAttemptScheduler,
+  type AppRunAttemptScheduler,
+} from './app-run-scheduler.js';
+import {
   denyAllAppRunAuthorizer,
   type AppRunAccessAction,
   type AppRunAuthorizer,
@@ -173,6 +177,7 @@ export class AppRunService {
     private readonly approvalAdapter: AppRunApprovalAdapter = postgresAppRunApprovalAdapter,
     private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
+    private readonly attemptScheduler: AppRunAttemptScheduler = noOpAppRunAttemptScheduler,
   ) {}
 
   async submit(context: AppRunTrustedContext, rawSubmission: unknown): Promise<AppRunSafeView> {
@@ -307,6 +312,9 @@ export class AppRunService {
           payload: { action_id: actionId },
           now,
         });
+      }
+      if (run.execution_released_at) {
+        await this.attemptScheduler.scheduleInTransaction(tx, run, now);
       }
       return run;
     });

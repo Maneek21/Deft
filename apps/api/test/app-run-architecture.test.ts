@@ -37,7 +37,7 @@ test('only the App Run secret boundary handles ciphertext and signing material',
   assert.deepEqual(violations, []);
 });
 
-test('the dormant foundation has no production execution consumer', async () => {
+test('App Run flag and key material stay confined to environment and the composition root', async () => {
   const consumers: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
     const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
@@ -50,16 +50,38 @@ test('the dormant foundation has no production execution consumer', async () => 
   assert.deepEqual(consumers, []);
 });
 
-test('the governed engine stays unwired from production entrances', async () => {
-  const protectedEntrances = [
-    'lib/capability-service.ts',
-    'lib/capability-providers/mcp.ts',
-    'workers/index.ts',
-  ];
-  for (const sourcePath of protectedEntrances) {
-    const source = await readFile(join(sourceRoot, sourcePath), 'utf8');
-    assert.doesNotMatch(source, /\b(?:AppRunService|AppRunAttemptRunner|createAppRunAttemptJobHandler)\b/);
+test('C4 has one composed worker-owned attempt entrance without Capability Service cutover', async () => {
+  const capabilityService = await readFile(join(sourceRoot, 'lib/capability-service.ts'), 'utf8');
+  const worker = await readFile(join(sourceRoot, 'workers/index.ts'), 'utf8');
+  const runtime = await readFile(join(sourceRoot, 'lib/app-run-runtime.ts'), 'utf8');
+  const handler = await readFile(join(sourceRoot, 'lib/app-run-worker-handler.ts'), 'utf8');
+
+  assert.doesNotMatch(capabilityService, /\b(?:AppRunService|getAppRunRuntime|AppRunAttemptRunner)\b/);
+  assert.equal(worker.match(/case 'app-run-attempt'/g)?.length, 1);
+  assert.match(handler, /getAppRunRuntime/);
+  assert.match(runtime, /new PinnedMcpAppRunProviderExecutor/);
+  assert.match(runtime, /postgresAppRunAttemptQueue/);
+  assert.match(runtime, /new PostgresAppRunReceiptWriter/);
+  assert.match(runtime, /new PostgresAppRunAttentionProjector/);
+});
+
+test('only the MCP adapter calls the low-level client and governed execution is pinned by provider id', async () => {
+  const violations: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    const source = await readFile(path, 'utf8');
+    if (sourcePath !== 'lib/capability-providers/mcp.ts' && /mcpClientManager\.executeTool/.test(source)) {
+      violations.push(sourcePath);
+    }
   }
+  assert.deepEqual(violations, []);
+
+  const provider = await readFile(join(sourceRoot, 'lib/capability-providers/mcp.ts'), 'utf8');
+  const executor = await readFile(join(sourceRoot, 'lib/app-run-provider-executor.ts'), 'utf8');
+  assert.match(provider, /resolvePinnedExecutable/);
+  assert.match(provider, /provider_instance_id/);
+  assert.doesNotMatch(executor, /connection_slug/);
+  assert.doesNotMatch(executor, /mcpClientManager/);
 });
 
 test('Run submission has one repository writer behind the advisory-lock service', async () => {
@@ -85,6 +107,8 @@ test('the App Run approval bridge has one safe compatibility writer and no execu
   assert.match(adapter, /safe_preview/);
   assert.doesNotMatch(adapter, /\b(?:executeTool|AppRunAttemptRunner|idempotency_key|raw_input|raw_output)\b/);
   assert.match(service, /approvalAdapter\.create/);
+  assert.match(service, /attemptScheduler\.scheduleInTransaction/);
+  assert.match(adapter, /attemptScheduler\.scheduleInTransaction/);
   assert.match(resolver, /row\.action === APP_RUN_APPROVAL_ACTION/);
 });
 
