@@ -20,6 +20,28 @@ export type CapabilityJsonValue =
   | CapabilityJsonValue[]
   | { [key: string]: CapabilityJsonValue };
 
+function capabilityJsonArrayElementKeys(value: unknown[]): string[] | null {
+  const keys = Reflect.ownKeys(value);
+  // Every ordinary array owns one non-enumerable `length` key plus exactly one
+  // enumerable canonical index key for each element. This rejects holes,
+  // symbols, and augmented/non-enumerable properties that JSON would discard.
+  if (keys.length !== value.length + 1) return null;
+
+  const elementKeys: string[] = [];
+  for (const key of keys) {
+    if (key === 'length') continue;
+    if (typeof key !== 'string' || !Object.prototype.propertyIsEnumerable.call(value, key)) {
+      return null;
+    }
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
+      return null;
+    }
+    elementKeys.push(key);
+  }
+  return elementKeys.length === value.length ? elementKeys : null;
+}
+
 function isCapabilityJsonValue(value: unknown, ancestors = new WeakSet<object>()): value is CapabilityJsonValue {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return true;
   if (typeof value === 'number') return Number.isFinite(value);
@@ -27,7 +49,9 @@ function isCapabilityJsonValue(value: unknown, ancestors = new WeakSet<object>()
   if (ancestors.has(value)) return false;
   ancestors.add(value);
   if (Array.isArray(value)) {
-    const valid = value.every((nested) => isCapabilityJsonValue(nested, ancestors));
+    const elementKeys = capabilityJsonArrayElementKeys(value);
+    const valid = elementKeys !== null
+      && elementKeys.every((key) => isCapabilityJsonValue(value[Number(key)], ancestors));
     ancestors.delete(value);
     return valid;
   }
@@ -314,8 +338,10 @@ export function assertCapabilityJsonWithinBudget(
     ancestors.add(nested);
 
     if (Array.isArray(nested)) {
+      const elementKeys = capabilityJsonArrayElementKeys(nested);
+      if (elementKeys === null) throw new TypeError('Capability JSON contains a non-JSON array');
       addBytes(2 + Math.max(0, nested.length - 1));
-      for (const item of nested) visit(item, depth + 1);
+      for (const key of elementKeys) visit(nested[Number(key)], depth + 1);
       ancestors.delete(nested);
       return;
     }

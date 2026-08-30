@@ -106,6 +106,17 @@ describe('capability identities and invocation contracts', () => {
     const cycle: Record<string, unknown> = {};
     cycle.self = cycle;
     assert.equal(CapabilityInvocationOutcomeSchema.safeParse({ ...success, output: cycle }).success, false);
+
+    const sparse = Array<string>(1);
+    const augmented = ['kept'] as string[] & { extra?: unknown };
+    augmented.extra = () => 'discarded';
+    const symbolAugmented = ['kept'] as string[] & { [key: symbol]: unknown };
+    symbolAugmented[Symbol('discarded')] = 'value';
+    const hiddenIndex: string[] = [];
+    Object.defineProperty(hiddenIndex, '0', { value: 'hidden', enumerable: false });
+    for (const output of [sparse, augmented, symbolAugmented, hiddenIndex]) {
+      assert.equal(CapabilityInvocationOutcomeSchema.safeParse({ ...success, output }).success, false);
+    }
   });
 
   test('does not narrow legacy provider-owned name lengths', () => {
