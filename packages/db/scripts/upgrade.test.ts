@@ -15,6 +15,9 @@ import {
   attachmentDerivatives,
   agentChannelEvents,
   agentChannelConnections,
+  appInstallations,
+  appModuleBindings,
+  appVersions,
   moduleInstallations,
   moduleMutationReceipts,
   moduleRecordRelations,
@@ -28,6 +31,48 @@ import {
   taskAttachments,
   tasks,
 } from '../src/schema.ts';
+
+test('App v0 schema keeps active versions and Module ownership tenant-bound', () => {
+  const installation = getTableConfig(appInstallations);
+  const version = getTableConfig(appVersions);
+  const binding = getTableConfig(appModuleBindings);
+  const foreignKeyNames = (config: ReturnType<typeof getTableConfig>) =>
+    config.foreignKeys.map((key) => key.getName());
+
+  assert.ok(installation.uniqueConstraints.some((item) => item.name === 'app_installations_org_id_id_unique'));
+  assert.ok(foreignKeyNames(version).includes('app_versions_org_installation_fk'));
+  assert.deepEqual(
+    foreignKeyNames(binding).filter((name) => name.startsWith('app_module_bindings_')).sort(),
+    [
+      'app_module_bindings_app_installation_fk',
+      'app_module_bindings_app_version_fk',
+      'app_module_bindings_module_installation_fk',
+      'app_module_bindings_module_version_fk',
+    ],
+  );
+  assert.ok(version.indexes.some((item) => item.config.name === 'app_versions_one_active_unique'));
+  assert.ok(binding.indexes.some((item) => item.config.name === 'app_module_bindings_owned_module_unique'));
+});
+
+test('App v0 supported upgrade contains the same tables and constraints as fresh schema', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.16');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  for (const table of ['app_installations', 'app_versions', 'app_module_bindings']) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`, 'i'));
+  }
+  for (const constraint of [
+    'app_installations_active_version_fk',
+    'app_versions_one_active_unique',
+    'app_module_bindings_app_version_fk',
+    'app_module_bindings_module_version_fk',
+  ]) {
+    assert.match(sql, new RegExp(constraint, 'i'));
+  }
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.16-declarative-apps-v0\.sql/);
+});
 
 test('parseUpgradeArgs recognizes status and dry run', () => {
   assert.deepEqual(parseUpgradeArgs(['--status']), { status: true, dryRun: false });

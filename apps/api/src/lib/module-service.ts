@@ -14,6 +14,7 @@ import {
   auditLog,
   agentActions,
   agentEmployees,
+  appModuleBindings,
   moduleInstallations,
   moduleMutationReceipts,
   moduleRecordRelations,
@@ -92,6 +93,17 @@ type SavedViewRow = typeof moduleSavedViews.$inferSelect;
 type InstallationVersionRow = {
   installation: InstallationRow;
   version: VersionRow;
+};
+
+export type ModuleLifecyclePostCommit = {
+  emit: () => void;
+  invalidate: () => Promise<void>;
+};
+
+export type ModuleLifecycleTransactionResult = {
+  row: InstallationVersionRow;
+  manifest: DeftModuleManifestV1;
+  postCommit: ModuleLifecyclePostCommit;
 };
 
 export type ModuleInstallationView = {
@@ -596,7 +608,7 @@ function emitRecordChange(orgId: string, payload: Record<string, unknown>): void
   getIO()?.to(`org-members:${orgId}`).emit('module:record:changed', payload);
 }
 
-async function invalidateModuleCatalogCaches(orgId: string): Promise<void> {
+export async function invalidateModuleCatalogCaches(orgId: string): Promise<void> {
   try {
     const employees = await db
       .select({ id: agentEmployees.id })
@@ -1684,21 +1696,27 @@ export async function getModuleSchema(
   };
 }
 
-export async function installModuleFromManifest(
+/**
+ * Transaction-composable Module install primitive. The caller owns commit and
+ * must run the returned effects only after a successful commit. This is the
+ * boundary used by App activation to avoid nested, independently committed
+ * Module state.
+ */
+export async function installModuleFromManifestWithExecutor(
+  executor: DbExecutor,
   actorValue: ModuleActor,
   manifestValue: unknown,
   options: { source: 'bundled' | 'sideloaded' | 'registry' },
-): Promise<ModuleInstallationView> {
+): Promise<ModuleLifecycleTransactionResult> {
   const actor = validatedActor(actorValue);
   assertLifecycleAccess(actor);
   const manifest = parseDeftModuleManifest(manifestValue);
   const digest = await digestModuleManifest(manifest);
   const identity = actorMetadata(actor);
 
-  const created = await db.transaction(async (tx) => {
-    await assertCurrentModuleManagerWithExecutor(tx, actor);
-    await acquireModuleInstallLocks(tx, actor.org_id, manifest.id, manifest.slug);
-    const [existing] = await tx
+    await assertCurrentModuleManagerWithExecutor(executor, actor);
+    await acquireModuleInstallLocks(executor, actor.org_id, manifest.id, manifest.slug);
+    const [existing] = await executor
       .select({ id: moduleInstallations.id })
       .from(moduleInstallations)
       .where(and(
@@ -1711,7 +1729,7 @@ export async function installModuleFromManifest(
       throw new ModuleError('Module is already installed', 'MODULE_ALREADY_INSTALLED', 409);
     }
 
-    const [installation] = await tx.insert(moduleInstallations).values({
+    const [installation] = await executor.insert(moduleInstallations).values({
       org_id: actor.org_id,
       module_id: manifest.id,
       slug: manifest.slug,
@@ -1728,7 +1746,7 @@ export async function installModuleFromManifest(
     if (!installation) throw new Error('Module installation insert returned no row');
 
     const now = new Date();
-    const [version] = await tx.insert(moduleVersions).values({
+    const [version] = await executor.insert(moduleVersions).values({
       org_id: actor.org_id,
       installation_id: installation.id,
       version: manifest.version,
@@ -1741,7 +1759,7 @@ export async function installModuleFromManifest(
     }).returning();
     if (!version) throw new Error('Module version insert returned no row');
 
-    await insertAudit(tx, actor, {
+    await insertAudit(executor, actor, {
       action: 'module.install',
       entityType: 'module_installation',
       entityId: installation.id,
@@ -1755,19 +1773,52 @@ export async function installModuleFromManifest(
         agent_access: 'none',
       },
     });
-    return { installation, version };
-  });
+    const row = { installation, version };
+    return {
+      row,
+      manifest,
+      postCommit: {
+        emit: () => emitModuleChange(actor.org_id, {
+          change: 'installed',
+          installation_id: installation.id,
+          module_id: installation.module_id,
+          slug: installation.slug,
+          active_version_id: version.id,
+          manifest_digest: version.manifest_digest,
+        }),
+        invalidate: () => invalidateModuleCatalogCaches(actor.org_id),
+      },
+    };
+}
 
-  emitModuleChange(actor.org_id, {
-    change: 'installed',
-    installation_id: created.installation.id,
-    module_id: created.installation.module_id,
-    slug: created.installation.slug,
-    active_version_id: created.version.id,
-    manifest_digest: created.version.manifest_digest,
-  });
-  await invalidateModuleCatalogCaches(actor.org_id);
-  return toInstallationView(created, manifest);
+async function assertModuleLifecycleNotOwnedByApp(
+  executor: DbExecutor,
+  orgId: string,
+  installationId: string,
+): Promise<void> {
+  const [binding] = await executor.select({ id: appModuleBindings.id }).from(appModuleBindings).where(and(
+    eq(appModuleBindings.org_id, orgId),
+    eq(appModuleBindings.module_installation_id, installationId),
+  )).limit(1);
+  if (binding) {
+    throw new ModuleError(
+      'This Module is owned by an App; manage its lifecycle from Settings → Apps',
+      'MODULE_ACCESS_DENIED',
+      403,
+    );
+  }
+}
+
+export async function installModuleFromManifest(
+  actorValue: ModuleActor,
+  manifestValue: unknown,
+  options: { source: 'bundled' | 'sideloaded' | 'registry' },
+): Promise<ModuleInstallationView> {
+  const created = await db.transaction((tx) =>
+    installModuleFromManifestWithExecutor(tx, actorValue, manifestValue, options));
+  created.postCommit.emit();
+  await created.postCommit.invalidate();
+  return toInstallationView(created.row, created.manifest);
 }
 
 export async function installBundledModule(
@@ -1821,6 +1872,7 @@ export async function upgradeModuleInstallationToManifest(
       'read',
       { allowDisabledForAdmin: true, lock: true },
     );
+    await assertModuleLifecycleNotOwnedByApp(tx, actor.org_id, current.installation.id);
     if (
       current.installation.source !== options.source
       || current.installation.module_id !== manifest.id
@@ -2074,6 +2126,7 @@ export async function updateModuleInstallation(
       'read',
       { allowDisabledForAdmin: true, lock: true },
     );
+    await assertModuleLifecycleNotOwnedByApp(tx, actor.org_id, row.installation.id);
     const nextEnabled = changes.enabled ?? row.installation.is_enabled;
     const nextAgentAccess = changes.agent_access ?? row.installation.agent_access;
     const [installation] = await tx

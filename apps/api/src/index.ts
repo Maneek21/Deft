@@ -69,6 +69,9 @@ import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
 import { moduleRoutes } from './routes/modules.js';
+import { appRoutes } from './routes/apps.js';
+import { appDeveloperRoutes } from './routes/app-developer.js';
+import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
 import {
@@ -172,6 +175,10 @@ app.route('/api/ics', icsPublicRoutes);
 app.route('/api/invites', inviteRoutes);
 
 // Protected routes
+if (APP_DEVELOPER_PAIRING_ENABLED) {
+  app.use('/api/app-developer/*', authLimiter);
+  app.route('/api/app-developer', appDeveloperRoutes);
+}
 app.use('/api/*', authMiddleware);
 app.use('/api/*', defaultLimiter);
 app.use('/api/agent/*', agentLimiter);
@@ -232,6 +239,7 @@ app.route('/api/projects', taskTemplateRoutes);
 app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
+if (APPS_ENABLED) app.route('/api/apps', appRoutes);
 
 app.get('/health', (c) => c.json({
   status: 'ok',

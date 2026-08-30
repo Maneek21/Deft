@@ -1,0 +1,25 @@
+{
+  "schema_version": "1",
+  "id": "org.deft.hello-workspace",
+  "slug": "hello-workspace",
+  "version": "1.0.0",
+  "name": "Hello Workspace",
+  "description": "A minimal greeting surface proving the declarative App lifecycle.",
+  "icon": "sparkles",
+  "collections": [
+    {
+      "key": "greetings",
+      "name": "Greetings",
+      "singular_name": "Greeting",
+      "fields": [
+        { "key": "message", "label": "Message", "type": "text", "required": true },
+        { "key": "occasion", "label": "Occasion", "type": "text" }
+      ],
+      "views": [
+        { "key": "all", "name": "All greetings", "type": "table", "fields": ["message", "occasion"] }
+      ],
+      "search": { "title_field": "message", "subtitle_fields": ["occasion"], "fields": ["message", "occasion"] }
+    }
+  ],
+  "navigation": { "default_collection": "greetings", "default_view": "all" }
+}

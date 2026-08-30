@@ -10,6 +10,7 @@ loadRootEnv(import.meta.url);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const drizzleDir = resolve(__dirname, '..', 'drizzle');
+const upgradesDir = resolve(__dirname, '..', 'upgrades');
 const databaseUrl = resolveDatabaseUrl();
 
 const files = [
@@ -38,6 +39,10 @@ async function main() {
       console.log(`[apply-extras] applied ${file}`);
     }
 
+    const appsV0File = '0.3.0-preview.16-declarative-apps-v0.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appsV0File), 'utf8'));
+    console.log(`[apply-extras] applied ${appsV0File}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -62,6 +67,13 @@ async function main() {
       'module_record_relations_target_record_fk',
       'module_saved_views_org_installation_fk',
       'module_saved_views_owner_member_fk',
+      'app_installations_active_version_fk',
+      'app_versions_org_installation_fk',
+      'app_module_bindings_app_installation_fk',
+      'app_module_bindings_app_version_fk',
+      'app_module_bindings_module_installation_fk',
+      'app_module_bindings_module_version_fk',
+      'app_developer_pairings_creator_member_fk',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -85,6 +97,13 @@ async function main() {
       'module_records_create_idempotency_unique',
       'module_record_relations_active_unique',
       'module_saved_views_active_name_unique',
+      'app_installations_org_app_id_unique',
+      'app_installations_org_lineage_unique',
+      'app_versions_one_active_unique',
+      'app_module_bindings_app_module_unique',
+      'app_module_bindings_owned_module_unique',
+      'app_developer_pairings_code_hash_unique',
+      'app_developer_pairings_session_hash_unique',
     ];
     const installedIndexes = await client.query<{ relname: string }>(
       `SELECT relname

@@ -7,12 +7,15 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "pretypecheck": "pnpm --filter @deft/app-kit build",
     "typecheck": "tsc --noEmit",
+    "pretest": "pnpm --filter @deft/app-kit build",
     "test": "tsx src/scripts/run-api-tests.ts",
     "inbox:compact": "tsx src/scripts/compact-inbox-history.ts",
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@deft/app-kit": "workspace:*",
     "@anthropic-ai/sdk": "^0.117.1",
     "@deft/db": "workspace:*",
     "@deft/mcp": "workspace:*",

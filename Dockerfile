@@ -9,6 +9,7 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/web/package.json apps/web/
 COPY apps/api/package.json apps/api/
+COPY packages/app-kit/package.json packages/app-kit/
 COPY packages/db/package.json packages/db/
 COPY packages/shared/package.json packages/shared/
 COPY packages/mcp/package.json packages/mcp/
@@ -28,21 +29,24 @@ ARG NEXT_PUBLIC_APP_URL=__DEFT_APP_URL__
 ARG NEXT_PUBLIC_API_URL=__DEFT_API_URL__
 ARG NEXT_PUBLIC_WS_URL=__DEFT_WS_URL__
 ARG NEXT_PUBLIC_FEATURE_HUDDLES=false
+ARG NEXT_PUBLIC_FEATURE_APPS=false
 ARG DEFT_RELEASE_VERSION=0.3.0-preview.13
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 ENV NEXT_PUBLIC_FEATURE_HUDDLES=$NEXT_PUBLIC_FEATURE_HUDDLES
+ENV NEXT_PUBLIC_FEATURE_APPS=$NEXT_PUBLIC_FEATURE_APPS
 ENV DEFT_RELEASE_VERSION=$DEFT_RELEASE_VERSION
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=deps /app/packages/app-kit/node_modules ./packages/app-kit/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY --from=deps /app/packages/mcp/node_modules ./packages/mcp/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
-RUN pnpm --filter @deft/web build
+RUN pnpm --filter @deft/app-kit build && pnpm --filter @deft/web build
 
 # Stage 3: Production
 FROM node:22-alpine AS runner

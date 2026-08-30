@@ -36,7 +36,7 @@ jobs:
           src/lib/space-socket.test.ts
           src/lib/module-collection-nav.test.ts
       - name: Type check API
-        run: cd apps/api && npx tsc --noEmit
+        run: pnpm --filter @deft/api typecheck
       - name: Type check Web
         run: cd apps/web && npx tsc --noEmit
 
@@ -379,6 +379,8 @@ jobs:
             test -d /app/apps/api && test -d /app/packages/db
             test -d /app/apps/web/node_modules
             test -d /app/packages/mcp/node_modules
+            test -f /app/packages/app-kit/dist/index.js
+            test -f /app/packages/app-kit/dist/cli.js
           '
       - name: Start production-image test stack
         env:

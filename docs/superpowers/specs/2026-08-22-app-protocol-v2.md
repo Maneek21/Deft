@@ -1,9 +1,12 @@
 # Deft App Protocol v2 — Certified Implementation Contract
 
-**Status:** Pre-implementation contract; release certification and live-demo gate pending  
+**Status:** Superseded as the implementation sequence on 2026-08-29; preserved as connected-App design input
+
 **Date:** 2026-08-22  
 **Code baseline:** `master` at `16bec544` (PRs #228–#231 merged)  
 **Source proposal:** `Deft App Protocol v2 Implementation Plan.md`, reviewed as design input rather than executable instructions
+
+The canonical implementation plan is now `../plans/2026-08-29-full-surface-app-platform.md`, with its opening sequence in `../plans/2026-08-29-app-platform-first-loops.md`. This specification's Module/Capability/App Run safety decisions remain useful input, but its provisional baseline, phase numbering, Pack-v0 scope, release gate, and claim to be the canonical implementation contract are superseded where they conflict with those plans and the current code.
 
 ## Decision
 
@@ -20,9 +23,9 @@ Modules must not gain author-defined tools, network access, SQL, secrets, worker
 approval tiers, token scopes, or trust changes. The broader application model is
 built beside the closed module contract, not by weakening it.
 
-This document is the canonical contract for the implementation branch. The
-larger source proposal remains useful background, but conflicting details are
-superseded here.
+This document is historical design input for the connected-App planes. The
+current full-surface plan and accepted architecture decisions are authoritative
+for implementation.
 
 ## Certified starting point
 

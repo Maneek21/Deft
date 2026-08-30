@@ -18,11 +18,13 @@ import {
   Users,
   Workflow,
 } from 'lucide-react';
+import { APPS_ENABLED } from '@/lib/feature-flags';
 
 const overviewCards = [
   { title: 'Profile', body: 'Identity, status, notifications, and security.', href: '/settings/profile', icon: UserRound, admin: false },
   { title: 'People & teams', body: 'Membership, access, ownership, and team context.', href: '/settings/members', icon: Users, admin: true },
   { title: 'Modules', body: 'Install workspace modules and govern their agent access.', href: '/settings/modules', icon: Boxes, admin: true },
+  ...(APPS_ENABLED ? [{ title: 'Apps', body: 'Expand Deft with locally authored declarative Apps.', href: '/settings/apps', icon: Boxes, admin: true }] : []),
   { title: 'Calendar', body: 'Bring external calendar context into Deft or subscribe to Deft events.', href: '/settings/calendar', icon: CalendarDays, admin: false },
   { title: 'AI connections', body: 'Connect Codex, Claude, ChatGPT, and other MCP clients.', href: '/settings/mcp-access', icon: Workflow, admin: false },
   { title: 'Agent employees', body: 'Operate shared agents as accountable members of the workspace.', href: '/settings/agent-employees', icon: Bot, admin: true },
