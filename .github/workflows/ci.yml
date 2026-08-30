@@ -36,7 +36,7 @@ jobs:
           src/lib/space-socket.test.ts
           src/lib/module-collection-nav.test.ts
       - name: Type check API
-        run: cd apps/api && npx tsc --noEmit
+        run: pnpm --filter @deft/api typecheck
       - name: Type check Web
         run: cd apps/web && npx tsc --noEmit
 
