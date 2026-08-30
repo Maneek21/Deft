@@ -155,4 +155,3 @@ DROP TRIGGER IF EXISTS oauth_access_tokens_app_run_authorization_version_trigger
 CREATE TRIGGER oauth_access_tokens_app_run_authorization_version_trigger
   BEFORE UPDATE ON oauth_access_tokens FOR EACH ROW
   EXECUTE FUNCTION bump_oauth_access_token_app_run_authorization_version();
-
