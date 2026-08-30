@@ -43,6 +43,10 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appsV0File), 'utf8'));
     console.log(`[apply-extras] applied ${appsV0File}`);
 
+    const appRunsFoundationFile = '0.3.0-preview.17-governed-app-runs-foundation.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunsFoundationFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunsFoundationFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -74,6 +78,19 @@ async function main() {
       'app_module_bindings_module_installation_fk',
       'app_module_bindings_module_version_fk',
       'app_developer_pairings_creator_member_fk',
+      'capability_provider_snapshots_org_id_id_unique',
+      'app_runs_org_id_id_unique',
+      'app_runs_org_provider_snapshot_fk',
+      'app_runs_org_root_run_fk',
+      'app_runs_org_parent_run_fk',
+      'app_run_attempts_org_run_fk',
+      'app_run_attempts_org_run_id_unique',
+      'app_run_secret_payloads_org_run_fk',
+      'app_run_secret_payloads_org_attempt_fk',
+      'app_run_events_org_run_fk',
+      'app_run_receipts_org_run_fk',
+      'app_run_receipts_org_attempt_fk',
+      'agent_actions_org_app_run_fk',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -104,6 +121,14 @@ async function main() {
       'app_module_bindings_owned_module_unique',
       'app_developer_pairings_code_hash_unique',
       'app_developer_pairings_session_hash_unique',
+      'capability_provider_snapshots_identity_digest_unique',
+      'app_runs_idempotency_unique',
+      'app_run_attempts_number_unique',
+      'app_run_secret_payloads_input_unique',
+      'app_run_secret_payloads_output_unique',
+      'app_run_events_sequence_unique',
+      'app_run_receipts_key_unique',
+      'agent_action_app_run_unique',
     ];
     const installedIndexes = await client.query<{ relname: string }>(
       `SELECT relname
@@ -131,6 +156,30 @@ async function main() {
       throw new Error('module_versions immutability trigger was not installed');
     }
     console.log('[apply-extras] verified module_versions_immutable_fields_trigger');
+
+    const requiredAppRunTriggers = [
+      'capability_provider_snapshots_append_only_trigger',
+      'app_runs_state_identity_trigger',
+      'app_run_attempts_state_identity_trigger',
+      'app_run_secret_payloads_append_only_trigger',
+      'app_run_events_append_only_trigger',
+      'app_run_receipts_append_only_trigger',
+    ];
+    const installedAppRunTriggers = await client.query<{ tgname: string }>(
+      `SELECT tgname
+         FROM pg_trigger
+        WHERE NOT tgisinternal
+          AND tgname = ANY($1::text[])`,
+      [requiredAppRunTriggers],
+    );
+    const installedAppRunTriggerNames = new Set(installedAppRunTriggers.rows.map((row) => row.tgname));
+    const missingAppRunTriggers = requiredAppRunTriggers.filter(
+      (name) => !installedAppRunTriggerNames.has(name),
+    );
+    if (missingAppRunTriggers.length > 0) {
+      throw new Error(`required App Run triggers are missing: ${missingAppRunTriggers.join(', ')}`);
+    }
+    console.log('[apply-extras] verified dormant App Run constraints, indexes, and triggers');
   } finally {
     await client.end();
   }

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Phases 1–2 merged; Phase 3 additive Governed Run plan proposed and rebased onto `9ba7b7c8` |
+| **Status** | Phases 1–2 merged; Phase 3 dormant foundation (Loops 0–2) implemented for review on `9ba7b7c8` |
 | **Date** | 2026-08-29; Phase 2 rebaseline 2026-08-30 |
 | **Baseline inspected** | Phase 2 starts from `origin/master` at `bdb137ee`, the squash merge of Phase 1 PR #269 |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
@@ -770,6 +770,12 @@ known missing local pgvector extension was not retried.
 and the staged secret/rollback decision. Phase 3 is not one big-bang PR; migration
 identifiers must be re-confirmed at the implementation boundary even though the
 planning branch is now rebased onto the Phase 2 merge.
+
+**Foundation status (2026-08-30):** PR A implements the frozen contracts,
+purpose-separated versioned key readers and cryptographic service, and additive
+tenant-bound Run/attempt/secret/event/receipt schema at upgrade slot `.17`.
+The App origin and all production execution consumers remain disabled; existing
+execution and legacy ciphertext writes are unchanged.
 
 - [ ] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
 - [ ] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.

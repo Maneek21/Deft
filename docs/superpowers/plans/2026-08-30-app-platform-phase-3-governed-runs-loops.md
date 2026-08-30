@@ -1,11 +1,11 @@
 # App Platform Phase 3: Governed App Runs and Secret Service loops
 
-**Status:** proposed and architecture-reviewed; plan-only branch rebased onto
-Phase 2 squash merge `9ba7b7c8`
+**Status:** accepted and in progress; PR A implements the dormant Loops 0–2
+foundation on Phase 2 squash merge `9ba7b7c8`
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
 the current upgrade manifest ends at `0.3.0-preview.16`, making `.17` the
-candidate first Phase 3 schema slot. Re-confirm immediately before Loop 2.
+candidate first Phase 3 schema slot. Loop 2 re-confirmed and selected `.17`.
 
 **Outcome:** Deft has an opt-in, actor-neutral, durable execution envelope with
 encrypted retained inputs, governed approvals, explicit attempts and unknown

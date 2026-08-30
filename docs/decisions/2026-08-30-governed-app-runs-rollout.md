@@ -1,6 +1,6 @@
 # ADR: Additive Governed App Runs and staged secret rollout
 
-- Status: Proposed; architecture-reviewed and rebased after Phase 2 merge
+- Status: Accepted; dormant foundation implementation begun after Phase 2 merge
 - Date: 2026-08-30
 - Depends on: Capability Service squash merge `9ba7b7c8` from PR #270
 - Supersedes: the big-bang sequencing implied by the earlier App Protocol v2
