@@ -18,6 +18,14 @@ import {
 import { AppRunError } from './app-run-errors.js';
 import type { AppRunProviderExecutor, AppRunProviderExecutionResult } from './app-run-provider-executor.js';
 import { PostgresAppRunRepository, type AppRunSafeView, type AppRunTransaction } from './app-run-repository.js';
+import {
+  noOpAppRunReceiptWriter,
+  type AppRunReceiptWriter,
+} from './app-run-receipts.js';
+import {
+  noOpAppRunAttentionProjector,
+  type AppRunAttentionProjector,
+} from './app-run-attention.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import type { AppRunSecretService } from './app-run-secrets.js';
 
@@ -47,6 +55,8 @@ export class AppRunAttemptRunner {
     private readonly now: () => Date = () => new Date(),
     private readonly leaseMs = 60_000,
     private readonly heartbeatIntervalMs = Math.max(250, Math.floor(boundedLeaseMs(leaseMs) / 3)),
+    private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
+    private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
   ) {}
 
   async run(
@@ -66,7 +76,9 @@ export class AppRunAttemptRunner {
     const input = await this.secretRepository.readInput(orgId, runId);
     if (input === null) {
       await this.#settleBeforeCallFailure(claimed, 'APP_RUN_EXPIRED');
-      return this.repository.inspect(orgId, runId).then((run) => run!);
+      const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
+      await this.#projectState(settled);
+      return settled;
     }
     const boundaryCommitted = await this.#markProviderCallStarted(claimed);
     if (!boundaryCommitted) return this.repository.inspect(orgId, runId).then((run) => run!);
@@ -99,7 +111,9 @@ export class AppRunAttemptRunner {
         claimed.attempt.id,
         claimed.attempt.claim_token!,
       );
-      return this.repository.inspect(orgId, runId).then((run) => run!);
+      const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
+      await this.#projectState(settled);
+      return settled;
     }
 
     const known = await this.#knownOutcome(claimed.run, result);
@@ -112,7 +126,9 @@ export class AppRunAttemptRunner {
       known,
     );
     await this.#finalizeKnownResult(orgId, runId, claimed.attempt.id, claimed.attempt.claim_token!);
-    return this.repository.inspect(orgId, runId).then((run) => run!);
+    const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
+    await this.#projectState(settled);
+    return settled;
   }
 
   async prepareAttempt(orgId: string, runId: string): Promise<string | null> {
@@ -218,7 +234,7 @@ export class AppRunAttemptRunner {
 
   async recoverRun(orgId: string, runId: string, attemptId?: string): Promise<number> {
     const now = this.now();
-    return this.repository.transaction(async (tx) => {
+    const recovered = await this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
       if (!run) return 0;
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
@@ -237,6 +253,11 @@ export class AppRunAttemptRunner {
       await this.#recoverUnknownInTransaction(tx, run, attempt, now);
       return 1;
     });
+    if (recovered > 0) {
+      const run = await this.repository.inspect(orgId, runId);
+      if (run) await this.#projectState(run);
+    }
+    return recovered;
   }
 
   async #claim(
@@ -494,10 +515,11 @@ export class AppRunAttemptRunner {
       id: crypto.randomUUID(), org_id: run.org_id, run_id: run.id,
       event_type: 'attempt_terminal', payload: { attempt_id: attempt.id, state: attemptState }, now,
     });
-    await this.repository.transition(tx, {
+    const terminalRun = await this.repository.transition(tx, {
       run, state: outcome.success ? 'succeeded' : 'failed', safe_outcome: outcome,
       error_code: outcome.error_code, now,
     });
+    await this.#writeAttemptReceipt(tx, terminalRun, attempt.id, attemptState, now, outcome.error_code);
   }
 
   async #settleBeforeCallFailure(claimed: ClaimedAttempt, code: 'APP_RUN_EXPIRED'): Promise<void> {
@@ -511,13 +533,29 @@ export class AppRunAttemptRunner {
           eq(appRunAttempts.id, claimed.attempt.id),
           eq(appRunAttempts.claim_token, claimed.attempt.claim_token!),
         ));
-      await this.repository.transition(tx, {
+      await this.repository.appendEvent(tx, {
+        id: crypto.randomUUID(),
+        org_id: run.org_id,
+        run_id: run.id,
+        event_type: 'attempt_terminal',
+        payload: { attempt_id: claimed.attempt.id, state: 'failed' },
+        now,
+      });
+      const terminalRun = await this.repository.transition(tx, {
         run, state: 'expired', now, error_code: code,
         safe_outcome: AppRunSafeOutcomeSchema.parse({
           success: false, provider_call_attempted: false,
           result_status: 'unavailable', error_code: code,
         }),
       });
+      await this.#writeAttemptReceipt(
+        tx,
+        terminalRun,
+        claimed.attempt.id,
+        'failed',
+        now,
+        code,
+      );
     });
   }
 
@@ -570,19 +608,38 @@ export class AppRunAttemptRunner {
     });
     if (decision === 'create_retry_attempt' && attempt.attempt_number < run.attempt_limit && run.input_expires_at > now) {
       await this.#createAttempt(tx, run, now);
+      await this.#writeAttemptReceipt(
+        tx,
+        run,
+        attempt.id,
+        terminalAttemptState,
+        now,
+        terminalAttemptState === 'unknown_outcome'
+          ? 'APP_RUN_UNKNOWN_OUTCOME'
+          : 'APP_RUN_PROVIDER_UNAVAILABLE',
+        true,
+      );
       return;
     }
     if (attempt.state === 'claimed') {
-      await this.repository.transition(tx, {
+      const terminalRun = await this.repository.transition(tx, {
         run, state: 'failed', now, error_code: 'APP_RUN_PROVIDER_UNAVAILABLE',
         safe_outcome: AppRunSafeOutcomeSchema.parse({
           success: false, provider_call_attempted: false,
           result_status: 'unavailable', error_code: 'APP_RUN_PROVIDER_UNAVAILABLE',
         }),
       });
+      await this.#writeAttemptReceipt(
+        tx,
+        terminalRun,
+        attempt.id,
+        terminalAttemptState,
+        now,
+        'APP_RUN_PROVIDER_UNAVAILABLE',
+      );
       return;
     }
-    await this.repository.transition(tx, {
+    const terminalRun = await this.repository.transition(tx, {
       run, state: 'unknown_outcome', now, error_code: 'APP_RUN_UNKNOWN_OUTCOME',
       safe_outcome: AppRunSafeOutcomeSchema.parse({
         success: false,
@@ -591,5 +648,51 @@ export class AppRunAttemptRunner {
         error_code: 'APP_RUN_UNKNOWN_OUTCOME',
       }),
     });
+    await this.#writeAttemptReceipt(
+      tx,
+      terminalRun,
+      attempt.id,
+      terminalAttemptState,
+      now,
+      'APP_RUN_UNKNOWN_OUTCOME',
+    );
+  }
+
+  async #writeAttemptReceipt(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    attemptId: string,
+    attemptState: 'succeeded' | 'failed' | 'cancelled' | 'unknown_outcome',
+    occurredAt: Date,
+    errorCode?: string,
+    retryScheduled = false,
+  ): Promise<void> {
+    await this.receiptWriter.write(tx, {
+      receipt_key: `attempt-terminal:${attemptId}`,
+      receipt_kind: 'attempt_terminal',
+      run,
+      attempt_id: attemptId,
+      facts: {
+        attempt_state: attemptState,
+        retry_scheduled: retryScheduled,
+        ...(errorCode ? { error_code: errorCode } : {}),
+      },
+      occurred_at: occurredAt,
+    });
+  }
+
+  async #projectState(run: AppRunSafeView): Promise<void> {
+    const kind = run.state === 'unknown_outcome'
+      ? 'unknown_outcome' as const
+      : run.state === 'failed'
+        ? 'failure' as const
+        : null;
+    if (!kind) return;
+    try {
+      await this.attention.projectRunState(run, kind);
+    } catch (error) {
+      console.warn('[app-runs] terminal Attention projection failed:',
+        error instanceof Error ? error.message : 'unknown error');
+    }
   }
 }

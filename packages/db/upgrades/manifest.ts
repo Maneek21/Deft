@@ -122,6 +122,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.20-app-run-live-authority-versions.sql',
       description: 'Add monotonic live authority versions for governed App Run authorization rechecks',
     },
+    {
+      version: '0.3.0-preview.21',
+      file: '0.3.0-preview.21-app-run-ancestry-guard.sql',
+      description: 'Guard child App Run lineage, authorization ceilings, and root budget continuity',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

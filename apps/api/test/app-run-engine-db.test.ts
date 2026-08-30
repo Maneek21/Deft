@@ -17,9 +17,20 @@ import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js'
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
+import {
+  PostgresAppRunApprovalResolver,
+  postgresAppRunApprovalAdapter,
+} from '../src/lib/app-run-approval-adapter.js';
+import { PostgresAppRunAttentionProjector } from '../src/lib/app-run-attention.js';
+import { AppRunOperationsService } from '../src/lib/app-run-operations.js';
+import { PostgresAppRunReceiptWriter } from '../src/lib/app-run-receipts.js';
 import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
 import { createAppRunAttemptJobHandler } from '../src/lib/app-run-worker-handler.js';
-import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from '../src/lib/app-run-keyrings.js';
+import {
+  assertAppRunReferencedKeysAvailable,
+  parseEnvironmentAppRunKeyrings,
+  type EnvironmentAppRunKeyProvider,
+} from '../src/lib/app-run-keyrings.js';
 import { closeDb } from '../src/lib/db.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
@@ -238,6 +249,25 @@ class CountingExecutor implements AppRunProviderExecutor {
       status: 'returned', provider_succeeded: true, output: { message_id: 'message-1' },
     };
   }
+}
+
+function receiptRotationKeyProvider(
+  current: 'sig-v1' | 'sig-v2',
+  includeV1 = true,
+): EnvironmentAppRunKeyProvider {
+  const provider = parseEnvironmentAppRunKeyrings(JSON.stringify({
+    schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
+    run_encryption: { current: 'enc-v1', keys: { 'enc-v1': key(1) } },
+    receipt_signing: {
+      current,
+      keys: includeV1
+        ? { 'sig-v1': key(2), 'sig-v2': key(5) }
+        : { 'sig-v2': key(5) },
+    },
+    fingerprint: { current: 'fp-v1', keys: { 'fp-v1': key(3), 'fp-old': key(4) } },
+  }));
+  providers.push(provider);
+  return provider;
 }
 
 test('live authority revocation is sticky and the execution budget is reserved exactly once', async () => {
@@ -1022,6 +1052,387 @@ test('database fencing rejects a second active attempt and mutable ownership', a
       [randomUUID(), ORG_ID, created.id, attemptId],
     ),
     /app_run_attempts_one_active_unique/,
+  );
+});
+
+test('child Runs enforce cycle, depth, authority, policy, and root-budget ceilings', async () => {
+  const setup = service();
+  const root = await setup.service.submit(trusted, submission({
+    idempotency_key: `lineage-root-${suffix}`,
+  }));
+  await client.query(
+    `UPDATE app_runs SET state = 'running', started_at = now(), updated_at = now()
+     WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, root.id],
+  );
+
+  await assert.rejects(
+    setup.service.submitChild(trusted, root.id, submission({
+      idempotency_key: `lineage-cycle-${suffix}`,
+    })),
+    (error: any) => error?.code === 'APP_RUN_CAPABILITY_CYCLE',
+  );
+  await assert.rejects(
+    setup.service.submitChild(trusted, root.id, submission({
+      idempotency_key: `lineage-policy-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: 'privileged_child',
+      },
+      policy: {
+        risk_class: 'privileged',
+        review_requirement: 'policy',
+        review_scope: 'per_invocation',
+        retry_class: 'unsafe_or_unknown',
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
+  );
+  await assert.rejects(
+    setup.service.submitChild(trusted, root.id, submission({
+      idempotency_key: `lineage-authority-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: 'authority_child',
+      },
+      authorization_snapshot: {
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        authenticated_subject: trusted.initiating_actor,
+        authority_refs: [
+          { authority_kind: 'membership', authority_id: USER_ID, version: '1' },
+          { authority_kind: 'token_scope', authority_id: 'new-token', version: '1' },
+          { authority_kind: 'connector', authority_id: PROVIDER_ID, version: '1' },
+        ],
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
+  );
+
+  let parent = root;
+  for (let depth = 1; depth <= 8; depth += 1) {
+    const child = await setup.service.submitChild(trusted, parent.id, submission({
+      idempotency_key: `lineage-depth-${depth}-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: `child_operation_${depth}`,
+      },
+    }));
+    assert.equal(child.root_run_id, root.id);
+    assert.equal(child.parent_run_id, parent.id);
+    assert.equal(child.depth, depth);
+    assert.ok(child.input_expires_at <= parent.input_expires_at);
+    if (depth < 8) {
+      await client.query(
+        `UPDATE app_runs SET state = 'running', started_at = now(), updated_at = now()
+         WHERE org_id = $1 AND id = $2`,
+        [ORG_ID, child.id],
+      );
+    }
+    parent = child;
+  }
+  await assert.rejects(
+    setup.service.submitChild(trusted, parent.id, submission({
+      idempotency_key: `lineage-too-deep-${suffix}`,
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+        operation_name: 'too_deep',
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ANCESTRY_LIMIT',
+  );
+
+  const employeeId = `lineage-agent-${suffix}`;
+  const agentTrusted = {
+    org_id: ORG_ID,
+    initiating_actor: { actor_type: 'agent_employee' as const, agent_employee_id: employeeId },
+    execution_actor: { actor_type: 'agent_employee' as const, agent_employee_id: employeeId },
+  };
+  const agentSubmission = (operationName: string, idempotencyKey: string) => submission({
+    initiating_actor: agentTrusted.initiating_actor,
+    execution_actor: agentTrusted.execution_actor,
+    idempotency_key: idempotencyKey,
+    operation: {
+      provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: PROVIDER_ID },
+      operation_name: operationName,
+    },
+    authorization_snapshot: {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      authenticated_subject: agentTrusted.initiating_actor,
+      authority_refs: [
+        { authority_kind: 'membership', authority_id: USER_ID, version: '1' },
+        { authority_kind: 'employee_health', authority_id: employeeId, version: '1' },
+        { authority_kind: 'employee_budget', authority_id: employeeId, version: '1' },
+        { authority_kind: 'connector', authority_id: PROVIDER_ID, version: '1' },
+      ],
+    },
+  });
+  const agentRoot = await setup.service.submit(
+    agentTrusted,
+    agentSubmission('agent_root', `lineage-agent-root-${suffix}`),
+  );
+  await client.query(
+    `UPDATE app_runs SET state = 'running', started_at = now(),
+       budget_reserved_at = now(), budget_reserved_count = 1,
+       budget_limit_at_reservation = 25, updated_at = now()
+     WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, agentRoot.id],
+  );
+  const agentChild = await setup.service.submitChild(
+    agentTrusted,
+    agentRoot.id,
+    agentSubmission('agent_child', `lineage-agent-child-${suffix}`),
+  );
+  const inheritedBudget = await client.query<{
+    budget_reserved_count: number | null;
+    budget_limit_at_reservation: number | null;
+  }>(
+    `SELECT budget_reserved_count, budget_limit_at_reservation
+       FROM app_runs WHERE org_id = $1 AND id = $2`,
+    [ORG_ID, agentChild.id],
+  );
+  assert.deepEqual(inheritedBudget.rows[0], {
+    budget_reserved_count: 1,
+    budget_limit_at_reservation: 25,
+  });
+});
+
+test('native receipts, Attention, operator reconciliation, and repair stay safe and idempotent', async () => {
+  await client.query(
+    `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+     VALUES ($1, $2, $3, 'owner', true)
+     ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'owner', is_active = true`,
+    [`ops-member-${suffix}`, ORG_ID, USER_ID],
+  );
+  const keys = receiptRotationKeyProvider('sig-v1');
+  const secrets = new AppRunSecretService(keys);
+  const repository = new PostgresAppRunRepository();
+  const secretRepository = new AppRunSecretRepository(secrets);
+  const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
+  const attention = new PostgresAppRunAttentionProjector(false);
+  const runs = new AppRunService(
+    repository,
+    secretRepository,
+    secrets,
+    keys,
+    allowAll,
+    () => new Date(),
+    postgresAppRunApprovalAdapter,
+    receipts,
+    attention,
+  );
+
+  const approvalRun = await runs.submit(trusted, submission({
+    idempotency_key: `native-approval-${suffix}`,
+    policy: {
+      risk_class: 'external_write',
+      review_requirement: 'always',
+      review_scope: 'per_invocation',
+      retry_class: 'unsafe_or_unknown',
+    },
+  }));
+  const action = await client.query<{ id: string }>(
+    `SELECT id FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, approvalRun.id],
+  );
+  assert.equal(action.rowCount, 1);
+  const approvalAttention = await client.query<{ state: string }>(
+    `SELECT state FROM attention_items
+      WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`,
+    [ORG_ID, action.rows[0]!.id],
+  );
+  assert.equal(approvalAttention.rows[0]?.state, 'open_unseen');
+
+  const resolver = new PostgresAppRunApprovalResolver(
+    repository,
+    { async authorizeApprovalInTransaction() { return true; } },
+    () => new Date(),
+    receipts,
+    attention,
+  );
+  assert.equal((await resolver.approve(action.rows[0]!.id, USER_ID)).status, 'approved');
+  assert.equal(await receipts.verifyStored(
+    ORG_ID,
+    approvalRun.id,
+    `approval:${action.rows[0]!.id}`,
+  ), true);
+  const resolvedAttention = await client.query<{ state: string }>(
+    `SELECT state FROM attention_items
+      WHERE org_id = $1 AND source_type = 'agent_action' AND source_id = $2`,
+    [ORG_ID, action.rows[0]!.id],
+  );
+  assert.equal(resolvedAttention.rows[0]?.state, 'resolved');
+
+  const executor = new CountingExecutor();
+  const runner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    executor,
+    allowExecution,
+    () => new Date(),
+    60_000,
+    20_000,
+    receipts,
+    attention,
+  );
+  const approvalAttempt = await prepareAttempt(runner, approvalRun.id);
+  assert.equal((await runner.run(
+    ORG_ID,
+    approvalRun.id,
+    approvalAttempt,
+    'native-receipt-worker',
+  )).state, 'succeeded');
+  assert.equal(await receipts.verifyStored(
+    ORG_ID,
+    approvalRun.id,
+    `attempt-terminal:${approvalAttempt}`,
+  ), true);
+  const storedReceipt = await client.query<{
+    envelope: Record<string, unknown>;
+    signing_key_version: string;
+    signature_hmac: string;
+  }>(
+    `SELECT envelope, signing_key_version, signature_hmac FROM app_run_receipts
+      WHERE org_id = $1 AND run_id = $2 AND receipt_key = $3`,
+    [ORG_ID, approvalRun.id, `attempt-terminal:${approvalAttempt}`],
+  );
+  assert.equal(secrets.verifyReceipt(
+    { ...storedReceipt.rows[0]!.envelope, run_state: 'failed' },
+    storedReceipt.rows[0]!.signing_key_version,
+    storedReceipt.rows[0]!.signature_hmac,
+  ), false);
+  const rotatedKeys = receiptRotationKeyProvider('sig-v2');
+  const rotatedSecrets = new AppRunSecretService(rotatedKeys);
+  const rotatedWriter = new PostgresAppRunReceiptWriter(
+    rotatedSecrets,
+    new AppRunSecretRepository(rotatedSecrets),
+  );
+  assert.equal(await rotatedWriter.verifyStored(
+    ORG_ID,
+    approvalRun.id,
+    `attempt-terminal:${approvalAttempt}`,
+  ), true);
+  const retiredKeys = receiptRotationKeyProvider('sig-v2', false);
+  await assert.rejects(
+    async () => assertAppRunReferencedKeysAvailable(
+      retiredKeys,
+      await secretRepository.receiptSigningKeyReferences(),
+    ),
+    (error: any) => error?.code === 'APP_RUN_KEY_VERSION_UNAVAILABLE',
+  );
+
+  const unknownExecutor = new CountingExecutor();
+  unknownExecutor.results.push({ status: 'indeterminate' });
+  const unknownRun = await runs.submit(trusted, submission({
+    idempotency_key: `native-unknown-${suffix}`,
+  }));
+  const unknownRunner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    unknownExecutor,
+    allowExecution,
+    () => new Date(),
+    60_000,
+    20_000,
+    receipts,
+    attention,
+  );
+  const unknownAttempt = await prepareAttempt(unknownRunner, unknownRun.id);
+  assert.equal((await unknownRunner.run(
+    ORG_ID,
+    unknownRun.id,
+    unknownAttempt,
+    'unknown-worker',
+  )).state, 'unknown_outcome');
+  assert.equal(unknownExecutor.calls.length, 1);
+  assert.equal((await runs.reconcileUnknown(
+    ORG_ID,
+    unknownRun.id,
+    trusted.initiating_actor,
+    'succeeded',
+  )).state, 'succeeded');
+  assert.equal(unknownExecutor.calls.length, 1);
+  const reconciliationReceipts = await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_run_receipts
+      WHERE org_id = $1 AND run_id = $2 AND receipt_kind = 'reconciliation'`,
+    [ORG_ID, unknownRun.id],
+  );
+  assert.equal(reconciliationReceipts.rows[0]!.count, '1');
+
+  const missingProjectionRun = await runs.submit(trusted, submission({
+    idempotency_key: `native-repair-${suffix}`,
+  }));
+  const failedExecutor = new CountingExecutor();
+  failedExecutor.results.push({
+    status: 'returned',
+    provider_succeeded: false,
+    output: { provider_error: 'safe-code' },
+  });
+  const unprojectedRunner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    failedExecutor,
+    allowExecution,
+  );
+  const missingAttempt = await prepareAttempt(unprojectedRunner, missingProjectionRun.id);
+  assert.equal((await unprojectedRunner.run(
+    ORG_ID,
+    missingProjectionRun.id,
+    missingAttempt,
+    'unprojected-worker',
+  )).state, 'failed');
+
+  const allowOperations = { async authorize() { return true; } };
+  const operations = new AppRunOperationsService(
+    repository,
+    allowOperations,
+    receipts,
+    attention,
+  );
+  const beforeRepair = await operations.auditGaps({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+    run_id: missingProjectionRun.id,
+  });
+  assert.ok(beforeRepair.some((gap) => gap.gap === 'missing_receipt'));
+  assert.ok(beforeRepair.some((gap) => gap.gap === 'missing_attention'));
+  await operations.repair({
+    org_id: ORG_ID,
+    run_id: missingProjectionRun.id,
+    actor: trusted.initiating_actor,
+  });
+  assert.deepEqual(await operations.auditGaps({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+    run_id: missingProjectionRun.id,
+  }), []);
+  const safeList = await operations.list({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+    states: ['failed'],
+    limit: 10,
+  });
+  assert.ok(safeList.some((run) => run.id === missingProjectionRun.id));
+  assert.doesNotMatch(
+    JSON.stringify(safeList),
+    /raw-marker|idempotency_key|ciphertext|nonce_b64|auth_tag_b64|claim_token/i,
+  );
+  const metrics = await operations.metrics({
+    org_id: ORG_ID,
+    actor: trusted.initiating_actor,
+  });
+  assert.ok(metrics.every((metric) =>
+    Object.keys(metric).every((key) => ['state', 'risk_class', 'provider_kind', 'count'].includes(key))));
+  assert.deepEqual(await operations.list({
+    org_id: `other-${suffix}`,
+    actor: trusted.initiating_actor,
+  }), []);
+  const denied = new AppRunOperationsService();
+  await assert.rejects(
+    denied.list({ org_id: ORG_ID, actor: trusted.initiating_actor }),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
   );
 });
 

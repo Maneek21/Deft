@@ -252,6 +252,23 @@ Rejection commits the compatibility decision plus Run cancellation together.
 Concurrent or replayed resolutions converge on the Run and never create an
 attempt or provider call in the approval transaction.
 
+### Child lineage and operational projections
+
+Child Runs are host-created only. The service rejects repeated capability
+identity, depth beyond eight, actor/origin changes, ambient-authority expansion,
+or a weaker policy ceiling before insert. Upgrade `.21` independently verifies
+the parent/root chain and copies the root budget evidence, so orchestration can
+neither reset an agent quota nor manufacture a broader child through direct
+database writes.
+
+Receipts and Attention are projections over the Run ledger, not alternate
+execution authorities. Native receipts contain only validated safe facts and a
+digest of any encrypted result envelope; signing-key references are inventoried
+inside the secret boundary. Operator list/metrics/audit surfaces select an
+explicit safe field set, are tenant-scoped and bounded, and have no provider
+executor dependency. Repair may append missing events, receipts, and Attention,
+but never invokes or retries an external effect.
+
 ## Consequences
 
 - Phase 3 is larger than a local refactor and may span more than one release.

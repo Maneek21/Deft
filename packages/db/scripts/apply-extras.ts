@@ -59,6 +59,10 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appRunLiveAuthorityFile), 'utf8'));
     console.log(`[apply-extras] applied ${appRunLiveAuthorityFile}`);
 
+    const appRunAncestryGuardFile = '0.3.0-preview.21-app-run-ancestry-guard.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunAncestryGuardFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunAncestryGuardFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -194,6 +198,7 @@ async function main() {
       'app_run_receipts_append_only_trigger',
       'app_runs_cutover_gate_trigger',
       'app_run_attempts_execution_release_trigger',
+      'app_runs_ancestry_insert_trigger',
       'org_members_app_run_authorization_version_trigger',
       'agent_employees_app_run_authorization_version_trigger',
       'mcp_connections_app_run_authorization_version_trigger',

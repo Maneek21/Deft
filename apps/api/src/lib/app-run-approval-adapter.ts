@@ -12,6 +12,14 @@ import {
   type AppRunSafeView,
   type AppRunTransaction,
 } from './app-run-repository.js';
+import {
+  noOpAppRunReceiptWriter,
+  type AppRunReceiptWriter,
+} from './app-run-receipts.js';
+import {
+  noOpAppRunAttentionProjector,
+  type AppRunAttentionProjector,
+} from './app-run-attention.js';
 
 export const APP_RUN_APPROVAL_ACTION = 'app_run_invoke';
 
@@ -28,6 +36,11 @@ export interface AppRunApprovalAdapter {
     now: Date;
   }>): Promise<string>;
 }
+
+type AppRunApprovalLiveAuthorization = Pick<
+  PostgresAppRunLiveAuthorization,
+  'authorizeApprovalInTransaction'
+>;
 
 async function approvalOwnerUserId(
   tx: AppRunTransaction,
@@ -82,15 +95,17 @@ export const postgresAppRunApprovalAdapter = Object.freeze<AppRunApprovalAdapter
 export class PostgresAppRunApprovalResolver {
   constructor(
     private readonly repository = new PostgresAppRunRepository(),
-    private readonly liveAuthorization = new PostgresAppRunLiveAuthorization(),
+    private readonly liveAuthorization: AppRunApprovalLiveAuthorization = new PostgresAppRunLiveAuthorization(),
     private readonly now: () => Date = () => new Date(),
+    private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
+    private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
   ) {}
 
   async approve(
     actionId: string,
     approverUserId: string,
   ): Promise<AppRunApprovalResolution> {
-    return db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx): Promise<AppRunApprovalResolution> => {
       const action = await this.#lockAction(tx, actionId);
       if (!action?.app_run_id || action.action !== APP_RUN_APPROVAL_ACTION) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
@@ -100,6 +115,14 @@ export class PostgresAppRunApprovalResolver {
 
       if (run.execution_release_kind === 'approved') {
         await this.#markApproved(tx, action.id, approverUserId, run);
+        await this.#writeApprovalReceipt(
+          tx,
+          action.id,
+          run,
+          { actor_type: 'human', user_id: action.approved_by_user_id ?? approverUserId },
+          'approved',
+          run.execution_released_at ?? this.now(),
+        );
         return { status: 'approved', message: 'already approved', result: this.#safeResult(run, true) };
       }
       if (run.state === 'cancelled') {
@@ -137,6 +160,14 @@ export class PostgresAppRunApprovalResolver {
               error_code: 'APP_RUN_AUTHORIZATION_STALE',
             }),
           });
+          await this.#writeApprovalReceipt(
+            tx,
+            action.id,
+            run,
+            { actor_type: 'human', user_id: approverUserId },
+            'expired',
+            run.terminal_at ?? now,
+          );
         }
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run authorization changed before approval' };
       }
@@ -148,15 +179,25 @@ export class PostgresAppRunApprovalResolver {
         this.now(),
       );
       await this.#markApproved(tx, action.id, approverUserId, run);
+      await this.#writeApprovalReceipt(
+        tx,
+        action.id,
+        run,
+        { actor_type: 'human', user_id: approverUserId },
+        'approved',
+        run.execution_released_at ?? this.now(),
+      );
       return { status: 'approved', result: this.#safeResult(run, true) };
     });
+    await this.#resolveApprovalAttention(actionId, approverUserId);
+    return result;
   }
 
   async reject(
     actionId: string,
     rejecterUserId: string,
   ): Promise<AppRunApprovalResolution> {
-    return db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx): Promise<AppRunApprovalResolution> => {
       const action = await this.#lockAction(tx, actionId);
       if (!action?.app_run_id || action.action !== APP_RUN_APPROVAL_ACTION) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
@@ -193,8 +234,18 @@ export class PostgresAppRunApprovalResolver {
           error_code: 'APP_RUN_APPROVAL_REJECTED',
         }),
       });
+      await this.#writeApprovalReceipt(
+        tx,
+        action.id,
+        run,
+        { actor_type: 'human', user_id: rejecterUserId },
+        'rejected',
+        run.terminal_at ?? now,
+      );
       return { status: 'rejected' };
     });
+    await this.#resolveApprovalAttention(actionId, rejecterUserId);
+    return result;
   }
 
   async #lockAction(tx: AppRunTransaction, actionId: string) {
@@ -245,6 +296,43 @@ export class PostgresAppRunApprovalResolver {
       run_state: run.state,
       execution_released: released,
     };
+  }
+
+  async #writeApprovalReceipt(
+    tx: AppRunTransaction,
+    actionId: string,
+    run: AppRunSafeView,
+    actor: Readonly<{ actor_type: 'human'; user_id: string }>,
+    decision: 'approved' | 'rejected' | 'expired',
+    occurredAt: Date,
+  ): Promise<void> {
+    await this.receiptWriter.write(tx, {
+      receipt_key: `approval:${actionId}`,
+      receipt_kind: 'approval',
+      run,
+      actor,
+      facts: { decision, action_id: actionId },
+      occurred_at: occurredAt,
+    });
+  }
+
+  async #resolveApprovalAttention(actionId: string, actorUserId: string): Promise<void> {
+    try {
+      const [action] = await db.select({
+        org_id: agentActions.org_id,
+        approval_status: agentActions.approval_status,
+      }).from(agentActions).where(eq(agentActions.id, actionId)).limit(1);
+      if (!action || action.approval_status === 'pending') return;
+      await this.attention.resolveApproval(
+        action.org_id,
+        actionId,
+        actorUserId,
+        action.approval_status,
+      );
+    } catch (error) {
+      console.warn('[app-runs] approval Attention resolution failed:',
+        error instanceof Error ? error.message : 'unknown error');
+    }
   }
 }
 

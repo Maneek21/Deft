@@ -87,3 +87,20 @@ test('the App Run approval bridge has one safe compatibility writer and no execu
   assert.match(service, /approvalAdapter\.create/);
   assert.match(resolver, /row\.action === APP_RUN_APPROVAL_ACTION/);
 });
+
+test('Run operations can repair projections but cannot call a provider', async () => {
+  const operations = await readFile(join(sourceRoot, 'lib/app-run-operations.ts'), 'utf8');
+  const receipts = await readFile(join(sourceRoot, 'lib/app-run-receipts.ts'), 'utf8');
+  const attention = await readFile(join(sourceRoot, 'lib/app-run-attention.ts'), 'utf8');
+
+  for (const source of [operations, receipts, attention]) {
+    assert.doesNotMatch(source, /\b(?:executeTool|AppRunProviderExecutor|provider_idempotency_key|claim_token)\b/);
+  }
+  assert.match(operations, /safeRunSelection/);
+  assert.match(operations, /Math\.max\(1, Math\.min\(limit \?\? 50, 100\)\)/);
+  assert.match(operations, /receipt_kind:\s*'repair'/);
+  assert.match(operations, /event_type:\s*'repair_gap'/);
+  assert.doesNotMatch(operations, /\b(?:authorization_snapshot|idempotency_fingerprint|input_fingerprint)\b/);
+  assert.match(receipts, /parseAppRunReceiptEnvelope/);
+  assert.match(attention, /sourceType:\s*'app_run'/);
+});

@@ -727,6 +727,16 @@ export const appRuns = pgTable('app_runs', {
     foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.id],
     name: 'app_runs_org_provider_snapshot_fk',
   }).onDelete('no action'),
+  foreignKey({
+    columns: [t.org_id, t.root_run_id],
+    foreignColumns: [t.org_id, t.id],
+    name: 'app_runs_org_root_run_fk',
+  }).onDelete('no action'),
+  foreignKey({
+    columns: [t.org_id, t.parent_run_id],
+    foreignColumns: [t.org_id, t.id],
+    name: 'app_runs_org_parent_run_fk',
+  }).onDelete('no action'),
   index('app_runs_idempotency_lookup_idx').on(
     t.org_id,
     t.initiating_actor_type,

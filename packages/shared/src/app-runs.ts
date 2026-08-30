@@ -400,6 +400,7 @@ export const AppRunReceiptKindSchema = z.enum([
   'reconciliation',
   'repair',
 ]);
+export type AppRunReceiptKind = z.infer<typeof AppRunReceiptKindSchema>;
 
 export const AppRunReceiptEnvelopeSchema = z.object({
   schema_version: z.literal(APP_RUN_CONTRACT_VERSIONS.receipt),

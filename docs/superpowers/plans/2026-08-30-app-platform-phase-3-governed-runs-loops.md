@@ -2,8 +2,8 @@
 
 **Status:** accepted and in progress; PR A (#271) and PR B (#272) merged the
 dormant Loops 0–4 foundation and fake-provider engine. C0 is complete at local
-checkpoint `4c4f48c1`; C1 live authorization/budget and C2 approval
-compatibility are stacked on it pending review and publication.
+checkpoint `4c4f48c1`; C1 live authorization/budget, C2 approval compatibility,
+and C3 operational safety are stacked on it pending review and publication.
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
 the foundation selected `.17`, PR B selected `.18`, and the post-engine audit
@@ -97,6 +97,38 @@ event, and user-supplied rejection prose is not copied into the safe ledger.
 
 C2 still does not enqueue an attempt or call a provider. C4 owns worker
 scheduling after the remaining receipt and runtime boundaries exist.
+
+### C3 lineage and operational safety
+
+C3 adds additive upgrade `.21`, which validates every child Run insert against
+its tenant-bound parent and root. A child must be created while its parent is
+running, remain within depth eight, preserve initiating/execution actors and
+origin, stay below the parent's risk/review/retry/retention ceilings, reuse only
+ambient membership/token/employee authorities already present above it, and
+inherit the root agent-budget reservation without incrementing it. Synchronous
+service checks reject capability cycles before insert; the database independently
+guards lineage, policy, and budget continuity.
+
+App-native approval, attempt-terminal, reconciliation, and repair receipts now
+use deterministic identities and validated safe envelopes. Each envelope signs
+immutable operation/policy/input-fingerprint facts plus an optional digest of
+the encrypted result envelope; it never stores the result or ciphertext.
+Verification survives signing-key rotation, detects envelope tampering, and the
+key inventory refuses retirement while any retained receipt still references a
+version.
+
+The existing Attention service receives idempotent approval, failure,
+`unknown_outcome`, reconciliation, and repair-gap projections. A bounded,
+tenant-scoped operations service lists safe Run views, emits only fixed-cardinality
+state/risk/provider-kind metrics, reports missing terminal events, receipts,
+approval rows, or Attention, and repairs projections without a provider port.
+Operator resolution of an unknown outcome appends its event and signed receipt
+in one transaction; Attention remains a post-commit projection and is itself
+repairable.
+
+C3 remains production-unwired. C4 owns the single runtime composition that
+injects these receipt and Attention implementations into the resolver, runner,
+worker, and Capability Service entrance.
 
 ### Milestone C: compatibility integration
 

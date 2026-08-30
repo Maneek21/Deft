@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   appRunAttempts,
   appRunEvents,
@@ -16,7 +16,7 @@ import { db } from './db.js';
 
 export type AppRunTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-const safeRunSelection = {
+export const safeRunSelection = {
   id: appRuns.id,
   org_id: appRuns.org_id,
   contract_version: appRuns.contract_version,
@@ -74,6 +74,24 @@ function actorColumns(actor: AppRunActor) {
 
 export type FingerprintCandidate = Readonly<{ key_version: string; fingerprint: string }>;
 
+export type AppRunChildLineage = Readonly<{
+  parent: AppRunSafeView;
+  ancestors: readonly AppRunSafeView[];
+  parent_authorization_snapshot: Record<string, unknown>;
+  root_budget_reserved_at: Date | null;
+  root_budget_reserved_count: number | null;
+  root_budget_limit_at_reservation: number | null;
+}>;
+
+export type AppRunLineageInsert = Readonly<{
+  root_run_id: string;
+  parent_run_id: string;
+  depth: number;
+  budget_reserved_at: Date | null;
+  budget_reserved_count: number | null;
+  budget_limit_at_reservation: number | null;
+}>;
+
 export class PostgresAppRunRepository {
   async transaction<T>(work: (tx: AppRunTransaction) => Promise<T>): Promise<T> {
     return db.transaction(work);
@@ -98,6 +116,7 @@ export class PostgresAppRunRepository {
     submission: AppRunSubmission,
     candidates: readonly FingerprintCandidate[],
     now: Date,
+    parentRunId: string | null = null,
   ): Promise<(AppRunSafeView & {
     input_fingerprint_key_version: string;
     input_fingerprint: string;
@@ -119,9 +138,60 @@ export class PostgresAppRunRepository {
       eq(appRuns.provider_instance_id, submission.operation.provider.provider_instance_id),
       eq(appRuns.operation_name, submission.operation.operation_name),
       gt(appRuns.idempotency_expires_at, now),
+      parentRunId === null
+        ? isNull(appRuns.parent_run_id)
+        : eq(appRuns.parent_run_id, parentRunId),
       or(...candidateFilters),
     )).limit(1);
     return row ?? null;
+  }
+
+  async loadChildLineage(
+    tx: AppRunTransaction,
+    orgId: string,
+    parentRunId: string,
+  ): Promise<AppRunChildLineage | null> {
+    const ancestors: AppRunSafeView[] = [];
+    let cursor: string | null = parentRunId;
+    while (cursor !== null && ancestors.length <= 8) {
+      const run = await this.lockRun(tx, orgId, cursor);
+      if (!run) return null;
+      ancestors.push(run);
+      cursor = run.parent_run_id;
+    }
+    if (cursor !== null || ancestors.length === 0) return null;
+
+    const parent = ancestors[0]!;
+    const root = ancestors.at(-1)!;
+    if (
+      root.id !== parent.root_run_id
+      || root.id !== root.root_run_id
+      || root.depth !== 0
+    ) return null;
+
+    const [internal] = await tx.select({
+      authorization_snapshot: appRuns.authorization_snapshot,
+    }).from(appRuns).where(and(
+      eq(appRuns.org_id, orgId),
+      eq(appRuns.id, parent.id),
+    )).limit(1);
+    const [rootBudget] = await tx.select({
+      budget_reserved_at: appRuns.budget_reserved_at,
+      budget_reserved_count: appRuns.budget_reserved_count,
+      budget_limit_at_reservation: appRuns.budget_limit_at_reservation,
+    }).from(appRuns).where(and(
+      eq(appRuns.org_id, orgId),
+      eq(appRuns.id, root.id),
+    )).limit(1);
+    if (!internal || !rootBudget) return null;
+    return Object.freeze({
+      parent,
+      ancestors: Object.freeze(ancestors),
+      parent_authorization_snapshot: internal.authorization_snapshot,
+      root_budget_reserved_at: rootBudget.budget_reserved_at,
+      root_budget_reserved_count: rootBudget.budget_reserved_count,
+      root_budget_limit_at_reservation: rootBudget.budget_limit_at_reservation,
+    });
   }
 
   async insertRun(
@@ -136,6 +206,7 @@ export class PostgresAppRunRepository {
       result_expires_at: Date;
       idempotency_expires_at: Date;
       attempt_limit: number;
+      lineage?: AppRunLineageInsert;
       now: Date;
     }>,
   ): Promise<AppRunSafeView> {
@@ -166,12 +237,16 @@ export class PostgresAppRunRepository {
       input_fingerprint: input.input_fingerprint.fingerprint,
       authorization_snapshot: input.submission.authorization_snapshot,
       safe_preview: input.submission.safe_preview,
-      root_run_id: input.id,
-      depth: 0,
+      root_run_id: input.lineage?.root_run_id ?? input.id,
+      parent_run_id: input.lineage?.parent_run_id ?? null,
+      depth: input.lineage?.depth ?? 0,
       input_expires_at: input.input_expires_at,
       result_expires_at: input.result_expires_at,
       idempotency_expires_at: input.idempotency_expires_at,
       attempt_limit: input.attempt_limit,
+      budget_reserved_at: input.lineage?.budget_reserved_at ?? null,
+      budget_reserved_count: input.lineage?.budget_reserved_count ?? null,
+      budget_limit_at_reservation: input.lineage?.budget_limit_at_reservation ?? null,
       execution_release_kind: input.submission.policy.review_requirement === 'policy'
         ? 'policy_satisfied'
         : null,

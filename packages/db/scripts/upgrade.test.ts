@@ -102,6 +102,8 @@ test('governed App Run fresh schema is tenant-bound and keeps ciphertext separat
   ));
   assert.ok(run.uniqueConstraints.some((item) => item.name === 'app_runs_org_id_id_unique'));
   assert.ok(foreignKeyNames(run).includes('app_runs_org_provider_snapshot_fk'));
+  assert.ok(foreignKeyNames(run).includes('app_runs_org_root_run_fk'));
+  assert.ok(foreignKeyNames(run).includes('app_runs_org_parent_run_fk'));
   assert.ok(foreignKeyNames(attempt).includes('app_run_attempts_org_run_fk'));
   assert.ok(attempt.indexes.some((item) => item.config.name === 'app_run_attempts_one_active_unique'));
   assert.deepEqual(
@@ -277,6 +279,27 @@ test('App Run live authority versions are additive, monotonic, and ignore ordina
     const config = getTableConfig(table);
     assert.ok(config.columns.some((column) => column.name === 'app_run_authorization_version'));
   }
+});
+
+test('App Run ancestry upgrade guards lineage, ceilings, and root budget continuity', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.21');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+
+  for (const invariant of [
+    'app_runs_ancestry_insert_trigger',
+    'APP_RUN_ANCESTRY_INVALID',
+    'APP_RUN_AUTHORIZATION_CEILING',
+    'APP_RUN_POLICY_CEILING',
+    'APP_RUN_BUDGET_CONTINUITY',
+  ]) assert.match(sql, new RegExp(invariant, 'i'));
+  assert.match(sql, /parent_row\.state NOT IN \('running', 'waiting_external'\)/i);
+  assert.match(sql, /jsonb_array_elements\(NEW\.authorization_snapshot->'authority_refs'\)/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+app_runs/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.21-app-run-ancestry-guard\.sql/);
+  assert.match(applyExtrasSource, /'app_runs_ancestry_insert_trigger'/);
 });
 
 test('parseUpgradeArgs recognizes status and dry run', () => {
