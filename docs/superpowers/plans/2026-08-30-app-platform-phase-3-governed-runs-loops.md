@@ -1,9 +1,10 @@
 # App Platform Phase 3: Governed App Runs and Secret Service loops
 
-**Status:** accepted and in progress; PR A (#271) and PR B (#272) merged the
-dormant Loops 0–4 foundation and fake-provider engine. C0 is complete at local
-checkpoint `4c4f48c1`; C1 live authorization/budget, C2 approval compatibility,
-and C3 operational safety are stacked on it pending review and publication.
+**Status:** local implementation and certification complete through D2; PR A
+(#271) and PR B (#272) merged the dormant foundation and fake-provider engine.
+C0–C5 are preserved as local review checkpoints through governed-cutover commit
+`944b265f`. External released-image, current-schema pgvector, browser, and
+self-host drills remain publication gates recorded in the certification audit.
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
 the foundation selected `.17`, PR B selected `.18`, and the post-engine audit
@@ -135,11 +136,26 @@ worker, and Capability Service entrance.
 Loops 5–7 integrate approvals, Capability Service, existing actors, receipts,
 Attention, ancestry, and operator inspection behind a fail-closed flag.
 
+**Implemented rebaseline:** C1–C3 delivered Loop 5 and Loop 7 boundaries before
+C4 composed the production runtime. C5 then selected the Run-backed path in
+Capability Service. Existing legacy approval policy remains the compatibility
+gate, so an approved legacy occurrence supplies host evidence and stable replay
+identity rather than creating a duplicate App Run approval. Auto-safe reads use
+the same Run engine without an employee action debit. App-origin calls remain
+denied.
+
 ### Milestone D: release certification
 
 Loops 8–9 prove key rotation, supported upgrades, rollback, self-host operation,
 parity, and leakage safety. Widening the flag remains a separate explicit
 decision.
+
+**Final Phase 3 decision:** remain disabled by default and self-host opt-in. The
+source-level rollback floor is C5 commit `944b265f`; downgrading below it is
+allowed only after governed work is quiescent. Full operations are documented
+in `docs/app-run-operations.md`; verified evidence and release-only omissions
+are recorded in
+`docs/superpowers/audits/2026-08-30-app-platform-phase-3-certification.md`.
 
 ## Invariants
 

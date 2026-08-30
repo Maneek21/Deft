@@ -1,6 +1,7 @@
 # ADR: Additive Governed App Runs and staged secret rollout
 
-- Status: Accepted; dormant foundation implementation begun after Phase 2 merge
+- Status: Accepted; governed legacy-connector cutover implemented behind an
+  exact disabled-by-default opt-in, pending release artifact certification
 - Date: 2026-08-30
 - Depends on: Capability Service squash merge `9ba7b7c8` from PR #270
 - Supersedes: the big-bang sequencing implied by the earlier App Protocol v2
@@ -269,6 +270,62 @@ explicit safe field set, are tenant-scoped and bounded, and have no provider
 executor dependency. Repair may append missing events, receipts, and Attention,
 but never invokes or retries an external effect.
 
+### Production runtime and compatibility cutover
+
+The production composition root owns one key provider, secret repository,
+tenant-safe Run repository, live authorizer, access authorizer, approval
+resolver, receipt writer, Attention projector, pinned MCP executor, attempt
+runner, and operations service. The existing PostgreSQL queue carries only
+tenant, Run, and exact attempt identity. No job contains decrypted input or a
+provider callback.
+
+Capability Service selects exactly one entrance from the exact process-start
+flag: legacy while disabled, governed while enabled. There is no shadow call and
+no fallback after selecting the governed path. Existing MCP approval policy
+remains the compatibility gate. Auto-safe reads may enter directly; every write
+or stricter operation must present the exact approved `agent_actions` occurrence
+as host-owned evidence. That action identity also supplies the stable replay
+identity, so concurrent approval or action retries converge on one Run, attempt,
+provider call, budget reservation, native receipt, and legacy receipt.
+
+The compatibility Run records `review_requirement: policy` because the existing
+action lifecycle has already satisfied the current host policy before the Run
+is created. The Run-native `always` adapter remains the direct App Run contract
+for future bound callers; Phase 3 does not manufacture a second approval for an
+already reviewed legacy occurrence. Provider metadata cannot declare a write
+safe, and `origin = app` remains rejected.
+
+Employee budgets move at the durable first-attempt boundary. A governed denial
+that occurs before any attempt is authorized does not consume a slot; a selected
+external effect reserves exactly one slot even under concurrency. Safe reads do
+not debit the action counter. Flag-off behavior and its historical ordering are
+unchanged.
+
+The authorized caller can receive the exact provider response transiently and,
+when representable and retained, replay it through the access-controlled result
+method. Generic Runs, jobs, events, receipts, Attention, metrics, and logs never
+contain it. Live membership is checked again before delivery; revocation after
+the provider effect withholds the response without changing a known terminal
+outcome into a retry.
+
+### Operational disable and rollback floor
+
+Exact flag-off stops new governed entrances. An already-durable attempt job is
+returned to pending under its existing lease fence without spending queue retry
+allowance or calling the provider. Re-enabling the same keyring resumes it.
+Pending governed approvals also cannot fall through to legacy execution.
+
+The source-level execution rollback floor is `944b265f`. A released image that
+contains that commit may safely run with the entrance disabled and preserved
+pending jobs. An image below that floor may treat an App Run job as unknown or
+exhaust it, so downgrade below the floor requires quiescing new calls and proving
+there are no nonterminal Runs, pending `app_run_invoke` approvals, or active
+`app-run-attempt` jobs. Additive Run tables and the matching keyring backup are
+preserved across rollback; they are never down-migrated as part of the gate.
+
+Detailed generation, rotation, retirement, backup/restore, disaster recovery,
+and rollback steps live in `docs/app-run-operations.md`.
+
 ## Consequences
 
 - Phase 3 is larger than a local refactor and may span more than one release.
@@ -281,7 +338,8 @@ but never invokes or retries an external effect.
   separate rollback-floor gate.
 - Self-hosts gain explicit key configuration only when enabling App Runs;
   existing deployments continue to boot with the legacy contract while the
-  feature is off.
+  feature is off. This remains self-host opt-in and disabled by default; a
+  hosted KMS is a future provider, not a Phase 3 dependency.
 
 ## Acceptance evidence
 

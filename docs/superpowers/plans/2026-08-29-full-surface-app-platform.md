@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Canonical capability map and threat model; Phases 0–2 merged and Phase 3 closeout pending |
+| **Status** | Canonical capability map and threat model; Phase 3 PR C merged and guarded PR D closeout in progress; release gate pending |
 | **Date** | 2026-08-29; execution rebaseline 2026-08-30 |
-| **Baseline inspected** | `origin/master` at `399cd030`; local Phase 3 closeout baseline `5050b0f1` is unreleased |
+| **Baseline inspected** | `origin/master` at PR C merge `9c8e9ac9`; PR D is replayed from that exact merge and remains unreleased |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
 | **First delivery principle** | Build one safe participation protocol in stages; do not turn `deft.module.json` into an arbitrary plugin runtime. |
 | **Relationship to earlier work** | Supersedes the provisional App Protocol v2 implementation sequence while retaining its certified Module, Capability, App Run, and approval-boundary decisions as design input. Absorbs the useful resource-graph and solution-composition ideas from the modular work-management proposal. |
@@ -778,25 +778,27 @@ and the staged secret/rollback decision. Phase 3 is not one big-bang PR; migrati
 identifiers must be re-confirmed at the implementation boundary even though the
 planning branch is now rebased onto the Phase 2 merge.
 
-**Foundation status (2026-08-30):** PR A implements the frozen contracts,
-purpose-separated versioned key readers and cryptographic service, and additive
-tenant-bound Run/attempt/secret/event/receipt schema at upgrade slot `.17`.
-The App origin and all production execution consumers remain disabled; existing
-execution and legacy ciphertext writes are unchanged.
+**Implementation status (2026-08-30):** PRs A and B merged the frozen contracts,
+purpose-separated key service, additive schema, lifecycle, and fake-provider
+engine. Local C0–C5 checkpoints add release/budget evidence, live authority,
+approval compatibility, ancestry, receipts, Attention, operations, the pinned
+worker runtime, and an exact guarded Capability Service cutover. App origin
+remains disabled; existing connector ciphertext and legacy receipt writers are
+unchanged.
 
-- [ ] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
-- [ ] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.
+- [x] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
+- [x] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.
 - [ ] Stage encryption compatibility across releases: add legacy+v2 dual-read while retaining legacy writes, require the rollback-floor image to read v2 before enabling v2 writes, avoid in-place connector re-encryption during that window, then retire legacy only after tested backup/restore.
-- [ ] Add separate versioned receipt-signing and input/idempotency-fingerprint keyrings; never reuse encryption, signing, and fingerprint keys across purposes.
-- [ ] Add App Run, attempt, append-only event, App-native receipt, and attention schemas/tables/state machines.
-- [ ] Add idempotency replay/conflict, locks, timeouts, cancellation, retry classification, and `unknown_outcome` semantics.
-- [ ] Add bounded child-Run ancestry with inherited budgets/authorization and synchronous capability-cycle rejection.
-- [ ] Integrate the existing approval inbox through one linked `app_run_invoke` action while making the App Run the execution source of truth.
-- [ ] Add the closed `app | core | legacy_connector` execution-origin union; legacy origins persist `grant_source: legacy_connection_policy` and cannot appear in the App catalog.
-- [ ] Enforce the actor/App-grant intersection for App origins and the exact current legacy policy for compatibility origins before approval and again immediately before execution.
-- [ ] Recheck membership, employee health/budget, token scope, connector, schema digest, provider, assignment, grants/policy source, and bound authorization versions at execution.
-- [ ] Add sanitized receipts, metrics, operator inspection, and migration adapters for existing action receipts.
-- [ ] Wrap App Run invocation behind a disabled-by-default flag, certify it, and retain a bounded rollback path until parity is proven.
+- [x] Add separate versioned receipt-signing and input/idempotency-fingerprint keyrings; never reuse encryption, signing, and fingerprint keys across purposes.
+- [x] Add App Run, attempt, append-only event, App-native receipt, and attention schemas/tables/state machines.
+- [x] Add idempotency replay/conflict, locks, timeouts, cancellation, retry classification, and `unknown_outcome` semantics.
+- [x] Add bounded child-Run ancestry with inherited budgets/authorization and synchronous capability-cycle rejection.
+- [x] Integrate the existing approval inbox through one linked `app_run_invoke` action while making the App Run the execution source of truth.
+- [x] Add the closed `app | core | legacy_connector` execution-origin union; legacy origins persist `grant_source: legacy_connection_policy` and cannot appear in the App catalog.
+- [x] Enforce the actor/App-grant intersection for App origins and the exact current legacy policy for compatibility origins before approval and again immediately before execution.
+- [x] Recheck membership, employee health/budget, token scope, connector, schema digest, provider, assignment, grants/policy source, and bound authorization versions at execution.
+- [x] Add sanitized receipts, metrics, operator inspection, and compatibility adapters without rewriting existing action receipts.
+- [x] Wrap App Run invocation behind a disabled-by-default flag and retain a bounded rollback path; immutable release certification remains the D2 gate.
 
 **Acceptance evidence:** auto and reviewed calls create one Run and at most one provider call; capability cycles stop before a second call and child Runs cannot reset budgets; no pseudo-App grant exists; legacy Runs are not App-discoverable; `always` review cannot be bypassed by an Autonomous employee; payload limits and terminal purge preserve only the declared sanitized residue; restart/replay, encryption/signer/fingerprint rotation, supported-image rollback, low-entropy guessing resistance, unknown-outcome, and ciphertext-leakage tests pass.
 

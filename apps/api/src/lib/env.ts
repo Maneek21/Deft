@@ -114,7 +114,7 @@ export const APPS_ENABLED = process.env.DEFT_APPS_ENABLED === 'true';
 export const APP_DEVELOPER_PAIRING_ENABLED =
   APPS_ENABLED && process.env.DEFT_APP_DEVELOPER_PAIRING_ENABLED === 'true';
 
-// Governed App Runs remain a dormant, independent opt-in during Phase 3.
+// Governed App Runs remain a disabled-by-default, independent opt-in.
 // Exact "true" plus valid purpose-separated keyrings is required. A normal
 // legacy self-host boot never needs or parses the new secret document.
 export const APP_RUNS_ENABLED = process.env.DEFT_APP_RUNS_ENABLED === 'true';
