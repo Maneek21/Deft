@@ -139,7 +139,7 @@ export class AppRunService {
       await this.repository.appendEvent(tx, {
         id: crypto.randomUUID(), org_id: submission.org_id, run_id: runId,
         event_type: 'run_created', actor: submission.initiating_actor,
-        payload: { state: 'pending' }, now,
+        payload: { state: run.state }, now,
       });
       return run;
     });
@@ -226,7 +226,7 @@ export class AppRunService {
     if (run.result_purged_at || run.result_expires_at <= this.now()) {
       throw new AppRunError('APP_RUN_RESULT_EXPIRED');
     }
-    const attemptId = await this.repository.latestSuccessfulAttemptId(orgId, runId);
+    const attemptId = await this.repository.latestRetainedAttemptId(orgId, runId);
     if (!attemptId) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
     const value = await this.secretRepository.readOutput(orgId, runId, attemptId);
     if (value === null) throw new AppRunError('APP_RUN_RESULT_EXPIRED');

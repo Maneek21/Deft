@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   CapabilityJsonObjectSchema,
+  CapabilityJsonValueSchema,
   CapabilityProviderOperationIdentitySchema,
   assertCapabilityJsonWithinBudget,
   type CapabilityJsonValue,
@@ -14,6 +15,7 @@ export const APP_RUN_CONTRACT_VERSIONS = {
   secret_envelope: 'deft.secret.v1',
   secret_aad: 'deft.app_run_aad.v1',
   keyring: 'deft.app_run_keyring.v1',
+  provider_result: 'deft.app_run_provider_result.v1',
 } as const;
 
 export const APP_RUN_LIMITS = {
@@ -243,6 +245,7 @@ export const AppRunErrorCodeSchema = z.enum([
   'APP_RUN_OUTPUT_TOO_LARGE',
   'APP_RUN_IDEMPOTENCY_CONFLICT',
   'APP_RUN_ILLEGAL_TRANSITION',
+  'APP_RUN_EXECUTION_NOT_RELEASED',
   'APP_RUN_ACCESS_DENIED',
   'APP_RUN_AUTHORIZATION_STALE',
   'APP_RUN_PROVIDER_UNAVAILABLE',
@@ -355,6 +358,13 @@ export const AppRunSafeOutcomeSchema = z.object({
   }
 });
 export type AppRunSafeOutcome = z.infer<typeof AppRunSafeOutcomeSchema>;
+
+export const AppRunRetainedProviderResultSchema = z.object({
+  schema_version: z.literal(APP_RUN_CONTRACT_VERSIONS.provider_result),
+  provider_succeeded: z.boolean(),
+  output: CapabilityJsonValueSchema,
+}).strict();
+export type AppRunRetainedProviderResult = z.infer<typeof AppRunRetainedProviderResultSchema>;
 
 export const AppRunEventTypeSchema = z.enum([
   'run_created',

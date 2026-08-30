@@ -193,6 +193,35 @@ planning branch is now rebased onto the exact squash merge. The upgrade manifest
 ends at `0.3.0-preview.16` on that baseline, so `.17` is the current candidate;
 Loop 0 must re-confirm it immediately before the first schema implementation.
 
+### Post-engine cutover gate
+
+PR B remained dormant, but its pre-integration audit found that release,
+dispatch, and replay needed stronger enforceable identities. Before any live
+Capability Service path is selected, additive upgrade `0.3.0-preview.19` adds
+write-once execution-release and budget-reservation evidence. The database
+rejects attempts and a `running` transition without execution release, while
+the runner independently retains a default-deny live execution authorizer.
+`review_requirement: always` starts unreleased in `pending_approval`; policy
+submissions record `policy_satisfied` atomically but still cannot execute until
+the live authorizer allows them.
+
+Queue work identifies `(org_id, run_id, attempt_id)`. A stale job can inspect or
+repair only that attempt and cannot claim a later retry. Claimed provider calls
+heartbeat their lease and every post-call write is fenced by the immutable
+claim token.
+
+Provider execution distinguishes a call that was not attempted, a determinate
+provider response (success or error), and an indeterminate dispatch. Every
+bounded JSON determinate response is stored only as a versioned encrypted
+provider-result envelope; generic Run projections retain only the safe outcome.
+Oversized or non-JSON determinate responses remain known but unavailable and
+never cause a second provider call.
+
+The fixed idempotency horizon is enforced by lookup plus the App Run service's
+transaction-scoped advisory lock, not an unbounded unique index. The unique
+index is therefore replaced by a non-unique lookup index, and architecture
+tests keep Run insertion behind that single service/repository writer.
+
 ## Consequences
 
 - Phase 3 is larger than a local refactor and may span more than one release.

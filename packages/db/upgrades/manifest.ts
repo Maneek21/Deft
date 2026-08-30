@@ -112,6 +112,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.18-governed-app-run-engine-hardening.sql',
       description: 'Harden dormant App Run replay, cancellation, retry ancestry, and attempt fencing',
     },
+    {
+      version: '0.3.0-preview.19',
+      file: '0.3.0-preview.19-governed-app-run-cutover-gate.sql',
+      description: 'Fail closed on App Run release, budget, approval-link, replay-horizon, and attempt dispatch boundaries',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

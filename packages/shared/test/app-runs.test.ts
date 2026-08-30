@@ -7,6 +7,7 @@ import {
   APP_RUN_SECRET_RETENTION_MS,
   APP_RUN_IDEMPOTENCY_RETENTION_MS,
   AppRunSafeOutcomeSchema,
+  AppRunRetainedProviderResultSchema,
   AppRunAttemptStateSchema,
   AppRunStateSchema,
   isAppRunAttemptStateTransitionAllowed,
@@ -183,6 +184,29 @@ describe('App Run contract', () => {
       provider_call_attempted: false,
       result_status: 'unavailable',
     }), /require an error code/);
+  });
+
+  test('keeps determinate provider responses in a strict retained envelope', () => {
+    assert.deepEqual(AppRunRetainedProviderResultSchema.parse({
+      schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+      provider_succeeded: false,
+      output: { code: 'recipient_rejected', private_detail: 'retained ciphertext only' },
+    }), {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+      provider_succeeded: false,
+      output: { code: 'recipient_rejected', private_detail: 'retained ciphertext only' },
+    });
+    assert.throws(() => AppRunRetainedProviderResultSchema.parse({
+      schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+      provider_succeeded: true,
+      output: undefined,
+    }));
+    assert.throws(() => AppRunRetainedProviderResultSchema.parse({
+      schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+      provider_succeeded: true,
+      output: { ok: true },
+      raw_input: { secret: true },
+    }));
   });
 
   test('freezes safe event and receipt envelopes without secret-bearing metadata', () => {

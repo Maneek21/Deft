@@ -189,6 +189,54 @@ test('governed App Run engine hardening is additive and fences replay and attemp
   assert.match(applyExtrasSource, /0\.3\.0-preview\.18-governed-app-run-engine-hardening\.sql/);
 });
 
+test('governed App Run cutover gate is additive and fails closed before integration', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.19');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  const run = getTableConfig(appRuns);
+  const action = getTableConfig(agentActions);
+
+  for (const boundary of [
+    'execution_release_kind',
+    'execution_released_at',
+    'budget_reserved_at',
+    'budget_reserved_count',
+    'budget_limit_at_reservation',
+    'app_runs_execution_release_shape_check',
+    'app_runs_budget_reservation_shape_check',
+    'app_run_attempts_execution_release_trigger',
+    'APP_RUN_EXECUTION_NOT_RELEASED',
+    'agent_actions_app_run_shape_check',
+    'app_runs_idempotency_lookup_idx',
+  ]) {
+    assert.match(sql, new RegExp(boundary, 'i'));
+  }
+  assert.match(sql, /DROP INDEX IF EXISTS app_runs_idempotency_unique/i);
+  assert.doesNotMatch(sql, /CREATE UNIQUE INDEX[^;]+app_runs_idempotency_lookup_idx/is);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+app_runs/im);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+agent_actions/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.19-governed-app-run-cutover-gate\.sql/);
+  assert.match(applyExtrasSource, /'app_runs_idempotency_lookup_idx'/);
+  assert.match(applyExtrasSource, /'app_run_attempts_execution_release_trigger'/);
+  assert.doesNotMatch(applyExtrasSource, /'app_runs_idempotency_unique'/);
+  for (const column of [
+    'execution_release_kind',
+    'execution_released_at',
+    'budget_reserved_at',
+    'budget_reserved_count',
+    'budget_limit_at_reservation',
+  ]) {
+    assert.ok(run.columns.some((item) => item.name === column));
+  }
+  assert.ok(run.indexes.some((item) => item.config.name === 'app_runs_idempotency_lookup_idx'));
+  assert.equal(run.indexes.some((item) => item.config.name === 'app_runs_idempotency_unique'), false);
+  assert.ok(run.checks.some((item) => item.name === 'app_runs_execution_release_shape_check'));
+  assert.ok(run.checks.some((item) => item.name === 'app_runs_budget_reservation_shape_check'));
+  assert.ok(action.checks.some((item) => item.name === 'agent_actions_app_run_shape_check'));
+});
+
 test('parseUpgradeArgs recognizes status and dry run', () => {
   assert.deepEqual(parseUpgradeArgs(['--status']), { status: true, dryRun: false });
   assert.deepEqual(parseUpgradeArgs(['--dry-run']), { status: false, dryRun: true });

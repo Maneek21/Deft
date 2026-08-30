@@ -17,3 +17,16 @@ export const denyAllAppRunAuthorizer: AppRunAuthorizer = Object.freeze({
     return false;
   },
 });
+
+export interface AppRunExecutionAuthorizer {
+  authorizeExecution(input: Readonly<{
+    org_id: string;
+    run: AppRunSafeView;
+  }>): Promise<boolean>;
+}
+
+export const denyAllAppRunExecutionAuthorizer: AppRunExecutionAuthorizer = Object.freeze({
+  async authorizeExecution() {
+    return false;
+  },
+});

@@ -705,6 +705,11 @@ export const appRuns = pgTable('app_runs', {
   result_expires_at: timestamp('result_expires_at').notNull(),
   idempotency_expires_at: timestamp('idempotency_expires_at').notNull(),
   attempt_limit: integer('attempt_limit').notNull(),
+  execution_release_kind: text('execution_release_kind').$type<'policy_satisfied' | 'approved'>(),
+  execution_released_at: timestamp('execution_released_at'),
+  budget_reserved_at: timestamp('budget_reserved_at'),
+  budget_reserved_count: integer('budget_reserved_count'),
+  budget_limit_at_reservation: integer('budget_limit_at_reservation'),
   input_purged_at: timestamp('input_purged_at'),
   result_purged_at: timestamp('result_purged_at'),
   started_at: timestamp('started_at'),
@@ -721,7 +726,7 @@ export const appRuns = pgTable('app_runs', {
     foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.id],
     name: 'app_runs_org_provider_snapshot_fk',
   }).onDelete('no action'),
-  uniqueIndex('app_runs_idempotency_unique').on(
+  index('app_runs_idempotency_lookup_idx').on(
     t.org_id,
     t.initiating_actor_type,
     t.initiating_actor_id,
@@ -730,6 +735,7 @@ export const appRuns = pgTable('app_runs', {
     t.operation_name,
     t.idempotency_key_version,
     t.idempotency_fingerprint,
+    t.idempotency_expires_at,
   ),
   index('app_runs_org_state_idx').on(t.org_id, t.state, t.created_at),
   index('app_runs_root_idx').on(t.org_id, t.root_run_id, t.created_at),
@@ -782,6 +788,25 @@ export const appRuns = pgTable('app_runs', {
   check('app_runs_expiry_check', sql`${t.result_expires_at} >= ${t.input_expires_at}`),
   check('app_runs_idempotency_expiry_check', sql`${t.idempotency_expires_at} >= ${t.result_expires_at}`),
   check('app_runs_attempt_limit_check', sql`${t.attempt_limit} BETWEEN 1 AND 10`),
+  check('app_runs_execution_release_shape_check', sql`
+    (${t.execution_release_kind} IS NULL AND ${t.execution_released_at} IS NULL)
+    OR (
+      ${t.execution_release_kind} IS NOT NULL
+      AND ${t.execution_released_at} IS NOT NULL
+      AND (
+        (${t.review_requirement} = 'always' AND ${t.execution_release_kind} = 'approved')
+        OR (${t.review_requirement} = 'policy' AND ${t.execution_release_kind} IN ('policy_satisfied', 'approved'))
+      )
+    )
+  `),
+  check('app_runs_budget_reservation_shape_check', sql`
+    (${t.budget_reserved_at} IS NULL AND ${t.budget_reserved_count} IS NULL AND ${t.budget_limit_at_reservation} IS NULL)
+    OR (
+      ${t.budget_reserved_at} IS NOT NULL
+      AND ${t.budget_reserved_count} BETWEEN 1 AND 1000000
+      AND ${t.budget_limit_at_reservation} >= ${t.budget_reserved_count}
+    )
+  `),
   check('app_runs_cancel_request_check', sql`${t.cancel_requested_at} IS NULL OR ${t.started_at} IS NOT NULL`),
 ]);
 
@@ -1010,6 +1035,19 @@ export const agentActions = pgTable('agent_actions', {
   uniqueIndex('agent_action_app_run_unique')
     .on(t.org_id, t.app_run_id)
     .where(sql`${t.app_run_id} IS NOT NULL`),
+  check('agent_actions_app_run_shape_check', sql`
+    (${t.app_run_id} IS NULL AND ${t.action} <> 'app_run_invoke')
+    OR (
+      ${t.app_run_id} IS NOT NULL
+      AND ${t.action} = 'app_run_invoke'
+      AND jsonb_typeof(${t.params}) = 'object'
+      AND ${t.params} ? 'run_id'
+      AND jsonb_typeof(${t.params}->'run_id') = 'string'
+      AND ${t.params}->>'run_id' = ${t.app_run_id}
+      AND (${t.params} - ARRAY['run_id', 'capability_label', 'provider_label', 'resource_ids', 'safe_preview']::text[]) = '{}'::jsonb
+      AND octet_length(${t.params}::text) <= 32768
+    )
+  `),
 ]);
 
 // ═══ ATTENTION + DELIVERY ═══

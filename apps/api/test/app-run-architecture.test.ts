@@ -61,3 +61,14 @@ test('the governed engine stays unwired from production entrances', async () => 
     assert.doesNotMatch(source, /\b(?:AppRunService|AppRunAttemptRunner|createAppRunAttemptJobHandler)\b/);
   }
 });
+
+test('Run submission has one repository writer behind the advisory-lock service', async () => {
+  const violations: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    if (sourcePath === 'lib/app-run-repository.ts') continue;
+    const source = await readFile(path, 'utf8');
+    if (/\.insert\(appRuns\)/.test(source)) violations.push(sourcePath);
+  }
+  assert.deepEqual(violations, []);
+});

@@ -1,13 +1,20 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { appRunAttempts } from '@deft/db/schema';
 import {
+  APP_RUN_CONTRACT_VERSIONS,
+  AppRunRetainedProviderResultSchema,
   AppRunSafeOutcomeSchema,
   assertAppRunOutputWithinBudget,
   classifyAppRunCrashRecovery,
   type AppRunSafeOutcome,
 } from '@deft/shared';
 import { db } from './db.js';
+import {
+  denyAllAppRunExecutionAuthorizer,
+  type AppRunExecutionAuthorizer,
+} from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
 import type { AppRunProviderExecutor, AppRunProviderExecutionResult } from './app-run-provider-executor.js';
 import { PostgresAppRunRepository, type AppRunSafeView, type AppRunTransaction } from './app-run-repository.js';
@@ -36,13 +43,21 @@ export class AppRunAttemptRunner {
     private readonly secretRepository: AppRunSecretRepository,
     private readonly secrets: AppRunSecretService,
     private readonly executor: AppRunProviderExecutor,
+    private readonly executionAuthorizer: AppRunExecutionAuthorizer = denyAllAppRunExecutionAuthorizer,
     private readonly now: () => Date = () => new Date(),
     private readonly leaseMs = 60_000,
+    private readonly heartbeatIntervalMs = Math.max(250, Math.floor(boundedLeaseMs(leaseMs) / 3)),
   ) {}
 
-  async run(orgId: string, runId: string, workerId: string, signal?: AbortSignal): Promise<AppRunSafeView> {
-    await this.recoverRun(orgId, runId);
-    const claimed = await this.#claim(orgId, runId, workerId);
+  async run(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    workerId: string,
+    signal?: AbortSignal,
+  ): Promise<AppRunSafeView> {
+    await this.recoverRun(orgId, runId, attemptId);
+    const claimed = await this.#claim(orgId, runId, attemptId, workerId);
     if (!claimed) return this.repository.inspect(orgId, runId).then((run) => {
       if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
       return run;
@@ -59,6 +74,7 @@ export class AppRunAttemptRunner {
     const stableProviderKey = claimed.run.retry_class === 'idempotent_with_key'
       ? providerIdempotencyKey(runId)
       : undefined;
+    const stopHeartbeat = this.#startLeaseHeartbeat(claimed);
     let result: AppRunProviderExecutionResult;
     try {
       result = await this.executor.execute({
@@ -72,17 +88,52 @@ export class AppRunAttemptRunner {
       });
     } catch {
       result = { status: 'indeterminate' };
+    } finally {
+      await stopHeartbeat();
     }
 
     if (result.status === 'indeterminate') {
-      await this.#settleIndeterminate(orgId, runId, claimed.attempt.id);
+      await this.#settleIndeterminate(
+        orgId,
+        runId,
+        claimed.attempt.id,
+        claimed.attempt.claim_token!,
+      );
       return this.repository.inspect(orgId, runId).then((run) => run!);
     }
 
     const known = await this.#knownOutcome(claimed.run, result);
-    await this.#persistKnownResult(orgId, runId, claimed.attempt.id, result, known);
-    await this.#finalizeKnownResult(orgId, runId, claimed.attempt.id);
+    await this.#persistKnownResult(
+      orgId,
+      runId,
+      claimed.attempt.id,
+      claimed.attempt.claim_token!,
+      result,
+      known,
+    );
+    await this.#finalizeKnownResult(orgId, runId, claimed.attempt.id, claimed.attempt.claim_token!);
     return this.repository.inspect(orgId, runId).then((run) => run!);
+  }
+
+  async prepareAttempt(orgId: string, runId: string): Promise<string | null> {
+    const now = this.now();
+    return this.repository.transaction(async (tx) => {
+      const run = await this.repository.lockRun(tx, orgId, runId);
+      if (
+        !run
+        || !run.execution_released_at
+        || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
+        || !await this.executionAuthorizer.authorizeExecution({ org_id: orgId, run })
+      ) return null;
+      if (run.input_expires_at <= now) return null;
+      const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
+        eq(appRunAttempts.org_id, orgId),
+        eq(appRunAttempts.run_id, runId),
+        inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
+      )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
+      if (existing) return existing.id;
+      return (await this.#createAttempt(tx, run, now))?.id ?? null;
+    });
   }
 
   async renewLease(orgId: string, attemptId: string, claimToken: string): Promise<boolean> {
@@ -117,6 +168,38 @@ export class AppRunAttemptRunner {
     });
   }
 
+  #startLeaseHeartbeat(claimed: ClaimedAttempt): () => Promise<void> {
+    const controller = new AbortController();
+    const task = (async () => {
+      while (!controller.signal.aborted) {
+        try {
+          await delay(Math.max(1, this.heartbeatIntervalMs), undefined, { signal: controller.signal });
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          throw error;
+        }
+        let renewed = false;
+        try {
+          renewed = await this.renewLease(
+            claimed.run.org_id,
+            claimed.attempt.id,
+            claimed.attempt.claim_token!,
+          );
+        } catch {
+          return;
+        }
+        if (!renewed) return;
+      }
+    })();
+    let stopped = false;
+    return async () => {
+      if (stopped) return;
+      stopped = true;
+      controller.abort();
+      await task;
+    };
+  }
+
   async recoverStale(limit = 100): Promise<number> {
     const now = this.now();
     const rows = await db.select({
@@ -131,7 +214,7 @@ export class AppRunAttemptRunner {
     return recovered;
   }
 
-  async recoverRun(orgId: string, runId: string): Promise<number> {
+  async recoverRun(orgId: string, runId: string, attemptId?: string): Promise<number> {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
@@ -139,6 +222,7 @@ export class AppRunAttemptRunner {
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
         eq(appRunAttempts.org_id, orgId),
         eq(appRunAttempts.run_id, runId),
+        ...(attemptId ? [eq(appRunAttempts.id, attemptId)] : []),
         inArray(appRunAttempts.state, ['claimed', 'provider_call_started']),
         lte(appRunAttempts.lease_expires_at, now),
       )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
@@ -153,11 +237,21 @@ export class AppRunAttemptRunner {
     });
   }
 
-  async #claim(orgId: string, runId: string, workerId: string): Promise<ClaimedAttempt | null> {
+  async #claim(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    workerId: string,
+  ): Promise<ClaimedAttempt | null> {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       let run = await this.repository.lockRun(tx, orgId, runId);
-      if (!run || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)) return null;
+      if (
+        !run
+        || !run.execution_released_at
+        || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
+        || !await this.executionAuthorizer.authorizeExecution({ org_id: orgId, run })
+      ) return null;
       if (run.input_expires_at <= now) {
         run = await this.repository.transition(tx, {
           run, state: 'expired', now, error_code: 'APP_RUN_EXPIRED',
@@ -168,13 +262,11 @@ export class AppRunAttemptRunner {
         });
         return null;
       }
-      const [existingAttempt] = await tx.select().from(appRunAttempts).where(and(
+      const [attempt] = await tx.select().from(appRunAttempts).where(and(
         eq(appRunAttempts.org_id, orgId),
         eq(appRunAttempts.run_id, runId),
-        inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
-      )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
-      let attempt: typeof appRunAttempts.$inferSelect | null | undefined = existingAttempt;
-      if (!attempt) attempt = await this.#createAttempt(tx, run, now);
+        eq(appRunAttempts.id, attemptId),
+      )).limit(1);
       if (!attempt || attempt.state !== 'pending') return null;
       const claimToken = crypto.randomUUID();
       const [claimed] = await tx.update(appRunAttempts).set({
@@ -235,7 +327,12 @@ export class AppRunAttemptRunner {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       let run = await this.repository.lockRun(tx, claimed.run.org_id, claimed.run.id);
-      if (!run || run.state === 'cancelled') return false;
+      if (
+        !run
+        || !run.execution_released_at
+        || run.state === 'cancelled'
+        || !await this.executionAuthorizer.authorizeExecution({ org_id: run.org_id, run })
+      ) return false;
       await tx.execute(sql`SELECT id FROM app_run_attempts
         WHERE org_id = ${claimed.run.org_id} AND id = ${claimed.attempt.id} FOR UPDATE`);
       const [current] = await tx.select().from(appRunAttempts).where(and(
@@ -269,24 +366,34 @@ export class AppRunAttemptRunner {
     });
   }
 
-  async #knownOutcome(run: AppRunSafeView, result: Exclude<AppRunProviderExecutionResult, { status: 'indeterminate' }>): Promise<AppRunSafeOutcome> {
-    if (result.status === 'failed') {
+  async #knownOutcome(
+    run: AppRunSafeView,
+    result: Exclude<AppRunProviderExecutionResult, { status: 'indeterminate' }>,
+  ): Promise<AppRunSafeOutcome> {
+    if (result.status === 'not_attempted') {
       return AppRunSafeOutcomeSchema.parse({
-        success: false, provider_call_attempted: true,
-        result_status: 'unavailable', error_code: 'APP_RUN_PROVIDER_ERROR',
+        success: false, provider_call_attempted: false,
+        result_status: 'unavailable',
+        error_code: result.error_code ?? 'APP_RUN_PROVIDER_UNAVAILABLE',
       });
     }
     let retained = run.result_expires_at > this.now();
     if (retained) {
       try {
-        assertAppRunOutputWithinBudget(result.output);
+        const envelope = AppRunRetainedProviderResultSchema.parse({
+          schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+          provider_succeeded: result.provider_succeeded,
+          output: result.output,
+        });
+        assertAppRunOutputWithinBudget(envelope);
       } catch {
         retained = false;
       }
     }
     return AppRunSafeOutcomeSchema.parse({
-      success: true, provider_call_attempted: true,
+      success: result.provider_succeeded, provider_call_attempted: true,
       result_status: retained ? 'retained' : 'unavailable',
+      ...(result.provider_succeeded ? {} : { error_code: 'APP_RUN_PROVIDER_ERROR' }),
     });
   }
 
@@ -294,6 +401,7 @@ export class AppRunAttemptRunner {
     orgId: string,
     runId: string,
     attemptId: string,
+    claimToken: string,
     result: Exclude<AppRunProviderExecutionResult, { status: 'indeterminate' }>,
     outcome: AppRunSafeOutcome,
   ): Promise<void> {
@@ -307,17 +415,30 @@ export class AppRunAttemptRunner {
           const [attempt] = await tx.select().from(appRunAttempts).where(and(
             eq(appRunAttempts.org_id, orgId), eq(appRunAttempts.id, attemptId),
           )).limit(1);
-          if (!attempt || attempt.state !== 'provider_call_started') return;
+          if (
+            !attempt
+            || attempt.state !== 'provider_call_started'
+            || attempt.claim_token !== claimToken
+          ) return;
           if (attempt.provider_call_finished_at && attempt.safe_outcome) return;
-          if (result.status === 'succeeded' && outcome.result_status === 'retained') {
+          if (result.status === 'returned' && outcome.result_status === 'retained') {
+            const envelope = AppRunRetainedProviderResultSchema.parse({
+              schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+              provider_succeeded: result.provider_succeeded,
+              output: result.output,
+            });
             await this.secretRepository.insertOutput(tx, {
               org_id: orgId, run_id: runId, attempt_id: attemptId,
-              value: result.output, expires_at: run.result_expires_at,
+              value: envelope, expires_at: run.result_expires_at,
             });
           }
           await tx.update(appRunAttempts).set({
             provider_call_finished_at: this.now(), safe_outcome: outcome, updated_at: this.now(),
-          }).where(and(eq(appRunAttempts.org_id, orgId), eq(appRunAttempts.id, attemptId)));
+          }).where(and(
+            eq(appRunAttempts.org_id, orgId),
+            eq(appRunAttempts.id, attemptId),
+            eq(appRunAttempts.claim_token, claimToken),
+          ));
         });
         return;
       } catch (error) {
@@ -327,7 +448,12 @@ export class AppRunAttemptRunner {
     throw lastError;
   }
 
-  async #finalizeKnownResult(orgId: string, runId: string, attemptId: string): Promise<void> {
+  async #finalizeKnownResult(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    claimToken: string,
+  ): Promise<void> {
     await this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
       if (!run) return;
@@ -335,7 +461,12 @@ export class AppRunAttemptRunner {
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
         eq(appRunAttempts.org_id, orgId), eq(appRunAttempts.id, attemptId),
       )).limit(1);
-      if (!attempt || attempt.state !== 'provider_call_started' || !attempt.safe_outcome) return;
+      if (
+        !attempt
+        || attempt.state !== 'provider_call_started'
+        || attempt.claim_token !== claimToken
+        || !attempt.safe_outcome
+      ) return;
       await this.#finalizeKnownInTransaction(tx, run, attempt, this.now());
     });
   }
@@ -369,7 +500,11 @@ export class AppRunAttemptRunner {
       const run = await this.repository.lockRun(tx, claimed.run.org_id, claimed.run.id);
       if (!run) return;
       await tx.update(appRunAttempts).set({ state: 'failed', error_code: code, updated_at: now })
-        .where(and(eq(appRunAttempts.org_id, run.org_id), eq(appRunAttempts.id, claimed.attempt.id)));
+        .where(and(
+          eq(appRunAttempts.org_id, run.org_id),
+          eq(appRunAttempts.id, claimed.attempt.id),
+          eq(appRunAttempts.claim_token, claimed.attempt.claim_token!),
+        ));
       await this.repository.transition(tx, {
         run, state: 'expired', now, error_code: code,
         safe_outcome: AppRunSafeOutcomeSchema.parse({
@@ -380,7 +515,12 @@ export class AppRunAttemptRunner {
     });
   }
 
-  async #settleIndeterminate(orgId: string, runId: string, attemptId: string): Promise<void> {
+  async #settleIndeterminate(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    claimToken: string,
+  ): Promise<void> {
     await this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
       if (!run) return;
@@ -388,7 +528,11 @@ export class AppRunAttemptRunner {
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
         eq(appRunAttempts.org_id, orgId), eq(appRunAttempts.id, attemptId),
       )).limit(1);
-      if (!attempt || attempt.state !== 'provider_call_started') return;
+      if (
+        !attempt
+        || attempt.state !== 'provider_call_started'
+        || attempt.claim_token !== claimToken
+      ) return;
       await this.#recoverUnknownInTransaction(tx, run, attempt, this.now());
     });
   }

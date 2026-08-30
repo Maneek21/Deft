@@ -43,6 +43,8 @@ const safeRunSelection = {
   result_expires_at: appRuns.result_expires_at,
   idempotency_expires_at: appRuns.idempotency_expires_at,
   attempt_limit: appRuns.attempt_limit,
+  execution_release_kind: appRuns.execution_release_kind,
+  execution_released_at: appRuns.execution_released_at,
   input_purged_at: appRuns.input_purged_at,
   result_purged_at: appRuns.result_purged_at,
   started_at: appRuns.started_at,
@@ -152,7 +154,7 @@ export class PostgresAppRunRepository {
       provider_instance_id: input.submission.operation.provider.provider_instance_id,
       operation_name: input.submission.operation.operation_name,
       provider_snapshot_id: input.provider_snapshot_id,
-      state: 'pending',
+      state: input.submission.policy.review_requirement === 'always' ? 'pending_approval' : 'pending',
       risk_class: input.submission.policy.risk_class,
       review_requirement: input.submission.policy.review_requirement,
       review_scope: input.submission.policy.review_scope,
@@ -170,6 +172,12 @@ export class PostgresAppRunRepository {
       result_expires_at: input.result_expires_at,
       idempotency_expires_at: input.idempotency_expires_at,
       attempt_limit: input.attempt_limit,
+      execution_release_kind: input.submission.policy.review_requirement === 'policy'
+        ? 'policy_satisfied'
+        : null,
+      execution_released_at: input.submission.policy.review_requirement === 'policy'
+        ? input.now
+        : null,
       created_at: input.now,
       updated_at: input.now,
     }).returning(safeRunSelection);
@@ -284,6 +292,38 @@ export class PostgresAppRunRepository {
     return updated;
   }
 
+  async recordApprovedExecutionRelease(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    actor: AppRunActor,
+    now: Date,
+  ): Promise<AppRunSafeView> {
+    if (run.execution_release_kind) {
+      if (run.execution_release_kind === 'approved') return run;
+      throw new Error('APP_RUN_ILLEGAL_TRANSITION');
+    }
+    const [updated] = await tx.update(appRuns).set({
+      execution_release_kind: 'approved',
+      execution_released_at: now,
+      updated_at: now,
+    }).where(and(
+      eq(appRuns.org_id, run.org_id),
+      eq(appRuns.id, run.id),
+      eq(appRuns.state, 'pending_approval'),
+    )).returning(safeRunSelection);
+    if (!updated) throw new Error('APP_RUN_ILLEGAL_TRANSITION');
+    await this.appendEvent(tx, {
+      id: crypto.randomUUID(),
+      org_id: run.org_id,
+      run_id: run.id,
+      event_type: 'approval_resolved',
+      actor,
+      payload: { resolution: 'approved', execution_release_kind: 'approved' },
+      now,
+    });
+    return updated;
+  }
+
   async activeKeyReferences(now: Date): Promise<readonly { purpose: 'fingerprint'; key_id: string }[]> {
     const rows = await db.select({
       idempotency: appRuns.idempotency_key_version,
@@ -302,11 +342,12 @@ export class PostgresAppRunRepository {
     return rows.map((row) => row.id);
   }
 
-  async latestSuccessfulAttemptId(orgId: string, runId: string): Promise<string | null> {
+  async latestRetainedAttemptId(orgId: string, runId: string): Promise<string | null> {
     const [row] = await db.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
       eq(appRunAttempts.org_id, orgId),
       eq(appRunAttempts.run_id, runId),
-      eq(appRunAttempts.state, 'succeeded'),
+      sql`${appRunAttempts.provider_call_finished_at} IS NOT NULL`,
+      sql`${appRunAttempts.safe_outcome}->>'result_status' = 'retained'`,
     )).orderBy(sql`${appRunAttempts.attempt_number} DESC`).limit(1);
     return row?.id ?? null;
   }

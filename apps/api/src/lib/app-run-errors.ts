@@ -9,6 +9,7 @@ const SAFE_MESSAGES: Record<AppRunErrorCode, string> = {
   APP_RUN_OUTPUT_TOO_LARGE: 'App Run output exceeds its limit',
   APP_RUN_IDEMPOTENCY_CONFLICT: 'The App Run idempotency key conflicts with an existing Run',
   APP_RUN_ILLEGAL_TRANSITION: 'The App Run state transition is not allowed',
+  APP_RUN_EXECUTION_NOT_RELEASED: 'The App Run is not released for execution',
   APP_RUN_ACCESS_DENIED: 'Access to the App Run is denied',
   APP_RUN_AUTHORIZATION_STALE: 'App Run authorization is no longer current',
   APP_RUN_PROVIDER_UNAVAILABLE: 'The App Run provider is unavailable',
