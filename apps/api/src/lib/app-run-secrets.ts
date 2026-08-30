@@ -207,6 +207,19 @@ export class AppRunSecretService {
     return this.#fingerprintWith(this.keys.current('fingerprint'), purpose, canonical);
   }
 
+  fingerprintJsonCandidates(purpose: AppRunFingerprintPurpose, value: unknown): readonly Readonly<{
+    key_version: string;
+    fingerprint: string;
+  }>[] {
+    assertCapabilityJsonWithinBudget(value, APP_RUN_LIMITS.input_bytes);
+    const canonical = canonicalCapabilityJson(value);
+    return Object.freeze(this.keys.keyIds('fingerprint').map((keyId) => {
+      const keyRef = this.keys.read('fingerprint', keyId);
+      if (!keyRef) throw new Error('APP_RUN_KEY_VERSION_UNAVAILABLE');
+      return this.#fingerprintWith(keyRef, purpose, Buffer.from(canonical, 'utf8'));
+    }));
+  }
+
   fingerprintText(purpose: AppRunFingerprintPurpose, value: string): Readonly<{
     key_version: string;
     fingerprint: string;

@@ -98,6 +98,7 @@ test('governed App Run fresh schema is tenant-bound and keeps ciphertext separat
   assert.ok(run.uniqueConstraints.some((item) => item.name === 'app_runs_org_id_id_unique'));
   assert.ok(foreignKeyNames(run).includes('app_runs_org_provider_snapshot_fk'));
   assert.ok(foreignKeyNames(attempt).includes('app_run_attempts_org_run_fk'));
+  assert.ok(attempt.indexes.some((item) => item.config.name === 'app_run_attempts_one_active_unique'));
   assert.deepEqual(
     foreignKeyNames(secret).filter((name) => name.startsWith('app_run_secret_payloads_')).sort(),
     ['app_run_secret_payloads_org_attempt_fk', 'app_run_secret_payloads_org_run_fk'],
@@ -161,6 +162,31 @@ test('governed App Run supported upgrade preserves dormant and immutable boundar
   assert.doesNotMatch(sql, /UPDATE\s+agent_actions/i);
   assert.doesNotMatch(sql, /^\s*UPDATE\s+/im);
   assert.match(applyExtrasSource, /0\.3\.0-preview\.17-governed-app-runs-foundation\.sql/);
+});
+
+test('governed App Run engine hardening is additive and fences replay and attempts', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.18');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+
+  for (const boundary of [
+    'idempotency_expires_at',
+    'attempt_limit',
+    'cancel_requested_at',
+    'retry_of_attempt_id',
+    'app_run_attempts_retry_of_fk',
+    'app_run_attempts_one_active_unique',
+    'app_runs_idempotency_expiry_check',
+    'app_run_attempts_retry_shape_check',
+    'cancellation_requested',
+    'APP_RUN_IMMUTABLE_FIELD',
+  ]) {
+    assert.match(sql, new RegExp(boundary, 'i'));
+  }
+  assert.doesNotMatch(sql, /ALTER TABLE agent_actions/i);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.18-governed-app-run-engine-hardening\.sql/);
 });
 
 test('parseUpgradeArgs recognizes status and dry run', () => {

@@ -107,6 +107,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.17-governed-app-runs-foundation.sql',
       description: 'Add dormant governed App Run metadata, encrypted payload, attempt, event, and receipt boundaries',
     },
+    {
+      version: '0.3.0-preview.18',
+      file: '0.3.0-preview.18-governed-app-run-engine-hardening.sql',
+      description: 'Harden dormant App Run replay, cancellation, retry ancestry, and attempt fencing',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

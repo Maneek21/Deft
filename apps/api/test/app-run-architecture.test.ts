@@ -20,6 +20,7 @@ test('only the App Run secret boundary handles ciphertext and signing material',
   const allowed = new Set([
     'lib/app-run-keyrings.ts',
     'lib/app-run-secrets.ts',
+    'lib/app-run-secret-repository.ts',
   ]);
   const forbidden = /\b(?:ciphertext_b64|nonce_b64|auth_tag_b64|receipt_signing)\b/g;
   const violations: string[] = [];
@@ -47,4 +48,16 @@ test('the dormant foundation has no production execution consumer', async () => 
     }
   }
   assert.deepEqual(consumers, []);
+});
+
+test('the governed engine stays unwired from production entrances', async () => {
+  const protectedEntrances = [
+    'lib/capability-service.ts',
+    'lib/capability-providers/mcp.ts',
+    'workers/index.ts',
+  ];
+  for (const sourcePath of protectedEntrances) {
+    const source = await readFile(join(sourceRoot, sourcePath), 'utf8');
+    assert.doesNotMatch(source, /\b(?:AppRunService|AppRunAttemptRunner|createAppRunAttemptJobHandler)\b/);
+  }
 });

@@ -5,6 +5,7 @@ import {
   APP_RUN_CONTRACT_VERSIONS,
   APP_RUN_LIMITS,
   APP_RUN_SECRET_RETENTION_MS,
+  APP_RUN_IDEMPOTENCY_RETENTION_MS,
   AppRunSafeOutcomeSchema,
   AppRunAttemptStateSchema,
   AppRunStateSchema,
@@ -15,6 +16,7 @@ import {
   parseAppRunEvent,
   parseAppRunReceiptEnvelope,
   retentionDeadline,
+  idempotencyDeadline,
 } from '../src/app-runs';
 
 const digest = `sha256:${'a'.repeat(64)}`;
@@ -243,6 +245,13 @@ describe('App Run contract', () => {
     assert.equal(
       retentionDeadline('extended', from).getTime() - from.getTime(),
       APP_RUN_SECRET_RETENTION_MS.extended,
+    );
+    assert.equal(
+      idempotencyDeadline('standard', from).getTime() - from.getTime(),
+      APP_RUN_IDEMPOTENCY_RETENTION_MS.standard,
+    );
+    assert.ok(
+      idempotencyDeadline('extended', from).getTime() > retentionDeadline('extended', from).getTime(),
     );
   });
 });

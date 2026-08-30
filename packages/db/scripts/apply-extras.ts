@@ -47,6 +47,10 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appRunsFoundationFile), 'utf8'));
     console.log(`[apply-extras] applied ${appRunsFoundationFile}`);
 
+    const appRunEngineHardeningFile = '0.3.0-preview.18-governed-app-run-engine-hardening.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunEngineHardeningFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunEngineHardeningFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -85,6 +89,11 @@ async function main() {
       'app_runs_org_parent_run_fk',
       'app_run_attempts_org_run_fk',
       'app_run_attempts_org_run_id_unique',
+      'app_run_attempts_retry_of_fk',
+      'app_runs_idempotency_expiry_check',
+      'app_runs_attempt_limit_check',
+      'app_runs_cancel_request_check',
+      'app_run_attempts_retry_shape_check',
       'app_run_secret_payloads_org_run_fk',
       'app_run_secret_payloads_org_attempt_fk',
       'app_run_events_org_run_fk',
@@ -124,6 +133,8 @@ async function main() {
       'capability_provider_snapshots_identity_digest_unique',
       'app_runs_idempotency_unique',
       'app_run_attempts_number_unique',
+      'app_run_attempts_one_active_unique',
+      'app_runs_idempotency_expiry_idx',
       'app_run_secret_payloads_input_unique',
       'app_run_secret_payloads_output_unique',
       'app_run_events_sequence_unique',
