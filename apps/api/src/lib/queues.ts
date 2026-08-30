@@ -46,6 +46,19 @@ export type FailJobOptions = {
   terminal?: boolean;
 };
 
+/** A handler can request a fenced pause without consuming its retry budget.
+ * This is reserved for operational gates where retrying immediately cannot
+ * make progress but the durable occurrence must remain resumable. */
+export class RetryLaterJobError extends Error {
+  constructor(
+    message: string,
+    readonly delayMs: number,
+  ) {
+    super(message);
+    this.name = 'RetryLaterJobError';
+  }
+}
+
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_WORKER_ID = `deft:${process.pid}:${crypto.randomUUID()}`;
@@ -258,6 +271,36 @@ export async function failJob(
     });
   }
   return true;
+}
+
+/** Return a live claimed job to pending without spending one max-attempt slot.
+ * The ownership token and lease fence prevent a stale worker from deferring a
+ * reclaimed occurrence. */
+export async function deferJob(
+  jobId: string,
+  lockToken: string,
+  error: string,
+  delayMs: number,
+): Promise<boolean> {
+  const normalizedDelayMs = Math.max(1_000, Math.floor(delayMs));
+  const result = await db.execute(sql`
+    UPDATE job_queue
+    SET status = 'pending',
+        attempts = GREATEST(attempts - 1, 0),
+        run_at = now() + (${normalizedDelayMs} * interval '1 millisecond'),
+        started_at = NULL,
+        completed_at = NULL,
+        error = ${error},
+        locked_by = NULL,
+        lock_token = NULL,
+        lock_expires_at = NULL
+    WHERE id = ${jobId}
+      AND status = 'running'
+      AND lock_token = ${lockToken}
+      AND lock_expires_at > now()
+    RETURNING id
+  `);
+  return resultRows(result).length === 1;
 }
 
 /** Atomically register at most one pending/running occurrence per cron key. */

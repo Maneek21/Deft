@@ -19,12 +19,20 @@ export type AppRunProviderExecutionResult =
       status: 'not_attempted';
       error_code?: 'APP_RUN_PROVIDER_UNAVAILABLE' | 'APP_RUN_PROVIDER_TIMEOUT';
     }>
-  | Readonly<{ status: 'returned'; provider_succeeded: boolean; output: unknown }>
+  | Readonly<{
+      status: 'returned';
+      provider_succeeded: boolean;
+      output: unknown;
+      error?: string;
+      duration_ms?: number;
+    }>
   | Readonly<{ status: 'indeterminate' }>;
 
 export interface AppRunProviderExecutor {
   execute(request: AppRunProviderExecutionRequest): Promise<AppRunProviderExecutionResult>;
 }
+
+export const MCP_APP_RUN_RESULT_VERSION = 'deft.app_run.mcp_result.v1';
 
 function isInputObject(
   value: CapabilityJsonValue,
@@ -64,6 +72,18 @@ export class PinnedMcpAppRunProviderExecutor implements AppRunProviderExecutor {
           : 'APP_RUN_PROVIDER_UNAVAILABLE',
       };
     }
-    return result;
+    if (result.status === 'indeterminate') return result;
+    return {
+      status: 'returned',
+      provider_succeeded: result.provider_succeeded,
+      output: {
+        schema_version: MCP_APP_RUN_RESULT_VERSION,
+        legacy_output: result.output,
+        duration_ms: result.duration_ms,
+        ...(result.error ? { error: result.error } : {}),
+      },
+      ...(result.error ? { error: result.error } : {}),
+      duration_ms: result.duration_ms,
+    };
   }
 }

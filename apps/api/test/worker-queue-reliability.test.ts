@@ -7,6 +7,7 @@ import {
   dequeueJob,
   enqueue,
   ensureCronJob,
+  RetryLaterJobError,
   type QueueName,
 } from '../src/lib/queues.js';
 import {
@@ -78,6 +79,27 @@ test('timeout aborts the handler and late resolution cannot complete the termina
   assert.equal(row?.attempts, 1, 'timeout must not enqueue an overlapping retry');
   assert.match(row?.error ?? '', /timed out/);
   assert.ok(row?.completed_at instanceof Date);
+});
+
+test('operational pauses preserve a durable occurrence without spending retry budget', async () => {
+  const name = `deferred:${crypto.randomUUID()}`;
+  await enqueue(TEST_QUEUE, name, {}, { maxAttempts: 1 });
+  const claim = await dequeueJob(TEST_QUEUE, { leaseMs: 10_000 });
+  assert.ok(claim);
+
+  await _processDequeuedJobForTest(TEST_QUEUE, claim, {
+    resolveHandler: async () => async () => {
+      throw new RetryLaterJobError('feature entrance disabled', 60_000);
+    },
+  });
+
+  const [row] = await rowsFor(name);
+  assert.equal(row?.status, 'pending');
+  assert.equal(row?.attempts, 0);
+  assert.equal(row?.completed_at, null);
+  assert.equal(row?.lock_token, null);
+  assert.match(row?.error ?? '', /feature entrance disabled/);
+  assert.ok((row?.run_at.getTime() ?? 0) > Date.now());
 });
 
 test('a terminally failed recurring occurrence schedules one successor', async () => {

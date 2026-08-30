@@ -1,7 +1,7 @@
 import { AppRunAttemptRunner } from './app-run-attempt-runner.js';
 import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from './app-run-approval-adapter.js';
 import { PostgresAppRunAttentionProjector } from './app-run-attention.js';
-import { denyAllAppRunAuthorizer } from './app-run-authorization.js';
+import { PostgresAppRunAuthorizer } from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
 import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
@@ -34,6 +34,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
   const repository = new PostgresAppRunRepository();
   const secretRepository = new AppRunSecretRepository(secrets);
   const liveAuthorization = new PostgresAppRunLiveAuthorization();
+  const accessAuthorization = new PostgresAppRunAuthorizer();
   const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
   const attention = new PostgresAppRunAttentionProjector();
   const clock = () => new Date();
@@ -55,7 +56,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     secretRepository,
     secrets,
     keys,
-    denyAllAppRunAuthorizer,
+    accessAuthorization,
     clock,
     postgresAppRunApprovalAdapter,
     receipts,

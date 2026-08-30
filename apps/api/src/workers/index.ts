@@ -2,11 +2,13 @@
 import {
   dequeueJob,
   completeJob,
+  deferJob,
   failJob,
   ensureCronJob,
   cleanupStaleJobs,
   pruneFinishedJobs,
   renewJobLease,
+  RetryLaterJobError,
   QUEUE_NAMES,
   type DequeuedJob,
   type QueueName,
@@ -413,6 +415,11 @@ async function processDequeuedJob(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof RetryLaterJobError) {
+      const settled = await deferJob(job.id, job.lockToken, message, err.delayMs);
+      if (settled) console.warn(`[worker] Job ${job.name} deferred:`, message);
+      return;
+    }
     // Until every handler cooperatively cancels its I/O, retrying immediately
     // after a timeout can overlap with the still-running original promise.
     // Terminal-fail the occurrence; operators can inspect/replay it explicitly.

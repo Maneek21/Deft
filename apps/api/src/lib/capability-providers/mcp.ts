@@ -108,7 +108,13 @@ export interface McpCapabilityRuntime {
 
 export type McpPinnedExecutionResult =
   | Readonly<{ status: 'not_attempted' }>
-  | Readonly<{ status: 'returned'; provider_succeeded: boolean; output: unknown }>
+  | Readonly<{
+      status: 'returned';
+      provider_succeeded: boolean;
+      output: unknown;
+      error?: string;
+      duration_ms: number;
+    }>
   | Readonly<{ status: 'indeterminate' }>;
 
 export interface CapabilitySnapshotWarning {
@@ -262,6 +268,17 @@ export class McpCapabilityProvider {
     };
   }
 
+  async resolveGoverned(
+    request: McpCapabilityInvocationRequest,
+  ): Promise<ExecutableMcpConnectionResult> {
+    return this.runtime.resolveExecutable(
+      request.org_id,
+      request.provider.connection_slug,
+      request.provider.operation_name,
+      request.actor.agent_employee_id,
+    );
+  }
+
   /** Execute one App Run attempt against the immutable provider identity.
    * Resolution and target materialization happen before the low-level call;
    * once that call is launched, an abort or transport-only failure is
@@ -313,6 +330,8 @@ export class McpCapabilityProvider {
         status: 'returned',
         provider_succeeded: settled.result.success,
         output: mcpResultPayload(settled.result),
+        ...(settled.result.error ? { error: settled.result.error } : {}),
+        duration_ms: settled.result.durationMs,
       };
     } finally {
       removeAbortListener();

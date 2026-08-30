@@ -793,7 +793,12 @@ test('pinned App Run execution resolves the exact provider once and preserves re
   assert.deepEqual(result, {
     status: 'returned',
     provider_succeeded: true,
-    output: rawResult,
+    output: {
+      schema_version: 'deft.app_run.mcp_result.v1',
+      legacy_output: rawResult,
+      duration_ms: 9,
+    },
+    duration_ms: 9,
   });
 });
 
@@ -841,4 +846,73 @@ test('pinned App Run execution fails closed for unbound idempotency and ambiguou
   assert.deepEqual(await aborted, { status: 'indeterminate' });
   release!();
   assert.equal(calls, 2);
+});
+
+test('Capability Service selects exactly one flag path and never shadow-calls or falls back', async () => {
+  const request = {
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada' },
+    provider: {
+      provider_kind: 'mcp' as const,
+      connection_slug: connection.slug,
+      operation_name: 'send_email',
+    },
+    input: { recipient: 'ada@example.test' },
+  };
+  const legacyResult = {
+    provider: {
+      provider_kind: 'mcp' as const,
+      requested_provider_key: connection.slug,
+      resolved_provider: {
+        org_id: connection.org_id,
+        provider_kind: 'mcp' as const,
+        provider_instance_id: connection.id,
+      },
+    },
+    provider_display_name: connection.name,
+    operation_name: 'send_email',
+    provider_call_attempted: true,
+    provider_succeeded: true,
+    legacy_output: { path: 'legacy' },
+    duration_ms: 1,
+  };
+  const governedResult = { ...legacyResult, legacy_output: { path: 'governed' } };
+  let legacyCalls = 0;
+  let governedCalls = 0;
+  let governedOptions: unknown;
+  const legacyPort = {
+    async discover() { return { provider_kind: 'mcp' as const, tools: [], snapshot: null }; },
+    async invoke() { legacyCalls++; return legacyResult; },
+  };
+  const governedPort = {
+    async invoke(_request: unknown, options: unknown) {
+      governedCalls++;
+      governedOptions = options;
+      return governedResult;
+    },
+  };
+
+  const disabled = new CapabilityService(legacyPort, governedPort, () => false);
+  assert.deepEqual((await disabled.invoke(request)).legacy_output, { path: 'legacy' });
+  assert.deepEqual({ legacyCalls, governedCalls }, { legacyCalls: 1, governedCalls: 0 });
+
+  const enabled = new CapabilityService(legacyPort, governedPort, () => true);
+  assert.deepEqual((await enabled.invoke(request, {
+    legacy_action_id: 'action-1',
+    idempotency_key: 'occurrence-1',
+  })).legacy_output, { path: 'governed' });
+  assert.deepEqual({ legacyCalls, governedCalls }, { legacyCalls: 1, governedCalls: 1 });
+  assert.deepEqual(governedOptions, {
+    legacy_action_id: 'action-1',
+    idempotency_key: 'occurrence-1',
+  });
+
+  const failing = new CapabilityService(legacyPort, {
+    async invoke() {
+      governedCalls++;
+      throw new Error('governed failure');
+    },
+  }, () => true);
+  await assert.rejects(failing.invoke(request), /governed failure/);
+  assert.equal(legacyCalls, 1);
 });

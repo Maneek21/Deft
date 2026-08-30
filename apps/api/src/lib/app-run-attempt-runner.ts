@@ -39,6 +39,11 @@ type ClaimedAttempt = Readonly<{
   attempt: typeof appRunAttempts.$inferSelect;
 }>;
 
+export type AppRunImmediateExecution = Readonly<{
+  run: AppRunSafeView;
+  provider_result?: AppRunProviderExecutionResult;
+}>;
+
 function providerIdempotencyKey(runId: string): string {
   return createHash('sha256')
     .update('deft.app_run.provider_idempotency.v1\0')
@@ -72,22 +77,49 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     workerId: string,
     signal?: AbortSignal,
   ): Promise<AppRunSafeView> {
+    return (await this.#runInternal(orgId, runId, attemptId, workerId, signal)).run;
+  }
+
+  /** Synchronous compatibility entrance. The exact provider result is
+   * transient and never enters generic Run APIs, logs, jobs, or projections. */
+  async runImmediate(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    workerId: string,
+    signal?: AbortSignal,
+  ): Promise<AppRunImmediateExecution> {
+    return this.#runInternal(orgId, runId, attemptId, workerId, signal);
+  }
+
+  async #runInternal(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    workerId: string,
+    signal?: AbortSignal,
+  ): Promise<AppRunImmediateExecution> {
     await this.recoverRun(orgId, runId, attemptId);
     const claimed = await this.#claim(orgId, runId, attemptId, workerId);
-    if (!claimed) return this.repository.inspect(orgId, runId).then((run) => {
+    if (!claimed) {
+      const run = await this.repository.inspect(orgId, runId);
       if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      return run;
-    });
+      return { run };
+    }
 
     const input = await this.secretRepository.readInput(orgId, runId);
     if (input === null) {
       await this.#settleBeforeCallFailure(claimed, 'APP_RUN_EXPIRED');
       const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
       await this.#projectState(settled);
-      return settled;
+      return { run: settled };
     }
     const boundaryCommitted = await this.#markProviderCallStarted(claimed);
-    if (!boundaryCommitted) return this.repository.inspect(orgId, runId).then((run) => run!);
+    if (!boundaryCommitted) {
+      const run = await this.repository.inspect(orgId, runId);
+      if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      return { run };
+    }
 
     const stableProviderKey = claimed.run.retry_class === 'idempotent_with_key'
       ? providerIdempotencyKey(runId)
@@ -119,7 +151,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       );
       const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
       await this.#projectState(settled);
-      return settled;
+      return { run: settled, provider_result: result };
     }
 
     const known = await this.#knownOutcome(claimed.run, result);
@@ -134,7 +166,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     await this.#finalizeKnownResult(orgId, runId, claimed.attempt.id, claimed.attempt.claim_token!);
     const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
     await this.#projectState(settled);
-    return settled;
+    return { run: settled, provider_result: result };
   }
 
   async prepareAttempt(orgId: string, runId: string): Promise<string | null> {

@@ -38,24 +38,33 @@ test('only the App Run secret boundary handles ciphertext and signing material',
 });
 
 test('App Run flag and key material stay confined to environment and the composition root', async () => {
+  const allowedConsumers = new Set([
+    'lib/agent-actions.ts',
+    'lib/capability-service.ts',
+  ]);
   const consumers: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
     const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
     if (sourcePath.startsWith('lib/app-run-') || sourcePath === 'lib/env.ts') continue;
     const source = await readFile(path, 'utf8');
     if (/\b(?:AppRunSecretService|DEFT_APP_RUNS_ENABLED|APP_RUNS_ENABLED)\b/.test(source)) {
-      consumers.push(sourcePath);
+      if (!allowedConsumers.has(sourcePath)) consumers.push(sourcePath);
     }
   }
   assert.deepEqual(consumers, []);
 });
 
-test('C4 has one composed worker-owned attempt entrance without Capability Service cutover', async () => {
+test('C5 selects one composed worker-owned attempt entrance through Capability Service', async () => {
   const capabilityService = await readFile(join(sourceRoot, 'lib/capability-service.ts'), 'utf8');
   const worker = await readFile(join(sourceRoot, 'workers/index.ts'), 'utf8');
   const runtime = await readFile(join(sourceRoot, 'lib/app-run-runtime.ts'), 'utf8');
   const handler = await readFile(join(sourceRoot, 'lib/app-run-worker-handler.ts'), 'utf8');
+  const bridge = await readFile(join(sourceRoot, 'lib/app-run-capability-bridge.ts'), 'utf8');
+  const legacyActions = await readFile(join(sourceRoot, 'lib/agent-actions.ts'), 'utf8');
 
+  assert.match(capabilityService, /governedEnabled\(\)/);
+  assert.match(capabilityService, /await this\.governed\.invoke/);
+  assert.match(capabilityService, /await this\.mcpProvider\.invoke/);
   assert.doesNotMatch(capabilityService, /\b(?:AppRunService|getAppRunRuntime|AppRunAttemptRunner)\b/);
   assert.equal(worker.match(/case 'app-run-attempt'/g)?.length, 1);
   assert.match(handler, /getAppRunRuntime/);
@@ -63,6 +72,11 @@ test('C4 has one composed worker-owned attempt entrance without Capability Servi
   assert.match(runtime, /postgresAppRunAttemptQueue/);
   assert.match(runtime, /new PostgresAppRunReceiptWriter/);
   assert.match(runtime, /new PostgresAppRunAttentionProjector/);
+  assert.match(bridge, /attemptRunner\.runImmediate/);
+  assert.match(bridge, /legacy_action_id/);
+  assert.doesNotMatch(bridge, /\.invoke\(request\)/);
+  assert.match(legacyActions, /APP_RUNS_ENABLED && action\.startsWith\('mcp__'\)/);
+  assert.match(legacyActions, /legacy_action_id:\s*actionId/);
 });
 
 test('only the MCP adapter calls the low-level client and governed execution is pinned by provider id', async () => {
