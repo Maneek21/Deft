@@ -780,11 +780,11 @@ planning branch is now rebased onto the Phase 2 merge.
 
 **Implementation status (2026-08-30):** PRs A and B merged the frozen contracts,
 purpose-separated key service, additive schema, lifecycle, and fake-provider
-engine. Local C0–C5 checkpoints add release/budget evidence, live authority,
-approval compatibility, ancestry, receipts, Attention, operations, the pinned
-worker runtime, and an exact guarded Capability Service cutover. App origin
-remains disabled; existing connector ciphertext and legacy receipt writers are
-unchanged.
+engine. PR C (#273) merged release/budget evidence, live authority, approval
+compatibility, ancestry, receipts, Attention, and internal repair invariants.
+PR D now contains the pinned worker runtime plus separate exact default-off Run
+engine/drain and legacy MCP intake controls. App origin remains disabled;
+existing connector ciphertext and legacy receipt writers are unchanged.
 
 - [x] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
 - [x] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.
@@ -797,8 +797,8 @@ unchanged.
 - [x] Add the closed `app | core | legacy_connector` execution-origin union; legacy origins persist `grant_source: legacy_connection_policy` and cannot appear in the App catalog.
 - [x] Enforce the actor/App-grant intersection for App origins and the exact current legacy policy for compatibility origins before approval and again immediately before execution.
 - [x] Recheck membership, employee health/budget, token scope, connector, schema digest, provider, assignment, grants/policy source, and bound authorization versions at execution.
-- [x] Add sanitized receipts, metrics, operator inspection, and compatibility adapters without rewriting existing action receipts.
-- [x] Wrap App Run invocation behind a disabled-by-default flag and retain a bounded rollback path; immutable release certification remains the D2 gate.
+- [x] Add sanitized receipts, metrics, Attention, internal bounded inspection/repair primitives, and compatibility adapters without rewriting existing action receipts or claiming a public Operations surface.
+- [x] Separate disabled-by-default Run engine/drain and legacy MCP intake controls, reject intake without the engine, and retain a bounded drain-first rollback path; immutable release certification remains the D2 gate.
 
 **Acceptance evidence:** auto and reviewed calls create one Run and at most one provider call; capability cycles stop before a second call and child Runs cannot reset budgets; no pseudo-App grant exists; legacy Runs are not App-discoverable; `always` review cannot be bypassed by an Autonomous employee; payload limits and terminal purge preserve only the declared sanitized residue; restart/replay, encryption/signer/fingerprint rotation, supported-image rollback, low-entropy guessing resistance, unknown-outcome, and ciphertext-leakage tests pass.
 

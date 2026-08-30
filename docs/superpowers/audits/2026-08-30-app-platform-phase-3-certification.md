@@ -1,78 +1,90 @@
-# App Platform Phase 3 local certification
+# App Platform Phase 3 certification checkpoints
 
 - Date: 2026-08-30
-- Runtime candidate: `944b265f`
-- Result: local code acceptance passed; release-only infrastructure gates remain
-- Rollout decision: disabled by default, self-host opt-in only; do not widen
-  further until the external gates below pass on a released image
+- Historical pre-split baseline: `5050b0f1` with C5 source checkpoint
+  `944b265f`; useful review evidence, superseded for rollout certification
+- Current PR D control checkpoint: `5cf88c51` on PR C merge `9c8e9ac9`
+- Current result: split-control delta acceptance passed; consolidated PR D and
+  immutable release-artifact gates remain
+- Rollout decision: off/off by default; merge alone does not make the legacy MCP
+  canary supported
 
-## Verified matrix
+## Current split-control delta
 
 | Boundary | Evidence | Result |
 |---|---|---|
-| Shared capability and App Run contracts | `@deft/shared` tests | 55 passed |
-| Fresh-schema/upgrade representation and additive migrations `.17`–`.21` | `@deft/db` upgrade contract tests | 23 passed |
-| Key configuration, AEAD/AAD, rotation, fingerprints, receipt signing, retirement refusal | App Run secret tests | passed |
-| Capability Service, pinned MCP adapter, one-path flag selection, no shadow/fallback | focused API tests | passed |
-| Architecture and leakage boundaries | App Run and Capability architecture tests | passed |
-| Trust, approval matrix, connector network/credential safety, provider-text boundary | focused API tests | passed |
-| Worker registry, lifecycle, lease fencing, retry exhaustion, and flag-off defer | focused worker and queue tests | passed |
-| Run lifecycle, concurrency, release, live authority, budgets, crash recovery, ancestry, receipts, Attention, operations, and atomic jobs | disposable-database engine tests | 20 passed |
-| Exact flag-off Phase 2 immediate/action/approval compatibility | same disposable fixture with flag false | 10 passed; 6 governed cases skipped |
-| Exact flag-on safe read, unrepresentable result, post-effect membership revocation, concurrent action replay, reviewed approval replay, and ambiguous transport | same disposable fixture with valid keyrings and flag true | 6 passed; 10 legacy cases skipped |
-| API discovery routes and legacy approval resolver assertions | disposable-database focused group | passed with the stale-fixture caveat below |
-| Repository TypeScript | `pnpm typecheck` | passed for all participating workspaces |
-| Production source build | `pnpm build` | API and optimized Next.js build passed; 43 web routes generated |
+| Three safe flag states, malformed intake, and invalid engine-off/intake-on startup | real isolated environment imports plus pure configuration checks | 3 passed |
+| Capability Service one-path selection, no shadow call, and no governed-to-legacy fallback | focused unit tests | passed |
+| Engine versus intake consumers | architecture scan plus runtime/handler assertions | passed |
+| Capability, architecture, and rollout configuration group | focused API tests | 27 passed |
+| Engine on/intake off | shared immediate/action disposable-database fixture | 10 legacy cases passed; 6 governed cases skipped |
+| Engine on/intake on | same fixture, provider stubs, and parity assertions | 6 governed cases passed; 10 legacy cases skipped |
+| API TypeScript | `pnpm --filter @deft/api typecheck` | passed |
+| Diff hygiene at the code checkpoint | `git diff --check` and bounded inspection | passed |
 
-The consolidated runs reported 55 shared tests, 23 upgrade tests, 104 focused
-non-database API tests, 69 selected flag-off database tests, and 6 selected
-flag-on database tests with no assertion failures. Exact provider results,
-inputs, retry keys, ciphertext, and key material remained outside safe ledgers
-in the explicit leakage assertions.
+The engine flag remains the only runtime/keyring/worker drain control. The
+legacy intake flag is consumed only by Capability Service and the legacy
+employee-budget bridge. A governed selection calls no legacy fallback even when
+the governed path throws. No UI, migration, token, connector-ciphertext, hosted
+dependency, or App-origin authority changed in the split.
 
-## Rollback and operations decision
+## Historical evidence retained through ancestry
 
-`docs/app-run-operations.md` is the operator contract. It covers initial key
-generation, additive current-key rotation, read/verify overlap, reference-based
-retirement refusal, database-plus-keyring backup/restore, disaster recovery,
-flag-off pause behavior, downgrade queries, and the future hosted KMS seam.
+The pre-split certification at `5050b0f1` covered shared App Run contracts,
+additive migrations `.17`–`.21`, key separation and rotation, lifecycle and
+crash recovery, live authority and budgets, approval ownership, ancestry,
+receipts, Attention, provider pinning, worker registration, leakage boundaries,
+repository typecheck, and a production source build. PR C independently passed
+required CI after merge-train reconstruction, including a real pgvector fresh
+schema, supported upgrade, production image, self-host smoke, browser smoke,
+CodeQL, dependency checks, API tests, typecheck, and build.
 
-The source-level execution rollback floor is `944b265f`. Exact flag-off on that
-floor routes new calls through the unchanged legacy path and defers durable App
-Run jobs without spending attempts. Downgrade below that floor is not allowed
-until there are no nonterminal Runs, pending `app_run_invoke` approvals, or
-active `app-run-attempt` jobs.
+That evidence remains valid for unchanged trust/data boundaries. It does not
+prove the newer control matrix, worker drain transition, or final PR D tip;
+those belong to the consolidated delta run and release gate below.
 
-Existing connector ciphertext and legacy action-receipt writers remain
-unchanged. There was no in-place re-encryption, token migration, new hosted
-dependency, or default enablement.
+## Execution and UI ownership
 
-## Explicitly unverified release gates
+`app_runs` is canonical execution state. `agent_actions` is the current
+approval-inbox projection for the legacy compatibility entrance, and legacy
+action receipts remain historical compatibility. After native App approval/Run
+UI and Phase 6 parity are certified, no new App-origin path may depend on this
+dual ledger.
 
-- The Docker daemon is not running on this host, so no production image,
-  Compose self-host smoke, rolling-image drill, or scripted backup/restore was
-  executed. The production source build passed.
-- Local PostgreSQL has no pgvector installation. Per the established test
-  constraint, `CREATE EXTENSION vector` and another `db:push-full` bootstrap
-  were not retried. Static fresh/upgrade convergence tests passed, and the
-  disposable database exercised the Phase 3 `.17`–`.21` objects, but a final
-  pgvector-backed fresh install and supported-upgrade drill remains a release
-  gate.
-- The disposable clone has no upgrade ledger and predates current Agent Channel
-  lease columns. The legacy approval-resolver assertions passed, but its
-  best-effort `approval.resolved` Agent Channel projection logged the missing
-  `claim_owner` column. A current-schema environment must rerun that projection
-  before release; the Phase 3 compatibility fixture's approval/receipt path was
-  clean.
-- No browser approval/Run-inspection pass was run. Phase 3 changes no web UI and
-  has no App Run operator UI; API/database compatibility and the production web
-  build passed. A released-image browser smoke with a deterministic MCP provider
-  remains a widening gate.
-- No actual downgrade to an older released image was performed. The source
-  rollback behavior and queue pause are tested; the image-level drill remains
-  blocked by Docker and by the absence of a released C5-floor image.
+`AppRunOperationsService` is an internal, production-denied repair primitive.
+Phase 3 exposes no public operations route or UI. Present operator access is the
+bounded, tenant-scoped SQL and procedure contract in
+`docs/app-run-operations.md`.
 
-These omissions do not invalidate the local implementation result. They do
-block default-on rollout, broad opt-in recommendation, and hosted-service
-enablement. Phase 3 should merge as additive guarded work, then complete the
-listed image/current-schema gates before a release announcement widens use.
+## Remaining PR D consolidated gate
+
+- Run engine off/intake off exact legacy parity.
+- Engine on/intake off durable-job drain/resume and engine-off defer without an
+  attempt debit.
+- Accepted-approval transition across intake-on, drain-only, and engine-off
+  process states with one Run, one provider effect, and no fallback.
+- Complete `apps/api/test/app-run-engine-db.test.ts` at the final PR D tip.
+- Focused worker, connector, trust, approval, keyring, leakage, and MCP-boundary
+  tests; participating typecheck; final diff inspection.
+- One production source build only if normal PR CI does not run the equivalent
+  build against the exact tip.
+
+## Remaining release-artifact gates
+
+- Build and identify the immutable merged candidate image and its supported
+  predecessor; record both digests and migration ledgers.
+- Prove a current pgvector-backed fresh install and supported upgrade through
+  `.21` on release-capable infrastructure.
+- Run deterministic-provider canary and approval/browser smoke without claiming
+  a public Run UI.
+- Back up and restore database, uploads/App artifacts where applicable, and all
+  Run keyrings at consistent points; exercise rotation and referenced-key
+  retirement refusal.
+- Disable intake, drain and quiesce governed work, then perform the actual
+  supported image rollback drill.
+- Record the first released image containing the final split-control contract as
+  the operational rollback floor.
+
+Until those gates pass, App origin remains disabled, the legacy MCP canary stays
+default-off and unsupported for production widening, and no local source hash
+is an operational rollback floor.

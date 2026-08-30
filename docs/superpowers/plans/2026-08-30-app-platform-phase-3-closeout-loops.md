@@ -2,12 +2,12 @@
 
 | Field | Value |
 |---|---|
-| **Status** | In execution; Loops 0–1 complete, Loop 2 next |
+| **Status** | In execution; Loops 0–5 complete, Loop 6 consolidated delta certification next |
 | **Date** | 2026-08-30 |
 | **Architecture source** | `docs/superpowers/plans/2026-08-29-full-surface-app-platform.md` |
 | **Delivery source** | `docs/superpowers/plans/2026-08-30-full-surface-app-platform-delivery-plan.md` |
-| **Merged base** | `origin/master` at `399cd030` |
-| **Local closeout baseline** | clean worktree at `5050b0f1`; local-only and unreleased |
+| **Merged base** | PR C merge on `origin/master` at `9c8e9ac9` |
+| **Local closeout baseline** | PR D C4–D2 replay at `ee513a35`, plus split-control checkpoint `5cf88c51`; local-only and unreleased |
 | **Outcome** | Merge and release the guarded Phase 3 execution substrate with Run draining separated from legacy MCP intake, then hand Phase 4 one immutable supported baseline. |
 
 ## Decision
@@ -29,8 +29,9 @@ trains.
 
 ## Current immutable facts
 
-- `origin/master` includes the Phase 3 foundation and fake-provider engine.
-- The Phase 3 worktree is clean on a linear local-only chain:
+- `origin/master` includes the Phase 3 foundation, engine, and PR C trust/data
+  completion through merge `9c8e9ac9`.
+- The original Phase 3 source worktree carried this historical local chain:
   - `4c4f48c1` — C0 engine/cutover hardening;
   - `e6274c41` — C1 live authority and budget evidence;
   - `c3670207` — C2 approval compatibility projection;
@@ -38,8 +39,10 @@ trains.
   - `ffdab418` — C4 runtime/worker composition;
   - `944b265f` — C5 legacy capability cutover;
   - `5050b0f1` — local certification documentation.
-- None of the local hashes is merged, released, or an operational rollback
-  floor.
+- PR C replayed C0–C3 and merged as #273. Original hashes remain historical;
+  PR D was rebuilt from the merge as `1e4ac5a7` (C4), `bd28ff6f` (C5), and
+  `ee513a35` (historical certification), then added split controls at
+  `5cf88c51`. No PR D hash is released or an operational rollback floor.
 - Before Loop 0, the revised delivery and closeout plans plus the intended
   canonical-plan header/pointer edits existed only in the dirty main worktree.
   The dirty main copy of the canonical plan predates newer Phase 1–3 evidence,
@@ -48,9 +51,9 @@ trains.
 - Additive migrations `.19`–`.21` are implemented and tested. Preserve them;
   rewriting their history provides no functional value and invalidates useful
   evidence.
-- The current single `DEFT_APP_RUNS_ENABLED` value controls Run runtime/key
-  availability and selects new legacy MCP intake. That coupling prevents a safe
-  drain-only mode and must be split before PR D closes.
+- `DEFT_APP_RUNS_ENABLED` now controls Run runtime/key availability and draining;
+  `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` independently controls new legacy
+  MCP admission. The invalid off/on state is rejected at startup.
 - App origin, system origin, and automation origin remain fail-closed.
 - The current local host lacks pgvector and a running Docker release
   environment. Do not retry those known local limitations; run their gates once
@@ -282,6 +285,19 @@ comments unless a focused test proves a behavior defect.
 - Engine off/intake on fails startup.
 - All unspecified/malformed values fail closed.
 
+### Completed evidence
+
+- Split-control implementation checkpoint: `5cf88c51`.
+- Capability Service, architecture, and rollout configuration: 27 passed.
+- Real isolated startup rejects off/on; malformed uppercase intake fails closed.
+- API typecheck passed.
+- Shared disposable fixture with engine on/intake off: 10 legacy cases passed,
+  6 governed cases skipped.
+- Same fixture with engine on/intake on: 6 governed cases passed, 10 legacy
+  cases skipped.
+- Runtime and worker-handler source remain engine-controlled and have no intake
+  flag dependency. Dynamic drain/defer certification remains in Loop 6.
+
 ## Loop 5 — Correct closeout truth and ownership
 
 **Outcome:** documentation describes the shipped boundary rather than local
@@ -304,6 +320,16 @@ checkpoint assumptions.
 - Documentation/link checks when available.
 - `git diff --check`.
 - No database, browser, Docker, or build rerun for prose-only changes.
+
+### Completed record
+
+- The four-state matrix, drain-first rollback sequence, dual-ledger exit,
+  internal-only Operations boundary, App-origin deferral, and future immutable
+  released-image floor are recorded in the environment example, self-hosting
+  guide, operations runbook, ADR, canonical/delivery/Phase 3 plans, and
+  certification audit.
+- Compose already passes `.env` to services, so no duplicate variable wiring is
+  required.
 
 ## Loop 6 — Run one PR D delta certification
 
@@ -413,8 +439,8 @@ backup/restore and image rollback. Do not use the known deficient local host.
    all required keyrings at consistent points.
 10. Rotate encryption, fingerprint, and signing keys; prove retained payload/
     receipt reads and referenced-key retirement refusal.
-11. Prove flag-off pause and flag-on resume without attempt debit or duplicate
-    provider dispatch.
+11. Prove intake-off drain, engine-off pause, and engine-on resume without
+    attempt debit or duplicate provider dispatch.
 12. Use the frozen quiescence query to prove no nonterminal Runs, pending
    compatibility approvals, or active Run jobs remain, then perform the actual
    supported rollback drill between the recorded immutable source and target

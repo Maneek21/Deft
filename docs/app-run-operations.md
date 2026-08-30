@@ -1,9 +1,20 @@
 # Governed App Run operations
 
-Governed App Runs are a disabled-by-default self-host opt-in. Exact
-`DEFT_APP_RUNS_ENABLED=true` selects the Run-backed MCP capability entrance;
-every other value preserves the legacy entrance. App-origin execution remains
-disabled until a later phase supplies App grants and exact bindings.
+Governed App Runs are a disabled-by-default self-host opt-in with two controls.
+Exact `DEFT_APP_RUNS_ENABLED=true` enables key access, runtime composition, and
+draining of accepted work. Exact
+`DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=true` separately admits supported
+legacy MCP capability calls to that engine. Every other intake value preserves
+the legacy entrance. Intake-on with the engine off is invalid and API startup
+rejects it. App-origin execution remains disabled until a later phase supplies
+App grants and exact bindings.
+
+| Run engine | Legacy MCP intake | Operational state |
+|---|---|---|
+| Off | Off | Default legacy execution; no Run keys required; durable Run jobs defer |
+| On | Off | Decrypt, resume, and drain accepted Runs; new MCP calls stay legacy |
+| On | On | Default-off governed legacy MCP canary |
+| Off | On | Invalid startup configuration |
 
 This feature has two independent operational assets: the additive PostgreSQL
 Run ledger and `DEFT_APP_RUN_KEYRINGS`. Back them up, restore them, and rotate
@@ -21,8 +32,9 @@ node -e "const c=require('node:crypto');const k=()=>c.randomBytes(32).toString('
 Store the single-line result as the secret `DEFT_APP_RUN_KEYRINGS`; do not put
 it in source control, logs, tickets, or a database row. Set
 `DEFT_APP_RUNS_ENABLED=true` only after the supported upgrades through
-`0.3.0-preview.21` are applied. A process restart is required after either
-environment value changes.
+`0.3.0-preview.21` are applied. Leave legacy MCP intake false while validating
+startup and draining behavior; enable it only for a certified canary. A process
+restart is required after any Run environment value changes.
 
 Startup rejects malformed documents, reused key material, missing current key
 IDs, non-32-byte keys, and a keyring that omits any version still referenced by
@@ -72,10 +84,11 @@ For a restore:
    enabling App Runs.
 3. Boot with `DEFT_APP_RUNS_ENABLED=false` first and complete database and
    application health checks.
-4. Set the restored keyring and exact enable flag, restart, and require the
-   referenced-key inventory to pass.
+4. Set the restored keyring and engine flag with legacy MCP intake still off,
+   restart, and require the referenced-key inventory to pass.
 5. Inspect pending, running, and `unknown_outcome` Runs before accepting new
-   provider work. Never blindly retry an unknown outcome.
+   provider work. Never blindly retry an unknown outcome. Enable legacy MCP
+   intake only after that inspection and the release's canary gate pass.
 
 If the database survives but a referenced key does not, keep App Runs disabled.
 Encryption-key loss prevents retained input/result recovery; signing-key loss
@@ -84,20 +97,27 @@ matching. None can be reconstructed from database contents.
 
 ## Disable and rollback
 
-Turning the flag off is a safe entrance rollback on the Phase 3 execution
-floor. New calls use the legacy Capability Service path. Already-durable
-`app-run-attempt` jobs remain pending, do not call a provider, and do not spend
-their queue retry allowance. Pending App Run approvals also remain governed and
-cannot execute through the legacy action path. Re-enable the same keyring to
-resume them.
+The normal entrance rollback is to set
+`DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false` while keeping
+`DEFT_APP_RUNS_ENABLED=true`. New MCP calls return to the legacy Capability
+Service path while already accepted Runs, attempts, and approvals retain their
+governed identity and may drain. There is no shadow call or legacy fallback for
+accepted governed work.
 
-The source-level execution rollback floor is `944b265f` or a later released
-image containing that commit. Images below that floor do not understand the
-pause contract for `app-run-attempt` jobs and must not be used while governed
-work is active. To move below the floor:
+Set the engine false only after intake is false. Engine-off defers durable
+`app-run-attempt` jobs without calling a provider or spending queue retry
+allowance; pending App Run approvals remain governed. Re-enable the same
+keyring and engine to resume them. Engine-off/intake-on is rejected rather than
+silently falling through.
 
-1. Quiesce traffic that can create MCP capability calls while still running the
-   Phase 3 floor with the flag and keyring available.
+Local C5 and closeout commit hashes are review checkpoints, not an operational
+rollback floor. The floor is the first immutable released image whose release
+record explicitly contains this split-control and job-pause contract. Until
+that artifact and its supported predecessor are recorded, do not treat the
+legacy MCP canary as production-supported. To move below the recorded floor:
+
+1. On the current floor, turn legacy MCP intake off but leave the engine and
+   keyring available; quiesce traffic that could create more governed work.
 2. Resolve or cancel pending approvals and let known work settle. Reconcile
    `unknown_outcome` without another provider call.
 3. Confirm there are no nonterminal Runs, pending App Run approvals, or active
@@ -114,9 +134,9 @@ work is active. To move below the floor:
     GROUP BY status;
    ```
 
-4. Set the flag false, restart on the Phase 3 floor, verify legacy execution,
-   and only then deploy an older image. Preserve the additive tables and
-   keyring backup; do not down-migrate or delete them.
+4. Set the engine false, restart on the current floor, verify legacy execution
+   and job deferral, and only then deploy the supported older image. Preserve
+   the additive tables and keyring backup; do not down-migrate or delete them.
 
 If any query is nonzero, remain on the Phase 3 floor. An in-flight process loss
 after a provider call may correctly produce `unknown_outcome`; that is an

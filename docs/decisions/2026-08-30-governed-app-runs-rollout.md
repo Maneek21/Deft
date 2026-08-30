@@ -1,7 +1,8 @@
 # ADR: Additive Governed App Runs and staged secret rollout
 
-- Status: Accepted; governed legacy-connector cutover implemented behind an
-  exact disabled-by-default opt-in, pending release artifact certification
+- Status: Accepted; Run engine/draining and governed legacy-connector intake
+  implemented behind separate exact disabled-by-default controls, pending
+  release artifact certification
 - Date: 2026-08-30
 - Depends on: Capability Service squash merge `9ba7b7c8` from PR #270
 - Supersedes: the big-bang sequencing implied by the earlier App Protocol v2
@@ -37,7 +38,7 @@ schema, migration, approval, provider-call, receipt, worker, and rollback risk.
 An external-effect shadow comparison is unsafe, and a rollback could strand
 ciphertext an older image cannot read. Rejected.
 
-### Add a dormant Run subsystem and cut over behind a fail-closed flag
+### Add a durable Run subsystem and cut over behind fail-closed controls
 
 Add new tables and a deep App Run service, preserve `agent_actions` as a linked
 approval adapter, and keep current execution active until parity and release
@@ -185,9 +186,12 @@ Phase 3 is delivered as additive merge trains rather than one stacked PR:
 
 1. contracts, key readers, and dormant schema;
 2. Run lifecycle, attempts, and recovery using fake providers;
-3. approval and legacy compatibility behind `DEFT_APP_RUNS_ENABLED=false`;
+3. approval and legacy compatibility while all production entrances remain
+   disabled;
 4. operations, retention, rotation, and release certification; and
-5. an explicit decision to widen opt-in after parity, never an implicit default.
+5. an independent engine/drain control plus a default-off legacy MCP intake
+   control, followed by an explicit decision to widen opt-in after parity,
+   never an implicit default.
 
 The Phase 2 PR remained unchanged while this plan was prepared. The Phase 3
 planning branch is now rebased onto the exact squash merge. The upgrade manifest
@@ -265,10 +269,11 @@ database writes.
 Receipts and Attention are projections over the Run ledger, not alternate
 execution authorities. Native receipts contain only validated safe facts and a
 digest of any encrypted result envelope; signing-key references are inventoried
-inside the secret boundary. Operator list/metrics/audit surfaces select an
-explicit safe field set, are tenant-scoped and bounded, and have no provider
-executor dependency. Repair may append missing events, receipts, and Attention,
-but never invokes or retries an external effect.
+inside the secret boundary. The bounded operations service is an internal,
+production-denied repair primitive with no route or UI. Present operator access
+is the documented tenant-scoped SQL/runbook path. Repair may append missing
+events, receipts, and Attention, but never invokes or retries an external
+effect.
 
 ### Production runtime and compatibility cutover
 
@@ -279,14 +284,17 @@ runner, and operations service. The existing PostgreSQL queue carries only
 tenant, Run, and exact attempt identity. No job contains decrypted input or a
 provider callback.
 
-Capability Service selects exactly one entrance from the exact process-start
-flag: legacy while disabled, governed while enabled. There is no shadow call and
-no fallback after selecting the governed path. Existing MCP approval policy
-remains the compatibility gate. Auto-safe reads may enter directly; every write
-or stricter operation must present the exact approved `agent_actions` occurrence
-as host-owned evidence. That action identity also supplies the stable replay
-identity, so concurrent approval or action retries converge on one Run, attempt,
-provider call, budget reservation, native receipt, and legacy receipt.
+The existing `DEFT_APP_RUNS_ENABLED` control owns key access, runtime
+composition, and draining. The separate exact default-false
+`DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` control selects the Capability Service
+entrance: legacy while intake is off, governed while intake is on. Intake cannot
+start while the engine is off. There is no shadow call and no fallback after
+selecting the governed path. Existing MCP approval policy remains the
+compatibility gate. Auto-safe reads may enter directly; every write or stricter
+operation must present the exact approved `agent_actions` occurrence as
+host-owned evidence. That action identity also supplies the stable replay
+identity, so concurrent approval or action retries converge on one Run,
+attempt, provider call, budget reservation, native receipt, and legacy receipt.
 
 The compatibility Run records `review_requirement: policy` because the existing
 action lifecycle has already satisfied the current host policy before the Run
@@ -298,8 +306,9 @@ safe, and `origin = app` remains rejected.
 Employee budgets move at the durable first-attempt boundary. A governed denial
 that occurs before any attempt is authorized does not consume a slot; a selected
 external effect reserves exactly one slot even under concurrency. Safe reads do
-not debit the action counter. Flag-off behavior and its historical ordering are
-unchanged.
+not debit the action counter. The legacy employee budget path is skipped only
+when legacy MCP intake actually selects the governed entrance; engine-on with
+intake-off preserves the historical ordering.
 
 The authorized caller can receive the exact provider response transiently and,
 when representable and retained, replay it through the access-controlled result
@@ -310,18 +319,22 @@ outcome into a retry.
 
 ### Operational disable and rollback floor
 
-Exact flag-off stops new governed entrances. An already-durable attempt job is
-returned to pending under its existing lease fence without spending queue retry
-allowance or calling the provider. Re-enabling the same keyring resumes it.
-Pending governed approvals also cannot fall through to legacy execution.
+Turning legacy MCP intake off stops new governed admission while the enabled
+engine continues to drain accepted work. Turning the engine off after intake is
+off returns already-durable attempt jobs to pending under their lease fence
+without spending queue retry allowance or calling the provider. Pending
+governed approvals cannot fall through to legacy execution. Engine-off with
+intake-on is an invalid startup state.
 
-The source-level execution rollback floor is `944b265f`. A released image that
-contains that commit may safely run with the entrance disabled and preserved
-pending jobs. An image below that floor may treat an App Run job as unknown or
-exhaust it, so downgrade below the floor requires quiescing new calls and proving
-there are no nonterminal Runs, pending `app_run_invoke` approvals, or active
-`app-run-attempt` jobs. Additive Run tables and the matching keyring backup are
-preserved across rollback; they are never down-migrated as part of the gate.
+Source commits such as the original C5 checkpoint are review evidence only.
+The operational execution rollback floor is the first immutable released image
+whose release record names the final split-control contract. An image below
+that floor may treat an App Run job as unknown or exhaust it, so downgrade below
+the floor requires disabling intake, draining/quiescing governed work, and
+proving there are no nonterminal Runs, pending `app_run_invoke` approvals, or
+active `app-run-attempt` jobs. Additive Run tables and the matching keyring
+backup are preserved across rollback; they are never down-migrated as part of
+the gate.
 
 Detailed generation, rotation, retirement, backup/restore, disaster recovery,
 and rollback steps live in `docs/app-run-operations.md`.
@@ -332,7 +345,9 @@ and rollback steps live in `docs/app-run-operations.md`.
 - Old and new execution can coexist in code, but exactly one is selected for an
   invocation; they are never both called.
 - The linked legacy approval row remains temporarily necessary for native UI
-  compatibility.
+  compatibility. `app_runs` is canonical; after native App approval/Run UI and
+  Phase 6 parity are certified, no new App-origin path may depend on this dual
+  ledger or on legacy receipt creation.
 - New App Run tables can be rolled back by using an older image because that
   image ignores them, but any change to existing ciphertext writers has a
   separate rollback-floor gate.
@@ -357,7 +372,9 @@ and rollback steps live in `docs/app-run-operations.md`.
   events, receipts, metrics, Attention, and trace output. Separate tests prove
   exact output is available only through the authorized invocation/result path
   during its retention window.
-- Flag-off tests preserve every Phase 2 compatibility path; flag-on golden tests
-  certify legacy outcomes without external shadow execution.
+- Engine-off/intake-off and engine-on/intake-off tests preserve Phase 2
+  compatibility; engine-on/intake-on golden tests certify governed legacy
+  outcomes without external shadow execution; engine-off/intake-on fails
+  startup.
 - Self-host, backup/restore, rotation, rollback-floor, image, browser approval,
   security, and operator-recovery checks pass before opt-in is widened.

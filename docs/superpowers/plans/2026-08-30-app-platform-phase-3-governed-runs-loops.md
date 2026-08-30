@@ -1,10 +1,10 @@
 # App Platform Phase 3: Governed App Runs and Secret Service loops
 
-**Status:** local implementation and certification complete through D2; PR A
-(#271) and PR B (#272) merged the dormant foundation and fake-provider engine.
-C0–C5 are preserved as local review checkpoints through governed-cutover commit
-`944b265f`. External released-image, current-schema pgvector, browser, and
-self-host drills remain publication gates recorded in the certification audit.
+**Status:** PR A (#271), PR B (#272), and trust/data PR C (#273) are merged.
+Runtime/cutover PR D is replayed from PR C's merge, and its split-control code
+checkpoint is `5cf88c51`; consolidated delta and release-artifact certification
+remain. Original C0–C5 hashes are historical review checkpoints, not supported
+release floors.
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
 the foundation selected `.17`, PR B selected `.18`, and the post-engine audit
@@ -134,7 +134,8 @@ worker, and Capability Service entrance.
 ### Milestone C: compatibility integration
 
 Loops 5–7 integrate approvals, Capability Service, existing actors, receipts,
-Attention, ancestry, and operator inspection behind a fail-closed flag.
+Attention, ancestry, and internal bounded inspection/repair behind fail-closed
+controls.
 
 **Implemented rebaseline:** C1–C3 delivered Loop 5 and Loop 7 boundaries before
 C4 composed the production runtime. C5 then selected the Run-backed path in
@@ -150,11 +151,13 @@ Loops 8–9 prove key rotation, supported upgrades, rollback, self-host operatio
 parity, and leakage safety. Widening the flag remains a separate explicit
 decision.
 
-**Final Phase 3 decision:** remain disabled by default and self-host opt-in. The
-source-level rollback floor is C5 commit `944b265f`; downgrading below it is
-allowed only after governed work is quiescent. Full operations are documented
-in `docs/app-run-operations.md`; verified evidence and release-only omissions
-are recorded in
+**Current Phase 3 decision:** remain disabled by default and self-host opt-in.
+The Run engine/drain and legacy MCP intake controls are independent; App origin
+remains denied. No local hash is an operational rollback floor. The first
+immutable released image containing the final split-control contract becomes
+the floor only after the release gate records it. Full operations are
+documented in `docs/app-run-operations.md`; verified evidence and release-only
+omissions are recorded in
 `docs/superpowers/audits/2026-08-30-app-platform-phase-3-certification.md`.
 
 ## Invariants
@@ -249,8 +252,9 @@ service interface. They do not receive decrypted input or a provider callback.
   unknown-key, rotation, and constant-time verification tests pass.
 - Low-entropy retry/input values cannot be verified by an offline database-only
   guessing attack.
-- Production startup fails only when App Runs are enabled without valid Run
-  keyrings; flag-off deployments retain the existing environment contract.
+- Production startup fails when the Run engine is enabled without valid Run
+  keyrings or when legacy MCP intake is enabled without the engine; the default
+  off/off deployment retains the existing environment contract.
 - Architecture tests prove only the secret repository handles Run ciphertext and
   only the signer handles signing key material.
 
@@ -410,7 +414,7 @@ service interface. They do not receive decrypted input or a provider callback.
   adapter or changed only under a separately approved migration decision.
 - No App-origin invocation succeeds.
 
-## Loop 7: Ancestry, receipts, Attention, and operator inspection
+## Loop 7: Ancestry, receipts, Attention, and internal inspection
 
 ### Work
 
@@ -422,8 +426,9 @@ service interface. They do not receive decrypted input or a provider callback.
   Do not migrate legacy receipt rows in place.
 - Publish idempotent Run Attention events for approval, failure,
   `unknown_outcome`, and repair gaps using the existing Attention service.
-- Add safe operator inspection and reconciliation surfaces plus bounded metrics.
-  Raw ciphertext and retry keys are never operator-list fields or metric labels.
+- Add safe internal inspection and reconciliation primitives plus bounded
+  metrics. Expose no production route or UI. Raw ciphertext and retry keys are
+  never selected fields or metric labels.
 - Add reconciliation reports for missing terminal events/receipts/Attention.
 
 ### Exit evidence
@@ -486,10 +491,10 @@ service interface. They do not receive decrypted input or a provider callback.
 - No raw input, retry key, ciphertext, provider secret, full output, or
   signing/fingerprint material appears in any generic/list or observability
   surface; the exact result is confined to its explicitly authorized response.
-- Every flag-on governed provider effect has a Run and attempt; every reviewed
+- Every intake-on governed provider effect has a Run and attempt; every reviewed
   Run has one linked approval adapter; every terminal governed effect has a
-  receipt or a visible repair gap. Flag-off legacy execution remains explicitly
-  outside that claim.
+  receipt or a visible repair gap. Intake-off legacy execution remains
+  explicitly outside that claim, including while the engine drains older work.
 - Unknown outcomes are inspectable and never auto-retried.
 - The flag/default, rollback floor, key versions, unverified requirements, and
   remaining legacy-encryption work are reported explicitly.
@@ -500,15 +505,15 @@ service interface. They do not receive decrypted input or a provider callback.
    schema, no execution cutover.
 2. **PR B — engine:** Loops 3–4; lifecycle, idempotency, retention, attempts, fake
    providers, and recovery.
-3. **PR C0 — engine cutover gate:** additive `.19`, execution-release and budget
-   evidence, exact-attempt jobs, lease heartbeat, provider-result taxonomy, and
-   horizon-safe replay; the engine remains unwired.
-4. **C1–C5 — integration train:** live authorization/budget, safe approval
-   adapter, receipts/Attention/operator/ancestry, pinned provider runtime and
-   worker, then an explicit guarded cutover. Each slice must be independently
-   green and may be its own PR.
-5. **D1–D2 — certification:** release/rotation/rollback evidence and the
-   explicit opt-in decision.
+3. **PR C — trust and data completion (#273):** C0–C3 additive `.19`–`.21`,
+   execution release, live authorization/budget, safe approval projection,
+   receipts, Attention, ancestry, and internal repair invariants.
+4. **PR D — guarded runtime and closeout:** C4–C5 production composition,
+   pinned provider/worker, independent engine and legacy-intake controls, and
+   consolidated delta certification.
+5. **Release gate:** immutable image, current-schema/pgvector, backup/restore,
+   rotation, rollback, deterministic-provider, and browser evidence before the
+   opt-in is called supported.
 
 Do not hold all merge trains for one final merge. Merge each independently green,
 then rebase the next train onto its merge commit. This preserves reviewability,
