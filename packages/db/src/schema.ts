@@ -628,6 +628,327 @@ export const favorites = pgTable('favorites', {
   uniqueIndex('favorite_unique').on(t.user_id, t.entity_type, t.entity_id),
 ]);
 
+// ═══ GOVERNED APP RUNS (DORMANT PHASE 3 FOUNDATION) ═══
+// These tables are additive and have no execution consumer until a later,
+// separately certified phase. Secret payload ciphertext is intentionally split
+// from safe Run metadata so ordinary app_runs selections cannot expose it.
+export const capabilityProviderSnapshots = pgTable('capability_provider_snapshots', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  provider_kind: text('provider_kind').$type<'mcp'>().notNull(),
+  provider_instance_id: text('provider_instance_id').notNull(),
+  adapter_contract_version: text('adapter_contract_version').notNull(),
+  snapshot_digest: text('snapshot_digest').notNull(),
+  safe_snapshot: jsonb('safe_snapshot').$type<Record<string, unknown>>().notNull(),
+  captured_at: timestamp('captured_at').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  unique('capability_provider_snapshots_org_id_id_unique').on(t.org_id, t.id),
+  uniqueIndex('capability_provider_snapshots_identity_digest_unique')
+    .on(t.org_id, t.provider_kind, t.provider_instance_id, t.snapshot_digest),
+  index('capability_provider_snapshots_provider_idx')
+    .on(t.org_id, t.provider_kind, t.provider_instance_id, t.captured_at),
+  check('capability_provider_snapshots_kind_check', sql`${t.provider_kind} IN ('mcp')`),
+  check('capability_provider_snapshots_digest_check', sql`${t.snapshot_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('capability_provider_snapshots_json_check', sql`jsonb_typeof(${t.safe_snapshot}) = 'object'`),
+  check('capability_provider_snapshots_size_check', sql`octet_length(${t.safe_snapshot}::text) <= 1048576`),
+]);
+
+export const appRuns = pgTable('app_runs', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  contract_version: text('contract_version').$type<'deft.app_run.v1'>().notNull(),
+  origin_kind: text('origin_kind').$type<'core' | 'legacy_connector' | 'app'>().notNull(),
+  initiating_actor_type: text('initiating_actor_type')
+    .$type<'human' | 'agent_employee' | 'system' | 'automation'>()
+    .notNull(),
+  initiating_actor_id: text('initiating_actor_id').notNull(),
+  execution_actor_type: text('execution_actor_type')
+    .$type<'human' | 'agent_employee' | 'system' | 'automation'>()
+    .notNull(),
+  execution_actor_id: text('execution_actor_id').notNull(),
+  provider_kind: text('provider_kind').$type<'mcp'>().notNull(),
+  provider_instance_id: text('provider_instance_id').notNull(),
+  operation_name: text('operation_name').notNull(),
+  provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  state: text('state').$type<
+    | 'pending'
+    | 'pending_approval'
+    | 'running'
+    | 'waiting_external'
+    | 'succeeded'
+    | 'failed'
+    | 'cancelled'
+    | 'expired'
+    | 'unknown_outcome'
+  >().default('pending').notNull(),
+  risk_class: text('risk_class')
+    .$type<'read' | 'internal_write' | 'external_write' | 'destructive' | 'privileged'>()
+    .notNull(),
+  review_requirement: text('review_requirement').$type<'policy' | 'always'>().notNull(),
+  review_scope: text('review_scope')
+    .$type<'per_invocation' | 'immutable_batch' | 'approved_automation_definition' | 'forbidden_in_automation'>()
+    .notNull(),
+  retry_class: text('retry_class').$type<'safe' | 'idempotent_with_key' | 'unsafe_or_unknown'>().notNull(),
+  retention_class: text('retention_class').$type<'ephemeral' | 'standard' | 'extended'>().notNull(),
+  idempotency_key_version: text('idempotency_key_version').notNull(),
+  idempotency_fingerprint: text('idempotency_fingerprint').notNull(),
+  input_fingerprint_key_version: text('input_fingerprint_key_version').notNull(),
+  input_fingerprint: text('input_fingerprint').notNull(),
+  authorization_snapshot: jsonb('authorization_snapshot').$type<Record<string, unknown>>().notNull(),
+  safe_preview: jsonb('safe_preview').$type<Record<string, unknown>>().notNull(),
+  safe_outcome: jsonb('safe_outcome').$type<Record<string, unknown> | null>(),
+  root_run_id: text('root_run_id').notNull(),
+  parent_run_id: text('parent_run_id'),
+  depth: integer('depth').default(0).notNull(),
+  input_expires_at: timestamp('input_expires_at').notNull(),
+  result_expires_at: timestamp('result_expires_at').notNull(),
+  input_purged_at: timestamp('input_purged_at'),
+  result_purged_at: timestamp('result_purged_at'),
+  started_at: timestamp('started_at'),
+  terminal_at: timestamp('terminal_at'),
+  unknown_outcome_at: timestamp('unknown_outcome_at'),
+  reconciled_at: timestamp('reconciled_at'),
+  cancelled_at: timestamp('cancelled_at'),
+  ...timestamps(),
+}, (t) => [
+  unique('app_runs_org_id_id_unique').on(t.org_id, t.id),
+  foreignKey({
+    columns: [t.org_id, t.provider_snapshot_id],
+    foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.id],
+    name: 'app_runs_org_provider_snapshot_fk',
+  }).onDelete('no action'),
+  uniqueIndex('app_runs_idempotency_unique').on(
+    t.org_id,
+    t.initiating_actor_type,
+    t.initiating_actor_id,
+    t.provider_kind,
+    t.provider_instance_id,
+    t.operation_name,
+    t.idempotency_key_version,
+    t.idempotency_fingerprint,
+  ),
+  index('app_runs_org_state_idx').on(t.org_id, t.state, t.created_at),
+  index('app_runs_root_idx').on(t.org_id, t.root_run_id, t.created_at),
+  index('app_runs_parent_idx').on(t.org_id, t.parent_run_id),
+  index('app_runs_secret_expiry_idx').on(t.state, t.input_expires_at, t.result_expires_at),
+  check('app_runs_origin_check', sql`${t.origin_kind} IN ('core', 'legacy_connector', 'app')`),
+  check('app_runs_contract_version_check', sql`${t.contract_version} = 'deft.app_run.v1'`),
+  // App origin is reserved but cannot persist until connected App grants exist.
+  check('app_runs_app_origin_disabled_check', sql`${t.origin_kind} <> 'app'`),
+  check('app_runs_actor_type_check', sql`
+    ${t.initiating_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
+    AND ${t.execution_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
+  `),
+  check('app_runs_provider_kind_check', sql`${t.provider_kind} IN ('mcp')`),
+  check('app_runs_state_check', sql`${t.state} IN (
+    'pending', 'pending_approval', 'running', 'waiting_external', 'succeeded',
+    'failed', 'cancelled', 'expired', 'unknown_outcome'
+  )`),
+  check('app_runs_risk_check', sql`${t.risk_class} IN ('read', 'internal_write', 'external_write', 'destructive', 'privileged')`),
+  check('app_runs_review_requirement_check', sql`${t.review_requirement} IN ('policy', 'always')`),
+  check('app_runs_review_scope_check', sql`${t.review_scope} IN ('per_invocation', 'immutable_batch', 'approved_automation_definition', 'forbidden_in_automation')`),
+  check('app_runs_retry_class_check', sql`${t.retry_class} IN ('safe', 'idempotent_with_key', 'unsafe_or_unknown')`),
+  check('app_runs_retention_class_check', sql`${t.retention_class} IN ('ephemeral', 'standard', 'extended')`),
+  check('app_runs_fingerprint_check', sql`
+    ${t.idempotency_fingerprint} ~ '^hmac-sha256:[a-f0-9]{64}$'
+    AND ${t.input_fingerprint} ~ '^hmac-sha256:[a-f0-9]{64}$'
+  `),
+  check('app_runs_key_version_check', sql`
+    ${t.idempotency_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.input_fingerprint_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+  `),
+  check('app_runs_json_check', sql`
+    jsonb_typeof(${t.authorization_snapshot}) = 'object'
+    AND jsonb_typeof(${t.safe_preview}) = 'object'
+    AND (${t.safe_outcome} IS NULL OR jsonb_typeof(${t.safe_outcome}) = 'object')
+  `),
+  check('app_runs_json_size_check', sql`
+    octet_length(${t.authorization_snapshot}::text) <= 65536
+    AND octet_length(${t.safe_preview}::text) <= 16384
+    AND (${t.safe_outcome} IS NULL OR octet_length(${t.safe_outcome}::text) <= 32768)
+  `),
+  check('app_runs_ancestry_check', sql`
+    ${t.depth} >= 0 AND ${t.depth} <= 8
+    AND (
+      (${t.depth} = 0 AND ${t.parent_run_id} IS NULL AND ${t.root_run_id} = ${t.id})
+      OR (${t.depth} > 0 AND ${t.parent_run_id} IS NOT NULL)
+    )
+  `),
+  check('app_runs_expiry_check', sql`${t.result_expires_at} >= ${t.input_expires_at}`),
+]);
+
+export const appRunAttempts = pgTable('app_run_attempts', {
+  ...id(),
+  ...orgId(),
+  run_id: text('run_id').notNull(),
+  attempt_number: integer('attempt_number').notNull(),
+  state: text('state').$type<
+    'pending' | 'claimed' | 'provider_call_started' | 'succeeded' | 'failed' | 'cancelled' | 'unknown_outcome'
+  >().default('pending').notNull(),
+  claim_owner: text('claim_owner'),
+  claim_token: text('claim_token'),
+  claimed_at: timestamp('claimed_at'),
+  lease_expires_at: timestamp('lease_expires_at'),
+  provider_call_started_at: timestamp('provider_call_started_at'),
+  provider_call_finished_at: timestamp('provider_call_finished_at'),
+  provider_idempotency_key_version: text('provider_idempotency_key_version'),
+  provider_idempotency_fingerprint: text('provider_idempotency_fingerprint'),
+  safe_outcome: jsonb('safe_outcome').$type<Record<string, unknown> | null>(),
+  error_code: text('error_code'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.run_id],
+    foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'app_run_attempts_org_run_fk',
+  }).onDelete('cascade'),
+  unique('app_run_attempts_org_run_id_unique').on(t.org_id, t.run_id, t.id),
+  uniqueIndex('app_run_attempts_number_unique').on(t.org_id, t.run_id, t.attempt_number),
+  index('app_run_attempts_lease_idx').on(t.state, t.lease_expires_at),
+  check('app_run_attempts_number_check', sql`${t.attempt_number} >= 1`),
+  check('app_run_attempts_state_check', sql`${t.state} IN ('pending', 'claimed', 'provider_call_started', 'succeeded', 'failed', 'cancelled', 'unknown_outcome')`),
+  check('app_run_attempts_claim_shape_check', sql`
+    (${t.claim_owner} IS NULL AND ${t.claim_token} IS NULL AND ${t.claimed_at} IS NULL AND ${t.lease_expires_at} IS NULL)
+    OR (${t.claim_owner} IS NOT NULL AND ${t.claim_token} IS NOT NULL AND ${t.claimed_at} IS NOT NULL AND ${t.lease_expires_at} IS NOT NULL)
+  `),
+  check('app_run_attempts_provider_call_time_check', sql`
+    ${t.provider_call_finished_at} IS NULL
+    OR (${t.provider_call_started_at} IS NOT NULL AND ${t.provider_call_finished_at} >= ${t.provider_call_started_at})
+  `),
+  check('app_run_attempts_idempotency_shape_check', sql`
+    (${t.provider_idempotency_key_version} IS NULL AND ${t.provider_idempotency_fingerprint} IS NULL)
+    OR (
+      ${t.provider_idempotency_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+      AND ${t.provider_idempotency_fingerprint} ~ '^hmac-sha256:[a-f0-9]{64}$'
+    )
+  `),
+  check('app_run_attempts_safe_outcome_check', sql`
+    ${t.safe_outcome} IS NULL
+    OR (jsonb_typeof(${t.safe_outcome}) = 'object' AND octet_length(${t.safe_outcome}::text) <= 32768)
+  `),
+]);
+
+export const appRunSecretPayloads = pgTable('app_run_secret_payloads', {
+  ...id(),
+  ...orgId(),
+  run_id: text('run_id').notNull(),
+  attempt_id: text('attempt_id'),
+  payload_kind: text('payload_kind').$type<'input' | 'output'>().notNull(),
+  envelope_version: text('envelope_version').notNull(),
+  algorithm: text('algorithm').$type<'aes-256-gcm'>().notNull(),
+  key_version: text('key_version').notNull(),
+  nonce_b64: text('nonce_b64').notNull(),
+  ciphertext_b64: text('ciphertext_b64').notNull(),
+  auth_tag_b64: text('auth_tag_b64').notNull(),
+  payload_bytes: integer('payload_bytes').notNull(),
+  expires_at: timestamp('expires_at').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.run_id],
+    foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'app_run_secret_payloads_org_run_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.org_id, t.run_id, t.attempt_id],
+    foreignColumns: [appRunAttempts.org_id, appRunAttempts.run_id, appRunAttempts.id],
+    name: 'app_run_secret_payloads_org_attempt_fk',
+  }).onDelete('cascade'),
+  uniqueIndex('app_run_secret_payloads_input_unique')
+    .on(t.org_id, t.run_id, t.payload_kind)
+    .where(sql`${t.payload_kind} = 'input'`),
+  uniqueIndex('app_run_secret_payloads_output_unique')
+    .on(t.org_id, t.attempt_id, t.payload_kind)
+    .where(sql`${t.payload_kind} = 'output'`),
+  index('app_run_secret_payloads_expiry_idx').on(t.expires_at),
+  check('app_run_secret_payloads_kind_shape_check', sql`
+    (${t.payload_kind} = 'input' AND ${t.attempt_id} IS NULL AND ${t.payload_bytes} BETWEEN 1 AND 262144)
+    OR (${t.payload_kind} = 'output' AND ${t.attempt_id} IS NOT NULL AND ${t.payload_bytes} BETWEEN 1 AND 1048576)
+  `),
+  check('app_run_secret_payloads_envelope_check', sql`
+    ${t.envelope_version} = 'deft.secret.v1'
+    AND ${t.algorithm} = 'aes-256-gcm'
+    AND ${t.key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.nonce_b64} ~ '^[A-Za-z0-9+/]{16}$'
+    AND ${t.auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'
+    AND ${t.ciphertext_b64} ~ '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$'
+  `),
+  check('app_run_secret_payloads_size_check', sql`
+    octet_length(decode(${t.ciphertext_b64}, 'base64')) = ${t.payload_bytes}
+  `),
+]);
+
+export const appRunEvents = pgTable('app_run_events', {
+  ...id(),
+  ...orgId(),
+  run_id: text('run_id').notNull(),
+  event_version: text('event_version').$type<'deft.app_run_event.v1'>()
+    .default('deft.app_run_event.v1').notNull(),
+  sequence: integer('sequence').notNull(),
+  event_type: text('event_type').notNull(),
+  actor_type: text('actor_type'),
+  actor_id: text('actor_id'),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.run_id],
+    foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'app_run_events_org_run_fk',
+  }).onDelete('cascade'),
+  uniqueIndex('app_run_events_sequence_unique').on(t.org_id, t.run_id, t.sequence),
+  index('app_run_events_run_idx').on(t.org_id, t.run_id, t.created_at),
+  check('app_run_events_sequence_check', sql`${t.sequence} >= 1`),
+  check('app_run_events_version_check', sql`${t.event_version} = 'deft.app_run_event.v1'`),
+  check('app_run_events_type_check', sql`${t.event_type} IN (
+    'run_created', 'approval_requested', 'approval_resolved', 'attempt_created',
+    'attempt_claimed', 'provider_call_started', 'attempt_terminal', 'run_transitioned',
+    'secrets_purged', 'reconciliation_recorded', 'repair_gap'
+  )`),
+  check('app_run_events_actor_shape_check', sql`
+    (${t.actor_type} IS NULL AND ${t.actor_id} IS NULL)
+    OR (${t.actor_type} IN ('human', 'agent_employee', 'system', 'automation') AND ${t.actor_id} IS NOT NULL)
+  `),
+  check('app_run_events_payload_check', sql`jsonb_typeof(${t.payload}) = 'object' AND octet_length(${t.payload}::text) <= 32768`),
+]);
+
+export const appRunReceipts = pgTable('app_run_receipts', {
+  ...id(),
+  ...orgId(),
+  run_id: text('run_id').notNull(),
+  attempt_id: text('attempt_id'),
+  receipt_version: text('receipt_version').$type<'deft.app_run_receipt.v1'>()
+    .default('deft.app_run_receipt.v1').notNull(),
+  receipt_key: text('receipt_key').notNull(),
+  receipt_kind: text('receipt_kind').$type<'approval' | 'attempt_terminal' | 'reconciliation' | 'repair'>().notNull(),
+  envelope: jsonb('envelope').$type<Record<string, unknown>>().notNull(),
+  envelope_digest: text('envelope_digest').notNull(),
+  signing_key_version: text('signing_key_version').notNull(),
+  signature_hmac: text('signature_hmac').notNull(),
+  signed_at: timestamp('signed_at').defaultNow().notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.run_id],
+    foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'app_run_receipts_org_run_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.org_id, t.run_id, t.attempt_id],
+    foreignColumns: [appRunAttempts.org_id, appRunAttempts.run_id, appRunAttempts.id],
+    name: 'app_run_receipts_org_attempt_fk',
+  }).onDelete('cascade'),
+  uniqueIndex('app_run_receipts_key_unique').on(t.org_id, t.run_id, t.receipt_key),
+  index('app_run_receipts_run_idx').on(t.org_id, t.run_id, t.signed_at),
+  check('app_run_receipts_kind_check', sql`${t.receipt_kind} IN ('approval', 'attempt_terminal', 'reconciliation', 'repair')`),
+  check('app_run_receipts_version_check', sql`${t.receipt_version} = 'deft.app_run_receipt.v1'`),
+  check('app_run_receipts_envelope_check', sql`jsonb_typeof(${t.envelope}) = 'object' AND octet_length(${t.envelope}::text) <= 32768`),
+  check('app_run_receipts_digest_check', sql`${t.envelope_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_run_receipts_signature_check', sql`${t.signature_hmac} ~ '^hmac-sha256:[a-f0-9]{64}$'`),
+  check('app_run_receipts_key_version_check', sql`${t.signing_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'`),
+]);
+
 // ═══ AGENT: ACTIONS LOG ═══
 // Note: agent_conversations and agent_messages were dropped in migration 0065
 // (Phase 2 agent-chat unification). Conversation IDs are now space IDs in the
@@ -641,6 +962,9 @@ export const agentActions = pgTable('agent_actions', {
   agent_employee_id: text('agent_employee_id'),
   tool_use_id: text('tool_use_id'), // Anthropic tool_use block id (toolu_*)
   source: text('source').default('native'),
+  // Nullable compatibility link only. App Runs are dormant and never created
+  // by the current action paths in the foundation phase.
+  app_run_id: text('app_run_id'),
   mcp_connection_id: text('mcp_connection_id'),
   plan_id: text('plan_id'),
   plan_step_id: text('plan_step_id'),
@@ -660,9 +984,17 @@ export const agentActions = pgTable('agent_actions', {
   undone_at: timestamp('undone_at'),
   ...timestamps(),
 }, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.app_run_id],
+    foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'agent_actions_org_app_run_fk',
+  }).onDelete('restrict'),
   index('agent_action_org_idx').on(t.org_id),
   index('agent_action_user_idx').on(t.user_id),
   index('agent_action_runtime_request_idx').on(t.org_id, t.agent_employee_id, t.runtime_request_key),
+  uniqueIndex('agent_action_app_run_unique')
+    .on(t.org_id, t.app_run_id)
+    .where(sql`${t.app_run_id} IS NOT NULL`),
 ]);
 
 // ═══ ATTENTION + DELIVERY ═══

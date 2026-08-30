@@ -140,7 +140,8 @@ openssl rand -hex 32   # paste into JWT_SECRET
 openssl rand -hex 32   # paste into JWT_REFRESH_SECRET
 ```
 
-Replace `ENCRYPTION_KEY` before production. It must be exactly 32 characters.
+Replace `ENCRYPTION_KEY` before production. It must contain at least 32
+characters.
 
 Leave `OLLAMA_URL` commented unless an Ollama server is actually running.
 Otherwise Deft will correctly show AI features as off until a provider is
@@ -390,7 +391,9 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `POSTGRES_PASSWORD` | Yes | Database password for Compose Postgres | none |
 | `JWT_SECRET` | Yes | Signs access tokens | none |
 | `JWT_REFRESH_SECRET` | Yes | Signs refresh tokens | none |
-| `ENCRYPTION_KEY` | Production | Encrypts provider keys at rest; exactly 32 chars | dev value |
+| `ENCRYPTION_KEY` | Production | Encrypts provider keys at rest; at least 32 chars | dev value |
+| `DEFT_APP_RUNS_ENABLED` | No | Exact `true` enables the dormant Governed App Run foundation; invalid or missing keyrings then fail startup | `false` |
+| `DEFT_APP_RUN_KEYRINGS` | Only when App Runs enabled | Single-line versioned JSON document containing separate 32-byte base64 Run-encryption, receipt-signing, and fingerprint keyrings | none |
 | `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
 | `NEXT_PUBLIC_API_URL` | Recommended | Public API URL seen by browser | `http://localhost:3001` |
@@ -407,6 +410,25 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
+
+### Dormant Governed App Run keyrings
+
+The App Run foundation has no production execution consumer in this release and
+stays off by default. Existing self-hosts do not need to set either App Run
+variable. If you are developing the later governed execution phases, generate
+three independent 32-byte keys with this Node.js command:
+
+```bash
+node -e "const c=require('node:crypto');const k=()=>c.randomBytes(32).toString('base64');console.log(JSON.stringify({schema_version:'deft.app_run_keyring.v1',run_encryption:{current:'enc-v1',keys:{'enc-v1':k()}},receipt_signing:{current:'sign-v1',keys:{'sign-v1':k()}},fingerprint:{current:'fp-v1',keys:{'fp-v1':k()}}}))"
+```
+
+Store the single-line output verbatim as `DEFT_APP_RUN_KEYRINGS`, then set
+`DEFT_APP_RUNS_ENABLED=true`. Add a new key ID and make it `current` to rotate;
+keep older entries configured for reads and verification. Back up this setting
+with the database. Removing a key that is still referenced by retained Run
+payloads, receipts, or fingerprints is unrecoverable data loss. The later
+execution rollout must add reference-inventory and retirement checks before this
+feature is exposed for normal use.
 
 ## Backups
 

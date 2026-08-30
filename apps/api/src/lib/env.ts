@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { validateAppRunKeyringEnvironment } from './app-run-keyrings.js';
 
 // Resolve .env from the repo root via the source file's location, NOT
 // process.cwd() — when this module loads under tsx / pnpm --filter / docker /
@@ -112,3 +113,9 @@ export const env = {
 export const APPS_ENABLED = process.env.DEFT_APPS_ENABLED === 'true';
 export const APP_DEVELOPER_PAIRING_ENABLED =
   APPS_ENABLED && process.env.DEFT_APP_DEVELOPER_PAIRING_ENABLED === 'true';
+
+// Governed App Runs remain a dormant, independent opt-in during Phase 3.
+// Exact "true" plus valid purpose-separated keyrings is required. A normal
+// legacy self-host boot never needs or parses the new secret document.
+export const APP_RUNS_ENABLED = process.env.DEFT_APP_RUNS_ENABLED === 'true';
+validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYRINGS);

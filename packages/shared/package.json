@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "test": "tsx --test test/modules.test.ts test/capabilities.test.ts",
+    "test": "tsx --test test/modules.test.ts test/capabilities.test.ts test/app-runs.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "exports": {

@@ -102,6 +102,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.16-declarative-apps-v0.sql',
       description: 'Add declarative App v0 installations, immutable versions, and owned Module bindings',
     },
+    {
+      version: '0.3.0-preview.17',
+      file: '0.3.0-preview.17-governed-app-runs-foundation.sql',
+      description: 'Add dormant governed App Run metadata, encrypted payload, attempt, event, and receipt boundaries',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

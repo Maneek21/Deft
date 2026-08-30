@@ -17,7 +17,14 @@ import {
   agentChannelConnections,
   appInstallations,
   appModuleBindings,
+  appRunAttempts,
+  appRunEvents,
+  appRunReceipts,
+  appRuns,
+  appRunSecretPayloads,
   appVersions,
+  capabilityProviderSnapshots,
+  agentActions,
   moduleInstallations,
   moduleMutationReceipts,
   moduleRecordRelations,
@@ -72,6 +79,88 @@ test('App v0 supported upgrade contains the same tables and constraints as fresh
     assert.match(sql, new RegExp(constraint, 'i'));
   }
   assert.match(applyExtrasSource, /0\.3\.0-preview\.16-declarative-apps-v0\.sql/);
+});
+
+test('governed App Run fresh schema is tenant-bound and keeps ciphertext separate', () => {
+  const foreignKeyNames = (config: ReturnType<typeof getTableConfig>) =>
+    config.foreignKeys.map((key) => key.getName());
+  const run = getTableConfig(appRuns);
+  const attempt = getTableConfig(appRunAttempts);
+  const secret = getTableConfig(appRunSecretPayloads);
+  const event = getTableConfig(appRunEvents);
+  const receipt = getTableConfig(appRunReceipts);
+  const snapshot = getTableConfig(capabilityProviderSnapshots);
+  const action = getTableConfig(agentActions);
+
+  assert.ok(snapshot.uniqueConstraints.some(
+    (item) => item.name === 'capability_provider_snapshots_org_id_id_unique',
+  ));
+  assert.ok(run.uniqueConstraints.some((item) => item.name === 'app_runs_org_id_id_unique'));
+  assert.ok(foreignKeyNames(run).includes('app_runs_org_provider_snapshot_fk'));
+  assert.ok(foreignKeyNames(attempt).includes('app_run_attempts_org_run_fk'));
+  assert.deepEqual(
+    foreignKeyNames(secret).filter((name) => name.startsWith('app_run_secret_payloads_')).sort(),
+    ['app_run_secret_payloads_org_attempt_fk', 'app_run_secret_payloads_org_run_fk'],
+  );
+  assert.ok(foreignKeyNames(event).includes('app_run_events_org_run_fk'));
+  assert.deepEqual(
+    foreignKeyNames(receipt).filter((name) => name.startsWith('app_run_receipts_')).sort(),
+    ['app_run_receipts_org_attempt_fk', 'app_run_receipts_org_run_fk'],
+  );
+  assert.ok(foreignKeyNames(action).includes('agent_actions_org_app_run_fk'));
+  assert.ok(action.indexes.some((item) => item.config.name === 'agent_action_app_run_unique'));
+
+  const safeRunColumnNames = new Set(run.columns.map((column) => column.name));
+  for (const secretColumn of ['nonce_b64', 'ciphertext_b64', 'auth_tag_b64']) {
+    assert.equal(safeRunColumnNames.has(secretColumn), false);
+  }
+  const secretColumnNames = new Set(secret.columns.map((column) => column.name));
+  assert.ok(secretColumnNames.has('ciphertext_b64'));
+});
+
+test('governed App Run supported upgrade preserves dormant and immutable boundaries', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.17');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+
+  for (const table of [
+    'capability_provider_snapshots',
+    'app_runs',
+    'app_run_attempts',
+    'app_run_secret_payloads',
+    'app_run_events',
+    'app_run_receipts',
+  ]) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`, 'i'));
+  }
+  for (const boundary of [
+    'app_runs_org_root_run_fk',
+    'app_runs_org_parent_run_fk',
+    'agent_actions_org_app_run_fk',
+    'agent_action_app_run_unique',
+    'app_runs_app_origin_disabled_check',
+    'app_runs_contract_version_check',
+    'app_runs_state_identity_trigger',
+    'app_run_attempts_state_identity_trigger',
+    'app_run_secret_payloads_append_only_trigger',
+    'app_run_secret_payloads_size_check',
+    'app_run_events_version_check',
+    'app_run_events_type_check',
+    'app_run_receipts_version_check',
+    'app_run_events_append_only_trigger',
+    'app_run_receipts_append_only_trigger',
+    'APP_RUN_ILLEGAL_TRANSITION',
+    'APP_RUN_IMMUTABLE_FIELD',
+    'APP_RUN_APPEND_ONLY',
+  ]) {
+    assert.match(sql, new RegExp(boundary, 'i'));
+  }
+  assert.match(sql, /ALTER TABLE agent_actions ADD COLUMN IF NOT EXISTS app_run_id text/i);
+  assert.doesNotMatch(sql, /UPDATE\s+agent_actions/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.17-governed-app-runs-foundation\.sql/);
 });
 
 test('parseUpgradeArgs recognizes status and dry run', () => {
