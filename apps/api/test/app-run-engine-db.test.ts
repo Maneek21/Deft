@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
-import { APP_RUN_CONTRACT_VERSIONS } from '@deft/shared';
+import {
+  APP_RUN_CONTRACT_VERSIONS,
+  createCapabilityProviderDiscoverySnapshot,
+} from '@deft/shared';
 import { AppRunAttemptRunner } from '../src/lib/app-run-attempt-runner.js';
 import type {
   AppRunProviderExecutionRequest,
@@ -13,6 +16,7 @@ import { PostgresAppRunRepository } from '../src/lib/app-run-repository.js';
 import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
+import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
 import { createAppRunAttemptJobHandler } from '../src/lib/app-run-worker-handler.js';
 import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from '../src/lib/app-run-keyrings.js';
 import { closeDb } from '../src/lib/db.js';
@@ -139,6 +143,8 @@ before(async () => {
 after(async () => {
   if (client) {
     await client.query('DELETE FROM agent_actions WHERE user_id = $1', [USER_ID]);
+    await client.query('DELETE FROM agent_employees WHERE user_id = $1', [USER_ID]);
+    await client.query('DELETE FROM mcp_connections WHERE created_by = $1', [USER_ID]);
     await client.query('DELETE FROM orgs WHERE id = $1', [ORG_ID]);
     await client.query('DELETE FROM users WHERE id = $1', [USER_ID]);
     await client.end();
@@ -232,6 +238,168 @@ class CountingExecutor implements AppRunProviderExecutor {
     };
   }
 }
+
+test('live authority revocation is sticky and the execution budget is reserved exactly once', async () => {
+  const providerId = `live-provider-${suffix}`;
+  const snapshotId = `live-snapshot-${suffix}`;
+  const employeeId = `live-employee-${suffix}`;
+  const operationName = 'send_email';
+  const policy = {
+    risk_class: 'external_write' as const,
+    review_requirement: 'policy' as const,
+    review_scope: 'per_invocation' as const,
+    retry_class: 'unsafe_or_unknown' as const,
+  };
+  await client.query(
+    `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+     VALUES ($1, $2, $3, 'owner', true)
+     ON CONFLICT (org_id, user_id) DO UPDATE SET is_active = true`,
+    [`live-member-${suffix}`, ORG_ID, USER_ID],
+  );
+  await client.query(
+    `INSERT INTO mcp_connections
+      (id, org_id, name, slug, server_url, transport, auth_type, is_active,
+       default_trust_tier, enabled_tools, created_by)
+     VALUES ($1, $2, 'Live provider', $3, 'https://example.test/mcp',
+       'streamable-http', 'none', true, 'full', $4, $5)`,
+    [providerId, ORG_ID, providerId, [operationName], USER_ID],
+  );
+  await client.query(
+    `INSERT INTO agent_employees
+      (id, org_id, user_id, name, slug, role, system_prompt, mcp_connection_ids,
+       trust_level, max_daily_actions, daily_action_count, unhealthy, is_active,
+       is_deleted, created_by)
+     VALUES ($1, $2, $3, 'Live employee', $4, 'custom', 'Test', $5,
+       'autonomous', 5, 0, false, true, false, $3)`,
+    [employeeId, ORG_ID, USER_ID, employeeId, [providerId]],
+  );
+  const snapshot = await createCapabilityProviderDiscoverySnapshot({
+    adapter_contract_version: 'deft.capability.mcp-adapter.v1',
+    provider: {
+      org_id: ORG_ID,
+      provider_kind: 'mcp',
+      provider_instance_id: providerId,
+    },
+    captured_at: new Date().toISOString(),
+    operations: [{
+      identity: {
+        provider: {
+          org_id: ORG_ID,
+          provider_kind: 'mcp',
+          provider_instance_id: providerId,
+        },
+        operation_name: operationName,
+      },
+      description: 'Send one test email',
+      input_schema: { type: 'object' },
+    }],
+  });
+  await client.query(
+    `INSERT INTO capability_provider_snapshots
+      (id, org_id, provider_kind, provider_instance_id, adapter_contract_version,
+       snapshot_digest, safe_snapshot, captured_at)
+     VALUES ($1, $2, 'mcp', $3, $4, $5, $6::jsonb, $7)`,
+    [snapshotId, ORG_ID, providerId, snapshot.adapter_contract_version,
+      snapshot.snapshot_digest, JSON.stringify(snapshot), snapshot.captured_at],
+  );
+
+  const live = new PostgresAppRunLiveAuthorization();
+  const executionActor = { actor_type: 'agent_employee' as const, agent_employee_id: employeeId };
+  const capture = () => live.capture({
+    org_id: ORG_ID,
+    authenticated_subject: trusted.initiating_actor,
+    execution_actor: executionActor,
+    provider_instance_id: providerId,
+    provider_snapshot_id: snapshotId,
+    operation_name: operationName,
+    policy,
+  });
+  const liveSubmission = async (key: string) => ({
+    ...submission({
+      idempotency_key: key,
+      execution_actor: executionActor,
+      origin: { origin_kind: 'legacy_connector', connection_id: providerId },
+      operation: {
+        provider: { org_id: ORG_ID, provider_kind: 'mcp', provider_instance_id: providerId },
+        operation_name: operationName,
+      },
+      provider_snapshot_digest: snapshot.snapshot_digest,
+      policy,
+      authorization_snapshot: await capture(),
+    }),
+  });
+  const liveTrusted = { ...trusted, execution_actor: executionActor };
+  const setup = service();
+  const stale = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-stale-${suffix}`),
+  );
+
+  // Restoring the same visible membership state still bumps the monotonic
+  // version, so a proposal captured before revocation cannot revive.
+  await client.query(
+    `UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`,
+    [ORG_ID, USER_ID],
+  );
+  await client.query(
+    `UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`,
+    [ORG_ID, USER_ID],
+  );
+  const executor = new CountingExecutor();
+  const runner = new AppRunAttemptRunner(
+    setup.repository, setup.secretRepository, setup.secrets, executor, live,
+  );
+  assert.equal(await runner.prepareAttempt(ORG_ID, stale.id), null);
+
+  const fresh = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-fresh-${suffix}`),
+  );
+  const attempts = await Promise.all(
+    Array.from({ length: 12 }, () => runner.prepareAttempt(ORG_ID, fresh.id)),
+  );
+  assert.equal(new Set(attempts).size, 1);
+  assert.ok(attempts[0]);
+  const reservation = await client.query<{
+    daily_action_count: number;
+    budget_reserved_count: number;
+    budget_limit_at_reservation: number;
+  }>(
+    `SELECT e.daily_action_count, r.budget_reserved_count, r.budget_limit_at_reservation
+       FROM agent_employees e JOIN app_runs r
+         ON r.org_id = e.org_id AND r.execution_actor_id = e.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, fresh.id],
+  );
+  assert.deepEqual(reservation.rows[0], {
+    daily_action_count: 1,
+    budget_reserved_count: 1,
+    budget_limit_at_reservation: 5,
+  });
+
+  // Ordinary budget consumption does not change the bound authority version,
+  // while the Run's own reservation remains write-once.
+  await client.query(
+    `UPDATE agent_employees SET daily_action_count = daily_action_count + 1 WHERE id = $1`,
+    [employeeId],
+  );
+  assert.equal(await runner.prepareAttempt(ORG_ID, fresh.id), attempts[0]);
+
+  await client.query(`UPDATE mcp_connections SET is_active = false WHERE id = $1`, [providerId]);
+  await client.query(`UPDATE mcp_connections SET is_active = true WHERE id = $1`, [providerId]);
+  const stopped = await runner.run(ORG_ID, fresh.id, attempts[0]!, 'live-worker');
+  assert.equal(stopped.state, 'pending');
+  assert.equal(executor.calls.length, 0);
+  const versions = await client.query<{ member: number; connector: number }>(
+    `SELECT m.app_run_authorization_version AS member,
+            c.app_run_authorization_version AS connector
+       FROM org_members m CROSS JOIN mcp_connections c
+      WHERE m.org_id = $1 AND m.user_id = $2 AND c.id = $3`,
+    [ORG_ID, USER_ID, providerId],
+  );
+  assert.equal(versions.rows[0]!.member, 3);
+  assert.equal(versions.rows[0]!.connector, 3);
+});
 
 async function prepareAttempt(runner: AppRunAttemptRunner, runId: string): Promise<string> {
   const attemptId = await runner.prepareAttempt(ORG_ID, runId);

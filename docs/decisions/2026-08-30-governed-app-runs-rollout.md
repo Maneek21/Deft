@@ -222,6 +222,21 @@ transaction-scoped advisory lock, not an unbounded unique index. The unique
 index is therefore replaced by a non-unique lookup index, and architecture
 tests keep Run insertion behind that single service/repository writer.
 
+### Live authority revisions
+
+Additive upgrade `.20` gives each existing live authority row a monotonic App
+Run authorization version. Table-specific triggers advance it only when fields
+that can change execution authority change. This prevents a revoke-then-restore
+cycle from reviving an old Run without making action counters, heartbeat data,
+provider caches, or last-used timestamps invalidate valid approvals.
+
+The host captures opaque versions and rederives them from tenant-scoped live
+rows before approval, attempt preparation, claim, and the final provider-call
+boundary. For agent execution, the daily action slot is reserved exactly once
+inside the locked first-attempt transaction and recorded as write-once Run
+evidence. No production entrance uses this gate until the later guarded
+Capability Service cutover.
+
 ## Consequences
 
 - Phase 3 is larger than a local refactor and may span more than one release.

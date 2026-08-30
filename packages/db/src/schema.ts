@@ -208,6 +208,7 @@ export const orgMembers = pgTable('org_members', {
   user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   role: orgRoleEnum('role').default('member').notNull(),
   is_active: boolean('is_active').default(true).notNull(),
+  app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   joined_at: timestamp('joined_at').defaultNow().notNull(),
   ...timestamps(),
 }, (t) => [
@@ -2732,6 +2733,7 @@ export const mcpConnections = pgTable('mcp_connections', {
   tools_cached_at: timestamp('tools_cached_at'),
   default_trust_tier: approvalTierEnum('default_trust_tier').default('full').notNull(),
   enabled_tools: text('enabled_tools').array(),
+  app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 }, (t) => [
@@ -2747,6 +2749,7 @@ export const mcpToolOverrides = pgTable('mcp_tool_overrides', {
   tool_name: text('tool_name').notNull(),
   trust_tier_override: approvalTierEnum('trust_tier_override'),
   is_disabled: boolean('is_disabled').default(false).notNull(),
+  app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   ...timestamps(),
 }, (t) => [
   uniqueIndex('mcp_tool_override_unique').on(t.mcp_connection_id, t.tool_name),
@@ -2826,6 +2829,7 @@ export const agentEmployees = pgTable('agent_employees', {
   // trigger_subscriptions is the routing key for the trigger system (e.g.
   // member.joined, cron:standup) — kept as part of Phase 9.
   trigger_subscriptions: text('trigger_subscriptions').array(),
+  app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 }, (t) => [
@@ -2887,6 +2891,7 @@ export const mcpTokens = pgTable('mcp_tokens', {
   scopes: text('scopes').array().notNull(),
   last_used_at: timestamp('last_used_at'),
   revoked_at: timestamp('revoked_at'),
+  app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   created_by: text('created_by').references(() => users.id),
   ...timestamps(),
 }, (t) => [
@@ -3105,6 +3110,7 @@ export const oauthAccessTokens = pgTable('oauth_access_tokens', {
   expires_at: timestamp('expires_at').notNull(),
   last_used_at: timestamp('last_used_at'),
   revoked_at: timestamp('revoked_at'),
+  app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   ...timestamps(),
 }, (t) => [
   index('oauth_access_tokens_hash_idx').on(t.token_hash),

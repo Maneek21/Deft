@@ -13,6 +13,7 @@ import {
 import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
   attachmentDerivatives,
+  agentEmployees,
   agentChannelEvents,
   agentChannelConnections,
   appInstallations,
@@ -34,6 +35,10 @@ import {
   files,
   messageAttachments,
   messages,
+  mcpConnections,
+  mcpTokens,
+  mcpToolOverrides,
+  oauthAccessTokens,
   orgMembers,
   taskAttachments,
   tasks,
@@ -235,6 +240,43 @@ test('governed App Run cutover gate is additive and fails closed before integrat
   assert.ok(run.checks.some((item) => item.name === 'app_runs_execution_release_shape_check'));
   assert.ok(run.checks.some((item) => item.name === 'app_runs_budget_reservation_shape_check'));
   assert.ok(action.checks.some((item) => item.name === 'agent_actions_app_run_shape_check'));
+});
+
+test('App Run live authority versions are additive, monotonic, and ignore ordinary counters', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.20');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+
+  for (const boundary of [
+    'org_members_app_run_authorization_version_trigger',
+    'agent_employees_app_run_authorization_version_trigger',
+    'mcp_connections_app_run_authorization_version_trigger',
+    'mcp_tool_overrides_app_run_authorization_version_trigger',
+    'mcp_tokens_app_run_authorization_version_trigger',
+    'oauth_access_tokens_app_run_authorization_version_trigger',
+  ]) assert.match(sql, new RegExp(boundary, 'i'));
+
+  assert.match(sql, /NEW\.max_daily_actions/i);
+  assert.match(sql, /NEW\.revoked_at/i);
+  assert.doesNotMatch(sql, /NEW\.daily_action_count/i);
+  assert.doesNotMatch(sql, /NEW\.daily_cost_cents/i);
+  assert.doesNotMatch(sql, /NEW\.last_used_at/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+(?:org_members|agent_employees|mcp_connections|mcp_tool_overrides|mcp_tokens|oauth_access_tokens)/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.20-app-run-live-authority-versions\.sql/);
+
+  for (const table of [
+    orgMembers,
+    agentEmployees,
+    mcpConnections,
+    mcpToolOverrides,
+    mcpTokens,
+    oauthAccessTokens,
+  ]) {
+    const config = getTableConfig(table);
+    assert.ok(config.columns.some((column) => column.name === 'app_run_authorization_version'));
+  }
 });
 
 test('parseUpgradeArgs recognizes status and dry run', () => {

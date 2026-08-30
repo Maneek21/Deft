@@ -1,8 +1,9 @@
 # App Platform Phase 3: Governed App Runs and Secret Service loops
 
 **Status:** accepted and in progress; PR A (#271) and PR B (#272) merged the
-dormant Loops 0–4 foundation and fake-provider engine. The C0 cutover-hardening
-gate is in progress from merge `399cd030`.
+dormant Loops 0–4 foundation and fake-provider engine. C0 is complete at local
+checkpoint `4c4f48c1`; C1 live authorization and budget integration is stacked
+on it pending review and publication.
 
 **Rebaseline record:** Phase 2 PR #270 merged with every required check green;
 the foundation selected `.17`, PR B selected `.18`, and the post-engine audit
@@ -56,6 +57,27 @@ fixed before any production ingress exists. C0 is a separate additive merge:
 C0 does not register a worker, call MCP, add an ingress route or flag, alter UI,
 or reserve a live employee budget. Its evidence uses fake providers and the
 disposable database only.
+
+### C1 live authorization and budget gate
+
+C1 adds upgrade `.20` and a host-owned authorization snapshot builder/verifier:
+
+- security-relevant membership, employee, connector, override, MCP-token, and
+  OAuth-token changes advance monotonic authority versions, including a
+  revoke-then-restore cycle; ordinary counters, heartbeats, caches, and
+  last-used timestamps do not;
+- live authorization rederives membership, initiating/execution actor health,
+  employee budget policy, token binding, connector activity, employee
+  assignment, provider schema, and the bound host-policy version before an
+  approval or attempt;
+- agent action budget is reserved once in the same Run-locked transaction that
+  creates the first attempt, and later claim/provider-call checks require that
+  durable evidence; and
+- system/automation actors remain fail-closed until a later host-owned
+  authority source is explicitly designed.
+
+C1 remains production-unwired. It adds no route, worker registration, provider
+call, flag, UI, environment variable, or deployment dependency.
 
 ### Milestone C: compatibility integration
 

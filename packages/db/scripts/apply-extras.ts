@@ -55,6 +55,10 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appRunCutoverGateFile), 'utf8'));
     console.log(`[apply-extras] applied ${appRunCutoverGateFile}`);
 
+    const appRunLiveAuthorityFile = '0.3.0-preview.20-app-run-live-authority-versions.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appRunLiveAuthorityFile), 'utf8'));
+    console.log(`[apply-extras] applied ${appRunLiveAuthorityFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -107,6 +111,12 @@ async function main() {
       'app_run_receipts_org_attempt_fk',
       'agent_actions_org_app_run_fk',
       'agent_actions_app_run_shape_check',
+      'org_members_app_run_authorization_version_check',
+      'agent_employees_app_run_authorization_version_check',
+      'mcp_connections_app_run_authorization_version_check',
+      'mcp_tool_overrides_app_run_authorization_version_check',
+      'mcp_tokens_app_run_authorization_version_check',
+      'oauth_access_tokens_app_run_authorization_version_check',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -184,6 +194,12 @@ async function main() {
       'app_run_receipts_append_only_trigger',
       'app_runs_cutover_gate_trigger',
       'app_run_attempts_execution_release_trigger',
+      'org_members_app_run_authorization_version_trigger',
+      'agent_employees_app_run_authorization_version_trigger',
+      'mcp_connections_app_run_authorization_version_trigger',
+      'mcp_tool_overrides_app_run_authorization_version_trigger',
+      'mcp_tokens_app_run_authorization_version_trigger',
+      'oauth_access_tokens_app_run_authorization_version_trigger',
     ];
     const installedAppRunTriggers = await client.query<{ tgname: string }>(
       `SELECT tgname

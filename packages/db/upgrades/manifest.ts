@@ -117,6 +117,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.19-governed-app-run-cutover-gate.sql',
       description: 'Fail closed on App Run release, budget, approval-link, replay-horizon, and attempt dispatch boundaries',
     },
+    {
+      version: '0.3.0-preview.20',
+      file: '0.3.0-preview.20-app-run-live-authority-versions.sql',
+      description: 'Add monotonic live authority versions for governed App Run authorization rechecks',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

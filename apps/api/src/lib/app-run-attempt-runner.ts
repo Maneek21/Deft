@@ -123,7 +123,9 @@ export class AppRunAttemptRunner {
         !run
         || !run.execution_released_at
         || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
-        || !await this.executionAuthorizer.authorizeExecution({ org_id: orgId, run })
+        || !await this.executionAuthorizer.authorizeExecution({
+          org_id: orgId, run, tx, stage: 'prepare', now,
+        })
       ) return null;
       if (run.input_expires_at <= now) return null;
       const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
@@ -250,7 +252,9 @@ export class AppRunAttemptRunner {
         !run
         || !run.execution_released_at
         || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
-        || !await this.executionAuthorizer.authorizeExecution({ org_id: orgId, run })
+        || !await this.executionAuthorizer.authorizeExecution({
+          org_id: orgId, run, tx, stage: 'claim', now,
+        })
       ) return null;
       if (run.input_expires_at <= now) {
         run = await this.repository.transition(tx, {
@@ -331,7 +335,9 @@ export class AppRunAttemptRunner {
         !run
         || !run.execution_released_at
         || run.state === 'cancelled'
-        || !await this.executionAuthorizer.authorizeExecution({ org_id: run.org_id, run })
+        || !await this.executionAuthorizer.authorizeExecution({
+          org_id: run.org_id, run, tx, stage: 'provider_call', now,
+        })
       ) return false;
       await tx.execute(sql`SELECT id FROM app_run_attempts
         WHERE org_id = ${claimed.run.org_id} AND id = ${claimed.attempt.id} FOR UPDATE`);
