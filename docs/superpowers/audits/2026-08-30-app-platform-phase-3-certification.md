@@ -1,11 +1,12 @@
 # App Platform Phase 3 certification checkpoints
 
-- Date: 2026-08-30
+- Date: 2026-08-30; consolidated PR D gate 2026-08-31
 - Historical pre-split baseline: `5050b0f1` with C5 source checkpoint
   `944b265f`; useful review evidence, superseded for rollout certification
-- Current PR D control checkpoint: `5cf88c51` on PR C merge `9c8e9ac9`
-- Current result: split-control delta acceptance passed; consolidated PR D and
-  immutable release-artifact gates remain
+- Current PR D certification checkpoint: `fe66113f` on PR C merge `9c8e9ac9`;
+  split-control source checkpoint `5cf88c51`
+- Current result: consolidated local PR D gate passed; remote PR checks and the
+  immutable release-artifact gate remain
 - Rollout decision: off/off by default; merge alone does not make the legacy MCP
   canary supported
 
@@ -56,18 +57,44 @@ Phase 3 exposes no public operations route or UI. Present operator access is the
 bounded, tenant-scoped SQL and procedure contract in
 `docs/app-run-operations.md`.
 
-## Remaining PR D consolidated gate
+## Consolidated PR D local gate
 
-- Run engine off/intake off exact legacy parity.
-- Engine on/intake off durable-job drain/resume and engine-off defer without an
-  attempt debit.
-- Accepted-approval transition across intake-on, drain-only, and engine-off
-  process states with one Run, one provider effect, and no fallback.
-- Complete `apps/api/test/app-run-engine-db.test.ts` at the final PR D tip.
-- Focused worker, connector, trust, approval, keyring, leakage, and MCP-boundary
-  tests; participating typecheck; final diff inspection.
-- One production source build only if normal PR CI does not run the equivalent
-  build against the exact tip.
+The 2026-08-31 run used PostgreSQL 16 database
+`deft_phase3_prc_20260830_01`. It ended with zero App Runs, zero nonterminal
+Runs, zero active App Run jobs, and no transition or approval-resolver fixture
+residue.
+
+| Boundary | Evidence | Result |
+|---|---|---|
+| Engine off/intake off | shared immediate/action fixture | 10 legacy cases passed; 6 governed cases skipped |
+| Engine on/intake off | same fixture | 10 legacy cases passed; 6 governed cases skipped |
+| Engine on/intake on | same fixture | 6 governed cases passed; 10 legacy cases skipped |
+| Accepted approval across restart states | `app-run-rollout-transition-db.test.ts` using the production approval resolver, runtime, worker, and provider adapter | 1 passed; one Run, one attempt, one budget reservation, one provider call, no legacy receipt/fallback |
+| Complete App Run engine database suite | `app-run-engine-db.test.ts` at `fe66113f` | 20 passed |
+| Shared contract, architecture, rollout configuration, keyring, Capability Service, connector, trust, worker routing, leakage, and MCP boundary | focused serial group | 117 passed |
+| Approval and worker defer/retry compatibility | focused database group | 27 passed |
+| Participating TypeScript packages | repository `pnpm typecheck` | passed for web, API, shared, and App Kit |
+| Diff and residue hygiene | `git diff --check`, bounded full-delta inspection, and database residue queries | passed |
+
+The transition proof starts with intake and engine enabled, persists a pending
+approval, proves engine-off approval fails closed, approves after restart in
+drain-only mode, proves engine-off returns the durable job to pending without a
+retry debit, and resumes it in drain-only mode. A replay through the registered
+handler does not call the provider again.
+
+No browser, fresh-schema, pgvector retry, Docker image, or self-host smoke was
+run locally because this delta changes no UI or migration and those checks are
+explicit release-candidate gates. The one production source build is delegated
+to normal PR CI against the exact pushed tip; run it locally only if that CI job
+does not execute.
+
+## Remaining PR D remote gate
+
+- Inspect the committed audit delta and open PR D from the exact checkpoint.
+- Require normal PR CI, including the production source build, API tests,
+  typecheck, upgrade/image jobs, and security checks, to pass.
+- Keep the branch unmerged until human review; passing PR D does not satisfy the
+  separate release-artifact gate below.
 
 ## Remaining release-artifact gates
 

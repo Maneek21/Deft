@@ -783,8 +783,10 @@ purpose-separated key service, additive schema, lifecycle, and fake-provider
 engine. PR C (#273) merged release/budget evidence, live authority, approval
 compatibility, ancestry, receipts, Attention, and internal repair invariants.
 PR D now contains the pinned worker runtime plus separate exact default-off Run
-engine/drain and legacy MCP intake controls. App origin remains disabled;
-existing connector ciphertext and legacy receipt writers are unchanged.
+engine/drain and legacy MCP intake controls. Its local consolidated gate and
+cross-process approval/drain transition passed at `fe66113f`; remote PR and
+immutable release-artifact gates remain. App origin remains disabled; existing
+connector ciphertext and legacy receipt writers are unchanged.
 
 - [x] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
 - [x] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.

@@ -86,9 +86,10 @@ trusted API, web, or worker processes.
 
 The remaining PR D chain is local-only and unreleased: `1e4ac5a7` (C4 replay)
 -> `bd28ff6f` (C5 replay) -> `ee513a35` (historical certification replay) ->
-`5cf88c51` (split controls). Original C0–D2 hashes remain historical review
-evidence. None of these hashes is a supported rollback floor; the floor is the
-eventual immutable released image revision recorded by the release gate.
+`5cf88c51` (split controls) -> `a6f2eed2` (closeout contract) -> `fe66113f`
+(restart-transition certification). Original C0–D2 hashes remain historical
+review evidence. None of these hashes is a supported rollback floor; the floor
+is the eventual immutable released image revision recorded by the release gate.
 
 No completed phase is restarted or redesigned. Later work must consume these
 deep services rather than create parallel execution, package, or authorization

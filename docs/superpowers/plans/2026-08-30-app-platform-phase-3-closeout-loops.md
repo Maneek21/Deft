@@ -377,6 +377,27 @@ boundaries.
 - No repeated fresh-schema bootstrap locally.
 - No unrelated Hermes or full API certification outside normal CI.
 
+### Completed evidence (2026-08-31)
+
+- The shared immediate/action fixture passed in all three supported modes:
+  off/off 10 legacy cases, on/off 10 legacy cases, and on/on 6 governed cases.
+- Cross-process transition test `app-run-rollout-transition-db.test.ts` passed
+  at `fe66113f`. It uses the production approval resolver, runtime composition,
+  worker settlement, and provider adapter to prove one pending approval survives
+  intake shutoff, engine pause, and drain-only restart with one attempt, one
+  budget reservation, one provider call, and no legacy fallback.
+- The complete App Run engine database suite passed 20/20 at that checkpoint.
+- The focused shared contract, Capability Service, architecture, rollout,
+  keyring, connector, trust, leakage, worker-routing, and MCP-boundary group
+  passed 117/117. The focused approval and worker-reliability database group
+  passed 27/27.
+- Repository typecheck passed for every participating package. Final diff and
+  database residue checks passed; the fixture left zero Runs, nonterminal Runs,
+  active App Run jobs, or test identities.
+- The production source build remains assigned to normal PR CI against the exact
+  pushed tip, as allowed by item 9. The explicit local exclusions above were not
+  repeated.
+
 ## Loop 7 — Open, review, and merge PR D default-off
 
 ### Work
