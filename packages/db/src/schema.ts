@@ -703,6 +703,8 @@ export const appRuns = pgTable('app_runs', {
   depth: integer('depth').default(0).notNull(),
   input_expires_at: timestamp('input_expires_at').notNull(),
   result_expires_at: timestamp('result_expires_at').notNull(),
+  idempotency_expires_at: timestamp('idempotency_expires_at').notNull(),
+  attempt_limit: integer('attempt_limit').notNull(),
   input_purged_at: timestamp('input_purged_at'),
   result_purged_at: timestamp('result_purged_at'),
   started_at: timestamp('started_at'),
@@ -710,6 +712,7 @@ export const appRuns = pgTable('app_runs', {
   unknown_outcome_at: timestamp('unknown_outcome_at'),
   reconciled_at: timestamp('reconciled_at'),
   cancelled_at: timestamp('cancelled_at'),
+  cancel_requested_at: timestamp('cancel_requested_at'),
   ...timestamps(),
 }, (t) => [
   unique('app_runs_org_id_id_unique').on(t.org_id, t.id),
@@ -732,6 +735,7 @@ export const appRuns = pgTable('app_runs', {
   index('app_runs_root_idx').on(t.org_id, t.root_run_id, t.created_at),
   index('app_runs_parent_idx').on(t.org_id, t.parent_run_id),
   index('app_runs_secret_expiry_idx').on(t.state, t.input_expires_at, t.result_expires_at),
+  index('app_runs_idempotency_expiry_idx').on(t.idempotency_expires_at),
   check('app_runs_origin_check', sql`${t.origin_kind} IN ('core', 'legacy_connector', 'app')`),
   check('app_runs_contract_version_check', sql`${t.contract_version} = 'deft.app_run.v1'`),
   // App origin is reserved but cannot persist until connected App grants exist.
@@ -776,6 +780,9 @@ export const appRuns = pgTable('app_runs', {
     )
   `),
   check('app_runs_expiry_check', sql`${t.result_expires_at} >= ${t.input_expires_at}`),
+  check('app_runs_idempotency_expiry_check', sql`${t.idempotency_expires_at} >= ${t.result_expires_at}`),
+  check('app_runs_attempt_limit_check', sql`${t.attempt_limit} BETWEEN 1 AND 10`),
+  check('app_runs_cancel_request_check', sql`${t.cancel_requested_at} IS NULL OR ${t.started_at} IS NOT NULL`),
 ]);
 
 export const appRunAttempts = pgTable('app_run_attempts', {
@@ -783,6 +790,7 @@ export const appRunAttempts = pgTable('app_run_attempts', {
   ...orgId(),
   run_id: text('run_id').notNull(),
   attempt_number: integer('attempt_number').notNull(),
+  retry_of_attempt_id: text('retry_of_attempt_id'),
   state: text('state').$type<
     'pending' | 'claimed' | 'provider_call_started' | 'succeeded' | 'failed' | 'cancelled' | 'unknown_outcome'
   >().default('pending').notNull(),
@@ -805,8 +813,15 @@ export const appRunAttempts = pgTable('app_run_attempts', {
   }).onDelete('cascade'),
   unique('app_run_attempts_org_run_id_unique').on(t.org_id, t.run_id, t.id),
   uniqueIndex('app_run_attempts_number_unique').on(t.org_id, t.run_id, t.attempt_number),
+  uniqueIndex('app_run_attempts_one_active_unique')
+    .on(t.org_id, t.run_id)
+    .where(sql`${t.state} IN ('pending', 'claimed', 'provider_call_started')`),
   index('app_run_attempts_lease_idx').on(t.state, t.lease_expires_at),
   check('app_run_attempts_number_check', sql`${t.attempt_number} >= 1`),
+  check('app_run_attempts_retry_shape_check', sql`
+    (${t.attempt_number} = 1 AND ${t.retry_of_attempt_id} IS NULL)
+    OR (${t.attempt_number} > 1 AND ${t.retry_of_attempt_id} IS NOT NULL)
+  `),
   check('app_run_attempts_state_check', sql`${t.state} IN ('pending', 'claimed', 'provider_call_started', 'succeeded', 'failed', 'cancelled', 'unknown_outcome')`),
   check('app_run_attempts_claim_shape_check', sql`
     (${t.claim_owner} IS NULL AND ${t.claim_token} IS NULL AND ${t.claimed_at} IS NULL AND ${t.lease_expires_at} IS NULL)
@@ -903,7 +918,7 @@ export const appRunEvents = pgTable('app_run_events', {
   check('app_run_events_version_check', sql`${t.event_version} = 'deft.app_run_event.v1'`),
   check('app_run_events_type_check', sql`${t.event_type} IN (
     'run_created', 'approval_requested', 'approval_resolved', 'attempt_created',
-    'attempt_claimed', 'provider_call_started', 'attempt_terminal', 'run_transitioned',
+    'attempt_claimed', 'provider_call_started', 'cancellation_requested', 'attempt_terminal', 'run_transitioned',
     'secrets_purged', 'reconciliation_recorded', 'repair_gap'
   )`),
   check('app_run_events_actor_shape_check', sql`

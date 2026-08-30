@@ -162,6 +162,15 @@ describe('App Run Secret Service', () => {
       service.fingerprintTextCandidates('idempotency', 'low-entropy').map((item) => item.key_version),
       ['fp-v1', 'fp-old'],
     );
+    assert.deepEqual(
+      service.fingerprintJsonCandidates('input', { nested: { b: 2, a: 1 } })
+        .map((item) => item.key_version),
+      ['fp-v1', 'fp-old'],
+    );
+    assert.deepEqual(
+      service.fingerprintJsonCandidates('input', { b: 2, a: 1 }),
+      service.fingerprintJsonCandidates('input', { a: 1, b: 2 }),
+    );
     assert.doesNotMatch(JSON.stringify(replay), /low-entropy/);
     assert.throws(
       () => service.fingerprintText('idempotency', 'é'.repeat(APP_RUN_LIMITS.idempotency_key_bytes)),

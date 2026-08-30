@@ -186,6 +186,10 @@ service interface. They do not receive decrypted input or a provider callback.
   or transient lock digest.
 - Return the existing Run for same-key/same-input replay with no new event;
   return `APP_RUN_IDEMPOTENCY_CONFLICT` for different input.
+- Pin a host-owned idempotency horizon at submission: 7 days for ephemeral,
+  30 days for standard, and 90 days for extended Runs. Active rows block
+  fingerprint-key retirement; after the horizon callers must use a new key.
+  Apps and later permission changes cannot widen this window.
 - Add terminal secret purge and sanitized residue. Permission widening cannot
   extend a previously chosen retention class.
 
@@ -207,8 +211,9 @@ service interface. They do not receive decrypted input or a provider callback.
 - Implement a shared claimed-attempt runner usable synchronously and by the
   PostgreSQL worker. Commit the attempt boundary before a provider call and do
   not hold a transaction open across network I/O.
-- Start against a counting fake provider. Add the internal provider executor only
-  after state/recovery tests pass.
+- Start against a counting fake provider and freeze a narrow injected executor
+  port after state/recovery tests pass. The real internal provider executor and
+  production worker registration remain Loop 6 cutover work.
 - Persist a known provider result as bounded encrypted output plus a sanitized
   terminal projection without another call even if event, receipt, metrics, or
   Attention work needs repair.
@@ -218,8 +223,9 @@ service interface. They do not receive decrypted input or a provider callback.
 - Make cancellation effective before call start and advisory after an external
   call begins. Never report an external effect as cancelled when its outcome is
   unknown.
-- Add idempotent repair jobs for terminal receipts/events/attention and bounded
-  stale-attempt reconciliation.
+- Add bounded stale-attempt reconciliation and idempotent repair for
+  engine-owned terminal state/events. Concrete receipt and Attention repair
+  remains Loop 7 work, after those projections exist.
 
 ### Exit evidence
 
@@ -234,7 +240,8 @@ service interface. They do not receive decrypted input or a provider callback.
   never re-enters the provider.
 - Exact result replay is available only to the live-authorized caller during the
   result-retention window. After purge, replay returns terminal identity plus
-  `result_expired` and never calls the provider again.
+  `result_expired` and never calls the provider again during the pinned
+  idempotency horizon.
 
 ## Loop 5: Approval adapter and live authorization
 

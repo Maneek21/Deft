@@ -36,6 +36,17 @@ export const APP_RUN_SECRET_RETENTION_MS = {
   extended: 30 * 24 * 60 * 60 * 1000,
 } as const;
 
+// Caller idempotency outlives exact input/result retention, but it is bounded
+// so self-hosted operators and the hosted service can eventually retire old
+// fingerprint keys. Apps cannot widen this host-owned policy.
+export const APP_RUN_IDEMPOTENCY_RETENTION_MS = {
+  ephemeral: 7 * 24 * 60 * 60 * 1000,
+  standard: 30 * 24 * 60 * 60 * 1000,
+  extended: 90 * 24 * 60 * 60 * 1000,
+} as const;
+
+export const APP_RUN_DEFAULT_ATTEMPT_LIMIT = 3;
+
 const ExactIdentitySchema = z
   .string()
   .min(1)
@@ -352,6 +363,7 @@ export const AppRunEventTypeSchema = z.enum([
   'attempt_created',
   'attempt_claimed',
   'provider_call_started',
+  'cancellation_requested',
   'attempt_terminal',
   'run_transitioned',
   'secrets_purged',
@@ -441,6 +453,13 @@ function utf8Bytes(value: string): number {
 }
 
 export function parseAppRunSubmission(value: unknown): AppRunSubmission {
+  // Bound adversarial recursive input before Zod walks it.
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && 'input' in value) {
+    assertCapabilityJsonWithinBudget(
+      (value as { input?: unknown }).input,
+      APP_RUN_LIMITS.input_bytes,
+    );
+  }
   const parsed = AppRunSubmissionSchema.parse(value);
   if (utf8Bytes(parsed.idempotency_key) > APP_RUN_LIMITS.idempotency_key_bytes) {
     throw new TypeError(`App Run idempotency key exceeds ${APP_RUN_LIMITS.idempotency_key_bytes} bytes`);
@@ -475,4 +494,11 @@ export function retentionDeadline(
   from: Date,
 ): Date {
   return new Date(from.getTime() + APP_RUN_SECRET_RETENTION_MS[retentionClass]);
+}
+
+export function idempotencyDeadline(
+  retentionClass: AppRunRetentionClass,
+  from = new Date(),
+): Date {
+  return new Date(from.getTime() + APP_RUN_IDEMPOTENCY_RETENTION_MS[retentionClass]);
 }
