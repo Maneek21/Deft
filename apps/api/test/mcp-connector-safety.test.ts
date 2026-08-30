@@ -174,6 +174,50 @@ test('tool discovery explicitly bypasses the SDK response cache', async (t) => {
   assert.deepEqual(listOptions, { cacheMode: 'refresh' });
 });
 
+test('one listTools call yields exact legacy tools and a pre-policy provider projection', async (t) => {
+  const manager = new MCPClientManager();
+  t.after(() => manager.shutdown());
+  let listCalls = 0;
+  const rawTools = [{
+    name: 'visible',
+    description: 'Raw visible description',
+    inputSchema: { type: 'object' as const },
+  }, {
+    name: 'disabled',
+    description: 'Raw disabled description',
+    inputSchema: { type: 'object' as const },
+  }];
+
+  (manager as any).connect = async () => ({
+    listTools: async () => {
+      listCalls++;
+      return { tools: rawTools };
+    },
+  });
+
+  const discovery = await manager.discoverToolDiscovery(connectionConfig, [{
+    toolName: 'visible',
+    description: 'Organization override',
+  }, {
+    toolName: 'disabled',
+    disabled: true,
+  }]);
+
+  assert.equal(listCalls, 1);
+  assert.deepEqual(discovery.tools.map((tool) => tool.originalName), ['visible']);
+  assert.equal(discovery.tools[0]?.description, 'Organization override');
+  assert.deepEqual(discovery.providerTools.map((tool) => tool.name), ['visible', 'disabled']);
+  assert.deepEqual(discovery.providerTools.map((tool) => tool.description), [
+    'Raw visible description',
+    'Raw disabled description',
+  ]);
+
+  const cached = await manager.getCachedToolDiscovery(connectionConfig, []);
+  assert.equal(cached.tools, discovery.tools);
+  assert.equal(cached.providerTools, discovery.providerTools);
+  assert.equal(listCalls, 1);
+});
+
 test('credentials are encrypted at rest, redacted in responses, and materialized only at runtime', () => {
   const secret = 'top-secret-api-key';
   const stored = storeMcpCredential({ secret });

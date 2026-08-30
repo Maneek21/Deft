@@ -251,6 +251,94 @@ function canonicalizeCapabilityJsonInner(value: CapabilityJsonValue): Capability
   return output;
 }
 
+function capabilityJsonStringBytes(value: string): number {
+  let bytes = new TextEncoder().encode(value).byteLength + 2;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      bytes += 1;
+    } else if (code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) {
+      bytes += 1;
+    } else if (code <= 0x1f) {
+      bytes += 5;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) index++;
+      else bytes += 3;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/** Reject expensive provider JSON before cloning or hashing it. The byte count
+ * matches JSON string escaping while depth/node limits bound structural work. */
+export function assertCapabilityJsonWithinBudget(
+  value: unknown,
+  maxBytes: number,
+  maxDepth = 64,
+  maxNodes = 100_000,
+): void {
+  let bytes = 0;
+  let nodes = 0;
+  const ancestors = new WeakSet<object>();
+  const addBytes = (count: number): void => {
+    bytes += count;
+    if (bytes > maxBytes) throw new TypeError(`Capability JSON exceeds ${maxBytes} bytes`);
+  };
+
+  const visit = (nested: unknown, depth: number): void => {
+    nodes++;
+    if (nodes > maxNodes) throw new TypeError(`Capability JSON exceeds ${maxNodes} nodes`);
+    if (depth > maxDepth) throw new TypeError(`Capability JSON exceeds depth ${maxDepth}`);
+    if (nested === null) {
+      addBytes(4);
+      return;
+    }
+    if (typeof nested === 'boolean') {
+      addBytes(nested ? 4 : 5);
+      return;
+    }
+    if (typeof nested === 'number') {
+      if (!Number.isFinite(nested)) throw new TypeError('Capability JSON contains a non-finite number');
+      addBytes(Object.is(nested, -0) ? 1 : String(nested).length);
+      return;
+    }
+    if (typeof nested === 'string') {
+      addBytes(capabilityJsonStringBytes(nested));
+      return;
+    }
+    if (typeof nested !== 'object') throw new TypeError('Capability JSON contains a non-JSON value');
+    if (ancestors.has(nested)) throw new TypeError('Capability JSON contains a cycle');
+    ancestors.add(nested);
+
+    if (Array.isArray(nested)) {
+      addBytes(2 + Math.max(0, nested.length - 1));
+      for (const item of nested) visit(item, depth + 1);
+      ancestors.delete(nested);
+      return;
+    }
+
+    const prototype = Object.getPrototypeOf(nested);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError('Capability JSON contains a non-plain object');
+    }
+    const keys = Reflect.ownKeys(nested);
+    if (keys.some((key) => typeof key !== 'string' || !Object.prototype.propertyIsEnumerable.call(nested, key))) {
+      throw new TypeError('Capability JSON contains a symbol or non-enumerable property');
+    }
+    addBytes(2 + Math.max(0, keys.length - 1));
+    for (const key of keys as string[]) {
+      addBytes(capabilityJsonStringBytes(key) + 1);
+      visit((nested as Record<string, unknown>)[key], depth + 1);
+    }
+    ancestors.delete(nested);
+  };
+
+  visit(value, 0);
+}
+
 export function canonicalizeCapabilityJson(value: unknown): CapabilityJsonValue {
   return canonicalizeCapabilityJsonInner(CapabilityJsonValueSchema.parse(value));
 }
@@ -282,8 +370,9 @@ function deepFreeze<T>(value: T): T {
 }
 
 export async function createCapabilityProviderDiscoverySnapshot(
-  value: CapabilityProviderDiscoverySnapshotInput,
+  value: unknown,
 ): Promise<Readonly<CapabilityProviderDiscoverySnapshot>> {
+  assertCapabilityJsonWithinBudget(value, CAPABILITY_LIMITS.snapshot_bytes);
   // Clone all JSON-shaped input synchronously before the first digest await.
   // This prevents provider/caller mutation races and ensures deepFreeze only
   // ever touches data owned by the returned snapshot.

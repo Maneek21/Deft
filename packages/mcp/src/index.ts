@@ -16,6 +16,8 @@ export {
 export type {
   MCPConnectionConfig,
   MCPTool,
+  MCPProviderTool,
+  MCPToolDiscovery,
   MCPResult,
   MCPToolOverride,
 } from "./types.js";

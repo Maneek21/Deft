@@ -3,7 +3,7 @@
  *
  * For each entry in BUNDLE:
  *   1. Upsert an mcp_connections row (keyed by org_id + slug)
- *   2. Force tool discovery via mcpClientManager.getCachedTools()
+ *   2. Request tool discovery through Capability Service's cached MCP mode
  *      — this runs the updated classifier and picks tiers
  *   3. Persist the discovered tools into tools_cache
  *   4. Attach the connection id to Alex PM's mcp_connection_ids
@@ -17,8 +17,7 @@
 import { db } from '../lib/db.js';
 import { mcpConnections, agentEmployees, orgMembers } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { mcpClientManager } from '@deft/mcp';
-import { toConnectionConfig } from '../lib/mcp-tools.js';
+import { capabilityService } from '../lib/capability-service.js';
 
 const EMPLOYEE_ID = '7e79b0a9-f88c-49f4-b79d-ab8a7c7f1633'; // Alex PM
 
@@ -168,9 +167,14 @@ async function main() {
       .from(mcpConnections)
       .where(eq(mcpConnections.id, connectionId))
       .limit(1);
-    const config = toConnectionConfig(connRow!);
     try {
-      const tools = await mcpClientManager.getCachedTools(config, []);
+      const { tools } = await capabilityService.discover({
+        provider_kind: 'mcp',
+        mode: 'cached',
+        org_id: connRow!.org_id,
+        provider_instance_id: connRow!.id,
+        overrides: [],
+      });
       console.log(`  discovered ${tools.length} tools:`);
       for (const t of tools) {
         console.log(

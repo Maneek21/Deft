@@ -1,6 +1,6 @@
 # App Platform Phase 2: Capability Service loops
 
-**Status:** in progress; Loops 0–1 completed on 2026-08-30, Loop 2 next
+**Status:** in progress; Loops 0–2 completed on 2026-08-30, Loop 3 next
 
 **Implementation baseline:** `origin/master` at `bdb137ee33a047a39b73d5f08ea958efb1fcbf35`
 
@@ -124,6 +124,10 @@ Rejected alternatives:
   Capability Service while retaining the current cache and refresh semantics.
 - Produce immutable safe snapshots alongside the exact legacy MCP tool
   projection; do not expose snapshots to Apps or persist them.
+- Resolve tenant/provider identity and materialize targets/credentials inside
+  the adapter. Capture the policy-free provider projection from the same
+  `listTools` call, preflight provider JSON, and reuse snapshots for unchanged
+  in-process cache entries.
 - Preserve override merging, disabled-tool filtering, description hardening,
   input-schema hardening, connection order, tool order, and failure isolation.
 - Move scripts that exercise production discovery onto the same adapter seam.
@@ -133,8 +137,9 @@ Rejected alternatives:
 - Golden before/after discovery projections are byte/deep equal.
 - Refresh, cached, test-connection, partial-provider-failure, duplicate-tool,
   disabled-tool, and tenant-negative tests pass.
-- Snapshot construction failure cannot weaken policy or cause provider
-  execution; discovery fails safely for that provider.
+- Snapshot construction failure cannot weaken policy, cause another provider
+  request, or change the exact legacy discovery result; observational snapshot
+  evidence is simply unavailable for that provider.
 
 ## Loop 3: Immediate execution cutover
 

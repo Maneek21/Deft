@@ -733,8 +733,10 @@ These are dependency and certification gates, not promises that each phase is on
 
 **Outcome:** one deep internal provider seam exists with no visible behavior change.
 
-- [ ] Add strict shared capability/provider/interface schemas.
-- [ ] Add strict immutable provider discovery snapshot values with tenant-bound
+- [x] Add strict shared capability/provider identities and provider-neutral
+  invocation contracts. Defer public interface registries until connected Apps
+  have real lineage, provenance, and policy consumers.
+- [x] Add strict immutable provider discovery snapshot values with tenant-bound
   operation tuple uniqueness, deterministic digests, and safe projections.
   Keep them non-durable until Phase 3 Runs provide a concrete reference,
   retention policy, and schema-drift consumer.

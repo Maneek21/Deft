@@ -8,8 +8,7 @@
 import { db } from '../lib/db.js';
 import { mcpConnections } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
-import { mcpClientManager } from '@deft/mcp';
-import { toConnectionConfig } from '../lib/mcp-tools.js';
+import { capabilityService } from '../lib/capability-service.js';
 
 async function main() {
   const active = await db
@@ -31,10 +30,15 @@ async function main() {
       .set({ tools_cache: null, tools_cached_at: null })
       .where(eq(mcpConnections.id, conn.id));
 
-    // 2. Force fresh discovery (pass [] for overrides to use defaults).
-    const config = toConnectionConfig(conn);
+    // 2. Re-run discovery with the manager's existing cache semantics.
     try {
-      const tools = await mcpClientManager.getCachedTools(config, []);
+      const { tools } = await capabilityService.discover({
+        provider_kind: 'mcp',
+        mode: 'cached',
+        org_id: conn.org_id,
+        provider_instance_id: conn.id,
+        overrides: [],
+      });
       console.log(`  Discovered ${tools.length} tools:`);
       for (const t of tools) {
         console.log(

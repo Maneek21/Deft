@@ -62,6 +62,23 @@ export interface MCPTool {
   rawTool: Record<string, unknown>;
 }
 
+/** Raw provider discovery fields captured before Deft overrides, filtering, or
+ * trust classification. This is evidence data only, never authorization. */
+export interface MCPProviderTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  title?: string;
+}
+
+/** One MCP listTools result projected both for legacy callers and for
+ * policy-free provider discovery evidence. */
+export interface MCPToolDiscovery {
+  tools: MCPTool[];
+  providerTools: MCPProviderTool[];
+}
+
 /**
  * Result from executing an MCP tool.
  */

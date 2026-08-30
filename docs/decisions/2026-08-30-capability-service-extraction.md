@@ -69,6 +69,16 @@ The snapshot is observational evidence only. It never authorizes, filters,
 validates an invocation, or becomes required for a legacy call. Live connector,
 assignment, override, and approval policy remain authoritative.
 
+Discovery callers pass only authenticated organization and provider-instance
+identity. The MCP adapter re-resolves that tuple before target validation and
+credential materialization. One low-level `listTools` response yields both the
+unchanged policy-enriched legacy tool array and a separate pre-override,
+pre-filter provider projection. Snapshot prose/schema annotations are hardened
+without changing executable schema values. Provider JSON is depth/count/byte
+preflighted before cloning or hashing, and unchanged process-cache projections
+reuse their immutable snapshot so observational work stays bounded on small
+self-hosted deployments.
+
 Phase 3 may persist the minimum immutable provider snapshot referenced by a Run
 after it defines retention, encryption/privacy classification, schema-drift,
 connector deletion, garbage collection, and backup/restore behavior. It must

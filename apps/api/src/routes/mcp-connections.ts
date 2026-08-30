@@ -4,7 +4,8 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { mcpConnections, mcpToolOverrides } from '@deft/db/schema';
 import { mcpClientManager } from '@deft/mcp';
-import { canonicalMcpToolName, toConnectionConfig } from '../lib/mcp-tools.js';
+import { capabilityService } from '../lib/capability-service.js';
+import { canonicalMcpToolName } from '../lib/mcp-tools.js';
 import {
   mcpAuthTypeSchema,
   mcpCredentialInputSchema,
@@ -290,8 +291,12 @@ mcpConnectionRoutes.post('/:id/test', async (c) => {
   }
 
   try {
-    const config = toConnectionConfig(connection);
-    const tools = await mcpClientManager.testConnection(config);
+    const { tools } = await capabilityService.discover({
+      provider_kind: 'mcp',
+      mode: 'test',
+      org_id: user.org_id,
+      provider_instance_id: connection.id,
+    });
 
     await db
       .update(mcpConnections)
@@ -349,8 +354,13 @@ mcpConnectionRoutes.post('/:id/refresh-tools', async (c) => {
   }));
 
   try {
-    const config = toConnectionConfig(connection);
-    const tools = await mcpClientManager.discoverTools(config, overrides);
+    const { tools } = await capabilityService.discover({
+      provider_kind: 'mcp',
+      mode: 'refresh',
+      org_id: user.org_id,
+      provider_instance_id: connection.id,
+      overrides,
+    });
 
     await db
       .update(mcpConnections)
