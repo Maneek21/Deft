@@ -379,6 +379,8 @@ jobs:
             test -d /app/apps/api && test -d /app/packages/db
             test -d /app/apps/web/node_modules
             test -d /app/packages/mcp/node_modules
+            test -f /app/packages/app-kit/dist/index.js
+            test -f /app/packages/app-kit/dist/cli.js
           '
       - name: Start production-image test stack
         env:
