@@ -26,14 +26,11 @@ import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc, inArray, or } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
-import { mcpClientManager } from '@deft/mcp';
 import {
-  getExecutableMcpConnection,
   getMCPToolsForAgent,
-  mcpResultPayload,
   parseMCPToolName,
-  toConnectionConfig,
 } from './mcp-tools.js';
+import { capabilityService } from './capability-service.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
@@ -1178,15 +1175,25 @@ export async function executeAction(
     // MCP tool execution — handle before the native action switch
     if (action.startsWith('mcp__')) {
       const { connectionSlug, toolName } = parseMCPToolName(action);
-      const resolved = await getExecutableMcpConnection(orgId, connectionSlug, toolName, agentEmployeeId);
-      if (!resolved.connection) {
-        return { success: false, result: null, error: resolved.error };
+      const invocation = await capabilityService.invoke({
+        org_id: orgId,
+        actor: {
+          user_id: userId,
+          ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}),
+        },
+        provider: {
+          provider_kind: 'mcp',
+          connection_slug: connectionSlug,
+          operation_name: toolName,
+        },
+        input: params,
+      });
+      if (!invocation.provider_call_attempted) {
+        return { success: false, result: null, error: invocation.error };
       }
-      const config = toConnectionConfig(resolved.connection);
-      const mcpResult = await mcpClientManager.executeTool(config, toolName, params);
-      const resultPayload = mcpResultPayload(mcpResult);
-      if (!mcpResult.success) {
-        const error = mcpResult.error || 'MCP tool error';
+      const resultPayload = invocation.legacy_output;
+      if (!invocation.provider_succeeded) {
+        const error = invocation.error || 'MCP tool error';
         await db.update(agentActions).set({
           result: resultPayload as any,
           error,

@@ -47,13 +47,26 @@ test('every current runtime, admin, and script discovery consumer names the Capa
   }
 });
 
-test('immediate MCP execution crosses Capability Service while the action seam remains for Loop 4', async () => {
-  const immediate = await readFile(join(sourceRoot, 'lib/agent-context.ts'), 'utf8');
-  assert.match(immediate, /capabilityService\.invoke\s*\(/);
-  assert.doesNotMatch(immediate, /mcpClientManager/);
-  assert.doesNotMatch(immediate, /\b(?:getExecutableMcpConnection|toConnectionConfig|mcpResultPayload)\b/);
-  assert.doesNotMatch(immediate, /\.executeTool\s*\(/);
+test('every production MCP execution crosses Capability Service and only its adapter calls executeTool', async () => {
+  for (const consumer of ['lib/agent-context.ts', 'lib/agent-actions.ts']) {
+    const source = await readFile(join(sourceRoot, consumer), 'utf8');
+    assert.match(source, /capabilityService\.invoke\s*\(/, consumer);
+    assert.doesNotMatch(source, /mcpClientManager/, consumer);
+    assert.doesNotMatch(
+      source,
+      /\b(?:getExecutableMcpConnection|toConnectionConfig|mcpResultPayload)\b/,
+      consumer,
+    );
+    assert.doesNotMatch(source, /\.executeTool\s*\(/, consumer);
+  }
 
-  const action = await readFile(join(sourceRoot, 'lib/agent-actions.ts'), 'utf8');
-  assert.match(action, /mcpClientManager\.executeTool\s*\(/);
+  const violations: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    if (sourcePath === adapterPath) continue;
+    const source = await readFile(path, 'utf8');
+    const matches = [...source.matchAll(/\.executeTool\s*\(/g)];
+    for (const match of matches) violations.push(`${sourcePath}:${match.index ?? 0}:${match[0]}`);
+  }
+  assert.deepEqual(violations, []);
 });

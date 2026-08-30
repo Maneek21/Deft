@@ -134,6 +134,17 @@ all current token/scope behavior. It adds no App manifest fields, routes, UI,
 grants, App Runs, database migration, feature flag, provider interface mapping,
 or new execution authority.
 
+“Preserves receipt and retry behavior” includes two legacy asymmetries rather
+than claiming they are the target design. The generic web approval path may
+reopen a failed non-Module MCP action for an explicit later retry and does not
+always emit the same receipt/approver projection as the signed resolver path;
+auto-direct outbound MCP also has no generic signed receipt. Phase 2 keeps those
+paths byte- and state-compatible. Phase 3 App Runs must replace them with a
+uniform `unknown_outcome`, idempotency, receipt, and crash-repair contract.
+Exactly once in this ADR means one low-level provider call per service
+invocation or approval attempt, not one provider call for a legacy row that a
+human explicitly re-approves after failure.
+
 No old/new external execution shadowing is permitted because it could duplicate
 a non-idempotent effect.
 
@@ -146,13 +157,17 @@ a non-idempotent effect.
   transport fields from the snapshot envelope. Provider descriptions and JSON
   Schemas remain untrusted and may contain sensitive provider-supplied values.
 - Golden discovery tests preserve legacy tools and admin cache behavior.
-- Immediate, auto-direct action, and human-reviewed tests preserve result,
-  citation, action-row, budget, approval, and receipt behavior.
+- Immediate, auto-direct action, and pending quick/full resolver tests preserve
+  result, citation, action-row, budget, approval, replay, revocation, and the
+  path-specific receipt behavior.
 - Non-JSON SDK edge payload tests prove that strict safe projection failure
   cannot alter, retry, or hide an already-attempted legacy provider result.
 - Denial and revocation produce zero provider calls; every attempted provider
   execution produces at most one low-level call.
 - An architecture test permits low-level MCP execution only in the MCP provider
   adapter.
-- Existing connector/trust tests plus repository CI, security, production-image,
-  browser/MCP smoke, and versioned-upgrade checks remain green.
+- Shared contracts, Capability Service, immediate/action parity, relevant
+  connector/trust/approval/architecture tests, repository typecheck, and one
+  production build remain green. UI, schema, environment, token, deployment,
+  browser, image, and upgrade certification are not repeated unless the final
+  diff touches those surfaces.

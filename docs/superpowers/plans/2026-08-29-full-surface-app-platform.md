@@ -741,9 +741,9 @@ These are dependency and certification gates, not promises that each phase is on
   Keep them non-durable until Phase 3 Runs provide a concrete reference,
   retention policy, and schema-drift consumer.
 - [x] Implement MCP as the first provider adapter for discovery and invocation.
-- [ ] Route discovery and both direct outbound MCP execution paths through CapabilityService.
+- [x] Route discovery and both direct outbound MCP execution paths through CapabilityService.
 - [ ] Preserve names, payload bytes, errors, approval tiers, assignments, budgets, and connector behavior.
-- [ ] Add a grep/architecture test proving only provider adapters call `mcpClientManager.executeTool`.
+- [x] Add a grep/architecture test proving only provider adapters call `mcpClientManager.executeTool`.
 
 **Acceptance evidence:** current connector/trust tests plus new immediate,
 auto-direct, and human-reviewed parity tests pass; one provider call occurs per

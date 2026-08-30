@@ -1,6 +1,6 @@
 # App Platform Phase 2: Capability Service loops
 
-**Status:** in progress; Loops 0–3 completed on 2026-08-30, Loop 4 next
+**Status:** in progress; Loops 0–4 completed on 2026-08-30, Loop 5 next
 
 **Implementation baseline:** `origin/master` at `bdb137ee33a047a39b73d5f08ea958efb1fcbf35`
 
@@ -181,6 +181,20 @@ Rejected alternatives:
 - Approval replay, duplicate execution, and provider-error tests prove at most
   one external call.
 
+### Preserved compatibility exceptions
+
+Phase 2 deliberately does not normalize two pre-existing approval paths. The
+generic web approval route reopens a failed non-Module MCP action as
+`pending`/retryable, so a later explicit approval may create a new invocation;
+the signed resolver path terminalizes the same failure. Receipt and approver
+attribution also remain path-dependent: signed resolver approvals emit a
+receipt, while auto-direct and generic web-approved outbound MCP actions do not
+always do so. The one-call invariant is therefore one low-level call per
+Capability Service invocation or approval attempt, not one call for the entire
+legacy action-row lifetime. Phase 3 App Runs own the retry, `unknown_outcome`,
+uniform receipt, and crash-repair contract. Changing those semantics here would
+violate the Phase 2 parity boundary.
+
 ## Loop 5: Seal and certify the seam
 
 ### Work
@@ -209,7 +223,7 @@ Rejected alternatives:
 | Discovery | names, order, descriptions, schemas, annotations, disabled filtering, override precedence |
 | Authorization | org scope, active connection, enabled tools, employee assignment, employee disabled tools |
 | Approval | dynamic tier mapping, trust behavior, destructive handling, proposal/resolver outcomes |
-| Execution | target validation, runtime credential materialization, timeout, auth expiry, backoff, no retry |
+| Execution | target validation, runtime credential materialization, timeout, auth expiry, backoff, no implicit retry within one invocation; preserve legacy explicit re-approval behavior |
 | Result | raw structured result, content, structured content, metadata, explicit error, stored result |
 | Accounting | employee daily budget, one provider call, `executed_at`, receipt and audit behavior |
 | Operations | connection refresh/test semantics, self-hosted stdio/network policy, no new service |
