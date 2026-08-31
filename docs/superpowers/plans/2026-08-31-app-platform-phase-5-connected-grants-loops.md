@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loop 0 complete; Loop 1 ready |
+| Status | Loops 0–1 complete; Loop 2 ready |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -170,6 +170,15 @@ test.
 
 **Stop condition:** reopen the gate if the proof needs a general expression
 language, a second provider kind, or an App-controlled policy field.
+
+**Closeout:** passed without granting authority or changing persistence. App
+Protocol v1 is authoring-only; the support registry leaves inspection,
+staging, routing, activation, review, and invocation unavailable until their
+registered handlers exist, and the API independently gates every existing
+path. The contract suite pins deterministic v0/v1 packages, exact invalid-v0
+dispatch, lineage-scoped private identity, closed current-resource/relation
+inputs, included-Module resource integrity, malicious declarations, and
+sandbox email idempotency conflicts.
 
 ## Loop 2 — Additive grant, binding, and dependency substrate
 
