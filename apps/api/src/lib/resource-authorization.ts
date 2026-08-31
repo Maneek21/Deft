@@ -155,5 +155,3 @@ export class ResourceAuthorizationService<TActor> {
     }
   }
 }
-
-export const resourceAuthorizationService = new ResourceAuthorizationService<never>();

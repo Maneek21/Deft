@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | In execution; Loops 0–1 are checkpointed and the remaining delivery is tightened into Loops 2–5 |
+| Status | In execution; Loops 0–2 are locally checkpointed and Loop 3 is next |
 | Released baseline | `v0.3.0-preview.14` at `6d39e0e0413c82d36c9481849ae582fdf805d1a6` |
 | Baseline image | `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
 | Architecture source | `2026-08-29-full-surface-app-platform.md` |
@@ -312,6 +312,17 @@ dependencies. Shared, App Kit, API, web, and repository typechecks pass.
 
 **Stop condition:** any authorized-result or disclosure difference is resolved
 before a relation migration or production caller is added.
+
+**Completed evidence (2026-08-31):** the configured service has only the
+code-owned Module and `core/tasks` adapters. Fourteen focused contract,
+adapter, error-normalization, v1-projection, and architecture tests pass, plus
+one live-database parity journey covering Module human/employee resolution,
+Task human/employee visibility, project-scope and restricted/deleted/cross-org
+denial, live employee pause, Module disable/re-enable, and record archive. API
+typecheck passes and no route, UI, schema, mutation, token, connector, or App
+grant adopts the seam. The dedicated local database uses a test-only storage
+stand-in because this machine lacks pgvector; that is not counted as the Loop 5
+fresh-pgvector proof.
 
 ### Loop 3 — Relation substrate and Module v2
 

@@ -25,6 +25,11 @@ test('PR A Resource authorization seam is dormant and owns no data or effect pat
   );
   assert.doesNotMatch(service, /\bregister\s*\(/);
 
+  const providers = await readFile(join(apiSourceRoot, 'lib/resource-provider-adapters.ts'), 'utf8');
+  assert.match(providers, /module:\s*moduleResourceProviderAdapter/);
+  assert.match(providers, /tasks:\s*taskResourceProviderAdapter/);
+  assert.doesNotMatch(providers, /\bregister\s*\(/);
+
   const routeConsumers: string[] = [];
   for (const path of await typescriptFiles(join(apiSourceRoot, 'routes'))) {
     const source = await readFile(path, 'utf8');
