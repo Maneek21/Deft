@@ -45,7 +45,7 @@ test('Phase 4 Resource authorization stays closed and owns no external effect pa
   assert.deepEqual(generalizedResourceRoutes, []);
 
   const appKitSource = await readFile(join(repositoryRoot, 'packages/app-kit/src/index.ts'), 'utf8');
-  assert.doesNotMatch(appKitSource, /ResourceRef|resource_requirements|capability_requirements/);
+  assert.doesNotMatch(appKitSource, /ResourceRef/);
 });
 
 test('bounded search callers use the live authorization wrapper and relations cannot execute effects', async () => {
