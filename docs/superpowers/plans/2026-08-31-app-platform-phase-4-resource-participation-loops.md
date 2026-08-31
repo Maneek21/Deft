@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | In execution; Loops 0–1 implemented and locally certified as the dormant PR A checkpoint |
+| Status | In execution; Loops 0–1 are checkpointed and the remaining delivery is tightened into Loops 2–5 |
 | Released baseline | `v0.3.0-preview.14` at `6d39e0e0413c82d36c9481849ae582fdf805d1a6` |
 | Baseline image | `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
 | Architecture source | `2026-08-29-full-surface-app-platform.md` |
@@ -220,15 +220,16 @@ resolves compatible target installations and the actor's access live.
 
 ## Task decision
 
-Task is the immediately following heterogeneous fixture, not a blocker for the
-first Campaign-to-Contact proof. It must land before Phase 4 is declared
-complete. This ordering allows the first relation to validate the Module/App
-composition need, then forces the seam to generalize beyond Module internals.
+Task is the heterogeneous owner fixture paired with the Module adapter in Loop
+2. Proving both adapters behind the same parity kernel removes a separate
+milestone and forces the seam beyond Module internals before the relation
+migration lands. It does not add Task mutation or make Task a dependency of the
+Contacts/Campaigns product flow.
 
 The Task adapter initially supports resolve and safe projection only. Task
 mutation remains on the current Task service unless a later, separately tested
-change proves exact parity. Task links are shadow-projected as ResourceRefs;
-existing task relation tables and APIs remain source of truth.
+change proves exact parity. Existing Task relation tables and APIs remain
+source of truth and are not converted in Phase 4.
 
 ## Delivery loops
 
@@ -276,107 +277,115 @@ adapter slots, pre-adapter rejection, denial/error sanitization, projection
 validation, zero provider calls, and the absence of routes or effect/data
 dependencies. Shared, App Kit, API, web, and repository typechecks pass.
 
-### Loop 2 — Module adapter and parity shadow
+### Tightened execution rules for Loops 2–5
 
-- Implement resolve/list-safe-projection and owner-service mutation delegation
-  for Module records.
-- Project existing same-installation v1 relations as ResourceRefs without moving
-  or rewriting rows.
-- Run byte/state parity against the existing Module API for human and employee
-  actors, disabled installations, deleted records, manifest mismatch,
-  optimistic concurrency, and idempotency.
-- Keep production reads on the old path while collecting deterministic shadow
-  comparisons in tests and the certification fixture.
+- Preserve the acceptance matrix; remove repeated ceremony, not safety evidence.
+- Reuse one parity-fixture library for Module, Task, relation, search, and
+  revocation assertions. Do not grow separate end-to-end harnesses per caller.
+- Keep one disposable PostgreSQL environment through focused development and
+  reset only owned fixtures. Recreate it only when Loop 3 needs to prove the
+  migration from a clean baseline.
+- Run changed-package tests and typechecks during a loop. Run the broad matrix,
+  production build, self-host proofs, packaging determinism, and rollback once
+  in Loop 5.
+- Do not add a generic mutation/search port before a concrete Loop 3 or Loop 4
+  caller needs it. Existing owner services remain the mutation entry points.
+- Do not wait for a separate Task milestone: prove the second owner adapter in
+  the same parity loop as Modules.
 
-**Stop condition:** any authorized-result difference is resolved before a new
-relation schema or UI caller is added.
+### Loop 2 — Owner adapters and one parity kernel
 
-### Loop 3 — Additive cross-installation relations and Module v2
+- Implement the Module resolve/list-safe-projection adapter by delegating to the
+  existing Module owner service; do not duplicate its authorization or mutation
+  policy.
+- Register the closed `core/tasks` resolve adapter in the same loop and delegate
+  to current Task/project visibility.
+- Add only the thin compatibility projection needed to express existing
+  same-installation Module v1 relations as ResourceRefs. Do not move or rewrite
+  their rows and do not generalize existing Task link tables.
+- Use one shared parity fixture to compare existing-owner and Resource Service
+  results for human and employee actors, tenant spoof attempts, disabled or
+  deleted Modules, manifest mismatch, project membership loss,
+  private/restricted Tasks, deleted Tasks, and stale references.
+- Keep production callers on their current paths. This loop proves both owner
+  adapters but changes no route, UI, schema, or mutation behavior.
 
-- Add the confirmed versioned migration and Drizzle schema for generic relation
-  edges.
+**Stop condition:** any authorized-result or disclosure difference is resolved
+before a relation migration or production caller is added.
+
+### Loop 3 — Relation substrate and Module v2
+
+- Add the confirmed `.22` migration and Drizzle schema for generic resource
+  relation edges.
 - Add the independent Module v2 parser/JSON schema and prove Module v1 parsing,
-  canonicalization, and digest fixtures are byte-identical.
-- Implement link, unlink/replace, list, and safe dangling-state behavior with
-  endpoint locks, optimistic concurrency, idempotency, and audit.
-- Test cross-org IDs, valid IDs from another installation, disabled endpoints,
-  archive/delete races, duplicate/reordered writes, rollback, and failed
-  activation.
+  canonicalization, digests, installs, and same-installation relation behavior
+  remain byte/state identical.
+- Implement only the operations required by the proof: link, replace/unlink,
+  list, and safe dangling-state resolution. Both endpoints pass through the
+  closed authorization service; writes remain tenant-bound, locked,
+  concurrency-checked, idempotent, and audited.
+- Run one database matrix covering cross-org and cross-installation IDs,
+  disabled endpoints, archive/delete races, duplicate/reordered writes,
+  compatible and rejected upgrades, and additive-row retention semantics.
 
-Migration rollback is image rollback with additive tables retained; no
-down-migration or v1 row rewrite is permitted.
+No UI or search caller lands in this loop. There is no down-migration, v1 row
+rewrite, App grant, or generalized resource mutation API.
 
-### Loop 4 — Contacts/Campaigns compound proof
+### Loop 4 — Single compound App and caller cutover proof
 
-- Independently build/check/package/install Contacts and Campaigns.
-- Create Contacts and Campaigns through the existing generic Module UI/API.
-- Link Campaigns to Contacts through Resource Service and the new relation
-  contract.
-- Add the bounded reference picker/rendering behavior needed by the generic
-  Module form and detail view. UI completion requires desktop and mobile visual
-  inspection.
-- Prove disable/re-enable, archive, delete/dangling, compatible upgrade, and
-  failed incompatible upgrade behavior without copied records or domain code in
-  core.
-- Prove current employee Module tools see only the same authorized projections.
+- Build/check the independent Contacts and Campaigns fixtures once, install
+  them together, and create records through the existing generic Module API/UI.
+- Link a Campaign to a Contact through the new relation substrate without
+  copying either record. Add only the generic reference picker and resolved
+  label rendering required by Module v2.
+- Adopt the Resource seam for the proof Apps' human/employee relation reads and
+  their bounded search, agent-context, and citation return paths. Stale indexes
+  may nominate candidates but live owner authorization runs immediately before
+  content is returned.
+- Exercise the Task adapter in the same caller matrix to prove the seam is not
+  Module-specific; do not create a Campaign-to-Task domain fixture or convert
+  Task mutation/link storage.
+- Use one end-to-end lifecycle matrix for disable/re-enable, archive,
+  delete/dangling state, membership loss, Task visibility change, compatible
+  upgrade, rejected upgrade, and post-index revocation.
+- Inspect the generic picker/detail behavior once at representative desktop and
+  mobile sizes. Assert the sandbox-email provider still has zero calls.
 
-The sandbox-email provider remains unused and its call count must remain zero.
+Cut over only the bounded proof callers. Do not rewrite universal search or add
+a rollout flag unless deterministic shadow comparison shows it is necessary.
 
-### Loop 5 — Task heterogeneous proof
+### Loop 5 — Consolidated certification and release
 
-- Register the closed `core/tasks` adapter.
-- Resolve safe Task projections through current Task/project authorization.
-- Shadow-project existing task links as ResourceRefs without changing their
-  source tables or public behavior.
-- Add a bounded Campaign-to-Task or Contact-to-Task conformance fixture only if
-  it improves the heterogeneous proof; do not add CRM-specific UI.
-- Test project membership loss, assignment changes, private/restricted Task
-  visibility, deleted Tasks, stale refs, and cross-org IDs.
-
-Task mutation and universal core-resource conversion remain out of scope.
-
-### Loop 6 — Search, context, and citation cutover
-
-- Adapt only Module results used by the two proof Apps and Task results used by
-  the heterogeneous fixture.
-- Compare old and Resource Service results for authorized IDs, safe fields,
-  ranking inputs, snippets, and citations. A projection mismatch cannot be
-  waived by a higher result count.
-- Resolve and authorize live immediately before returning content; stale search
-  documents can only nominate candidates.
-- Add revocation tests where membership, installation state, record state, or
-  Task visibility changes after indexing.
-- Use one bounded default-off rollout control if runtime shadowing is required;
-  document it and its removal criterion. Do not add parallel permanent search
-  architectures.
-
-### Loop 7 — Consolidate, release, and hand Phase 5 exact inputs
-
-- Run shared ResourceRef and authorization contracts.
-- Run Module v1 byte/digest compatibility and Module v2 tests.
-- Run relation database, tenant, lifecycle, idempotency, concurrency, and
-  malicious-provider tests.
-- Run Module human/employee parity, Task authorization parity, search/context
-  shadow/cutover, and architecture tests.
-- Run API/shared/web/App Kit typecheck, one production build, and focused UI
-  visual checks for the generic picker/detail behavior.
+- Run the shared ResourceRef/authorization contracts, owner-adapter parity,
+  Module v1/v2 compatibility, relation database/lifecycle/concurrency tests,
+  caller revocation tests, malicious-provider tests, and architecture guards as
+  one focused matrix using the shared fixtures.
+- Run API/shared/web/App Kit typecheck and one production build. Repeat visual
+  inspection only if Loop 5 repairs changed the UI.
+- Check/package Contacts and Campaigns twice for deterministic public App Kit
+  output, then install the release-candidate packages once.
 - Prove fresh pgvector schema, supported upgrade from `preview.14`, matched
-  backup/restore, image rollback reads, and independent Contacts/Campaigns App
-  installation on the release candidate.
-- Record exact released commit/image, evidence, remaining adapters, and the
-  Phase 5 sandbox-email interface inputs. Do not begin Phase 5 code in this
-  loop.
+  backup/restore, and image rollback reads once on a release-capable host.
+- Record the exact released commit/image, evidence, remaining adapters, and the
+  Phase 5 sandbox-email interface inputs. Do not begin Phase 5 code here.
+
+Any failure gets the smallest repair and reruns only its affected focused gate
+plus the final matrix. Unrelated self-host, Docker, visual, or migration work is
+not repeated when the diff did not touch that surface.
 
 ## PR and review shape
 
-Use additive merge trains rather than one large PR:
+Use a three-PR additive merge train:
 
 1. **PR A — contracts and authorization seam:** Loop 0 ADR plus Loop 1.
-2. **PR B — Module adapter and relation substrate:** Loops 2–3, including the
-   migration and Module v2 compatibility proof.
-3. **PR C — proof callers and heterogeneous adapter:** Loops 4–6.
-4. **PR D only if needed — release-only repair:** bounded fixes revealed by the
-   release gate; do not mix Phase 5 grants or capability work into closeout.
+2. **PR B — owner adapters and relation substrate:** Loops 2–3, including both
+   owner parity proofs, the migration, and Module v2 compatibility.
+3. **PR C — compound cutover and certification:** Loops 4–5 and the Phase 4
+   evidence record.
+
+Open a separate repair PR only if the release gate reveals a change that cannot
+be reviewed safely inside PR C. Do not mix Phase 5 grants or capability work
+into closeout.
 
 Each PR gets focused checks while developing and one consolidated relevant
 validation pass. Release infrastructure, fresh schema, restore, and rollback
