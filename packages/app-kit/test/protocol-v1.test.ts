@@ -8,6 +8,7 @@ import {
   AppMachineKeyV1Schema,
   DeftAppManifestV1Schema,
   SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
+  SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE,
   SandboxEmailSendInputSchema,
   SandboxEmailSendOutputSchema,
   buildDeftAppPackage,
@@ -155,9 +156,9 @@ describe('App Protocol v1 authoring contract', () => {
     assert.equal(isDeftAppProtocolOperationSupported('1', 'inspect'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'stage'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'review'), true);
-    assert.equal(isDeftAppProtocolOperationSupported('1', 'route'), false);
+    assert.equal(isDeftAppProtocolOperationSupported('1', 'route'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'activate'), true);
-    assert.equal(isDeftAppProtocolOperationSupported('1', 'invoke'), false);
+    assert.equal(isDeftAppProtocolOperationSupported('1', 'invoke'), true);
     for (const support of Object.values(DEFT_APP_PROTOCOL_SUPPORT)) {
       assert.ok(Object.keys(support.atoms).length > 0);
       for (const handlers of Object.values(support.atoms)) {
@@ -180,6 +181,25 @@ describe('App Protocol v1 authoring contract', () => {
       'action_inputs.user_input',
       'package.module_artifacts',
     ]);
+    assert.deepEqual(DEFT_APP_PROTOCOL_SUPPORT['0'].private_interfaces, []);
+    assert.deepEqual(DEFT_APP_PROTOCOL_SUPPORT['1'].private_interfaces, [
+      SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE,
+    ]);
+    assert.equal(Object.isFrozen(DEFT_APP_PROTOCOL_SUPPORT['1'].private_interfaces), true);
+    assert.equal(Object.isFrozen(SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE), true);
+    assert.equal(Object.isFrozen(SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE.action_binding.inputs), true);
+    assert.ok(SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE.action_binding.inputs.every(
+      (input) => Object.isFrozen(input.allowed_field_types),
+    ));
+    assert.equal(
+      new Set(DEFT_APP_PROTOCOL_SUPPORT['1'].private_interfaces.map(
+        (item) => `${item.key}:v${item.version}`,
+      )).size,
+      DEFT_APP_PROTOCOL_SUPPORT['1'].private_interfaces.length,
+    );
+    assert.equal('loader' in SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE, false);
+    assert.equal('module_path' in SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE, false);
+    assert.equal('callback' in SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE, false);
   });
 
   test('derives private interface identity only from host-owned lineage inputs', () => {

@@ -1,0 +1,16 @@
+{
+  "schema": "deft.app.lock.v0",
+  "app_id": "org.deft.reference.resource-contacts-app",
+  "version": "1.0.0",
+  "package_digest": "sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8",
+  "manifest_digest": "sha256:d25831fbc3b87881db689ce1cf2beeb2256324be9c7e4a3f780e70534513e1ed",
+  "artifacts": [
+    {
+      "path": "modules/resource-contacts/deft.module.json",
+      "digest": "sha256:394040ab9dc442711e39f53cfbc7304968f448b7ab663cb09e04b620c18d8251",
+      "byte_length": 1152,
+      "media_type": "application/vnd.deft.module+json"
+    }
+  ],
+  "permissions": []
+}

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–6 complete; PR C continues with Loop 7 |
+| Status | Loop 7 local candidate complete; immutable release-host gate waits for PR C merge |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -465,6 +465,19 @@ isolated contracts.
   smoke, predecessor-image rollback read, candidate restoration, and final
   commit/image digest.
 - Record the immutable release evidence and exact Phase 6 authoring-kit handoff.
+
+**Local closeout:** the connected Campaigns proof now uses the exact checked
+Contacts and Campaigns source packages and lockfiles. The four interactive
+surfaces share AppActionService, exact grant/binding ancestry, and governed App
+Runs while replay authority remains isolated by surface and token. Review,
+revocation, upgrade/rollback, uninstall refusal, developer pairing, deterministic
+proof packages, capability/resource seams, operator rollback, and the
+Apps-enabled candidate lane are covered by the focused certification matrix.
+Repository typecheck passes. The official release default remains off until the
+Phase 6 beta gate. The immutable release-host pass cannot run truthfully before
+PR C is merged and an exact commit/image digest exists, so Phase 5 is not yet
+marked complete. See
+`docs/superpowers/audits/2026-09-01-app-platform-phase-5-release-certification.md`.
 
 ## PR train
 

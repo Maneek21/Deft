@@ -15,9 +15,8 @@ import {
 } from '@deft/db/schema';
 import {
   DeftAppManifestV1Schema,
-  SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
-  SandboxEmailSendInputSchema,
   type DeftAppManifestV1,
+  type DeftAppPrivateInterfaceDescriptorV1,
 } from '@deft/app-kit';
 import type { MCPToolOverride } from '@deft/mcp';
 import {
@@ -43,11 +42,12 @@ import {
 } from './app-grant-service.js';
 import {
   CONNECTED_APP_ACTION_BINDING_VERSION,
-  CONNECTED_APP_SANDBOX_OPERATION_NAME,
+  connectedAppActionBindingMatches,
+  connectedAppOperationMatches,
+  connectedAppToolMatches,
+  getConnectedAppPrivateInterface,
   normalizeConnectedMcpOverrides,
-  sandboxEmailActionBindingMatches,
-  sandboxEmailOperationMatches,
-  sandboxEmailToolMatches,
+  parseConnectedAppProviderInput,
 } from './app-connected-contract.js';
 import type { CapabilityDiscoveryResult } from './capability-service.js';
 import {
@@ -66,7 +66,7 @@ import { resourceAuthorizationService } from './resource-provider-adapters.js';
 import { listResourceRelation } from './resource-relation-service.js';
 
 const APP_ACTION_AUTHORITY_VERSION = 'deft.app_action_authority.v1' as const;
-const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v1' as const;
+const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v2' as const;
 const APP_MCP_DISCOVERY_SCOPES = Object.freeze(['read:modules', 'read:apps'] as const);
 const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
 const APP_MCP_RUN_READ_SCOPES = Object.freeze(['read:app-runs'] as const);
@@ -201,6 +201,7 @@ type ActionContext = Readonly<{
   binding: BindingRow;
   manifest: DeftAppManifestV1;
   action: DeftAppManifestV1['actions'][number];
+  private_interface: DeftAppPrivateInterfaceDescriptorV1;
   dependencies: readonly DependencyLockRow[];
   resources: ReadonlyMap<string, Readonly<{
     requirement: DeftAppManifestV1['resource_requirements'][number];
@@ -432,8 +433,8 @@ function actionResourceProjection(resource: ResourceSafeProjectionV1): ResourceS
   return Object.freeze({
     ...resource,
     // A Module's ordinary display label may be backed by a field that becomes
-    // provider input (for example Campaign subject or Contact email). App action
-    // responses therefore use only host-owned identity copy.
+    // provider input. App action responses therefore use only host-owned
+    // identity copy.
     label: `${resource.ref.resource_type} record ${identitySuffix}`,
   });
 }
@@ -456,12 +457,18 @@ function replayIdentity(context: ActionContext, caller: CallerContext, idempoten
     : caller.execution_actor.actor_type === 'agent_employee'
       ? caller.execution_actor.agent_employee_id
       : '';
+  const tokenAuthorities = [...caller.token_authorities]
+    .sort((left, right) => `${left.token_kind}\0${left.token_id}`.localeCompare(
+      `${right.token_kind}\0${right.token_id}`,
+    ));
   const digest = createHash('sha256')
     .update(`${APP_ACTION_REPLAY_VERSION}\0`)
     .update(canonicalCapabilityJson({
       organization_id: caller.actor.org_id,
       principal_type: caller.execution_actor.actor_type,
       principal_id: principalId,
+      caller_surface: caller.surface,
+      token_authorities: tokenAuthorities,
       app_installation_id: context.installation.id,
       app_version_id: context.version.id,
       grant_snapshot_id: context.grant.id,
@@ -665,7 +672,22 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
   }
   const manifest = DeftAppManifestV1Schema.parse(version.manifest);
   const action = manifest.actions.find((candidate) => candidate.key === binding.action_key);
-  if (!action || !sandboxEmailActionBindingMatches(action)) {
+  const capabilityRequirement = action
+    ? manifest.capability_requirements.find((candidate) => candidate.key === action.capability_requirement_key)
+    : null;
+  const privateInterface = capabilityRequirement
+    ? getConnectedAppPrivateInterface(capabilityRequirement.interface)
+    : null;
+  const connectorRequirement = action
+    ? manifest.connector_requirements.find((candidate) => candidate.key === action.connector_requirement_key)
+    : null;
+  if (
+    !action
+    || !privateInterface
+    || !connectorRequirement
+    || connectorRequirement.provider_kind !== privateInterface.provider_kind
+    || !connectedAppActionBindingMatches(privateInterface, action)
+  ) {
     throw actionError('App action contract is unavailable', 'APP_ACTION_UNAVAILABLE');
   }
   const expectedRights = manifest.resource_requirements.map((requirement) => ({
@@ -709,19 +731,20 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     || providerSnapshot.data.adapter_contract_version !== storedProvider.adapter_contract_version
     || !providerOperation
     || providerOperation.schema_digest !== binding.operation_schema_digest
-    || !sandboxEmailOperationMatches(providerOperation)
+    || !connectedAppOperationMatches(privateInterface, providerOperation)
   ) throw actionError('Pinned App provider schema is unavailable', 'APP_PROVIDER_UNAVAILABLE', 503);
   if (
-    binding.provider_kind !== 'mcp'
-    || binding.operation_name !== CONNECTED_APP_SANDBOX_OPERATION_NAME
-    || binding.risk_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.risk_class
-    || binding.review_requirement !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_requirement
-    || binding.review_scope !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_scope
-    || binding.egress_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.egress_class
-    || binding.retry_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retry_class
-    || binding.retention_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retention_class
-    || binding.automation_eligibility !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.automation_eligibility
-    || binding.provider_idempotency_key_required !== true
+    binding.provider_kind !== privateInterface.provider_kind
+    || binding.operation_name !== privateInterface.operation_name
+    || binding.risk_class !== privateInterface.host_policy.risk_class
+    || binding.review_requirement !== privateInterface.host_policy.review_requirement
+    || binding.review_scope !== privateInterface.host_policy.review_scope
+    || binding.egress_class !== privateInterface.host_policy.egress_class
+    || binding.retry_class !== privateInterface.host_policy.retry_class
+    || binding.retention_class !== privateInterface.host_policy.retention_class
+    || binding.automation_eligibility !== privateInterface.host_policy.automation_eligibility
+    || binding.provider_idempotency_key_required
+      !== privateInterface.host_policy.provider_idempotency_key_required
   ) throw actionError('App action host policy is invalid', 'APP_STALE');
   const expectedCanonicalBinding = canonicalizeAppGrantValue({
     binding_version: CONNECTED_APP_ACTION_BINDING_VERSION,
@@ -729,14 +752,14 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     capability_requirement_key: action.capability_requirement_key,
     connector_requirement_key: action.connector_requirement_key,
     interface_identity: binding.interface_identity,
-    provider_kind: 'mcp',
+    provider_kind: privateInterface.provider_kind,
     mcp_connection_id: binding.mcp_connection_id,
     provider_snapshot_digest: storedProvider.snapshot_digest,
     provider_adapter_contract_version: storedProvider.adapter_contract_version,
-    operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
+    operation_name: privateInterface.operation_name,
     operation_schema_digest: providerOperation.schema_digest,
     connector_authorization_version: connection.app_run_authorization_version,
-    host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+    host_policy: privateInterface.host_policy,
     placement: action.placement,
     input_bindings: action.input_bindings,
   });
@@ -811,6 +834,7 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     binding,
     manifest,
     action,
+    private_interface: privateInterface,
     dependencies: [...dependencies].sort((left, right) => left.dependency_key.localeCompare(right.dependency_key)),
     resources,
     provider_snapshot: providerSnapshot.data,
@@ -961,7 +985,10 @@ export class AppActionService {
           ? selectedFields.get(binding.input_key)?.fields[source.target_field_key]
           : userInputs[binding.input_key];
     }
-    const parsedProviderInput = SandboxEmailSendInputSchema.safeParse(providerInput);
+    const parsedProviderInput = parseConnectedAppProviderInput(
+      resolved.context.private_interface,
+      providerInput,
+    );
     if (!parsedProviderInput.success) {
       throw actionError('Resolved App action input is invalid', 'APP_ACTION_INVALID', 400);
     }
@@ -1188,9 +1215,9 @@ export class AppActionService {
       || live.snapshot.snapshot_digest !== context.provider_snapshot_digest
       || !operation
       || operation.schema_digest !== context.binding.operation_schema_digest
-      || !sandboxEmailOperationMatches(operation)
+      || !connectedAppOperationMatches(context.private_interface, operation)
       || !tool
-      || !sandboxEmailToolMatches(tool)
+      || !connectedAppToolMatches(context.private_interface, tool)
     ) throw actionError('App action provider schema changed after review', 'APP_PROVIDER_UNAVAILABLE', 503);
   }
 

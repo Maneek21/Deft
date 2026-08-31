@@ -269,8 +269,8 @@ test('App actions resolve and prepare one reviewed relation identically across f
   ));
   if (!binding) throw new Error('Reviewed App action binding is missing');
 
-  let contacts = await getModuleInstallation(owner, { moduleId: 'community.deft.contacts' });
-  let campaigns = await getModuleInstallation(owner, { moduleId: 'community.deft.connected-campaigns' });
+  let contacts = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-contacts' });
+  let campaigns = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-campaigns' });
   contacts = await updateModuleInstallation(owner, contacts.slug, { agent_access: 'read' });
   campaigns = await updateModuleInstallation(owner, campaigns.slug, { agent_access: 'read' });
 
@@ -296,7 +296,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
   const campaign = await createModuleRecord(owner, {
     module_id: campaigns.module_id,
     collection_key: 'campaigns',
-    data: { subject, body: bodyText },
+    data: { name: 'Connected campaign', subject, body: bodyText, status: 'draft' },
     relations: {},
     expected_manifest_digest: campaigns.manifest_digest,
     idempotency_key: `loop4-campaign-${suffix}`,
@@ -519,9 +519,11 @@ test('App actions resolve and prepare one reviewed relation identically across f
     preparedBySurface.set(surface.name, prepared);
   }
   for (const result of semanticResults.slice(1)) assert.deepEqual(result, semanticResults[0]);
-  assert.equal(replayBySurface.get('defty'), replayBySurface.get('ui'));
-  assert.equal(replayBySurface.get('human_mcp'), replayBySurface.get('ui'));
-  assert.notEqual(replayBySurface.get('employee'), replayBySurface.get('ui'));
+  assert.equal(
+    new Set(replayBySurface.values()).size,
+    callers.length,
+    'replay identity must isolate every pinned caller surface and token authority',
+  );
   assert.equal(protectedInputs.length, callers.length);
   assert.equal(fieldReads, callers.length * 2);
 

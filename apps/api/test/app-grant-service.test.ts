@@ -5,7 +5,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { DeftAppManifestV0Schema } from '@deft/app-kit';
 import { buildRequestedAppGrantProjection } from '../src/lib/app-grant-service.js';
-import { sandboxEmailActionBindingMatches } from '../src/lib/app-connected-contract.js';
+import {
+  connectedAppActionBindingMatches,
+  getConnectedAppPrivateInterface,
+} from '../src/lib/app-connected-contract.js';
 import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -30,7 +33,7 @@ test('Protocol v1 staging projection is deterministic and explicitly non-executa
   assert.deepEqual(replay, first);
   assert.equal(
     first.snapshot_digest,
-    'sha256:bfafacb0372bfab36a78ed541c630427dbf58060472b711b50de18a038c13dde',
+    'sha256:2464c10f3a480c8d5d7f75c7923f8231a311bcdeb6dbfb584c8a0d7449572bed',
   );
   assert.equal(first.resource_rights.length, 2);
   assert.equal(first.classification.authority_state, 'requested_only');
@@ -75,7 +78,13 @@ test('Protocol v0 staging projection is an empty compatibility request', () => {
 test('connected sandbox actions accept only the frozen resource-backed input mapping', async () => {
   const built = await buildPhase5ConnectedAppPackage();
   const action = built.package.manifest.actions[0]!;
-  assert.equal(sandboxEmailActionBindingMatches(action), true);
+  const requirement = built.package.manifest.capability_requirements.find(
+    (candidate) => candidate.key === action.capability_requirement_key,
+  );
+  assert.ok(requirement);
+  const privateInterface = getConnectedAppPrivateInterface(requirement.interface);
+  assert.ok(privateInterface);
+  assert.equal(connectedAppActionBindingMatches(privateInterface, action), true);
 
   const unsupported = {
     ...action,
@@ -86,7 +95,7 @@ test('connected sandbox actions accept only the frozen resource-backed input map
         }
       : binding),
   } as typeof action;
-  assert.equal(sandboxEmailActionBindingMatches(unsupported), false);
+  assert.equal(connectedAppActionBindingMatches(privateInterface, unsupported), false);
 });
 
 test('grant staging code has no provider, connector runtime, approval, or Run dependency', () => {

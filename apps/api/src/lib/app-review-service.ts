@@ -17,9 +17,9 @@ import {
 } from '@deft/db/schema';
 import {
   canonicalAppPrivateInterfaceIdentity,
-  SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
   type DeftAppManifestV1,
   type DeftAppPackageV1,
+  type DeftAppPrivateInterfaceDescriptorV1,
 } from '@deft/app-kit';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
 import {
@@ -44,11 +44,12 @@ import { persistCapabilityProviderSnapshotWithExecutor } from './capability-prov
 import { isMcpToolEnabled } from './mcp-tool-identity.js';
 import {
   CONNECTED_APP_ACTION_BINDING_VERSION,
-  CONNECTED_APP_SANDBOX_OPERATION_NAME,
+  connectedAppActionBindingMatches,
+  connectedAppOperationMatches,
+  connectedAppPrivateInterfaceRegistryKey,
+  connectedAppToolMatches,
+  getConnectedAppPrivateInterface,
   normalizeConnectedMcpOverrides,
-  sandboxEmailActionBindingMatches,
-  sandboxEmailOperationMatches,
-  sandboxEmailToolMatches,
 } from './app-connected-contract.js';
 import {
   assertCurrentModuleManagerWithExecutor,
@@ -137,7 +138,7 @@ type ReviewActionBinding = Readonly<{
   mcp_connection_id: string;
   provider_snapshot_digest: string;
   provider_adapter_contract_version: string;
-  operation_name: typeof CONNECTED_APP_SANDBOX_OPERATION_NAME;
+  operation_name: DeftAppPrivateInterfaceDescriptorV1['operation_name'];
   operation_schema_digest: string;
   connector_authorization_version: number;
   canonical_binding: Readonly<Record<string, unknown>>;
@@ -165,6 +166,7 @@ type ReviewContext = Readonly<{
   version: Version;
   requested: RequestedSnapshot;
   manifest: DeftAppManifestV1;
+  private_interfaces: ReadonlyMap<string, DeftAppPrivateInterfaceDescriptorV1>;
   package: DeftAppPackageV1;
   included_modules: ReadonlyMap<string, ModuleDescriptor>;
   dependencies: readonly DependencyContext[];
@@ -177,7 +179,7 @@ type ProviderEvidence = Readonly<{
   connection: Connection;
   result: CapabilityDiscoveryResult;
   snapshot: Readonly<CapabilityProviderDiscoverySnapshot>;
-  operation: Readonly<CapabilityProviderDiscoverySnapshot['operations'][number]>;
+  operations: ReadonlyMap<string, Readonly<CapabilityProviderDiscoverySnapshot['operations'][number]>>;
 }>;
 
 export interface AppReviewCapabilityPort {
@@ -380,6 +382,19 @@ async function loadReviewContext(
   }
   const manifest = version.manifest as DeftAppManifestV1;
   const packageValue = version.package as unknown as DeftAppPackageV1;
+  const privateInterfaces = new Map<string, DeftAppPrivateInterfaceDescriptorV1>();
+  const uniquePrivateInterfaces = new Map<string, DeftAppPrivateInterfaceDescriptorV1>();
+  for (const requirement of manifest.capability_requirements) {
+    const privateInterface = getConnectedAppPrivateInterface(requirement.interface);
+    if (!privateInterface) {
+      throw new AppError('The App requires an unsupported private interface', 'APP_PROTOCOL_UNSUPPORTED', 409);
+    }
+    privateInterfaces.set(requirement.key, privateInterface);
+    uniquePrivateInterfaces.set(
+      connectedAppPrivateInterfaceRegistryKey(privateInterface),
+      privateInterface,
+    );
+  }
   const [requested] = await executor.select().from(appGrantSnapshots).where(and(
     eq(appGrantSnapshots.org_id, actor.org_id),
     eq(appGrantSnapshots.app_installation_id, installation.id),
@@ -425,9 +440,6 @@ async function loadReviewContext(
       eq(mcpConnections.is_active, true),
     )).limit(1);
     if (!connection) throw appError('The selected connector is unavailable', 'APP_PROVIDER_UNAVAILABLE');
-    if (!isMcpToolEnabled(connection.enabled_tools, connection.slug, CONNECTED_APP_SANDBOX_OPERATION_NAME)) {
-      throw appError('The selected connector does not enable the required operation', 'APP_PROVIDER_UNAVAILABLE');
-    }
     const overrideRows = await executor.select({
       tool_name: mcpToolOverrides.tool_name,
       trust_tier_override: mcpToolOverrides.trust_tier_override,
@@ -437,10 +449,18 @@ async function loadReviewContext(
       eq(mcpToolOverrides.mcp_connection_id, connection.id),
     ));
     const overrides = normalizeConnectedMcpOverrides(overrideRows);
-    if (overrides.some((override) => (
-      override.toolName === CONNECTED_APP_SANDBOX_OPERATION_NAME && override.disabled
-    ))) {
-      throw appError('The selected connector operation is disabled', 'APP_PROVIDER_UNAVAILABLE');
+    for (const privateInterface of uniquePrivateInterfaces.values()) {
+      if (
+        connector.provider_kind !== privateInterface.provider_kind
+        || !isMcpToolEnabled(connection.enabled_tools, connection.slug, privateInterface.operation_name)
+      ) {
+        throw appError('The selected connector does not enable the required operation', 'APP_PROVIDER_UNAVAILABLE');
+      }
+      if (overrides.some((override) => (
+        override.toolName === privateInterface.operation_name && override.disabled
+      ))) {
+        throw appError('The selected connector operation is disabled', 'APP_PROVIDER_UNAVAILABLE');
+      }
     }
     connections.set(connector.key, connection);
     connectorOverrides.set(connector.key, overrides);
@@ -450,6 +470,7 @@ async function loadReviewContext(
     version,
     requested,
     manifest,
+    private_interfaces: privateInterfaces,
     package: packageValue,
     included_modules: includedModules,
     dependencies,
@@ -463,6 +484,12 @@ async function discoverProviderEvidence(
   context: ReviewContext,
   capability: AppReviewCapabilityPort,
 ): Promise<Map<string, ProviderEvidence>> {
+  const privateInterfaces = new Map(
+    [...context.private_interfaces.values()].map((privateInterface) => [
+      connectedAppPrivateInterfaceRegistryKey(privateInterface),
+      privateInterface,
+    ]),
+  );
   const entries = await Promise.all([...context.connections.entries()].map(async ([key, connection]) => {
     let result: CapabilityDiscoveryResult;
     try {
@@ -477,25 +504,39 @@ async function discoverProviderEvidence(
       throw appError('Provider discovery failed', 'APP_PROVIDER_UNAVAILABLE');
     }
     const snapshot = result.snapshot;
-    const operation = snapshot?.operations.find(
-      (item) => item.identity.operation_name === CONNECTED_APP_SANDBOX_OPERATION_NAME,
-    );
-    const filteredTool = result.tools.find((tool: MCPTool) => (
-      tool.originalName === CONNECTED_APP_SANDBOX_OPERATION_NAME
-    ));
     if (
       !snapshot
       || snapshot.provider.org_id !== actor.org_id
       || snapshot.provider.provider_kind !== 'mcp'
       || snapshot.provider.provider_instance_id !== connection.id
-      || !operation
-      || !filteredTool
-      || !sandboxEmailOperationMatches(operation)
-      || !sandboxEmailToolMatches(filteredTool)
     ) {
-      throw appError('Provider does not implement the required sandbox email contract', 'APP_PROVIDER_UNAVAILABLE');
+      throw appError('Provider discovery evidence is unavailable', 'APP_PROVIDER_UNAVAILABLE');
     }
-    return [key, { connector_requirement_key: key, connection, result, snapshot, operation }] as const;
+    const operations = new Map<string, CapabilityProviderDiscoverySnapshot['operations'][number]>();
+    for (const [interfaceKey, privateInterface] of privateInterfaces) {
+      const operation = snapshot.operations.find(
+        (item) => item.identity.operation_name === privateInterface.operation_name,
+      );
+      const filteredTool = result.tools.find((tool: MCPTool) => (
+        tool.originalName === privateInterface.operation_name
+      ));
+      if (
+        !operation
+        || !filteredTool
+        || !connectedAppOperationMatches(privateInterface, operation)
+        || !connectedAppToolMatches(privateInterface, filteredTool)
+      ) {
+        throw appError('Provider does not implement the required private interface', 'APP_PROVIDER_UNAVAILABLE');
+      }
+      operations.set(interfaceKey, operation);
+    }
+    return [key, {
+      connector_requirement_key: key,
+      connection,
+      result,
+      snapshot,
+      operations,
+    }] as const;
   }));
   return new Map(entries);
 }
@@ -535,12 +576,16 @@ function validateResourceAndActionContracts(context: ReviewContext): void {
     resourceModules.set(requirement.key, module);
   }
   for (const action of context.manifest.actions) {
-    if (!sandboxEmailActionBindingMatches(action)) {
+    const privateInterface = context.private_interfaces.get(action.capability_requirement_key);
+    if (!privateInterface || !connectedAppActionBindingMatches(privateInterface, action)) {
       throw appError(
         'The action input mapping is outside the supported connected App contract',
         'APP_DEPENDENCY_UNHEALTHY',
       );
     }
+    const inputConstraints = new Map(
+      privateInterface.action_binding.inputs.map((constraint) => [constraint.input_key, constraint]),
+    );
     const placement = context.manifest.resource_requirements.find(
       (item) => item.key === action.placement.resource_requirement_key,
     )!;
@@ -576,11 +621,12 @@ function validateResourceAndActionContracts(context: ReviewContext): void {
         const module = resourceModules.get(requirement.key)!;
         const field = module.manifest.collections.find((item) => item.key === requirement.resource_type)!
           .fields.find((item) => item.key === fieldKey);
-        const validType = binding.input_key === 'to'
-          ? field?.type === 'email'
-          : binding.input_key === 'subject'
-            ? field?.type === 'text'
-            : field?.type === 'text' || field?.type === 'long_text';
+        const constraint = inputConstraints.get(binding.input_key);
+        const validType = Boolean(
+          field
+          && constraint
+          && (constraint.allowed_field_types as readonly string[]).includes(field.type),
+        );
         if (!validType) {
           throw appError(
             `The ${binding.input_key} binding uses an incompatible resource field`,
@@ -635,11 +681,19 @@ function buildReview(
     .map((action) => {
       const provider = evidence.get(action.connector_requirement_key);
       if (!provider) throw appError('Action connector evidence is missing', 'APP_PROVIDER_UNAVAILABLE');
+      const privateInterface = context.private_interfaces.get(action.capability_requirement_key);
+      if (!privateInterface) {
+        throw new AppError('Action private interface is unsupported', 'APP_PROTOCOL_UNSUPPORTED', 409);
+      }
+      const operation = provider.operations.get(
+        connectedAppPrivateInterfaceRegistryKey(privateInterface),
+      );
+      if (!operation) throw appError('Action provider evidence is missing', 'APP_PROVIDER_UNAVAILABLE');
       const interfaceIdentity = canonicalAppPrivateInterfaceIdentity({
         organization_id: context.installation.org_id,
         app_lineage_id: context.installation.id,
-        interface_key: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.key,
-        interface_version: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.version,
+        interface_key: privateInterface.key,
+        interface_version: privateInterface.version,
       });
       const canonicalBinding = canonicalizeAppGrantValue({
         binding_version: CONNECTED_APP_ACTION_BINDING_VERSION,
@@ -647,14 +701,14 @@ function buildReview(
         capability_requirement_key: action.capability_requirement_key,
         connector_requirement_key: action.connector_requirement_key,
         interface_identity: interfaceIdentity,
-        provider_kind: 'mcp' as const,
+        provider_kind: privateInterface.provider_kind,
         mcp_connection_id: provider.connection.id,
         provider_snapshot_digest: provider.snapshot.snapshot_digest,
         provider_adapter_contract_version: provider.snapshot.adapter_contract_version,
-        operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
-        operation_schema_digest: provider.operation.schema_digest,
+        operation_name: privateInterface.operation_name,
+        operation_schema_digest: operation.schema_digest,
         connector_authorization_version: provider.connection.app_run_authorization_version,
-        host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+        host_policy: privateInterface.host_policy,
         placement: action.placement,
         input_bindings: action.input_bindings,
       }) as Record<string, unknown>;
@@ -663,12 +717,12 @@ function buildReview(
         capability_requirement_key: action.capability_requirement_key,
         connector_requirement_key: action.connector_requirement_key,
         interface_identity: interfaceIdentity,
-        provider_kind: 'mcp' as const,
+        provider_kind: privateInterface.provider_kind,
         mcp_connection_id: provider.connection.id,
         provider_snapshot_digest: provider.snapshot.snapshot_digest,
         provider_adapter_contract_version: provider.snapshot.adapter_contract_version,
-        operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
-        operation_schema_digest: provider.operation.schema_digest,
+        operation_name: privateInterface.operation_name,
+        operation_schema_digest: operation.schema_digest,
         connector_authorization_version: provider.connection.app_run_authorization_version,
         canonical_binding: canonicalBinding,
         binding_digest: digestAppGrantValue(canonicalBinding),
@@ -704,13 +758,17 @@ function buildReview(
     prior_authority_surface_digest: priorAuthoritySurfaceDigest,
     proposed_authority_surface_digest: authoritySurfaceDigest,
   };
+  const reviewPrivateInterface = context.private_interfaces.values().next().value;
+  if (!reviewPrivateInterface) {
+    throw new AppError('App private interface support metadata is missing', 'APP_PROTOCOL_UNSUPPORTED', 409);
+  }
   const classification = canonicalizeAppGrantValue({
     authority_state: 'effective',
     execution_gate: 'app_origin_disabled',
     executable: false,
     provider_access: 'governed_only',
     review_required: true,
-    host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+    host_policy: reviewPrivateInterface.host_policy,
   }) as Record<string, unknown>;
   const reviewWithoutDigest = canonicalizeAppGrantValue({
     review_version: REVIEW_VERSION,
@@ -1075,6 +1133,8 @@ export async function activateConnectedAppInstallation(
     for (const binding of review.action_bindings) {
       const providerSnapshotId = providerSnapshotIds.get(binding.connector_requirement_key);
       if (!providerSnapshotId) throw new Error('Provider snapshot persistence returned no identity');
+      const privateInterface = context.private_interfaces.get(binding.capability_requirement_key);
+      if (!privateInterface) throw new Error('Private interface support metadata is missing');
       await tx.insert(appActionBindings).values({
         id: randomUUID(),
         org_id: actorValue.org_id,
@@ -1092,7 +1152,7 @@ export async function activateConnectedAppInstallation(
         operation_name: binding.operation_name,
         operation_schema_digest: binding.operation_schema_digest,
         connector_authorization_version: binding.connector_authorization_version,
-        ...SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+        ...privateInterface.host_policy,
         canonical_binding: binding.canonical_binding,
         binding_digest: binding.binding_digest,
       });

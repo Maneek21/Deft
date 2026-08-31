@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
+  appDependencyLocks,
   appInstallations,
   appModuleBindings,
   appVersions,
@@ -585,6 +586,69 @@ export async function enableAppInstallation(
   await invalidateModuleCatalogCaches(actor.org_id);
   emitAppChange(actor.org_id, { change: 'enabled', installation_id: enabled.installation.id });
   return view(enabled.installation, enabled.version);
+}
+
+/**
+ * Phase 5 deliberately has no destructive App uninstall. This explicit
+ * refusal distinguishes a live dependency from the still-unresolved export /
+ * retention decision and guarantees that neither case can cascade silently.
+ */
+export async function refuseAppUninstall(
+  actor: ModuleActor,
+  installationId: string,
+  expectedLifecycleEpoch: number,
+): Promise<never> {
+  assertHumanManager(actor);
+  return db.transaction(async (tx) => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
+    await acquireAppLock(tx, actor.org_id, installationId);
+    const [installation] = await tx.select().from(appInstallations).where(and(
+      eq(appInstallations.org_id, actor.org_id),
+      eq(appInstallations.id, installationId),
+    )).limit(1).for('update');
+    if (!installation) throw new AppError('App installation not found', 'APP_NOT_FOUND', 404);
+    if (installation.lifecycle_epoch !== expectedLifecycleEpoch) {
+      throw new AppError('App lifecycle changed', 'APP_STALE', 409);
+    }
+
+    const dependents = await tx.select({
+      installation_id: appInstallations.id,
+      app_id: appInstallations.app_id,
+      state: appInstallations.state,
+    }).from(appDependencyLocks).innerJoin(appInstallations, and(
+      eq(appInstallations.org_id, appDependencyLocks.org_id),
+      eq(appInstallations.id, appDependencyLocks.app_installation_id),
+      eq(appInstallations.active_version_id, appDependencyLocks.app_version_id),
+    )).where(and(
+      eq(appDependencyLocks.org_id, actor.org_id),
+      eq(appDependencyLocks.dependency_installation_id, installation.id),
+      inArray(appInstallations.state, ['active', 'disabled']),
+    )).orderBy(asc(appInstallations.app_id), asc(appInstallations.id));
+    const uniqueDependents = [...new Map(
+      dependents.map((dependent) => [dependent.installation_id, dependent]),
+    ).values()];
+    if (uniqueDependents.length > 0) {
+      throw new AppError(
+        'App cannot be uninstalled while another App depends on it',
+        'APP_DEPENDENCY_IN_USE',
+        409,
+        {
+          dependents: uniqueDependents.map((dependent) => ({
+            installation_id: dependent.installation_id,
+            app_id: dependent.app_id,
+            state: dependent.state,
+          })),
+          cascaded: false,
+        },
+      );
+    }
+    throw new AppError(
+      'App uninstall requires an explicit export and retention decision',
+      'APP_UNINSTALL_REQUIRES_RETENTION_DECISION',
+      409,
+      { cascaded: false, data_preserved: true },
+    );
+  });
 }
 
 export async function listAppInstallations(actor: ModuleActor): Promise<AppInstallationView[]> {

@@ -89,6 +89,55 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   assert.doesNotMatch(service, /\.insert\s*\(\s*(?:appRuns|agentActions)\s*\)/);
 });
 
+test('generic App action owners use the closed interface registry without domain branches or provider loaders', async () => {
+  const genericOwners = [
+    'lib/app-action-service.ts',
+    'lib/app-review-service.ts',
+    'routes/app-actions.ts',
+    'routes/app-runs.ts',
+  ] as const;
+  const domainBranch = /SandboxEmail|sandboxEmail|CONNECTED_APP_SANDBOX_OPERATION_NAME|['"]send_email['"]|\b(?:Contacts?|Campaigns?)\b/;
+  for (const sourcePath of genericOwners) {
+    const source = await readFile(join(sourceRoot, sourcePath), 'utf8');
+    assert.doesNotMatch(source, domainBranch, `${sourcePath} must remain interface-driven`);
+  }
+
+  const actionService = await readFile(join(sourceRoot, 'lib/app-action-service.ts'), 'utf8');
+  const reviewService = await readFile(join(sourceRoot, 'lib/app-review-service.ts'), 'utf8');
+  for (const source of [actionService, reviewService]) {
+    assert.match(source, /getConnectedAppPrivateInterface/);
+    assert.match(source, /connectedAppActionBindingMatches/);
+    assert.match(source, /connectedAppOperationMatches/);
+  }
+  assert.doesNotMatch(
+    reviewService,
+    /binding\.input_key\s*===\s*['"](?:to|subject|body_text)['"]/,
+    'App review must read field-type constraints from the code-owned interface descriptor',
+  );
+
+  for (const sourcePath of [
+    'lib/app-connected-contract.ts',
+    'lib/app-action-service.ts',
+    'lib/app-review-service.ts',
+    'lib/app-run-provider-executor.ts',
+    'lib/capability-service.ts',
+  ]) {
+    const source = await readFile(join(sourceRoot, sourcePath), 'utf8');
+    for (const match of source.matchAll(/\bimport\s*\(\s*([^)]+)\)/g)) {
+      assert.match(
+        match[1]?.trim() ?? '',
+        /^(['"])[^'"]+\1$/,
+        `${sourcePath} may lazy-load only a fixed code-owned module`,
+      );
+    }
+    assert.doesNotMatch(
+      source,
+      /\b(?:module_path|import_specifier|provider_loader|callback)\s*:/i,
+      `${sourcePath} must not declare executable provider-loading metadata`,
+    );
+  }
+});
+
 test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionService authority seam', async () => {
   const appAuthorityTables = [
     'appInstallations',

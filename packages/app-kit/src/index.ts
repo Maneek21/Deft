@@ -261,6 +261,47 @@ export const SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT = Object.freeze({
   }),
 } as const);
 
+/**
+ * Host-owned descriptor for the first private App interface. This is inert
+ * support metadata: Apps may select a registered key/version, but cannot add
+ * provider operations, policy, executable validators, or loading behavior.
+ */
+export const SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE = Object.freeze({
+  key: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.key,
+  version: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.version,
+  provider_kind: 'mcp',
+  operation_name: 'send_email',
+  input_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
+  output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
+  host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+  action_binding: Object.freeze({
+    inputs: Object.freeze([
+      Object.freeze({
+        input_key: 'to',
+        source_kind: 'selected_relation_field',
+        source_resource_requirement: 'placement',
+        selection: 'one',
+        allowed_field_types: Object.freeze(['email'] as const),
+      }),
+      Object.freeze({
+        input_key: 'subject',
+        source_kind: 'resource_field',
+        resource_requirement: 'placement',
+        allowed_field_types: Object.freeze(['text'] as const),
+      }),
+      Object.freeze({
+        input_key: 'body_text',
+        source_kind: 'resource_field',
+        resource_requirement: 'placement',
+        allowed_field_types: Object.freeze(['text', 'long_text'] as const),
+      }),
+    ]),
+    distinct_resource_field_inputs: Object.freeze([
+      Object.freeze(['subject', 'body_text'] as const),
+    ]),
+  }),
+} as const);
+
 export const DeftAppDependencyRequirementV1Schema = z.strictObject({
   key: AppAuthorityKeyV1Schema,
   app_id: AppIdSchema,
@@ -291,8 +332,8 @@ export const DeftAppCapabilityRequirementV1Schema = z.strictObject({
   interface: z.strictObject({
     kind: z.literal('private'),
     namespace: z.literal('app_lineage'),
-    key: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.key),
-    version: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.version),
+    key: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE.key),
+    version: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE.version),
   }),
 });
 
@@ -545,7 +586,9 @@ const V1_HANDLER_MATRIX = handlerMatrix({
   inspect: 'app-service:inspect-v1',
   stage: 'app-service:stage-v1-requested-grant',
   review: 'app-review-service:prepare-v1',
+  route: 'app-action-service:route-v1',
   activate: 'app-review-service:activate-v1',
+  invoke: 'app-action-service:invoke-v1',
 });
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
@@ -561,6 +604,7 @@ export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
       'navigation.host_rendered',
       'package.module_artifacts',
     ], V0_HANDLER_MATRIX),
+    private_interfaces: Object.freeze([]),
   }),
   '1': Object.freeze({
     manifest_keys: Object.freeze([
@@ -585,8 +629,14 @@ export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
       'action_inputs.user_input',
       'package.module_artifacts',
     ], V1_HANDLER_MATRIX),
+    private_interfaces: Object.freeze([
+      SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE,
+    ]),
   }),
 } as const);
+
+export type DeftAppPrivateInterfaceDescriptorV1 =
+  typeof DEFT_APP_PROTOCOL_SUPPORT['1']['private_interfaces'][number];
 
 export function isDeftAppProtocolOperationSupported(
   protocol: string,

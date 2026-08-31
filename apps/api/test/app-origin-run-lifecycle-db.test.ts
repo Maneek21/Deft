@@ -1,40 +1,46 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, sql } from 'drizzle-orm';
 import { SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT } from '@deft/app-kit';
 import {
   APP_RUN_CONTRACT_VERSIONS,
   CAPABILITY_CONTRACT_VERSIONS,
   RESOURCE_CONTRACT_VERSIONS,
   createCapabilityProviderDiscoverySnapshot,
+  type AppRunSafeView,
   type AppRunSubmission,
   type ModuleResourceRefV1,
 } from '@deft/shared';
 import {
+  agentEmployees,
   agentActions,
   appActionBindings,
   appGrantSnapshots,
+  appInstallations,
   appRunAttempts,
   appRunReceipts,
   appRunSecretPayloads,
   appRuns,
   appVersions,
   mcpConnections,
+  mcpTokens,
   orgMembers,
   orgs,
+  resourceRelationEdges,
   users,
 } from '@deft/db/schema';
-import { AppActionService } from '../src/lib/app-action-service.js';
+import { AppActionService, type AppActionCaller } from '../src/lib/app-action-service.js';
 import { AppRunAttemptRunner } from '../src/lib/app-run-attempt-runner.js';
 import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from '../src/lib/app-run-approval-adapter.js';
 import { PostgresAppRunAuthorizer } from '../src/lib/app-run-authorization.js';
+import { AppError } from '../src/lib/app-errors.js';
 import { AppRunError } from '../src/lib/app-run-errors.js';
 import { parseEnvironmentAppRunKeyrings } from '../src/lib/app-run-keyrings.js';
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
 import { AppRunPreparedInputService } from '../src/lib/app-run-prepared-input.js';
 import { PinnedMcpAppRunProviderExecutor } from '../src/lib/app-run-provider-executor.js';
-import { PostgresAppRunRepository } from '../src/lib/app-run-repository.js';
+import { PostgresAppRunRepository, type AppRunTransaction } from '../src/lib/app-run-repository.js';
 import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
@@ -55,9 +61,12 @@ import {
 } from '../src/lib/app-review-service.js';
 import {
   createModuleRecord,
+  deftyModuleActor,
+  employeeModuleActor,
   getModuleInstallation,
   humanModuleActor,
   readModuleRecordScalarFields,
+  updateModuleInstallation,
 } from '../src/lib/module-service.js';
 import { replaceResourceRelation } from '../src/lib/resource-relation-service.js';
 import { Phase4SandboxEmailProvider } from './fixtures/phase4-sandbox-email-provider.js';
@@ -94,12 +103,15 @@ function moduleRef(
   };
 }
 
-test('sealed App action candidate creates one governed Run, executes once after approval, and fails closed on revocation', {
+test('App actions create governed Runs once across every caller surface and fail closed on revocation', {
   skip: !canRun,
 }, async () => {
   const suffix = randomUUID();
   const orgId = randomUUID();
   const ownerUserId = randomUUID();
+  const employeeUserId = randomUUID();
+  const employeeId = randomUUID();
+  const mcpTokenId = randomUUID();
   const connectionId = randomUUID();
   const connectionSlug = `loop5-mail-${suffix}`;
   const recipient = `loop5-recipient-${suffix}@example.test`;
@@ -107,18 +119,37 @@ test('sealed App action candidate creates one governed Run, executes once after 
   const bodyText = `Loop 5 private body ${suffix}`;
 
   await db.insert(orgs).values({ id: orgId, name: 'Loop 5 App origin', slug: `loop5-${suffix}` });
-  await db.insert(users).values({
-    id: ownerUserId,
-    email: `loop5-owner-${suffix}@example.test`,
-    name: 'Loop 5 owner',
-  });
-  await db.insert(orgMembers).values({
-    id: randomUUID(),
-    org_id: orgId,
-    user_id: ownerUserId,
-    role: 'owner',
-    is_active: true,
-  });
+  await db.insert(users).values([
+    {
+      id: ownerUserId,
+      email: `loop5-owner-${suffix}@example.test`,
+      name: 'Loop 5 owner',
+    },
+    {
+      id: employeeUserId,
+      email: `loop5-employee-${suffix}@example.test`,
+      name: 'Loop 5 employee',
+      kind: 'agent',
+      is_agent: true,
+      agent_employee_id: employeeId,
+    },
+  ]);
+  await db.insert(orgMembers).values([
+    {
+      id: randomUUID(),
+      org_id: orgId,
+      user_id: ownerUserId,
+      role: 'owner',
+      is_active: true,
+    },
+    {
+      id: randomUUID(),
+      org_id: orgId,
+      user_id: employeeUserId,
+      role: 'member',
+      is_active: true,
+    },
+  ]);
   const owner = humanModuleActor({
     orgId,
     userId: ownerUserId,
@@ -174,6 +205,7 @@ test('sealed App action candidate creates one governed Run, executes once after 
       output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
     }],
   });
+  let currentSnapshot = snapshot;
   const tool = {
     name: `mcp__${connectionSlug}__send_email`,
     originalName: 'send_email',
@@ -192,7 +224,7 @@ test('sealed App action candidate creates one governed Run, executes once after 
     async discover(request: McpCapabilityDiscoveryRequest): Promise<McpCapabilityDiscoveryResult> {
       assert.equal(request.org_id, orgId);
       assert.equal(request.provider_instance_id, connectionId);
-      return { provider_kind: 'mcp', tools: [tool], snapshot };
+      return { provider_kind: 'mcp', tools: [tool], snapshot: currentSnapshot };
     },
     async invoke(_request: McpCapabilityInvocationRequest): Promise<never> {
       throw new Error('Legacy capability invocation must not serve App-origin Runs');
@@ -237,8 +269,10 @@ test('sealed App action candidate creates one governed Run, executes once after 
   ));
   if (!binding) throw new Error('Reviewed App action binding is missing');
 
-  const contacts = await getModuleInstallation(owner, { moduleId: 'community.deft.contacts' });
-  const campaigns = await getModuleInstallation(owner, { moduleId: 'community.deft.connected-campaigns' });
+  let contacts = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-contacts' });
+  let campaigns = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-campaigns' });
+  contacts = await updateModuleInstallation(owner, contacts.slug, { agent_access: 'read' });
+  campaigns = await updateModuleInstallation(owner, campaigns.slug, { agent_access: 'read' });
   const contact = await createModuleRecord(owner, {
     module_id: contacts.module_id,
     collection_key: 'contacts',
@@ -250,7 +284,7 @@ test('sealed App action candidate creates one governed Run, executes once after 
   const campaign = await createModuleRecord(owner, {
     module_id: campaigns.module_id,
     collection_key: 'campaigns',
-    data: { subject, body: bodyText },
+    data: { name: 'Connected campaign', subject, body: bodyText, status: 'draft' },
     relations: {},
     expected_manifest_digest: campaigns.manifest_digest,
     idempotency_key: `loop5-campaign-${suffix}`,
@@ -265,6 +299,36 @@ test('sealed App action candidate creates one governed Run, executes once after 
     refs: [contactRef],
     expected_revision: 0,
     idempotency_key: `loop5-link-${suffix}`,
+  });
+
+  await db.insert(agentEmployees).values({
+    id: employeeId,
+    org_id: orgId,
+    user_id: employeeUserId,
+    name: 'Loop 5 employee',
+    slug: `loop5-employee-${suffix}`,
+    role: 'custom',
+    system_prompt: 'Test governed connected App execution.',
+    mcp_connection_ids: [connectionId],
+    trust_level: 'autonomous',
+    max_daily_actions: 20,
+    daily_action_count: 0,
+    unhealthy: false,
+    is_active: true,
+    is_deleted: false,
+    created_by: ownerUserId,
+  });
+  await db.insert(mcpTokens).values({
+    id: mcpTokenId,
+    org_id: orgId,
+    user_id: ownerUserId,
+    agent_employee_id: null,
+    principal_kind: 'human',
+    name: 'Loop 5 human MCP token',
+    token_hash: `loop5-hash-${suffix}`,
+    token_prefix: `loop5-${suffix.slice(0, 8)}`,
+    scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+    created_by: ownerUserId,
   });
 
   const [fingerprintRows, encryptionRows, signingRows] = await Promise.all([
@@ -337,8 +401,47 @@ test('sealed App action candidate creates one governed Run, executes once after 
       preparedInputs,
       { read: readModuleRecordScalarFields },
       { submitPreparedApp: (context, candidate) => runService.submitPreparedApp(context, candidate) },
+      {
+        inspect: (readOrgId, runId, actor) => runService.inspect(readOrgId, runId, actor),
+        result: (readOrgId, runId, actor) => runService.result(readOrgId, runId, actor),
+      },
     );
-    const caller = { actor: owner };
+    const callers: ReadonlyArray<Readonly<{
+      name: 'ui' | 'defty' | 'employee' | 'human_mcp';
+      caller: AppActionCaller;
+    }>> = [
+      { name: 'ui', caller: { actor: owner } },
+      {
+        name: 'defty',
+        caller: {
+          actor: deftyModuleActor({ orgId, userId: ownerUserId, role: 'owner' }),
+        },
+      },
+      {
+        name: 'employee',
+        caller: {
+          actor: employeeModuleActor({
+            orgId,
+            employeeId,
+            trustLevel: 'autonomous',
+            source: 'runtime',
+          }),
+        },
+      },
+      {
+        name: 'human_mcp',
+        caller: {
+          actor: humanModuleActor({
+            orgId,
+            userId: ownerUserId,
+            role: 'owner',
+            source: 'mcp',
+            scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+          }),
+          token_authorities: [{ token_kind: 'mcp', token_id: mcpTokenId }],
+        },
+      },
+    ];
     const actionInput = (idempotencyKey: string) => ({
       binding_id: binding.id,
       resource_ref: campaignRef,
@@ -347,8 +450,35 @@ test('sealed App action candidate creates one governed Run, executes once after 
       idempotency_key: idempotencyKey,
     });
 
-    const firstInput = actionInput(`loop5-positive-${suffix}`);
-    const firstPrepared = await actions.prepare(caller, firstInput);
+    const sharedInput = actionInput(`loop7-shared-principal-${suffix}`);
+    const sharedPrepared = new Map<string, Awaited<ReturnType<AppActionService['prepare']>>>();
+    for (const surface of callers) {
+      const prepared = await actions.prepare(surface.caller, sharedInput);
+      assert.equal(prepared.action.binding_id, binding.id);
+      assert.equal(prepared.authority_vector.binding.id, binding.id);
+      assert.equal(prepared.authority_vector.provider.connection_id, connectionId);
+      sharedPrepared.set(surface.name, prepared);
+    }
+    const uiShared = sharedPrepared.get('ui');
+    const deftyShared = sharedPrepared.get('defty');
+    const employeeShared = sharedPrepared.get('employee');
+    const humanMcpShared = sharedPrepared.get('human_mcp');
+    if (!uiShared || !deftyShared || !employeeShared || !humanMcpShared) {
+      throw new Error('A caller surface did not prepare the shared App action');
+    }
+    assert.equal(
+      new Set([uiShared, deftyShared, employeeShared, humanMcpShared]
+        .map((prepared) => prepared.replay_identity)).size,
+      callers.length,
+      'caller surfaces and token authority must own distinct replay identities',
+    );
+    assert.deepEqual(
+      callers.map((surface) => sharedPrepared.get(surface.name)?.safe_preview),
+      callers.map(() => uiShared.safe_preview),
+    );
+
+    const firstInput = sharedInput;
+    const firstPrepared = uiShared;
     const serializedCandidate = JSON.stringify(firstPrepared.input_candidate);
     for (const sensitive of [recipient, subject, bodyText, firstInput.idempotency_key]) {
       assert.equal(serializedCandidate.includes(sensitive), false, 'sealed candidate exposed plaintext');
@@ -401,32 +531,61 @@ test('sealed App action candidate creates one governed Run, executes once after 
       (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_ACCESS_DENIED',
     );
 
-    const [firstRun, replayedRun] = await Promise.all([
-      actions.invoke(caller, { ...firstInput, input_candidate: firstPrepared.input_candidate }),
-      actions.invoke(caller, { ...firstInput, input_candidate: firstPrepared.input_candidate }),
-    ]);
-    assert.equal(firstRun.id, replayedRun.id, 'concurrent replay created more than one Run');
-    assert.equal(firstRun.state, 'pending_approval');
+    const surfaceRuns: Array<Readonly<{
+      surface: typeof callers[number];
+      run: AppRunSafeView;
+    }>> = [];
+    for (const surface of callers) {
+      const prepared = sharedPrepared.get(surface.name);
+      if (!prepared) throw new Error(`${surface.name} shared preparation is missing`);
+      const [run, replayed] = await Promise.all([
+        actions.invoke(surface.caller, { ...sharedInput, input_candidate: prepared.input_candidate }),
+        actions.invoke(surface.caller, { ...sharedInput, input_candidate: prepared.input_candidate }),
+      ]);
+      assert.equal(run.id, replayed.id, `${surface.name} concurrent replay created more than one Run`);
+      assert.equal(run.state, 'pending_approval');
+      surfaceRuns.push({ surface, run });
+    }
+    const surfaceRun = (name: typeof callers[number]['name']) => {
+      const found = surfaceRuns.find((item) => item.surface.name === name);
+      if (!found) throw new Error(`${name} App Run is missing`);
+      return found;
+    };
+    const uiRun = surfaceRun('ui');
+    const deftyRun = surfaceRun('defty');
+    const employeeRun = surfaceRun('employee');
+    const humanMcpRun = surfaceRun('human_mcp');
+    const distinctPositiveRuns = [uiRun, deftyRun, employeeRun, humanMcpRun] as const;
+    assert.equal(
+      new Set(distinctPositiveRuns.map((positive) => positive.run.id)).size,
+      callers.length,
+      'caller surfaces and token authority must own distinct Runs',
+    );
     assert.equal(sandbox.callCount, 0, 'provider ran before approval');
 
-    const secondInput = actionInput(`loop5-revoked-${suffix}`);
-    const secondPrepared = await actions.prepare(caller, secondInput);
-    const secondRun = await actions.invoke(caller, {
-      ...secondInput,
-      input_candidate: secondPrepared.input_candidate,
-    });
-    assert.equal(secondRun.state, 'pending_approval');
-
     const persistedRuns = await db.select().from(appRuns).where(eq(appRuns.org_id, orgId));
-    assert.equal(persistedRuns.length, 2, 'each invocation identity must own exactly one Run');
-    const persistedFirst = persistedRuns.find((run) => run.id === firstRun.id);
-    assert.ok(persistedFirst);
-    assert.equal(persistedFirst.origin_kind, 'app');
-    assert.equal(persistedFirst.origin_app_installation_id, connected.id);
-    assert.equal(persistedFirst.origin_app_version_id, connectedVersion.id);
-    assert.equal(persistedFirst.origin_app_binding_key, binding.action_key);
-    assert.equal(persistedFirst.origin_app_grant_snapshot_id, vector.grant.id);
-    assert.equal(persistedFirst.provider_instance_id, connectionId);
+    assert.equal(persistedRuns.length, distinctPositiveRuns.length, 'each caller authority must own one semantic Run');
+    for (const positive of surfaceRuns) {
+      const persisted = persistedRuns.find((run) => run.id === positive.run.id);
+      assert.ok(persisted);
+      assert.equal(persisted.origin_kind, 'app');
+      assert.equal(persisted.origin_app_installation_id, connected.id);
+      assert.equal(persisted.origin_app_version_id, connectedVersion.id);
+      assert.equal(persisted.origin_app_binding_key, binding.action_key);
+      assert.equal(persisted.origin_app_grant_snapshot_id, vector.grant.id);
+      assert.equal(persisted.provider_instance_id, connectionId);
+      if (positive.surface.name === 'employee') {
+        assert.equal(persisted.initiating_actor_type, 'agent_employee');
+        assert.equal(persisted.initiating_actor_id, employeeId);
+        assert.equal(persisted.execution_actor_type, 'agent_employee');
+        assert.equal(persisted.execution_actor_id, employeeId);
+      } else {
+        assert.equal(persisted.initiating_actor_type, 'human');
+        assert.equal(persisted.initiating_actor_id, ownerUserId);
+        assert.equal(persisted.execution_actor_type, 'human');
+        assert.equal(persisted.execution_actor_id, ownerUserId);
+      }
+    }
     const recapturedBase = await liveAuthorization.capture({
       org_id: orgId,
       authenticated_subject: initiatingActor,
@@ -443,79 +602,256 @@ test('sealed App action candidate creates one governed Run, executes once after 
       vector.run_authorization.authority_refs,
       'base Run authority changed before approval',
     );
-    const preApprovalPrepared = await actions.prepare(caller, firstInput);
+    const preApprovalPrepared = await actions.prepare(callers[0]!.caller, firstInput);
     assert.deepEqual(
       preApprovalPrepared.authority_vector,
       firstPrepared.authority_vector,
       'App authority vector changed before approval',
     );
 
-    const approvals = await db.select().from(agentActions).where(and(
+    let approvals = await db.select().from(agentActions).where(and(
       eq(agentActions.org_id, orgId),
       eq(agentActions.source, 'app_run'),
     ));
-    assert.equal(approvals.length, 2, 'each Run must receive one per-invocation approval');
-    const firstApproval = approvals.find((approval) => approval.app_run_id === firstRun.id);
-    const secondApproval = approvals.find((approval) => approval.app_run_id === secondRun.id);
-    if (!firstApproval || !secondApproval) throw new Error('App Run approvals are missing');
-
-    assert.equal((await approvalResolver.approve(firstApproval.id, ownerUserId)).status, 'approved');
-    assert.equal((await approvalResolver.approve(secondApproval.id, ownerUserId)).status, 'approved');
+    assert.equal(approvals.length, distinctPositiveRuns.length, 'each Run must receive one per-invocation approval');
+    for (const positive of distinctPositiveRuns) {
+      const approval = approvals.find((item) => item.app_run_id === positive.run.id);
+      if (!approval) throw new Error(`${positive.surface.name} App Run approval is missing`);
+      assert.equal((await approvalResolver.approve(approval.id, ownerUserId)).status, 'approved');
+    }
     assert.equal(sandbox.callCount, 0, 'approval itself must not dispatch the provider');
 
-    const attempts = await db.select().from(appRunAttempts).where(eq(appRunAttempts.org_id, orgId));
-    const firstAttempt = attempts.find((attempt) => attempt.run_id === firstRun.id);
-    const secondAttempt = attempts.find((attempt) => attempt.run_id === secondRun.id);
-    if (!firstAttempt || !secondAttempt) throw new Error('Approved App Run attempts are missing');
+    let attempts = await db.select().from(appRunAttempts).where(eq(appRunAttempts.org_id, orgId));
     const dispatchPin = await repository.transaction(
-      (tx) => repository.loadAppProviderDispatchPin(tx, orgId, firstRun.id),
+      (tx) => repository.loadAppProviderDispatchPin(tx, orgId, uiRun.run.id),
     );
     assert.deepEqual(dispatchPin, {
       connector_authorization_version: vector.binding.connector_authorization_version,
       provider_snapshot_digest: vector.provider.snapshot_digest,
       operation_schema_digest: vector.provider.operation_schema_digest,
     });
-    const workerResults = await Promise.all([
-      attemptRunner.runImmediate(orgId, firstRun.id, firstAttempt.id, 'loop5-worker-a'),
-      attemptRunner.runImmediate(orgId, firstRun.id, firstAttempt.id, 'loop5-worker-b'),
-    ]);
-    assert.equal(sandbox.callCount, 1, `concurrent workers produced an invalid effect count: ${JSON.stringify(
-      workerResults.map((result) => ({ state: result.run.state, provider: result.provider_result })),
-    )}`);
-    assert.equal(pinnedRequests.length, 1);
-    assert.equal(pinnedRequests[0]?.org_id, orgId);
-    assert.equal(pinnedRequests[0]?.provider_instance_id, connectionId);
-    assert.equal(pinnedRequests[0]?.operation_name, 'send_email');
-    assert.deepEqual(pinnedRequests[0]?.dispatch_pin, dispatchPin);
-    assert.equal(Object.hasOwn(pinnedRequests[0] ?? {}, 'connection_slug'), false);
+    for (const positive of distinctPositiveRuns) {
+      const attempt = attempts.find((item) => item.run_id === positive.run.id);
+      if (!attempt) throw new Error(`${positive.surface.name} approved App Run attempt is missing`);
+      const effectsBefore = sandbox.callCount;
+      const workerResults = await Promise.all([
+        attemptRunner.runImmediate(orgId, positive.run.id, attempt.id, `loop7-${positive.surface.name}-worker-a`),
+        attemptRunner.runImmediate(orgId, positive.run.id, attempt.id, `loop7-${positive.surface.name}-worker-b`),
+      ]);
+      assert.equal(
+        sandbox.callCount,
+        effectsBefore + 1,
+        `${positive.surface.name} concurrent workers produced an invalid effect count: ${JSON.stringify(
+          workerResults.map((result) => ({ state: result.run.state, provider: result.provider_result })),
+        )}`,
+      );
 
-    const firstReceipts = await db.select({
-      kind: appRunReceipts.receipt_kind,
-      run_id: appRunReceipts.run_id,
-    }).from(appRunReceipts).where(and(
-      eq(appRunReceipts.org_id, orgId),
-      eq(appRunReceipts.run_id, firstRun.id),
+      const runReceipts = await db.select({
+        kind: appRunReceipts.receipt_kind,
+        run_id: appRunReceipts.run_id,
+      }).from(appRunReceipts).where(and(
+        eq(appRunReceipts.org_id, orgId),
+        eq(appRunReceipts.run_id, positive.run.id),
+      ));
+      assert.deepEqual(
+        new Set(runReceipts.map((receipt) => receipt.kind)),
+        new Set(['approval', 'attempt_terminal']),
+      );
+      assert.ok(runReceipts.every((receipt) => receipt.run_id === positive.run.id));
+
+    }
+    for (const positive of surfaceRuns) {
+      const retained = await actions.result(positive.surface.caller, positive.run.id);
+      assert.equal(retained.run.state, 'succeeded');
+      assert.equal((retained.value as { provider_succeeded?: boolean }).provider_succeeded, true);
+    }
+    assert.equal(sandbox.callCount, distinctPositiveRuns.length, 'each caller-authority Run must produce one provider effect');
+    assert.equal(pinnedRequests.length, distinctPositiveRuns.length);
+    for (const request of pinnedRequests) {
+      assert.equal(request.org_id, orgId);
+      assert.equal(request.provider_instance_id, connectionId);
+      assert.equal(request.operation_name, 'send_email');
+      assert.deepEqual(request.dispatch_pin, dispatchPin);
+      assert.equal(Object.hasOwn(request, 'connection_slug'), false);
+    }
+
+    const pendingRun = async (surface: typeof callers[number], label: string): Promise<AppRunSafeView> => {
+      const input = actionInput(`loop7-stale-${label}-${suffix}`);
+      const prepared = await actions.prepare(surface.caller, input);
+      const run = await actions.invoke(surface.caller, {
+        ...input,
+        input_candidate: prepared.input_candidate,
+      });
+      assert.equal(run.state, 'pending_approval');
+      return run;
+    };
+    const uiStaleRun = await pendingRun(callers[0]!, 'ui');
+    const employeeStaleRun = await pendingRun(callers[2]!, 'employee');
+    const tokenStaleRun = await pendingRun(callers[3]!, 'token');
+    const connectorRun = await pendingRun(callers[0]!, 'connector');
+
+    class ExpectedProbeRollback extends Error {}
+    const expectTransactionalStale = async (
+      label: string,
+      run: AppRunSafeView,
+      mutate: (tx: AppRunTransaction) => Promise<unknown>,
+    ): Promise<void> => {
+      await assert.rejects(
+        db.transaction(async (tx) => {
+          await mutate(tx);
+          assert.equal(
+            await liveAuthorization.authorizeApprovalInTransaction(tx, run),
+            false,
+            `${label} unexpectedly retained App-origin authority`,
+          );
+          throw new ExpectedProbeRollback(label);
+        }),
+        (error: unknown) => error instanceof ExpectedProbeRollback && error.message === label,
+      );
+    };
+
+    const [relationEdge] = await db.select().from(resourceRelationEdges).where(and(
+      eq(resourceRelationEdges.org_id, orgId),
+      eq(resourceRelationEdges.target_provider_instance_id, contacts.id),
+      eq(resourceRelationEdges.target_resource_id, contact.record.id),
+      eq(resourceRelationEdges.is_deleted, false),
     ));
-    assert.deepEqual(
-      new Set(firstReceipts.map((receipt) => receipt.kind)),
-      new Set(['approval', 'attempt_terminal']),
-    );
-    assert.ok(firstReceipts.every((receipt) => receipt.run_id === firstRun.id));
+    if (!relationEdge) throw new Error('The connected proof relation edge is missing');
 
-    const retained = await runService.result(orgId, firstRun.id, initiatingActor);
-    assert.equal(retained.run.state, 'succeeded');
-    assert.equal((retained.value as { provider_succeeded?: boolean }).provider_succeeded, true);
+    const providerSchemaInput = actionInput(`loop7-stale-provider-schema-${suffix}`);
+    const providerSchemaPrepared = await actions.prepare(callers[0]!.caller, providerSchemaInput);
+    const driftedSnapshot = await createCapabilityProviderDiscoverySnapshot({
+      adapter_contract_version: snapshot.adapter_contract_version,
+      provider: snapshot.provider,
+      captured_at: '2026-08-31T12:05:00.000Z',
+      operations: [{
+        identity: snapshot.operations[0]!.identity,
+        title: snapshot.operations[0]!.title,
+        description: 'A drifted sandbox email contract.',
+        input_schema: {
+          ...SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
+          properties: {
+            ...SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema.properties,
+            drift_marker: { type: 'string' },
+          },
+        },
+        output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
+      }],
+    });
+
+    const staleCases: ReadonlyArray<Readonly<{ label: string; probe: () => Promise<void> }>> = [
+      {
+        label: 'App state',
+        probe: () => expectTransactionalStale('App state', uiStaleRun, (tx) => tx.update(appInstallations).set({
+          state: 'disabled',
+          disabled_at: new Date(),
+          active_grant_snapshot_id: null,
+          active_grant_snapshot_kind: null,
+          lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
+          grant_epoch: sql`${appInstallations.grant_epoch} + 1`,
+        }).where(and(eq(appInstallations.org_id, orgId), eq(appInstallations.id, connected.id)))),
+      },
+      {
+        label: 'dependency',
+        probe: () => expectTransactionalStale('dependency', uiStaleRun, (tx) => tx.update(appInstallations).set({
+          state: 'disabled',
+          disabled_at: new Date(),
+          lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
+        }).where(and(eq(appInstallations.org_id, orgId), eq(appInstallations.id, dependency.id)))),
+      },
+      {
+        label: 'grant',
+        probe: () => expectTransactionalStale('grant', uiStaleRun, (tx) => tx.update(appInstallations).set({
+          active_grant_snapshot_id: null,
+          active_grant_snapshot_kind: null,
+          grant_epoch: sql`${appInstallations.grant_epoch} + 1`,
+        }).where(and(eq(appInstallations.org_id, orgId), eq(appInstallations.id, connected.id)))),
+      },
+      {
+        label: 'version',
+        probe: () => expectTransactionalStale('version', uiStaleRun, (tx) => tx.update(appVersions).set({
+          state: 'superseded',
+          superseded_at: new Date(),
+        }).where(and(eq(appVersions.org_id, orgId), eq(appVersions.id, connectedVersion.id)))),
+      },
+      {
+        label: 'relation',
+        probe: () => expectTransactionalStale('relation', uiStaleRun, (tx) => tx.update(resourceRelationEdges).set({
+          is_deleted: true,
+          deleted_at: new Date(),
+        }).where(and(eq(resourceRelationEdges.org_id, orgId), eq(resourceRelationEdges.id, relationEdge.id)))),
+      },
+      {
+        label: 'provider schema',
+        probe: async () => {
+          currentSnapshot = driftedSnapshot;
+          try {
+            await assert.rejects(
+              actions.invoke(callers[0]!.caller, {
+                ...providerSchemaInput,
+                input_candidate: providerSchemaPrepared.input_candidate,
+              }),
+              (error: unknown) => error instanceof AppError && error.code === 'APP_PROVIDER_UNAVAILABLE',
+            );
+          } finally {
+            currentSnapshot = snapshot;
+          }
+        },
+      },
+      {
+        label: 'employee assignment',
+        probe: () => expectTransactionalStale('employee assignment', employeeStaleRun, (tx) => tx.update(agentEmployees).set({
+          mcp_connection_ids: [],
+        }).where(and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.id, employeeId)))),
+      },
+      {
+        label: 'employee health',
+        probe: () => expectTransactionalStale('employee health', employeeStaleRun, (tx) => tx.update(agentEmployees).set({
+          unhealthy: true,
+        }).where(and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.id, employeeId)))),
+      },
+      {
+        label: 'employee budget',
+        probe: () => expectTransactionalStale('employee budget', employeeStaleRun, (tx) => tx.update(agentEmployees).set({
+          daily_action_count: sql`${agentEmployees.max_daily_actions}`,
+        }).where(and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.id, employeeId)))),
+      },
+      {
+        label: 'token scope',
+        probe: () => expectTransactionalStale('token scope', tokenStaleRun, (tx) => tx.update(mcpTokens).set({
+          scopes: ['read:modules', 'read:apps'],
+        }).where(and(eq(mcpTokens.org_id, orgId), eq(mcpTokens.id, mcpTokenId)))),
+      },
+      {
+        label: 'membership',
+        probe: () => expectTransactionalStale('membership', uiStaleRun, (tx) => tx.update(orgMembers).set({
+          is_active: false,
+        }).where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, ownerUserId)))),
+      },
+    ];
+    for (const staleCase of staleCases) await staleCase.probe();
+
+    approvals = await db.select().from(agentActions).where(and(
+      eq(agentActions.org_id, orgId),
+      eq(agentActions.source, 'app_run'),
+    ));
+    const connectorApproval = approvals.find((approval) => approval.app_run_id === connectorRun.id);
+    if (!connectorApproval) throw new Error('Connector revocation App Run approval is missing');
+    assert.equal((await approvalResolver.approve(connectorApproval.id, ownerUserId)).status, 'approved');
+    attempts = await db.select().from(appRunAttempts).where(eq(appRunAttempts.org_id, orgId));
+    const connectorAttempt = attempts.find((attempt) => attempt.run_id === connectorRun.id);
+    if (!connectorAttempt) throw new Error('Connector revocation App Run attempt is missing');
 
     await db.update(mcpConnections).set({ is_active: false }).where(and(
       eq(mcpConnections.org_id, orgId),
       eq(mcpConnections.id, connectionId),
     ));
     await assert.rejects(
-      runService.result(orgId, firstRun.id, initiatingActor),
+      actions.result(callers[0]!.caller, uiRun.run.id),
       (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_AUTHORIZATION_STALE',
     );
-    await attemptRunner.runImmediate(orgId, secondRun.id, secondAttempt.id, 'loop5-revoked-worker');
-    assert.equal(sandbox.callCount, 1, 'revoked connector reached the provider');
+    await attemptRunner.runImmediate(orgId, connectorRun.id, connectorAttempt.id, 'loop7-revoked-worker');
+    assert.equal(sandbox.callCount, distinctPositiveRuns.length, 'revoked connector reached the provider');
 
     const [[runCount], [approvalCount]] = await Promise.all([
       db.select({ value: count() }).from(appRuns).where(eq(appRuns.org_id, orgId)),
@@ -524,8 +860,8 @@ test('sealed App action candidate creates one governed Run, executes once after 
         eq(agentActions.source, 'app_run'),
       )),
     ]);
-    assert.equal(runCount?.value, 2);
-    assert.equal(approvalCount?.value, 2);
+    assert.equal(runCount?.value, distinctPositiveRuns.length + 4);
+    assert.equal(approvalCount?.value, distinctPositiveRuns.length + 4);
   } finally {
     keys.destroy();
   }
