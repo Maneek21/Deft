@@ -29,7 +29,7 @@ test('Protocol v1 staging projection is deterministic and explicitly non-executa
   assert.deepEqual(replay, first);
   assert.equal(
     first.snapshot_digest,
-    'sha256:f4255469cbcfe3500e2ad268f17b85cc16aad741b7ff9f77bd86983b27945d32',
+    'sha256:bfafacb0372bfab36a78ed541c630427dbf58060472b711b50de18a038c13dde',
   );
   assert.equal(first.resource_rights.length, 2);
   assert.equal(first.classification.authority_state, 'requested_only');
@@ -90,4 +90,25 @@ test('grant staging code has no provider, connector runtime, approval, or Run de
       );
     }
   }
+});
+
+test('connected review uses Capability Service discovery but cannot invoke or create Runs', () => {
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(resolve(testDir, '..', 'src', 'lib', 'app-review-service.ts'), 'utf8');
+  assert.match(source, /from ['"]\.\/capability-service\.js['"]/);
+  for (const forbiddenImport of [
+    'capability-providers',
+    'mcp-client',
+    'mcp-runtime',
+    'app-run-service',
+    'app-run-runtime',
+    'approval',
+  ]) {
+    assert.doesNotMatch(
+      source,
+      new RegExp(`from ['"][^'"]*${forbiddenImport}`, 'i'),
+      `review lifecycle must not import ${forbiddenImport}`,
+    );
+  }
+  assert.doesNotMatch(source, /\.invoke\s*\(/);
 });

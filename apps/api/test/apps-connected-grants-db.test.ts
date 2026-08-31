@@ -3,18 +3,29 @@ import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { and, count, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { canonicalAppPrivateInterfaceIdentity } from '@deft/app-kit';
+import {
+  SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
+  canonicalAppPrivateInterfaceIdentity,
+} from '@deft/app-kit';
+import {
+  CAPABILITY_CONTRACT_VERSIONS,
+  createCapabilityProviderDiscoverySnapshot,
+} from '@deft/shared';
 import {
   agentActions,
   appActionBindings,
   appDependencyLocks,
   appGrantSnapshots,
   appInstallations,
+  appModuleBindings,
   appRuns,
   appVersions,
   capabilityProviderSnapshots,
   mcpConnections,
   mcpTokens,
+  mcpToolOverrides,
+  moduleRecords,
+  moduleVersions,
   oauthAccessTokens,
   orgMembers,
   orgs,
@@ -22,11 +33,24 @@ import {
 } from '@deft/db/schema';
 import { AppError } from '../src/lib/app-errors.js';
 import { closeDb, db } from '../src/lib/db.js';
-import { activateAppInstallation, stageAppPackage } from '../src/lib/app-service.js';
-import { humanModuleActor } from '../src/lib/module-service.js';
+import {
+  activateAppInstallation,
+  disableAppInstallation,
+  enableAppInstallation,
+  stageAppPackage,
+  stageAppUpgrade,
+} from '../src/lib/app-service.js';
+import {
+  activateConnectedAppInstallation,
+  getConnectedAppGrantManagement,
+  inspectConnectedAppHealth,
+  prepareConnectedAppReview,
+} from '../src/lib/app-review-service.js';
+import { createModuleRecord, humanModuleActor } from '../src/lib/module-service.js';
 import { mcpConnectionRoutes } from '../src/routes/mcp-connections.js';
 import {
   buildPhase5ConnectedAppPackage,
+  buildPhase5ConnectedPredecessorAppPackage,
   buildPhase5DependencyAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
 
@@ -42,6 +66,47 @@ const ORG_ID = randomUUID();
 const OTHER_ORG_ID = randomUUID();
 const USER_ID = randomUUID();
 const OTHER_USER_ID = randomUUID();
+
+async function sandboxReviewCapability(orgId: string, connectionId: string) {
+  const snapshot = await createCapabilityProviderDiscoverySnapshot({
+    adapter_contract_version: CAPABILITY_CONTRACT_VERSIONS.mcp_adapter,
+    provider: { org_id: orgId, provider_kind: 'mcp', provider_instance_id: connectionId },
+    captured_at: '2026-08-31T12:00:00.000Z',
+    operations: [{
+      identity: {
+        provider: { org_id: orgId, provider_kind: 'mcp', provider_instance_id: connectionId },
+        operation_name: 'send_email',
+      },
+      title: 'Send sandbox email',
+      description: 'Accept one deterministic sandbox email.',
+      input_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
+      output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
+    }],
+  });
+  let discoveryCalls = 0;
+  const capability = {
+    discover: async () => {
+      discoveryCalls += 1;
+      return {
+        provider_kind: 'mcp' as const,
+        tools: [{
+          name: 'mcp__reviewed__send_email',
+          originalName: 'send_email',
+          description: 'Send sandbox email',
+          inputSchema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
+          outputSchema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
+          connectionId,
+          connectionSlug: 'reviewed',
+          isWrite: true,
+          approvalTier: 'full-review' as const,
+          rawTool: { name: 'send_email' },
+        }],
+        snapshot,
+      };
+    },
+  };
+  return { snapshot, capability, discoveryCalls: () => discoveryCalls };
+}
 
 before(async () => {
   await db.insert(orgs).values([
@@ -142,7 +207,7 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
   await assert.rejects(
     () => activateAppInstallation(actor, staged.id, staged.package_digest),
     (error: unknown) => error instanceof AppError
-      && error.code === 'APP_PROTOCOL_UNSUPPORTED'
+      && error.code === 'APP_REVIEW_REQUIRED'
       && error.status === 409,
   );
   const [afterRejection] = await db.select().from(appInstallations).where(eq(appInstallations.id, staged.id));
@@ -211,6 +276,11 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
   const [effective] = await db.select().from(appGrantSnapshots)
     .where(eq(appGrantSnapshots.id, effectiveId));
   assert.ok(effective);
+  await assert.rejects(
+    db.insert(appGrantSnapshots).values(effectiveValues(randomUUID(), USER_ID)),
+    (error: any) => error?.cause?.code === '23505'
+      && error?.cause?.constraint === 'app_grant_snapshots_one_root_unique',
+  );
 
   const dependencyBuilt = await buildPhase5DependencyAppPackage();
   const dependencyStaged = await stageAppPackage(actor, dependencyBuilt.json);
@@ -339,6 +409,22 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
   const [actionBinding] = await db.select().from(appActionBindings)
     .where(eq(appActionBindings.id, actionBindingId));
   assert.ok(actionBinding);
+  await assert.rejects(
+    db.update(appModuleBindings).set({ module_id: 'community.deft.rewritten' }).where(and(
+      eq(appModuleBindings.org_id, ORG_ID),
+      eq(appModuleBindings.app_installation_id, dependency.id),
+    )),
+    (error: any) => error?.cause?.code === '55000'
+      && error?.cause?.message === 'APP_MODULE_BINDING_APPEND_ONLY',
+  );
+  await assert.rejects(
+    db.delete(appModuleBindings).where(and(
+      eq(appModuleBindings.org_id, ORG_ID),
+      eq(appModuleBindings.app_installation_id, dependency.id),
+    )),
+    (error: any) => error?.cause?.code === '55000'
+      && error?.cause?.message === 'APP_MODULE_BINDING_APPEND_ONLY',
+  );
 
   await assert.rejects(
     db.insert(appActionBindings).values({
@@ -427,4 +513,562 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
   assert.equal(unboundDeleteResponse.status, 200);
   assert.equal((await db.select().from(mcpConnections)
     .where(eq(mcpConnections.id, unboundConnectionId))).length, 0);
+});
+
+test('explicit connected review activates atomically, rejects stale CAS, and re-reviews after revocation', async () => {
+  const actor = humanModuleActor({ orgId: OTHER_ORG_ID, userId: OTHER_USER_ID, role: 'owner' });
+  const dependencyBuilt = await buildPhase5DependencyAppPackage();
+  const dependencyStaged = await stageAppPackage(actor, dependencyBuilt.json);
+  const dependency = await activateAppInstallation(
+    actor,
+    dependencyStaged.id,
+    dependencyStaged.package_digest,
+  );
+
+  const connectedBuilt = await buildPhase5ConnectedAppPackage();
+  const staged = await stageAppPackage(actor, connectedBuilt.json);
+  const [version] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, OTHER_ORG_ID),
+    eq(appVersions.id, staged.version_id),
+  ));
+  const [requested] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, OTHER_ORG_ID),
+    eq(appGrantSnapshots.id, version!.requested_grant_snapshot_id!),
+  ));
+  assert.ok(version);
+  assert.ok(requested);
+
+  const connectionId = randomUUID();
+  await db.insert(mcpConnections).values({
+    id: connectionId,
+    org_id: OTHER_ORG_ID,
+    name: 'Reviewed sandbox mail',
+    slug: `phase5-reviewed-${TEST_GENERATION}`,
+    server_url: 'https://reviewed-sandbox.example.test/mcp',
+    transport: 'streamable-http',
+    auth_type: 'none',
+    is_active: true,
+    created_by: OTHER_USER_ID,
+  });
+  const reviewProvider = await sandboxReviewCapability(OTHER_ORG_ID, connectionId);
+  const { snapshot, capability } = reviewProvider;
+  const [beforeOverride] = await db.select().from(mcpConnections).where(eq(mcpConnections.id, connectionId));
+  await assert.rejects(
+    db.insert(mcpToolOverrides).values({
+      id: randomUUID(),
+      org_id: ORG_ID,
+      mcp_connection_id: connectionId,
+      tool_name: 'send_email',
+      is_disabled: false,
+    }),
+    (error: any) => error?.cause?.code === '23503'
+      && error?.cause?.constraint === 'mcp_tool_overrides_org_connection_fk',
+  );
+  const overrideId = randomUUID();
+  await db.insert(mcpToolOverrides).values({
+    id: overrideId,
+    org_id: OTHER_ORG_ID,
+    mcp_connection_id: connectionId,
+    tool_name: 'send_email',
+    is_disabled: false,
+  });
+  await db.delete(mcpToolOverrides).where(eq(mcpToolOverrides.id, overrideId));
+  const [afterOverride] = await db.select().from(mcpConnections).where(eq(mcpConnections.id, connectionId));
+  assert.equal(
+    afterOverride?.app_run_authorization_version,
+    beforeOverride!.app_run_authorization_version + 2,
+  );
+  const baseRequest = {
+    app_version_id: version.id,
+    expected_package_digest: version.package_digest,
+    expected_requested_snapshot_digest: requested.snapshot_digest,
+    expected_lifecycle_epoch: staged.lifecycle_epoch,
+    expected_grant_epoch: staged.grant_epoch,
+    connector_selections: [{
+      connector_requirement_key: 'mail_provider',
+      mcp_connection_id: connectionId,
+    }],
+  };
+  const legacyDisabledOverrideId = randomUUID();
+  await db.insert(mcpToolOverrides).values({
+    id: legacyDisabledOverrideId,
+    org_id: OTHER_ORG_ID,
+    mcp_connection_id: connectionId,
+    tool_name: 'mcp__legacy_mail__send_email',
+    is_disabled: true,
+  });
+  await assert.rejects(
+    prepareConnectedAppReview(actor, staged.id, baseRequest, capability),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_PROVIDER_UNAVAILABLE',
+  );
+  await db.delete(mcpToolOverrides).where(eq(mcpToolOverrides.id, legacyDisabledOverrideId));
+  const disabledDependency = await disableAppInstallation(
+    actor,
+    dependency.id,
+    dependency.lifecycle_epoch,
+  );
+  await assert.rejects(
+    prepareConnectedAppReview(actor, staged.id, baseRequest, capability),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_DEPENDENCY_UNHEALTHY',
+  );
+  const reenabledDependency = await enableAppInstallation(
+    actor,
+    dependency.id,
+    disabledDependency.lifecycle_epoch,
+  );
+  const firstReview = await prepareConnectedAppReview(actor, staged.id, baseRequest, capability);
+  assert.equal(firstReview.permission_diff.kind, 'initial');
+  assert.equal(firstReview.action_bindings[0]?.operation_name, 'send_email');
+  assert.equal((await db.select({ value: count() }).from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, OTHER_ORG_ID),
+    eq(appGrantSnapshots.snapshot_kind, 'effective'),
+  )))[0]?.value, 0);
+
+  const driftedDependency = await disableAppInstallation(
+    actor,
+    dependency.id,
+    reenabledDependency.lifecycle_epoch,
+  );
+  await assert.rejects(
+    activateConnectedAppInstallation(actor, staged.id, {
+      ...baseRequest,
+      expected_review_digest: firstReview.review_digest,
+      accept_host_policy: true,
+    }, capability),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_DEPENDENCY_UNHEALTHY',
+  );
+  await enableAppInstallation(actor, dependency.id, driftedDependency.lifecycle_epoch);
+
+  await db.update(mcpConnections).set({ is_active: false }).where(and(
+    eq(mcpConnections.org_id, OTHER_ORG_ID),
+    eq(mcpConnections.id, connectionId),
+  ));
+  await assert.rejects(
+    activateConnectedAppInstallation(actor, staged.id, {
+      ...baseRequest,
+      expected_review_digest: firstReview.review_digest,
+      accept_host_policy: true,
+    }, capability),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_PROVIDER_UNAVAILABLE',
+  );
+  const [afterDrift] = await db.select().from(appInstallations).where(eq(appInstallations.id, staged.id));
+  assert.equal(afterDrift?.state, 'staged');
+  assert.equal(afterDrift?.active_grant_snapshot_id, null);
+  assert.equal((await db.select({ value: count() }).from(appActionBindings).where(
+    eq(appActionBindings.app_installation_id, staged.id),
+  ))[0]?.value, 0);
+
+  await db.update(mcpConnections).set({ is_active: true }).where(and(
+    eq(mcpConnections.org_id, OTHER_ORG_ID),
+    eq(mcpConnections.id, connectionId),
+  ));
+  const [restoredConnection] = await db.select().from(mcpConnections).where(eq(mcpConnections.id, connectionId));
+  const restoredRequest = { ...baseRequest };
+  const restoredReview = await prepareConnectedAppReview(actor, staged.id, restoredRequest, capability);
+  assert.notEqual(
+    restoredReview.action_bindings[0]?.connector_authorization_version,
+    firstReview.action_bindings[0]?.connector_authorization_version,
+  );
+  const concurrent = await Promise.allSettled([
+    activateConnectedAppInstallation(actor, staged.id, {
+      ...restoredRequest,
+      expected_review_digest: restoredReview.review_digest,
+      accept_host_policy: true,
+    }, capability),
+    activateConnectedAppInstallation(actor, staged.id, {
+      ...restoredRequest,
+      expected_review_digest: restoredReview.review_digest,
+      accept_host_policy: true,
+    }, capability),
+  ]);
+  assert.equal(concurrent.filter((item) => item.status === 'fulfilled').length, 1);
+  assert.equal(concurrent.filter((item) => item.status === 'rejected').length, 1);
+  assert.ok(concurrent.some((item) => item.status === 'rejected'
+    && item.reason instanceof AppError
+    && item.reason.code === 'APP_STALE'));
+
+  const [active] = await db.select().from(appInstallations).where(eq(appInstallations.id, staged.id));
+  assert.equal(active?.state, 'active');
+  assert.ok(active?.active_grant_snapshot_id);
+  assert.equal(active?.grant_epoch, 1);
+  await assert.rejects(
+    db.update(appInstallations).set({
+      active_grant_snapshot_id: null,
+      active_grant_snapshot_kind: null,
+    }).where(eq(appInstallations.id, staged.id)),
+    (error: any) => error?.cause?.code === '23514'
+      && error?.cause?.message === 'APP_GRANT_EPOCH_MISMATCH',
+  );
+  await assert.rejects(
+    db.update(appInstallations).set({
+      state: 'disabled',
+      disabled_at: new Date(),
+    }).where(eq(appInstallations.id, staged.id)),
+    (error: any) => error?.cause?.code === '23514'
+      && error?.cause?.message === 'APP_LIFECYCLE_EPOCH_MISMATCH',
+  );
+  const [binding] = await db.select().from(appActionBindings).where(and(
+    eq(appActionBindings.org_id, OTHER_ORG_ID),
+    eq(appActionBindings.app_installation_id, staged.id),
+    eq(appActionBindings.grant_snapshot_id, active!.active_grant_snapshot_id!),
+  ));
+  assert.equal(binding?.operation_name, 'send_email');
+  assert.equal(binding?.provider_snapshot_id.length > 0, true);
+  assert.equal((await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, OTHER_ORG_ID),
+  ))[0]?.value, 0);
+  const management = await getConnectedAppGrantManagement(actor, staged.id);
+  assert.equal(management.installation.active_grant_snapshot_id, active!.active_grant_snapshot_id);
+  assert.equal(management.snapshots.filter((item) => item.snapshot_kind === 'effective').length, 1);
+  assert.equal(management.dependencies.length, 1);
+  assert.equal(management.action_bindings[0]?.operation_name, 'send_email');
+  const healthy = await inspectConnectedAppHealth(
+    actor,
+    staged.id,
+    { refresh_provider_schemas: true },
+    capability,
+  );
+  assert.equal(healthy.status, 'healthy');
+  const driftedSnapshot = await createCapabilityProviderDiscoverySnapshot({
+    adapter_contract_version: CAPABILITY_CONTRACT_VERSIONS.mcp_adapter,
+    provider: snapshot.provider,
+    captured_at: '2026-08-31T12:05:00.000Z',
+    operations: [{
+      identity: snapshot.operations[0]!.identity,
+      title: 'Send sandbox email',
+      description: 'Changed provider contract.',
+      input_schema: {
+        ...SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
+        properties: {
+          ...SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema.properties,
+          campaign_tag: { type: 'string' },
+        },
+      },
+      output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
+    }],
+  });
+  const driftedHealth = await inspectConnectedAppHealth(
+    actor,
+    staged.id,
+    { refresh_provider_schemas: true },
+    { discover: async () => ({ ...await capability.discover(), snapshot: driftedSnapshot }) },
+  );
+  assert.equal(driftedHealth.status, 'unhealthy');
+  assert.equal(driftedHealth.issues.some((issue) => issue.code === 'APP_PROVIDER_SCHEMA_DRIFT'), true);
+
+  const disabled = await disableAppInstallation(actor, staged.id, active!.lifecycle_epoch);
+  assert.equal(disabled.state, 'disabled');
+  assert.equal(disabled.grant_epoch, 2);
+  const [revoked] = await db.select().from(appInstallations).where(eq(appInstallations.id, staged.id));
+  assert.equal(revoked?.active_grant_snapshot_id, null);
+  await assert.rejects(
+    enableAppInstallation(actor, staged.id, revoked!.lifecycle_epoch),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
+  );
+
+  const reactivationRequest = {
+    ...restoredRequest,
+    expected_lifecycle_epoch: revoked!.lifecycle_epoch,
+    expected_grant_epoch: revoked!.grant_epoch,
+  };
+  const reactivationReview = await prepareConnectedAppReview(
+    actor,
+    staged.id,
+    reactivationRequest,
+    capability,
+  );
+  assert.equal(reactivationReview.permission_diff.kind, 'unchanged');
+  const reactivated = await activateConnectedAppInstallation(actor, staged.id, {
+    ...reactivationRequest,
+    expected_review_digest: reactivationReview.review_digest,
+    accept_host_policy: false,
+    allow_identical_carry_forward: true,
+  }, capability);
+  assert.equal(reactivated.permission_diff.carry_forward_eligible, true);
+  const [afterReactivation] = await db.select().from(appInstallations).where(eq(appInstallations.id, staged.id));
+  assert.equal(afterReactivation?.state, 'active');
+  assert.equal(afterReactivation?.grant_epoch, 3);
+  const effective = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, OTHER_ORG_ID),
+    eq(appGrantSnapshots.app_installation_id, staged.id),
+    eq(appGrantSnapshots.snapshot_kind, 'effective'),
+  ));
+  assert.equal(effective.length, 2);
+  assert.equal(effective.some((item) => item.supersedes_snapshot_id === active!.active_grant_snapshot_id), true);
+  assert.equal(reviewProvider.discoveryCalls() >= 5, true);
+  assert.equal(restoredConnection?.is_active, true);
+});
+
+test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, and rollback', async () => {
+  const orgId = randomUUID();
+  const userId = randomUUID();
+  await db.insert(orgs).values({
+    id: orgId,
+    name: 'Connected upgrade',
+    slug: `phase5-upgrade-${randomUUID()}`,
+  });
+  await db.insert(users).values({
+    id: userId,
+    email: `phase5-upgrade-${randomUUID()}@example.test`,
+    name: 'Connected upgrade owner',
+  });
+  await db.insert(orgMembers).values({
+    id: randomUUID(),
+    org_id: orgId,
+    user_id: userId,
+    role: 'owner',
+    is_active: true,
+  });
+  const actor = humanModuleActor({ orgId, userId, role: 'owner' });
+
+  const dependencyBuilt = await buildPhase5DependencyAppPackage();
+  const dependencyStaged = await stageAppPackage(actor, dependencyBuilt.json);
+  await activateAppInstallation(actor, dependencyStaged.id, dependencyStaged.package_digest);
+  const predecessorBuilt = await buildPhase5ConnectedPredecessorAppPackage();
+  const predecessorStaged = await stageAppPackage(actor, predecessorBuilt.json);
+  const predecessor = await activateAppInstallation(
+    actor,
+    predecessorStaged.id,
+    predecessorStaged.package_digest,
+  );
+  const [priorBinding] = await db.select({ binding: appModuleBindings, version: moduleVersions })
+    .from(appModuleBindings)
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.org_id, appModuleBindings.org_id),
+      eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+      eq(moduleVersions.id, appModuleBindings.module_version_id),
+    ))
+    .where(and(
+      eq(appModuleBindings.org_id, orgId),
+      eq(appModuleBindings.app_installation_id, predecessor.id),
+      eq(appModuleBindings.app_version_id, predecessor.active_version_id!),
+    ));
+  assert.ok(priorBinding);
+  const created = await createModuleRecord(actor, {
+    module_id: 'community.deft.connected-campaigns',
+    collection_key: 'campaigns',
+    data: { subject: 'Preserve this campaign' },
+    relations: {},
+    expected_manifest_digest: priorBinding.version.manifest_digest,
+    idempotency_key: 'phase5-upgrade-preserved-record',
+  });
+  assert.ok(created.record);
+
+  const upgradeBuilt = await buildPhase5ConnectedAppPackage();
+  const upgrade = await stageAppUpgrade(
+    actor,
+    predecessor.id,
+    upgradeBuilt.json,
+    predecessor.lifecycle_epoch,
+  );
+  const [upgradeVersion] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.id, upgrade.version_id),
+  ));
+  const [upgradeRequest] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.id, upgradeVersion!.requested_grant_snapshot_id!),
+  ));
+  assert.ok(upgradeVersion);
+  assert.ok(upgradeRequest);
+  const connectionId = randomUUID();
+  await db.insert(mcpConnections).values({
+    id: connectionId,
+    org_id: orgId,
+    name: 'Upgrade sandbox mail',
+    slug: `phase5-upgrade-mail-${randomUUID()}`,
+    server_url: 'https://upgrade-sandbox.example.test/mcp',
+    transport: 'streamable-http',
+    auth_type: 'none',
+    is_active: true,
+    created_by: userId,
+  });
+  const reviewProvider = await sandboxReviewCapability(orgId, connectionId);
+  const reviewRequest = {
+    app_version_id: upgradeVersion.id,
+    expected_package_digest: upgradeVersion.package_digest,
+    expected_requested_snapshot_digest: upgradeRequest.snapshot_digest,
+    expected_lifecycle_epoch: predecessor.lifecycle_epoch,
+    expected_grant_epoch: predecessor.grant_epoch,
+    connector_selections: [{
+      connector_requirement_key: 'mail_provider',
+      mcp_connection_id: connectionId,
+    }],
+  };
+  const review = await prepareConnectedAppReview(
+    actor,
+    predecessor.id,
+    reviewRequest,
+    reviewProvider.capability,
+  );
+  await assert.rejects(
+    activateConnectedAppInstallation(actor, predecessor.id, {
+      ...reviewRequest,
+      expected_review_digest: review.review_digest,
+      accept_host_policy: true,
+    }, reviewProvider.capability, { failBeforePointerSwap: true }),
+    /Injected connected App activation failure/,
+  );
+  const [afterFailure] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, orgId),
+    eq(appInstallations.id, predecessor.id),
+  ));
+  const [moduleAfterFailure] = await db.select().from(moduleVersions).where(and(
+    eq(moduleVersions.org_id, orgId),
+    eq(moduleVersions.installation_id, priorBinding.binding.module_installation_id),
+    eq(moduleVersions.is_active, true),
+  ));
+  const [recordAfterFailure] = await db.select().from(moduleRecords).where(and(
+    eq(moduleRecords.org_id, orgId),
+    eq(moduleRecords.id, created.record!.id),
+  ));
+  assert.equal(afterFailure?.active_version_id, predecessor.active_version_id);
+  assert.equal(afterFailure?.active_grant_snapshot_id, null);
+  assert.equal(afterFailure?.lifecycle_epoch, predecessor.lifecycle_epoch);
+  assert.equal(moduleAfterFailure?.id, priorBinding.version.id);
+  assert.equal(recordAfterFailure?.validated_version_id, priorBinding.version.id);
+  assert.deepEqual(recordAfterFailure?.data, { subject: 'Preserve this campaign' });
+  assert.equal((await db.select({ value: count() }).from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.app_version_id, upgradeVersion.id),
+    eq(appGrantSnapshots.snapshot_kind, 'effective'),
+  )))[0]?.value, 0);
+
+  await activateConnectedAppInstallation(actor, predecessor.id, {
+    ...reviewRequest,
+    expected_review_digest: review.review_digest,
+    accept_host_policy: true,
+  }, reviewProvider.capability);
+  const [afterUpgrade] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, orgId),
+    eq(appInstallations.id, predecessor.id),
+  ));
+  const [oldVersion] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.id, predecessor.active_version_id!),
+  ));
+  const [newModule] = await db.select().from(moduleVersions).where(and(
+    eq(moduleVersions.org_id, orgId),
+    eq(moduleVersions.installation_id, priorBinding.binding.module_installation_id),
+    eq(moduleVersions.is_active, true),
+  ));
+  const [preservedRecord] = await db.select().from(moduleRecords).where(and(
+    eq(moduleRecords.org_id, orgId),
+    eq(moduleRecords.id, created.record!.id),
+  ));
+  assert.equal(afterUpgrade?.active_version_id, upgradeVersion.id);
+  assert.ok(afterUpgrade?.active_grant_snapshot_id);
+  assert.equal(afterUpgrade?.lifecycle_epoch, predecessor.lifecycle_epoch + 1);
+  assert.equal(afterUpgrade?.grant_epoch, predecessor.grant_epoch + 1);
+  assert.equal(oldVersion?.state, 'superseded');
+  await assert.rejects(
+    db.update(appVersions).set({ state: 'active', superseded_at: null }).where(and(
+      eq(appVersions.org_id, orgId),
+      eq(appVersions.id, oldVersion!.id),
+    )),
+    (error: any) => error?.cause?.code === '55000'
+      && error?.cause?.message === 'APP_VERSION_INVALID_TRANSITION',
+  );
+  assert.equal(newModule?.version, '3.0.0');
+  assert.equal(preservedRecord?.validated_version_id, newModule?.id);
+  assert.deepEqual(preservedRecord?.data, { subject: 'Preserve this campaign' });
+  const bindings = await db.select().from(appModuleBindings).where(and(
+    eq(appModuleBindings.org_id, orgId),
+    eq(appModuleBindings.app_installation_id, predecessor.id),
+    eq(appModuleBindings.module_installation_id, priorBinding.binding.module_installation_id),
+  ));
+  assert.equal(bindings.length, 2);
+  assert.deepEqual(new Set(bindings.map((item) => item.app_version_id)), new Set([
+    predecessor.active_version_id!,
+    upgradeVersion.id,
+  ]));
+
+  const identicalBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.1' });
+  const identical = await stageAppUpgrade(
+    actor,
+    predecessor.id,
+    identicalBuilt.json,
+    afterUpgrade!.lifecycle_epoch,
+  );
+  const [identicalVersion] = await db.select().from(appVersions).where(eq(appVersions.id, identical.version_id));
+  const [identicalRequest] = await db.select().from(appGrantSnapshots).where(
+    eq(appGrantSnapshots.id, identicalVersion!.requested_grant_snapshot_id!),
+  );
+  const identicalReviewRequest = {
+    ...reviewRequest,
+    app_version_id: identicalVersion!.id,
+    expected_package_digest: identicalVersion!.package_digest,
+    expected_requested_snapshot_digest: identicalRequest!.snapshot_digest,
+    expected_lifecycle_epoch: afterUpgrade!.lifecycle_epoch,
+    expected_grant_epoch: afterUpgrade!.grant_epoch,
+  };
+  const identicalReview = await prepareConnectedAppReview(
+    actor,
+    predecessor.id,
+    identicalReviewRequest,
+    reviewProvider.capability,
+  );
+  assert.equal(identicalReview.permission_diff.kind, 'unchanged');
+  assert.equal(identicalReview.permission_diff.carry_forward_eligible, true);
+  await activateConnectedAppInstallation(actor, predecessor.id, {
+    ...identicalReviewRequest,
+    expected_review_digest: identicalReview.review_digest,
+    accept_host_policy: false,
+    allow_identical_carry_forward: true,
+  }, reviewProvider.capability);
+  const [afterCarry] = await db.select().from(appInstallations).where(eq(appInstallations.id, predecessor.id));
+  assert.equal(afterCarry?.active_version_id, identicalVersion!.id);
+  assert.equal(afterCarry?.grant_epoch, afterUpgrade!.grant_epoch + 1);
+
+  const widenedBuilt = await buildPhase5ConnectedAppPackage({
+    app_version: '3.1.0',
+    module_version: '3.1.0',
+    add_campaign_code: true,
+  });
+  const widened = await stageAppUpgrade(
+    actor,
+    predecessor.id,
+    widenedBuilt.json,
+    afterCarry!.lifecycle_epoch,
+  );
+  const [widenedVersion] = await db.select().from(appVersions).where(eq(appVersions.id, widened.version_id));
+  const [widenedRequest] = await db.select().from(appGrantSnapshots).where(
+    eq(appGrantSnapshots.id, widenedVersion!.requested_grant_snapshot_id!),
+  );
+  const widenedReviewRequest = {
+    ...reviewRequest,
+    app_version_id: widenedVersion!.id,
+    expected_package_digest: widenedVersion!.package_digest,
+    expected_requested_snapshot_digest: widenedRequest!.snapshot_digest,
+    expected_lifecycle_epoch: afterCarry!.lifecycle_epoch,
+    expected_grant_epoch: afterCarry!.grant_epoch,
+  };
+  const widenedReview = await prepareConnectedAppReview(
+    actor,
+    predecessor.id,
+    widenedReviewRequest,
+    reviewProvider.capability,
+  );
+  assert.equal(widenedReview.permission_diff.kind, 'widening_or_incompatible');
+  assert.deepEqual(widenedReview.permission_diff.changed_atoms, ['resources', 'included_modules']);
+  assert.equal(widenedReview.permission_diff.carry_forward_eligible, false);
+  await assert.rejects(
+    activateConnectedAppInstallation(actor, predecessor.id, {
+      ...widenedReviewRequest,
+      expected_review_digest: widenedReview.review_digest,
+      accept_host_policy: false,
+      allow_identical_carry_forward: true,
+    }, reviewProvider.capability),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
+  );
+  const [afterWideningRejection] = await db.select().from(appInstallations).where(
+    eq(appInstallations.id, predecessor.id),
+  );
+  assert.equal(afterWideningRejection?.active_version_id, identicalVersion!.id);
+  assert.equal(afterWideningRejection?.grant_epoch, afterCarry!.grant_epoch);
+  assert.equal((await db.select({ value: count() }).from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.app_version_id, widenedVersion!.id),
+    eq(appGrantSnapshots.snapshot_kind, 'effective'),
+  )))[0]?.value, 0);
 });

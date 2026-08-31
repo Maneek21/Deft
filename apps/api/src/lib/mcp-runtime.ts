@@ -7,6 +7,9 @@ import { and, eq } from 'drizzle-orm';
 import { db } from './db.js';
 import { resolveMcpRuntimeAuth } from './mcp-connection-auth.js';
 import { validateMcpConnectionTarget } from './mcp-connection-validation.js';
+import { canonicalMcpToolName, isMcpToolEnabled } from './mcp-tool-identity.js';
+
+export { canonicalMcpToolName, isMcpToolEnabled } from './mcp-tool-identity.js';
 
 /** Convert a DB row from mcp_connections to a validated runtime config. */
 export function toConnectionConfig(
@@ -51,23 +54,6 @@ export function mcpResultPayload(result: MCPResult): unknown {
     ...payload,
     error: result.error ?? 'MCP tool error',
   };
-}
-
-/** Normalize the historical mcp__<slug>__<tool> storage form to the
- * connection-local tool name. Connection slugs never contain `__`. */
-export function canonicalMcpToolName(toolName: string): string {
-  if (!toolName.startsWith('mcp__')) return toolName;
-  const separator = toolName.indexOf('__', 'mcp__'.length);
-  return separator >= 0 ? toolName.slice(separator + 2) : toolName;
-}
-
-export function isMcpToolEnabled(
-  enabledTools: string[] | null,
-  _connectionSlug: string,
-  toolName: string,
-): boolean {
-  if (enabledTools === null) return true;
-  return enabledTools.some((configuredName) => canonicalMcpToolName(configuredName) === toolName);
 }
 
 export type McpExecutionUnavailableReason = 'provider_unavailable' | 'operation_unavailable';

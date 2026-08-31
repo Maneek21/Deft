@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import {
   appInstallations,
   appModuleBindings,
@@ -46,11 +46,13 @@ export type InspectedAppPackage = {
 
 export type AppInstallationView = {
   id: string;
+  version_id: string;
   app_id: string;
   name: string;
   version: string;
   state: 'staged' | 'active' | 'disabled' | 'failed';
   lifecycle_epoch: number;
+  grant_epoch: number;
   active_version_id: string | null;
   package_digest: string;
   manifest_digest: string;
@@ -94,11 +96,13 @@ function view(installation: Installation, version: Version): AppInstallationView
   const manifest = version.manifest as DeftAppManifest;
   return {
     id: installation.id,
+    version_id: version.id,
     app_id: installation.app_id,
     name: manifest.name,
     version: version.version,
     state: installation.state,
     lifecycle_epoch: installation.lifecycle_epoch,
+    grant_epoch: installation.grant_epoch,
     active_version_id: installation.active_version_id,
     package_digest: version.package_digest,
     manifest_digest: version.manifest_digest,
@@ -110,6 +114,39 @@ function view(installation: Installation, version: Version): AppInstallationView
 
 function emitAppChange(orgId: string, payload: Record<string, unknown>): void {
   getIO()?.to(`org-members:${orgId}`).emit('app:changed', payload);
+}
+
+export function compareAppSemver(left: string, right: string): number {
+  const parse = (value: string) => {
+    const withoutBuild = value.split('+', 1)[0]!;
+    const dash = withoutBuild.indexOf('-');
+    const core = dash === -1 ? withoutBuild : withoutBuild.slice(0, dash);
+    const prerelease = dash === -1 ? [] : withoutBuild.slice(dash + 1).split('.');
+    return { core: core.split('.').map(Number), prerelease };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (a.core[index] ?? 0) - (b.core[index] ?? 0);
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  if (a.prerelease.length === 0 || b.prerelease.length === 0) {
+    if (a.prerelease.length === b.prerelease.length) return 0;
+    return a.prerelease.length === 0 ? 1 : -1;
+  }
+  const count = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < count; index += 1) {
+    const aPart = a.prerelease[index];
+    const bPart = b.prerelease[index];
+    if (aPart === undefined || bPart === undefined) return aPart === undefined ? -1 : 1;
+    if (aPart === bPart) continue;
+    const aNumeric = /^\d+$/.test(aPart);
+    const bNumeric = /^\d+$/.test(bPart);
+    if (aNumeric && bNumeric) return Number(aPart) < Number(bPart) ? -1 : 1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return aPart < bPart ? -1 : 1;
+  }
+  return 0;
 }
 
 function assertAppProtocolOperationSupported(
@@ -243,6 +280,94 @@ export async function stageAppPackage(
   return view(created.installation, created.version);
 }
 
+export async function stageAppUpgrade(
+  actor: ModuleActor,
+  installationId: string,
+  packageJson: string,
+  expectedLifecycleEpoch: number,
+): Promise<AppInstallationView> {
+  assertHumanManager(actor);
+  const inspected = await inspectAppPackageJson(packageJson);
+  assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
+  if (inspected.manifest.compatibility.app_protocol !== '1') {
+    throw new AppError('Connected App upgrades require App Protocol v1', 'APP_PROTOCOL_UNSUPPORTED', 409);
+  }
+  const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
+  const staged = await db.transaction(async (tx) => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
+    await acquireAppLock(tx, actor.org_id, installationId);
+    const [installation] = await tx.select().from(appInstallations).where(and(
+      eq(appInstallations.org_id, actor.org_id),
+      eq(appInstallations.id, installationId),
+    )).limit(1).for('update');
+    if (!installation || !installation.active_version_id) {
+      throw new AppError('Active App installation not found', 'APP_NOT_FOUND', 404);
+    }
+    if (!['active', 'disabled'].includes(installation.state)) {
+      throw new AppError('Only an installed App can stage an upgrade', 'APP_STATE_CONFLICT', 409);
+    }
+    if (installation.lifecycle_epoch !== expectedLifecycleEpoch) {
+      throw new AppError('App lifecycle changed', 'APP_STALE', 409);
+    }
+    if (installation.app_id !== inspected.manifest.id) {
+      throw new AppError('Upgrade App identity does not match the installation', 'APP_INVALID_PACKAGE', 409);
+    }
+    const [activeVersion] = await tx.select().from(appVersions).where(and(
+      eq(appVersions.org_id, actor.org_id),
+      eq(appVersions.installation_id, installation.id),
+      eq(appVersions.id, installation.active_version_id),
+      eq(appVersions.state, 'active'),
+    )).limit(1).for('update');
+    if (!activeVersion) throw new AppError('Active App version not found', 'APP_STATE_CONFLICT', 409);
+    if (compareAppSemver(activeVersion.version, inspected.manifest.version) >= 0) {
+      throw new AppError('App upgrade must use a strictly newer semantic version', 'APP_INVALID_PACKAGE', 409);
+    }
+    const versionId = randomUUID();
+    const requestedGrantSnapshotId = randomUUID();
+    const [version] = await tx.insert(appVersions).values({
+      id: versionId,
+      org_id: actor.org_id,
+      installation_id: installation.id,
+      version: inspected.manifest.version,
+      protocol_version: '1',
+      manifest: inspected.manifest,
+      manifest_digest: inspected.manifest_digest,
+      package_digest: inspected.package_digest,
+      package: storedPackage,
+      requested_grant_snapshot_id: requestedGrantSnapshotId,
+      provenance: inspected.manifest.provenance ?? null,
+      state: 'staged',
+      created_by_actor_type: actor.kind,
+      created_by_actor_id: actor.actor_id,
+    }).returning();
+    if (!version) throw new Error('App upgrade version insert returned no row');
+    await insertRequestedAppGrantSnapshotWithExecutor(tx, {
+      id: requestedGrantSnapshotId,
+      organization_id: actor.org_id,
+      app_installation_id: installation.id,
+      app_version_id: version.id,
+      manifest: inspected.manifest,
+      manifest_digest: inspected.manifest_digest,
+      package_digest: inspected.package_digest,
+    });
+    await insertAppAudit(tx, actor, 'app.upgrade.stage', installation.id, {
+      active_version_id: installation.active_version_id,
+      lifecycle_epoch: installation.lifecycle_epoch,
+    }, {
+      staged_version_id: version.id,
+      version: version.version,
+      package_digest: version.package_digest,
+    });
+    return { installation, version };
+  });
+  emitAppChange(actor.org_id, {
+    change: 'upgrade_staged',
+    installation_id: staged.installation.id,
+    version_id: staged.version.id,
+  });
+  return view(staged.installation, staged.version);
+}
+
 export async function activateAppInstallation(
   actor: ModuleActor,
   installationId: string,
@@ -270,6 +395,13 @@ export async function activateAppInstallation(
     )).limit(1).for('update');
     if (!version) throw new AppError('The staged App package changed', 'APP_STALE', 409);
     assertAppProtocolOperationSupported(version.protocol_version, 'activate');
+    if (version.protocol_version !== '0') {
+      throw new AppError(
+        'Connected Apps require explicit review and connector binding before activation',
+        'APP_REVIEW_REQUIRED',
+        409,
+      );
+    }
     const packageValue = version.package as unknown as DeftAppPackageV0;
     for (const reference of [...packageValue.manifest.modules].sort((a, b) => a.module_id.localeCompare(b.module_id))) {
       const artifact = packageValue.artifacts.find((item) => item.path === reference.manifest_path);
@@ -331,6 +463,10 @@ export async function disableAppInstallation(
     if (!installation || !installation.active_version_id) throw new AppError('App installation not found', 'APP_NOT_FOUND', 404);
     if (installation.state !== 'active') throw new AppError('Only an active App can be disabled', 'APP_STATE_CONFLICT', 409);
     if (installation.lifecycle_epoch !== expectedLifecycleEpoch) throw new AppError('App lifecycle changed', 'APP_STALE', 409);
+    const [version] = await tx.select().from(appVersions).where(and(
+      eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
+    )).limit(1);
+    if (!version) throw new Error('App disable active version returned no row');
     const bindings = await tx.select().from(appModuleBindings).where(and(
       eq(appModuleBindings.org_id, actor.org_id),
       eq(appModuleBindings.app_installation_id, installation.id),
@@ -351,16 +487,22 @@ export async function disableAppInstallation(
     const [updated] = await tx.update(appInstallations).set({
       state: 'disabled',
       lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
+      ...(version.protocol_version === '1' ? {
+        active_grant_snapshot_id: null,
+        active_grant_snapshot_kind: null,
+        grant_epoch: sql`${appInstallations.grant_epoch} + 1`,
+      } : {}),
       disabled_at: now,
       updated_by_actor_type: actor.kind,
       updated_by_actor_id: actor.actor_id,
     }).where(and(eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installation.id))).returning();
-    const [version] = await tx.select().from(appVersions).where(and(
-      eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
-    )).limit(1);
     if (!updated || !version) throw new Error('App disable update returned no row');
     await insertAppAudit(tx, actor, 'app.disable', installation.id, { state: 'active' }, {
-      state: 'disabled', lifecycle_epoch: updated.lifecycle_epoch, data_preserved: true,
+      state: 'disabled',
+      lifecycle_epoch: updated.lifecycle_epoch,
+      grant_epoch: updated.grant_epoch,
+      grant_revoked: version.protocol_version === '1',
+      data_preserved: true,
     });
     return { installation: updated, version, bindings };
   });
@@ -392,6 +534,17 @@ export async function enableAppInstallation(
     if (!installation || !installation.active_version_id) throw new AppError('App installation not found', 'APP_NOT_FOUND', 404);
     if (installation.state !== 'disabled') throw new AppError('Only a disabled App can be enabled', 'APP_STATE_CONFLICT', 409);
     if (installation.lifecycle_epoch !== expectedLifecycleEpoch) throw new AppError('App lifecycle changed', 'APP_STALE', 409);
+    const [version] = await tx.select().from(appVersions).where(and(
+      eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
+    )).limit(1);
+    if (!version) throw new Error('App enable active version returned no row');
+    if (version.protocol_version === '1') {
+      throw new AppError(
+        'Connected Apps require a fresh review before re-enabling',
+        'APP_REVIEW_REQUIRED',
+        409,
+      );
+    }
     const bindings = await tx.select().from(appModuleBindings).where(and(
       eq(appModuleBindings.org_id, actor.org_id),
       eq(appModuleBindings.app_installation_id, installation.id),
@@ -415,9 +568,6 @@ export async function enableAppInstallation(
       updated_by_actor_type: actor.kind,
       updated_by_actor_id: actor.actor_id,
     }).where(and(eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installation.id))).returning();
-    const [version] = await tx.select().from(appVersions).where(and(
-      eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
-    )).limit(1);
     if (!updated || !version) throw new Error('App enable update returned no row');
     await insertAppAudit(tx, actor, 'app.enable', installation.id, { state: 'disabled' }, {
       state: 'active', lifecycle_epoch: updated.lifecycle_epoch, data_preserved: true,
@@ -439,15 +589,19 @@ export async function enableAppInstallation(
 
 export async function listAppInstallations(actor: ModuleActor): Promise<AppInstallationView[]> {
   if (actor.kind !== 'human' || actor.role === 'guest') throw new AppError('Apps are unavailable', 'APP_ACCESS_DENIED', 403);
-  const rows = await db.select({ installation: appInstallations, version: appVersions })
-    .from(appInstallations)
-    .innerJoin(appVersions, and(
-      eq(appVersions.org_id, appInstallations.org_id),
-      eq(appVersions.installation_id, appInstallations.id),
-    ))
+  const installations = await db.select().from(appInstallations)
     .where(eq(appInstallations.org_id, actor.org_id))
     .orderBy(asc(appInstallations.app_id));
-  return rows.map((row) => view(row.installation, row.version));
+  const versions = await db.select().from(appVersions)
+    .where(eq(appVersions.org_id, actor.org_id))
+    .orderBy(desc(appVersions.created_at), desc(appVersions.id));
+  return installations.flatMap((installation) => {
+    const candidates = versions.filter((version) => version.installation_id === installation.id);
+    const selected = installation.active_version_id
+      ? candidates.find((version) => version.id === installation.active_version_id)
+      : candidates.find((version) => version.state === 'staged');
+    return selected ? [view(installation, selected)] : [];
+  });
 }
 
 export async function getAppInstallation(actor: ModuleActor, installationId: string): Promise<AppInstallationView> {

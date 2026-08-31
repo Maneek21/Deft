@@ -33,7 +33,7 @@ const campaignModule = {
     name: 'Campaigns',
     fields: [
       { key: 'subject', label: 'Subject', type: 'text', required: true },
-      { key: 'body', label: 'Body', type: 'long_text', required: true },
+      { key: 'body', label: 'Body', type: 'long_text' },
       {
         key: 'contacts',
         label: 'Contacts',
@@ -44,6 +44,21 @@ const campaignModule = {
       },
     ],
     views: [{ key: 'detail', name: 'Campaign', type: 'detail', fields: ['subject', 'body', 'contacts'] }],
+  }],
+} as const;
+
+const predecessorCampaignModule = {
+  ...campaignModule,
+  version: '2.0.0',
+  collections: [{
+    ...campaignModule.collections[0],
+    fields: campaignModule.collections[0].fields.filter((field) => field.key !== 'body'),
+    views: [{
+      key: 'detail',
+      name: 'Campaign',
+      type: 'detail' as const,
+      fields: ['subject', 'contacts'],
+    }],
   }],
 } as const;
 
@@ -78,21 +93,36 @@ export async function buildPhase5DependencyAppPackage() {
   });
 }
 
-export async function buildPhase5ConnectedAppPackage() {
+export async function buildPhase5ConnectedAppPackage(options: {
+  app_version?: string;
+  module_version?: string;
+  add_campaign_code?: boolean;
+} = {}) {
+  const extraFields = options.add_campaign_code
+    ? [{ key: 'campaign_code', label: 'Campaign code', type: 'text' as const }]
+    : [];
+  const moduleManifest = {
+    ...campaignModule,
+    version: options.module_version ?? campaignModule.version,
+    collections: [{
+      ...campaignModule.collections[0],
+      fields: [...campaignModule.collections[0].fields, ...extraFields],
+    }],
+  };
   const artifact = await prepareModuleArtifact({
     path: 'modules/connected-campaigns/deft.module.json',
-    manifest: campaignModule,
+    manifest: moduleManifest,
   });
   const manifest: DeftAppManifestV1Input = {
     schema_version: '1',
     id: 'community.deft.connected-campaigns-app',
-    version: '3.0.0',
+    version: options.app_version ?? '3.0.0',
     name: 'Connected Campaigns',
     license: 'AGPL-3.0-only',
     compatibility: { app_protocol: '1' },
     modules: [{
-      module_id: campaignModule.id,
-      version: campaignModule.version,
+      module_id: moduleManifest.id,
+      version: moduleManifest.version,
       manifest_path: artifact.path,
       manifest_digest: artifact.digest,
     }],
@@ -111,9 +141,9 @@ export async function buildPhase5ConnectedAppPackage() {
     resource_requirements: [
       {
         key: 'campaign',
-        source: { kind: 'included_module', module_id: campaignModule.id, version: campaignModule.version },
+        source: { kind: 'included_module', module_id: moduleManifest.id, version: moduleManifest.version },
         resource_type: 'campaigns',
-        fields: ['subject', 'body', 'contacts'],
+        fields: ['subject', 'body', 'contacts', ...(options.add_campaign_code ? ['campaign_code'] : [])],
       },
       {
         key: 'contact',
@@ -162,4 +192,35 @@ export async function buildPhase5ConnectedAppPackage() {
     }],
   };
   return buildDeftAppPackage({ manifest, artifacts: [artifact] });
+}
+
+export async function buildPhase5ConnectedPredecessorAppPackage() {
+  const artifact = await prepareModuleArtifact({
+    path: 'modules/connected-campaigns/deft.module.json',
+    manifest: predecessorCampaignModule,
+  });
+  return buildDeftAppPackage({
+    manifest: {
+      schema_version: '0',
+      id: 'community.deft.connected-campaigns-app',
+      version: '2.0.0',
+      name: 'Connected Campaigns',
+      license: 'AGPL-3.0-only',
+      compatibility: { app_protocol: '0' },
+      modules: [{
+        module_id: predecessorCampaignModule.id,
+        version: predecessorCampaignModule.version,
+        manifest_path: artifact.path,
+        manifest_digest: artifact.digest,
+      }],
+      navigation: [{
+        key: 'campaigns',
+        label: 'Campaigns',
+        module_id: predecessorCampaignModule.id,
+        collection_key: 'campaigns',
+        view_key: 'detail',
+      }],
+    },
+    artifacts: [artifact],
+  });
 }

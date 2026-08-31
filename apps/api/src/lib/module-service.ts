@@ -1819,6 +1819,225 @@ async function assertModuleLifecycleNotOwnedByApp(
   }
 }
 
+function assertStrictlyAdditiveAppModuleUpgrade(
+  current: DeftModuleManifestV1,
+  next: DeftModuleManifestV1,
+): void {
+  const equal = (left: unknown, right: unknown) => (
+    JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right))
+  );
+  for (const currentCollection of current.collections) {
+    const nextCollection = next.collections.find((item) => item.key === currentCollection.key);
+    if (!nextCollection) {
+      throw new ModuleError(
+        `App Module upgrade cannot remove collection ${currentCollection.key}`,
+        'MODULE_VALIDATION_ERROR',
+        409,
+      );
+    }
+    if (!equal(currentCollection.search, nextCollection.search)) {
+      throw new ModuleError(
+        `App Module upgrade cannot change search projection for ${currentCollection.key}`,
+        'MODULE_VALIDATION_ERROR',
+        409,
+      );
+    }
+    const currentFieldKeys = new Set(currentCollection.fields.map((field) => field.key));
+    for (const currentField of currentCollection.fields) {
+      const nextField = nextCollection.fields.find((item) => item.key === currentField.key);
+      if (!nextField || !equal(currentField, nextField)) {
+        throw new ModuleError(
+          `App Module upgrade cannot change existing field ${currentCollection.key}.${currentField.key}`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+        );
+      }
+    }
+    for (const added of nextCollection.fields.filter((field) => !currentFieldKeys.has(field.key))) {
+      if (added.required || ('default' in added && added.default !== undefined)) {
+        throw new ModuleError(
+          `Added App Module field ${nextCollection.key}.${added.key} must be optional without a default`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+        );
+      }
+    }
+  }
+  const currentCollectionKeys = new Set(current.collections.map((collection) => collection.key));
+  for (const addedCollection of next.collections.filter((item) => !currentCollectionKeys.has(item.key))) {
+    for (const field of addedCollection.fields) {
+      if (field.required || ('default' in field && field.default !== undefined)) {
+        throw new ModuleError(
+          `New App Module collection ${addedCollection.key} must contain only optional fields without defaults`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Transaction-composable upgrade for App-owned Modules. Loop 3 intentionally
+ * accepts only strictly additive schemas: every existing field and search
+ * projection remains byte-equivalent, while new fields are optional and have
+ * no default. Existing records, saved views, and relation endpoints therefore
+ * remain valid without an independently committed migration.
+ */
+export async function upgradeAppOwnedModuleAdditivelyWithExecutor(
+  executor: ModuleDbExecutor,
+  actorValue: ModuleActor,
+  input: {
+    app_installation_id: string;
+    module_installation_id: string;
+    expected_active_manifest_digest: string;
+    manifest: unknown;
+  },
+): Promise<ModuleLifecycleTransactionResult> {
+  const actor = validatedActor(actorValue);
+  assertLifecycleAccess(actor);
+  const expectedDigest = ModuleManifestDigestSchema.parse(input.expected_active_manifest_digest);
+  const manifest = parseDeftModuleManifest(input.manifest);
+  const digest = await digestModuleManifest(manifest);
+  const identity = actorMetadata(actor);
+
+  await assertCurrentModuleManagerWithExecutor(executor, actor);
+  await acquireModuleInstallLocks(executor, actor.org_id, manifest.id, manifest.slug);
+  const [current] = await executor.select({ installation: moduleInstallations, version: moduleVersions })
+    .from(moduleInstallations)
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.org_id, moduleInstallations.org_id),
+      eq(moduleVersions.installation_id, moduleInstallations.id),
+      eq(moduleVersions.is_active, true),
+    ))
+    .where(and(
+      eq(moduleInstallations.org_id, actor.org_id),
+      eq(moduleInstallations.id, input.module_installation_id),
+      eq(moduleInstallations.is_deleted, false),
+    ))
+    .limit(1)
+    .for('update');
+  if (!current) throw new ModuleError('App-owned Module not found', 'MODULE_NOT_FOUND', 404);
+  const [owner] = await executor.select({ app_installation_id: appModuleBindings.app_installation_id })
+    .from(appModuleBindings)
+    .where(and(
+      eq(appModuleBindings.org_id, actor.org_id),
+      eq(appModuleBindings.module_installation_id, current.installation.id),
+    ))
+    .limit(1);
+  if (!owner || owner.app_installation_id !== input.app_installation_id) {
+    throw new ModuleError('App Module owner does not match', 'MODULE_ACCESS_DENIED', 403);
+  }
+  if (
+    current.installation.source !== 'sideloaded'
+    || current.installation.module_id !== manifest.id
+    || current.installation.slug !== manifest.slug
+  ) {
+    throw new ModuleError('App Module identity changed', 'MODULE_IDENTITY_MISMATCH', 409);
+  }
+  if (current.version.manifest_digest !== expectedDigest) {
+    throw new ModuleError(
+      'The active App Module schema changed before activation',
+      'MODULE_MANIFEST_STALE',
+      409,
+      { current_manifest_digest: current.version.manifest_digest },
+    );
+  }
+  if (compareSemver(current.version.version, manifest.version) >= 0) {
+    throw new ModuleError(
+      'The App Module upgrade must use a strictly newer semantic version',
+      'MODULE_UPDATE_NOT_AVAILABLE',
+      409,
+    );
+  }
+  const currentManifest = parseDeftModuleManifest(current.version.manifest);
+  assertStrictlyAdditiveAppModuleUpgrade(currentManifest, manifest);
+
+  const now = new Date();
+  const [version] = await executor.insert(moduleVersions).values({
+    org_id: actor.org_id,
+    installation_id: current.installation.id,
+    version: manifest.version,
+    manifest,
+    manifest_digest: digest,
+    is_active: false,
+    activated_at: null,
+    created_by_actor_type: identity.type,
+    created_by_actor_id: identity.id,
+  }).returning();
+  if (!version) throw new Error('App Module version insert returned no row');
+  const records = await executor.select({ id: moduleRecords.id, updated_at: moduleRecords.updated_at })
+    .from(moduleRecords)
+    .where(and(
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.installation_id, current.installation.id),
+    ))
+    .for('update');
+  for (const record of records) {
+    await executor.update(moduleRecords).set({
+      validated_version_id: version.id,
+      updated_at: record.updated_at,
+    }).where(and(
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.installation_id, current.installation.id),
+      eq(moduleRecords.id, record.id),
+    ));
+  }
+  await executor.update(moduleVersions).set({ is_active: false }).where(and(
+    eq(moduleVersions.org_id, actor.org_id),
+    eq(moduleVersions.installation_id, current.installation.id),
+    eq(moduleVersions.id, current.version.id),
+    eq(moduleVersions.is_active, true),
+  ));
+  const [activeVersion] = await executor.update(moduleVersions).set({
+    is_active: true,
+    activated_at: now,
+  }).where(and(
+    eq(moduleVersions.org_id, actor.org_id),
+    eq(moduleVersions.installation_id, current.installation.id),
+    eq(moduleVersions.id, version.id),
+    eq(moduleVersions.is_active, false),
+  )).returning();
+  const [installation] = await executor.update(moduleInstallations).set({
+    is_enabled: true,
+    disabled_at: null,
+    updated_by_actor_type: identity.type,
+    updated_by_actor_id: identity.id,
+  }).where(and(
+    eq(moduleInstallations.org_id, actor.org_id),
+    eq(moduleInstallations.id, current.installation.id),
+  )).returning();
+  if (!activeVersion || !installation) throw new Error('App Module activation returned no row');
+  await insertAudit(executor, actor, {
+    action: 'module.update',
+    entityType: 'module_installation',
+    entityId: installation.id,
+    before: { version: current.version.version, manifest_digest: current.version.manifest_digest },
+    after: { version: activeVersion.version, manifest_digest: activeVersion.manifest_digest },
+    metadata: {
+      app_installation_id: input.app_installation_id,
+      compatibility: 'strictly_additive',
+      records_repointed: records.length,
+    },
+  });
+  return {
+    row: { installation, version: activeVersion },
+    manifest,
+    postCommit: {
+      emit: () => emitModuleChange(actor.org_id, {
+        change: 'updated',
+        installation_id: installation.id,
+        module_id: installation.module_id,
+        slug: installation.slug,
+        active_version_id: activeVersion.id,
+        manifest_digest: activeVersion.manifest_digest,
+        version: activeVersion.version,
+      }),
+      invalidate: () => invalidateModuleCatalogCaches(actor.org_id),
+    },
+  };
+}
+
 export async function installModuleFromManifest(
   actorValue: ModuleActor,
   manifestValue: unknown,

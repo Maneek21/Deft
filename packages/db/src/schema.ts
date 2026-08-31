@@ -1450,8 +1450,9 @@ export const appInstallations = pgTable('app_installations', {
   check('app_installations_state_check', sql`${t.state} IN ('staged', 'active', 'disabled', 'failed')`),
   check('app_installations_epoch_nonnegative_check', sql`${t.lifecycle_epoch} >= 0`),
   check('app_installations_grant_epoch_nonnegative_check', sql`${t.grant_epoch} >= 0`),
-  check('app_installations_grant_pointer_dormant_check', sql`
-    ${t.active_grant_snapshot_id} IS NULL AND ${t.active_grant_snapshot_kind} IS NULL
+  check('app_installations_grant_pointer_shape_check', sql`
+    (${t.active_grant_snapshot_id} IS NULL AND ${t.active_grant_snapshot_kind} IS NULL)
+    OR (${t.active_grant_snapshot_id} IS NOT NULL AND ${t.active_grant_snapshot_kind} = 'effective')
   `),
   check(
     'app_installations_active_pointer_check',
@@ -1476,10 +1477,11 @@ export const appVersions = pgTable('app_versions', {
   // immutable compatibility/request projection; only v1 requires the pointer.
   requested_grant_snapshot_id: text('requested_grant_snapshot_id'),
   provenance: jsonb('provenance').$type<Record<string, unknown> | null>(),
-  state: text('state').$type<'staged' | 'active' | 'failed'>().default('staged').notNull(),
+  state: text('state').$type<'staged' | 'active' | 'superseded' | 'failed'>().default('staged').notNull(),
   staged_at: timestamp('staged_at').defaultNow().notNull(),
   activated_at: timestamp('activated_at'),
   failed_at: timestamp('failed_at'),
+  superseded_at: timestamp('superseded_at'),
   created_by_actor_type: text('created_by_actor_type').notNull(),
   created_by_actor_id: text('created_by_actor_id').notNull(),
   ...timestamps(),
@@ -1498,22 +1500,20 @@ export const appVersions = pgTable('app_versions', {
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
   check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1')`),
-  check('app_versions_protocol_stage_gate_check', sql`
-    ${t.protocol_version} = '0' OR ${t.state} = 'staged'
-  `),
   check('app_versions_connected_request_check', sql`
     ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
   `),
-  check('app_versions_state_check', sql`${t.state} IN ('staged', 'active', 'failed')`),
+  check('app_versions_state_check', sql`${t.state} IN ('staged', 'active', 'superseded', 'failed')`),
   check('app_versions_manifest_object_check', sql`jsonb_typeof(${t.manifest}) = 'object'`),
   check('app_versions_package_object_check', sql`jsonb_typeof(${t.package}) = 'object'`),
   check('app_versions_manifest_digest_check', sql`${t.manifest_digest} ~ '^sha256:[a-f0-9]{64}$'`),
   check('app_versions_package_digest_check', sql`${t.package_digest} ~ '^sha256:[a-f0-9]{64}$'`),
   check(
     'app_versions_lifecycle_check',
-    sql`(${t.state} = 'staged' AND ${t.activated_at} IS NULL AND ${t.failed_at} IS NULL)
-      OR (${t.state} = 'active' AND ${t.activated_at} IS NOT NULL AND ${t.failed_at} IS NULL)
-      OR (${t.state} = 'failed' AND ${t.activated_at} IS NULL AND ${t.failed_at} IS NOT NULL)`,
+    sql`(${t.state} = 'staged' AND ${t.activated_at} IS NULL AND ${t.failed_at} IS NULL AND ${t.superseded_at} IS NULL)
+      OR (${t.state} = 'active' AND ${t.activated_at} IS NOT NULL AND ${t.failed_at} IS NULL AND ${t.superseded_at} IS NULL)
+      OR (${t.state} = 'superseded' AND ${t.activated_at} IS NOT NULL AND ${t.failed_at} IS NULL AND ${t.superseded_at} IS NOT NULL)
+      OR (${t.state} = 'failed' AND ${t.activated_at} IS NULL AND ${t.failed_at} IS NOT NULL AND ${t.superseded_at} IS NULL)`,
   ),
 ]);
 
@@ -1549,7 +1549,7 @@ export const appModuleBindings = pgTable('app_module_bindings', {
     name: 'app_module_bindings_module_version_fk',
   }).onDelete('restrict'),
   uniqueIndex('app_module_bindings_app_module_unique').on(t.org_id, t.app_version_id, t.module_id),
-  uniqueIndex('app_module_bindings_owned_module_unique').on(t.org_id, t.module_installation_id),
+  index('app_module_bindings_owner_idx').on(t.org_id, t.module_installation_id, t.app_installation_id),
   check('app_module_bindings_ownership_check', sql`${t.ownership} = 'app'`),
 ]);
 
@@ -1624,6 +1624,12 @@ export const appGrantSnapshots = pgTable('app_grant_snapshots', {
   uniqueIndex('app_grant_snapshots_one_requested_unique')
     .on(t.org_id, t.app_version_id)
     .where(sql`${t.snapshot_kind} = 'requested'`),
+  uniqueIndex('app_grant_snapshots_one_successor_unique')
+    .on(t.org_id, t.app_installation_id, t.supersedes_snapshot_id)
+    .where(sql`${t.supersedes_snapshot_id} IS NOT NULL`),
+  uniqueIndex('app_grant_snapshots_one_root_unique')
+    .on(t.org_id, t.app_installation_id)
+    .where(sql`${t.snapshot_kind} = 'effective' AND ${t.supersedes_snapshot_id} IS NULL`),
   index('app_grant_snapshots_app_version_idx')
     .on(t.org_id, t.app_installation_id, t.app_version_id, t.created_at),
   check('app_grant_snapshots_kind_check', sql`${t.snapshot_kind} IN ('requested', 'effective')`),
@@ -3277,6 +3283,11 @@ export const mcpToolOverrides = pgTable('mcp_tool_overrides', {
   app_run_authorization_version: integer('app_run_authorization_version').default(1).notNull(),
   ...timestamps(),
 }, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.mcp_connection_id],
+    foreignColumns: [mcpConnections.org_id, mcpConnections.id],
+    name: 'mcp_tool_overrides_org_connection_fk',
+  }).onDelete('cascade'),
   uniqueIndex('mcp_tool_override_unique').on(t.mcp_connection_id, t.tool_name),
 ]);
 

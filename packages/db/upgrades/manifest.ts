@@ -137,6 +137,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.23-connected-app-grants-foundation.sql',
       description: 'Add immutable connected-App grant requests, exact binding lineage, and dormant App Run identities',
     },
+    {
+      version: '0.3.0-preview.24',
+      file: '0.3.0-preview.24-connected-app-review-lifecycle.sql',
+      description: 'Enable reviewed connected-App grants, immutable supersession, and lifecycle coherence',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

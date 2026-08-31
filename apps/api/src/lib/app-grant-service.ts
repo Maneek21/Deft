@@ -10,7 +10,13 @@ import { db } from './db.js';
 export const APP_GRANT_SNAPSHOT_VERSION = 'deft.app_grant_snapshot.v1' as const;
 
 type GrantExecutor = Pick<typeof db, 'insert'>;
-type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
+export type AppGrantCanonicalJson =
+  | null
+  | boolean
+  | number
+  | string
+  | AppGrantCanonicalJson[]
+  | { [key: string]: AppGrantCanonicalJson };
 
 export type RequestedAppGrantProjection = {
   resource_rights: Record<string, unknown>[];
@@ -19,27 +25,27 @@ export type RequestedAppGrantProjection = {
   snapshot_digest: `sha256:${string}`;
 };
 
-function canonicalize(value: unknown): CanonicalJson {
+export function canonicalizeAppGrantValue(value: unknown): AppGrantCanonicalJson {
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'string') return value.normalize('NFC');
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new TypeError('Grant snapshot cannot contain non-finite numbers');
     return value;
   }
-  if (Array.isArray(value)) return value.map(canonicalize);
+  if (Array.isArray(value)) return value.map(canonicalizeAppGrantValue);
   if (typeof value === 'object') {
-    const result: Record<string, CanonicalJson> = {};
+    const result: Record<string, AppGrantCanonicalJson> = {};
     for (const key of Object.keys(value as Record<string, unknown>).sort()) {
       const item = (value as Record<string, unknown>)[key];
-      if (item !== undefined) result[key.normalize('NFC')] = canonicalize(item);
+      if (item !== undefined) result[key.normalize('NFC')] = canonicalizeAppGrantValue(item);
     }
     return result;
   }
   throw new TypeError(`Grant snapshot cannot contain ${typeof value}`);
 }
 
-function digestCanonical(value: unknown): `sha256:${string}` {
-  const json = JSON.stringify(canonicalize(value));
+export function digestAppGrantValue(value: unknown): `sha256:${string}` {
+  const json = JSON.stringify(canonicalizeAppGrantValue(value));
   return `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}`;
 }
 
@@ -87,7 +93,7 @@ export function buildRequestedAppGrantProjection(input: {
         }))
       : [],
   };
-  const canonicalSnapshot = canonicalize({
+  const canonicalSnapshot = canonicalizeAppGrantValue({
     snapshot_version: APP_GRANT_SNAPSHOT_VERSION,
     snapshot_kind: 'requested',
     organization_id: input.organization_id,
@@ -111,7 +117,7 @@ export function buildRequestedAppGrantProjection(input: {
     resource_rights: resourceRights,
     classification,
     canonical_snapshot: canonicalSnapshot,
-    snapshot_digest: digestCanonical(canonicalSnapshot),
+    snapshot_digest: digestAppGrantValue(canonicalSnapshot),
   };
 }
 
