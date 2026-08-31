@@ -17,7 +17,12 @@ import {
 } from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
 import type { AppRunProviderExecutor, AppRunProviderExecutionResult } from './app-run-provider-executor.js';
-import { PostgresAppRunRepository, type AppRunSafeView, type AppRunTransaction } from './app-run-repository.js';
+import {
+  PostgresAppRunRepository,
+  type AppRunProviderDispatchPin,
+  type AppRunSafeView,
+  type AppRunTransaction,
+} from './app-run-repository.js';
 import {
   noOpAppRunReceiptWriter,
   type AppRunReceiptWriter,
@@ -114,8 +119,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       await this.#projectState(settled);
       return { run: settled };
     }
-    const boundaryCommitted = await this.#markProviderCallStarted(claimed);
-    if (!boundaryCommitted) {
+    const boundary = await this.#markProviderCallStarted(claimed);
+    if (!boundary) {
       const run = await this.repository.inspect(orgId, runId);
       if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
       return { run };
@@ -132,8 +137,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         provider_kind: claimed.run.provider_kind,
         provider_instance_id: claimed.run.provider_instance_id,
         operation_name: claimed.run.operation_name,
+        origin_kind: claimed.run.origin_kind,
         input,
         provider_idempotency_key: stableProviderKey,
+        ...(boundary.dispatch_pin ? { dispatch_pin: boundary.dispatch_pin } : {}),
         signal,
       });
     } catch {
@@ -400,7 +407,9 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     return attempt;
   }
 
-  async #markProviderCallStarted(claimed: ClaimedAttempt): Promise<boolean> {
+  async #markProviderCallStarted(claimed: ClaimedAttempt): Promise<Readonly<{
+    dispatch_pin?: AppRunProviderDispatchPin;
+  }> | null> {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       let run = await this.repository.lockRun(tx, claimed.run.org_id, claimed.run.id);
@@ -411,7 +420,11 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !await this.executionAuthorizer.authorizeExecution({
           org_id: run.org_id, run, tx, stage: 'provider_call', now,
         })
-      ) return false;
+      ) return null;
+      const dispatchPin = run.origin_kind === 'app'
+        ? await this.repository.loadAppProviderDispatchPin(tx, run.org_id, run.id)
+        : undefined;
+      if (run.origin_kind === 'app' && !dispatchPin) return null;
       await tx.execute(sql`SELECT id FROM app_run_attempts
         WHERE org_id = ${claimed.run.org_id} AND id = ${claimed.attempt.id} FOR UPDATE`);
       const [current] = await tx.select().from(appRunAttempts).where(and(
@@ -424,7 +437,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || current.claim_token !== claimed.attempt.claim_token
         || !current.lease_expires_at
         || current.lease_expires_at <= now
-      ) return false;
+      ) return null;
       const [attempt] = await tx.update(appRunAttempts).set({
         state: 'provider_call_started', provider_call_started_at: now, updated_at: now,
       }).where(and(
@@ -433,7 +446,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         eq(appRunAttempts.state, 'claimed'),
         eq(appRunAttempts.claim_token, claimed.attempt.claim_token!),
       )).returning();
-      if (!attempt) return false;
+      if (!attempt) return null;
       if (run.state === 'pending' || run.state === 'pending_approval') {
         run = await this.repository.transition(tx, { run, state: 'running', now });
       }
@@ -441,7 +454,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         id: crypto.randomUUID(), org_id: run.org_id, run_id: run.id,
         event_type: 'provider_call_started', payload: { attempt_id: attempt.id }, now,
       });
-      return true;
+      return Object.freeze({ ...(dispatchPin ? { dispatch_pin: dispatchPin } : {}) });
     });
   }
 

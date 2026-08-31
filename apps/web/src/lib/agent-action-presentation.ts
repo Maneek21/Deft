@@ -43,6 +43,7 @@ export type ApprovalCardPresentation = {
     | 'calendar'
     | 'canvas'
     | 'module'
+    | 'app_run'
     | 'plan'
     | 'admin'
     | 'generic';
@@ -309,6 +310,39 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
   const confidence = formatConfidence(getNumberParam(params, ['confidence', 'capture_confidence', 'classification_confidence']));
   const age = formatAge(action.created_at);
   const chips: ApprovalCardPresentation['chips'] = [];
+
+  if (action.action === 'app_run_invoke' || action.source === 'app_run') {
+    const previewTitle = getNestedStringParam(params, ['safe_preview.title']);
+    const previewSummary = getNestedStringParam(params, ['safe_preview.summary']);
+    const provider = getStringParam(params, ['provider_label']);
+    const capability = getStringParam(params, ['capability_label']);
+    const preview = params.safe_preview && typeof params.safe_preview === 'object' && !Array.isArray(params.safe_preview)
+      ? params.safe_preview as Record<string, unknown>
+      : {};
+    const resourceRefs = Array.isArray(preview.resource_refs) ? preview.resource_refs : [];
+    for (const candidate of resourceRefs) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      const label = cleanText((candidate as Record<string, unknown>).label);
+      pushChip(chips, label, 'project');
+    }
+    pushChip(chips, capability, 'shield');
+    return {
+      kind: 'app_run',
+      icon: 'generic',
+      eyebrow: 'Connected App action',
+      headline: 'An App prepared a governed action',
+      title: previewTitle || capability || 'Run App action',
+      summary: previewSummary ? truncateApprovalText(previewSummary, 150) : 'Review the safe preview before Deft releases this action to the selected provider.',
+      approveLabel: 'Approve App action',
+      doneLabel: 'App action approved',
+      sourceLabel: provider ? `Provider: ${provider}` : 'Source: Connected App',
+      detailsLabel: 'Safe App preview',
+      emptyDetails: 'Provider input remains sealed. Deft revalidates App, grant, connector, and resource authority before execution.',
+      badge: 'Governed Run',
+      badgeTone: 'caution',
+      chips,
+    };
+  }
 
   if (kind === 'task_create') {
     const subtasks = getSubtaskDrafts(params);

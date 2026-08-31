@@ -151,6 +151,10 @@ async function readPairingCode(): Promise<string> {
 async function installLocal(): Promise<void> {
   const url = await hostUrl();
   const built = await buildProject(true);
+  const protocol = built.package.manifest.compatibility.app_protocol;
+  if (protocol !== '0') {
+    throw new Error(`App Protocol v${protocol} packages must use the workspace review flow`);
+  }
   const code = await readPairingCode();
   if (!code) throw new Error('A one-time pairing code is required on stdin');
   const exchange = await fetch(`${url}/api/app-developer/pair/exchange`, {
@@ -177,7 +181,7 @@ async function main(): Promise<void> {
     const protocol = built.package.manifest.compatibility.app_protocol;
     console.log(protocol === '0'
       ? `Valid App Protocol v0 package ${built.digest}; connected permissions: none`
-      : `Valid App Protocol v1 authoring package ${built.digest}; host activation unavailable until connected grants are installed`);
+      : `Valid App Protocol v1 connected package ${built.digest}; staging grants zero authority; review and activation are explicit; execution is rollout-gated`);
     return;
   }
   if (command === 'build') {

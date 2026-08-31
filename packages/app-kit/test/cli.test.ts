@@ -139,8 +139,10 @@ test('external authoring loop checks and builds Protocol v1 deterministically wi
 
   const checked = run(project, 'check');
   assert.equal(checked.status, 0, checked.stderr);
-  assert.match(checked.stdout, /Protocol v1 authoring package/);
-  assert.match(checked.stdout, /host activation unavailable/);
+  assert.match(checked.stdout, /Protocol v1 connected package/);
+  assert.match(checked.stdout, /staging grants zero authority/);
+  assert.match(checked.stdout, /review and activation are explicit/);
+  assert.match(checked.stdout, /execution is rollout-gated/);
 
   const first = run(project, 'build');
   assert.equal(first.status, 0, first.stderr);
@@ -151,4 +153,20 @@ test('external authoring loop checks and builds Protocol v1 deterministically wi
   assert.equal(second.status, 0, second.stderr);
   assert.equal(await readFile(resolve(project, '.deft', 'app.deftapp.json'), 'utf8'), firstPackage);
   assert.equal(await readFile(resolve(project, 'deft.app.lock.json'), 'utf8'), firstLock);
+
+  const installLocal = spawnSync(
+    process.execPath,
+    [cli, 'app', 'install-local', '--url', 'http://127.0.0.1:1'],
+    {
+      cwd: project,
+      encoding: 'utf8',
+      input: 'pairing-code-must-not-be-read\n',
+    },
+  );
+  assert.notEqual(installLocal.status, 0);
+  assert.equal(
+    installLocal.stderr.trim(),
+    'App Protocol v1 packages must use the workspace review flow',
+  );
+  assert.doesNotMatch(installLocal.stderr, /Pairing failed|fetch failed|one-time pairing code/i);
 });

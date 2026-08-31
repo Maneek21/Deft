@@ -113,6 +113,13 @@ import { publishAgentChannelEvent } from './agent-channel.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
 export { sanitizeModuleActionParamsForReceipt };
 
+/** Approval routes must send both MCP-owned writes and the App Run release
+ * record through this resolver. App Runs remain outside MCP action catalogs
+ * and budgets; this predicate only owns the human approval handoff. */
+export function isApprovalResolverAction(action: string): boolean {
+  return action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+}
+
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
     (operation) => MODULE_OPERATION_DEFINITIONS[operation].mode === 'write',

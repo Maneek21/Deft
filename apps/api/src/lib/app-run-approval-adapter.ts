@@ -145,11 +145,13 @@ export class PostgresAppRunApprovalResolver {
       if (action.approval_status === 'expired') {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
+      const approvalNow = this.now();
       if (
         run.state !== 'pending_approval'
-        || !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run)
+        || run.input_expires_at <= approvalNow
+        || !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, approvalNow)
       ) {
-        const now = this.now();
+        const now = approvalNow;
         await this.#markExpired(tx, action.id);
         if (run.state === 'pending_approval') {
           run = await this.repository.transition(tx, {
@@ -182,7 +184,7 @@ export class PostgresAppRunApprovalResolver {
         tx,
         run,
         { actor_type: 'human', user_id: approverUserId },
-        this.now(),
+        approvalNow,
       );
       await this.#markApproved(tx, action.id, approverUserId, run);
       await this.#writeApprovalReceipt(
@@ -193,7 +195,7 @@ export class PostgresAppRunApprovalResolver {
         'approved',
         run.execution_released_at ?? this.now(),
       );
-      await this.attemptScheduler.scheduleInTransaction(tx, run, this.now());
+      await this.attemptScheduler.scheduleInTransaction(tx, run, approvalNow);
       return { status: 'approved', result: this.#safeResult(run, true) };
     });
     await this.#resolveApprovalAttention(actionId, approverUserId);

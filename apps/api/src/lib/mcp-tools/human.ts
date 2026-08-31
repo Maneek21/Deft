@@ -71,6 +71,12 @@ import {
   dispatchAgentEmployeeTask,
   publishTaskChannelEventForAssignee,
 } from '../dispatch-agent-task.js';
+import {
+  APP_ACTION_OPERATION_NAMES,
+  APP_ACTION_OPERATION_PRIMARY_SCOPES,
+  executeAppActionOperation,
+  type AppActionOperationName,
+} from '../app-action-operations.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -239,6 +245,9 @@ export const HUMAN_READ_TOOLS = new Set([
   'task_saved_view_list',
   'agent_employee_list',
   'agent_employee_get',
+  'capability_list',
+  'capability_get',
+  'app_run_get',
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
@@ -270,12 +279,42 @@ export const HUMAN_WRITE_TOOLS = new Set([
   'project_archive',
   'task_saved_view_create',
   'agent_employee_update_state',
+  'app_binding_invoke',
 ]);
+
+async function humanAppActionOperation(
+  operation: AppActionOperationName,
+  args: Record<string, unknown>,
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  if (!ctx.token_id) return errorResult('App tools require one exact MCP token authority');
+  if (!humanToolHasRequiredScope(ctx.scopes, operation)) {
+    return errorResult(humanToolScopeError(operation) ?? 'Missing MCP scope');
+  }
+  const result = await executeAppActionOperation({
+    actor: humanModuleActor({
+      orgId: ctx.org_id,
+      userId: ctx.user_id,
+      role: ctx.role,
+      source: 'mcp',
+      scopes: ctx.scopes,
+    }),
+    token_authorities: [{
+      token_kind: ctx.principal_kind === 'oauth' ? 'oauth' : 'mcp',
+      token_id: ctx.token_id,
+    }],
+  }, operation, args);
+  return textResult(result);
+}
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   ...Object.fromEntries(MODULE_OPERATION_NAMES.map((name) => [
     name,
     (args: Record<string, unknown>, ctx: HumanToolContext) => humanModuleOperation(name, args, ctx),
+  ])),
+  ...Object.fromEntries(APP_ACTION_OPERATION_NAMES.map((name) => [
+    name,
+    (args: Record<string, unknown>, ctx: HumanToolContext) => humanAppActionOperation(name, args, ctx),
   ])),
   search: humanSearch,
   fetch: humanFetch,
@@ -3607,10 +3646,21 @@ export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
   agent_employee_list: 'read:workspace', agent_employee_get: 'read:workspace', agent_employee_update_state: 'write:workspace',
   module_list: 'read:modules', module_schema_get: 'read:modules', module_record_search: 'read:modules', module_record_query: 'read:modules', module_record_get: 'read:modules',
   module_record_create: 'write:modules', module_record_update: 'write:modules', module_record_archive: 'write:modules',
+  capability_list: APP_ACTION_OPERATION_PRIMARY_SCOPES.capability_list,
+  capability_get: APP_ACTION_OPERATION_PRIMARY_SCOPES.capability_get,
+  app_binding_invoke: APP_ACTION_OPERATION_PRIMARY_SCOPES.app_binding_invoke,
+  app_run_get: APP_ACTION_OPERATION_PRIMARY_SCOPES.app_run_get,
 };
 
 /** Array requirements are alternatives (any one scope is sufficient). */
 export function humanToolHasRequiredScope(scopes: readonly string[], toolName: string): boolean {
+  if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
+    const operation = toolName as AppActionOperationName;
+    const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];
+    return operation === 'app_run_get'
+      ? scopes.includes(primary)
+      : scopes.includes('read:modules') && scopes.includes(primary);
+  }
   const requirement = HUMAN_TOOL_SCOPES[toolName];
   if (!requirement) return true;
   return Array.isArray(requirement)
@@ -3619,6 +3669,13 @@ export function humanToolHasRequiredScope(scopes: readonly string[], toolName: s
 }
 
 export function humanToolScopeError(toolName: string): string | null {
+  if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
+    const operation = toolName as AppActionOperationName;
+    const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];
+    return operation === 'app_run_get'
+      ? `Missing MCP scope: ${primary}`
+      : `Missing MCP scope: read:modules and ${primary}`;
+  }
   const requirement = HUMAN_TOOL_SCOPES[toolName];
   if (!requirement) return null;
   return Array.isArray(requirement)
@@ -3626,7 +3683,16 @@ export function humanToolScopeError(toolName: string): string | null {
     : `Missing MCP scope: ${requirement}`;
 }
 
-export function humanToolChallengeScope(toolName: string): string | undefined {
+export function humanToolChallengeScope(
+  toolName: string,
+  scopes: readonly string[] = [],
+): string | undefined {
+  if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
+    const operation = toolName as AppActionOperationName;
+    const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];
+    const required = operation === 'app_run_get' ? [primary] : ['read:modules', primary];
+    return required.find((scope) => !scopes.includes(scope)) ?? required[0];
+  }
   const requirement = HUMAN_TOOL_SCOPES[toolName];
   if (!requirement) return undefined;
   return typeof requirement === 'string' ? requirement : requirement[0];

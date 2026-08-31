@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
 import {
   SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
@@ -9,6 +9,7 @@ import {
 } from '@deft/app-kit';
 import {
   CAPABILITY_CONTRACT_VERSIONS,
+  RESOURCE_CONTRACT_VERSIONS,
   createCapabilityProviderDiscoverySnapshot,
 } from '@deft/shared';
 import {
@@ -29,6 +30,8 @@ import {
   oauthAccessTokens,
   orgMembers,
   orgs,
+  resourceRelationEdges,
+  resourceRelationSets,
   users,
 } from '@deft/db/schema';
 import { AppError } from '../src/lib/app-errors.js';
@@ -37,6 +40,7 @@ import {
   activateAppInstallation,
   disableAppInstallation,
   enableAppInstallation,
+  refuseAppUninstall,
   stageAppPackage,
   stageAppUpgrade,
 } from '../src/lib/app-service.js';
@@ -47,7 +51,9 @@ import {
   prepareConnectedAppReview,
 } from '../src/lib/app-review-service.js';
 import { createModuleRecord, humanModuleActor } from '../src/lib/module-service.js';
+import { replaceResourceRelation } from '../src/lib/resource-relation-service.js';
 import { mcpConnectionRoutes } from '../src/routes/mcp-connections.js';
+import { appRoutes } from '../src/routes/apps.js';
 import {
   buildPhase5ConnectedAppPackage,
   buildPhase5ConnectedPredecessorAppPackage,
@@ -66,6 +72,45 @@ const ORG_ID = randomUUID();
 const OTHER_ORG_ID = randomUUID();
 const USER_ID = randomUUID();
 const OTHER_USER_ID = randomUUID();
+
+function moduleRef(installationId: string, resourceType: string, resourceId: string) {
+  return {
+    schema_version: RESOURCE_CONTRACT_VERSIONS.ref,
+    provider: { kind: 'module' as const, provider_instance_id: installationId },
+    resource_type: resourceType,
+    resource_id: resourceId,
+  };
+}
+
+async function relationPersistenceSnapshot(
+  orgId: string,
+  sourceInstallationId: string,
+  sourceRecordId: string,
+) {
+  const [relation] = await db.select({
+    set_id: resourceRelationSets.id,
+    revision: resourceRelationSets.revision,
+    edge_id: resourceRelationEdges.id,
+    target_provider_kind: resourceRelationEdges.target_provider_kind,
+    target_provider_instance_id: resourceRelationEdges.target_provider_instance_id,
+    target_resource_type: resourceRelationEdges.target_resource_type,
+    target_resource_id: resourceRelationEdges.target_resource_id,
+    position: resourceRelationEdges.position,
+  }).from(resourceRelationSets).innerJoin(resourceRelationEdges, and(
+    eq(resourceRelationEdges.org_id, resourceRelationSets.org_id),
+    eq(resourceRelationEdges.relation_set_id, resourceRelationSets.id),
+    eq(resourceRelationEdges.is_deleted, false),
+  )).where(and(
+    eq(resourceRelationSets.org_id, orgId),
+    eq(resourceRelationSets.source_provider_kind, 'module'),
+    eq(resourceRelationSets.source_provider_instance_id, sourceInstallationId),
+    eq(resourceRelationSets.source_resource_type, 'campaigns'),
+    eq(resourceRelationSets.source_resource_id, sourceRecordId),
+    eq(resourceRelationSets.relation_key, 'contacts'),
+  ));
+  assert.ok(relation);
+  return relation;
+}
 
 async function sandboxReviewCapability(orgId: string, connectionId: string) {
   const snapshot = await createCapabilityProviderDiscoverySnapshot({
@@ -637,7 +682,11 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
     }, capability),
     (error: unknown) => error instanceof AppError && error.code === 'APP_DEPENDENCY_UNHEALTHY',
   );
-  await enableAppInstallation(actor, dependency.id, driftedDependency.lifecycle_epoch);
+  const restoredDependency = await enableAppInstallation(
+    actor,
+    dependency.id,
+    driftedDependency.lifecycle_epoch,
+  );
 
   await db.update(mcpConnections).set({ is_active: false }).where(and(
     eq(mcpConnections.org_id, OTHER_ORG_ID),
@@ -722,6 +771,7 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
   assert.equal(management.snapshots.filter((item) => item.snapshot_kind === 'effective').length, 1);
   assert.equal(management.dependencies.length, 1);
   assert.equal(management.action_bindings[0]?.operation_name, 'send_email');
+  assert.deepEqual(management.recent_runs, []);
   const healthy = await inspectConnectedAppHealth(
     actor,
     staged.id,
@@ -795,6 +845,85 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
   ));
   assert.equal(effective.length, 2);
   assert.equal(effective.some((item) => item.supersedes_snapshot_id === active!.active_grant_snapshot_id), true);
+  const historicalLocks = await db.select().from(appDependencyLocks).where(and(
+    eq(appDependencyLocks.org_id, OTHER_ORG_ID),
+    eq(appDependencyLocks.app_installation_id, staged.id),
+    eq(appDependencyLocks.dependency_installation_id, dependency.id),
+  ));
+  assert.equal(historicalLocks.length, 2);
+
+  const dependencyRefusal: unknown = await refuseAppUninstall(
+    actor,
+    dependency.id,
+    restoredDependency.lifecycle_epoch,
+  ).catch((error: unknown) => error);
+  assert.ok(dependencyRefusal instanceof AppError);
+  assert.equal(dependencyRefusal.code, 'APP_DEPENDENCY_IN_USE');
+  assert.deepEqual(dependencyRefusal.details, {
+    dependents: [{
+      installation_id: staged.id,
+      app_id: 'org.deft.reference.resource-campaigns-app',
+      state: 'active',
+    }],
+    cascaded: false,
+  });
+
+  const routeApp = new Hono();
+  routeApp.use('*', async (context, next) => {
+    context.set('user', {
+      id: OTHER_USER_ID,
+      org_id: OTHER_ORG_ID,
+      email: `phase5-other-${TEST_GENERATION}@example.test`,
+      name: 'Other Connected Apps owner',
+      role: 'owner',
+    });
+    await next();
+  });
+  routeApp.route('/api/apps', appRoutes);
+  const dependencyResponse = await routeApp.request(`/api/apps/${dependency.id}/uninstall`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expected_lifecycle_epoch: restoredDependency.lifecycle_epoch }),
+  });
+  assert.equal(dependencyResponse.status, 409);
+  assert.deepEqual(await dependencyResponse.json(), {
+    error: 'App cannot be uninstalled while another App depends on it',
+    code: 'APP_DEPENDENCY_IN_USE',
+    details: dependencyRefusal.details,
+  });
+
+  const staleResponse = await routeApp.request(`/api/apps/${dependency.id}/uninstall`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expected_lifecycle_epoch: restoredDependency.lifecycle_epoch + 1 }),
+  });
+  assert.equal(staleResponse.status, 409);
+  assert.deepEqual(await staleResponse.json(), {
+    error: 'App lifecycle changed',
+    code: 'APP_STALE',
+  });
+
+  await db.update(orgMembers).set({ role: 'member' }).where(and(
+    eq(orgMembers.org_id, OTHER_ORG_ID),
+    eq(orgMembers.user_id, OTHER_USER_ID),
+  ));
+  try {
+    const accessResponse = await routeApp.request(`/api/apps/${dependency.id}/uninstall`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_lifecycle_epoch: restoredDependency.lifecycle_epoch }),
+    });
+    assert.equal(accessResponse.status, 403);
+    assert.deepEqual(await accessResponse.json(), {
+      error: 'Only active workspace owners and admins can manage Apps',
+      code: 'APP_ACCESS_DENIED',
+    });
+  } finally {
+    await db.update(orgMembers).set({ role: 'owner' }).where(and(
+      eq(orgMembers.org_id, OTHER_ORG_ID),
+      eq(orgMembers.user_id, OTHER_USER_ID),
+    ));
+  }
   assert.equal(reviewProvider.discoveryCalls() >= 5, true);
   assert.equal(restoredConnection?.is_active, true);
 });
@@ -823,7 +952,33 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
 
   const dependencyBuilt = await buildPhase5DependencyAppPackage();
   const dependencyStaged = await stageAppPackage(actor, dependencyBuilt.json);
-  await activateAppInstallation(actor, dependencyStaged.id, dependencyStaged.package_digest);
+  const dependency = await activateAppInstallation(
+    actor,
+    dependencyStaged.id,
+    dependencyStaged.package_digest,
+  );
+  const [dependencyBinding] = await db.select({ binding: appModuleBindings, version: moduleVersions })
+    .from(appModuleBindings)
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.org_id, appModuleBindings.org_id),
+      eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+      eq(moduleVersions.id, appModuleBindings.module_version_id),
+    ))
+    .where(and(
+      eq(appModuleBindings.org_id, orgId),
+      eq(appModuleBindings.app_installation_id, dependency.id),
+      eq(appModuleBindings.app_version_id, dependency.active_version_id!),
+    ));
+  assert.ok(dependencyBinding);
+  const contact = await createModuleRecord(actor, {
+    module_id: 'org.deft.reference.resource-contacts',
+    collection_key: 'contacts',
+    data: { name: 'Ada Lovelace', email: 'ada@example.test' },
+    relations: {},
+    expected_manifest_digest: dependencyBinding.version.manifest_digest,
+    idempotency_key: 'phase5-upgrade-preserved-contact',
+  });
+  assert.ok(contact.record);
   const predecessorBuilt = await buildPhase5ConnectedPredecessorAppPackage();
   const predecessorStaged = await stageAppPackage(actor, predecessorBuilt.json);
   const predecessor = await activateAppInstallation(
@@ -845,14 +1000,40 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     ));
   assert.ok(priorBinding);
   const created = await createModuleRecord(actor, {
-    module_id: 'community.deft.connected-campaigns',
+    module_id: 'org.deft.reference.resource-campaigns',
     collection_key: 'campaigns',
-    data: { subject: 'Preserve this campaign' },
+    data: { name: 'Preserve this campaign', subject: 'Preserve this campaign', status: 'draft' },
     relations: {},
     expected_manifest_digest: priorBinding.version.manifest_digest,
     idempotency_key: 'phase5-upgrade-preserved-record',
   });
   assert.ok(created.record);
+  const campaignRef = moduleRef(
+    priorBinding.binding.module_installation_id,
+    'campaigns',
+    created.record.id,
+  );
+  const contactRef = moduleRef(
+    dependencyBinding.binding.module_installation_id,
+    'contacts',
+    contact.record!.id,
+  );
+  const linked = await replaceResourceRelation(actor, {
+    schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
+    source: campaignRef,
+    relation_key: 'contacts',
+    refs: [contactRef],
+    expected_revision: 0,
+    idempotency_key: 'phase5-upgrade-preserved-relation',
+  });
+  assert.equal(linked.revision, 1);
+  const relationBeforeUpgrade = await relationPersistenceSnapshot(
+    orgId,
+    priorBinding.binding.module_installation_id,
+    created.record.id,
+  );
+  assert.equal(relationBeforeUpgrade.revision, 1);
+  assert.equal(relationBeforeUpgrade.target_resource_id, contact.record!.id);
 
   const upgradeBuilt = await buildPhase5ConnectedAppPackage();
   const upgrade = await stageAppUpgrade(
@@ -927,7 +1108,19 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.equal(afterFailure?.lifecycle_epoch, predecessor.lifecycle_epoch);
   assert.equal(moduleAfterFailure?.id, priorBinding.version.id);
   assert.equal(recordAfterFailure?.validated_version_id, priorBinding.version.id);
-  assert.deepEqual(recordAfterFailure?.data, { subject: 'Preserve this campaign' });
+  assert.deepEqual(recordAfterFailure?.data, {
+    name: 'Preserve this campaign',
+    subject: 'Preserve this campaign',
+    status: 'draft',
+  });
+  assert.deepEqual(
+    await relationPersistenceSnapshot(
+      orgId,
+      priorBinding.binding.module_installation_id,
+      created.record!.id,
+    ),
+    relationBeforeUpgrade,
+  );
   assert.equal((await db.select({ value: count() }).from(appGrantSnapshots).where(and(
     eq(appGrantSnapshots.org_id, orgId),
     eq(appGrantSnapshots.app_version_id, upgradeVersion.id),
@@ -971,7 +1164,19 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   );
   assert.equal(newModule?.version, '3.0.0');
   assert.equal(preservedRecord?.validated_version_id, newModule?.id);
-  assert.deepEqual(preservedRecord?.data, { subject: 'Preserve this campaign' });
+  assert.deepEqual(preservedRecord?.data, {
+    name: 'Preserve this campaign',
+    subject: 'Preserve this campaign',
+    status: 'draft',
+  });
+  assert.deepEqual(
+    await relationPersistenceSnapshot(
+      orgId,
+      priorBinding.binding.module_installation_id,
+      created.record!.id,
+    ),
+    relationBeforeUpgrade,
+  );
   const bindings = await db.select().from(appModuleBindings).where(and(
     eq(appModuleBindings.org_id, orgId),
     eq(appModuleBindings.app_installation_id, predecessor.id),
@@ -982,6 +1187,64 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     predecessor.active_version_id!,
     upgradeVersion.id,
   ]));
+
+  const snapshotGraph = async () => {
+    const installations = await db.select().from(appInstallations).where(and(
+      eq(appInstallations.org_id, orgId),
+      inArray(appInstallations.id, [dependency.id, predecessor.id]),
+    )).orderBy(appInstallations.id);
+    const records = await db.select().from(moduleRecords).where(and(
+      eq(moduleRecords.org_id, orgId),
+      inArray(moduleRecords.id, [contact.record!.id, created.record!.id]),
+    )).orderBy(moduleRecords.id);
+    const dependencyLocks = await db.select().from(appDependencyLocks).where(and(
+      eq(appDependencyLocks.org_id, orgId),
+      eq(appDependencyLocks.app_installation_id, predecessor.id),
+    )).orderBy(appDependencyLocks.app_version_id, appDependencyLocks.dependency_installation_id);
+    return {
+      installations,
+      records,
+      dependencyLocks,
+      relation: await relationPersistenceSnapshot(
+        orgId,
+        priorBinding.binding.module_installation_id,
+        created.record!.id,
+      ),
+    };
+  };
+  const graphBeforeUninstallRefusals = await snapshotGraph();
+  assert.equal(graphBeforeUninstallRefusals.dependencyLocks.length, 1);
+  assert.equal(
+    graphBeforeUninstallRefusals.dependencyLocks[0]?.dependency_installation_id,
+    dependency.id,
+  );
+
+  const dependencyRefusal: unknown = await refuseAppUninstall(
+    actor,
+    dependency.id,
+    dependency.lifecycle_epoch,
+  ).catch((error: unknown) => error);
+  assert.ok(dependencyRefusal instanceof AppError);
+  assert.equal(dependencyRefusal.code, 'APP_DEPENDENCY_IN_USE');
+  assert.deepEqual(dependencyRefusal.details, {
+    dependents: [{
+      installation_id: predecessor.id,
+      app_id: 'org.deft.reference.resource-campaigns-app',
+      state: 'active',
+    }],
+    cascaded: false,
+  });
+  assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
+
+  const retentionRefusal: unknown = await refuseAppUninstall(
+    actor,
+    predecessor.id,
+    afterUpgrade!.lifecycle_epoch,
+  ).catch((error: unknown) => error);
+  assert.ok(retentionRefusal instanceof AppError);
+  assert.equal(retentionRefusal.code, 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION');
+  assert.deepEqual(retentionRefusal.details, { cascaded: false, data_preserved: true });
+  assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
 
   const identicalBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.1' });
   const identical = await stageAppUpgrade(

@@ -358,13 +358,15 @@ jobs:
           tags: deft:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Huddles are a compile-time Next.js flag. Keep this image aligned
-          # with the official release contract exercised by the smoke below.
+          # Public flags are compiled into Next.js. Huddles matches the official
+          # image; Apps is enabled only on this candidate lane to certify the
+          # opt-in surface before the Connected App Platform beta.
           build-args: |
             NEXT_PUBLIC_APP_URL=http://localhost:3000
             NEXT_PUBLIC_API_URL=http://localhost:3001
             NEXT_PUBLIC_WS_URL=http://localhost:3001
             NEXT_PUBLIC_FEATURE_HUDDLES=true
+            NEXT_PUBLIC_FEATURE_APPS=true
       - name: Smoke-test the image (binaries resolve)
         # Catches the "next CLI not on PATH from apps/web" and
         # "pnpm not in runner stage" classes of bug — both real bugs we hit
@@ -421,9 +423,11 @@ jobs:
             -e JWT_SECRET="$JWT_SECRET" \
             -e JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET" \
             -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+            -e DEFT_APPS_ENABLED=true \
             -e NEXT_PUBLIC_APP_URL="$NEXT_PUBLIC_APP_URL" \
             -e NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
             -e NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
+            -e NEXT_PUBLIC_FEATURE_APPS=true \
             deft:ci
           for attempt in $(seq 1 45); do
             curl --fail --silent http://127.0.0.1:3001/health >/dev/null && \

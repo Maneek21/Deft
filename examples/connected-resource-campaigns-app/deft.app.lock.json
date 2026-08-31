@@ -1,0 +1,16 @@
+{
+  "schema": "deft.app.lock.v1",
+  "app_id": "org.deft.reference.resource-campaigns-app",
+  "version": "3.0.0",
+  "package_digest": "sha256:973ec7076daf7405a7a4d8b48509ef6f99b1b1cc4b787961104c73f23b7f770d",
+  "manifest_digest": "sha256:e7f0f04ecf793a62157f6759b5ca7ee4154e2125b9303b01179011d86fb5c987",
+  "artifacts": [
+    {
+      "path": "modules/resource-campaigns/deft.module.json",
+      "digest": "sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208",
+      "byte_length": 1721,
+      "media_type": "application/vnd.deft.module+json"
+    }
+  ],
+  "permissions": []
+}

@@ -12,7 +12,7 @@
  * The shapes are intentionally lightweight — Phase 3 exists to unblock
  * the BYOA agent handshake, not to teach the agent every nuance.
  */
-import type { ToolContext, ToolResult } from './types.js';
+import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
 
 import { platformContext } from './context.js';
 import { memoryRecall, memoryWrite, memoryList } from './memory.js';
@@ -46,11 +46,71 @@ import {
   MODULE_MCP_TOOL_SCHEMAS,
   MODULE_MCP_WRITE_TOOLS,
 } from './modules.js';
+import { employeeModuleActor } from '../module-service.js';
+import {
+  APP_ACTION_OPERATION_DESCRIPTIONS,
+  APP_ACTION_OPERATION_JSON_SCHEMAS,
+  APP_ACTION_OPERATION_NAMES,
+  APP_ACTION_OPERATION_PRIMARY_SCOPES,
+  executeAppActionOperation,
+  type AppActionOperationName,
+} from '../app-action-operations.js';
 
 export type ToolHandler = (args: any, ctx: ToolContext) => Promise<ToolResult>;
 
+const APP_ACTION_OPERATION_NAME_SET = new Set<string>(APP_ACTION_OPERATION_NAMES);
+
+export function isAgentAppActionTool(toolName: string): toolName is AppActionOperationName {
+  return APP_ACTION_OPERATION_NAME_SET.has(toolName);
+}
+
+export function agentAppToolRequiredScopes(toolName: string): readonly string[] {
+  if (!isAgentAppActionTool(toolName)) return [];
+  const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[toolName];
+  return toolName === 'app_run_get' ? [primary] : ['read:modules', primary];
+}
+
+export function agentAppToolHasRequiredScope(
+  scopes: readonly string[],
+  toolName: string,
+): boolean {
+  return agentAppToolRequiredScopes(toolName).every((scope) => scopes.includes(scope));
+}
+
+async function employeeAppActionOperation(
+  operation: AppActionOperationName,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (!ctx.token_id) return errorResult('App tools require a first-class employee MCP token');
+  if (!agentAppToolHasRequiredScope(ctx.scopes ?? [], operation)) {
+    return errorResult(`Missing MCP scope: ${agentAppToolRequiredScopes(operation).join(' and ')}`);
+  }
+  const { caller_employee_slug: _boundIdentity, ...input } = args;
+  const result = await executeAppActionOperation({
+    actor: employeeModuleActor({
+      orgId: ctx.org_id,
+      employeeId: ctx.employee_id,
+      trustLevel: ctx.trust_level,
+      source: 'mcp',
+      scopes: ctx.scopes ?? [],
+    }),
+    token_authorities: [{ token_kind: 'mcp', token_id: ctx.token_id }],
+  }, operation, input);
+  return textResult(result);
+}
+
+export const APP_ACTION_MCP_TOOLS: Record<string, ToolHandler> = Object.fromEntries(
+  APP_ACTION_OPERATION_NAMES.map((name) => [
+    name,
+    (args: Record<string, unknown>, ctx: ToolContext) => employeeAppActionOperation(name, args, ctx),
+  ]),
+);
+
 export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   ...MODULE_MCP_READ_TOOLS,
+  // Neutral adapter registry: App Runs own approval, budget, and execution.
+  ...APP_ACTION_MCP_TOOLS,
   platform_context: platformContext as ToolHandler,
   memory_recall: memoryRecall as ToolHandler,
   memory_list: memoryList as ToolHandler,
@@ -1125,4 +1185,24 @@ export const toolSchemas: ToolSchema[] = [
       required: ['caller_employee_slug'],
     },
   },
+  ...APP_ACTION_OPERATION_NAMES.map((name): ToolSchema => {
+    const inputSchema = APP_ACTION_OPERATION_JSON_SCHEMAS[name] as {
+      type: string;
+      additionalProperties?: boolean;
+      properties?: Record<string, unknown>;
+      required?: readonly string[];
+    };
+    return {
+      name,
+      description: APP_ACTION_OPERATION_DESCRIPTIONS[name],
+      inputSchema: {
+        ...inputSchema,
+        properties: {
+          ...(inputSchema.properties ?? {}),
+          ...CALLER_SLUG_PROP,
+        },
+        required: [...new Set([...(inputSchema.required ?? []), 'caller_employee_slug'])],
+      },
+    };
+  }),
 ];

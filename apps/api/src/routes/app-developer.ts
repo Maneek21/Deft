@@ -1,15 +1,21 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { APP_LIMITS } from '@deft/app-kit';
-import { activateAppInstallation, stageAppPackage } from '../lib/app-service.js';
+import { activateAppInstallation, inspectAppPackageJson, stageAppPackage } from '../lib/app-service.js';
 import { claimAppDeveloperSession, exchangeAppDeveloperPairing } from '../lib/app-developer-pairing.js';
-import { isAppError } from '../lib/app-errors.js';
+import { AppError, isAppError } from '../lib/app-errors.js';
 
 export const appDeveloperRoutes = new Hono();
 const exchangeSchema = z.strictObject({ code: z.string().min(1).max(64) });
 
 function fail(c: any, error: unknown) {
-  if (isAppError(error)) return c.json({ error: error.message, code: error.code }, error.status);
+  if (isAppError(error)) {
+    return c.json({
+      error: error.message,
+      code: error.code,
+      ...(error.details ? { details: error.details } : {}),
+    }, error.status);
+  }
   if (error instanceof z.ZodError) return c.json({ error: 'Invalid developer request', code: 'VALIDATION_ERROR' }, 400);
   console.error('[app-developer] request failed:', error);
   return c.json({ error: 'Developer request failed', code: 'INTERNAL_ERROR' }, 500);
@@ -34,6 +40,18 @@ appDeveloperRoutes.post('/install', async (c) => {
     const packageJson = await c.req.text();
     if (new TextEncoder().encode(packageJson).byteLength > APP_LIMITS.package_bytes) {
       return c.json({ error: 'App package is too large', code: 'APP_INVALID_PACKAGE' }, 413);
+    }
+    const inspected = await inspectAppPackageJson(packageJson);
+    if (inspected.manifest.compatibility.app_protocol !== '0') {
+      throw new AppError(
+        `App Protocol v${inspected.manifest.compatibility.app_protocol} packages must use the workspace review flow`,
+        'APP_REVIEW_REQUIRED',
+        409,
+        {
+          app_protocol: inspected.manifest.compatibility.app_protocol,
+          required_flow: 'workspace_review',
+        },
+      );
     }
     const actor = await claimAppDeveloperSession(token);
     const staged = await stageAppPackage(actor, packageJson);

@@ -161,6 +161,7 @@ export async function getExecutableMcpConnectionById(
   orgId: string,
   connectionId: string,
   toolName: string,
+  expectedAuthorizationVersion?: number,
 ): Promise<ExecutableMcpConnectionResult> {
   const [connection] = await db
     .select()
@@ -169,6 +170,9 @@ export async function getExecutableMcpConnectionById(
       eq(mcpConnections.org_id, orgId),
       eq(mcpConnections.id, connectionId),
       eq(mcpConnections.is_active, true),
+      ...(expectedAuthorizationVersion === undefined
+        ? []
+        : [eq(mcpConnections.app_run_authorization_version, expectedAuthorizationVersion)]),
     ))
     .limit(1);
   if (!connection) {

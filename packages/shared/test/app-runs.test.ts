@@ -86,6 +86,34 @@ describe('App Run contract', () => {
     })));
   });
 
+  test('accepts the closed additive App authority dimensions', () => {
+    const appKinds = [
+      'app_surface',
+      'app_installation',
+      'app_version',
+      'app_grant',
+      'app_binding',
+      'app_dependency',
+      'resource',
+      'relation',
+    ] as const;
+    const parsed = parseAppRunSubmission(submission({
+      authorization_snapshot: {
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        authenticated_subject: { actor_type: 'human', user_id: 'user-1' },
+        authority_refs: appKinds.map((authority_kind, index) => ({
+          authority_kind,
+          authority_id: `app-authority-${index}`,
+          version: digest,
+        })),
+      },
+    }));
+    assert.deepEqual(
+      parsed.authorization_snapshot.authority_refs.map((ref) => ref.authority_kind),
+      appKinds,
+    );
+  });
+
   test('enforces byte budgets for opaque replay keys and retained JSON', () => {
     assert.throws(() => parseAppRunSubmission(submission({
       idempotency_key: 'é'.repeat(APP_RUN_LIMITS.idempotency_key_bytes),

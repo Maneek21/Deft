@@ -76,12 +76,16 @@ export const AppRunSecretEnvelopeSchema = z.object({
 });
 export type AppRunSecretEnvelope = z.infer<typeof AppRunSecretEnvelopeSchema>;
 
-export type AppRunSecretSafeProjection = Readonly<{
-  schema_version: typeof APP_RUN_CONTRACT_VERSIONS.secret_envelope;
-  algorithm: typeof ALGORITHM;
-  key_version: string;
-  ciphertext_bytes: number;
-}>;
+export const AppRunSecretSafeProjectionSchema = z.object({
+  schema_version: z.literal(APP_RUN_CONTRACT_VERSIONS.secret_envelope),
+  algorithm: z.literal(ALGORITHM),
+  key_version: z.string()
+    .min(1)
+    .max(APP_RUN_LIMITS.key_id_chars)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+  ciphertext_bytes: z.number().int().nonnegative().max(APP_RUN_LIMITS.output_bytes),
+}).strict();
+export type AppRunSecretSafeProjection = z.infer<typeof AppRunSecretSafeProjectionSchema>;
 
 export type AppRunFingerprintPurpose = 'input' | 'idempotency';
 
@@ -187,12 +191,12 @@ export class AppRunSecretService {
     const envelope = AppRunSecretEnvelopeSchema.parse(rawEnvelope);
     const ciphertext = Buffer.from(envelope.ciphertext_b64, 'base64');
     try {
-      return Object.freeze({
+      return Object.freeze(AppRunSecretSafeProjectionSchema.parse({
         schema_version: envelope.schema_version,
         algorithm: envelope.algorithm,
         key_version: envelope.key_version,
         ciphertext_bytes: ciphertext.length,
-      });
+      }));
     } finally {
       ciphertext.fill(0);
     }

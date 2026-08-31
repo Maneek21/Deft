@@ -41,6 +41,7 @@ const connection: McpConnectionRow = {
   tools_cached_at: null,
   default_trust_tier: 'full',
   enabled_tools: null,
+  app_run_authorization_version: 1,
   created_by: 'user_ada',
   created_at: new Date('2026-08-30T05:00:00.000Z'),
   updated_at: new Date('2026-08-30T05:00:00.000Z'),
@@ -846,6 +847,161 @@ test('pinned App Run execution fails closed for unbound idempotency and ambiguou
   assert.deepEqual(await aborted, { status: 'indeterminate' });
   release!();
   assert.equal(calls, 2);
+});
+
+test('reviewed dispatch pin rejects connector races and refreshed provider schema drift before execute', async () => {
+  const stableDiscovery = discovery();
+  const driftedDiscovery = discovery([legacyTool()], [providerTool({
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recipient: { type: 'string' },
+        drift_marker: { type: 'string' },
+      },
+      required: ['recipient'],
+    },
+  })]);
+  let currentDiscovery = stableDiscovery;
+  let currentAuthorizationVersion = 1;
+  let executeCalls = 0;
+  const resolvedVersions: Array<number | undefined> = [];
+  const client: McpDiscoveryClient = {
+    getCachedToolDiscovery: async () => currentDiscovery,
+    discoverToolDiscovery: async () => currentDiscovery,
+    testToolDiscovery: async () => currentDiscovery,
+  };
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async () => ({ connection }),
+    resolvePinnedExecutable: async (_orgId, _connectionId, _operationName, expectedVersion) => {
+      resolvedVersions.push(expectedVersion);
+      return { connection: { ...connection, app_run_authorization_version: currentAuthorizationVersion } };
+    },
+    executeTool: async () => {
+      executeCalls++;
+      return {
+        success: true,
+        content: [],
+        rawResult: { content: [] },
+        durationMs: 1,
+      };
+    },
+  };
+  const provider = new McpCapabilityProvider(
+    client,
+    sourceFor(),
+    () => '2026-08-30T06:00:00.000Z',
+    () => undefined,
+    runtime,
+  );
+  const reviewed = await provider.discover({
+    provider_kind: 'mcp',
+    mode: 'refresh',
+    org_id: connection.org_id,
+    provider_instance_id: connection.id,
+  });
+  assert.ok(reviewed.snapshot);
+  const operation = reviewed.snapshot.operations.find(
+    (candidate) => candidate.identity.operation_name === 'send_email',
+  );
+  assert.ok(operation);
+  const request = {
+    org_id: connection.org_id,
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    input: { idempotency_key: 'host-stable-key' },
+    dispatch_pin: {
+      connector_authorization_version: 1,
+      provider_snapshot_digest: reviewed.snapshot.snapshot_digest,
+      operation_schema_digest: operation.schema_digest,
+    },
+  };
+
+  currentAuthorizationVersion = 2;
+  assert.deepEqual(await provider.executePinned(request), { status: 'not_attempted' });
+  assert.equal(executeCalls, 0);
+
+  currentAuthorizationVersion = 1;
+  stableDiscovery.providerTools[0] = driftedDiscovery.providerTools[0]!;
+  assert.deepEqual(await provider.executePinned(request), { status: 'not_attempted' });
+  assert.equal(executeCalls, 0);
+
+  stableDiscovery.providerTools[0] = providerTool();
+  assert.equal((await provider.executePinned(request)).status, 'returned');
+  assert.equal(executeCalls, 1);
+  assert.deepEqual(resolvedVersions, [1, 1, 1]);
+});
+
+test('App-origin execution binds the host key into declared input before the pinned provider call', async () => {
+  const received: Array<Record<string, unknown>> = [];
+  const executor = new PinnedMcpAppRunProviderExecutor({
+    async executePinned(request) {
+      received.push(request.input);
+      return {
+        status: 'returned',
+        provider_succeeded: true,
+        output: { message_id: 'message-app-run' },
+        duration_ms: 4,
+      };
+    },
+  });
+  const base = {
+    org_id: connection.org_id,
+    provider_kind: 'mcp' as const,
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    origin_kind: 'app' as const,
+    input: { idempotency_key: 'caller-controlled', recipient: 'ada@example.test' },
+    dispatch_pin: {
+      connector_authorization_version: 1,
+      provider_snapshot_digest: `sha256:${'1'.repeat(64)}`,
+      operation_schema_digest: `sha256:${'2'.repeat(64)}`,
+    },
+  };
+
+  const result = await executor.execute({ ...base, provider_idempotency_key: 'host-stable-key' });
+  assert.equal(result.status, 'returned');
+  assert.deepEqual(received, [{
+    idempotency_key: 'host-stable-key',
+    recipient: 'ada@example.test',
+  }]);
+
+  assert.deepEqual(await executor.execute({
+    ...base,
+    input: { recipient: 'ada@example.test' },
+    provider_idempotency_key: 'host-stable-key',
+  }), { status: 'not_attempted', error_code: 'APP_RUN_PROVIDER_UNAVAILABLE' });
+  assert.equal(received.length, 1);
+});
+
+test('Capability Service pinned ingress accepts only the exact provider-ID request shape', async () => {
+  const resolutions: unknown[][] = [];
+  const service = new CapabilityService(providerForRuntime({
+    resolveExecutable: async () => ({ connection }),
+    resolvePinnedExecutable: async (...args) => {
+      resolutions.push(args);
+      return { connection };
+    },
+    executeTool: async () => ({
+      success: true,
+      content: [],
+      rawResult: { content: [] },
+      durationMs: 1,
+    }),
+  }));
+  const request = {
+    org_id: connection.org_id,
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    input: { idempotency_key: 'host-stable-key' },
+  };
+
+  assert.equal((await service.invokePinned(request)).status, 'returned');
+  assert.deepEqual(resolutions, [[connection.org_id, connection.id, 'send_email']]);
+  assert.deepEqual(await service.invokePinned({
+    ...request,
+    actor: { user_id: 'authority-smuggling-is-forbidden' },
+  } as typeof request), { status: 'not_attempted' });
+  assert.equal(resolutions.length, 1);
 });
 
 test('engine-on MCP intake modes select exactly one Capability Service path without fallback', async () => {

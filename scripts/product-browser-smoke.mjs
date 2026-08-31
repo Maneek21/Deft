@@ -106,10 +106,14 @@ async function main() {
     for (const [path, heading] of [
       ['/settings', 'Settings'],
       ['/settings/profile', 'Profile'],
+      ['/settings/apps', 'Apps'],
       ['/settings/mcp-access', 'What do you want to connect?'],
     ]) {
       await settle(page, path);
       await page.getByRole('heading', { name: heading }).first().waitFor({ timeout: 10_000 });
+      if (path === '/settings/apps') {
+        await page.getByText('No Apps installed', { exact: true }).waitFor({ timeout: 10_000 });
+      }
     }
     record('Navigate core settings surfaces');
 

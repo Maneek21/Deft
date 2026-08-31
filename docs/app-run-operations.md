@@ -1,20 +1,25 @@
 # Governed App Run operations
 
-Governed App Runs are a disabled-by-default self-host opt-in with two controls.
+Governed App Runs are a disabled-by-default self-host opt-in with three controls.
 Exact `DEFT_APP_RUNS_ENABLED=true` enables key access, runtime composition, and
 draining of accepted work. Exact
+`DEFT_APP_RUN_APP_ORIGIN_ENABLED=true` separately admits reviewed connected-App
+actions, and exact
 `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=true` separately admits supported
 legacy MCP capability calls to that engine. Every other intake value preserves
-the legacy entrance. Intake-on with the engine off is invalid and API startup
-rejects it. App-origin execution remains disabled until a later phase supplies
-App grants and exact bindings.
+the legacy or disabled entrance. Either intake on with the engine off is invalid
+and API startup rejects it. App-origin intake additionally requires
+`DEFT_APPS_ENABLED=true`; the flag never creates grants or bindings.
 
-| Run engine | Legacy MCP intake | Operational state |
-|---|---|---|
-| Off | Off | Default legacy execution; no Run keys required; durable Run jobs defer |
-| On | Off | Decrypt, resume, and drain accepted Runs; new MCP calls stay legacy |
-| On | On | Default-off governed legacy MCP canary |
-| Off | On | Invalid startup configuration |
+| Run engine | App intake | Legacy MCP intake | Operational state |
+|---|---|---|---|
+| Off | Off | Off | Default legacy execution; no Run keys required; durable Run jobs defer |
+| On | Off | Off | Decrypt, resume, and drain accepted Runs; no new governed intake |
+| On | On | Off | Exact reviewed App bindings may submit governed Runs |
+| On | Off | On | Default-off governed legacy MCP canary |
+| On | On | On | Both intake planes use the same governed engine |
+| Off | On | Any | Invalid startup configuration |
+| Off | Any | On | Invalid startup configuration |
 
 This feature has two independent operational assets: the additive PostgreSQL
 Run ledger and `DEFT_APP_RUN_KEYRINGS`. Back them up, restore them, and rotate
@@ -32,9 +37,10 @@ node -e "const c=require('node:crypto');const k=()=>c.randomBytes(32).toString('
 Store the single-line result as the secret `DEFT_APP_RUN_KEYRINGS`; do not put
 it in source control, logs, tickets, or a database row. Set
 `DEFT_APP_RUNS_ENABLED=true` only after the supported upgrades through
-`0.3.0-preview.21` are applied. Leave legacy MCP intake false while validating
-startup and draining behavior; enable it only for a certified canary. A process
-restart is required after any Run environment value changes.
+`0.3.0-preview.25` are applied. Leave both intake flags false while validating
+startup and draining behavior. Enable App-origin intake only with Apps enabled
+and exact reviewed bindings; enable legacy MCP intake only for a certified
+canary. A process restart is required after any Run environment value changes.
 
 Startup rejects malformed documents, reused key material, missing current key
 IDs, non-32-byte keys, and a keyring that omits any version still referenced by
@@ -84,11 +90,11 @@ For a restore:
    enabling App Runs.
 3. Boot with `DEFT_APP_RUNS_ENABLED=false` first and complete database and
    application health checks.
-4. Set the restored keyring and engine flag with legacy MCP intake still off,
+4. Set the restored keyring and engine flag with both intake flags still off,
    restart, and require the referenced-key inventory to pass.
 5. Inspect pending, running, and `unknown_outcome` Runs before accepting new
-   provider work. Never blindly retry an unknown outcome. Enable legacy MCP
-   intake only after that inspection and the release's canary gate pass.
+   provider work. Never blindly retry an unknown outcome. Enable each intake
+   only after that inspection and its release canary gate passes.
 
 If the database survives but a referenced key does not, keep App Runs disabled.
 Encryption-key loss prevents retained input/result recovery; signing-key loss
@@ -97,14 +103,14 @@ matching. None can be reconstructed from database contents.
 
 ## Disable and rollback
 
-The normal entrance rollback is to set
-`DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false` while keeping
-`DEFT_APP_RUNS_ENABLED=true`. New MCP calls return to the legacy Capability
-Service path while already accepted Runs, attempts, and approvals retain their
-governed identity and may drain. There is no shadow call or legacy fallback for
-accepted governed work.
+The normal entrance rollback is to set the affected intake flag false while
+keeping `DEFT_APP_RUNS_ENABLED=true`. For connected Apps, set
+`DEFT_APP_RUN_APP_ORIGIN_ENABLED=false`; for legacy MCP, set
+`DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false`. Already accepted Runs,
+attempts, and approvals retain their governed identity and may drain. There is
+no shadow call or legacy fallback for accepted governed work.
 
-Set the engine false only after intake is false. Engine-off defers durable
+Set the engine false only after both intake flags are false. Engine-off defers durable
 `app-run-attempt` jobs without calling a provider or spending queue retry
 allowance; pending App Run approvals remain governed. Re-enable the same
 keyring and engine to resume them. Engine-off/intake-on is rejected rather than
@@ -116,7 +122,8 @@ record explicitly contains this split-control and job-pause contract. Until
 that artifact and its supported predecessor are recorded, do not treat the
 legacy MCP canary as production-supported. To move below the recorded floor:
 
-1. On the current floor, turn legacy MCP intake off but leave the engine and
+1. On the current floor, set both `DEFT_APP_RUN_APP_ORIGIN_ENABLED=false` and
+   `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false`, but leave the engine and
    keyring available; quiesce traffic that could create more governed work.
 2. Resolve or cancel pending approvals and let known work settle. Reconcile
    `unknown_outcome` without another provider call.
@@ -134,9 +141,10 @@ legacy MCP canary as production-supported. To move below the recorded floor:
     GROUP BY status;
    ```
 
-4. Set the engine false, restart on the current floor, verify legacy execution
-   and job deferral, and only then deploy the supported older image. Preserve
-   the additive tables and keyring backup; do not down-migrate or delete them.
+4. Set the engine false, restart on the current floor, verify that both intake
+   paths remain closed and App Run jobs defer safely, and only then deploy the
+   supported older image. Preserve the additive tables and keyring backup; do
+   not down-migrate or delete them.
 
 If any query is nonzero, remain on the Phase 3 floor. An in-flight process loss
 after a provider call may correctly produce `unknown_outcome`; that is an

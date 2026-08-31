@@ -51,8 +51,8 @@ import {
 } from '../lib/agent-system-prompt.js';
 import {
   approveAction as resolveApproveAction,
+  isApprovalResolverAction,
   rejectAction as resolveRejectAction,
-  MCP_ACTION_KINDS,
   sanitizeModuleActionParamsForReceipt,
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
@@ -1395,12 +1395,10 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     .limit(1);
   if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
-  // Phase 6.5 — MCP-sourced actions (task_create/task_update/message_post/
-  // memory_update) go through the approval resolver, which rebuilds the
-  // ToolContext from the employee row and dispatches to the inner execute*
-  // functions. Legacy Defty actions (create_task/update_task_status/…)
-  // still use the original executeAction path.
-  if (MCP_ACTION_KINDS.has(action.action)) {
+  // Resolver-owned MCP writes and App Run releases enter the shared approval
+  // boundary. Legacy Defty actions (create_task/update_task_status/…) still
+  // use the original executeAction path.
+  if (isApprovalResolverAction(action.action)) {
     const result = await resolveApproveAction(actionId, user.id);
     if (result.status === 'error') {
       const statusCode =
@@ -1767,9 +1765,9 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   }
 
-  // Phase 6.5 — MCP-sourced actions go through the resolver for idempotency
-  // + permission enforcement + reason capture.
-  if (MCP_ACTION_KINDS.has(action.action)) {
+  // Resolver-owned MCP writes and App Run releases use the same idempotent,
+  // permission-checked rejection boundary.
+  if (isApprovalResolverAction(action.action)) {
     const result = await resolveRejectAction(actionId, user.id, reason);
     if (result.status === 'error') {
       const statusCode =

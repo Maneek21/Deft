@@ -392,8 +392,11 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `JWT_SECRET` | Yes | Signs access tokens | none |
 | `JWT_REFRESH_SECRET` | Yes | Signs refresh tokens | none |
 | `ENCRYPTION_KEY` | Production | Encrypts provider keys at rest; at least 32 chars | dev value |
+| `DEFT_APPS_ENABLED` | No | Exact `true` enables the experimental Apps API; keep aligned with the web build flag | `false` |
+| `NEXT_PUBLIC_FEATURE_APPS` | No | Build-time public flag that exposes Apps in the web bundle; changing it requires rebuilding the image | `false` |
 | `DEFT_APP_RUNS_ENABLED` | No | Exact `true` enables the App Run runtime and draining; invalid or missing keyrings then fail startup | `false` |
 | `DEFT_APP_RUN_KEYRINGS` | Only when App Runs enabled | Single-line versioned JSON document containing separate 32-byte base64 Run-encryption, receipt-signing, and fingerprint keyrings | none |
+| `DEFT_APP_RUN_APP_ORIGIN_ENABLED` | No | Exact `true` admits reviewed connected-App actions to App Runs; requires both `DEFT_APPS_ENABLED=true` and the Run engine | `false` |
 | `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` | No | Exact `true` routes supported legacy MCP capability calls into App Runs; requires the Run engine to be enabled | `false` |
 | `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
@@ -415,15 +418,18 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 ### Opt-in Governed App Run keyrings
 
 Governed App Runs stay off by default. Existing self-hosts do not need any Run
-variable and retain the legacy connector execution path. The engine and legacy
-MCP intake are intentionally separate:
+variable and retain the legacy connector execution path. The engine, connected
+App intake, and legacy MCP intake are intentionally separate:
 
-| Run engine | Legacy MCP intake | Meaning |
-|---|---|---|
-| Off | Off | Default legacy behavior; no Run keyrings required |
-| On | Off | Run service can decrypt, resume, and drain accepted work; new MCP calls remain legacy |
-| On | On | Exact default-off legacy MCP canary enters App Runs |
-| Off | On | Invalid; API startup rejects the configuration |
+| Run engine | Connected App intake | Legacy MCP intake | Meaning |
+|---|---|---|---|
+| Off | Off | Off | Default legacy behavior; no Run keyrings required |
+| On | Off | Off | Run service can decrypt, resume, and drain accepted work; no new governed intake |
+| On | On | Off | Reviewed connected-App actions enter App Runs; legacy MCP remains legacy |
+| On | Off | On | Exact default-off legacy MCP canary enters App Runs |
+| On | On | On | Both independently reviewed intake planes enter the same governed engine |
+| Off | On | Any | Invalid; API startup rejects the configuration |
+| Off | Any | On | Invalid; API startup rejects the configuration |
 
 Operators preparing the engine must generate three independent 32-byte keys
 with this Node.js command:
@@ -434,6 +440,7 @@ node -e "const c=require('node:crypto');const k=()=>c.randomBytes(32).toString('
 
 Store the single-line output verbatim as `DEFT_APP_RUN_KEYRINGS`, then set
 `DEFT_APP_RUNS_ENABLED=true` while leaving
+`DEFT_APP_RUN_APP_ORIGIN_ENABLED=false` and
 `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false`. Add a new key ID and make it
 `current` to rotate; keep older entries configured for reads and verification.
 Back up this setting with the database. Removing a key that is still referenced
@@ -443,8 +450,13 @@ Startup checks that inventory before any governed effect can execute.
 Enable the separate legacy intake flag only for a certified canary. To stop new
 governed MCP admission without stranding accepted work, turn the intake flag
 off and leave the engine on until the Run ledger and queue are quiescent.
-App-origin execution remains disabled until the later App grant and binding
-phase; neither Phase 3 flag creates App authority.
+
+Enable `DEFT_APP_RUN_APP_ORIGIN_ENABLED=true` only after Apps are enabled and
+the connected App has passed explicit grant review and activation. The flag
+admits only exact persisted App bindings; it does not create a grant, connector,
+or provider authority. To stop new App-origin admission without stranding
+accepted work, turn this intake flag off and leave the Run engine and matching
+keyring available until the governed ledger is quiescent.
 
 Read [Governed App Run operations](./app-run-operations.md) before enabling the
 feature. It contains rotation, retirement, backup/restore, disaster recovery,

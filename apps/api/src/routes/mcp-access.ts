@@ -15,12 +15,15 @@ const ALLOWED_SCOPES = [
   'read:messages',
   'read:calendar',
   'read:modules',
+  'read:apps',
+  'read:app-runs',
   'write:tasks',
   'write:messages',
   'write:wiki',
   'write:calendar',
   'write:modules',
   'write:workspace',
+  'invoke:apps',
 ] as const;
 
 const createTokenSchema = z.object({

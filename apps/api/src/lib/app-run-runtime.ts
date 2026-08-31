@@ -14,7 +14,7 @@ import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
 import { AppRunPreparedInputService } from './app-run-prepared-input.js';
 import { AppRunService } from './app-run-service.js';
-import { APP_RUNS_ENABLED } from './env.js';
+import { APP_RUN_APP_ORIGIN_ENABLED, APP_RUNS_ENABLED } from './env.js';
 
 export type AppRunRuntime = Readonly<{
   keys: EnvironmentAppRunKeyProvider;
@@ -65,6 +65,9 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     receipts,
     attention,
     attemptRunner,
+    inputPreparation,
+    liveAuthorization,
+    () => APP_RUN_APP_ORIGIN_ENABLED,
   );
   const approvalResolver = new PostgresAppRunApprovalResolver(
     repository,

@@ -1,7 +1,8 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   REMOTE_MCP_AUTHORIZATION_SCOPES,
+  REMOTE_MCP_APP_SCOPES,
   REMOTE_MCP_DEFAULT_READ_SCOPES,
   REMOTE_MCP_SCOPES,
   authorizationScopeSelection,
@@ -15,13 +16,28 @@ import {
   HUMAN_TOOLS,
   HUMAN_WRITE_TOOLS,
   buildHumanToolSchemas,
+  humanToolChallengeScope,
   humanToolHasRequiredScope,
 } from '../src/lib/mcp-tools/human.js';
-import { toolSchemas } from '../src/lib/mcp-tools/index.js';
+import {
+  READ_ONLY_TOOLS,
+  WRITE_TOOLS,
+  agentAppToolHasRequiredScope,
+  agentAppToolRequiredScopes,
+  toolSchemas,
+} from '../src/lib/mcp-tools/index.js';
+import { ACTION_TOOLS, AGENT_TOOLS } from '../src/lib/agent-tools.js';
+import {
+  APP_ACTION_OPERATION_NAMES,
+  APP_ACTION_OPERATION_PRIMARY_SCOPES,
+} from '../src/lib/app-action-operations.js';
 import {
   MODULE_OPERATION_DEFINITIONS,
   MODULE_OPERATION_NAMES,
 } from '@deft/shared/modules';
+import { closeDb } from '../src/lib/db.js';
+
+after(async () => closeDb());
 
 const READ_TOOLS = [
   'workspace_capabilities',
@@ -62,6 +78,11 @@ test('operational headless scopes are accepted without weakening default read gr
   assert.ok(REMOTE_MCP_SCOPES.includes('write:workspace'));
   assert.ok(REMOTE_MCP_SCOPES.includes('read:modules'));
   assert.ok(REMOTE_MCP_SCOPES.includes('write:modules'));
+  assert.deepEqual(REMOTE_MCP_APP_SCOPES, ['read:apps', 'invoke:apps', 'read:app-runs']);
+  for (const scope of REMOTE_MCP_APP_SCOPES) {
+    assert.ok(REMOTE_MCP_SCOPES.includes(scope));
+    assert.equal((REMOTE_MCP_DEFAULT_READ_SCOPES as readonly string[]).includes(scope), false);
+  }
   assert.deepEqual(normalizeScopes(undefined), [
     'read:workspace',
     'read:wiki',
@@ -82,6 +103,57 @@ test('operational headless scopes are accepted without weakening default read gr
   assert.equal(profileForScopes(['read:workspace', 'write:tasks']), 'task-helper');
   assert.equal(profileForScopes(['read:workspace', 'write:calendar']), 'workspace-operator');
   assert.equal(profileForScopes(['read:workspace', 'write:workspace']), 'workspace-operator');
+  assert.equal(profileForScopes(['read:modules', 'invoke:apps']), 'task-helper');
+});
+
+test('App operations use one fixed shallow adapter vocabulary on native and MCP surfaces', () => {
+  const nativeNames = AGENT_TOOLS
+    .filter((tool) => APP_ACTION_OPERATION_NAMES.some((name) => name === tool.name))
+    .map((tool) => tool.name);
+  assert.deepEqual(nativeNames, [...APP_ACTION_OPERATION_NAMES]);
+
+  const humanSchemas = buildHumanToolSchemas(
+    toolSchemas as unknown as Array<Record<string, unknown>>,
+  );
+  const humanByName = new Map(humanSchemas.map((schema) => [String(schema.name), schema]));
+
+  for (const operation of APP_ACTION_OPERATION_NAMES) {
+    assert.equal(ACTION_TOOLS.has(operation), false, `${operation} must not enter legacy approval`);
+    assert.equal(typeof READ_ONLY_TOOLS[operation], 'function');
+    assert.equal(WRITE_TOOLS[operation], undefined, `${operation} must not consume the generic budget`);
+
+    const employeeSchema = toolSchemas.find((schema) => schema.name === operation)!;
+    assert.ok(employeeSchema);
+    assert.ok((employeeSchema.inputSchema as any).required.includes('caller_employee_slug'));
+    assert.equal((employeeSchema.inputSchema as any).additionalProperties, false);
+
+    const expectedPrimary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];
+    assert.equal(HUMAN_TOOL_SCOPES[operation], expectedPrimary);
+    assert.deepEqual(
+      agentAppToolRequiredScopes(operation),
+      operation === 'app_run_get' ? [expectedPrimary] : ['read:modules', expectedPrimary],
+    );
+    assert.equal(agentAppToolHasRequiredScope([], operation), false);
+    assert.equal(
+      agentAppToolHasRequiredScope(
+        operation === 'app_run_get' ? [expectedPrimary] : ['read:modules', expectedPrimary],
+        operation,
+      ),
+      true,
+    );
+    if (operation !== 'app_run_get') {
+      assert.equal(humanToolHasRequiredScope([expectedPrimary], operation), false);
+      assert.equal(humanToolChallengeScope(operation, [expectedPrimary]), 'read:modules');
+    }
+
+    const humanSchema = humanByName.get(operation)!;
+    assert.ok(humanSchema);
+    assert.equal((humanSchema.inputSchema as any).properties?.caller_employee_slug, undefined);
+    assert.equal(
+      (humanSchema.annotations as any)?.readOnlyHint,
+      operation !== 'app_binding_invoke',
+    );
+  }
 });
 
 test('scope-less OAuth clients get a read-safe default with explicit access choices', () => {

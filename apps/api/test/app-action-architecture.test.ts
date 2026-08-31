@@ -25,6 +25,7 @@ async function surfaceAdapterFiles(): Promise<string[]> {
       (/^lib\/agent(?:-|\.)/.test(sourcePath) && !sourcePath.includes('/test/'))
       || sourcePath === 'lib/mcp-tools.ts'
       || sourcePath.startsWith('lib/mcp-tools/')
+      || sourcePath === 'lib/app-action-operations.ts'
       || sourcePath === 'lib/app-service.ts'
       || sourcePath === 'lib/app-review-service.ts'
     );
@@ -47,6 +48,8 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   assert.match(service, /this\.capability\.discover\s*\(/);
   assert.match(service, /getAppRunRuntime\s*\(/);
   assert.match(service, /inputPreparation\.protect\s*\(/);
+  assert.match(service, /inputPreparation\.open\s*\(/);
+  assert.match(service, /service\.submitPreparedApp\s*\(/);
 
   const prepareStart = service.indexOf('async prepare(');
   const prepareResolve = service.indexOf('const resolved = await this.#resolve', prepareStart);
@@ -57,6 +60,18 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   const resolveContext = service.indexOf('loadActionContext(', resolveStart);
   const resolveResource = service.indexOf('resourceAuthorizationService.resolve', resolveStart);
   assert.ok(resolveStart >= 0 && resolveContext > resolveStart && resolveResource > resolveContext);
+
+  const invokeStart = service.indexOf('async invoke(');
+  const invokePrepare = service.indexOf('await this.prepare(', invokeStart);
+  const invokeFreshOpen = service.indexOf('this.preparedInput.open', invokePrepare);
+  const invokeSubmit = service.indexOf('this.runs.submitPreparedApp', invokeFreshOpen);
+  assert.ok(
+    invokeStart >= 0
+      && invokePrepare > invokeStart
+      && invokeFreshOpen > invokePrepare
+      && invokeSubmit > invokeFreshOpen,
+  );
+  assert.match(service.slice(invokeSubmit), /current\.input_candidate/);
 
   const contextStart = service.indexOf('async function loadActionContext(');
   const contextEnd = service.indexOf('\nfunction assertPlacement(', contextStart);
@@ -72,6 +87,55 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   assert.doesNotMatch(service, /capabilityService\.invoke\s*\(/);
   assert.doesNotMatch(service, /(?:AppRunService|appRunService|\.service)\.submit\s*\(/);
   assert.doesNotMatch(service, /\.insert\s*\(\s*(?:appRuns|agentActions)\s*\)/);
+});
+
+test('generic App action owners use the closed interface registry without domain branches or provider loaders', async () => {
+  const genericOwners = [
+    'lib/app-action-service.ts',
+    'lib/app-review-service.ts',
+    'routes/app-actions.ts',
+    'routes/app-runs.ts',
+  ] as const;
+  const domainBranch = /SandboxEmail|sandboxEmail|CONNECTED_APP_SANDBOX_OPERATION_NAME|['"]send_email['"]|\b(?:Contacts?|Campaigns?)\b/;
+  for (const sourcePath of genericOwners) {
+    const source = await readFile(join(sourceRoot, sourcePath), 'utf8');
+    assert.doesNotMatch(source, domainBranch, `${sourcePath} must remain interface-driven`);
+  }
+
+  const actionService = await readFile(join(sourceRoot, 'lib/app-action-service.ts'), 'utf8');
+  const reviewService = await readFile(join(sourceRoot, 'lib/app-review-service.ts'), 'utf8');
+  for (const source of [actionService, reviewService]) {
+    assert.match(source, /getConnectedAppPrivateInterface/);
+    assert.match(source, /connectedAppActionBindingMatches/);
+    assert.match(source, /connectedAppOperationMatches/);
+  }
+  assert.doesNotMatch(
+    reviewService,
+    /binding\.input_key\s*===\s*['"](?:to|subject|body_text)['"]/,
+    'App review must read field-type constraints from the code-owned interface descriptor',
+  );
+
+  for (const sourcePath of [
+    'lib/app-connected-contract.ts',
+    'lib/app-action-service.ts',
+    'lib/app-review-service.ts',
+    'lib/app-run-provider-executor.ts',
+    'lib/capability-service.ts',
+  ]) {
+    const source = await readFile(join(sourceRoot, sourcePath), 'utf8');
+    for (const match of source.matchAll(/\bimport\s*\(\s*([^)]+)\)/g)) {
+      assert.match(
+        match[1]?.trim() ?? '',
+        /^(['"])[^'"]+\1$/,
+        `${sourcePath} may lazy-load only a fixed code-owned module`,
+      );
+    }
+    assert.doesNotMatch(
+      source,
+      /\b(?:module_path|import_specifier|provider_loader|callback)\s*:/i,
+      `${sourcePath} must not declare executable provider-loading metadata`,
+    );
+  }
 });
 
 test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionService authority seam', async () => {
@@ -111,6 +175,10 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
       reviewManagementConsumers.push(sourcePath);
     }
 
+    if (/\.submitPreparedApp\s*\(/.test(source)) {
+      appActionBypassViolations.push(`${sourcePath}:submitPreparedApp`);
+    }
+
     // Existing legacy/native Capability Service and agent_actions paths remain
     // out of scope. Once an adapter names AppActionService, it must not also
     // compose any lower-level App action execution or persistence boundary.
@@ -121,6 +189,7 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
       /capabilityService\.invoke\s*\(/,
       /(?:PinnedMcp)?AppRunProviderExecutor|capability-providers\/mcp/,
       /(?:AppRunService|appRunService|\.service)\.submit\s*\(/,
+      /\.submitPreparedApp\s*\(/,
       /\.insert\s*\(\s*(?:appRuns|agentActions)\s*\)/,
     ];
     for (const pattern of forbidden) {
@@ -131,4 +200,16 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
   assert.deepEqual(authorityImportViolations, []);
   assert.deepEqual(appActionBypassViolations, []);
   assert.deepEqual(reviewManagementConsumers, ['routes/apps.ts']);
+});
+
+test('App Run approve and reject routes stay on the governed approval resolver', async () => {
+  const routes = await readFile(join(sourceRoot, 'routes/agent.ts'), 'utf8');
+  const uses = routes.match(/if \(isApprovalResolverAction\(action\.action\)\)/g) ?? [];
+  assert.equal(uses.length, 2, 'approve and reject must share the App Run-aware resolver predicate');
+
+  const resolver = await readFile(join(sourceRoot, 'lib/agent-approval-resolver.ts'), 'utf8');
+  assert.match(
+    resolver,
+    /return action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
+  );
 });

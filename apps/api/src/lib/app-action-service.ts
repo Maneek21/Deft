@@ -15,9 +15,8 @@ import {
 } from '@deft/db/schema';
 import {
   DeftAppManifestV1Schema,
-  SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
-  SandboxEmailSendInputSchema,
   type DeftAppManifestV1,
+  type DeftAppPrivateInterfaceDescriptorV1,
 } from '@deft/app-kit';
 import type { MCPToolOverride } from '@deft/mcp';
 import {
@@ -43,25 +42,34 @@ import {
 } from './app-grant-service.js';
 import {
   CONNECTED_APP_ACTION_BINDING_VERSION,
-  CONNECTED_APP_SANDBOX_OPERATION_NAME,
+  connectedAppActionBindingMatches,
+  connectedAppOperationMatches,
+  connectedAppToolMatches,
+  getConnectedAppPrivateInterface,
   normalizeConnectedMcpOverrides,
-  sandboxEmailActionBindingMatches,
-  sandboxEmailOperationMatches,
-  sandboxEmailToolMatches,
+  parseConnectedAppProviderInput,
 } from './app-connected-contract.js';
 import type { CapabilityDiscoveryResult } from './capability-service.js';
 import {
   PostgresAppRunLiveAuthorization,
   type AppRunAuthorizationCapture,
+  type AppRunTokenScopeAuthorization,
 } from './app-run-live-authorization.js';
-import type { AppRunPreparedInputCandidate } from './app-run-prepared-input.js';
+import type {
+  AppRunPreparedInputCandidate,
+  AppRunPreparedInputPayload,
+} from './app-run-prepared-input.js';
+import type { AppRunSafeView } from './app-run-repository.js';
 import { isMcpToolEnabled } from './mcp-tool-identity.js';
 import { readModuleRecordScalarFields } from './module-service.js';
 import { resourceAuthorizationService } from './resource-provider-adapters.js';
 import { listResourceRelation } from './resource-relation-service.js';
 
 const APP_ACTION_AUTHORITY_VERSION = 'deft.app_action_authority.v1' as const;
-const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v1' as const;
+const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v2' as const;
+const APP_MCP_DISCOVERY_SCOPES = Object.freeze(['read:modules', 'read:apps'] as const);
+const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
+const APP_MCP_RUN_READ_SCOPES = Object.freeze(['read:app-runs'] as const);
 
 type BindingRow = typeof appActionBindings.$inferSelect;
 type DependencyLockRow = typeof appDependencyLocks.$inferSelect;
@@ -178,6 +186,14 @@ export type AppActionPrepareResult = Readonly<{
   authority_digest: `sha256:${string}`;
 }>;
 
+export type AppActionPrepareInput = Readonly<{
+  binding_id: string;
+  resource_ref: unknown;
+  selections?: readonly Readonly<{ input_key: string; resource_ref: unknown }>[];
+  user_inputs?: Readonly<Record<string, string>>;
+  idempotency_key: string;
+}>;
+
 type ActionContext = Readonly<{
   installation: InstallationRow;
   version: VersionRow;
@@ -185,6 +201,7 @@ type ActionContext = Readonly<{
   binding: BindingRow;
   manifest: DeftAppManifestV1;
   action: DeftAppManifestV1['actions'][number];
+  private_interface: DeftAppPrivateInterfaceDescriptorV1;
   dependencies: readonly DependencyLockRow[];
   resources: ReadonlyMap<string, Readonly<{
     requirement: DeftAppManifestV1['resource_requirements'][number];
@@ -218,6 +235,7 @@ export interface AppActionCapabilityPort {
 
 export interface AppActionLiveAuthorityPort {
   captureForPreparation(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot>;
+  assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<void>;
 }
 
 export interface AppActionPreparedInputPort {
@@ -232,7 +250,37 @@ export interface AppActionPreparedInputPort {
       binding_digest: string;
     }>;
     provider_input: unknown;
+    app_run?: Readonly<{
+      initiating_actor: AppRunActor;
+      execution_actor: AppRunActor;
+      safe_preview: unknown;
+      authority_vector: unknown;
+      authority_digest: string;
+    }>;
   }>): Promise<AppRunPreparedInputCandidate> | AppRunPreparedInputCandidate;
+  open(
+    orgId: string,
+    candidate: AppRunPreparedInputCandidate,
+  ): Promise<AppRunPreparedInputPayload> | AppRunPreparedInputPayload;
+}
+
+export interface AppActionRunPort {
+  submitPreparedApp(
+    context: Readonly<{
+      org_id: string;
+      initiating_actor: AppRunActor;
+      execution_actor: AppRunActor;
+    }>,
+    candidate: AppRunPreparedInputCandidate,
+  ): Promise<AppRunSafeView>;
+}
+
+export interface AppActionRunReadPort {
+  inspect(orgId: string, runId: string, actor: AppRunActor): Promise<AppRunSafeView>;
+  result(orgId: string, runId: string, actor: AppRunActor): Promise<Readonly<{
+    run: AppRunSafeView;
+    value: unknown;
+  }>>;
 }
 
 export interface AppActionFieldReaderPort {
@@ -259,6 +307,42 @@ const lazyPreparedInput: AppActionPreparedInputPort = Object.freeze({
     const { getAppRunRuntime } = await import('./app-run-runtime.js');
     return (await getAppRunRuntime()).inputPreparation.protect(input);
   },
+  async open(
+    orgId: Parameters<AppActionPreparedInputPort['open']>[0],
+    candidate: Parameters<AppActionPreparedInputPort['open']>[1],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).inputPreparation.open(orgId, candidate);
+  },
+});
+
+const lazyRuns: AppActionRunPort = Object.freeze({
+  async submitPreparedApp(
+    context: Parameters<AppActionRunPort['submitPreparedApp']>[0],
+    candidate: Parameters<AppActionRunPort['submitPreparedApp']>[1],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).service.submitPreparedApp(context, candidate);
+  },
+});
+
+const lazyRunReads: AppActionRunReadPort = Object.freeze({
+  async inspect(
+    orgId: Parameters<AppActionRunReadPort['inspect']>[0],
+    runId: Parameters<AppActionRunReadPort['inspect']>[1],
+    actor: Parameters<AppActionRunReadPort['inspect']>[2],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).service.inspect(orgId, runId, actor);
+  },
+  async result(
+    orgId: Parameters<AppActionRunReadPort['result']>[0],
+    runId: Parameters<AppActionRunReadPort['result']>[1],
+    actor: Parameters<AppActionRunReadPort['result']>[2],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).service.result(orgId, runId, actor);
+  },
 });
 
 function actionError(message: string, code: 'APP_ACTION_INVALID' | 'APP_ACTION_UNAVAILABLE' | 'APP_ACCESS_DENIED' | 'APP_DEPENDENCY_UNHEALTHY' | 'APP_PROVIDER_UNAVAILABLE' | 'APP_NOT_FOUND' | 'APP_STALE', status: 400 | 403 | 404 | 409 | 503 = 409) {
@@ -267,6 +351,16 @@ function actionError(message: string, code: 'APP_ACTION_INVALID' | 'APP_ACTION_U
 
 function sameCanonical(left: unknown, right: unknown): boolean {
   return canonicalCapabilityJson(left) === canonicalCapabilityJson(right);
+}
+
+function preparedActionFacts(payload: AppRunPreparedInputPayload) {
+  return {
+    schema_version: payload.schema_version,
+    replay_identity: payload.replay_identity,
+    binding_identity: payload.binding_identity,
+    provider_input: payload.provider_input,
+    app_run: payload.app_run,
+  };
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -298,11 +392,15 @@ function callerContext(value: AppActionCaller): CallerContext {
   }
   const tokenRequired = (actor.kind === 'human' && actor.source === 'mcp')
     || (actor.kind === 'agent_employee' && actor.source === 'mcp');
-  if (tokenRequired && tokenAuthorities.length === 0) {
-    throw actionError('MCP App actions require exact live token authority', 'APP_ACCESS_DENIED', 403);
+  if (tokenRequired && tokenAuthorities.length !== 1) {
+    throw actionError('MCP App actions require one exact live token authority', 'APP_ACCESS_DENIED', 403);
   }
-  if (tokenRequired && tokenAuthorities.some((token) => token.token_kind !== 'mcp')) {
-    throw actionError('MCP App actions require MCP token authority', 'APP_ACCESS_DENIED', 403);
+  if (
+    tokenRequired
+    && actor.kind === 'agent_employee'
+    && tokenAuthorities.some((token) => token.token_kind !== 'mcp')
+  ) {
+    throw actionError('Employee MCP App actions require MCP token authority', 'APP_ACCESS_DENIED', 403);
   }
   if (!tokenRequired && tokenAuthorities.length !== 0) {
     throw actionError('This App action surface cannot carry token authority', 'APP_ACCESS_DENIED', 403);
@@ -335,8 +433,8 @@ function actionResourceProjection(resource: ResourceSafeProjectionV1): ResourceS
   return Object.freeze({
     ...resource,
     // A Module's ordinary display label may be backed by a field that becomes
-    // provider input (for example Campaign subject or Contact email). App action
-    // responses therefore use only host-owned identity copy.
+    // provider input. App action responses therefore use only host-owned
+    // identity copy.
     label: `${resource.ref.resource_type} record ${identitySuffix}`,
   });
 }
@@ -359,12 +457,18 @@ function replayIdentity(context: ActionContext, caller: CallerContext, idempoten
     : caller.execution_actor.actor_type === 'agent_employee'
       ? caller.execution_actor.agent_employee_id
       : '';
+  const tokenAuthorities = [...caller.token_authorities]
+    .sort((left, right) => `${left.token_kind}\0${left.token_id}`.localeCompare(
+      `${right.token_kind}\0${right.token_id}`,
+    ));
   const digest = createHash('sha256')
     .update(`${APP_ACTION_REPLAY_VERSION}\0`)
     .update(canonicalCapabilityJson({
       organization_id: caller.actor.org_id,
       principal_type: caller.execution_actor.actor_type,
       principal_id: principalId,
+      caller_surface: caller.surface,
+      token_authorities: tokenAuthorities,
       app_installation_id: context.installation.id,
       app_version_id: context.version.id,
       grant_snapshot_id: context.grant.id,
@@ -568,7 +672,22 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
   }
   const manifest = DeftAppManifestV1Schema.parse(version.manifest);
   const action = manifest.actions.find((candidate) => candidate.key === binding.action_key);
-  if (!action || !sandboxEmailActionBindingMatches(action)) {
+  const capabilityRequirement = action
+    ? manifest.capability_requirements.find((candidate) => candidate.key === action.capability_requirement_key)
+    : null;
+  const privateInterface = capabilityRequirement
+    ? getConnectedAppPrivateInterface(capabilityRequirement.interface)
+    : null;
+  const connectorRequirement = action
+    ? manifest.connector_requirements.find((candidate) => candidate.key === action.connector_requirement_key)
+    : null;
+  if (
+    !action
+    || !privateInterface
+    || !connectorRequirement
+    || connectorRequirement.provider_kind !== privateInterface.provider_kind
+    || !connectedAppActionBindingMatches(privateInterface, action)
+  ) {
     throw actionError('App action contract is unavailable', 'APP_ACTION_UNAVAILABLE');
   }
   const expectedRights = manifest.resource_requirements.map((requirement) => ({
@@ -612,19 +731,20 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     || providerSnapshot.data.adapter_contract_version !== storedProvider.adapter_contract_version
     || !providerOperation
     || providerOperation.schema_digest !== binding.operation_schema_digest
-    || !sandboxEmailOperationMatches(providerOperation)
+    || !connectedAppOperationMatches(privateInterface, providerOperation)
   ) throw actionError('Pinned App provider schema is unavailable', 'APP_PROVIDER_UNAVAILABLE', 503);
   if (
-    binding.provider_kind !== 'mcp'
-    || binding.operation_name !== CONNECTED_APP_SANDBOX_OPERATION_NAME
-    || binding.risk_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.risk_class
-    || binding.review_requirement !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_requirement
-    || binding.review_scope !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_scope
-    || binding.egress_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.egress_class
-    || binding.retry_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retry_class
-    || binding.retention_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retention_class
-    || binding.automation_eligibility !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.automation_eligibility
-    || binding.provider_idempotency_key_required !== true
+    binding.provider_kind !== privateInterface.provider_kind
+    || binding.operation_name !== privateInterface.operation_name
+    || binding.risk_class !== privateInterface.host_policy.risk_class
+    || binding.review_requirement !== privateInterface.host_policy.review_requirement
+    || binding.review_scope !== privateInterface.host_policy.review_scope
+    || binding.egress_class !== privateInterface.host_policy.egress_class
+    || binding.retry_class !== privateInterface.host_policy.retry_class
+    || binding.retention_class !== privateInterface.host_policy.retention_class
+    || binding.automation_eligibility !== privateInterface.host_policy.automation_eligibility
+    || binding.provider_idempotency_key_required
+      !== privateInterface.host_policy.provider_idempotency_key_required
   ) throw actionError('App action host policy is invalid', 'APP_STALE');
   const expectedCanonicalBinding = canonicalizeAppGrantValue({
     binding_version: CONNECTED_APP_ACTION_BINDING_VERSION,
@@ -632,14 +752,14 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     capability_requirement_key: action.capability_requirement_key,
     connector_requirement_key: action.connector_requirement_key,
     interface_identity: binding.interface_identity,
-    provider_kind: 'mcp',
+    provider_kind: privateInterface.provider_kind,
     mcp_connection_id: binding.mcp_connection_id,
     provider_snapshot_digest: storedProvider.snapshot_digest,
     provider_adapter_contract_version: storedProvider.adapter_contract_version,
-    operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
+    operation_name: privateInterface.operation_name,
     operation_schema_digest: providerOperation.schema_digest,
     connector_authorization_version: connection.app_run_authorization_version,
-    host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+    host_policy: privateInterface.host_policy,
     placement: action.placement,
     input_bindings: action.input_bindings,
   });
@@ -714,6 +834,7 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     binding,
     manifest,
     action,
+    private_interface: privateInterface,
     dependencies: [...dependencies].sort((left, right) => left.dependency_key.localeCompare(right.dependency_key)),
     resources,
     provider_snapshot: providerSnapshot.data,
@@ -743,6 +864,8 @@ export class AppActionService {
     private readonly liveAuthority: AppActionLiveAuthorityPort = new PostgresAppRunLiveAuthorization(),
     private readonly preparedInput: AppActionPreparedInputPort = lazyPreparedInput,
     private readonly fieldReader: AppActionFieldReaderPort = defaultFieldReader,
+    private readonly runs: AppActionRunPort = lazyRuns,
+    private readonly runReads: AppActionRunReadPort = lazyRunReads,
   ) {}
 
   async list(callerValue: AppActionCaller, input: Readonly<{ resource_ref: unknown }>): Promise<AppActionListResult> {
@@ -758,7 +881,7 @@ export class AppActionService {
       try {
         const context = await loadActionContext(caller.actor.org_id, candidate.id);
         assertPlacement(context, resource.ref);
-        await this.#captureAuthority(caller, context);
+        await this.#captureAuthority(caller, context, APP_MCP_DISCOVERY_SCOPES);
         actions.push(actionItem(context));
       } catch {
         // Discovery is availability-filtered. An inaccessible or stale binding
@@ -775,19 +898,17 @@ export class AppActionService {
     callerValue: AppActionCaller,
     input: Readonly<{ binding_id: string; resource_ref: unknown }>,
   ): Promise<AppActionResolveResult> {
-    const resolved = await this.#resolve(callerContext(callerValue), input);
+    const resolved = await this.#resolve(
+      callerContext(callerValue),
+      input,
+      APP_MCP_DISCOVERY_SCOPES,
+    );
     return resolved.safe;
   }
 
-  async prepare(callerValue: AppActionCaller, input: Readonly<{
-    binding_id: string;
-    resource_ref: unknown;
-    selections?: readonly Readonly<{ input_key: string; resource_ref: unknown }>[];
-    user_inputs?: Readonly<Record<string, string>>;
-    idempotency_key: string;
-  }>): Promise<AppActionPrepareResult> {
+  async prepare(callerValue: AppActionCaller, input: AppActionPrepareInput): Promise<AppActionPrepareResult> {
     const caller = callerContext(callerValue);
-    const resolved = await this.#resolve(caller, input);
+    const resolved = await this.#resolve(caller, input, APP_MCP_INVOKE_SCOPES);
     const selectionMap = new Map<string, ModuleResourceRefV1>();
     for (const selection of input.selections ?? []) {
       if (selectionMap.has(selection.input_key)) {
@@ -864,7 +985,10 @@ export class AppActionService {
           ? selectedFields.get(binding.input_key)?.fields[source.target_field_key]
           : userInputs[binding.input_key];
     }
-    const parsedProviderInput = SandboxEmailSendInputSchema.safeParse(providerInput);
+    const parsedProviderInput = parseConnectedAppProviderInput(
+      resolved.context.private_interface,
+      providerInput,
+    );
     if (!parsedProviderInput.success) {
       throw actionError('Resolved App action input is invalid', 'APP_ACTION_INVALID', 400);
     }
@@ -947,6 +1071,13 @@ export class AppActionService {
         binding_digest: resolved.context.binding.binding_digest,
       },
       provider_input: parsedProviderInput.data,
+      app_run: {
+        initiating_actor: caller.authenticated_subject,
+        execution_actor: caller.execution_actor,
+        safe_preview: safePreview,
+        authority_vector: authorityVector,
+        authority_digest: digestAppGrantValue(authorityVector),
+      },
     });
     return Object.freeze({
       action: actionItem(resolved.context),
@@ -958,7 +1089,85 @@ export class AppActionService {
     });
   }
 
-  async #captureAuthority(caller: CallerContext, context: ActionContext) {
+  async invoke(
+    callerValue: AppActionCaller,
+    input: AppActionPrepareInput & Readonly<{ input_candidate: AppRunPreparedInputCandidate }>,
+  ): Promise<AppRunSafeView> {
+    const caller = callerContext(callerValue);
+    let original: AppRunPreparedInputPayload;
+    try {
+      original = await this.preparedInput.open(caller.actor.org_id, input.input_candidate);
+    } catch {
+      throw actionError('Prepared App action input is invalid or expired', 'APP_ACTION_INVALID', 400);
+    }
+    const app = original.app_run;
+    if (
+      !app
+      || app.authority_vector.caller_surface !== caller.surface
+      || !sameCanonical(app.initiating_actor, caller.authenticated_subject)
+      || !sameCanonical(app.execution_actor, caller.execution_actor)
+    ) throw actionError('Prepared App action belongs to a different caller surface', 'APP_ACCESS_DENIED', 403);
+
+    const current = await this.prepare(callerValue, {
+      binding_id: input.binding_id,
+      resource_ref: input.resource_ref,
+      selections: input.selections,
+      user_inputs: input.user_inputs,
+      idempotency_key: input.idempotency_key,
+    });
+    let currentPayload: AppRunPreparedInputPayload;
+    try {
+      currentPayload = await this.preparedInput.open(caller.actor.org_id, current.input_candidate);
+    } catch {
+      throw actionError('Revalidated App action input could not be authenticated', 'APP_STALE');
+    }
+    if (!sameCanonical(preparedActionFacts(original), preparedActionFacts(currentPayload))) {
+      throw actionError('Prepared App action changed before invocation', 'APP_STALE');
+    }
+
+    // submitPreparedApp owns another authenticated open and the in-transaction
+    // re-derivation of every pinned authority. This seam cannot call a provider.
+    return this.runs.submitPreparedApp({
+      org_id: caller.actor.org_id,
+      initiating_actor: caller.authenticated_subject,
+      execution_actor: caller.execution_actor,
+    }, current.input_candidate);
+  }
+
+  async inspectRun(callerValue: AppActionCaller, runId: string): Promise<AppRunSafeView> {
+    const caller = callerContext(callerValue);
+    await this.#assertRunReadAuthority(caller);
+    return this.runReads.inspect(caller.actor.org_id, runId, caller.authenticated_subject);
+  }
+
+  async result(callerValue: AppActionCaller, runId: string): Promise<Readonly<{
+    run: AppRunSafeView;
+    value: unknown;
+  }>> {
+    const caller = callerContext(callerValue);
+    await this.#assertRunReadAuthority(caller);
+    return this.runReads.result(caller.actor.org_id, runId, caller.authenticated_subject);
+  }
+
+  async #assertRunReadAuthority(caller: CallerContext): Promise<void> {
+    if (!caller.surface.endsWith(':mcp')) return;
+    try {
+      await this.liveAuthority.assertTokenScopes({
+        org_id: caller.actor.org_id,
+        authenticated_subject: caller.authenticated_subject,
+        required_token_scopes: APP_MCP_RUN_READ_SCOPES,
+        token_authorities: caller.token_authorities,
+      });
+    } catch {
+      throw actionError('Current caller authority does not permit App Run access', 'APP_ACCESS_DENIED', 403);
+    }
+  }
+
+  async #captureAuthority(
+    caller: CallerContext,
+    context: ActionContext,
+    requiredTokenScopes: readonly string[],
+  ) {
     try {
       return await this.liveAuthority.captureForPreparation({
         org_id: caller.actor.org_id,
@@ -973,7 +1182,7 @@ export class AppActionService {
           review_scope: context.binding.review_scope,
           retry_class: context.binding.retry_class,
         },
-        required_token_scopes: caller.actor.source === 'mcp' ? ['read:modules'] : [],
+        required_token_scopes: caller.actor.source === 'mcp' ? requiredTokenScopes : [],
         token_authorities: caller.token_authorities,
       });
     } catch {
@@ -1006,16 +1215,16 @@ export class AppActionService {
       || live.snapshot.snapshot_digest !== context.provider_snapshot_digest
       || !operation
       || operation.schema_digest !== context.binding.operation_schema_digest
-      || !sandboxEmailOperationMatches(operation)
+      || !connectedAppOperationMatches(context.private_interface, operation)
       || !tool
-      || !sandboxEmailToolMatches(tool)
+      || !connectedAppToolMatches(context.private_interface, tool)
     ) throw actionError('App action provider schema changed after review', 'APP_PROVIDER_UNAVAILABLE', 503);
   }
 
   async #resolve(caller: CallerContext, input: Readonly<{
     binding_id: string;
     resource_ref: unknown;
-  }>): Promise<Readonly<{
+  }>, requiredTokenScopes: readonly string[]): Promise<Readonly<{
     context: ActionContext;
     resourceRef: ModuleResourceRefV1;
     runAuthorization: AppRunAuthorizationSnapshot;
@@ -1026,7 +1235,7 @@ export class AppActionService {
     }
     const context = await loadActionContext(caller.actor.org_id, input.binding_id);
     const resourceRef = assertPlacement(context, input.resource_ref);
-    const runAuthorization = await this.#captureAuthority(caller, context);
+    const runAuthorization = await this.#captureAuthority(caller, context, requiredTokenScopes);
     await this.#assertLiveProvider(context);
     const resource = actionResourceProjection(await resourceAuthorizationService.resolve(
       { org_id: caller.actor.org_id, actor: caller.actor },

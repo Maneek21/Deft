@@ -1,5 +1,6 @@
 import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
+  appActionBindings,
   appRunAttempts,
   appRunEvents,
   appRuns,
@@ -74,6 +75,12 @@ function actorColumns(actor: AppRunActor) {
 
 export type FingerprintCandidate = Readonly<{ key_version: string; fingerprint: string }>;
 
+export type AppRunProviderDispatchPin = Readonly<{
+  connector_authorization_version: number;
+  provider_snapshot_digest: string;
+  operation_schema_digest: string;
+}>;
+
 export type AppRunChildLineage = Readonly<{
   parent: AppRunSafeView;
   ancestors: readonly AppRunSafeView[];
@@ -120,6 +127,11 @@ export class PostgresAppRunRepository {
   ): Promise<(AppRunSafeView & {
     input_fingerprint_key_version: string;
     input_fingerprint: string;
+    origin_app_installation_id: string | null;
+    origin_app_version_id: string | null;
+    origin_app_binding_key: string | null;
+    origin_app_grant_snapshot_id: string | null;
+    authorization_snapshot: Record<string, unknown>;
   }) | null> {
     const actor = actorColumns(submission.initiating_actor);
     const candidateFilters = candidates.map((candidate) => and(
@@ -130,6 +142,11 @@ export class PostgresAppRunRepository {
       ...safeRunSelection,
       input_fingerprint_key_version: appRuns.input_fingerprint_key_version,
       input_fingerprint: appRuns.input_fingerprint,
+      origin_app_installation_id: appRuns.origin_app_installation_id,
+      origin_app_version_id: appRuns.origin_app_version_id,
+      origin_app_binding_key: appRuns.origin_app_binding_key,
+      origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
+      authorization_snapshot: appRuns.authorization_snapshot,
     }).from(appRuns).where(and(
       eq(appRuns.org_id, submission.org_id),
       eq(appRuns.initiating_actor_type, actor.type),
@@ -144,6 +161,41 @@ export class PostgresAppRunRepository {
       or(...candidateFilters),
     )).limit(1);
     return row ?? null;
+  }
+
+  /** Load only immutable reviewed dispatch evidence. The connection itself is
+   * resolved later with this exact authorization version so target/auth races
+   * cannot inherit the Run. */
+  async loadAppProviderDispatchPin(
+    tx: AppRunTransaction,
+    orgId: string,
+    runId: string,
+  ): Promise<AppRunProviderDispatchPin | null> {
+    const [pin] = await tx.select({
+      connector_authorization_version: appActionBindings.connector_authorization_version,
+      provider_snapshot_digest: capabilityProviderSnapshots.snapshot_digest,
+      operation_schema_digest: appActionBindings.operation_schema_digest,
+    }).from(appRuns).innerJoin(appActionBindings, and(
+      eq(appActionBindings.org_id, appRuns.org_id),
+      eq(appActionBindings.app_installation_id, appRuns.origin_app_installation_id),
+      eq(appActionBindings.app_version_id, appRuns.origin_app_version_id),
+      eq(appActionBindings.grant_snapshot_id, appRuns.origin_app_grant_snapshot_id),
+      eq(appActionBindings.action_key, appRuns.origin_app_binding_key),
+      eq(appActionBindings.provider_kind, appRuns.provider_kind),
+      eq(appActionBindings.mcp_connection_id, appRuns.provider_instance_id),
+      eq(appActionBindings.operation_name, appRuns.operation_name),
+      eq(appActionBindings.provider_snapshot_id, appRuns.provider_snapshot_id),
+    )).innerJoin(capabilityProviderSnapshots, and(
+      eq(capabilityProviderSnapshots.org_id, appRuns.org_id),
+      eq(capabilityProviderSnapshots.id, appRuns.provider_snapshot_id),
+      eq(capabilityProviderSnapshots.provider_kind, appRuns.provider_kind),
+      eq(capabilityProviderSnapshots.provider_instance_id, appRuns.provider_instance_id),
+    )).where(and(
+      eq(appRuns.org_id, orgId),
+      eq(appRuns.id, runId),
+      eq(appRuns.origin_kind, 'app'),
+    )).limit(1);
+    return pin ? Object.freeze(pin) : null;
   }
 
   async loadChildLineage(
@@ -225,6 +277,18 @@ export class PostgresAppRunRepository {
       provider_instance_id: input.submission.operation.provider.provider_instance_id,
       operation_name: input.submission.operation.operation_name,
       provider_snapshot_id: input.provider_snapshot_id,
+      origin_app_installation_id: input.submission.origin.origin_kind === 'app'
+        ? input.submission.origin.installation_id
+        : null,
+      origin_app_version_id: input.submission.origin.origin_kind === 'app'
+        ? input.submission.origin.app_version_id
+        : null,
+      origin_app_binding_key: input.submission.origin.origin_kind === 'app'
+        ? input.submission.origin.binding_key
+        : null,
+      origin_app_grant_snapshot_id: input.submission.origin.origin_kind === 'app'
+        ? input.submission.origin.grant_snapshot_id
+        : null,
       state: input.submission.policy.review_requirement === 'always' ? 'pending_approval' : 'pending',
       risk_class: input.submission.policy.risk_class,
       review_requirement: input.submission.policy.review_requirement,

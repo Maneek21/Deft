@@ -1,0 +1,111 @@
+{
+  "schema_version": "1",
+  "id": "org.deft.reference.resource-campaigns-app",
+  "version": "3.0.0",
+  "name": "Connected Resource Campaigns",
+  "description": "The connected Phase 5 upgrade of the Resource Campaigns proof App.",
+  "license": "AGPL-3.0-only",
+  "compatibility": { "app_protocol": "1" },
+  "modules": [
+    {
+      "module_id": "org.deft.reference.resource-campaigns",
+      "version": "3.0.0",
+      "manifest_path": "modules/resource-campaigns/deft.module.json",
+      "manifest_digest": "sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208"
+    }
+  ],
+  "navigation": [
+    {
+      "key": "resource_campaigns",
+      "label": "Resource Campaigns",
+      "module_id": "org.deft.reference.resource-campaigns",
+      "collection_key": "campaigns",
+      "view_key": "all"
+    }
+  ],
+  "dependencies": [
+    {
+      "key": "contacts_app",
+      "app_id": "org.deft.reference.resource-contacts-app",
+      "version": "1.0.0"
+    }
+  ],
+  "resource_requirements": [
+    {
+      "key": "campaign",
+      "source": {
+        "kind": "included_module",
+        "module_id": "org.deft.reference.resource-campaigns",
+        "version": "3.0.0"
+      },
+      "resource_type": "campaigns",
+      "fields": ["subject", "body", "contacts"]
+    },
+    {
+      "key": "contact",
+      "source": {
+        "kind": "dependency_module",
+        "dependency_key": "contacts_app",
+        "module_id": "org.deft.reference.resource-contacts",
+        "version": "1.0.0"
+      },
+      "resource_type": "contacts",
+      "fields": ["email"]
+    }
+  ],
+  "capability_requirements": [
+    {
+      "key": "send_email",
+      "interface": {
+        "kind": "private",
+        "namespace": "app_lineage",
+        "key": "sandbox_email_send",
+        "version": "1"
+      }
+    }
+  ],
+  "connector_requirements": [
+    { "key": "mail_provider", "provider_kind": "mcp" }
+  ],
+  "actions": [
+    {
+      "key": "send_campaign_email",
+      "label": "Send campaign email",
+      "capability_requirement_key": "send_email",
+      "connector_requirement_key": "mail_provider",
+      "placement": {
+        "kind": "resource_detail",
+        "resource_requirement_key": "campaign"
+      },
+      "input_bindings": [
+        {
+          "input_key": "to",
+          "source": {
+            "kind": "selected_relation_field",
+            "source_resource_requirement_key": "campaign",
+            "relation_field_key": "contacts",
+            "target_resource_requirement_key": "contact",
+            "target_field_key": "email",
+            "selection": "one"
+          }
+        },
+        {
+          "input_key": "subject",
+          "source": {
+            "kind": "resource_field",
+            "resource_requirement_key": "campaign",
+            "field_key": "subject"
+          }
+        },
+        {
+          "input_key": "body_text",
+          "source": {
+            "kind": "resource_field",
+            "resource_requirement_key": "campaign",
+            "field_key": "body"
+          }
+        }
+      ]
+    }
+  ]
+}

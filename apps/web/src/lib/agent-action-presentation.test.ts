@@ -61,3 +61,34 @@ test('module CSV imports show one truthful batch approval', () => {
   assert.equal(presentation.approveLabel, 'Approve import');
   assert.equal(presentation.doneLabel, 'Records imported');
 });
+
+test('App Run approvals present only the safe preview without raw orchestration identities', () => {
+  const action = {
+    action: 'app_run_invoke',
+    source: 'app_run',
+    params: {
+      run_id: 'run-secret-id',
+      capability_label: 'Send email',
+      provider_label: 'Workspace mail connector',
+      resource_ids: ['campaign-secret-id'],
+      safe_preview: {
+        title: 'Send September campaign',
+        summary: 'Send to one selected contact',
+        resource_refs: [{ resource_kind: 'campaign', resource_id: 'campaign-secret-id', label: 'September campaign' }],
+      },
+    },
+  };
+  const presentation = getAgentActionPresentation(action);
+  const genericDetails = getSafeGenericParams(action.params);
+
+  assert.equal(presentation.kind, 'app_run');
+  assert.equal(presentation.title, 'Send September campaign');
+  assert.equal(presentation.summary, 'Send to one selected contact');
+  assert.equal(presentation.approveLabel, 'Approve App action');
+  assert.deepEqual(presentation.chips, [
+    { label: 'September campaign', icon: 'project' },
+    { label: 'Send email', icon: 'shield' },
+  ]);
+  assert.equal(JSON.stringify(genericDetails).includes('run-secret-id'), false);
+  assert.equal(JSON.stringify(genericDetails).includes('campaign-secret-id'), true, 'safe_preview remains the only resource presentation');
+});

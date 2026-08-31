@@ -7,12 +7,12 @@ single integrity-checked package. Parsing a package proves structure and
 artifact integrity only. Installation, authorization, permissions, tenant
 isolation, and full Module validation remain host responsibilities.
 
-App Protocol v1 is an authoring-only connected contract in this release. It
-adds exact App dependencies, Module resource/field requirements, one private
-sandbox-email capability, an existing MCP-connector requirement, and closed
-host-rendered action bindings. It does not grant authority, create a connector,
-or enable execution. Hosts reject v1 inspection/staging until the corresponding
-grant and lifecycle substrate is installed.
+App Protocol v1 is a closed connected contract. It adds exact App dependencies,
+Module resource/field requirements, one private sandbox-email capability, an
+existing MCP-connector requirement, and closed host-rendered action bindings.
+Staging grants zero authority: it does not create a connector or enable
+execution. Supported hosts may explicitly review and activate the single frozen
+connected contract; execution remains separately rollout-gated.
 
 Private interface keys are always relative to the immutable workspace App
 lineage selected by the host. An App id, repository, publisher label, or other

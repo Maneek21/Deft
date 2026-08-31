@@ -1,0 +1,57 @@
+{
+  "schema_version": "2",
+  "id": "org.deft.reference.resource-campaigns",
+  "slug": "resource-campaigns",
+  "version": "3.0.0",
+  "name": "Resource Campaigns",
+  "description": "Campaigns owned by the connected Phase 5 proof App.",
+  "icon": "megaphone",
+  "collections": [
+    {
+      "key": "campaigns",
+      "name": "Campaigns",
+      "singular_name": "Campaign",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        { "key": "subject", "label": "Subject", "type": "text", "required": true },
+        { "key": "body", "label": "Body", "type": "long_text" },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "options": [
+            { "value": "draft", "label": "Draft" },
+            { "value": "ready", "label": "Ready" },
+            { "value": "paused", "label": "Paused" }
+          ],
+          "default": "draft"
+        },
+        {
+          "key": "contacts",
+          "label": "Contacts",
+          "type": "resource_ref",
+          "target": {
+            "module_id": "org.deft.reference.resource-contacts",
+            "resource_type": "contacts"
+          },
+          "multiple": true,
+          "display": "label"
+        },
+        { "key": "scheduled_for", "label": "Scheduled for", "type": "datetime" },
+        { "key": "audience_notes", "label": "Audience notes", "type": "long_text" }
+      ],
+      "views": [
+        { "key": "all", "name": "All campaigns", "type": "table", "fields": ["name", "subject", "status", "contacts", "scheduled_for"] },
+        { "key": "board", "name": "Campaign status", "type": "board", "group_by": "status", "fields": ["name", "subject", "scheduled_for"] },
+        { "key": "form", "name": "Campaign form", "type": "form", "fields": ["name", "subject", "body", "status", "scheduled_for", "audience_notes"] },
+        { "key": "detail", "name": "Campaign details", "type": "detail", "fields": ["name", "subject", "body", "status", "contacts", "scheduled_for", "audience_notes"] }
+      ],
+      "search": {
+        "title_field": "name",
+        "subtitle_fields": ["subject", "status"],
+        "fields": ["name", "subject", "status", "audience_notes"]
+      }
+    }
+  ],
+  "navigation": { "default_collection": "campaigns", "default_view": "all" }
+}

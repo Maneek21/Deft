@@ -1,9 +1,14 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
-import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import {
+  EMPLOYEE_MCP_APP_SCOPES,
+  issueScopedEmployeeMcpToken,
+  type EmployeeMcpAppScope,
+  type EmployeeMcpScope,
+} from '../lib/mcp-token.js';
 import {
   agentEmployees,
   agentEmployeeSkills,
@@ -495,6 +500,10 @@ const externalRuntimeKindSchema = z.string().trim().min(1).max(64).refine(
   { message: 'defty_system is reserved for Deft internal use' },
 );
 
+const employeeMcpAppScopesSchema = z.array(z.enum(EMPLOYEE_MCP_APP_SCOPES))
+  .max(EMPLOYEE_MCP_APP_SCOPES.length)
+  .default([]);
+
 const createSchema = z.object({
   name: z.string().min(1).max(100).refine(
     (name) => !isReservedDeftyEmployeeSlug(baseSlugForName(name)),
@@ -520,6 +529,9 @@ const createSchema = z.object({
   heartbeat_enabled: z.boolean().default(false),
   heartbeat_interval_min: z.number().int().min(5).max(1440).default(30),
   heartbeat_config: z.string().optional(),
+  // Additive token capabilities. Omission intentionally preserves the
+  // historical App-blind employee credential contract.
+  mcp_app_scopes: employeeMcpAppScopesSchema,
 });
 
 function roleToTitle(role: string): string {
@@ -1575,18 +1587,30 @@ async function issueMcpToken({
   employeeId,
   employeeName,
   createdBy,
+  appScopes = [],
   deactivateExisting = false,
 }: {
   orgId: string;
   employeeId: string;
   employeeName: string;
   createdBy: string;
+  appScopes?: readonly EmployeeMcpAppScope[];
   deactivateExisting?: boolean;
-}): Promise<string> {
+}): Promise<{ raw: string; scopes: readonly EmployeeMcpScope[] }> {
   const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
   const rawApiKey = `deft_${keyId}`;
-  const keyHash = await bcrypt.hash(rawApiKey, 12);
   const keyPrefix = rawApiKey.slice(0, 12);
+
+  const issued = await issueScopedEmployeeMcpToken({
+    orgId,
+    employeeId,
+    name: `${employeeName} MCP token`,
+    createdBy,
+    rawToken: rawApiKey,
+    scopes: appScopes,
+    revokeExisting: deactivateExisting,
+    bcryptRounds: 12,
+  });
 
   if (deactivateExisting) {
     await db
@@ -1599,18 +1623,13 @@ async function issueMcpToken({
     org_id: orgId,
     agent_employee_id: employeeId,
     name: `${employeeName} API Key`,
-    key_hash: keyHash,
+    key_hash: issued.tokenHash,
     key_prefix: keyPrefix,
     permissions: ['read:spaces', 'read:tasks', 'read:messages', 'read:members'],
     created_by: createdBy,
   });
 
-  await db
-    .update(agentEmployees)
-    .set({ mcp_token_hash: keyHash })
-    .where(eq(agentEmployees.id, employeeId));
-
-  return rawApiKey;
+  return { raw: rawApiKey, scopes: issued.scopes };
 }
 
 async function installRequiredWorkspaceSkill(employeeId: string) {
@@ -1749,11 +1768,12 @@ agentEmployeeRoutes.post('/', async (c) => {
     // surface (auth via api_keys). /api/mcp/v1 is the modern path; /mcp
     // is kept during the deprecation window so existing integrations
     // don't break.
-    const rawApiKey = await issueMcpToken({
+    const issuedMcpToken = await issueMcpToken({
       orgId: currentUser.org_id,
       employeeId: employee!.id,
       employeeName: data.name,
       createdBy: currentUser.id,
+      appScopes: data.mcp_app_scopes,
     });
     const channelToken = await issueAgentChannelToken({
       orgId: currentUser.org_id,
@@ -1767,7 +1787,8 @@ agentEmployeeRoutes.post('/', async (c) => {
       {
         employee: employee!,
         user_id: agentUser!.id,
-        api_key: rawApiKey,
+        api_key: issuedMcpToken.raw,
+        mcp_scopes: issuedMcpToken.scopes,
         channel_key: channelToken.raw,
         channel_endpoint_url: agentChannelEndpointUrl(),
       },
@@ -3405,6 +3426,10 @@ agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
   }
 });
 
+const regenerateMcpTokenSchema = z.strictObject({
+  mcp_app_scopes: employeeMcpAppScopesSchema,
+});
+
 agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
   try {
     const authorizationError = await requireOwnerOrAdmin(c);
@@ -3412,6 +3437,10 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
 
     const user = c.get('user');
     const id = c.req.param('id');
+    const parsed = regenerateMcpTokenSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
 
     const [employee] = await db
       .select()
@@ -3420,11 +3449,12 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const rawApiKey = await issueMcpToken({
+    const issuedMcpToken = await issueMcpToken({
       orgId: user.org_id,
       employeeId: employee.id,
       employeeName: employee.name,
       createdBy: user.id,
+      appScopes: parsed.data.mcp_app_scopes,
       deactivateExisting: true,
     });
 
@@ -3435,7 +3465,8 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
         name: employee.name,
       },
       mcp_endpoint_url: mcpEndpointUrl(),
-      api_key: rawApiKey,
+      api_key: issuedMcpToken.raw,
+      mcp_scopes: issuedMcpToken.scopes,
     });
   } catch (err) {
     console.error('Failed to regenerate agent employee token:', err);

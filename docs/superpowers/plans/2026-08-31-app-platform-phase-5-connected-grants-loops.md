@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–4 complete; PR B ready for review |
+| Status | Loop 7 local candidate complete; immutable release-host gate waits for PR C merge |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -369,6 +369,27 @@ Run/receipt identity, crash recovery, and stale claim/session denial.
 four installation/version/binding/grant identities or can reach a provider
 without CapabilityService.
 
+**Closeout:** passed on the exact one-action cutover. Raw App-origin submission
+remains denied, while the authenticated AppActionService path re-prepares the
+candidate, rederives its tenant-bound installation/version/effective-grant/
+binding/dependency/resource/relation authority in the Run transaction, and
+persists the four exact App ancestry fields under composite foreign keys. The
+default-off App-origin flag is composed only at the Run boundary. Approval,
+claim, provider-call, and result delivery all recheck live authority; approval
+also reserves employee budget atomically. Replay requires the same canonical
+App authority snapshot, not merely the same provider input.
+
+The retained-database compound proof creates one Run and one approval under
+concurrent invocation, performs no effect before approval, dispatches once
+through CapabilityService using the immutable provider ID plus reviewed
+connector-version/provider-snapshot/operation-schema pin, records approval and
+terminal receipts, returns the authorized retained result, and then blocks
+delivery and a second approved Run after connector revocation. The focused
+shared/AppAction/Capability/architecture/rollout/Run-engine matrix and API
+typecheck pass. The test fixture now tolerates retained foreign key-version
+references without weakening the production key check. Real pgvector and the
+release-host matrix remain deliberately deferred to Loop 7.
+
 ## Loop 6 — Native management and four-surface parity
 
 **Purpose:** make the governed action usable without creating surface-specific
@@ -394,6 +415,24 @@ authority paths.
 **Evidence:** parity tests across four surfaces, token non-discovery tests,
 employee assignment/budget tests, approval projection tests, Settings/action UI
 tests, and rendered desktop/mobile verification with no console errors.
+
+**Closeout:** passed on the native-surface boundary. Settings now exposes the
+requested/effective authority diff, exact connector binding, dependency and
+provenance evidence, health, lifecycle controls, and recent safe Run states.
+Campaign detail renders one descriptor-driven action with related-resource
+selection, a redacted review, retry-stable submission, App Run approval, and
+safe status/result polling. UI, Defty, employee runtime, employee MCP, and human
+MCP use the same fixed `capability_list`, `capability_get`,
+`app_binding_invoke`, and `app_run_get` operations over AppActionService; no
+per-App tools or execution path were introduced. App scopes are explicit and
+legacy/default credentials remain App-blind. Focused contract, scope, parity,
+approval, architecture, API/web typecheck, lint, and UI tests pass. A disposable
+browser stack proved loading, healthy/unhealthy and stale denial, approval,
+disabled, succeeded, and failed states at desktop and 390x844 mobile sizes.
+That pass also caught and closed the final integration gap: App Run approve and
+reject buttons now enter the governed approval resolver rather than the legacy
+agent executor. The disposable visual database was removed; the retained Phase
+5 certification database remains for Loop 7.
 
 ## Loop 7 — Compound proof, certification, and release
 
@@ -426,6 +465,19 @@ isolated contracts.
   smoke, predecessor-image rollback read, candidate restoration, and final
   commit/image digest.
 - Record the immutable release evidence and exact Phase 6 authoring-kit handoff.
+
+**Local closeout:** the connected Campaigns proof now uses the exact checked
+Contacts and Campaigns source packages and lockfiles. The four interactive
+surfaces share AppActionService, exact grant/binding ancestry, and governed App
+Runs while replay authority remains isolated by surface and token. Review,
+revocation, upgrade/rollback, uninstall refusal, developer pairing, deterministic
+proof packages, capability/resource seams, operator rollback, and the
+Apps-enabled candidate lane are covered by the focused certification matrix.
+Repository typecheck passes. The official release default remains off until the
+Phase 6 beta gate. The immutable release-host pass cannot run truthfully before
+PR C is merged and an exact commit/image digest exists, so Phase 5 is not yet
+marked complete. See
+`docs/superpowers/audits/2026-09-01-app-platform-phase-5-release-certification.md`.
 
 ## PR train
 
