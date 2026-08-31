@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import {
   buildDeftAppPackage,
   prepareModuleArtifact,
-  type DeftAppManifestV1Input,
 } from '@deft/app-kit';
 import { inspectAppPackageJson } from '../src/lib/app-service.js';
 import { AppError } from '../src/lib/app-errors.js';
+import { closeDb } from '../src/lib/db.js';
+import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
+
+after(async () => closeDb());
 
 async function helloPackage(options: { includeOmittedDefault?: boolean } = {}) {
   const fields = [
@@ -82,60 +85,11 @@ test('API inspection rejects navigation that is not backed by an included Module
   );
 });
 
-test('API inspection rejects authoring-only Protocol v1 before persistence is installed', async () => {
-  const v0 = await helloPackage();
-  const reference = v0.package.manifest.modules[0]!;
-  const manifest: DeftAppManifestV1Input = {
-    ...v0.package.manifest,
-    schema_version: '1',
-    compatibility: { app_protocol: '1' },
-    dependencies: [{ key: 'contacts_app', app_id: 'community.deft.contacts-app', version: '1.0.0' }],
-    resource_requirements: [
-      {
-        key: 'greeting',
-        source: { kind: 'included_module', module_id: reference.module_id, version: reference.version },
-        resource_type: 'greetings',
-        fields: ['message'],
-      },
-      {
-        key: 'contact',
-        source: {
-          kind: 'dependency_module', dependency_key: 'contacts_app',
-          module_id: 'community.deft.contacts', version: '1.0.0',
-        },
-        resource_type: 'contacts',
-        fields: ['email'],
-      },
-    ],
-    capability_requirements: [{
-      key: 'send_email',
-      interface: { kind: 'private', namespace: 'app_lineage', key: 'sandbox_email_send', version: '1' },
-    }],
-    connector_requirements: [{ key: 'mail_provider', provider_kind: 'mcp' }],
-    actions: [{
-      key: 'send_greeting',
-      label: 'Send greeting',
-      capability_requirement_key: 'send_email',
-      connector_requirement_key: 'mail_provider',
-      placement: { kind: 'resource_detail', resource_requirement_key: 'greeting' },
-      input_bindings: [
-        {
-          input_key: 'to',
-          source: {
-            kind: 'user_input', input_type: 'email', label: 'Recipient', required: true,
-          },
-        },
-        { input_key: 'subject', source: { kind: 'resource_field', resource_requirement_key: 'greeting', field_key: 'message' } },
-        { input_key: 'body_text', source: { kind: 'resource_field', resource_requirement_key: 'greeting', field_key: 'message' } },
-      ],
-    }],
-  };
-  const built = await buildDeftAppPackage({ manifest, artifacts: v0.package.artifacts });
+test('API inspection accepts Protocol v1 without granting authority', async () => {
+  const built = await buildPhase5ConnectedAppPackage();
+  const inspected = await inspectAppPackageJson(built.json);
 
-  await assert.rejects(
-    () => inspectAppPackageJson(built.json),
-    (error: unknown) => error instanceof AppError
-      && error.code === 'APP_PROTOCOL_UNSUPPORTED'
-      && error.status === 409,
-  );
+  assert.equal(inspected.package_digest, built.digest);
+  assert.equal(inspected.manifest.compatibility.app_protocol, '1');
+  assert.deepEqual(inspected.permissions, []);
 });

@@ -173,6 +173,57 @@ after(async () => {
   await closeDb();
 });
 
+test('App-origin submission remains service- and database-denied', async () => {
+  const setup = service();
+  const beforeCount = await client.query<{ count: string }>(
+    'SELECT count(*) FROM app_runs WHERE org_id = $1',
+    [ORG_ID],
+  );
+  await assert.rejects(
+    setup.service.submit(trusted, submission({
+      origin: {
+        origin_kind: 'app',
+        installation_id: randomUUID(),
+        app_version_id: randomUUID(),
+        binding_key: 'send_campaign_email',
+        grant_snapshot_id: randomUUID(),
+      },
+    })),
+    (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
+  );
+  const afterCount = await client.query<{ count: string }>(
+    'SELECT count(*) FROM app_runs WHERE org_id = $1',
+    [ORG_ID],
+  );
+  assert.equal(afterCount.rows[0]?.count, beforeCount.rows[0]?.count);
+
+  const legitimate = await setup.service.submit(trusted, submission({
+    idempotency_key: `app-origin-db-gate-source-${suffix}`,
+  }));
+  const forbiddenId = randomUUID();
+  await assert.rejects(
+    client.query(
+      `INSERT INTO app_runs
+       SELECT (jsonb_populate_record(
+         NULL::app_runs,
+         to_jsonb(source) || jsonb_build_object(
+           'id', $2::text,
+           'origin_kind', 'app',
+           'origin_app_installation_id', $3::text,
+           'origin_app_version_id', $4::text,
+           'origin_app_binding_key', 'send_campaign_email',
+           'origin_app_grant_snapshot_id', $5::text,
+           'root_run_id', $2::text,
+           'parent_run_id', NULL
+         )
+       )).* FROM app_runs AS source WHERE source.org_id = $1 AND source.id = $6`,
+      [ORG_ID, forbiddenId, randomUUID(), randomUUID(), randomUUID(), legitimate.id],
+    ),
+    (error: any) => error?.code === '23514'
+      && error?.constraint === 'app_runs_app_origin_disabled_check',
+  );
+});
+
 test('submission is atomic, rotation-safe, tenant-scoped, and replay-conflict aware', async () => {
   const { service: runs } = service();
   const parallel = await Promise.all(Array.from({ length: 20 }, () => runs.submit(trusted, submission())));

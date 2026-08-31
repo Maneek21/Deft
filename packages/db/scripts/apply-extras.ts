@@ -67,6 +67,10 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, resourceRelationsFile), 'utf8'));
     console.log(`[apply-extras] applied ${resourceRelationsFile}`);
 
+    const connectedAppGrantsFile = '0.3.0-preview.23-connected-app-grants-foundation.sql';
+    await client.query(readFileSync(resolve(upgradesDir, connectedAppGrantsFile), 'utf8'));
+    console.log(`[apply-extras] applied ${connectedAppGrantsFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -128,6 +132,37 @@ async function main() {
       'resource_relation_sets_org_id_id_unique',
       'resource_relation_edges_org_set_fk',
       'resource_relation_receipts_org_set_fk',
+      'capability_provider_snapshots_org_provider_id_unique',
+      'mcp_connections_org_id_id_unique',
+      'app_installations_org_id_app_id_unique',
+      'app_installations_active_grant_snapshot_fk',
+      'app_installations_grant_pointer_dormant_check',
+      'app_versions_org_installation_identity_unique',
+      'app_versions_requested_grant_snapshot_fk',
+      'app_versions_protocol_supported_check',
+      'app_versions_protocol_stage_gate_check',
+      'app_versions_connected_request_check',
+      'app_grant_snapshots_app_installation_fk',
+      'app_grant_snapshots_app_version_fk',
+      'app_grant_snapshots_requested_snapshot_fk',
+      'app_grant_snapshots_supersedes_snapshot_fk',
+      'app_grant_snapshots_review_shape_check',
+      'app_grant_snapshots_supersedes_self_check',
+      'app_dependency_locks_grant_snapshot_fk',
+      'app_dependency_locks_dependency_app_fk',
+      'app_dependency_locks_dependency_version_fk',
+      'app_dependency_locks_ownership_check',
+      'app_action_bindings_grant_snapshot_fk',
+      'app_action_bindings_mcp_connection_fk',
+      'app_action_bindings_provider_snapshot_fk',
+      'app_action_bindings_run_identity_unique',
+      'app_action_bindings_interface_check',
+      'app_action_bindings_policy_check',
+      'app_runs_app_version_fk',
+      'app_runs_app_grant_snapshot_fk',
+      'app_runs_app_action_binding_fk',
+      'app_runs_app_origin_disabled_check',
+      'app_runs_app_identity_dormant_check',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -172,6 +207,11 @@ async function main() {
       'resource_relation_edges_active_target_unique',
       'resource_relation_edges_active_position_unique',
       'resource_relation_receipts_idempotency_unique',
+      'app_grant_snapshots_one_requested_unique',
+      'app_dependency_locks_grant_key_unique',
+      'app_dependency_locks_grant_installation_unique',
+      'app_action_bindings_grant_action_unique',
+      'app_action_bindings_run_identity_unique',
     ];
     const installedIndexes = await client.query<{ relname: string }>(
       `SELECT relname
@@ -216,6 +256,11 @@ async function main() {
       'mcp_tool_overrides_app_run_authorization_version_trigger',
       'mcp_tokens_app_run_authorization_version_trigger',
       'oauth_access_tokens_app_run_authorization_version_trigger',
+      'app_grant_snapshots_lineage_trigger',
+      'app_grant_snapshots_append_only_trigger',
+      'app_dependency_locks_append_only_trigger',
+      'app_action_bindings_append_only_trigger',
+      'app_versions_identity_trigger',
     ];
     const installedAppRunTriggers = await client.query<{ tgname: string }>(
       `SELECT tgname

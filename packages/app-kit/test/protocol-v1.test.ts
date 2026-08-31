@@ -4,6 +4,8 @@ import {
   DEFT_APP_PACKAGE_FORMAT_V1,
   DEFT_APP_PROTOCOL_OPERATIONS,
   DEFT_APP_PROTOCOL_SUPPORT,
+  AppAuthorityKeyV1Schema,
+  AppMachineKeyV1Schema,
   DeftAppManifestV1Schema,
   SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
   SandboxEmailSendInputSchema,
@@ -150,8 +152,8 @@ describe('App Protocol v1 authoring contract', () => {
     const schemaKeys = Object.keys((schema as { properties: Record<string, unknown> }).properties).sort();
     assert.deepEqual(schemaKeys, [...DEFT_APP_PROTOCOL_SUPPORT['1'].manifest_keys].sort());
     assert.equal(isDeftAppProtocolOperationSupported('1', 'authoring'), true);
-    assert.equal(isDeftAppProtocolOperationSupported('1', 'inspect'), false);
-    assert.equal(isDeftAppProtocolOperationSupported('1', 'stage'), false);
+    assert.equal(isDeftAppProtocolOperationSupported('1', 'inspect'), true);
+    assert.equal(isDeftAppProtocolOperationSupported('1', 'stage'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'review'), false);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'route'), false);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'activate'), false);
@@ -202,6 +204,13 @@ describe('App Protocol v1 authoring contract', () => {
       ...base,
       claimed_publisher: 'attacker.example',
     } as typeof base), /Unrecognized key/);
+    assert.equal(
+      canonicalAppPrivateInterfaceIdentity({
+        ...base,
+        organization_id: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }),
+      'deft.private.v1:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:22222222-2222-4222-8222-222222222222:sandbox_email_send:v1',
+    );
   });
 
   test('freezes the private sandbox email schema and host-owned policy floor', () => {
@@ -247,6 +256,14 @@ describe('App Protocol v1 authoring contract', () => {
 
   test('rejects policy injection, executable planes, arbitrary mapping, and ambiguous references', async () => {
     const { manifest } = await fixture();
+    assert.equal(AppMachineKeyV1Schema.safeParse('system_prompt').success, true);
+    for (const reserved of ['deft', 'deft_action', 'core', 'core_action', 'system', 'system_action']) {
+      assert.equal(AppAuthorityKeyV1Schema.safeParse(reserved).success, false, reserved);
+    }
+    assert.equal(DeftAppManifestV1Schema.safeParse({
+      ...manifest,
+      actions: [{ ...manifest.actions[0], key: 'system_action' }],
+    }).success, false);
     for (const forbidden of [
       'runtime',
       'code',
@@ -292,6 +309,20 @@ describe('App Protocol v1 authoring contract', () => {
       ...manifest,
       dependencies: [{ ...manifest.dependencies[0], app_id: manifest.id }],
     }).success, false);
+    assert.equal(DeftAppManifestV1Schema.safeParse({
+      ...manifest,
+      dependencies: [
+        manifest.dependencies[0]!,
+        { key: manifest.dependencies[0]!.key, app_id: 'community.deft.accounts-app', version: '1.0.0' },
+      ],
+    }).success, false, 'Dependency keys must be unique');
+    assert.equal(DeftAppManifestV1Schema.safeParse({
+      ...manifest,
+      dependencies: [
+        manifest.dependencies[0]!,
+        { key: 'accounts_app', app_id: manifest.dependencies[0]!.app_id, version: '1.0.0' },
+      ],
+    }).success, false, 'One dependency App cannot be selected ambiguously');
     assert.equal(DeftAppManifestV1Schema.safeParse({
       ...manifest,
       resource_requirements: [{ ...manifest.resource_requirements[0], key: 'cаmpaign' }],

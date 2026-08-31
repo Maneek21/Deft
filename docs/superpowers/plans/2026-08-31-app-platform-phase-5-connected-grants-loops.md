@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–1 complete; Loop 2 ready |
+| Status | Loops 0–2 complete; PR A ready |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -209,6 +209,22 @@ and proof that staging produces zero provider calls and zero executable grant.
 
 **Stop condition:** do not continue if a Run can reference an unpinned slug,
 mutable provider discovery result, or grant JSON without database lineage.
+
+**Closeout:** passed on the dormant-authority boundary. Protocol v1 staging now
+writes one exact requested snapshot whose fixture digest is pinned, while v0
+staging writes an empty compatibility request. Migration `.23` was applied
+idempotently to both the disposable fresh-schema database and a database built
+from predecessor commit `c1508a06`; the pre-migration pointerless v0 row was
+preserved and another pointerless v0 version remained insertable after upgrade.
+Focused database proofs reject cross-tenant grant/dependency/action lineage,
+unauthorized reviewers, v0 effective grants, self-supersession, duplicate or
+ambiguous dependency locks, private-interface lineage substitution, and child
+row mutation. Historical App bindings now block MCP hard deletion before the
+live client is disconnected. App-origin submission remains denied in both the
+service and database, and staging imports no provider, approval, connector
+runtime, or App Run seam. The local PostgreSQL proof used the previously
+documented test-only `vector` type shim because pgvector is not installed;
+real-pgvector release-host certification remains Loop 7 work.
 
 ## Loop 3 — Explicit review, activation, upgrade, and revocation
 

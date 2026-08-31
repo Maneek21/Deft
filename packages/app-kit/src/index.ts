@@ -168,10 +168,19 @@ export const AppMachineKeyV1Schema = z
   .max(48)
   .regex(KEY_PATTERN, 'App key must be lowercase snake_case');
 
+// Only identifiers that enter host authority/binding namespaces reserve these
+// prefixes. App-scoped resource and Module field keys remain ordinary machine
+// keys so names such as `system_prompt` stay compatible.
+export const AppAuthorityKeyV1Schema = AppMachineKeyV1Schema
+  .refine(
+    (value) => !/^(deft|core|system)(_|$)/.test(value),
+    'App authority key uses a reserved host namespace',
+  );
+
 export const AppPrivateInterfaceIdentityInputSchema = z.strictObject({
-  organization_id: z.uuid(),
-  app_lineage_id: z.uuid(),
-  interface_key: AppMachineKeyV1Schema,
+  organization_id: z.uuid().transform((value) => value.toLowerCase()),
+  app_lineage_id: z.uuid().transform((value) => value.toLowerCase()),
+  interface_key: AppAuthorityKeyV1Schema,
   interface_version: z.string().regex(/^[1-9]\d*$/, 'Private interface version must be a positive integer'),
 });
 
@@ -253,7 +262,7 @@ export const SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT = Object.freeze({
 } as const);
 
 export const DeftAppDependencyRequirementV1Schema = z.strictObject({
-  key: AppMachineKeyV1Schema,
+  key: AppAuthorityKeyV1Schema,
   app_id: AppIdSchema,
   version: AppSemverSchema,
 });
@@ -268,7 +277,7 @@ export const DeftAppResourceRequirementV1Schema = z.strictObject({
     }),
     z.strictObject({
       kind: z.literal('dependency_module'),
-      dependency_key: AppMachineKeyV1Schema,
+      dependency_key: AppAuthorityKeyV1Schema,
       module_id: AppIdSchema,
       version: AppSemverSchema,
     }),
@@ -278,7 +287,7 @@ export const DeftAppResourceRequirementV1Schema = z.strictObject({
 });
 
 export const DeftAppCapabilityRequirementV1Schema = z.strictObject({
-  key: AppMachineKeyV1Schema,
+  key: AppAuthorityKeyV1Schema,
   interface: z.strictObject({
     kind: z.literal('private'),
     namespace: z.literal('app_lineage'),
@@ -288,7 +297,7 @@ export const DeftAppCapabilityRequirementV1Schema = z.strictObject({
 });
 
 export const DeftAppConnectorRequirementV1Schema = z.strictObject({
-  key: AppMachineKeyV1Schema,
+  key: AppAuthorityKeyV1Schema,
   provider_kind: z.literal('mcp'),
 });
 
@@ -315,10 +324,10 @@ export const DeftAppActionInputSourceV1Schema = z.discriminatedUnion('kind', [
 ]);
 
 export const DeftAppActionBindingV1Schema = z.strictObject({
-  key: AppMachineKeyV1Schema,
+  key: AppAuthorityKeyV1Schema,
   label: boundedPlainText(APP_LIMITS.display_name_chars, 'Action label'),
-  capability_requirement_key: AppMachineKeyV1Schema,
-  connector_requirement_key: AppMachineKeyV1Schema,
+  capability_requirement_key: AppAuthorityKeyV1Schema,
+  connector_requirement_key: AppAuthorityKeyV1Schema,
   placement: z.strictObject({
     kind: z.literal('resource_detail'),
     resource_requirement_key: AppMachineKeyV1Schema,
@@ -531,7 +540,11 @@ const V0_HANDLER_MATRIX = handlerMatrix({
   activate: 'app-service:activate-v0',
 });
 
-const V1_HANDLER_MATRIX = handlerMatrix({ authoring: 'app-kit:v1' });
+const V1_HANDLER_MATRIX = handlerMatrix({
+  authoring: 'app-kit:v1',
+  inspect: 'app-service:inspect-v1',
+  stage: 'app-service:stage-v1-requested-grant',
+});
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
   '0': Object.freeze({
