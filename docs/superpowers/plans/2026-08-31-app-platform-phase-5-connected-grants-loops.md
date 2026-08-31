@@ -2,8 +2,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Planned; implementation blocked on Phase 4 PR merge and immutable closeout |
-| Base candidate | Phase 4 PR #277 at `3f439959425dc0869c6a14f0bf801d6cb9742562` |
+| Status | Loop 0 complete; Loop 1 ready |
+| Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
 | Exclusions | Automation, schedules, bulk/newsletter delivery, sync, runtimes, custom UI, public ingress, marketplace, billing, and SaaS control plane |
@@ -132,6 +132,11 @@ adds a plain-text body field through a compatible Module upgrade.
 
 **Stop condition:** do not begin authority schema work if Phase 4 cannot be
 restored with relations retained and authorization still live.
+
+**Closeout:** passed on the isolated release host. The matched projection hash,
+live restored relation read, exact predecessor read, candidate restoration,
+and cleanup are recorded in
+`docs/superpowers/audits/2026-08-31-app-platform-phase-4-release-host-certification.md`.
 
 ## Loop 1 — Protocol v1 and the first private capability contract
 
