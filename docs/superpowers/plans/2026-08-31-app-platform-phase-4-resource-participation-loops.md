@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Read-only implementation handoff; no Phase 4 code started |
+| Status | In execution; Loops 0–1 implemented and locally certified as the dormant PR A checkpoint |
 | Released baseline | `v0.3.0-preview.14` at `6d39e0e0413c82d36c9481849ae582fdf805d1a6` |
 | Baseline image | `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
 | Architecture source | `2026-08-29-full-surface-app-platform.md` |
@@ -248,6 +248,13 @@ existing task relation tables and APIs remain source of truth.
 without widening or if a caller needs a new token scope, stop and move that
 caller to Phase 5 rather than weakening the boundary.
 
+**Completed evidence (2026-08-31):** the released baseline and `.22` migration
+slot were confirmed; current Module relation/search and Task visibility owners
+remain delegable without a new scope. The architecture decision, independent
+Contacts/Campaigns App v0 fixtures, and deterministic zero-call sandbox email
+provider are materialized. Both Apps pass two identical public App Kit checks
+with no connected permissions.
+
 ### Loop 1 — Shared contract and closed service seam
 
 - Add strict shared ResourceRef schemas, limits, structured errors, safe
@@ -261,6 +268,13 @@ caller to Phase 5 rather than weakening the boundary.
 
 This loop changes no schema, UI, App manifest, token, connector, or provider
 execution path.
+
+**Completed evidence (2026-08-31):** the shared closed ResourceRef and safe
+projection contracts pass with all existing shared contracts (58 tests). Eight
+focused service/fixture/architecture tests prove host-bound context, closed
+adapter slots, pre-adapter rejection, denial/error sanitization, projection
+validation, zero provider calls, and the absence of routes or effect/data
+dependencies. Shared, App Kit, API, web, and repository typechecks pass.
 
 ### Loop 2 — Module adapter and parity shadow
 

@@ -5,12 +5,13 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "test": "tsx --test test/modules.test.ts test/capabilities.test.ts test/app-runs.test.ts",
+    "test": "tsx --test test/modules.test.ts test/capabilities.test.ts test/app-runs.test.ts test/resources.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
     ".": "./src/index.ts",
     "./modules": "./src/modules.ts",
+    "./resources": "./src/resources.ts",
     "./schemas": "./src/schemas.ts",
     "./rich-text": "./src/rich-text.ts"
   },
