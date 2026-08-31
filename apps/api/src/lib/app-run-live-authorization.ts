@@ -130,7 +130,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       const internal = await this.#loadInternalRun(input.tx, input.org_id, input.run.id);
       if (!internal || !await this.#matchesLiveState(input.tx, input.run, internal)) return false;
 
-      if (input.run.execution_actor_type !== 'agent_employee') {
+      const reservesEmployeeBudget = input.run.execution_actor_type === 'agent_employee'
+        && input.run.risk_class !== 'read';
+      if (!reservesEmployeeBudget) {
         return internal.budget_reserved_at === null
           && internal.budget_reserved_count === null
           && internal.budget_limit_at_reservation === null;
@@ -274,7 +276,10 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     };
 
     await captureActor(input.authenticated_subject, false);
-    await captureActor(input.execution_actor, input.execution_actor.actor_type === 'agent_employee');
+    await captureActor(
+      input.execution_actor,
+      input.execution_actor.actor_type === 'agent_employee' && input.policy.risk_class !== 'read',
+    );
 
     const [connection] = await tx.select().from(mcpConnections).where(and(
       eq(mcpConnections.org_id, input.org_id),

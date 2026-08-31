@@ -110,6 +110,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     ]);
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (rejected) throw rejected.reason;
+    const { shutdownAppRunRuntime } = await import('./lib/app-run-runtime.js');
+    await shutdownAppRunRuntime();
     const { closeDb } = await import('./lib/db.js');
     await closeDb();
   } catch (err) {

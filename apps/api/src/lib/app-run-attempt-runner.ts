@@ -28,10 +28,20 @@ import {
 } from './app-run-attention.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import type { AppRunSecretService } from './app-run-secrets.js';
+import {
+  noOpAppRunAttemptQueue,
+  type AppRunAttemptQueue,
+  type AppRunAttemptScheduler,
+} from './app-run-scheduler.js';
 
 type ClaimedAttempt = Readonly<{
   run: AppRunSafeView;
   attempt: typeof appRunAttempts.$inferSelect;
+}>;
+
+export type AppRunImmediateExecution = Readonly<{
+  run: AppRunSafeView;
+  provider_result?: AppRunProviderExecutionResult;
 }>;
 
 function providerIdempotencyKey(runId: string): string {
@@ -45,7 +55,7 @@ function boundedLeaseMs(value: number): number {
   return Math.max(1_000, Math.min(value, 15 * 60_000));
 }
 
-export class AppRunAttemptRunner {
+export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   constructor(
     private readonly repository: PostgresAppRunRepository,
     private readonly secretRepository: AppRunSecretRepository,
@@ -57,6 +67,7 @@ export class AppRunAttemptRunner {
     private readonly heartbeatIntervalMs = Math.max(250, Math.floor(boundedLeaseMs(leaseMs) / 3)),
     private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
+    private readonly attemptQueue: AppRunAttemptQueue = noOpAppRunAttemptQueue,
   ) {}
 
   async run(
@@ -66,22 +77,49 @@ export class AppRunAttemptRunner {
     workerId: string,
     signal?: AbortSignal,
   ): Promise<AppRunSafeView> {
+    return (await this.#runInternal(orgId, runId, attemptId, workerId, signal)).run;
+  }
+
+  /** Synchronous compatibility entrance. The exact provider result is
+   * transient and never enters generic Run APIs, logs, jobs, or projections. */
+  async runImmediate(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    workerId: string,
+    signal?: AbortSignal,
+  ): Promise<AppRunImmediateExecution> {
+    return this.#runInternal(orgId, runId, attemptId, workerId, signal);
+  }
+
+  async #runInternal(
+    orgId: string,
+    runId: string,
+    attemptId: string,
+    workerId: string,
+    signal?: AbortSignal,
+  ): Promise<AppRunImmediateExecution> {
     await this.recoverRun(orgId, runId, attemptId);
     const claimed = await this.#claim(orgId, runId, attemptId, workerId);
-    if (!claimed) return this.repository.inspect(orgId, runId).then((run) => {
+    if (!claimed) {
+      const run = await this.repository.inspect(orgId, runId);
       if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      return run;
-    });
+      return { run };
+    }
 
     const input = await this.secretRepository.readInput(orgId, runId);
     if (input === null) {
       await this.#settleBeforeCallFailure(claimed, 'APP_RUN_EXPIRED');
       const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
       await this.#projectState(settled);
-      return settled;
+      return { run: settled };
     }
     const boundaryCommitted = await this.#markProviderCallStarted(claimed);
-    if (!boundaryCommitted) return this.repository.inspect(orgId, runId).then((run) => run!);
+    if (!boundaryCommitted) {
+      const run = await this.repository.inspect(orgId, runId);
+      if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      return { run };
+    }
 
     const stableProviderKey = claimed.run.retry_class === 'idempotent_with_key'
       ? providerIdempotencyKey(runId)
@@ -113,7 +151,7 @@ export class AppRunAttemptRunner {
       );
       const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
       await this.#projectState(settled);
-      return settled;
+      return { run: settled, provider_result: result };
     }
 
     const known = await this.#knownOutcome(claimed.run, result);
@@ -128,30 +166,43 @@ export class AppRunAttemptRunner {
     await this.#finalizeKnownResult(orgId, runId, claimed.attempt.id, claimed.attempt.claim_token!);
     const settled = await this.repository.inspect(orgId, runId).then((run) => run!);
     await this.#projectState(settled);
-    return settled;
+    return { run: settled, provider_result: result };
   }
 
   async prepareAttempt(orgId: string, runId: string): Promise<string | null> {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
-      if (
-        !run
-        || !run.execution_released_at
-        || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
-        || !await this.executionAuthorizer.authorizeExecution({
-          org_id: orgId, run, tx, stage: 'prepare', now,
-        })
-      ) return null;
-      if (run.input_expires_at <= now) return null;
-      const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
-        eq(appRunAttempts.org_id, orgId),
-        eq(appRunAttempts.run_id, runId),
-        inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
-      )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
-      if (existing) return existing.id;
-      return (await this.#createAttempt(tx, run, now))?.id ?? null;
+      return run ? this.scheduleInTransaction(tx, run, now) : null;
     });
+  }
+
+  /** Schedule against a Run already locked by the caller. Queue insertion is
+   * in the same transaction as attempt creation/release, closing the crash gap
+   * between durable authority and worker ownership. */
+  async scheduleInTransaction(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    now: Date,
+  ): Promise<string | null> {
+    if (
+      !run.execution_released_at
+      || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
+      || !await this.executionAuthorizer.authorizeExecution({
+        org_id: run.org_id, run, tx, stage: 'prepare', now,
+      })
+      || run.input_expires_at <= now
+    ) return null;
+    const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, run.org_id),
+      eq(appRunAttempts.run_id, run.id),
+      inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
+    )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
+    if (existing) {
+      await this.attemptQueue.enqueue(tx, run.org_id, run.id, existing.id);
+      return existing.id;
+    }
+    return (await this.#createAttempt(tx, run, now))?.id ?? null;
   }
 
   async renewLease(orgId: string, attemptId: string, claimToken: string): Promise<boolean> {
@@ -345,6 +396,7 @@ export class AppRunAttemptRunner {
       id: crypto.randomUUID(), org_id: run.org_id, run_id: run.id,
       event_type: 'attempt_created', payload: { attempt_id: attempt.id, attempt_number: attemptNumber }, now,
     });
+    await this.attemptQueue.enqueue(tx, run.org_id, run.id, attempt.id);
     return attempt;
   }
 

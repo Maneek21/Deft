@@ -20,6 +20,10 @@ import {
   noOpAppRunAttentionProjector,
   type AppRunAttentionProjector,
 } from './app-run-attention.js';
+import {
+  noOpAppRunAttemptScheduler,
+  type AppRunAttemptScheduler,
+} from './app-run-scheduler.js';
 
 export const APP_RUN_APPROVAL_ACTION = 'app_run_invoke';
 
@@ -99,6 +103,7 @@ export class PostgresAppRunApprovalResolver {
     private readonly now: () => Date = () => new Date(),
     private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
+    private readonly attemptScheduler: AppRunAttemptScheduler = noOpAppRunAttemptScheduler,
   ) {}
 
   async approve(
@@ -123,6 +128,7 @@ export class PostgresAppRunApprovalResolver {
           'approved',
           run.execution_released_at ?? this.now(),
         );
+        await this.attemptScheduler.scheduleInTransaction(tx, run, this.now());
         return { status: 'approved', message: 'already approved', result: this.#safeResult(run, true) };
       }
       if (run.state === 'cancelled') {
@@ -187,6 +193,7 @@ export class PostgresAppRunApprovalResolver {
         'approved',
         run.execution_released_at ?? this.now(),
       );
+      await this.attemptScheduler.scheduleInTransaction(tx, run, this.now());
       return { status: 'approved', result: this.#safeResult(run, true) };
     });
     await this.#resolveApprovalAttention(actionId, approverUserId);

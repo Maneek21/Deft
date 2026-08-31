@@ -10,6 +10,7 @@ import type {
   MCPToolOverride,
 } from '@deft/mcp';
 import { CapabilityService } from '../src/lib/capability-service.js';
+import { PinnedMcpAppRunProviderExecutor } from '../src/lib/app-run-provider-executor.js';
 import {
   discoverMcpToolsForConnections,
   mcpProviderDescriptionForAgent,
@@ -752,4 +753,166 @@ test('strict invocation inputs fail before resolution and pre-call/runtime throw
     /Invalid MCP connection target:/,
   );
   assert.equal(executeCalls, 1);
+});
+
+test('pinned App Run execution resolves the exact provider once and preserves returned MCP payloads', async () => {
+  const resolutionCalls: unknown[][] = [];
+  const executionCalls: unknown[][] = [];
+  const rawResult = {
+    content: [{ type: 'text', text: 'sent' }],
+    structuredContent: { message_id: 'message-pinned' },
+  };
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async () => ({ connection }),
+    resolvePinnedExecutable: async (...args) => {
+      resolutionCalls.push(args);
+      return { connection };
+    },
+    executeTool: async (...args) => {
+      executionCalls.push(args);
+      return {
+        success: true,
+        content: rawResult.content,
+        structuredContent: rawResult.structuredContent,
+        rawResult,
+        durationMs: 9,
+      };
+    },
+  };
+  const executor = new PinnedMcpAppRunProviderExecutor(providerForRuntime(runtime));
+  const result = await executor.execute({
+    org_id: connection.org_id,
+    provider_kind: 'mcp',
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    input: { recipient: 'ada@example.test' },
+  });
+
+  assert.deepEqual(resolutionCalls, [[connection.org_id, connection.id, 'send_email']]);
+  assert.equal(executionCalls.length, 1);
+  assert.deepEqual(result, {
+    status: 'returned',
+    provider_succeeded: true,
+    output: {
+      schema_version: 'deft.app_run.mcp_result.v1',
+      legacy_output: rawResult,
+      duration_ms: 9,
+    },
+    duration_ms: 9,
+  });
+});
+
+test('pinned App Run execution fails closed for unbound idempotency and ambiguous transport outcomes', async () => {
+  let resolutions = 0;
+  let calls = 0;
+  let release: (() => void) | null = null;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async () => ({ connection }),
+    resolvePinnedExecutable: async () => {
+      resolutions++;
+      return { connection };
+    },
+    executeTool: async () => {
+      calls++;
+      if (calls === 1) {
+        return { success: false, content: null, error: 'socket reset', durationMs: 2 };
+      }
+      await pending;
+      return { success: true, content: [], rawResult: { content: [] }, durationMs: 2 };
+    },
+  };
+  const executor = new PinnedMcpAppRunProviderExecutor(providerForRuntime(runtime));
+  const base = {
+    org_id: connection.org_id,
+    provider_kind: 'mcp' as const,
+    provider_instance_id: connection.id,
+    operation_name: 'send_email',
+    input: {},
+  };
+
+  assert.deepEqual(await executor.execute({ ...base, provider_idempotency_key: 'unbound' }), {
+    status: 'not_attempted',
+    error_code: 'APP_RUN_PROVIDER_UNAVAILABLE',
+  });
+  assert.equal(resolutions, 0);
+  assert.equal(calls, 0);
+  assert.deepEqual(await executor.execute(base), { status: 'indeterminate' });
+
+  const controller = new AbortController();
+  const aborted = executor.execute({ ...base, signal: controller.signal });
+  while (calls < 2) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  assert.deepEqual(await aborted, { status: 'indeterminate' });
+  release!();
+  assert.equal(calls, 2);
+});
+
+test('engine-on MCP intake modes select exactly one Capability Service path without fallback', async () => {
+  const request = {
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada' },
+    provider: {
+      provider_kind: 'mcp' as const,
+      connection_slug: connection.slug,
+      operation_name: 'send_email',
+    },
+    input: { recipient: 'ada@example.test' },
+  };
+  const legacyResult = {
+    provider: {
+      provider_kind: 'mcp' as const,
+      requested_provider_key: connection.slug,
+      resolved_provider: {
+        org_id: connection.org_id,
+        provider_kind: 'mcp' as const,
+        provider_instance_id: connection.id,
+      },
+    },
+    provider_display_name: connection.name,
+    operation_name: 'send_email',
+    provider_call_attempted: true,
+    provider_succeeded: true,
+    legacy_output: { path: 'legacy' },
+    duration_ms: 1,
+  };
+  const governedResult = { ...legacyResult, legacy_output: { path: 'governed' } };
+  let legacyCalls = 0;
+  let governedCalls = 0;
+  let governedOptions: unknown;
+  const legacyPort = {
+    async discover() { return { provider_kind: 'mcp' as const, tools: [], snapshot: null }; },
+    async invoke() { legacyCalls++; return legacyResult; },
+  };
+  const governedPort = {
+    async invoke(_request: unknown, options: unknown) {
+      governedCalls++;
+      governedOptions = options;
+      return governedResult;
+    },
+  };
+
+  const engineOnIntakeOff = new CapabilityService(legacyPort, governedPort, () => false);
+  assert.deepEqual((await engineOnIntakeOff.invoke(request)).legacy_output, { path: 'legacy' });
+  assert.deepEqual({ legacyCalls, governedCalls }, { legacyCalls: 1, governedCalls: 0 });
+
+  const engineOnIntakeOn = new CapabilityService(legacyPort, governedPort, () => true);
+  assert.deepEqual((await engineOnIntakeOn.invoke(request, {
+    legacy_action_id: 'action-1',
+    idempotency_key: 'occurrence-1',
+  })).legacy_output, { path: 'governed' });
+  assert.deepEqual({ legacyCalls, governedCalls }, { legacyCalls: 1, governedCalls: 1 });
+  assert.deepEqual(governedOptions, {
+    legacy_action_id: 'action-1',
+    idempotency_key: 'occurrence-1',
+  });
+
+  const failing = new CapabilityService(legacyPort, {
+    async invoke() {
+      governedCalls++;
+      throw new Error('governed failure');
+    },
+  }, () => true);
+  await assert.rejects(failing.invoke(request), /governed failure/);
+  assert.equal(legacyCalls, 1);
 });

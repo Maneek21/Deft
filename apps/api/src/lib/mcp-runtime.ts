@@ -165,3 +165,58 @@ export async function getExecutableMcpConnection(
 
   return { connection };
 }
+
+/** Resolve the exact provider identity pinned into an App Run. Slug lookup is
+ * intentionally unavailable on this path: a renamed or replacement
+ * connection must never inherit an already-authorized Run. Actor assignment
+ * and token authority are rechecked by App Run live authorization immediately
+ * before this provider boundary. */
+export async function getExecutableMcpConnectionById(
+  orgId: string,
+  connectionId: string,
+  toolName: string,
+): Promise<ExecutableMcpConnectionResult> {
+  const [connection] = await db
+    .select()
+    .from(mcpConnections)
+    .where(and(
+      eq(mcpConnections.org_id, orgId),
+      eq(mcpConnections.id, connectionId),
+      eq(mcpConnections.is_active, true),
+    ))
+    .limit(1);
+  if (!connection) {
+    return {
+      connection: null,
+      error: 'Pinned MCP connection is unavailable',
+      reason: 'provider_unavailable',
+    };
+  }
+
+  if (!isMcpToolEnabled(connection.enabled_tools, connection.slug, toolName)) {
+    return {
+      connection: null,
+      error: 'Pinned MCP operation is unavailable',
+      reason: 'operation_unavailable',
+    };
+  }
+
+  const overrideRows = await db
+    .select({ tool_name: mcpToolOverrides.tool_name, is_disabled: mcpToolOverrides.is_disabled })
+    .from(mcpToolOverrides)
+    .where(and(
+      eq(mcpToolOverrides.org_id, orgId),
+      eq(mcpToolOverrides.mcp_connection_id, connection.id),
+    ));
+  if (overrideRows.some((row) => (
+    row.is_disabled && canonicalMcpToolName(row.tool_name) === toolName
+  ))) {
+    return {
+      connection: null,
+      error: 'Pinned MCP operation is unavailable',
+      reason: 'operation_unavailable',
+    };
+  }
+
+  return { connection };
+}

@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Proposed execution plan; Phases 0–2 merged, Phase 3 closeout pending |
+| **Status** | Active execution plan; Phases 0–2 and Phase 3 PR C merged, guarded PR D closeout in progress |
 | **Date** | 2026-08-30 |
 | **Architecture source** | `docs/superpowers/plans/2026-08-29-full-surface-app-platform.md` |
-| **Execution baseline** | Phase 1 `bdb137ee`; Phase 2 `9ba7b7c8`; merged Phase 3 engine `399cd030`; existing local Phase 3 certification baseline `5050b0f1` (not the final closeout tip) |
+| **Execution baseline** | Phase 1 `bdb137ee`; Phase 2 `9ba7b7c8`; Phase 3 PR C merge `9c8e9ac9`; PR D replay `ee513a35` plus split-control checkpoint `5cf88c51` (unreleased) |
 | **North star** | A community member can ask Codex to build any feasible Deft App, install it on an ordinary self-hosted workspace, and have it participate through governed resources, knowledge, agents, capabilities, experiences, automation, runtimes, sync, and public ingress as required by that App. |
 
 ## Decision
@@ -80,12 +80,16 @@ trusted API, web, or worker processes.
 - **Phase 3 PR A/B:** dormant App Run contracts, schema, secrets, lifecycle,
   attempts, replay, failure classification, and fake-provider engine merged
   through `399cd030`.
+- **Phase 3 PR C (#273):** C0–C3 trust/data completion merged at `9c8e9ac9`,
+  preserving additive `.19`–`.21`, release/budget evidence, approval ownership,
+  ancestry, receipts, Attention, and internal repair invariants.
 
-The remaining chain is local-only and unreleased:
-`4c4f48c1` (C0) -> `e6274c41` (C1) -> `c3670207` (C2) ->
-`d5192c55` (C3) -> `ffdab418` (C4) -> `944b265f` (C5) ->
-`5050b0f1` (certification docs). None of those hashes is a supported rollback
-floor. The rollback floor is the eventual merged and released image revision.
+The remaining PR D chain is local-only and unreleased: `1e4ac5a7` (C4 replay)
+-> `bd28ff6f` (C5 replay) -> `ee513a35` (historical certification replay) ->
+`5cf88c51` (split controls) -> `a6f2eed2` (closeout contract) -> `fe66113f`
+(restart-transition certification). Original C0–D2 hashes remain historical
+review evidence. None of these hashes is a supported rollback floor; the floor
+is the eventual immutable released image revision recorded by the release gate.
 
 No completed phase is restarted or redesigned. Later work must consume these
 deep services rather than create parallel execution, package, or authorization
@@ -93,8 +97,9 @@ paths.
 
 ### Phase 3 closeout gate
 
-The local C0–D2 work through `5050b0f1` is treated as completion and hardening
-of the merged engine, not as an App-facing feature.
+The historical C0–D2 work through `5050b0f1` is preserved as review evidence,
+not treated as proof of the newer split-control contract or as an App-facing
+feature. PR D's new checkpoint and consolidated matrix own closeout evidence.
 
 Before it merges:
 
@@ -112,17 +117,15 @@ Before it merges:
    one exists.
 4. Keep `origin = app`, system/automation origins, and broad rollout fail-closed
    until later phases provide their host-owned authority sources.
-5. Keep the exact flag-on legacy MCP path default-off, with no shadow provider
+5. Keep the exact legacy MCP intake path default-off, with no shadow provider
    call and no fallback after a governed attempt begins.
-6. Separate rollout controls for Run runtime/key availability, App-origin
-   entrance, and legacy-connector cutover. Document supported combinations,
-   prerequisites, compatible image floor, owner, and retirement/permanent
-   status. Enabling community Apps must not implicitly migrate all existing MCP
-   traffic.
-7. Because the split controls change code/startup contracts beyond
-   `5050b0f1`, create a new closeout checkpoint and rerun the flag-combination,
-   startup, queue-deferral, keyring, rollback, and compatibility delta before
-   PR D is certified.
+6. Keep Run runtime/key availability separate from legacy-connector cutover;
+   reject intake-on/engine-off and document the three safe combinations. Add an
+   App-origin control only with Phase 5's real grants/bindings entrance.
+   Enabling community Apps must not implicitly migrate all existing MCP traffic.
+7. Split-control checkpoint `5cf88c51` supersedes `5050b0f1` for rollout
+   evidence. Complete its flag-combination, startup, queue-deferral, keyring,
+   rollback, and compatibility delta before PR D is certified.
 
 Recommended review shape:
 
@@ -138,7 +141,8 @@ and recertify the changed delta rather than treating old hashes as evidence.
 
 Merge evidence is limited to changed boundaries plus one consolidated delta
 matrix: shared contracts, final upgrade representation, App Run database suite,
-one flag-off and one flag-on disposable-database fixture, focused
+engine-off/intake-off, engine-on/intake-off, and engine-on/intake-on modes in one
+disposable-database fixture, focused
 approval/trust/connector/worker/crypto/architecture tests, repository typecheck,
 and one production source build. Browser testing is required only if web code
 changes. Production-image, current-schema, backup/restore, rollback, and

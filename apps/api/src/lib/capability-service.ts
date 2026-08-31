@@ -12,6 +12,8 @@ import {
   type McpCapabilityInvocationAdapterResult,
   type McpCapabilityInvocationRequest,
 } from './capability-providers/mcp.js';
+import type { GovernedCapabilityInvocationOptions } from './app-run-capability-bridge.js';
+import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from './env.js';
 
 export type CapabilityDiscoveryRequest = McpCapabilityDiscoveryRequest;
 export type CapabilityDiscoveryResult = McpCapabilityDiscoveryResult;
@@ -33,6 +35,23 @@ interface McpCapabilityProviderPort {
   invoke(request: McpCapabilityInvocationRequest): Promise<McpCapabilityInvocationAdapterResult>;
 }
 
+export interface GovernedCapabilityInvocationPort {
+  invoke(
+    request: McpCapabilityInvocationRequest,
+    options?: GovernedCapabilityInvocationOptions,
+  ): Promise<McpCapabilityInvocationAdapterResult>;
+}
+
+const lazyGovernedCapabilityPort: GovernedCapabilityInvocationPort = Object.freeze({
+  async invoke(
+    request: McpCapabilityInvocationRequest,
+    options?: GovernedCapabilityInvocationOptions,
+  ) {
+    const { postgresGovernedCapabilityExecutor } = await import('./app-run-capability-bridge.js');
+    return postgresGovernedCapabilityExecutor.invoke(request, options);
+  },
+});
+
 /**
  * Provider-neutral internal seam for discovery now and invocation in the next
  * cutover loops. The provider union is intentionally closed.
@@ -40,6 +59,9 @@ interface McpCapabilityProviderPort {
 export class CapabilityService {
   constructor(
     private readonly mcpProvider: McpCapabilityProviderPort = mcpCapabilityProvider,
+    private readonly governed: GovernedCapabilityInvocationPort = lazyGovernedCapabilityPort,
+    private readonly legacyMcpCutoverEnabled: () => boolean =
+      () => APP_RUN_LEGACY_MCP_CUTOVER_ENABLED,
   ) {}
 
   async discover(request: CapabilityDiscoveryRequest): Promise<CapabilityDiscoveryResult> {
@@ -51,14 +73,19 @@ export class CapabilityService {
     throw new Error('Unsupported capability provider kind');
   }
 
-  async invoke(value: unknown): Promise<CapabilityInvocationResult> {
+  async invoke(
+    value: unknown,
+    options: GovernedCapabilityInvocationOptions = {},
+  ): Promise<CapabilityInvocationResult> {
     // Invocation inputs cross an execution boundary, so reject unsupported
     // non-JSON/authority-bearing fields before resolution or any provider call.
     const request = CapabilityInvocationRequestSchema.parse(value);
     let adapterResult: McpCapabilityInvocationAdapterResult;
     switch (request.provider.provider_kind) {
       case 'mcp':
-        adapterResult = await this.mcpProvider.invoke(request);
+        adapterResult = this.legacyMcpCutoverEnabled()
+          ? await this.governed.invoke(request, options)
+          : await this.mcpProvider.invoke(request);
         break;
       default:
         throw new Error('Unsupported capability provider kind');

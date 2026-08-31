@@ -81,8 +81,21 @@ import {
 import { ACTION_TOOLS } from './agent-tools.js';
 import {
   APP_RUN_APPROVAL_ACTION,
-  postgresAppRunApprovalResolver,
 } from './app-run-approval-adapter.js';
+import { getAppRunRuntime } from './app-run-runtime.js';
+import type { PostgresAppRunApprovalResolver } from './app-run-approval-adapter.js';
+
+let appRunApprovalResolverForTest: PostgresAppRunApprovalResolver | null = null;
+
+export function _setAppRunApprovalResolverForTest(
+  resolver: PostgresAppRunApprovalResolver | null,
+): void {
+  appRunApprovalResolverForTest = resolver;
+}
+
+async function appRunApprovalResolver(): Promise<PostgresAppRunApprovalResolver> {
+  return appRunApprovalResolverForTest ?? (await getAppRunRuntime()).approvalResolver;
+}
 import { isAgentToolDisabled } from './agent-tool-policy.js';
 import {
   MODULE_OPERATION_DEFINITIONS,
@@ -787,7 +800,7 @@ async function approveActionLocked(
   }
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
-    return postgresAppRunApprovalResolver.approve(actionId, approverUserId);
+    return (await appRunApprovalResolver()).approve(actionId, approverUserId);
   }
 
   const resumesApprovedModule = isModuleMutation
@@ -1246,7 +1259,7 @@ async function rejectActionOnce(
   }
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
-    return postgresAppRunApprovalResolver.reject(actionId, rejecterUserId);
+    return (await appRunApprovalResolver()).reject(actionId, rejecterUserId);
   }
 
   if (row.approval_status === 'rejected') {

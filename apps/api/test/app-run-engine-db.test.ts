@@ -24,8 +24,16 @@ import {
 import { PostgresAppRunAttentionProjector } from '../src/lib/app-run-attention.js';
 import { AppRunOperationsService } from '../src/lib/app-run-operations.js';
 import { PostgresAppRunReceiptWriter } from '../src/lib/app-run-receipts.js';
-import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
+import {
+  _setAppRunApprovalResolverForTest,
+  approveAction,
+  rejectAction,
+} from '../src/lib/agent-approval-resolver.js';
 import { createAppRunAttemptJobHandler } from '../src/lib/app-run-worker-handler.js';
+import {
+  postgresAppRunAttemptQueue,
+  type AppRunAttemptQueue,
+} from '../src/lib/app-run-scheduler.js';
 import {
   assertAppRunReferencedKeysAvailable,
   parseEnvironmentAppRunKeyrings,
@@ -270,7 +278,7 @@ function receiptRotationKeyProvider(
   return provider;
 }
 
-test('live authority revocation is sticky and the execution budget is reserved exactly once', async () => {
+test('live authority revocation is sticky and the execution budget is reserved exactly once', async (t) => {
   const providerId = `live-provider-${suffix}`;
   const snapshotId = `live-snapshot-${suffix}`;
   const employeeId = `live-employee-${suffix}`;
@@ -361,6 +369,8 @@ test('live authority revocation is sticky and the execution budget is reserved e
   });
   const liveTrusted = { ...trusted, execution_actor: executionActor };
   const setup = service();
+  _setAppRunApprovalResolverForTest(new PostgresAppRunApprovalResolver(setup.repository, live));
+  t.after(() => _setAppRunApprovalResolverForTest(null));
   const alwaysPolicy = {
     ...policy,
     review_requirement: 'always' as const,
@@ -1459,4 +1469,131 @@ test('the worker adapter accepts exact identity-only jobs and remains dependency
       data: { orgId: ORG_ID, runId: 'run-1', attemptId: 'attempt-1', input: 'secret' }, attempts: 1,
     }),
   );
+});
+
+test('released Runs create their exact attempt job atomically and approval rollback cannot strand authority', async () => {
+  const keys = keyProvider();
+  const secrets = new AppRunSecretService(keys);
+  const repository = new PostgresAppRunRepository();
+  const secretRepository = new AppRunSecretRepository(secrets);
+  const executor = new CountingExecutor();
+  const clock = () => new Date();
+  const runner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    executor,
+    allowExecution,
+    clock,
+    60_000,
+    20_000,
+    undefined,
+    undefined,
+    postgresAppRunAttemptQueue,
+  );
+  const runs = new AppRunService(
+    repository,
+    secretRepository,
+    secrets,
+    keys,
+    allowAll,
+    clock,
+    postgresAppRunApprovalAdapter,
+    undefined,
+    undefined,
+    runner,
+  );
+  const governed = await runs.submit(trusted, submission({
+    idempotency_key: `atomic-job-${suffix}`,
+  }));
+  const scheduled = await client.query<{
+    attempt_id: string;
+    data: Record<string, unknown>;
+    dedupe_key: string;
+  }>(
+    `SELECT a.id AS attempt_id, q.data, q.dedupe_key
+       FROM app_run_attempts a JOIN job_queue q
+         ON q.org_id = a.org_id
+        AND q.name = 'app-run-attempt'
+        AND q.dedupe_key = 'app-run-attempt:' || a.id
+      WHERE a.org_id = $1 AND a.run_id = $2`,
+    [ORG_ID, governed.id],
+  );
+  assert.equal(scheduled.rowCount, 1);
+  assert.deepEqual(scheduled.rows[0]!.data, {
+    orgId: ORG_ID,
+    runId: governed.id,
+    attemptId: scheduled.rows[0]!.attempt_id,
+  });
+  assert.doesNotMatch(JSON.stringify(scheduled.rows[0]!.data), /raw-marker|recipient|retry-/);
+
+  const throwingQueue: AppRunAttemptQueue = {
+    async enqueue() { throw new Error('injected queue outage'); },
+  };
+  const rollbackRunner = new AppRunAttemptRunner(
+    repository,
+    secretRepository,
+    secrets,
+    executor,
+    allowExecution,
+    clock,
+    60_000,
+    20_000,
+    undefined,
+    undefined,
+    throwingQueue,
+  );
+  const approvalRuns = new AppRunService(
+    repository,
+    secretRepository,
+    secrets,
+    keys,
+    allowAll,
+    clock,
+    postgresAppRunApprovalAdapter,
+    undefined,
+    undefined,
+    rollbackRunner,
+  );
+  const reviewed = await approvalRuns.submit(trusted, submission({
+    idempotency_key: `atomic-approval-${suffix}`,
+    policy: {
+      risk_class: 'external_write',
+      review_requirement: 'always',
+      review_scope: 'per_invocation',
+      retry_class: 'unsafe_or_unknown',
+    },
+  }));
+  const [approval] = (await client.query<{ id: string }>(
+    `SELECT id FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, reviewed.id],
+  )).rows;
+  const approvalResolver = new PostgresAppRunApprovalResolver(
+    repository,
+    { async authorizeApprovalInTransaction() { return true; } },
+    clock,
+    undefined,
+    undefined,
+    rollbackRunner,
+  );
+  await assert.rejects(
+    approvalResolver.approve(approval!.id, USER_ID),
+    /injected queue outage/,
+  );
+  const rolledBack = await client.query<{ run_state: string; action_state: string; attempts: string }>(
+    `SELECT r.state AS run_state, a.approval_status AS action_state,
+            (SELECT count(*) FROM app_run_attempts x
+              WHERE x.org_id = r.org_id AND x.run_id = r.id) AS attempts
+       FROM app_runs r JOIN agent_actions a
+         ON a.org_id = r.org_id AND a.app_run_id = r.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, reviewed.id],
+  );
+  assert.deepEqual(rolledBack.rows[0], {
+    run_state: 'pending_approval',
+    action_state: 'pending',
+    attempts: '0',
+  });
+
+  await client.query(`DELETE FROM job_queue WHERE org_id = $1 AND name = 'app-run-attempt'`, [ORG_ID]);
 });

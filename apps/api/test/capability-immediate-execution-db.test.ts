@@ -17,6 +17,11 @@ import { closeDb } from '../src/lib/db.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../src/lib/agent-actions.js';
 import { approveAction } from '../src/lib/agent-approval-resolver.js';
+import { APP_RUN_LEGACY_MCP_CUTOVER_ENABLED } from '../src/lib/env.js';
+import { shutdownAppRunRuntime } from '../src/lib/app-run-runtime.js';
+
+const legacyTest = APP_RUN_LEGACY_MCP_CUTOVER_ENABLED ? test.skip : test;
+const governedTest = APP_RUN_LEGACY_MCP_CUTOVER_ENABLED ? test : test.skip;
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
@@ -25,9 +30,9 @@ if (!DATABASE_URL) {
 }
 if (
   process.env.CI !== 'true'
-  && !/(?:test|ci|acceptance|phase2)/i.test(new URL(DATABASE_URL).pathname)
+  && !/(?:test|ci|acceptance|phase[23])/i.test(new URL(DATABASE_URL).pathname)
 ) {
-  throw new Error('Capability execution DB tests refuse a database without a test/CI/phase2 name');
+  throw new Error('Capability execution DB tests refuse a database without a test/CI/phase name');
 }
 const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const ORG_ID = `capability-immediate-org-${suffix}`;
@@ -65,8 +70,10 @@ before(async () => {
   );
   await client.query(
     `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-     VALUES ($1, $2, $3, 'owner', true)`,
-    [randomUUID(), ORG_ID, APPROVER_USER_ID],
+     VALUES
+       ($1, $2, $3, 'owner', true),
+       ($4, $2, $5, 'member', true)`,
+    [randomUUID(), ORG_ID, APPROVER_USER_ID, randomUUID(), USER_ID],
   );
   await client.query(
     `INSERT INTO mcp_connections
@@ -92,6 +99,11 @@ beforeEach(async () => {
   await client.query('DELETE FROM agent_action_approvers WHERE org_id = $1', [ORG_ID]);
   await client.query('DELETE FROM agent_actions WHERE org_id = $1', [ORG_ID]);
   await client.query('DELETE FROM mcp_tool_overrides WHERE mcp_connection_id = $1', [CONNECTION_ID]);
+  await client.query('DELETE FROM job_queue WHERE org_id = $1', [ORG_ID]);
+  await client.query(
+    'UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2',
+    [ORG_ID, USER_ID],
+  );
   await client.query(
     `UPDATE mcp_connections
      SET is_active = true, enabled_tools = $2::text[], server_url = $3,
@@ -116,6 +128,7 @@ after(async () => {
   await client.query('DELETE FROM action_receipts WHERE org_id = $1', [ORG_ID]);
   await client.query('DELETE FROM agent_action_approvers WHERE org_id = $1', [ORG_ID]);
   await client.query('DELETE FROM agent_actions WHERE org_id = $1', [ORG_ID]);
+  await client.query('DELETE FROM job_queue WHERE org_id = $1', [ORG_ID]);
   await client.query('DELETE FROM mcp_tool_overrides WHERE mcp_connection_id = $1', [CONNECTION_ID]);
   await client.query('DELETE FROM agent_employees WHERE id = $1', [EMPLOYEE_ID]);
   await client.query('DELETE FROM mcp_connections WHERE id = $1', [CONNECTION_ID]);
@@ -123,6 +136,7 @@ after(async () => {
   await client.query('DELETE FROM users WHERE id = ANY($1::text[])', [[USER_ID, APPROVER_USER_ID]]);
   await client.query('DELETE FROM orgs WHERE id = $1', [ORG_ID]);
   await client.end();
+  await shutdownAppRunRuntime();
   await closeDb();
 });
 
@@ -195,7 +209,13 @@ async function budgetCount(): Promise<number> {
   return result.rows[0]!.daily_action_count;
 }
 
-function stubDiscovery(t: TestContext) {
+function stubDiscovery(
+  t: TestContext,
+  options: Readonly<{
+    isWrite?: boolean;
+    approvalTier?: 'auto-execute' | 'quick-approve' | 'full-review';
+  }> = {},
+) {
   const original = mcpClientManager.getCachedToolDiscovery;
   const calls: MCPConnectionConfig[] = [];
   const discovered: MCPToolDiscovery = {
@@ -206,8 +226,8 @@ function stubDiscovery(t: TestContext) {
       inputSchema: { type: 'object', properties: {} },
       connectionId: CONNECTION_ID,
       connectionSlug: CONNECTION_SLUG,
-      isWrite: true,
-      approvalTier: 'auto-execute',
+      isWrite: options.isWrite ?? true,
+      approvalTier: options.approvalTier ?? 'auto-execute',
       annotations: { destructiveHint: false },
       rawTool: {
         name: OPERATION_NAME,
@@ -282,7 +302,7 @@ async function receiptRows(actionId: string) {
   return result.rows;
 }
 
-test('immediate MCP success preserves exact structured output, citation, config, and one call', async (t) => {
+legacyTest('immediate MCP success preserves exact structured output, citation, config, and one call', async (t) => {
   const rawResult = {
     content: [{ type: 'text', text: 'sent' }],
     structuredContent: { report_id: 'report-1' },
@@ -334,7 +354,7 @@ test('immediate MCP success preserves exact structured output, citation, config,
   assert.equal(budget.rows[0]?.daily_action_count, 0);
 });
 
-test('immediate MCP compatibility output survives an unavailable strict projection', async (t) => {
+legacyTest('immediate MCP compatibility output survives an unavailable strict projection', async (t) => {
   const rawResult = {
     content: [{ type: 'text', text: 'provider completed the effect' }],
     structuredContent: { unsupported_counter: 1n },
@@ -357,7 +377,7 @@ test('immediate MCP compatibility output survives an unavailable strict projecti
   assert.equal(calls.length, 1);
 });
 
-test('immediate MCP tool and transport failures retain exact payloads and resolved citations', async (t) => {
+legacyTest('immediate MCP tool and transport failures retain exact payloads and resolved citations', async (t) => {
   const rawError = {
     content: [{ type: 'text', text: 'invalid report' }],
     structuredContent: { code: 'INVALID_REPORT' },
@@ -406,7 +426,7 @@ test('immediate MCP tool and transport failures retain exact payloads and resolv
   assert.equal(toolCalls.length, 2);
 });
 
-test('immediate MCP authorization denials preserve messages, ordering, and zero calls', async (t) => {
+legacyTest('immediate MCP authorization denials preserve messages, ordering, and zero calls', async (t) => {
   const calls = stubExecution(t, {
     success: true,
     content: [],
@@ -453,7 +473,7 @@ test('immediate MCP authorization denials preserve messages, ordering, and zero 
   assert.equal(calls.length, 0);
 });
 
-test('immediate MCP live connection, allowlist, override, and tenant denials make zero calls', async (t) => {
+legacyTest('immediate MCP live connection, allowlist, override, and tenant denials make zero calls', async (t) => {
   const calls = stubExecution(t, {
     success: true,
     content: [],
@@ -504,7 +524,7 @@ test('immediate MCP live connection, allowlist, override, and tenant denials mak
   assert.equal(calls.length, 0);
 });
 
-test('malformed names and invalid targets still throw before provider execution', async (t) => {
+legacyTest('malformed names and invalid targets still throw before provider execution', async (t) => {
   const calls = stubExecution(t, {
     success: true,
     content: [],
@@ -530,7 +550,7 @@ test('malformed names and invalid targets still throw before provider execution'
   assert.equal(calls.length, 0);
 });
 
-test('governed MCP actions preserve exact success and provider-failure persistence', async (t) => {
+legacyTest('governed MCP actions preserve exact success and provider-failure persistence', async (t) => {
   const successPayload = {
     content: [{ type: 'text', text: 'sent' }],
     structuredContent: { report_id: 'report-action' },
@@ -623,7 +643,7 @@ test('governed MCP actions preserve exact success and provider-failure persisten
   assert.equal(await budgetCount(), 2);
 });
 
-test('governed MCP action denials preserve policy and budget ordering with zero calls', async (t) => {
+legacyTest('governed MCP action denials preserve policy and budget ordering with zero calls', async (t) => {
   const calls = stubExecution(t, {
     success: true,
     content: [],
@@ -715,7 +735,7 @@ test('governed MCP action denials preserve policy and budget ordering with zero 
   assert.equal(calls.length, 0);
 });
 
-test('direct MCP actions preserve auto execution and stricter quick/full re-gating', async (t) => {
+legacyTest('direct MCP actions preserve auto execution and stricter quick/full re-gating', async (t) => {
   const discoveryCalls = stubDiscovery(t);
   const rawResult = {
     content: [{ type: 'text', text: 'sent' }],
@@ -799,7 +819,7 @@ test('direct MCP actions preserve auto execution and stricter quick/full re-gati
   assert.equal(discoveryCalls.length, 3);
 });
 
-test('reviewed MCP actions preserve quick/full resolution, receipts, revocation, and replay', async (t) => {
+legacyTest('reviewed MCP actions preserve quick/full resolution, receipts, revocation, and replay', async (t) => {
   const discoveryCalls = stubDiscovery(t);
   const successPayload = { content: [{ type: 'text', text: 'reviewed send' }] };
   const calls = stubExecution(t, {
@@ -910,4 +930,298 @@ test('reviewed MCP actions preserve quick/full resolution, receipts, revocation,
   assert.equal((await receiptRows(revokedActionId)).length, 1);
 
   assert.equal(discoveryCalls.length, 3);
+});
+
+async function appRunLedger(actionId?: string) {
+  const where = actionId
+    ? `AND r.safe_preview #>> '{fields,legacy_action_id}' = $2`
+    : `AND NOT (r.safe_preview->'fields' ? 'legacy_action_id')`;
+  const values = actionId ? [ORG_ID, actionId] : [ORG_ID];
+  const result = await client.query<{
+    runs: string;
+    attempts: string;
+    native_receipts: string;
+    jobs: string;
+    state: string | null;
+    safe_rows: string;
+  }>(
+    `SELECT count(DISTINCT r.id)::text AS runs,
+            count(DISTINCT a.id)::text AS attempts,
+            count(DISTINCT rr.id)::text AS native_receipts,
+            count(DISTINCT q.id)::text AS jobs,
+            max(r.state)::text AS state,
+            concat_ws(' ',
+              string_agg(DISTINCT r.safe_preview::text, ' '),
+              string_agg(DISTINCT e.payload::text, ' '),
+              string_agg(DISTINCT rr.envelope::text, ' '),
+              string_agg(DISTINCT q.data::text, ' ')
+            ) AS safe_rows
+       FROM app_runs r
+       LEFT JOIN app_run_attempts a ON a.org_id = r.org_id AND a.run_id = r.id
+       LEFT JOIN app_run_events e ON e.org_id = r.org_id AND e.run_id = r.id
+       LEFT JOIN app_run_receipts rr ON rr.org_id = r.org_id AND rr.run_id = r.id
+       LEFT JOIN job_queue q ON q.org_id = r.org_id
+         AND q.dedupe_key = 'app-run-attempt:' || a.id
+      WHERE r.org_id = $1 ${where}`,
+    values,
+  );
+  return result.rows[0]!;
+}
+
+governedTest('flag-on immediate safe MCP calls preserve exact output with one governed attempt and no budget debit', async (t) => {
+  stubDiscovery(t, { isWrite: false, approvalTier: 'auto-execute' });
+  await client.query(
+    `UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1`,
+    [CONNECTION_ID],
+  );
+  const rawResult = {
+    content: [{ type: 'text', text: 'read result' }],
+    structuredContent: { report_id: 'read-report-1' },
+    _meta: { trace_id: 'governed-read' },
+  };
+  const calls = stubExecution(t, {
+    success: true,
+    content: rawResult.content,
+    structuredContent: rawResult.structuredContent,
+    meta: rawResult._meta,
+    rawResult,
+    durationMs: 13,
+  });
+  const params = { recipient: `safe-read-${suffix}@example.test` };
+
+  const actual = await executeToolCall(
+    PREFIXED_NAME,
+    params,
+    ORG_ID,
+    USER_ID,
+    undefined,
+    EMPLOYEE_ID,
+  );
+  assert.equal(actual.result, rawResult);
+  assert.equal(calls.length, 1);
+  assert.equal(await budgetCount(), 0);
+  const ledger = await appRunLedger();
+  assert.deepEqual(
+    { runs: ledger.runs, attempts: ledger.attempts, receipts: ledger.native_receipts, jobs: ledger.jobs, state: ledger.state },
+    { runs: '1', attempts: '1', receipts: '1', jobs: '1', state: 'succeeded' },
+  );
+  assert.doesNotMatch(ledger.safe_rows, new RegExp(`safe-read-${suffix}|recipient`, 'i'));
+});
+
+governedTest('flag-on post-effect output outside the retained contract is returned once without unsafe persistence or recall', async (t) => {
+  stubDiscovery(t, { isWrite: false, approvalTier: 'auto-execute' });
+  await client.query(
+    `UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1`,
+    [CONNECTION_ID],
+  );
+  const rawResult = {
+    content: [{ type: 'text', text: 'provider completed' }],
+    structuredContent: { unsupported_counter: 1n },
+  };
+  const calls = stubExecution(t, {
+    success: true,
+    content: rawResult.content,
+    structuredContent: rawResult.structuredContent,
+    rawResult,
+    durationMs: 4,
+  });
+  const before = Number((await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_runs WHERE org_id = $1`,
+    [ORG_ID],
+  )).rows[0]!.count);
+
+  const actual = await executeToolCall(PREFIXED_NAME, {}, ORG_ID, USER_ID, undefined, EMPLOYEE_ID);
+  assert.equal(actual.result, rawResult);
+  assert.equal(calls.length, 1);
+  const latest = await client.query<{ state: string; outputs: string }>(
+    `SELECT r.state,
+            (SELECT count(*) FROM app_run_secret_payloads p
+              WHERE p.org_id = r.org_id AND p.run_id = r.id AND p.payload_kind = 'output') AS outputs
+       FROM app_runs r WHERE r.org_id = $1
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1`,
+    [ORG_ID],
+  );
+  assert.deepEqual(latest.rows[0], { state: 'succeeded', outputs: '0' });
+  assert.equal(Number((await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_runs WHERE org_id = $1`,
+    [ORG_ID],
+  )).rows[0]!.count), before + 1);
+});
+
+governedTest('flag-on result delivery rechecks live membership after the provider effect', async (t) => {
+  stubDiscovery(t, { isWrite: false, approvalTier: 'auto-execute' });
+  await client.query(
+    `UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1`,
+    [CONNECTION_ID],
+  );
+  const original = mcpClientManager.executeTool;
+  let release!: () => void;
+  let entered!: () => void;
+  const providerEntered = new Promise<void>((resolve) => { entered = resolve; });
+  const providerRelease = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  mcpClientManager.executeTool = async () => {
+    calls += 1;
+    entered();
+    await providerRelease;
+    return {
+      success: true,
+      content: [{ type: 'text', text: 'membership-sensitive-result' }],
+      rawResult: { content: [{ type: 'text', text: 'membership-sensitive-result' }] },
+      durationMs: 6,
+    };
+  };
+  t.after(() => { mcpClientManager.executeTool = original; });
+  const before = Number((await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_runs WHERE org_id = $1`,
+    [ORG_ID],
+  )).rows[0]!.count);
+
+  const pending = executeToolCall(PREFIXED_NAME, {}, ORG_ID, USER_ID, undefined, EMPLOYEE_ID);
+  await providerEntered;
+  await client.query(
+    'UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2',
+    [ORG_ID, USER_ID],
+  );
+  release();
+
+  await assert.rejects(pending, /Access to the App Run is denied/);
+  assert.equal(calls, 1);
+  const latest = await client.query<{
+    state: string;
+    attempts: string;
+    receipts: string;
+    safe_rows: string;
+  }>(
+    `SELECT r.state,
+            (SELECT count(*) FROM app_run_attempts a
+              WHERE a.org_id = r.org_id AND a.run_id = r.id)::text AS attempts,
+            (SELECT count(*) FROM app_run_receipts rr
+              WHERE rr.org_id = r.org_id AND rr.run_id = r.id)::text AS receipts,
+            concat_ws(' ', r.safe_preview::text,
+              (SELECT string_agg(e.payload::text, ' ') FROM app_run_events e
+                WHERE e.org_id = r.org_id AND e.run_id = r.id)) AS safe_rows
+       FROM app_runs r WHERE r.org_id = $1
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1`,
+    [ORG_ID],
+  );
+  assert.deepEqual(
+    { state: latest.rows[0]!.state, attempts: latest.rows[0]!.attempts, receipts: latest.rows[0]!.receipts },
+    { state: 'succeeded', attempts: '1', receipts: '1' },
+  );
+  assert.doesNotMatch(latest.rows[0]!.safe_rows, /membership-sensitive-result/);
+  assert.equal(Number((await client.query<{ count: string }>(
+    `SELECT count(*) FROM app_runs WHERE org_id = $1`,
+    [ORG_ID],
+  )).rows[0]!.count), before + 1);
+});
+
+governedTest('flag-on approved MCP action retries converge on one Run, one attempt, one call, and one budget debit', async (t) => {
+  stubDiscovery(t, { isWrite: true, approvalTier: 'auto-execute' });
+  await client.query(
+    `UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1`,
+    [CONNECTION_ID],
+  );
+  const rawResult = {
+    content: [{ type: 'text', text: 'sent once' }],
+    structuredContent: { report_id: 'governed-action-1' },
+  };
+  const calls = stubExecution(t, {
+    success: true,
+    content: rawResult.content,
+    structuredContent: rawResult.structuredContent,
+    rawResult,
+    durationMs: 19,
+  });
+  const params = { recipient: `governed-action-${suffix}@example.test` };
+  const actionId = await insertApprovedAction({ params });
+
+  const results = await Promise.all(Array.from({ length: 8 }, () => executeAction(
+    actionId,
+    PREFIXED_NAME,
+    params,
+    ORG_ID,
+    USER_ID,
+    { agentEmployeeId: EMPLOYEE_ID },
+  )));
+  assert.ok(results.every((result) => result.success));
+  for (const result of results) assert.deepEqual(result.result, rawResult);
+  assert.equal(calls.length, 1);
+  assert.equal(await budgetCount(), 1);
+  const ledger = await appRunLedger(actionId);
+  assert.deepEqual(
+    { runs: ledger.runs, attempts: ledger.attempts, receipts: ledger.native_receipts, jobs: ledger.jobs, state: ledger.state },
+    { runs: '1', attempts: '1', receipts: '1', jobs: '1', state: 'succeeded' },
+  );
+  assert.doesNotMatch(ledger.safe_rows, new RegExp(`governed-action-${suffix}|recipient`, 'i'));
+});
+
+governedTest('flag-on reviewed MCP approval preserves legacy receipts and replays without another provider call', async (t) => {
+  stubDiscovery(t, { isWrite: true, approvalTier: 'quick-approve' });
+  const rawResult = { content: [{ type: 'text', text: 'reviewed once' }] };
+  const calls = stubExecution(t, {
+    success: true,
+    content: rawResult.content,
+    rawResult,
+    durationMs: 7,
+  });
+  const actionId = await queueReviewedAction('quick');
+
+  const resolutions = await Promise.all([
+    approveAction(actionId, APPROVER_USER_ID),
+    approveAction(actionId, APPROVER_USER_ID),
+  ]);
+  assert.deepEqual(resolutions.map((result) => result.status), ['approved', 'approved']);
+  assert.equal(calls.length, 1);
+  assert.equal(await budgetCount(), 1);
+  assert.equal((await receiptRows(actionId)).length, 1);
+  assert.equal((await approveAction(actionId, APPROVER_USER_ID)).status, 'approved');
+  assert.equal(calls.length, 1);
+  const ledger = await appRunLedger(actionId);
+  assert.deepEqual(
+    { runs: ledger.runs, attempts: ledger.attempts, receipts: ledger.native_receipts, state: ledger.state },
+    { runs: '1', attempts: '1', receipts: '1', state: 'succeeded' },
+  );
+});
+
+governedTest('flag-on ambiguous MCP transport outcome becomes inspectable unknown and is never retried', async (t) => {
+  stubDiscovery(t, { isWrite: true, approvalTier: 'auto-execute' });
+  await client.query(
+    `UPDATE mcp_connections SET default_trust_tier = 'auto' WHERE id = $1`,
+    [CONNECTION_ID],
+  );
+  const calls = stubExecution(t, {
+    success: false,
+    content: null,
+    error: 'connection reset after send',
+    durationMs: 5,
+  });
+  const actionId = await insertApprovedAction({ params: {} });
+
+  const result = await executeAction(
+    actionId,
+    PREFIXED_NAME,
+    {},
+    ORG_ID,
+    USER_ID,
+    { agentEmployeeId: EMPLOYEE_ID },
+  );
+  assert.equal(result.success, false);
+  assert.match(result.error ?? '', /outcome is unknown/);
+  assert.equal(calls.length, 1);
+  assert.equal(await budgetCount(), 1);
+  const ledger = await appRunLedger(actionId);
+  assert.deepEqual(
+    { runs: ledger.runs, attempts: ledger.attempts, receipts: ledger.native_receipts, state: ledger.state },
+    { runs: '1', attempts: '1', receipts: '1', state: 'unknown_outcome' },
+  );
+  assert.equal((await executeAction(
+    actionId,
+    PREFIXED_NAME,
+    {},
+    ORG_ID,
+    USER_ID,
+    { agentEmployeeId: EMPLOYEE_ID },
+  )).success, false);
+  assert.equal(calls.length, 1);
 });

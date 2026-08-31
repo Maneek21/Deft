@@ -21,3 +21,10 @@ test('durable scheduled-message-send resolves to a real handler', async () => {
 
   assert.equal(typeof handler, 'function');
 });
+
+test('governed App Run attempts resolve through the agent-job worker registry', async () => {
+  const workers = await import('../src/workers/index.js');
+  const handler = await workers._getAgentJobHandlerForTest('app-run-attempt');
+
+  assert.equal(typeof handler, 'function');
+});

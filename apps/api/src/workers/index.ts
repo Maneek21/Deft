@@ -2,11 +2,13 @@
 import {
   dequeueJob,
   completeJob,
+  deferJob,
   failJob,
   ensureCronJob,
   cleanupStaleJobs,
   pruneFinishedJobs,
   renewJobLease,
+  RetryLaterJobError,
   QUEUE_NAMES,
   type DequeuedJob,
   type QueueName,
@@ -254,6 +256,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/workflow-execute.js');
       return mod.handleWorkflowExecute;
     }
+    case 'app-run-attempt': {
+      const mod = await import('../lib/app-run-worker-handler.js');
+      return mod.handleAppRunAttempt;
+    }
     case 'certification-noop': {
       // Synthetic 60-person certification intentionally measures queue claim,
       // completion, and recovery without invoking a product side effect.
@@ -362,6 +368,10 @@ export async function _getScheduledJobHandlerForTest(jobName: string): Promise<J
   return getScheduledJobHandler(jobName);
 }
 
+export async function _getAgentJobHandlerForTest(jobName: string): Promise<JobHandler | null> {
+  return getAgentJobHandler(jobName);
+}
+
 async function getHandler(queueName: string, jobName: string): Promise<JobHandler | null> {
   if (queueName === QUEUE_NAMES.AGENT_JOBS) return getAgentJobHandler(jobName);
   if (queueName === QUEUE_NAMES.SCHEDULED_JOBS) return getScheduledJobHandler(jobName);
@@ -405,6 +415,11 @@ async function processDequeuedJob(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof RetryLaterJobError) {
+      const settled = await deferJob(job.id, job.lockToken, message, err.delayMs);
+      if (settled) console.warn(`[worker] Job ${job.name} deferred:`, message);
+      return;
+    }
     // Until every handler cooperatively cancels its I/O, retrying immediately
     // after a timeout can overlap with the still-running original promise.
     // Terminal-fail the occurrence; operators can inspect/replay it explicitly.
