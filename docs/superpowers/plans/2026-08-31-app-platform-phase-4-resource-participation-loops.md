@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | In execution; Loops 0–2 are locally checkpointed and Loop 3 is next |
+| Status | Loops 0–4 locally complete; Loop 5 code, test, build, packaging, and visual gates pass; release-host operations remain |
 | Released baseline | `v0.3.0-preview.14` at `6d39e0e0413c82d36c9481849ae582fdf805d1a6` |
 | Baseline image | `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
 | Architecture source | `2026-08-29-full-surface-app-platform.md` |
@@ -342,6 +342,14 @@ fresh-pgvector proof.
 No UI or search caller lands in this loop. There is no down-migration, v1 row
 rewrite, App grant, or generalized resource mutation API.
 
+**Completed evidence (2026-08-31):** additive migration `.22`, tenant-bound
+relation sets/edges/receipts, strict Module v2, byte-identical v1 compatibility,
+locked endpoint authorization, revision CAS, replay receipts, audit, retained
+edges, and upgrade compatibility are implemented. The live database matrix
+passes cross-App writes, ordering, duplicate and stale rejection, concurrent
+CAS, cross-org denial, disable/re-enable, archive, compatible upgrade, rejected
+upgrade, clear, and historical retention.
+
 ### Loop 4 — Single compound App and caller cutover proof
 
 - Build/check the independent Contacts and Campaigns fixtures once, install
@@ -365,6 +373,16 @@ rewrite, App grant, or generalized resource mutation API.
 Cut over only the bounded proof callers. Do not rewrite universal search or add
 a rollout flag unless deterministic shadow comparison shows it is necessary.
 
+**Completed evidence (2026-08-31):** independent Contacts and Campaigns App
+packages install into distinct App and Module lineages. Authenticated generic
+Module routes create a Campaign-to-Contact reference at revision zero without
+copying Contact data. Human and employee relation reads, bounded picker options,
+search, agent context, and citations pass live authorization. App disable drops
+the indexed Contact and citation immediately and renders an unavailable target;
+re-enable restores it. Membership loss is live, and the sandbox email provider
+records zero calls. The generic detail and picker passed rendered inspection at
+1440×1000 and 390×844 with no browser console errors.
+
 ### Loop 5 — Consolidated certification and release
 
 - Run the shared ResourceRef/authorization contracts, owner-adapter parity,
@@ -383,6 +401,16 @@ a rollout flag unless deterministic shadow comparison shows it is necessary.
 Any failure gets the smallest repair and reruns only its affected focused gate
 plus the final matrix. Unrelated self-host, Docker, visual, or migration work is
 not repeated when the diff did not touch that surface.
+
+**Local candidate evidence (2026-08-31):** shared contracts (62), App Kit (8),
+upgrade/schema (24), web Module (30), focused API contract/security (34), and
+six live database journeys pass. Repository typecheck and one production build
+pass. Contacts and Campaigns each produce identical digests across two public
+App Kit checks with zero permissions. The exact local `.22` SQL applies and runs
+against the disposable database. This machine has neither pgvector nor a
+running Docker engine, so fresh pgvector, supported release upgrade,
+backup/restore, and immutable image rollback remain the release-host gate and
+are not represented as passed.
 
 ## PR and review shape
 
