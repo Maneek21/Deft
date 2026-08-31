@@ -722,6 +722,7 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
   assert.equal(management.snapshots.filter((item) => item.snapshot_kind === 'effective').length, 1);
   assert.equal(management.dependencies.length, 1);
   assert.equal(management.action_bindings[0]?.operation_name, 'send_email');
+  assert.deepEqual(management.recent_runs, []);
   const healthy = await inspectConnectedAppHealth(
     actor,
     staged.id,

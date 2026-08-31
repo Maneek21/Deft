@@ -41,9 +41,19 @@ export const REMOTE_MCP_WRITE_SCOPES = [
   'write:workspace',
 ] as const;
 
+// App access is deliberately additive. These scopes are advertised for an
+// explicit grant, but never enter REMOTE_MCP_DEFAULT_READ_SCOPES, so an older
+// or scope-less OAuth grant remains blind to newly installed Apps.
+export const REMOTE_MCP_APP_SCOPES = [
+  'read:apps',
+  'invoke:apps',
+  'read:app-runs',
+] as const;
+
 export const REMOTE_MCP_SCOPES = [
   ...REMOTE_MCP_READ_SCOPES,
   ...REMOTE_MCP_WRITE_SCOPES,
+  ...REMOTE_MCP_APP_SCOPES,
 ] as const;
 
 // Authorization-only scope. It is advertised by the OAuth server, but not by
@@ -126,7 +136,8 @@ export function profileForScopes(scopes: string[]): ConnectorProfile {
   if (scopes.includes('write:workspace') || scopes.includes('write:calendar')) {
     return 'workspace-operator';
   }
-  return scopes.some((scope) => REMOTE_MCP_WRITE_SCOPES.includes(scope as typeof REMOTE_MCP_WRITE_SCOPES[number]))
+  return scopes.includes('invoke:apps')
+    || scopes.some((scope) => REMOTE_MCP_WRITE_SCOPES.includes(scope as typeof REMOTE_MCP_WRITE_SCOPES[number]))
     ? 'task-helper'
     : 'knowledge';
 }

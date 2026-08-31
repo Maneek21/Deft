@@ -4,7 +4,13 @@ import { useEffect, useMemo } from 'react';
 import useSWR, { mutate as mutateSWR } from 'swr';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { normalizeAppsResponse } from '@/lib/apps';
+import {
+  normalizeAppConnectors,
+  normalizeAppGrantManagement,
+  normalizeAppsResponse,
+  type AppConnector,
+  type AppGrantManagement,
+} from '@/lib/apps';
 import { APPS_ENABLED } from '@/lib/feature-flags';
 import type { AppNavigationResponseItem } from '@/lib/app-navigation';
 
@@ -33,6 +39,42 @@ export function useAppNavigation(enabled = true) {
     return Array.isArray(value?.navigation) ? value.navigation as AppNavigationResponseItem[] : [];
   }, [swr.data]);
   return { ...swr, navigation };
+}
+
+export function useAppGrantManagement(installationId: string, enabled = true) {
+  const key = APPS_ENABLED && enabled && installationId
+    ? `/api/apps/${encodeURIComponent(installationId)}/grants`
+    : null;
+  const swr = useSWR<unknown>(key, fetchJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+    refreshInterval: 10_000,
+  });
+  const normalized = useMemo<{ grants: AppGrantManagement | null; error: Error | null }>(() => {
+    if (!swr.data) return { grants: null, error: null };
+    try {
+      return { grants: normalizeAppGrantManagement(swr.data), error: null };
+    } catch (error) {
+      return { grants: null, error: error instanceof Error ? error : new Error('Invalid App grant response.') };
+    }
+  }, [swr.data]);
+  return { ...swr, grants: normalized.grants, error: swr.error ?? normalized.error };
+}
+
+export function useAppConnectors(enabled = true) {
+  const swr = useSWR<unknown>(APPS_ENABLED && enabled ? '/api/mcp-connections' : null, fetchJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+  });
+  const normalized = useMemo<{ connectors: AppConnector[]; error: Error | null }>(() => {
+    if (!swr.data) return { connectors: [], error: null };
+    try {
+      return { connectors: normalizeAppConnectors(swr.data), error: null };
+    } catch (error) {
+      return { connectors: [], error: error instanceof Error ? error : new Error('Invalid connector response.') };
+    }
+  }, [swr.data]);
+  return { ...swr, connectors: normalized.connectors, error: swr.error ?? normalized.error };
 }
 
 export async function refreshApps(): Promise<void> {

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–5 complete; PR C continues with Loop 6 |
+| Status | Loops 0–6 complete; PR C continues with Loop 7 |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -415,6 +415,24 @@ authority paths.
 **Evidence:** parity tests across four surfaces, token non-discovery tests,
 employee assignment/budget tests, approval projection tests, Settings/action UI
 tests, and rendered desktop/mobile verification with no console errors.
+
+**Closeout:** passed on the native-surface boundary. Settings now exposes the
+requested/effective authority diff, exact connector binding, dependency and
+provenance evidence, health, lifecycle controls, and recent safe Run states.
+Campaign detail renders one descriptor-driven action with related-resource
+selection, a redacted review, retry-stable submission, App Run approval, and
+safe status/result polling. UI, Defty, employee runtime, employee MCP, and human
+MCP use the same fixed `capability_list`, `capability_get`,
+`app_binding_invoke`, and `app_run_get` operations over AppActionService; no
+per-App tools or execution path were introduced. App scopes are explicit and
+legacy/default credentials remain App-blind. Focused contract, scope, parity,
+approval, architecture, API/web typecheck, lint, and UI tests pass. A disposable
+browser stack proved loading, healthy/unhealthy and stale denial, approval,
+disabled, succeeded, and failed states at desktop and 390x844 mobile sizes.
+That pass also caught and closed the final integration gap: App Run approve and
+reject buttons now enter the governed approval resolver rather than the legacy
+agent executor. The disposable visual database was removed; the retained Phase
+5 certification database remains for Loop 7.
 
 ## Loop 7 — Compound proof, certification, and release
 

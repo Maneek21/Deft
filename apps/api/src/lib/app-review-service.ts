@@ -6,6 +6,7 @@ import {
   appGrantSnapshots,
   appInstallations,
   appModuleBindings,
+  appRuns,
   appVersions,
   auditLog,
   capabilityProviderSnapshots,
@@ -58,6 +59,7 @@ import {
 } from './module-service.js';
 import { getIO } from '../socket.js';
 import { compareAppSemver } from './app-service.js';
+import { safeRunSelection } from './app-run-repository.js';
 
 type ReviewExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -1254,6 +1256,11 @@ export async function getConnectedAppGrantManagement(
           provider_idempotency_key_required: binding.provider_idempotency_key_required,
         },
       }));
+  const recentRuns = await db.select(safeRunSelection).from(appRuns).where(and(
+    eq(appRuns.org_id, actorValue.org_id),
+    eq(appRuns.origin_kind, 'app'),
+    eq(appRuns.origin_app_installation_id, installation.id),
+  )).orderBy(desc(appRuns.created_at), desc(appRuns.id)).limit(5);
   return {
     installation: {
       id: installation.id,
@@ -1286,6 +1293,7 @@ export async function getConnectedAppGrantManagement(
     })),
     dependencies,
     action_bindings: bindings,
+    recent_runs: recentRuns,
   };
 }
 

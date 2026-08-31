@@ -25,6 +25,7 @@ async function surfaceAdapterFiles(): Promise<string[]> {
       (/^lib\/agent(?:-|\.)/.test(sourcePath) && !sourcePath.includes('/test/'))
       || sourcePath === 'lib/mcp-tools.ts'
       || sourcePath.startsWith('lib/mcp-tools/')
+      || sourcePath === 'lib/app-action-operations.ts'
       || sourcePath === 'lib/app-service.ts'
       || sourcePath === 'lib/app-review-service.ts'
     );
@@ -150,4 +151,16 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
   assert.deepEqual(authorityImportViolations, []);
   assert.deepEqual(appActionBypassViolations, []);
   assert.deepEqual(reviewManagementConsumers, ['routes/apps.ts']);
+});
+
+test('App Run approve and reject routes stay on the governed approval resolver', async () => {
+  const routes = await readFile(join(sourceRoot, 'routes/agent.ts'), 'utf8');
+  const uses = routes.match(/if \(isApprovalResolverAction\(action\.action\)\)/g) ?? [];
+  assert.equal(uses.length, 2, 'approve and reject must share the App Run-aware resolver predicate');
+
+  const resolver = await readFile(join(sourceRoot, 'lib/agent-approval-resolver.ts'), 'utf8');
+  assert.match(
+    resolver,
+    /return action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
+  );
 });

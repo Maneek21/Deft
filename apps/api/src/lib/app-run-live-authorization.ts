@@ -55,11 +55,25 @@ import {
 } from './app-run-prepared-input.js';
 
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
+const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
 
 type AuthorityRef = AppRunAuthorizationSnapshot['authority_refs'][number];
-type TokenAuthority = Readonly<{
+export type AppRunTokenAuthority = Readonly<{
   token_kind: 'mcp' | 'oauth';
   token_id: string;
+}>;
+
+export type AppRunTokenScopeAuthorization = Readonly<{
+  org_id: string;
+  authenticated_subject: AppRunActor;
+  required_token_scopes: readonly string[];
+  token_authorities: readonly AppRunTokenAuthority[];
+}>;
+
+type TokenScopeCheckInput = Readonly<{
+  org_id: string;
+  authenticated_subject: AppRunActor;
+  required_token_scopes?: readonly string[];
 }>;
 
 export type AppRunAuthorizationCapture = Readonly<{
@@ -71,7 +85,7 @@ export type AppRunAuthorizationCapture = Readonly<{
   operation_name: string;
   policy: AppRunPolicySnapshot;
   required_token_scopes?: readonly string[];
-  token_authorities?: readonly TokenAuthority[];
+  token_authorities?: readonly AppRunTokenAuthority[];
 }>;
 
 type InternalRunAuthorization = Readonly<{
@@ -203,6 +217,17 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     });
   }
 
+  /** Revalidate an exact MCP/OAuth token and its current scopes for actor-
+   * scoped Run reads. This does not create or mutate Run authority. */
+  async assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<void> {
+    if (input.token_authorities.length !== 1) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    await db.transaction(async (tx) => {
+      await this.#tokenAuthority(tx, input, input.token_authorities[0]!);
+    });
+  }
+
   /** Trusted App submission verifier. The encrypted candidate supplies the
    * immutable prepared vector; every row is rederived in the Run insertion
    * transaction before an approval can be linked. */
@@ -234,7 +259,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       provider_snapshot_id: prepared.provider.snapshot_id,
       operation_name: prepared.provider.operation_name,
       policy: submission.policy,
-      required_token_scopes: prepared.caller_surface.endsWith(':mcp') ? ['read:modules'] : [],
+      required_token_scopes: prepared.caller_surface.endsWith(':mcp') ? APP_MCP_INVOKE_SCOPES : [],
       token_authorities: await Promise.all(tokenAuthorities.map(async ({ token_id }) => ({
         token_id,
         token_kind: await this.#tokenKind(tx, submission.org_id, token_id),
@@ -431,7 +456,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         review_scope: run.review_scope,
         retry_class: run.retry_class,
       },
-      required_token_scopes: surface?.endsWith(':mcp') ? ['read:modules'] : [],
+      required_token_scopes: surface?.endsWith(':mcp') ? APP_MCP_INVOKE_SCOPES : [],
       token_authorities: await Promise.all(tokenAuthorities.map(async ({ token_id }) => ({
         token_id,
         token_kind: await this.#tokenKind(tx, run.org_id, token_id),
@@ -1027,7 +1052,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     tx: AppRunTransaction,
     orgId: string,
     tokenId: string,
-  ): Promise<TokenAuthority['token_kind']> {
+  ): Promise<AppRunTokenAuthority['token_kind']> {
     const [mcp] = await tx.select({ id: mcpTokens.id }).from(mcpTokens).where(and(
       eq(mcpTokens.org_id, orgId), eq(mcpTokens.id, tokenId),
     )).limit(1);
@@ -1041,8 +1066,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
 
   async #tokenAuthority(
     tx: AppRunTransaction,
-    input: AppRunAuthorizationCapture,
-    token: TokenAuthority,
+    input: TokenScopeCheckInput,
+    token: AppRunTokenAuthority,
   ): Promise<AuthorityRef> {
     if (token.token_kind === 'mcp') {
       const [row] = await tx.select().from(mcpTokens).where(and(

@@ -179,6 +179,10 @@ describe('App Run prepared input', () => {
         ...candidate,
         expires_at: new Date(Date.parse(candidate.expires_at) + 60_000).toISOString(),
       }), /APP_RUN_PREPARED_INPUT_INVALID/);
+      assert.throws(() => preparedInputs.open('org-1', {
+        ...candidate,
+        safe_envelope: { ...candidate.safe_envelope, key_version: 'different-key' },
+      }));
       assert.throws(() => preparedInputs.open('org-2', candidate));
     } finally {
       provider.destroy();

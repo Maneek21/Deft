@@ -7,6 +7,7 @@ import { ArrowLeft, ExternalLink, Pencil, Trash2 } from 'lucide-react';
 import ConfirmDialog from '@/components/confirm-dialog';
 import { useSetPageContext } from '@/components/app-header-context';
 import { ModuleRecordActivity } from '@/components/modules/module-record-activity';
+import { ModuleRecordAppActions } from '@/components/modules/module-record-app-actions';
 import { ModuleRecordFormDialog } from '@/components/modules/module-record-form';
 import { ModuleRecordRelations } from '@/components/modules/module-record-relations';
 import { ModuleResourceRelations } from '@/components/modules/module-resource-relations';
@@ -193,6 +194,16 @@ export default function ModuleRecordDetailPage() {
           </section>
 
           <aside className="space-y-4">
+            <ModuleRecordAppActions
+              enabled={canWrite}
+              resourceRef={{
+                schemaVersion: 'deft.resource_ref.v1',
+                providerKind: 'module',
+                providerInstanceId: installedModule.id,
+                resourceType: collection.key,
+                resourceId: record.id,
+              }}
+            />
             <ModuleRecordTaskLinks slug={installedModule.slug} recordId={record.id} />
             <ModuleRecordRelations
               slug={installedModule.slug}

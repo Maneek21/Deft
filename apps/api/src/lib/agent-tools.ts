@@ -4,6 +4,11 @@ import {
   getModuleOperationInputJsonSchema,
   type ModuleOperationName,
 } from '@deft/shared/modules';
+import {
+  APP_ACTION_OPERATION_DESCRIPTIONS,
+  APP_ACTION_OPERATION_JSON_SCHEMAS,
+  APP_ACTION_OPERATION_NAMES,
+} from './app-action-operations.js';
 
 const MODULE_OPERATION_DESCRIPTIONS: Record<ModuleOperationName, string> = {
   module_list:
@@ -42,6 +47,15 @@ export const MODULE_AGENT_TOOLS: Anthropic.Tool[] = MODULE_OPERATION_NAMES.map(
     name,
     description: MODULE_OPERATION_DESCRIPTIONS[name],
     input_schema: moduleOperationInputSchema(name),
+  }),
+);
+
+/** Fixed host-owned App operations; installed Apps never add native tools. */
+export const APP_ACTION_AGENT_TOOLS: Anthropic.Tool[] = APP_ACTION_OPERATION_NAMES.map(
+  (name) => ({
+    name,
+    description: APP_ACTION_OPERATION_DESCRIPTIONS[name],
+    input_schema: APP_ACTION_OPERATION_JSON_SCHEMAS[name] as Anthropic.Tool['input_schema'],
   }),
 );
 
@@ -910,6 +924,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   ...MODULE_AGENT_TOOLS,
+  ...APP_ACTION_AGENT_TOOLS,
 ];
 
 /** Tool names that require user approval before execution */

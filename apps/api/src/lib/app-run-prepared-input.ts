@@ -13,8 +13,7 @@ import {
 } from '@deft/shared';
 import {
   AppRunSecretEnvelopeSchema,
-  type AppRunSecretEnvelope,
-  type AppRunSecretSafeProjection,
+  AppRunSecretSafeProjectionSchema,
   type AppRunSecretService,
 } from './app-run-secrets.js';
 
@@ -258,13 +257,26 @@ const PreparedPayloadSchema = z.strictObject({
 
 export type AppRunPreparedInputPayload = z.infer<typeof PreparedPayloadSchema>;
 
-export type AppRunPreparedInputCandidate = Readonly<{
-  schema_version: typeof APP_RUN_PREPARED_INPUT_VERSION;
-  candidate_id: string;
-  expires_at: string;
-  sealed_payload: AppRunSecretEnvelope;
-  safe_envelope: AppRunSecretSafeProjection;
-}>;
+export const AppRunPreparedInputCandidateSchema = z.strictObject({
+  schema_version: z.literal(APP_RUN_PREPARED_INPUT_VERSION),
+  candidate_id: ExactIdentitySchema,
+  expires_at: z.string().datetime({ offset: true }),
+  sealed_payload: AppRunSecretEnvelopeSchema,
+  safe_envelope: AppRunSecretSafeProjectionSchema,
+}).superRefine((value, ctx) => {
+  if (
+    value.safe_envelope.schema_version !== value.sealed_payload.schema_version
+    || value.safe_envelope.algorithm !== value.sealed_payload.algorithm
+    || value.safe_envelope.key_version !== value.sealed_payload.key_version
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['safe_envelope'],
+      message: 'Prepared input safe envelope must describe the sealed payload',
+    });
+  }
+});
+export type AppRunPreparedInputCandidate = z.infer<typeof AppRunPreparedInputCandidateSchema>;
 
 /** App-Run-owned transient protection for a fully revalidated action input.
  * It creates no Run, approval, receipt, or provider effect. Loop 5 may open it
@@ -329,20 +341,18 @@ export class AppRunPreparedInputService {
   }
 
   open(orgId: string, candidate: AppRunPreparedInputCandidate): AppRunPreparedInputPayload {
+    const parsedCandidate = AppRunPreparedInputCandidateSchema.parse(candidate);
     if (
-      candidate.schema_version !== APP_RUN_PREPARED_INPUT_VERSION
-      || !ExactIdentitySchema.safeParse(candidate.candidate_id).success
-      || !Number.isFinite(Date.parse(candidate.expires_at))
-      || Date.parse(candidate.expires_at) <= this.now().getTime()
+      Date.parse(parsedCandidate.expires_at) <= this.now().getTime()
     ) throw new Error('APP_RUN_PREPARED_INPUT_INVALID');
-    const sealed = AppRunSecretEnvelopeSchema.parse(candidate.sealed_payload);
+    const sealed = parsedCandidate.sealed_payload;
     const payload = PreparedPayloadSchema.parse(this.secrets.openJson(sealed, {
       org_id: orgId,
-      run_id: candidate.candidate_id,
+      run_id: parsedCandidate.candidate_id,
       payload_kind: 'input',
     }));
     if (
-      payload.expires_at !== candidate.expires_at
+      payload.expires_at !== parsedCandidate.expires_at
       || Date.parse(payload.expires_at) <= this.now().getTime()
     ) throw new Error('APP_RUN_PREPARED_INPUT_INVALID');
     return payload;

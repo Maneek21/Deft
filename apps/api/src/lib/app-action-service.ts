@@ -53,6 +53,7 @@ import type { CapabilityDiscoveryResult } from './capability-service.js';
 import {
   PostgresAppRunLiveAuthorization,
   type AppRunAuthorizationCapture,
+  type AppRunTokenScopeAuthorization,
 } from './app-run-live-authorization.js';
 import type {
   AppRunPreparedInputCandidate,
@@ -66,6 +67,9 @@ import { listResourceRelation } from './resource-relation-service.js';
 
 const APP_ACTION_AUTHORITY_VERSION = 'deft.app_action_authority.v1' as const;
 const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v1' as const;
+const APP_MCP_DISCOVERY_SCOPES = Object.freeze(['read:modules', 'read:apps'] as const);
+const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
+const APP_MCP_RUN_READ_SCOPES = Object.freeze(['read:app-runs'] as const);
 
 type BindingRow = typeof appActionBindings.$inferSelect;
 type DependencyLockRow = typeof appDependencyLocks.$inferSelect;
@@ -230,6 +234,7 @@ export interface AppActionCapabilityPort {
 
 export interface AppActionLiveAuthorityPort {
   captureForPreparation(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot>;
+  assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<void>;
 }
 
 export interface AppActionPreparedInputPort {
@@ -267,6 +272,14 @@ export interface AppActionRunPort {
     }>,
     candidate: AppRunPreparedInputCandidate,
   ): Promise<AppRunSafeView>;
+}
+
+export interface AppActionRunReadPort {
+  inspect(orgId: string, runId: string, actor: AppRunActor): Promise<AppRunSafeView>;
+  result(orgId: string, runId: string, actor: AppRunActor): Promise<Readonly<{
+    run: AppRunSafeView;
+    value: unknown;
+  }>>;
 }
 
 export interface AppActionFieldReaderPort {
@@ -309,6 +322,25 @@ const lazyRuns: AppActionRunPort = Object.freeze({
   ) {
     const { getAppRunRuntime } = await import('./app-run-runtime.js');
     return (await getAppRunRuntime()).service.submitPreparedApp(context, candidate);
+  },
+});
+
+const lazyRunReads: AppActionRunReadPort = Object.freeze({
+  async inspect(
+    orgId: Parameters<AppActionRunReadPort['inspect']>[0],
+    runId: Parameters<AppActionRunReadPort['inspect']>[1],
+    actor: Parameters<AppActionRunReadPort['inspect']>[2],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).service.inspect(orgId, runId, actor);
+  },
+  async result(
+    orgId: Parameters<AppActionRunReadPort['result']>[0],
+    runId: Parameters<AppActionRunReadPort['result']>[1],
+    actor: Parameters<AppActionRunReadPort['result']>[2],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).service.result(orgId, runId, actor);
   },
 });
 
@@ -359,11 +391,15 @@ function callerContext(value: AppActionCaller): CallerContext {
   }
   const tokenRequired = (actor.kind === 'human' && actor.source === 'mcp')
     || (actor.kind === 'agent_employee' && actor.source === 'mcp');
-  if (tokenRequired && tokenAuthorities.length === 0) {
-    throw actionError('MCP App actions require exact live token authority', 'APP_ACCESS_DENIED', 403);
+  if (tokenRequired && tokenAuthorities.length !== 1) {
+    throw actionError('MCP App actions require one exact live token authority', 'APP_ACCESS_DENIED', 403);
   }
-  if (tokenRequired && tokenAuthorities.some((token) => token.token_kind !== 'mcp')) {
-    throw actionError('MCP App actions require MCP token authority', 'APP_ACCESS_DENIED', 403);
+  if (
+    tokenRequired
+    && actor.kind === 'agent_employee'
+    && tokenAuthorities.some((token) => token.token_kind !== 'mcp')
+  ) {
+    throw actionError('Employee MCP App actions require MCP token authority', 'APP_ACCESS_DENIED', 403);
   }
   if (!tokenRequired && tokenAuthorities.length !== 0) {
     throw actionError('This App action surface cannot carry token authority', 'APP_ACCESS_DENIED', 403);
@@ -805,6 +841,7 @@ export class AppActionService {
     private readonly preparedInput: AppActionPreparedInputPort = lazyPreparedInput,
     private readonly fieldReader: AppActionFieldReaderPort = defaultFieldReader,
     private readonly runs: AppActionRunPort = lazyRuns,
+    private readonly runReads: AppActionRunReadPort = lazyRunReads,
   ) {}
 
   async list(callerValue: AppActionCaller, input: Readonly<{ resource_ref: unknown }>): Promise<AppActionListResult> {
@@ -820,7 +857,7 @@ export class AppActionService {
       try {
         const context = await loadActionContext(caller.actor.org_id, candidate.id);
         assertPlacement(context, resource.ref);
-        await this.#captureAuthority(caller, context);
+        await this.#captureAuthority(caller, context, APP_MCP_DISCOVERY_SCOPES);
         actions.push(actionItem(context));
       } catch {
         // Discovery is availability-filtered. An inaccessible or stale binding
@@ -837,13 +874,17 @@ export class AppActionService {
     callerValue: AppActionCaller,
     input: Readonly<{ binding_id: string; resource_ref: unknown }>,
   ): Promise<AppActionResolveResult> {
-    const resolved = await this.#resolve(callerContext(callerValue), input);
+    const resolved = await this.#resolve(
+      callerContext(callerValue),
+      input,
+      APP_MCP_DISCOVERY_SCOPES,
+    );
     return resolved.safe;
   }
 
   async prepare(callerValue: AppActionCaller, input: AppActionPrepareInput): Promise<AppActionPrepareResult> {
     const caller = callerContext(callerValue);
-    const resolved = await this.#resolve(caller, input);
+    const resolved = await this.#resolve(caller, input, APP_MCP_INVOKE_SCOPES);
     const selectionMap = new Map<string, ModuleResourceRefV1>();
     for (const selection of input.selections ?? []) {
       if (selectionMap.has(selection.input_key)) {
@@ -1066,7 +1107,40 @@ export class AppActionService {
     }, current.input_candidate);
   }
 
-  async #captureAuthority(caller: CallerContext, context: ActionContext) {
+  async inspectRun(callerValue: AppActionCaller, runId: string): Promise<AppRunSafeView> {
+    const caller = callerContext(callerValue);
+    await this.#assertRunReadAuthority(caller);
+    return this.runReads.inspect(caller.actor.org_id, runId, caller.authenticated_subject);
+  }
+
+  async result(callerValue: AppActionCaller, runId: string): Promise<Readonly<{
+    run: AppRunSafeView;
+    value: unknown;
+  }>> {
+    const caller = callerContext(callerValue);
+    await this.#assertRunReadAuthority(caller);
+    return this.runReads.result(caller.actor.org_id, runId, caller.authenticated_subject);
+  }
+
+  async #assertRunReadAuthority(caller: CallerContext): Promise<void> {
+    if (!caller.surface.endsWith(':mcp')) return;
+    try {
+      await this.liveAuthority.assertTokenScopes({
+        org_id: caller.actor.org_id,
+        authenticated_subject: caller.authenticated_subject,
+        required_token_scopes: APP_MCP_RUN_READ_SCOPES,
+        token_authorities: caller.token_authorities,
+      });
+    } catch {
+      throw actionError('Current caller authority does not permit App Run access', 'APP_ACCESS_DENIED', 403);
+    }
+  }
+
+  async #captureAuthority(
+    caller: CallerContext,
+    context: ActionContext,
+    requiredTokenScopes: readonly string[],
+  ) {
     try {
       return await this.liveAuthority.captureForPreparation({
         org_id: caller.actor.org_id,
@@ -1081,7 +1155,7 @@ export class AppActionService {
           review_scope: context.binding.review_scope,
           retry_class: context.binding.retry_class,
         },
-        required_token_scopes: caller.actor.source === 'mcp' ? ['read:modules'] : [],
+        required_token_scopes: caller.actor.source === 'mcp' ? requiredTokenScopes : [],
         token_authorities: caller.token_authorities,
       });
     } catch {
@@ -1123,7 +1197,7 @@ export class AppActionService {
   async #resolve(caller: CallerContext, input: Readonly<{
     binding_id: string;
     resource_ref: unknown;
-  }>): Promise<Readonly<{
+  }>, requiredTokenScopes: readonly string[]): Promise<Readonly<{
     context: ActionContext;
     resourceRef: ModuleResourceRefV1;
     runAuthorization: AppRunAuthorizationSnapshot;
@@ -1134,7 +1208,7 @@ export class AppActionService {
     }
     const context = await loadActionContext(caller.actor.org_id, input.binding_id);
     const resourceRef = assertPlacement(context, input.resource_ref);
-    const runAuthorization = await this.#captureAuthority(caller, context);
+    const runAuthorization = await this.#captureAuthority(caller, context, requiredTokenScopes);
     await this.#assertLiveProvider(context);
     const resource = actionResourceProjection(await resourceAuthorizationService.resolve(
       { org_id: caller.actor.org_id, actor: caller.actor },

@@ -22,6 +22,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { Hono } from 'hono';
+import bcrypt from 'bcryptjs';
 
 // We import the MCP router directly (NOT apps/api/src/index.ts) because
 // importing index.ts would call serve() and open a real TCP port.
@@ -30,8 +31,16 @@ const DATABASE_URL =
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6'; // Maneek seed org
 const TEST_EMPLOYEE_ID = 'test-mcp-phase3-employee';
 const TEST_EMPLOYEE_SLUG = 'mcp-phase3-test';
+const APP_ACTION_OPERATION_NAMES = [
+  'capability_list',
+  'capability_get',
+  'app_binding_invoke',
+  'app_run_get',
+] as const;
 
 let RAW_TOKEN: string | null = null;
+let APP_SCOPED_TOKEN: string | null = null;
+let LEGACY_TOKEN: string | null = null;
 let TEST_USER_ID: string | null = null;
 let testApp: Hono | null = null;
 let tokenModule: typeof import('../src/lib/mcp-token.js') | null = null;
@@ -110,6 +119,19 @@ before(async () => {
   testApp.route('/api/mcp/v1', routeModule.mcpServerV1Routes);
   testApp.route(routeModule.HERMES_MCP_ENDPOINT_PATH, routeModule.mcpServerV1Routes);
   RAW_TOKEN = await tokenModule.issueEmployeeToken(ORG_ID, TEST_EMPLOYEE_ID);
+  APP_SCOPED_TOKEN = (await tokenModule.issueScopedEmployeeMcpToken({
+    orgId: ORG_ID,
+    employeeId: TEST_EMPLOYEE_ID,
+    scopes: ['read:apps'],
+  })).raw;
+  LEGACY_TOKEN = 'deft_legacy_mcp_phase3_test_token_0123456789';
+  const legacyHash = await bcrypt.hash(LEGACY_TOKEN, 4);
+  await withClient(async (c) => {
+    await c.query(
+      `UPDATE agent_employees SET mcp_token_hash = $1 WHERE id = $2 AND org_id = $3`,
+      [legacyHash, TEST_EMPLOYEE_ID, ORG_ID],
+    );
+  });
 });
 
 after(async () => {
@@ -218,6 +240,9 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
   assert.ok(names.has('thread_fetch'), 'thread_fetch in catalog');
   assert.ok(names.has('member_list'), 'member_list in catalog');
   assert.ok(names.has('record_progress'), 'record_progress in catalog');
+  for (const operation of APP_ACTION_OPERATION_NAMES) {
+    assert.equal(names.has(operation), false, `${operation} is opt-in for employee credentials`);
+  }
 
   const memoryRecall = body.tools.find((t: any) => t.name === 'memory_recall');
   const wikiSearch = body.tools.find((t: any) => t.name === 'wiki_search');
@@ -262,6 +287,33 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
     'blocked',
     'approval_pending',
   ]);
+});
+
+test('3b. only first-class employee tokens with exact App scopes discover App tools', async () => {
+  assert.ok(APP_SCOPED_TOKEN);
+  assert.ok(LEGACY_TOKEN);
+
+  const scoped = await mcpPost('/tools/list', {}, APP_SCOPED_TOKEN!);
+  assert.equal(scoped.status, 200);
+  const scopedBody = (await scoped.json()) as any;
+  const scopedNames = new Set<string>(scopedBody.tools.map((tool: any) => tool.name));
+  assert.equal(scopedNames.has('capability_list'), true);
+  assert.equal(scopedNames.has('capability_get'), true);
+  assert.equal(scopedNames.has('app_binding_invoke'), false);
+  assert.equal(scopedNames.has('app_run_get'), false);
+
+  const legacy = await mcpPost('/tools/list', {}, LEGACY_TOKEN!);
+  assert.equal(legacy.status, 200);
+  const legacyBody = (await legacy.json()) as any;
+  const legacyNames = new Set<string>(legacyBody.tools.map((tool: any) => tool.name));
+  for (const operation of APP_ACTION_OPERATION_NAMES) assert.equal(legacyNames.has(operation), false);
+
+  const directLegacyCall = await mcpPost('/tools/call', {
+    name: 'capability_list',
+    arguments: {},
+  }, LEGACY_TOKEN!);
+  assert.equal(directLegacyCall.status, 403);
+  assert.equal(((await directLegacyCall.json()) as any).error?.code, 'insufficient_scope');
 });
 
 test('4. POST /tools/call platform_context returns org, employee, date', async () => {

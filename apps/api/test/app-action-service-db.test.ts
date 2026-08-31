@@ -31,6 +31,7 @@ import {
   AppActionService,
   type AppActionCaller,
   type AppActionPreparedInputPort,
+  type AppActionRunReadPort,
   type AppActionRunPort,
 } from '../src/lib/app-action-service.js';
 import { closeDb, db } from '../src/lib/db.js';
@@ -342,7 +343,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
     name: 'Loop 4 human MCP token',
     token_hash: `loop4-hash-${suffix}`,
     token_prefix: `loop4-${suffix.slice(0, 8)}`,
-    scopes: ['read:modules'],
+    scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
     created_by: ownerUserId,
   });
 
@@ -388,6 +389,17 @@ test('App actions resolve and prepare one reviewed relation identically across f
       return { id: `loop5-run-${submittedRuns.length}` } as AppRunSafeView;
     },
   };
+  const runReadCalls: Array<Readonly<{ kind: 'inspect' | 'result'; org_id: string; run_id: string; actor: unknown }>> = [];
+  const runReads: AppActionRunReadPort = {
+    async inspect(readOrgId, runId, actor) {
+      runReadCalls.push({ kind: 'inspect', org_id: readOrgId, run_id: runId, actor });
+      return { id: runId } as AppRunSafeView;
+    },
+    async result(readOrgId, runId, actor) {
+      runReadCalls.push({ kind: 'result', org_id: readOrgId, run_id: runId, actor });
+      return { run: { id: runId } as AppRunSafeView, value: { status: 'delivered' } };
+    },
+  };
   let fieldReads = 0;
   const service = new AppActionService(
     provider.capability,
@@ -400,6 +412,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
       },
     },
     runs,
+    runReads,
   );
   const sandboxEffect = new Phase4SandboxEmailProvider();
   const callers: ReadonlyArray<Readonly<{ name: string; caller: AppActionCaller }>> = [
@@ -429,7 +442,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
           userId: ownerUserId,
           role: 'owner',
           source: 'mcp',
-          scopes: ['read:modules'],
+          scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
         }),
         token_authorities: [{ token_kind: 'mcp', token_id: mcpTokenId }],
       },
@@ -437,6 +450,30 @@ test('App actions resolve and prepare one reviewed relation identically across f
   ];
 
   const beforeEffects = await effectCounts(orgId);
+
+  assert.equal((await service.inspectRun(callers[0]!.caller, 'loop6-ui-run')).id, 'loop6-ui-run');
+  assert.deepEqual(await service.result(callers[3]!.caller, 'loop6-mcp-run'), {
+    run: { id: 'loop6-mcp-run' },
+    value: { status: 'delivered' },
+  });
+  assert.deepEqual(runReadCalls.map((call) => ({ kind: call.kind, actor: call.actor })), [
+    { kind: 'inspect', actor: { actor_type: 'human', user_id: ownerUserId } },
+    { kind: 'result', actor: { actor_type: 'human', user_id: ownerUserId } },
+  ]);
+
+  await db.update(mcpTokens).set({ scopes: ['read:modules', 'read:apps', 'invoke:apps'] }).where(and(
+    eq(mcpTokens.org_id, orgId),
+    eq(mcpTokens.id, mcpTokenId),
+  ));
+  await assert.rejects(
+    service.inspectRun(callers[3]!.caller, 'loop6-hidden-run'),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_ACCESS_DENIED',
+  );
+  assert.equal(runReadCalls.length, 2, 'missing Run scope must fail before Run inspection');
+  await db.update(mcpTokens).set({
+    scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+  }).where(and(eq(mcpTokens.org_id, orgId), eq(mcpTokens.id, mcpTokenId)));
+
   const semanticResults: Array<Readonly<{ list: unknown; resolve: unknown; preview: unknown }>> = [];
   const replayBySurface = new Map<string, string>();
   const preparedBySurface = new Map<string, Awaited<ReturnType<AppActionService['prepare']>>>();

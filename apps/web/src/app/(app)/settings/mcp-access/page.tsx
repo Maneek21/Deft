@@ -41,6 +41,8 @@ const READ_SCOPES = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages
 const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki', 'write:calendar', 'write:modules', 'write:workspace'];
 const COLLABORATE_SCOPES = [...READ_SCOPES, 'write:tasks', 'write:messages', 'write:wiki', 'write:modules'];
 const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES];
+const APP_SCOPES = ['read:apps', 'invoke:apps', 'read:app-runs'];
+const AVAILABLE_SCOPES = [...ALL_SCOPES, ...APP_SCOPES];
 
 const SCOPE_LABELS: Record<string, string> = {
   'read:workspace': 'Workspace map, teammates, projects, receipts, and activity context',
@@ -49,6 +51,9 @@ const SCOPE_LABELS: Record<string, string> = {
   'read:messages': 'Visible spaces, threads, unread work, and chat search',
   'read:calendar': 'Native and ICS calendar context',
   'read:modules': 'Installed module schemas and records, such as the Contacts Directory',
+  'read:apps': 'Installed App identities, reviewed grants, bindings, and health',
+  'invoke:apps': 'Discover, prepare, and invoke reviewed App actions as you',
+  'read:app-runs': 'Inspect authorized App Run status, safe previews, and retained results',
   'write:tasks': 'Create, update, transition, and comment on tasks',
   'write:messages': 'Post messages into spaces and DMs you can access',
   'write:wiki': 'Save or update wiki knowledge as you',
@@ -727,7 +732,7 @@ export default function McpAccessPage() {
 
                     {accessPreset === 'custom' && (
                       <div className="grid sm:grid-cols-2 gap-2 mt-3">
-                        {ALL_SCOPES.map((scope) => (
+                        {AVAILABLE_SCOPES.map((scope) => (
                           <label key={scope} className="flex items-start gap-2 rounded-md p-2.5 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
                             <input
                               type="checkbox"
@@ -1088,7 +1093,7 @@ export default function McpAccessPage() {
               <div className="rounded-md p-3 min-w-0 md:col-span-2" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
                 <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Supported remote scopes</div>
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  {(remote?.scopes ?? ALL_SCOPES).map((scope) => <ScopePill key={scope} scope={scope} />)}
+                  {(remote?.scopes ?? AVAILABLE_SCOPES).map((scope) => <ScopePill key={scope} scope={scope} />)}
                 </div>
               </div>
             </div>

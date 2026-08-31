@@ -65,6 +65,10 @@ import {
   loadEmployeeProjectAccess,
   type EmployeeProjectAccess,
 } from './mcp-tools/employee-project-access.js';
+import {
+  APP_ACTION_OPERATION_NAMES,
+  executeAppActionOperation,
+} from './app-action-operations.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -110,6 +114,21 @@ export async function executeToolCall(
 ): Promise<{ result: any; citations: Citation[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
+
+  // App operations already own approval, replay, budget, and receipt policy
+  // through App Runs. Keep this adapter ahead of the generic native-agent
+  // daily-action gate so an App request is never charged or reviewed twice.
+  const appActionOperation = APP_ACTION_OPERATION_NAMES.find((name) => name === toolName);
+  if (appActionOperation) {
+    const actor = await buildModuleReadActor(orgId, _userId, {
+      conversationId,
+      agentEmployeeId,
+    });
+    return {
+      result: await executeAppActionOperation({ actor }, appActionOperation, params),
+      citations: [],
+    };
+  }
 
   // Native runners and the legacy /mcp endpoint both terminate here. Resolve
   // project scope from the live employee row inside each tool call so neither

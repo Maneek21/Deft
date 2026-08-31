@@ -19,6 +19,10 @@ export type ToolContext = {
   employee_id: string;
   employee_slug: string;
   trust_level: TrustLevel;
+  /** Exact first-class MCP credential identity. Legacy employee hashes omit it. */
+  token_id?: string;
+  /** Exact scopes captured from the first-class credential. */
+  scopes?: string[];
   channel_event_id?: string;
   runtime_request_key?: string;
 };

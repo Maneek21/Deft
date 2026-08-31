@@ -70,6 +70,8 @@ import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
 import { moduleRoutes } from './routes/modules.js';
 import { appRoutes } from './routes/apps.js';
+import { appActionRoutes } from './routes/app-actions.js';
+import { appRunRoutes } from './routes/app-runs.js';
 import { appDeveloperRoutes } from './routes/app-developer.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
@@ -239,7 +241,11 @@ app.route('/api/projects', taskTemplateRoutes);
 app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
-if (APPS_ENABLED) app.route('/api/apps', appRoutes);
+if (APPS_ENABLED) {
+  app.route('/api/apps', appRoutes);
+  app.route('/api/app-actions', appActionRoutes);
+  app.route('/api/app-runs', appRunRoutes);
+}
 
 app.get('/health', (c) => c.json({
   status: 'ok',

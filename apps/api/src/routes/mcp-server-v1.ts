@@ -38,6 +38,9 @@ import {
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
   TOOL_ALIASES,
+  agentAppToolHasRequiredScope,
+  agentAppToolRequiredScopes,
+  isAgentAppActionTool,
   toolSchemas,
   type ToolHandler,
 } from '../lib/mcp-tools/index.js';
@@ -163,8 +166,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function tokenBoundAgentCatalog(tools: typeof toolSchemas): typeof toolSchemas {
-  return tools.map((tool) => {
+function tokenBoundAgentCatalog(
+  tools: typeof toolSchemas,
+  principal: Pick<ResolvedGateway, 'token_id' | 'scopes'>,
+): typeof toolSchemas {
+  return tools.filter((tool) => (
+    !isAgentAppActionTool(tool.name)
+    || (Boolean(principal.token_id) && agentAppToolHasRequiredScope(principal.scopes ?? [], tool.name))
+  )).map((tool) => {
     const inputSchema = { ...tool.inputSchema };
     const properties = isRecord(inputSchema.properties)
       ? { ...inputSchema.properties }
@@ -803,7 +812,7 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const resolved = principal as ResolvedGateway;
       const catalog = sortedCatalog(
-        tokenBoundAgentCatalog(toolSchemas).filter((t) => (
+        tokenBoundAgentCatalog(toolSchemas, resolved).filter((t) => (
           resolved.gateway_employees.every((employee) => (
             !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
           ))
@@ -844,7 +853,7 @@ mcpServerV1Routes.post('/', async (c) => {
       const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
       if (principal.kind === 'human' || principal.kind === 'oauth') {
         if (principal.kind === 'oauth' && !humanToolHasRequiredScope(principal.scopes, canonicalToolName)) {
-          const challengeScope = humanToolChallengeScope(canonicalToolName);
+          const challengeScope = humanToolChallengeScope(canonicalToolName, principal.scopes);
           throw new McpAuthError(
             403,
             'insufficient_scope',
@@ -907,6 +916,21 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const resolved = principal as ResolvedGateway;
       const employee = resolveAuthenticatedEmployee(resolved);
+      if (
+        isAgentAppActionTool(canonicalToolName)
+        && (!resolved.token_id || !agentAppToolHasRequiredScope(resolved.scopes ?? [], canonicalToolName))
+      ) {
+        const requiredScopes = agentAppToolRequiredScopes(canonicalToolName);
+        const missingScope = requiredScopes.find((scope) => !(resolved.scopes ?? []).includes(scope));
+        throw new McpAuthError(
+          403,
+          'insufficient_scope',
+          resolved.token_id
+            ? `Missing MCP scope: ${requiredScopes.join(' and ')}`
+            : 'App tools require a first-class employee MCP token',
+          missingScope ?? requiredScopes[0],
+        );
+      }
       const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
         resolved.org_id,
         employee.employee_id,
@@ -924,6 +948,8 @@ mcpServerV1Routes.post('/', async (c) => {
         employee_id: employee.employee_id,
         employee_slug: employee.slug,
         trust_level: employee.trust_level,
+        token_id: resolved.token_id,
+        scopes: resolved.scopes ?? [],
         ...(runtimeCorrelation ?? {}),
       };
       const knownTool = Boolean(ALL_TOOLS[canonicalToolName]);
@@ -1024,7 +1050,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   // for the resolved caller at tools/call time. Conservative employees must
   // still be able to propose governed writes for human review.
   const catalog = sortedCatalog(
-    tokenBoundAgentCatalog(toolSchemas).filter((t) => (
+    tokenBoundAgentCatalog(toolSchemas, resolved).filter((t) => (
       resolved.gateway_employees.every((employee) => (
         !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
       ))
@@ -1074,7 +1100,7 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   if (principal.kind === 'human' || principal.kind === 'oauth') {
     const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
     if (principal.kind === 'oauth' && !humanToolHasRequiredScope(principal.scopes, canonicalToolName)) {
-      setOAuthChallenge(c, humanToolChallengeScope(canonicalToolName), 'insufficient_scope');
+      setOAuthChallenge(c, humanToolChallengeScope(canonicalToolName, principal.scopes), 'insufficient_scope');
       return errorResponse(
         c,
         403,
@@ -1138,6 +1164,22 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     return errorResponse(c, 500, 'internal', 'Slug validation error');
   }
   const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
+  if (
+    isAgentAppActionTool(canonicalToolName)
+    && (!resolved.token_id || !agentAppToolHasRequiredScope(resolved.scopes ?? [], canonicalToolName))
+  ) {
+    const requiredScopes = agentAppToolRequiredScopes(canonicalToolName);
+    const missingScope = requiredScopes.find((scope) => !(resolved.scopes ?? []).includes(scope));
+    setOAuthChallenge(c, missingScope ?? requiredScopes[0], 'insufficient_scope');
+    return errorResponse(
+      c,
+      403,
+      'insufficient_scope',
+      resolved.token_id
+        ? `Missing MCP scope: ${requiredScopes.join(' and ')}`
+        : 'App tools require a first-class employee MCP token',
+    );
+  }
   const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
   if (!isModuleWrite && isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
     return errorResponse(c, 403, 'forbidden', `Tool '${toolName}' is disabled for this agent employee`);
@@ -1156,6 +1198,8 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     employee_id: employee.employee_id,
     employee_slug: employee.slug,
     trust_level: employee.trust_level,
+    token_id: resolved.token_id,
+    scopes: resolved.scopes ?? [],
     ...(runtimeCorrelation ?? {}),
   };
 
