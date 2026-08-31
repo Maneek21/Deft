@@ -30,7 +30,7 @@ ARG NEXT_PUBLIC_API_URL=__DEFT_API_URL__
 ARG NEXT_PUBLIC_WS_URL=__DEFT_WS_URL__
 ARG NEXT_PUBLIC_FEATURE_HUDDLES=false
 ARG NEXT_PUBLIC_FEATURE_APPS=false
-ARG DEFT_RELEASE_VERSION=0.3.0-preview.13
+ARG DEFT_RELEASE_VERSION=0.3.0-preview.14
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
@@ -50,7 +50,7 @@ RUN pnpm --filter @deft/app-kit build && pnpm --filter @deft/web build
 
 # Stage 3: Production
 FROM node:22-alpine AS runner
-ARG DEFT_RELEASE_VERSION=0.3.0-preview.13
+ARG DEFT_RELEASE_VERSION=0.3.0-preview.14
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/Maneek21/Deft
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \

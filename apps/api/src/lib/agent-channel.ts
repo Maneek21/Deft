@@ -45,9 +45,9 @@ export const AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES = [
   'accepted_event_rehydration_v1',
 ] as const;
 export type AgentChannelAdapterMode = 'supervised_runtime' | 'autonomous_platform';
-export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.13';
+export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.14';
 export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
-export const DEFT_SCHEMA_HEAD = '0.3.0-preview.13';
+export const DEFT_SCHEMA_HEAD = '0.3.0-preview.14';
 export const AGENT_CHANNEL_DEFAULT_LEASE_MS = 120_000;
 export const AGENT_CHANNEL_MIN_LEASE_MS = 30_000;
 export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;

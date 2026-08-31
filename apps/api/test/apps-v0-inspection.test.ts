@@ -4,7 +4,13 @@ import { buildDeftAppPackage, prepareModuleArtifact } from '@deft/app-kit';
 import { inspectAppPackageJson } from '../src/lib/app-service.js';
 import { AppError } from '../src/lib/app-errors.js';
 
-async function helloPackage() {
+async function helloPackage(options: { includeOmittedDefault?: boolean } = {}) {
+  const fields = [
+    { key: 'message', label: 'Message', type: 'text' as const, required: true },
+    ...(options.includeOmittedDefault
+      ? [{ key: 'occasion', label: 'Occasion', type: 'text' as const }]
+      : []),
+  ];
   const moduleManifest = {
     schema_version: '1',
     id: 'community.deft.hello-workspace',
@@ -14,7 +20,7 @@ async function helloPackage() {
     collections: [{
       key: 'greetings',
       name: 'Greetings',
-      fields: [{ key: 'message', label: 'Message', type: 'text', required: true }],
+      fields,
       views: [{ key: 'all', name: 'All greetings', type: 'table', fields: ['message'] }],
     }],
   };
@@ -54,6 +60,12 @@ test('API inspection uses the public package contract and grants zero permission
   assert.equal(inspected.package_digest, built.digest);
   assert.deepEqual(inspected.permissions, []);
   assert.equal(inspected.manifest.navigation[0]?.collection_key, 'greetings');
+});
+
+test('API inspection accepts public App Kit artifacts with omitted Module defaults', async () => {
+  const built = await helloPackage({ includeOmittedDefault: true });
+  const inspected = await inspectAppPackageJson(built.json);
+  assert.equal(inspected.package_digest, built.digest);
 });
 
 test('API inspection rejects navigation that is not backed by an included Module collection', async () => {

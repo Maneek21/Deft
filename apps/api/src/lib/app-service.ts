@@ -12,7 +12,6 @@ import {
   type DeftAppPackageV0,
 } from '@deft/app-kit';
 import {
-  digestModuleManifest,
   parseDeftModuleManifest,
   type ModuleActor,
 } from '@deft/shared/modules';
@@ -115,9 +114,6 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
       const artifact = verified.package.artifacts.find((item) => item.path === reference.manifest_path);
       if (!artifact) throw new Error(`Missing artifact ${reference.manifest_path}`);
       const moduleManifest = parseDeftModuleManifest(JSON.parse(artifact.content) as unknown);
-      if ((await digestModuleManifest(moduleManifest)) !== reference.manifest_digest) {
-        throw new Error(`Module digest mismatch for ${reference.module_id}`);
-      }
       const collections = new Set(moduleManifest.collections.map((collection) => collection.key));
       for (const item of verified.package.manifest.navigation.filter((nav) => nav.module_id === reference.module_id)) {
         if (!collections.has(item.collection_key)) {
