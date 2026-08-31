@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import {
   appInstallations,
@@ -7,8 +8,12 @@ import {
   moduleInstallations,
 } from '@deft/db/schema';
 import {
+  isDeftAppProtocolOperationSupported,
   verifyDeftAppPackageJson,
+  type DeftAppProtocolOperation,
+  type DeftAppManifest,
   type DeftAppManifestV0,
+  type DeftAppPackage,
   type DeftAppPackageV0,
 } from '@deft/app-kit';
 import {
@@ -24,17 +29,18 @@ import {
   type ModuleLifecyclePostCommit,
 } from './module-service.js';
 import { AppError } from './app-errors.js';
+import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
 type Version = typeof appVersions.$inferSelect;
 
 export type InspectedAppPackage = {
-  manifest: DeftAppManifestV0;
+  manifest: DeftAppManifest;
   manifest_digest: string;
   package_digest: string;
   canonical_package_json: string;
-  package: DeftAppPackageV0;
+  package: DeftAppPackage;
   permissions: [];
 };
 
@@ -48,7 +54,7 @@ export type AppInstallationView = {
   active_version_id: string | null;
   package_digest: string;
   manifest_digest: string;
-  manifest: DeftAppManifestV0;
+  manifest: DeftAppManifest;
   created_at: string;
   updated_at: string;
 };
@@ -85,7 +91,7 @@ async function insertAppAudit(
 }
 
 function view(installation: Installation, version: Version): AppInstallationView {
-  const manifest = version.manifest as DeftAppManifestV0;
+  const manifest = version.manifest as DeftAppManifest;
   return {
     id: installation.id,
     app_id: installation.app_id,
@@ -106,12 +112,35 @@ function emitAppChange(orgId: string, payload: Record<string, unknown>): void {
   getIO()?.to(`org-members:${orgId}`).emit('app:changed', payload);
 }
 
+function assertAppProtocolOperationSupported(
+  protocol: string,
+  operation: DeftAppProtocolOperation,
+): void {
+  if (isDeftAppProtocolOperationSupported(protocol, operation)) return;
+  throw new AppError(
+    `App Protocol v${protocol} does not support ${operation} on this host`,
+    'APP_PROTOCOL_UNSUPPORTED',
+    409,
+  );
+}
+
 export async function inspectAppPackageJson(value: string): Promise<InspectedAppPackage> {
-  let verified;
+  let verified: Awaited<ReturnType<typeof verifyDeftAppPackageJson>>;
   try {
     verified = await verifyDeftAppPackageJson(value);
-    for (const reference of verified.package.manifest.modules) {
-      const artifact = verified.package.artifacts.find((item) => item.path === reference.manifest_path);
+  } catch (error) {
+    throw new AppError(
+      error instanceof Error ? error.message : 'Invalid App package',
+      'APP_INVALID_PACKAGE',
+      400,
+    );
+  }
+  const protocol = verified.package.manifest.compatibility.app_protocol;
+  assertAppProtocolOperationSupported(protocol, 'inspect');
+  const packageValue = verified.package;
+  try {
+    for (const reference of packageValue.manifest.modules) {
+      const artifact = packageValue.artifacts.find((item) => item.path === reference.manifest_path);
       if (!artifact) throw new Error(`Missing artifact ${reference.manifest_path}`);
       const moduleManifest = parseDeftModuleManifest(JSON.parse(artifact.content) as unknown);
       const collections = new Set(moduleManifest.collections.map((collection) => collection.key));
@@ -129,11 +158,11 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
     );
   }
   return {
-    manifest: verified.package.manifest,
-    manifest_digest: verified.package.manifest_digest,
+    manifest: packageValue.manifest,
+    manifest_digest: packageValue.manifest_digest,
     package_digest: verified.digest,
     canonical_package_json: verified.json,
-    package: verified.package,
+    package: packageValue,
     permissions: [],
   };
 }
@@ -144,6 +173,7 @@ export async function stageAppPackage(
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
+  assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
   const identity = { type: actor.kind, id: actor.actor_id };
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
   const created = await db.transaction(async (tx) => {
@@ -155,7 +185,11 @@ export async function stageAppPackage(
     )).limit(1);
     if (existing) throw new AppError('App is already installed', 'APP_ALREADY_INSTALLED', 409);
 
+    const installationId = randomUUID();
+    const versionId = randomUUID();
+    const requestedGrantSnapshotId = randomUUID();
     const [installation] = await tx.insert(appInstallations).values({
+      id: installationId,
       org_id: actor.org_id,
       app_id: inspected.manifest.id,
       lineage_key: `local:${inspected.manifest.id}`,
@@ -172,6 +206,7 @@ export async function stageAppPackage(
     }).returning();
     if (!installation) throw new Error('App installation insert returned no row');
     const [version] = await tx.insert(appVersions).values({
+      id: versionId,
       org_id: actor.org_id,
       installation_id: installation.id,
       version: inspected.manifest.version,
@@ -180,12 +215,22 @@ export async function stageAppPackage(
       manifest_digest: inspected.manifest_digest,
       package_digest: inspected.package_digest,
       package: storedPackage,
+      requested_grant_snapshot_id: requestedGrantSnapshotId,
       provenance: inspected.manifest.provenance ?? null,
       state: 'staged',
       created_by_actor_type: identity.type,
       created_by_actor_id: identity.id,
     }).returning();
     if (!version) throw new Error('App version insert returned no row');
+    await insertRequestedAppGrantSnapshotWithExecutor(tx, {
+      id: requestedGrantSnapshotId,
+      organization_id: actor.org_id,
+      app_installation_id: installation.id,
+      app_version_id: version.id,
+      manifest: inspected.manifest,
+      manifest_digest: inspected.manifest_digest,
+      package_digest: inspected.package_digest,
+    });
     await insertAppAudit(tx, actor, 'app.stage', installation.id, null, {
       app_id: installation.app_id,
       version: version.version,
@@ -224,6 +269,7 @@ export async function activateAppInstallation(
       eq(appVersions.state, 'staged'),
     )).limit(1).for('update');
     if (!version) throw new AppError('The staged App package changed', 'APP_STALE', 409);
+    assertAppProtocolOperationSupported(version.protocol_version, 'activate');
     const packageValue = version.package as unknown as DeftAppPackageV0;
     for (const reference of [...packageValue.manifest.modules].sort((a, b) => a.module_id.localeCompare(b.module_id))) {
       const artifact = packageValue.artifacts.find((item) => item.path === reference.manifest_path);
@@ -439,6 +485,7 @@ export async function listActiveAppNavigation(actor: ModuleActor) {
     .where(and(eq(appInstallations.org_id, actor.org_id), eq(appInstallations.state, 'active')))
     .orderBy(asc(appInstallations.app_id));
   return rows.flatMap(({ installation, version, binding, moduleInstallation }) => {
+    if (!isDeftAppProtocolOperationSupported(version.protocol_version, 'route')) return [];
     const manifest = version.manifest as DeftAppManifestV0;
     return manifest.navigation.filter((item) => item.module_id === binding.module_id).map((item) => ({
       app_installation_id: installation.id,

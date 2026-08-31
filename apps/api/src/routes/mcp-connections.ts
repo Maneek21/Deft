@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { mcpConnections, mcpToolOverrides } from '@deft/db/schema';
+import { appActionBindings, mcpConnections, mcpToolOverrides } from '@deft/db/schema';
 import { mcpClientManager } from '@deft/mcp';
 import { capabilityService } from '../lib/capability-service.js';
 import { canonicalMcpToolName } from '../lib/mcp-tools.js';
@@ -260,17 +260,46 @@ mcpConnectionRoutes.delete('/:id', async (c) => {
     return c.json({ error: 'Connection not found', code: 'NOT_FOUND' }, 404);
   }
 
-  // Disconnect from the MCP client pool
+  // Historical App bindings pin the exact connector used during grant review.
+  // Refuse hard deletion before disconnecting the live client; a later
+  // lifecycle can revoke/tombstone the grant without destroying audit lineage.
+  const [appBinding] = await db
+    .select({ id: appActionBindings.id })
+    .from(appActionBindings)
+    .where(and(
+      eq(appActionBindings.org_id, user.org_id),
+      eq(appActionBindings.mcp_connection_id, id),
+    ))
+    .limit(1);
+  if (appBinding) {
+    return c.json({
+      error: 'Connection is retained by an App grant and cannot be deleted',
+      code: 'CONNECTION_IN_USE',
+    }, 409);
+  }
+
+  // Delete before disconnecting so a concurrent App binding cannot leave a
+  // still-persisted connection with its live client unexpectedly torn down.
+  try {
+    await db
+      .delete(mcpConnections)
+      .where(and(eq(mcpConnections.id, id), eq(mcpConnections.org_id, user.org_id)));
+  } catch (error: any) {
+    const cause = error?.cause ?? error;
+    if (cause?.code === '23503' && cause?.constraint === 'app_action_bindings_mcp_connection_fk') {
+      return c.json({
+        error: 'Connection is retained by an App grant and cannot be deleted',
+        code: 'CONNECTION_IN_USE',
+      }, 409);
+    }
+    throw error;
+  }
+
   try {
     await mcpClientManager.disconnect(id);
   } catch {
-    // Ignore disconnect errors — connection may not be active
+    // Ignore disconnect errors — connection may not be active.
   }
-
-  // Cascade delete handles tool_overrides via FK
-  await db
-    .delete(mcpConnections)
-    .where(and(eq(mcpConnections.id, id), eq(mcpConnections.org_id, user.org_id)));
 
   return c.json({ success: true });
 });

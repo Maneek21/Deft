@@ -7,6 +7,7 @@ import {
   buildDeftAppPackage,
   digestAppManifest,
   getDeftAppManifestV0JsonSchema,
+  parseDeftAppManifest,
   prepareModuleArtifact,
   verifyDeftAppPackageJson,
   type DeftAppManifestV0Input,
@@ -157,6 +158,57 @@ describe('App Protocol v0 contract', () => {
     await assert.rejects(
       buildDeftAppPackage({ manifest, artifacts: [{ ...artifact, byte_length: artifact.byte_length + 1 }] }),
       /byte length mismatch/,
+    );
+  });
+
+  test('preserves direct v0 rejection issues instead of wrapping them in a v1 union error', async () => {
+    const invalid = {
+      schema_version: '0',
+      id: 'community.deft.bad',
+      version: '1.0.0',
+      name: 'Bad',
+      license: 'AGPL-3.0-only',
+      compatibility: { app_protocol: '0' },
+      modules: [],
+      runtime: {},
+    };
+    assert.throws(
+      () => parseDeftAppManifest(invalid),
+      (error: any) => {
+        assert.deepEqual(error.issues, [
+          {
+            origin: 'array',
+            code: 'too_small',
+            minimum: 1,
+            inclusive: true,
+            path: ['modules'],
+            message: 'Too small: expected array to have >=1 items',
+          },
+          {
+            code: 'unrecognized_keys',
+            keys: ['runtime'],
+            path: [],
+            message: 'Unrecognized key: "runtime"',
+          },
+        ]);
+        return true;
+      },
+    );
+
+    const { artifact, manifest } = await fixture();
+    const built = await buildDeftAppPackage({ manifest, artifacts: [artifact] });
+    const invalidPackage = JSON.parse(built.json) as any;
+    invalidPackage.manifest.modules = [];
+    invalidPackage.manifest.runtime = {};
+    await assert.rejects(
+      verifyDeftAppPackageJson(JSON.stringify(invalidPackage)),
+      (error: any) => {
+        assert.deepEqual(error.issues.map((issue: any) => ({ code: issue.code, path: issue.path })), [
+          { code: 'too_small', path: ['manifest', 'modules'] },
+          { code: 'unrecognized_keys', path: ['manifest'] },
+        ]);
+        return true;
+      },
     );
   });
 

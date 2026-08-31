@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { buildDeftAppPackage, prepareModuleArtifact } from '@deft/app-kit';
+import test, { after } from 'node:test';
+import {
+  buildDeftAppPackage,
+  prepareModuleArtifact,
+} from '@deft/app-kit';
 import { inspectAppPackageJson } from '../src/lib/app-service.js';
 import { AppError } from '../src/lib/app-errors.js';
+import { closeDb } from '../src/lib/db.js';
+import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
+
+after(async () => closeDb());
 
 async function helloPackage(options: { includeOmittedDefault?: boolean } = {}) {
   const fields = [
@@ -76,4 +83,13 @@ test('API inspection rejects navigation that is not backed by an included Module
     () => inspectAppPackageJson(JSON.stringify(value)),
     (error: unknown) => error instanceof AppError && error.code === 'APP_INVALID_PACKAGE',
   );
+});
+
+test('API inspection accepts Protocol v1 without granting authority', async () => {
+  const built = await buildPhase5ConnectedAppPackage();
+  const inspected = await inspectAppPackageJson(built.json);
+
+  assert.equal(inspected.package_digest, built.digest);
+  assert.equal(inspected.manifest.compatibility.app_protocol, '1');
+  assert.deepEqual(inspected.permissions, []);
 });

@@ -132,6 +132,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.22-resource-relations.sql',
       description: 'Add tenant-bound, live-authorized resource relation sets, edges, and replay receipts',
     },
+    {
+      version: '0.3.0-preview.23',
+      file: '0.3.0-preview.23-connected-app-grants-foundation.sql',
+      description: 'Add immutable connected-App grant requests, exact binding lineage, and dormant App Run identities',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

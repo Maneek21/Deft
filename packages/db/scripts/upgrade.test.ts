@@ -17,6 +17,9 @@ import {
   agentChannelEvents,
   agentChannelConnections,
   appInstallations,
+  appActionBindings,
+  appDependencyLocks,
+  appGrantSnapshots,
   appModuleBindings,
   appRunAttempts,
   appRunEvents,
@@ -87,6 +90,78 @@ test('App v0 supported upgrade contains the same tables and constraints as fresh
     assert.match(sql, new RegExp(constraint, 'i'));
   }
   assert.match(applyExtrasSource, /0\.3\.0-preview\.16-declarative-apps-v0\.sql/);
+});
+
+test('connected App grant foundation is additive, tenant-bound, immutable, and dormant', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.23');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  const foreignKeyNames = (config: ReturnType<typeof getTableConfig>) =>
+    config.foreignKeys.map((key) => key.getName());
+  const installation = getTableConfig(appInstallations);
+  const version = getTableConfig(appVersions);
+  const grant = getTableConfig(appGrantSnapshots);
+  const dependency = getTableConfig(appDependencyLocks);
+  const binding = getTableConfig(appActionBindings);
+  const run = getTableConfig(appRuns);
+
+  for (const table of ['app_grant_snapshots', 'app_dependency_locks', 'app_action_bindings']) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`, 'i'));
+  }
+  assert.ok(installation.columns.some((column) => column.name === 'active_grant_snapshot_id'));
+  assert.ok(version.columns.some((column) => column.name === 'requested_grant_snapshot_id'));
+  for (const column of [
+    'origin_app_installation_id',
+    'origin_app_version_id',
+    'origin_app_binding_key',
+    'origin_app_grant_snapshot_id',
+  ]) {
+    assert.ok(run.columns.some((item) => item.name === column), column);
+  }
+  assert.deepEqual(
+    foreignKeyNames(grant).filter((name) => name.startsWith('app_grant_snapshots_')).sort(),
+    [
+      'app_grant_snapshots_app_installation_fk',
+      'app_grant_snapshots_app_version_fk',
+      'app_grant_snapshots_requested_snapshot_fk',
+      'app_grant_snapshots_supersedes_snapshot_fk',
+    ],
+  );
+  assert.ok(foreignKeyNames(dependency).includes('app_dependency_locks_grant_snapshot_fk'));
+  assert.ok(foreignKeyNames(dependency).includes('app_dependency_locks_dependency_version_fk'));
+  assert.ok(foreignKeyNames(binding).includes('app_action_bindings_grant_snapshot_fk'));
+  assert.ok(foreignKeyNames(binding).includes('app_action_bindings_provider_snapshot_fk'));
+  assert.ok(grant.checks.some((item) => item.name === 'app_grant_snapshots_supersedes_self_check'));
+  assert.ok(dependency.checks.some((item) => item.name === 'app_dependency_locks_ownership_check'));
+  assert.ok(binding.checks.some((item) => item.name === 'app_action_bindings_interface_check'));
+  assert.ok(run.checks.some((item) => item.name === 'app_runs_app_origin_disabled_check'));
+
+  for (const boundary of [
+    'app_versions_requested_grant_snapshot_fk',
+    'app_installations_active_grant_snapshot_fk',
+    'app_runs_app_action_binding_fk',
+    'app_installations_grant_pointer_dormant_check',
+    'app_grant_snapshots_lineage_trigger',
+    'app_grant_snapshots_append_only_trigger',
+    'app_dependency_locks_append_only_trigger',
+    'app_action_bindings_append_only_trigger',
+    'app_versions_identity_trigger',
+    'APP_FOUNDATION_APPEND_ONLY',
+    'APP_VERSION_IMMUTABLE_FIELD',
+    'APP_GRANT_EFFECTIVE_PROTOCOL_UNSUPPORTED',
+    'APP_GRANT_REVIEWER_NOT_AUTHORIZED',
+  ]) {
+    assert.match(sql, new RegExp(boundary, 'i'));
+  }
+  assert.match(sql, /protocol_version IN \('0', '1'\)/i);
+  assert.match(sql, /ownership = 'preexisting'/i);
+  assert.match(sql, /'deft\.private\.v1:' \|\| lower\(org_id\)/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+app_versions/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.23-connected-app-grants-foundation\.sql/);
+  assert.match(applyExtrasSource, /'app_grant_snapshots_append_only_trigger'/);
+  assert.match(applyExtrasSource, /'app_runs_app_action_binding_fk'/);
 });
 
 test('governed App Run fresh schema is tenant-bound and keeps ciphertext separate', () => {

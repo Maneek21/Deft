@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { buildDeftAppPackage, prepareModuleArtifact } from '@deft/app-kit';
 import {
+  appGrantSnapshots,
   appInstallations,
   appModuleBindings,
+  appVersions,
   moduleInstallations,
   moduleRecords,
   orgMembers,
+  orgs,
+  users,
 } from '@deft/db/schema';
 import { db, closeDb } from '../src/lib/db.js';
 import {
@@ -22,79 +24,37 @@ import {
 } from '../src/lib/app-service.js';
 import { humanModuleActor, updateModuleInstallation } from '../src/lib/module-service.js';
 
-const orgId = 'apps-v0-test-org';
-const otherOrgId = 'apps-v0-other-org';
-const userId = 'apps-v0-test-owner';
+const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
+  ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
+if (!DATABASE_URL) throw new Error('App lifecycle DB tests require DEFT_TEST_DATABASE_URL');
+if (process.env.CI !== 'true' && !/(?:test|ci|acceptance|phase5)/i.test(new URL(DATABASE_URL).pathname)) {
+  throw new Error('App lifecycle DB tests require an explicitly disposable database');
+}
+
+const orgId = '11111111-1111-4111-8111-111111111101';
+const otherOrgId = '11111111-1111-4111-8111-111111111102';
+const userId = '22222222-2222-4222-8222-222222222201';
 
 before(async () => {
-  const tables = await db.execute<{ exists: boolean }>(sql`
-    SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'orgs') AS exists
-  `);
-  if (!tables.rows[0]?.exists) {
-    await db.execute(sql.raw(`
-      CREATE TYPE org_role AS ENUM ('owner', 'admin', 'member', 'guest');
-      CREATE TABLE orgs (id text PRIMARY KEY, name text, slug text);
-      CREATE TABLE users (id text PRIMARY KEY, email text, name text);
-      CREATE TABLE org_members (
-        id text PRIMARY KEY, org_id text NOT NULL, user_id text NOT NULL,
-        role org_role NOT NULL DEFAULT 'member', is_active boolean NOT NULL DEFAULT true,
-        joined_at timestamp NOT NULL DEFAULT now(), created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now(),
-        CONSTRAINT org_member_unique UNIQUE (org_id, user_id)
-      );
-      CREATE TABLE audit_log (
-        id text PRIMARY KEY, org_id text NOT NULL, actor_type text NOT NULL, actor_id text NOT NULL,
-        action text NOT NULL, entity_type text NOT NULL, entity_id text NOT NULL,
-        before_state jsonb, after_state jsonb, metadata jsonb, created_at timestamp NOT NULL DEFAULT now()
-      );
-      CREATE TABLE module_installations (
-        id text PRIMARY KEY, org_id text NOT NULL, module_id text NOT NULL, slug text NOT NULL, source text NOT NULL,
-        is_enabled boolean NOT NULL DEFAULT true, disabled_at timestamp, agent_access text NOT NULL DEFAULT 'none',
-        installed_by_user_id text, installed_by_actor_type text NOT NULL, installed_by_actor_id text NOT NULL,
-        updated_by_actor_type text NOT NULL, updated_by_actor_id text NOT NULL, is_deleted boolean NOT NULL DEFAULT false,
-        deleted_at timestamp, deleted_by_actor_type text, deleted_by_actor_id text,
-        created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now(),
-        CONSTRAINT module_installations_org_id_id_unique UNIQUE (org_id, id),
-        CONSTRAINT module_installations_org_module_id_unique UNIQUE (org_id, module_id),
-        CONSTRAINT module_installations_org_slug_unique UNIQUE (org_id, slug),
-        CONSTRAINT module_installations_enabled_state_check CHECK ((is_enabled AND disabled_at IS NULL) OR (NOT is_enabled AND disabled_at IS NOT NULL))
-      );
-      CREATE TABLE module_versions (
-        id text PRIMARY KEY, org_id text NOT NULL, installation_id text NOT NULL, version text NOT NULL,
-        manifest jsonb NOT NULL, manifest_digest text NOT NULL, is_active boolean NOT NULL DEFAULT false,
-        activated_at timestamp, created_by_actor_type text NOT NULL, created_by_actor_id text NOT NULL,
-        created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now(),
-        CONSTRAINT module_versions_org_installation_fk FOREIGN KEY (org_id, installation_id) REFERENCES module_installations(org_id, id),
-        CONSTRAINT module_versions_org_installation_id_unique UNIQUE (org_id, installation_id, id),
-        CONSTRAINT module_versions_org_installation_version_unique UNIQUE (org_id, installation_id, version)
-      );
-      CREATE UNIQUE INDEX module_versions_one_active_unique ON module_versions(org_id, installation_id) WHERE is_active = true;
-      CREATE TABLE module_records (
-        id text PRIMARY KEY, org_id text NOT NULL, installation_id text NOT NULL, collection_key text NOT NULL,
-        validated_version_id text NOT NULL, data jsonb NOT NULL DEFAULT '{}'::jsonb, revision integer NOT NULL DEFAULT 1,
-        create_idempotency_key text, search_title text NOT NULL, search_subtitle text, search_text text NOT NULL DEFAULT '',
-        search_vector tsvector, created_by_actor_type text NOT NULL, created_by_actor_id text NOT NULL,
-        updated_by_actor_type text NOT NULL, updated_by_actor_id text NOT NULL, is_deleted boolean NOT NULL DEFAULT false,
-        deleted_at timestamp, deleted_by_actor_type text, deleted_by_actor_id text,
-        created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now(),
-        CONSTRAINT module_records_org_installation_id_unique UNIQUE (org_id, installation_id, id)
-      );
-      CREATE TABLE agent_employees (id text PRIMARY KEY, org_id text NOT NULL, is_deleted boolean NOT NULL DEFAULT false);
-    `));
-  }
-  const appMigration = readFileSync(
-    resolve(import.meta.dirname, '../../../packages/db/upgrades/0.3.0-preview.16-declarative-apps-v0.sql'),
-    'utf8',
-  );
-  await db.execute(sql.raw(appMigration));
-  await db.execute(sql.raw(`
-    INSERT INTO orgs (id, name, slug) VALUES
-      ('${orgId}', 'Apps v0 test', 'apps-v0-test'),
-      ('${otherOrgId}', 'Apps v0 other', 'apps-v0-other') ON CONFLICT DO NOTHING;
-    INSERT INTO users (id, email, name) VALUES ('${userId}', 'apps-v0-owner@example.test', 'Apps owner') ON CONFLICT DO NOTHING;
-    INSERT INTO org_members (id, org_id, user_id, role, is_active)
-      VALUES ('apps-v0-member', '${orgId}', '${userId}', 'owner', true)
-      ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'owner', is_active = true;
-  `));
+  await db.insert(orgs).values([
+    { id: orgId, name: 'Apps v0 test', slug: `apps-v0-test-${orgId.slice(-6)}` },
+    { id: otherOrgId, name: 'Apps v0 other', slug: `apps-v0-other-${otherOrgId.slice(-6)}` },
+  ]).onConflictDoNothing();
+  await db.insert(users).values({
+    id: userId,
+    email: 'apps-v0-owner@example.test',
+    name: 'Apps owner',
+  }).onConflictDoNothing();
+  await db.insert(orgMembers).values({
+    id: '33333333-3333-4333-8333-333333333301',
+    org_id: orgId,
+    user_id: userId,
+    role: 'owner',
+    is_active: true,
+  }).onConflictDoUpdate({
+    target: [orgMembers.org_id, orgMembers.user_id],
+    set: { role: 'owner', is_active: true },
+  });
 });
 
 after(async () => closeDb());
@@ -137,6 +97,36 @@ test('App activation is atomic, tenant-bound, zero-rights while staged, and pres
   assert.equal(lineage?.lineage_key, `local:${built.package.manifest.id}`);
   assert.equal(lineage?.lineage_authority_type, 'local_user');
   assert.equal(lineage?.lineage_authority_id, userId);
+  const [version] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.installation_id, staged.id),
+  ));
+  assert.ok(version?.requested_grant_snapshot_id);
+  const [requestedGrant] = await db.select().from(appGrantSnapshots).where(eq(
+    appGrantSnapshots.id,
+    version.requested_grant_snapshot_id,
+  ));
+  assert.ok(requestedGrant);
+  assert.equal(requestedGrant.snapshot_kind, 'requested');
+  assert.deepEqual(requestedGrant.resource_rights, []);
+  assert.equal(requestedGrant.classification.executable, false);
+  await assert.rejects(
+    db.insert(appGrantSnapshots).values({
+      ...requestedGrant,
+      id: randomUUID(),
+      snapshot_kind: 'effective',
+      requested_snapshot_id: requestedGrant.id,
+      classification: { ...requestedGrant.classification, authority_state: 'effective' },
+      canonical_snapshot: { ...requestedGrant.canonical_snapshot, snapshot_kind: 'effective' },
+      snapshot_digest: `sha256:${'8'.repeat(64)}`,
+      reviewed_by_actor_type: 'human',
+      reviewed_by_actor_id: userId,
+      reviewed_at: new Date(),
+      created_at: new Date(),
+    }),
+    (error: any) => error?.cause?.code === '23514'
+      && error?.cause?.message === 'APP_GRANT_EFFECTIVE_PROTOCOL_UNSUPPORTED',
+  );
   assert.equal((await listActiveAppNavigation(actor)).some((item) => item.module_slug === suffix), false);
   assert.equal((await db.select().from(moduleInstallations).where(and(
     eq(moduleInstallations.org_id, orgId), eq(moduleInstallations.module_id, moduleId),

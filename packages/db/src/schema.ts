@@ -645,6 +645,8 @@ export const capabilityProviderSnapshots = pgTable('capability_provider_snapshot
   created_at: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   unique('capability_provider_snapshots_org_id_id_unique').on(t.org_id, t.id),
+  unique('capability_provider_snapshots_org_provider_id_unique')
+    .on(t.org_id, t.provider_kind, t.provider_instance_id, t.id),
   uniqueIndex('capability_provider_snapshots_identity_digest_unique')
     .on(t.org_id, t.provider_kind, t.provider_instance_id, t.snapshot_digest),
   index('capability_provider_snapshots_provider_idx')
@@ -672,6 +674,10 @@ export const appRuns = pgTable('app_runs', {
   provider_instance_id: text('provider_instance_id').notNull(),
   operation_name: text('operation_name').notNull(),
   provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  origin_app_installation_id: text('origin_app_installation_id'),
+  origin_app_version_id: text('origin_app_version_id'),
+  origin_app_binding_key: text('origin_app_binding_key'),
+  origin_app_grant_snapshot_id: text('origin_app_grant_snapshot_id'),
   state: text('state').$type<
     | 'pending'
     | 'pending_approval'
@@ -757,6 +763,27 @@ export const appRuns = pgTable('app_runs', {
   check('app_runs_contract_version_check', sql`${t.contract_version} = 'deft.app_run.v1'`),
   // App origin is reserved but cannot persist until connected App grants exist.
   check('app_runs_app_origin_disabled_check', sql`${t.origin_kind} <> 'app'`),
+  check('app_runs_app_identity_dormant_check', sql`
+    (
+      ${t.origin_kind} = 'app'
+      AND ${t.origin_app_installation_id} IS NOT NULL
+      AND ${t.origin_app_version_id} IS NOT NULL
+      AND ${t.origin_app_binding_key} IS NOT NULL
+      AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
+    ) OR (
+      ${t.origin_kind} <> 'app'
+      AND ${t.origin_app_installation_id} IS NULL
+      AND ${t.origin_app_version_id} IS NULL
+      AND ${t.origin_app_binding_key} IS NULL
+      AND ${t.origin_app_grant_snapshot_id} IS NULL
+    )
+  `),
+  check('app_runs_app_binding_key_check', sql`
+    ${t.origin_app_binding_key} IS NULL OR (
+      ${t.origin_app_binding_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+      AND ${t.origin_app_binding_key} !~ '^(deft|core|system)(_|$)'
+    )
+  `),
   check('app_runs_actor_type_check', sql`
     ${t.initiating_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
     AND ${t.execution_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
@@ -1387,10 +1414,10 @@ export const moduleVersions = pgTable('module_versions', {
   ),
 ]);
 
-// ═══ APPS (DECLARATIVE APP PROTOCOL V0) ═══
+// ═══ APPS (DECLARATIVE AND CONNECTED APP PROTOCOLS) ═══
 // Apps are tenant-local lifecycle owners for exact immutable Module versions.
-// The first protocol is deliberately JSON-only and carries no grants, secrets,
-// runtime, connector, public-ingress, automation, sync, or entitlement state.
+// Protocol v1 may persist requested authority, but effective grants, execution,
+// secrets, public ingress, automation, sync, and entitlement state remain gated.
 export const appInstallations = pgTable('app_installations', {
   ...id(),
   org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
@@ -1401,7 +1428,10 @@ export const appInstallations = pgTable('app_installations', {
   source: text('source').$type<'local'>().default('local').notNull(),
   state: text('state').$type<'staged' | 'active' | 'disabled' | 'failed'>().default('staged').notNull(),
   active_version_id: text('active_version_id'),
+  active_grant_snapshot_id: text('active_grant_snapshot_id'),
+  active_grant_snapshot_kind: text('active_grant_snapshot_kind').$type<'effective'>(),
   lifecycle_epoch: integer('lifecycle_epoch').default(0).notNull(),
+  grant_epoch: integer('grant_epoch').default(0).notNull(),
   installed_by_user_id: text('installed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   installed_by_actor_type: text('installed_by_actor_type').notNull(),
   installed_by_actor_id: text('installed_by_actor_id').notNull(),
@@ -1411,6 +1441,7 @@ export const appInstallations = pgTable('app_installations', {
   ...timestamps(),
 }, (t) => [
   unique('app_installations_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_installations_org_id_app_id_unique').on(t.org_id, t.id, t.app_id),
   uniqueIndex('app_installations_org_app_id_unique').on(t.org_id, t.app_id),
   uniqueIndex('app_installations_org_lineage_unique').on(t.org_id, t.lineage_key),
   index('app_installations_org_state_idx').on(t.org_id, t.state),
@@ -1418,6 +1449,10 @@ export const appInstallations = pgTable('app_installations', {
   check('app_installations_lineage_authority_check', sql`${t.lineage_authority_type} = 'local_user'`),
   check('app_installations_state_check', sql`${t.state} IN ('staged', 'active', 'disabled', 'failed')`),
   check('app_installations_epoch_nonnegative_check', sql`${t.lifecycle_epoch} >= 0`),
+  check('app_installations_grant_epoch_nonnegative_check', sql`${t.grant_epoch} >= 0`),
+  check('app_installations_grant_pointer_dormant_check', sql`
+    ${t.active_grant_snapshot_id} IS NULL AND ${t.active_grant_snapshot_kind} IS NULL
+  `),
   check(
     'app_installations_active_pointer_check',
     sql`(${t.state} = 'staged' AND ${t.active_version_id} IS NULL AND ${t.disabled_at} IS NULL)
@@ -1437,6 +1472,9 @@ export const appVersions = pgTable('app_versions', {
   manifest_digest: text('manifest_digest').notNull(),
   package_digest: text('package_digest').notNull(),
   package: jsonb('package').$type<Record<string, unknown>>().notNull(),
+  // Nullable preserves pre-.23 Protocol v0 rows. New v0/v1 staging writes an
+  // immutable compatibility/request projection; only v1 requires the pointer.
+  requested_grant_snapshot_id: text('requested_grant_snapshot_id'),
   provenance: jsonb('provenance').$type<Record<string, unknown> | null>(),
   state: text('state').$type<'staged' | 'active' | 'failed'>().default('staged').notNull(),
   staged_at: timestamp('staged_at').defaultNow().notNull(),
@@ -1452,12 +1490,20 @@ export const appVersions = pgTable('app_versions', {
     name: 'app_versions_org_installation_fk',
   }).onDelete('restrict'),
   unique('app_versions_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
+  unique('app_versions_org_installation_identity_unique')
+    .on(t.org_id, t.installation_id, t.id, t.version, t.manifest_digest, t.package_digest),
   uniqueIndex('app_versions_org_installation_version_unique').on(t.org_id, t.installation_id, t.version),
   uniqueIndex('app_versions_package_digest_unique').on(t.org_id, t.installation_id, t.package_digest),
   uniqueIndex('app_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
-  check('app_versions_protocol_v0_check', sql`${t.protocol_version} = '0'`),
+  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1')`),
+  check('app_versions_protocol_stage_gate_check', sql`
+    ${t.protocol_version} = '0' OR ${t.state} = 'staged'
+  `),
+  check('app_versions_connected_request_check', sql`
+    ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
+  `),
   check('app_versions_state_check', sql`${t.state} IN ('staged', 'active', 'failed')`),
   check('app_versions_manifest_object_check', sql`jsonb_typeof(${t.manifest}) = 'object'`),
   check('app_versions_package_object_check', sql`jsonb_typeof(${t.package}) = 'object'`),
@@ -1505,6 +1551,337 @@ export const appModuleBindings = pgTable('app_module_bindings', {
   uniqueIndex('app_module_bindings_app_module_unique').on(t.org_id, t.app_version_id, t.module_id),
   uniqueIndex('app_module_bindings_owned_module_unique').on(t.org_id, t.module_installation_id),
   check('app_module_bindings_ownership_check', sql`${t.ownership} = 'app'`),
+]);
+
+// Immutable requested/effective authority snapshots. Staging writes only a
+// requested row. Effective rows, dependency locks, provider bindings, and the
+// active pointer remain absent until explicit review in the next lifecycle loop.
+export const appGrantSnapshots = pgTable('app_grant_snapshots', {
+  ...id(),
+  ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  app_id: text('app_id').notNull(),
+  app_version: text('app_version').notNull(),
+  manifest_digest: text('manifest_digest').notNull(),
+  package_digest: text('package_digest').notNull(),
+  snapshot_kind: text('snapshot_kind').$type<'requested' | 'effective'>().notNull(),
+  snapshot_version: text('snapshot_version').$type<'deft.app_grant_snapshot.v1'>().notNull(),
+  requested_snapshot_id: text('requested_snapshot_id'),
+  supersedes_snapshot_id: text('supersedes_snapshot_id'),
+  resource_rights: jsonb('resource_rights').$type<unknown[]>().notNull(),
+  classification: jsonb('classification').$type<Record<string, unknown>>().notNull(),
+  canonical_snapshot: jsonb('canonical_snapshot').$type<Record<string, unknown>>().notNull(),
+  snapshot_digest: text('snapshot_digest').notNull(),
+  reviewed_by_actor_type: text('reviewed_by_actor_type'),
+  // The upgrade trigger verifies this human is an active owner/admin in org_id
+  // at insert time. It remains an immutable historical actor snapshot rather
+  // than an FK that would prevent a former reviewer from leaving the workspace.
+  reviewed_by_actor_id: text('reviewed_by_actor_id'),
+  reviewed_at: timestamp('reviewed_at'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.app_id],
+    foreignColumns: [appInstallations.org_id, appInstallations.id, appInstallations.app_id],
+    name: 'app_grant_snapshots_app_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.app_installation_id,
+      t.app_version_id,
+      t.app_version,
+      t.manifest_digest,
+      t.package_digest,
+    ],
+    foreignColumns: [
+      appVersions.org_id,
+      appVersions.installation_id,
+      appVersions.id,
+      appVersions.version,
+      appVersions.manifest_digest,
+      appVersions.package_digest,
+    ],
+    name: 'app_grant_snapshots_app_version_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.app_version_id, t.requested_snapshot_id],
+    foreignColumns: [t.org_id, t.app_installation_id, t.app_version_id, t.id],
+    name: 'app_grant_snapshots_requested_snapshot_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.supersedes_snapshot_id],
+    foreignColumns: [t.org_id, t.app_installation_id, t.id],
+    name: 'app_grant_snapshots_supersedes_snapshot_fk',
+  }).onDelete('restrict'),
+  unique('app_grant_snapshots_org_installation_id_unique')
+    .on(t.org_id, t.app_installation_id, t.id),
+  unique('app_grant_snapshots_org_version_id_unique')
+    .on(t.org_id, t.app_installation_id, t.app_version_id, t.id),
+  unique('app_grant_snapshots_org_version_kind_id_unique')
+    .on(t.org_id, t.app_installation_id, t.app_version_id, t.id, t.snapshot_kind),
+  uniqueIndex('app_grant_snapshots_one_requested_unique')
+    .on(t.org_id, t.app_version_id)
+    .where(sql`${t.snapshot_kind} = 'requested'`),
+  index('app_grant_snapshots_app_version_idx')
+    .on(t.org_id, t.app_installation_id, t.app_version_id, t.created_at),
+  check('app_grant_snapshots_kind_check', sql`${t.snapshot_kind} IN ('requested', 'effective')`),
+  check('app_grant_snapshots_version_check', sql`${t.snapshot_version} = 'deft.app_grant_snapshot.v1'`),
+  check('app_grant_snapshots_app_id_check', sql`
+    ${t.app_id} ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\.[a-z][a-z0-9]*(-[a-z0-9]+)*)+$'
+  `),
+  check('app_grant_snapshots_digest_check', sql`
+    ${t.manifest_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.package_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.snapshot_digest} ~ '^sha256:[a-f0-9]{64}$'
+  `),
+  check('app_grant_snapshots_json_check', sql`
+    jsonb_typeof(${t.resource_rights}) = 'array'
+    AND jsonb_typeof(${t.classification}) = 'object'
+    AND jsonb_typeof(${t.canonical_snapshot}) = 'object'
+  `),
+  check('app_grant_snapshots_json_size_check', sql`
+    octet_length(${t.resource_rights}::text) <= 65536
+    AND octet_length(${t.classification}::text) <= 32768
+    AND octet_length(${t.canonical_snapshot}::text) <= 262144
+  `),
+  check('app_grant_snapshots_review_shape_check', sql`
+    (
+      ${t.snapshot_kind} = 'requested'
+      AND ${t.requested_snapshot_id} IS NULL
+      AND ${t.supersedes_snapshot_id} IS NULL
+      AND ${t.reviewed_by_actor_type} IS NULL
+      AND ${t.reviewed_by_actor_id} IS NULL
+      AND ${t.reviewed_at} IS NULL
+    ) OR (
+      ${t.snapshot_kind} = 'effective'
+      AND ${t.requested_snapshot_id} IS NOT NULL
+      AND ${t.reviewed_by_actor_type} = 'human'
+      AND ${t.reviewed_by_actor_id} IS NOT NULL
+      AND ${t.reviewed_at} IS NOT NULL
+    )
+  `),
+  check('app_grant_snapshots_supersedes_self_check', sql`
+    ${t.supersedes_snapshot_id} IS NULL OR ${t.supersedes_snapshot_id} <> ${t.id}
+  `),
+]);
+
+export const appDependencyLocks = pgTable('app_dependency_locks', {
+  ...id(),
+  ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
+  dependency_key: text('dependency_key').notNull(),
+  required_app_id: text('required_app_id').notNull(),
+  required_version: text('required_version').notNull(),
+  dependency_installation_id: text('dependency_installation_id').notNull(),
+  dependency_version_id: text('dependency_version_id').notNull(),
+  dependency_manifest_digest: text('dependency_manifest_digest').notNull(),
+  dependency_package_digest: text('dependency_package_digest').notNull(),
+  dependency_lifecycle_epoch: integer('dependency_lifecycle_epoch').notNull(),
+  ownership: text('ownership').$type<'preexisting'>().notNull(),
+  canonical_lock: jsonb('canonical_lock').$type<Record<string, unknown>>().notNull(),
+  lock_digest: text('lock_digest').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
+    name: 'app_dependency_locks_app_version_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.app_installation_id,
+      t.app_version_id,
+      t.grant_snapshot_id,
+      t.grant_snapshot_kind,
+    ],
+    foreignColumns: [
+      appGrantSnapshots.org_id,
+      appGrantSnapshots.app_installation_id,
+      appGrantSnapshots.app_version_id,
+      appGrantSnapshots.id,
+      appGrantSnapshots.snapshot_kind,
+    ],
+    name: 'app_dependency_locks_grant_snapshot_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.dependency_installation_id, t.required_app_id],
+    foreignColumns: [appInstallations.org_id, appInstallations.id, appInstallations.app_id],
+    name: 'app_dependency_locks_dependency_app_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.dependency_installation_id,
+      t.dependency_version_id,
+      t.required_version,
+      t.dependency_manifest_digest,
+      t.dependency_package_digest,
+    ],
+    foreignColumns: [
+      appVersions.org_id,
+      appVersions.installation_id,
+      appVersions.id,
+      appVersions.version,
+      appVersions.manifest_digest,
+      appVersions.package_digest,
+    ],
+    name: 'app_dependency_locks_dependency_version_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('app_dependency_locks_grant_key_unique')
+    .on(t.org_id, t.grant_snapshot_id, t.dependency_key),
+  uniqueIndex('app_dependency_locks_grant_installation_unique')
+    .on(t.org_id, t.grant_snapshot_id, t.dependency_installation_id),
+  index('app_dependency_locks_dependency_idx')
+    .on(t.org_id, t.dependency_installation_id, t.dependency_version_id),
+  check('app_dependency_locks_key_check', sql`
+    ${t.dependency_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.dependency_key} !~ '^(deft|core|system)(_|$)'
+  `),
+  check('app_dependency_locks_app_id_check', sql`
+    ${t.required_app_id} ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*(\\.[a-z][a-z0-9]*(-[a-z0-9]+)*)+$'
+  `),
+  check('app_dependency_locks_self_check', sql`${t.dependency_installation_id} <> ${t.app_installation_id}`),
+  check('app_dependency_locks_epoch_check', sql`${t.dependency_lifecycle_epoch} >= 0`),
+  check('app_dependency_locks_ownership_check', sql`
+    ${t.ownership} = 'preexisting'
+  `),
+  check('app_dependency_locks_grant_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
+  check('app_dependency_locks_digest_check', sql`
+    ${t.dependency_manifest_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.dependency_package_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.lock_digest} ~ '^sha256:[a-f0-9]{64}$'
+  `),
+  check('app_dependency_locks_json_check', sql`
+    jsonb_typeof(${t.canonical_lock}) = 'object'
+    AND octet_length(${t.canonical_lock}::text) <= 65536
+  `),
+]);
+
+export const appActionBindings = pgTable('app_action_bindings', {
+  ...id(),
+  ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
+  action_key: text('action_key').notNull(),
+  capability_requirement_key: text('capability_requirement_key').notNull(),
+  connector_requirement_key: text('connector_requirement_key').notNull(),
+  interface_identity: text('interface_identity').notNull(),
+  provider_kind: text('provider_kind').$type<'mcp'>().notNull(),
+  mcp_connection_id: text('mcp_connection_id').notNull(),
+  provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  operation_name: text('operation_name').notNull(),
+  operation_schema_digest: text('operation_schema_digest').notNull(),
+  connector_authorization_version: integer('connector_authorization_version').notNull(),
+  risk_class: text('risk_class').$type<'external_write'>().notNull(),
+  review_requirement: text('review_requirement').$type<'always'>().notNull(),
+  review_scope: text('review_scope').$type<'per_invocation'>().notNull(),
+  egress_class: text('egress_class').$type<'email'>().notNull(),
+  retry_class: text('retry_class').$type<'idempotent_with_key'>().notNull(),
+  retention_class: text('retention_class').$type<'standard'>().notNull(),
+  automation_eligibility: text('automation_eligibility').$type<'forbidden'>().notNull(),
+  provider_idempotency_key_required: boolean('provider_idempotency_key_required').notNull(),
+  canonical_binding: jsonb('canonical_binding').$type<Record<string, unknown>>().notNull(),
+  binding_digest: text('binding_digest').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
+    name: 'app_action_bindings_app_version_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.app_installation_id,
+      t.app_version_id,
+      t.grant_snapshot_id,
+      t.grant_snapshot_kind,
+    ],
+    foreignColumns: [
+      appGrantSnapshots.org_id,
+      appGrantSnapshots.app_installation_id,
+      appGrantSnapshots.app_version_id,
+      appGrantSnapshots.id,
+      appGrantSnapshots.snapshot_kind,
+    ],
+    name: 'app_action_bindings_grant_snapshot_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.mcp_connection_id],
+    foreignColumns: [mcpConnections.org_id, mcpConnections.id],
+    name: 'app_action_bindings_mcp_connection_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.provider_kind, t.mcp_connection_id, t.provider_snapshot_id],
+    foreignColumns: [
+      capabilityProviderSnapshots.org_id,
+      capabilityProviderSnapshots.provider_kind,
+      capabilityProviderSnapshots.provider_instance_id,
+      capabilityProviderSnapshots.id,
+    ],
+    name: 'app_action_bindings_provider_snapshot_fk',
+  }).onDelete('restrict'),
+  unique('app_action_bindings_grant_action_unique')
+    .on(t.org_id, t.grant_snapshot_id, t.action_key),
+  unique('app_action_bindings_run_identity_unique').on(
+    t.org_id,
+    t.app_installation_id,
+    t.app_version_id,
+    t.grant_snapshot_id,
+    t.action_key,
+    t.provider_kind,
+    t.mcp_connection_id,
+    t.operation_name,
+    t.provider_snapshot_id,
+  ),
+  index('app_action_bindings_provider_idx')
+    .on(t.org_id, t.mcp_connection_id, t.provider_snapshot_id),
+  check('app_action_bindings_key_check', sql`
+    ${t.action_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.capability_requirement_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.connector_requirement_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.action_key} !~ '^(deft|core|system)(_|$)'
+    AND ${t.capability_requirement_key} !~ '^(deft|core|system)(_|$)'
+    AND ${t.connector_requirement_key} !~ '^(deft|core|system)(_|$)'
+  `),
+  check('app_action_bindings_interface_check', sql`
+    ${t.interface_identity} =
+      'deft.private.v1:' || lower(${t.org_id}) || ':' || lower(${t.app_installation_id}) ||
+      ':sandbox_email_send:v1'
+  `),
+  check('app_action_bindings_provider_check', sql`${t.provider_kind} = 'mcp'`),
+  check('app_action_bindings_grant_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
+  check('app_action_bindings_policy_check', sql`
+    ${t.risk_class} = 'external_write'
+    AND ${t.review_requirement} = 'always'
+    AND ${t.review_scope} = 'per_invocation'
+    AND ${t.egress_class} = 'email'
+    AND ${t.retry_class} = 'idempotent_with_key'
+    AND ${t.retention_class} = 'standard'
+    AND ${t.automation_eligibility} = 'forbidden'
+    AND ${t.provider_idempotency_key_required} = true
+    AND ${t.connector_authorization_version} >= 1
+  `),
+  check('app_action_bindings_operation_check', sql`
+    octet_length(${t.operation_name}) BETWEEN 1 AND 512
+    AND ${t.operation_name} !~ '[[:cntrl:]]'
+  `),
+  check('app_action_bindings_digest_check', sql`
+    ${t.operation_schema_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.binding_digest} ~ '^sha256:[a-f0-9]{64}$'
+  `),
+  check('app_action_bindings_json_check', sql`
+    jsonb_typeof(${t.canonical_binding}) = 'object'
+    AND octet_length(${t.canonical_binding}::text) <= 65536
+  `),
 ]);
 
 export const appDeveloperPairings = pgTable('app_developer_pairings', {
@@ -2884,6 +3261,7 @@ export const mcpConnections = pgTable('mcp_connections', {
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 }, (t) => [
+  unique('mcp_connections_org_id_id_unique').on(t.org_id, t.id),
   index('mcp_conn_org_idx').on(t.org_id),
   uniqueIndex('mcp_conn_slug_unique').on(t.org_id, t.slug),
 ]);

@@ -7,6 +7,7 @@ import {
   buildDeftAppPackage,
   parseDeftAppManifest,
   prepareModuleArtifact,
+  type DeftAppManifestInput,
   type DeftAppManifestV0Input,
 } from './index.js';
 
@@ -91,7 +92,7 @@ async function initialize(): Promise<void> {
 }
 
 async function buildProject(writeOutput: boolean) {
-  const source = JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as DeftAppManifestV0Input;
+  const source = JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as DeftAppManifestInput;
   const artifacts = [];
   const modules = [];
   for (const reference of source.modules ?? []) {
@@ -106,7 +107,7 @@ async function buildProject(writeOutput: boolean) {
     await mkdir(resolve(cwd, '.deft'), { recursive: true });
     await writeFile(resolve(cwd, '.deft', 'app.deftapp.json'), `${built.json}\n`, 'utf8');
     await writeJson(resolve(cwd, 'deft.app.lock.json'), {
-      schema: 'deft.app.lock.v0',
+      schema: `deft.app.lock.v${manifest.schema_version}`,
       app_id: manifest.id,
       version: manifest.version,
       package_digest: built.digest,
@@ -173,7 +174,10 @@ async function main(): Promise<void> {
   if (command === 'init') return initialize();
   if (command === 'check') {
     const built = await buildProject(false);
-    console.log(`Valid App Protocol v0 package ${built.digest}; connected permissions: none`);
+    const protocol = built.package.manifest.compatibility.app_protocol;
+    console.log(protocol === '0'
+      ? `Valid App Protocol v0 package ${built.digest}; connected permissions: none`
+      : `Valid App Protocol v1 authoring package ${built.digest}; host activation unavailable until connected grants are installed`);
     return;
   }
   if (command === 'build') {
