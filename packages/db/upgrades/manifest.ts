@@ -142,6 +142,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.24-connected-app-review-lifecycle.sql',
       description: 'Enable reviewed connected-App grants, immutable supersession, and lifecycle coherence',
     },
+    {
+      version: '0.3.0-preview.25',
+      file: '0.3.0-preview.25-app-origin-run-cutover.sql',
+      description: 'Permit exact tenant-bound App-origin Run ancestry behind the production rollout gate',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

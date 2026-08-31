@@ -743,6 +743,56 @@ export const appRuns = pgTable('app_runs', {
     foreignColumns: [t.org_id, t.id],
     name: 'app_runs_org_parent_run_fk',
   }).onDelete('no action'),
+  foreignKey({
+    columns: [t.org_id, t.origin_app_installation_id],
+    foreignColumns: [appInstallations.org_id, appInstallations.id],
+    name: 'app_runs_app_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.origin_app_installation_id, t.origin_app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
+    name: 'app_runs_app_version_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.origin_app_installation_id,
+      t.origin_app_version_id,
+      t.origin_app_grant_snapshot_id,
+    ],
+    foreignColumns: [
+      appGrantSnapshots.org_id,
+      appGrantSnapshots.app_installation_id,
+      appGrantSnapshots.app_version_id,
+      appGrantSnapshots.id,
+    ],
+    name: 'app_runs_app_grant_snapshot_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.origin_app_installation_id,
+      t.origin_app_version_id,
+      t.origin_app_grant_snapshot_id,
+      t.origin_app_binding_key,
+      t.provider_kind,
+      t.provider_instance_id,
+      t.operation_name,
+      t.provider_snapshot_id,
+    ],
+    foreignColumns: [
+      appActionBindings.org_id,
+      appActionBindings.app_installation_id,
+      appActionBindings.app_version_id,
+      appActionBindings.grant_snapshot_id,
+      appActionBindings.action_key,
+      appActionBindings.provider_kind,
+      appActionBindings.mcp_connection_id,
+      appActionBindings.operation_name,
+      appActionBindings.provider_snapshot_id,
+    ],
+    name: 'app_runs_app_action_binding_fk',
+  }).onDelete('restrict'),
   index('app_runs_idempotency_lookup_idx').on(
     t.org_id,
     t.initiating_actor_type,
@@ -761,15 +811,20 @@ export const appRuns = pgTable('app_runs', {
   index('app_runs_idempotency_expiry_idx').on(t.idempotency_expires_at),
   check('app_runs_origin_check', sql`${t.origin_kind} IN ('core', 'legacy_connector', 'app')`),
   check('app_runs_contract_version_check', sql`${t.contract_version} = 'deft.app_run.v1'`),
-  // App origin is reserved but cannot persist until connected App grants exist.
-  check('app_runs_app_origin_disabled_check', sql`${t.origin_kind} <> 'app'`),
-  check('app_runs_app_identity_dormant_check', sql`
+  // Database ancestry is exact; the API's independent feature flag remains
+  // disabled by default until Phase 5 certification deliberately enables it.
+  check('app_runs_app_origin_coherence_check', sql`
     (
       ${t.origin_kind} = 'app'
       AND ${t.origin_app_installation_id} IS NOT NULL
       AND ${t.origin_app_version_id} IS NOT NULL
       AND ${t.origin_app_binding_key} IS NOT NULL
       AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
+      AND ${t.risk_class} = 'external_write'
+      AND ${t.review_requirement} = 'always'
+      AND ${t.review_scope} = 'per_invocation'
+      AND ${t.retry_class} = 'idempotent_with_key'
+      AND ${t.retention_class} = 'standard'
     ) OR (
       ${t.origin_kind} <> 'app'
       AND ${t.origin_app_installation_id} IS NULL

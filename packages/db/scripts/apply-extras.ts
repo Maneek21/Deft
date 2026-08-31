@@ -65,7 +65,7 @@ async function main() {
     // Fresh pushes already contain the current declarative-App tables from
     // schema.ts, so .16 must not be replayed unchanged: retain its circular
     // active-version FK while omitting the obsolete one-binding-per-Module
-    // index. Reconcile only .24 whenever either the
+    // index. Reconcile the connected lifecycle and cutover migrations whenever either the
     // durable migration ledger or an earlier connected-foundation trigger
     // proves this is an existing App database, even if a .24 trigger is being
     // repaired.
@@ -118,6 +118,10 @@ async function main() {
       await client.query(readFileSync(resolve(upgradesDir, connectedAppReviewFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${connectedAppReviewFile}`);
     }
+
+    const appOriginCutoverFile = '0.3.0-preview.25-app-origin-run-cutover.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appOriginCutoverFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${appOriginCutoverFile}`);
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
@@ -206,11 +210,11 @@ async function main() {
       'app_action_bindings_run_identity_unique',
       'app_action_bindings_interface_check',
       'app_action_bindings_policy_check',
+      'app_runs_app_installation_fk',
       'app_runs_app_version_fk',
       'app_runs_app_grant_snapshot_fk',
       'app_runs_app_action_binding_fk',
-      'app_runs_app_origin_disabled_check',
-      'app_runs_app_identity_dormant_check',
+      'app_runs_app_origin_coherence_check',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -332,7 +336,7 @@ async function main() {
     if (missingAppRunTriggers.length > 0) {
       throw new Error(`required App Run triggers are missing: ${missingAppRunTriggers.join(', ')}`);
     }
-    console.log('[apply-extras] verified dormant App Run constraints, indexes, and triggers');
+    console.log('[apply-extras] verified governed App Run constraints, indexes, and triggers');
   } finally {
     await client.end();
   }

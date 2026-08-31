@@ -136,7 +136,7 @@ test('connected App grant foundation is additive, tenant-bound, immutable, and d
   assert.ok(grant.checks.some((item) => item.name === 'app_grant_snapshots_supersedes_self_check'));
   assert.ok(dependency.checks.some((item) => item.name === 'app_dependency_locks_ownership_check'));
   assert.ok(binding.checks.some((item) => item.name === 'app_action_bindings_interface_check'));
-  assert.ok(run.checks.some((item) => item.name === 'app_runs_app_origin_disabled_check'));
+  assert.doesNotMatch(sql, /DROP CONSTRAINT IF EXISTS app_runs_app_origin_disabled_check/i);
 
   for (const boundary of [
     'app_versions_requested_grant_snapshot_fk',
@@ -199,7 +199,56 @@ test('connected App review lifecycle preserves history and keeps execution denie
   assert.match(applyExtrasSource, /failed to remove obsolete App Module owner index/);
   assert.match(applyExtrasSource, /app_grant_snapshots_lineage_trigger/);
   assert.match(applyExtrasSource, /deft_schema_migrations/);
-  assert.ok(getTableConfig(appRuns).checks.some((item) => item.name === 'app_runs_app_origin_disabled_check'));
+  assert.doesNotMatch(sql, /DROP CONSTRAINT IF EXISTS app_runs_app_origin_disabled_check/i);
+});
+
+test('App-origin Run cutover pins exact tenant ancestry and preserves legacy shape', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.25');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  const run = getTableConfig(appRuns);
+  const foreignKeyNames = run.foreignKeys.map((key) => key.getName());
+
+  assert.equal(run.checks.some((item) => item.name === 'app_runs_app_origin_disabled_check'), false);
+  assert.equal(run.checks.some((item) => item.name === 'app_runs_app_identity_dormant_check'), false);
+  assert.ok(run.checks.some((item) => item.name === 'app_runs_app_origin_coherence_check'));
+
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS app_runs_app_origin_disabled_check/i);
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS app_runs_app_identity_dormant_check/i);
+  assert.match(sql, /ADD CONSTRAINT app_runs_app_origin_coherence_check CHECK/i);
+  for (const boundary of [
+    'app_runs_app_installation_fk',
+    'app_runs_app_version_fk',
+    'app_runs_app_grant_snapshot_fk',
+    'app_runs_app_action_binding_fk',
+  ]) {
+    assert.ok(foreignKeyNames.includes(boundary));
+    assert.match(sql, new RegExp(`ADD CONSTRAINT ${boundary}`, 'i'));
+    assert.match(applyExtrasSource, new RegExp(`'${boundary}'`));
+  }
+  for (const identity of [
+    'origin_app_installation_id',
+    'origin_app_version_id',
+    'origin_app_binding_key',
+    'origin_app_grant_snapshot_id',
+  ]) {
+    assert.match(sql, new RegExp(`origin_kind = 'app'[\\s\\S]+${identity} IS NOT NULL`, 'i'));
+    assert.match(sql, new RegExp(`origin_kind <> 'app'[\\s\\S]+${identity} IS NULL`, 'i'));
+  }
+  assert.match(sql, /risk_class = 'external_write'/i);
+  assert.match(sql, /review_requirement = 'always'/i);
+  assert.match(sql, /review_scope = 'per_invocation'/i);
+  assert.match(sql, /retry_class = 'idempotent_with_key'/i);
+  assert.match(sql, /retention_class = 'standard'/i);
+  assert.match(sql, /grant_snapshot_kind = 'effective'/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+app_runs/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.25-app-origin-run-cutover\.sql/);
+
+  const reviewIndex = upgradeManifest.migrations.findIndex((item) => item.version === '0.3.0-preview.24');
+  const cutoverIndex = upgradeManifest.migrations.findIndex((item) => item.version === '0.3.0-preview.25');
+  assert.equal(cutoverIndex, reviewIndex + 1);
 });
 
 test('governed App Run fresh schema is tenant-bound and keeps ciphertext separate', () => {
