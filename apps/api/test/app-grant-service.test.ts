@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { DeftAppManifestV0Schema } from '@deft/app-kit';
 import { buildRequestedAppGrantProjection } from '../src/lib/app-grant-service.js';
+import { sandboxEmailActionBindingMatches } from '../src/lib/app-connected-contract.js';
 import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -29,7 +30,7 @@ test('Protocol v1 staging projection is deterministic and explicitly non-executa
   assert.deepEqual(replay, first);
   assert.equal(
     first.snapshot_digest,
-    'sha256:f4255469cbcfe3500e2ad268f17b85cc16aad741b7ff9f77bd86983b27945d32',
+    'sha256:bfafacb0372bfab36a78ed541c630427dbf58060472b711b50de18a038c13dde',
   );
   assert.equal(first.resource_rights.length, 2);
   assert.equal(first.classification.authority_state, 'requested_only');
@@ -71,6 +72,23 @@ test('Protocol v0 staging projection is an empty compatibility request', () => {
   assert.deepEqual(projection.classification.actions, []);
 });
 
+test('connected sandbox actions accept only the frozen resource-backed input mapping', async () => {
+  const built = await buildPhase5ConnectedAppPackage();
+  const action = built.package.manifest.actions[0]!;
+  assert.equal(sandboxEmailActionBindingMatches(action), true);
+
+  const unsupported = {
+    ...action,
+    input_bindings: action.input_bindings.map((binding) => binding.input_key === 'subject'
+      ? {
+          ...binding,
+          source: { kind: 'user_input' as const, input_type: 'text' as const, label: 'Subject' },
+        }
+      : binding),
+  } as typeof action;
+  assert.equal(sandboxEmailActionBindingMatches(unsupported), false);
+});
+
 test('grant staging code has no provider, connector runtime, approval, or Run dependency', () => {
   const testDir = dirname(fileURLToPath(import.meta.url));
   for (const sourceFile of ['app-grant-service.ts', 'app-service.ts']) {
@@ -90,4 +108,25 @@ test('grant staging code has no provider, connector runtime, approval, or Run de
       );
     }
   }
+});
+
+test('connected review uses Capability Service discovery but cannot invoke or create Runs', () => {
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(resolve(testDir, '..', 'src', 'lib', 'app-review-service.ts'), 'utf8');
+  assert.match(source, /from ['"]\.\/capability-service\.js['"]/);
+  for (const forbiddenImport of [
+    'capability-providers',
+    'mcp-client',
+    'mcp-runtime',
+    'app-run-service',
+    'app-run-runtime',
+    'approval',
+  ]) {
+    assert.doesNotMatch(
+      source,
+      new RegExp(`from ['"][^'"]*${forbiddenImport}`, 'i'),
+      `review lifecycle must not import ${forbiddenImport}`,
+    );
+  }
+  assert.doesNotMatch(source, /\.invoke\s*\(/);
 });

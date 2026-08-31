@@ -1,0 +1,1084 @@
+import { createHash } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
+import {
+  appActionBindings,
+  appDependencyLocks,
+  appGrantSnapshots,
+  appInstallations,
+  appModuleBindings,
+  appVersions,
+  capabilityProviderSnapshots,
+  mcpConnections,
+  mcpToolOverrides,
+  moduleInstallations,
+  moduleVersions,
+} from '@deft/db/schema';
+import {
+  DeftAppManifestV1Schema,
+  SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
+  SandboxEmailSendInputSchema,
+  type DeftAppManifestV1,
+} from '@deft/app-kit';
+import type { MCPToolOverride } from '@deft/mcp';
+import {
+  APP_RUN_CONTRACT_VERSIONS,
+  AppRunSafePreviewSchema,
+  CapabilityProviderDiscoverySnapshotSchema,
+  ModuleResourceRefV1Schema,
+  RESOURCE_CONTRACT_VERSIONS,
+  canonicalCapabilityJson,
+  resourceRefIdentity,
+  type AppRunActor,
+  type AppRunAuthorizationSnapshot,
+  type AppRunSafePreview,
+  type ModuleResourceRefV1,
+  type ResourceSafeProjectionV1,
+} from '@deft/shared';
+import { ModuleActorSchema, type ModuleActor } from '@deft/shared/modules';
+import { db } from './db.js';
+import { AppError } from './app-errors.js';
+import {
+  canonicalizeAppGrantValue,
+  digestAppGrantValue,
+} from './app-grant-service.js';
+import {
+  CONNECTED_APP_ACTION_BINDING_VERSION,
+  CONNECTED_APP_SANDBOX_OPERATION_NAME,
+  normalizeConnectedMcpOverrides,
+  sandboxEmailActionBindingMatches,
+  sandboxEmailOperationMatches,
+  sandboxEmailToolMatches,
+} from './app-connected-contract.js';
+import type { CapabilityDiscoveryResult } from './capability-service.js';
+import {
+  PostgresAppRunLiveAuthorization,
+  type AppRunAuthorizationCapture,
+} from './app-run-live-authorization.js';
+import type { AppRunPreparedInputCandidate } from './app-run-prepared-input.js';
+import { isMcpToolEnabled } from './mcp-tool-identity.js';
+import { readModuleRecordScalarFields } from './module-service.js';
+import { resourceAuthorizationService } from './resource-provider-adapters.js';
+import { listResourceRelation } from './resource-relation-service.js';
+
+const APP_ACTION_AUTHORITY_VERSION = 'deft.app_action_authority.v1' as const;
+const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v1' as const;
+
+type BindingRow = typeof appActionBindings.$inferSelect;
+type DependencyLockRow = typeof appDependencyLocks.$inferSelect;
+type GrantRow = typeof appGrantSnapshots.$inferSelect;
+type InstallationRow = typeof appInstallations.$inferSelect;
+type VersionRow = typeof appVersions.$inferSelect;
+
+export type AppActionTokenAuthority = Readonly<{
+  token_kind: 'mcp' | 'oauth';
+  token_id: string;
+}>;
+
+export type AppActionCaller = Readonly<{
+  actor: ModuleActor;
+  token_authorities?: readonly AppActionTokenAuthority[];
+}>;
+
+export type AppActionListItem = Readonly<{
+  binding_id: string;
+  installation_id: string;
+  app_id: string;
+  app_version_id: string;
+  action_key: string;
+  label: string;
+}>;
+
+export type AppActionListResult = Readonly<{
+  resource: ResourceSafeProjectionV1;
+  actions: readonly AppActionListItem[];
+}>;
+
+export type AppActionResolvedInput = Readonly<
+  | { input_key: 'to' | 'subject' | 'body_text'; kind: 'resource_field' }
+  | {
+      input_key: 'to' | 'subject' | 'body_text';
+      kind: 'selected_relation_field';
+      relation_key: string;
+      relation_revision: number;
+      options: readonly ResourceSafeProjectionV1[];
+    }
+  | {
+      input_key: 'to' | 'subject' | 'body_text';
+      kind: 'user_input';
+      input_type: 'email' | 'text';
+      label: string;
+      required: true;
+    }
+>;
+
+export type AppActionResolveResult = Readonly<{
+  action: AppActionListItem;
+  resource: ResourceSafeProjectionV1;
+  inputs: readonly AppActionResolvedInput[];
+}>;
+
+export type AppActionResourceEvidence = Readonly<{
+  ref: ModuleResourceRefV1;
+  revision: number;
+  active_manifest_digest: string;
+  validated_manifest_digest: string;
+  updated_at: string;
+}>;
+
+export type AppActionAuthorityVector = Readonly<{
+  schema_version: typeof APP_ACTION_AUTHORITY_VERSION;
+  caller_surface: string;
+  installation: Readonly<{
+    id: string;
+    lifecycle_epoch: number;
+    grant_epoch: number;
+  }>;
+  app_version: Readonly<{
+    id: string;
+    manifest_digest: string;
+    package_digest: string;
+  }>;
+  grant: Readonly<{ id: string; snapshot_digest: string }>;
+  binding: Readonly<{
+    id: string;
+    action_key: string;
+    binding_digest: string;
+    connector_authorization_version: number;
+  }>;
+  dependencies: readonly Readonly<{
+    dependency_key: string;
+    installation_id: string;
+    version_id: string;
+    lifecycle_epoch: number;
+    lock_digest: string;
+  }>[];
+  provider: Readonly<{
+    connection_id: string;
+    snapshot_id: string;
+    snapshot_digest: string;
+    operation_name: string;
+    operation_schema_digest: string;
+  }>;
+  run_authorization: AppRunAuthorizationSnapshot;
+  resources: readonly AppActionResourceEvidence[];
+  relations: readonly Readonly<{
+    source_ref: ModuleResourceRefV1;
+    relation_key: string;
+    revision: number;
+    selected_ref: ModuleResourceRefV1;
+  }>[];
+}>;
+
+export type AppActionPrepareResult = Readonly<{
+  action: AppActionListItem;
+  safe_preview: AppRunSafePreview;
+  input_candidate: AppRunPreparedInputCandidate;
+  replay_identity: `sha256:${string}`;
+  authority_vector: AppActionAuthorityVector;
+  authority_digest: `sha256:${string}`;
+}>;
+
+type ActionContext = Readonly<{
+  installation: InstallationRow;
+  version: VersionRow;
+  grant: GrantRow;
+  binding: BindingRow;
+  manifest: DeftAppManifestV1;
+  action: DeftAppManifestV1['actions'][number];
+  dependencies: readonly DependencyLockRow[];
+  resources: ReadonlyMap<string, Readonly<{
+    requirement: DeftAppManifestV1['resource_requirements'][number];
+    module_installation_id: string;
+    module_version_id: string;
+    module_manifest_digest: string;
+  }>>;
+  provider_snapshot: ReturnType<typeof CapabilityProviderDiscoverySnapshotSchema.parse>;
+  provider_snapshot_id: string;
+  provider_snapshot_digest: string;
+  overrides: readonly MCPToolOverride[];
+}>;
+
+type CallerContext = Readonly<{
+  actor: ModuleActor;
+  surface: string;
+  authenticated_subject: AppRunActor;
+  execution_actor: AppRunActor;
+  token_authorities: readonly AppActionTokenAuthority[];
+}>;
+
+export interface AppActionCapabilityPort {
+  discover(input: {
+    provider_kind: 'mcp';
+    mode: 'refresh';
+    org_id: string;
+    provider_instance_id: string;
+    overrides?: MCPToolOverride[];
+  }): Promise<CapabilityDiscoveryResult>;
+}
+
+export interface AppActionLiveAuthorityPort {
+  captureForPreparation(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot>;
+}
+
+export interface AppActionPreparedInputPort {
+  protect(input: Readonly<{
+    org_id: string;
+    replay_identity: string;
+    binding_identity: Readonly<{
+      app_installation_id: string;
+      app_version_id: string;
+      grant_snapshot_id: string;
+      binding_id: string;
+      binding_digest: string;
+    }>;
+    provider_input: unknown;
+  }>): Promise<AppRunPreparedInputCandidate> | AppRunPreparedInputCandidate;
+}
+
+export interface AppActionFieldReaderPort {
+  read(
+    actor: ModuleActor,
+    ref: ModuleResourceRefV1,
+    fieldKeys: readonly string[],
+  ): ReturnType<typeof readModuleRecordScalarFields>;
+}
+
+const defaultFieldReader: AppActionFieldReaderPort = Object.freeze({
+  read: readModuleRecordScalarFields,
+});
+
+const lazyCapability: AppActionCapabilityPort = Object.freeze({
+  async discover(input: Parameters<AppActionCapabilityPort['discover']>[0]) {
+    const { capabilityService } = await import('./capability-service.js');
+    return capabilityService.discover(input);
+  },
+});
+
+const lazyPreparedInput: AppActionPreparedInputPort = Object.freeze({
+  async protect(input: Parameters<AppActionPreparedInputPort['protect']>[0]) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).inputPreparation.protect(input);
+  },
+});
+
+function actionError(message: string, code: 'APP_ACTION_INVALID' | 'APP_ACTION_UNAVAILABLE' | 'APP_ACCESS_DENIED' | 'APP_DEPENDENCY_UNHEALTHY' | 'APP_PROVIDER_UNAVAILABLE' | 'APP_NOT_FOUND' | 'APP_STALE', status: 400 | 403 | 404 | 409 | 503 = 409) {
+  return new AppError(message, code, status);
+}
+
+function sameCanonical(left: unknown, right: unknown): boolean {
+  return canonicalCapabilityJson(left) === canonicalCapabilityJson(right);
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringArrayValue(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((item): item is string => typeof item === 'string')
+    ? value
+    : null;
+}
+
+function callerContext(value: AppActionCaller): CallerContext {
+  const actor = ModuleActorSchema.parse(value.actor);
+  if (actor.kind === 'system') {
+    throw actionError('System actors cannot prepare App actions', 'APP_ACCESS_DENIED', 403);
+  }
+  const tokenAuthorities = [...(value.token_authorities ?? [])];
+  const seenTokens = new Set<string>();
+  for (const token of tokenAuthorities) {
+    if (!token.token_id || token.token_id !== token.token_id.trim()) {
+      throw actionError('App action token authority is invalid', 'APP_ACCESS_DENIED', 403);
+    }
+    const identity = `${token.token_kind}\0${token.token_id}`;
+    if (seenTokens.has(identity)) throw actionError('App action token authority is duplicated', 'APP_ACCESS_DENIED', 403);
+    seenTokens.add(identity);
+  }
+  const tokenRequired = (actor.kind === 'human' && actor.source === 'mcp')
+    || (actor.kind === 'agent_employee' && actor.source === 'mcp');
+  if (tokenRequired && tokenAuthorities.length === 0) {
+    throw actionError('MCP App actions require exact live token authority', 'APP_ACCESS_DENIED', 403);
+  }
+  if (tokenRequired && tokenAuthorities.some((token) => token.token_kind !== 'mcp')) {
+    throw actionError('MCP App actions require MCP token authority', 'APP_ACCESS_DENIED', 403);
+  }
+  if (!tokenRequired && tokenAuthorities.length !== 0) {
+    throw actionError('This App action surface cannot carry token authority', 'APP_ACCESS_DENIED', 403);
+  }
+  const principal: AppRunActor = actor.kind === 'agent_employee'
+    ? { actor_type: 'agent_employee', agent_employee_id: actor.actor_id }
+    : { actor_type: 'human', user_id: actor.actor_id };
+  return {
+    actor,
+    surface: actor.kind === 'defty' ? 'defty' : `${actor.kind}:${actor.source}`,
+    authenticated_subject: principal,
+    execution_actor: principal,
+    token_authorities: tokenAuthorities,
+  };
+}
+
+function actionItem(context: ActionContext): AppActionListItem {
+  return Object.freeze({
+    binding_id: context.binding.id,
+    installation_id: context.installation.id,
+    app_id: context.installation.app_id,
+    app_version_id: context.version.id,
+    action_key: context.action.key,
+    label: context.action.label,
+  });
+}
+
+function actionResourceProjection(resource: ResourceSafeProjectionV1): ResourceSafeProjectionV1 {
+  const identitySuffix = resource.ref.resource_id.slice(0, 8);
+  return Object.freeze({
+    ...resource,
+    // A Module's ordinary display label may be backed by a field that becomes
+    // provider input (for example Campaign subject or Contact email). App action
+    // responses therefore use only host-owned identity copy.
+    label: `${resource.ref.resource_type} record ${identitySuffix}`,
+  });
+}
+
+function actionResourceEvidence(
+  value: Awaited<ReturnType<AppActionFieldReaderPort['read']>>,
+): AppActionResourceEvidence {
+  return Object.freeze({
+    ref: value.ref,
+    revision: value.revision,
+    active_manifest_digest: value.active_manifest_digest,
+    validated_manifest_digest: value.validated_manifest_digest,
+    updated_at: value.updated_at,
+  });
+}
+
+function replayIdentity(context: ActionContext, caller: CallerContext, idempotencyKey: string): `sha256:${string}` {
+  const principalId = caller.execution_actor.actor_type === 'human'
+    ? caller.execution_actor.user_id
+    : caller.execution_actor.actor_type === 'agent_employee'
+      ? caller.execution_actor.agent_employee_id
+      : '';
+  const digest = createHash('sha256')
+    .update(`${APP_ACTION_REPLAY_VERSION}\0`)
+    .update(canonicalCapabilityJson({
+      organization_id: caller.actor.org_id,
+      principal_type: caller.execution_actor.actor_type,
+      principal_id: principalId,
+      app_installation_id: context.installation.id,
+      app_version_id: context.version.id,
+      grant_snapshot_id: context.grant.id,
+      binding_id: context.binding.id,
+      idempotency_key: idempotencyKey,
+    }))
+    .digest('hex');
+  return `sha256:${digest}`;
+}
+
+async function loadRequirementModule(
+  orgId: string,
+  appInstallationId: string,
+  appVersionId: string,
+  requirement: DeftAppManifestV1['resource_requirements'][number],
+  locks: ReadonlyMap<string, DependencyLockRow>,
+): Promise<ActionContext['resources'] extends ReadonlyMap<string, infer T> ? T : never> {
+  const ownerInstallationId = requirement.source.kind === 'included_module'
+    ? appInstallationId
+    : locks.get(requirement.source.dependency_key)?.dependency_installation_id;
+  const ownerVersionId = requirement.source.kind === 'included_module'
+    ? appVersionId
+    : locks.get(requirement.source.dependency_key)?.dependency_version_id;
+  if (!ownerInstallationId || !ownerVersionId) {
+    throw actionError('A reviewed App dependency is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
+  }
+  const [row] = await db.select({
+    binding: appModuleBindings,
+    installation: moduleInstallations,
+    version: moduleVersions,
+  }).from(appModuleBindings)
+    .innerJoin(moduleInstallations, and(
+      eq(moduleInstallations.org_id, appModuleBindings.org_id),
+      eq(moduleInstallations.id, appModuleBindings.module_installation_id),
+    ))
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.org_id, appModuleBindings.org_id),
+      eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+      eq(moduleVersions.id, appModuleBindings.module_version_id),
+    ))
+    .where(and(
+      eq(appModuleBindings.org_id, orgId),
+      eq(appModuleBindings.app_installation_id, ownerInstallationId),
+      eq(appModuleBindings.app_version_id, ownerVersionId),
+      eq(appModuleBindings.module_id, requirement.source.module_id),
+    )).limit(1);
+  if (
+    !row
+    || row.installation.is_deleted
+    || !row.installation.is_enabled
+    || !row.version.is_active
+    || row.binding.module_id !== requirement.source.module_id
+    || row.version.version !== requirement.source.version
+  ) throw actionError('A reviewed App resource Module is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
+  return {
+    requirement,
+    module_installation_id: row.installation.id,
+    module_version_id: row.version.id,
+    module_manifest_digest: row.version.manifest_digest,
+  };
+}
+
+async function assertGrantAuthoritySurface(input: Readonly<{
+  org_id: string;
+  installation: InstallationRow;
+  version: VersionRow;
+  grant: GrantRow;
+  manifest: DeftAppManifestV1;
+  dependencies: readonly DependencyLockRow[];
+}>): Promise<void> {
+  const [bindingRows, includedRows] = await Promise.all([
+    db.select().from(appActionBindings).where(and(
+      eq(appActionBindings.org_id, input.org_id),
+      eq(appActionBindings.app_installation_id, input.installation.id),
+      eq(appActionBindings.app_version_id, input.version.id),
+      eq(appActionBindings.grant_snapshot_id, input.grant.id),
+    )),
+    db.select({ binding: appModuleBindings, version: moduleVersions })
+      .from(appModuleBindings)
+      .innerJoin(moduleVersions, and(
+        eq(moduleVersions.org_id, appModuleBindings.org_id),
+        eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+        eq(moduleVersions.id, appModuleBindings.module_version_id),
+      ))
+      .where(and(
+        eq(appModuleBindings.org_id, input.org_id),
+        eq(appModuleBindings.app_installation_id, input.installation.id),
+        eq(appModuleBindings.app_version_id, input.version.id),
+      )),
+  ]);
+  const sortedBindings = [...bindingRows].sort((left, right) => left.action_key.localeCompare(right.action_key));
+  const actionsByKey = new Map(input.manifest.actions.map((action) => [action.key, action]));
+  if (
+    sortedBindings.length !== input.manifest.actions.length
+    || sortedBindings.some((row) => (
+      !actionsByKey.has(row.action_key)
+      || digestAppGrantValue(row.canonical_binding) !== row.binding_digest
+    ))
+  ) throw actionError('App grant action membership is stale', 'APP_STALE');
+
+  const modulesById = new Map(input.manifest.modules.map((module) => [module.module_id, module]));
+  const sortedIncluded = [...includedRows]
+    .sort((left, right) => left.binding.module_id.localeCompare(right.binding.module_id));
+  if (
+    sortedIncluded.length !== input.manifest.modules.length
+    || sortedIncluded.some(({ binding, version }) => {
+      const declared = modulesById.get(binding.module_id);
+      return !declared
+        || version.version !== declared.version;
+    })
+  ) throw actionError('App grant Module membership is stale', 'APP_STALE');
+
+  const locksByKey = new Map(input.dependencies.map((lock) => [lock.dependency_key, lock]));
+  const sortedDependencies = [...input.manifest.dependencies]
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map((requirement) => locksByKey.get(requirement.key)!);
+  const expectedSurface = canonicalizeAppGrantValue({
+    dependencies: sortedDependencies.map((lock) => lock.canonical_lock),
+    resources: input.manifest.resource_requirements,
+    included_modules: sortedIncluded.map(({ binding, version }) => ({
+      module_id: binding.module_id,
+      module_version: version.version,
+      // Effective review pins the canonical supported-Module manifest digest,
+      // not the package artifact digest stored in the App manifest reference.
+      manifest_digest: version.manifest_digest,
+    })),
+    action_bindings: sortedBindings.map((row) => row.canonical_binding),
+  });
+  const canonicalSnapshot = objectValue(input.grant.canonical_snapshot);
+  const storedSurface = objectValue(canonicalSnapshot?.authority_surface);
+  const storedDependencyDigests = stringArrayValue(canonicalSnapshot?.dependency_lock_digests);
+  const storedBindingDigests = stringArrayValue(canonicalSnapshot?.action_binding_digests);
+  const expectedSurfaceDigest = digestAppGrantValue(expectedSurface);
+  if (
+    !canonicalSnapshot
+    || !storedSurface
+    || canonicalSnapshot.authority_surface_digest !== expectedSurfaceDigest
+    || !sameCanonical(storedSurface, expectedSurface)
+    || !sameCanonical(canonicalSnapshot.resource_rights, input.grant.resource_rights)
+    || !sameCanonical(canonicalSnapshot.classification, input.grant.classification)
+    || !sameCanonical(
+      storedDependencyDigests,
+      sortedDependencies.map((lock) => lock.lock_digest),
+    )
+    || !sameCanonical(
+      storedBindingDigests,
+      sortedBindings.map((row) => row.binding_digest),
+    )
+  ) throw actionError('App effective grant authority surface failed integrity validation', 'APP_STALE');
+}
+
+async function loadActionContext(orgId: string, bindingId: string): Promise<ActionContext> {
+  const [binding] = await db.select().from(appActionBindings).where(and(
+    eq(appActionBindings.org_id, orgId),
+    eq(appActionBindings.id, bindingId),
+  )).limit(1);
+  if (!binding) throw actionError('App action not found', 'APP_NOT_FOUND', 404);
+  const [[installation], [version], [grant], [connection], [storedProvider]] = await Promise.all([
+    db.select().from(appInstallations).where(and(
+      eq(appInstallations.org_id, orgId),
+      eq(appInstallations.id, binding.app_installation_id),
+    )).limit(1),
+    db.select().from(appVersions).where(and(
+      eq(appVersions.org_id, orgId),
+      eq(appVersions.id, binding.app_version_id),
+      eq(appVersions.installation_id, binding.app_installation_id),
+    )).limit(1),
+    db.select().from(appGrantSnapshots).where(and(
+      eq(appGrantSnapshots.org_id, orgId),
+      eq(appGrantSnapshots.id, binding.grant_snapshot_id),
+      eq(appGrantSnapshots.app_installation_id, binding.app_installation_id),
+    )).limit(1),
+    db.select().from(mcpConnections).where(and(
+      eq(mcpConnections.org_id, orgId),
+      eq(mcpConnections.id, binding.mcp_connection_id),
+    )).limit(1),
+    db.select().from(capabilityProviderSnapshots).where(and(
+      eq(capabilityProviderSnapshots.org_id, orgId),
+      eq(capabilityProviderSnapshots.id, binding.provider_snapshot_id),
+      eq(capabilityProviderSnapshots.provider_kind, 'mcp'),
+      eq(capabilityProviderSnapshots.provider_instance_id, binding.mcp_connection_id),
+    )).limit(1),
+  ]);
+  if (
+    !installation
+    || installation.state !== 'active'
+    || installation.active_version_id !== binding.app_version_id
+    || installation.active_grant_snapshot_id !== binding.grant_snapshot_id
+    || installation.active_grant_snapshot_kind !== 'effective'
+    || !version
+    || version.state !== 'active'
+    || version.protocol_version !== '1'
+    || !grant
+    || grant.snapshot_kind !== 'effective'
+    || grant.app_version_id !== version.id
+    || grant.manifest_digest !== version.manifest_digest
+    || grant.package_digest !== version.package_digest
+  ) throw actionError('App action authority is inactive or stale', 'APP_ACTION_UNAVAILABLE');
+  if (digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) {
+    throw actionError('App effective grant failed integrity validation', 'APP_STALE');
+  }
+  const manifest = DeftAppManifestV1Schema.parse(version.manifest);
+  const action = manifest.actions.find((candidate) => candidate.key === binding.action_key);
+  if (!action || !sandboxEmailActionBindingMatches(action)) {
+    throw actionError('App action contract is unavailable', 'APP_ACTION_UNAVAILABLE');
+  }
+  const expectedRights = manifest.resource_requirements.map((requirement) => ({
+    requirement_key: requirement.key,
+    source: requirement.source,
+    resource_type: requirement.resource_type,
+    fields: requirement.fields,
+    right: 'read',
+  }));
+  if (!sameCanonical(expectedRights, grant.resource_rights)) {
+    throw actionError('App resource grant no longer matches the active contract', 'APP_STALE');
+  }
+  if (
+    !connection
+    || !connection.is_active
+    || connection.app_run_authorization_version !== binding.connector_authorization_version
+    || !isMcpToolEnabled(connection.enabled_tools, connection.slug, binding.operation_name)
+  ) throw actionError('App connector authority changed after review', 'APP_PROVIDER_UNAVAILABLE', 503);
+  const overrideRows = await db.select({
+    tool_name: mcpToolOverrides.tool_name,
+    trust_tier_override: mcpToolOverrides.trust_tier_override,
+    is_disabled: mcpToolOverrides.is_disabled,
+  }).from(mcpToolOverrides).where(and(
+    eq(mcpToolOverrides.org_id, orgId),
+    eq(mcpToolOverrides.mcp_connection_id, connection.id),
+  ));
+  const overrides = normalizeConnectedMcpOverrides(overrideRows);
+  if (overrides.some((override) => override.toolName === binding.operation_name && override.disabled)) {
+    throw actionError('App connector operation is disabled', 'APP_PROVIDER_UNAVAILABLE', 503);
+  }
+  const providerSnapshot = storedProvider
+    ? CapabilityProviderDiscoverySnapshotSchema.safeParse(storedProvider.safe_snapshot)
+    : null;
+  const providerOperation = providerSnapshot?.success
+    ? providerSnapshot.data.operations.find((item) => item.identity.operation_name === binding.operation_name)
+    : null;
+  if (
+    !storedProvider
+    || !providerSnapshot?.success
+    || providerSnapshot.data.snapshot_digest !== storedProvider.snapshot_digest
+    || providerSnapshot.data.adapter_contract_version !== storedProvider.adapter_contract_version
+    || !providerOperation
+    || providerOperation.schema_digest !== binding.operation_schema_digest
+    || !sandboxEmailOperationMatches(providerOperation)
+  ) throw actionError('Pinned App provider schema is unavailable', 'APP_PROVIDER_UNAVAILABLE', 503);
+  if (
+    binding.provider_kind !== 'mcp'
+    || binding.operation_name !== CONNECTED_APP_SANDBOX_OPERATION_NAME
+    || binding.risk_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.risk_class
+    || binding.review_requirement !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_requirement
+    || binding.review_scope !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_scope
+    || binding.egress_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.egress_class
+    || binding.retry_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retry_class
+    || binding.retention_class !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retention_class
+    || binding.automation_eligibility !== SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.automation_eligibility
+    || binding.provider_idempotency_key_required !== true
+  ) throw actionError('App action host policy is invalid', 'APP_STALE');
+  const expectedCanonicalBinding = canonicalizeAppGrantValue({
+    binding_version: CONNECTED_APP_ACTION_BINDING_VERSION,
+    action_key: action.key,
+    capability_requirement_key: action.capability_requirement_key,
+    connector_requirement_key: action.connector_requirement_key,
+    interface_identity: binding.interface_identity,
+    provider_kind: 'mcp',
+    mcp_connection_id: binding.mcp_connection_id,
+    provider_snapshot_digest: storedProvider.snapshot_digest,
+    provider_adapter_contract_version: storedProvider.adapter_contract_version,
+    operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
+    operation_schema_digest: providerOperation.schema_digest,
+    connector_authorization_version: connection.app_run_authorization_version,
+    host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+    placement: action.placement,
+    input_bindings: action.input_bindings,
+  });
+  if (
+    digestAppGrantValue(binding.canonical_binding) !== binding.binding_digest
+    || digestAppGrantValue(expectedCanonicalBinding) !== binding.binding_digest
+  ) throw actionError('App action binding failed integrity validation', 'APP_STALE');
+
+  const dependencies = await db.select().from(appDependencyLocks).where(and(
+    eq(appDependencyLocks.org_id, orgId),
+    eq(appDependencyLocks.app_installation_id, installation.id),
+    eq(appDependencyLocks.app_version_id, version.id),
+    eq(appDependencyLocks.grant_snapshot_id, grant.id),
+  ));
+  if (dependencies.length !== manifest.dependencies.length) {
+    throw actionError('App dependency locks no longer match the active contract', 'APP_DEPENDENCY_UNHEALTHY');
+  }
+  const locks = new Map(dependencies.map((lock) => [lock.dependency_key, lock]));
+  for (const requirement of manifest.dependencies) {
+    const lock = locks.get(requirement.key);
+    if (
+      !lock
+      || lock.required_app_id !== requirement.app_id
+      || lock.required_version !== requirement.version
+      || digestAppGrantValue(lock.canonical_lock) !== lock.lock_digest
+    ) throw actionError('App dependency lock failed integrity validation', 'APP_DEPENDENCY_UNHEALTHY');
+    const [[dependencyInstallation], [dependencyVersion]] = await Promise.all([
+      db.select().from(appInstallations).where(and(
+        eq(appInstallations.org_id, orgId),
+        eq(appInstallations.id, lock.dependency_installation_id),
+      )).limit(1),
+      db.select().from(appVersions).where(and(
+        eq(appVersions.org_id, orgId),
+        eq(appVersions.id, lock.dependency_version_id),
+        eq(appVersions.installation_id, lock.dependency_installation_id),
+      )).limit(1),
+    ]);
+    if (
+      !dependencyInstallation
+      || dependencyInstallation.state !== 'active'
+      || dependencyInstallation.active_version_id !== lock.dependency_version_id
+      || dependencyInstallation.lifecycle_epoch !== lock.dependency_lifecycle_epoch
+      || !dependencyVersion
+      || dependencyVersion.state !== 'active'
+      || dependencyVersion.version !== lock.required_version
+      || dependencyVersion.manifest_digest !== lock.dependency_manifest_digest
+      || dependencyVersion.package_digest !== lock.dependency_package_digest
+    ) throw actionError('App dependency changed after review', 'APP_DEPENDENCY_UNHEALTHY');
+  }
+  const resources = new Map<string, Awaited<ReturnType<typeof loadRequirementModule>>>();
+  for (const requirement of manifest.resource_requirements) {
+    resources.set(requirement.key, await loadRequirementModule(
+      orgId,
+      installation.id,
+      version.id,
+      requirement,
+      locks,
+    ));
+  }
+  await assertGrantAuthoritySurface({
+    org_id: orgId,
+    installation,
+    version,
+    grant,
+    manifest,
+    dependencies,
+  });
+  return {
+    installation,
+    version,
+    grant,
+    binding,
+    manifest,
+    action,
+    dependencies: [...dependencies].sort((left, right) => left.dependency_key.localeCompare(right.dependency_key)),
+    resources,
+    provider_snapshot: providerSnapshot.data,
+    provider_snapshot_id: storedProvider.id,
+    provider_snapshot_digest: storedProvider.snapshot_digest,
+    overrides,
+  };
+}
+
+function assertPlacement(context: ActionContext, refValue: unknown): ModuleResourceRefV1 {
+  const parsed = ModuleResourceRefV1Schema.safeParse(refValue);
+  if (!parsed.success) {
+    throw actionError('App action placement resource is invalid', 'APP_ACTION_INVALID', 400);
+  }
+  const placement = context.resources.get(context.action.placement.resource_requirement_key);
+  if (
+    !placement
+    || parsed.data.provider.provider_instance_id !== placement.module_installation_id
+    || parsed.data.resource_type !== placement.requirement.resource_type
+  ) throw actionError('App action does not apply to this resource', 'APP_ACTION_UNAVAILABLE');
+  return parsed.data;
+}
+
+export class AppActionService {
+  constructor(
+    private readonly capability: AppActionCapabilityPort = lazyCapability,
+    private readonly liveAuthority: AppActionLiveAuthorityPort = new PostgresAppRunLiveAuthorization(),
+    private readonly preparedInput: AppActionPreparedInputPort = lazyPreparedInput,
+    private readonly fieldReader: AppActionFieldReaderPort = defaultFieldReader,
+  ) {}
+
+  async list(callerValue: AppActionCaller, input: Readonly<{ resource_ref: unknown }>): Promise<AppActionListResult> {
+    const caller = callerContext(callerValue);
+    const resource = await resourceAuthorizationService.resolve(
+      { org_id: caller.actor.org_id, actor: caller.actor },
+      input.resource_ref,
+    );
+    const candidates = await db.select({ id: appActionBindings.id }).from(appActionBindings)
+      .where(eq(appActionBindings.org_id, caller.actor.org_id));
+    const actions: AppActionListItem[] = [];
+    for (const candidate of candidates) {
+      try {
+        const context = await loadActionContext(caller.actor.org_id, candidate.id);
+        assertPlacement(context, resource.ref);
+        await this.#captureAuthority(caller, context);
+        actions.push(actionItem(context));
+      } catch {
+        // Discovery is availability-filtered. An inaccessible or stale binding
+        // is indistinguishable from absence and reveals no authority detail.
+      }
+    }
+    return Object.freeze({
+      resource: actionResourceProjection(resource),
+      actions: actions.sort((left, right) => left.action_key.localeCompare(right.action_key)),
+    });
+  }
+
+  async resolve(
+    callerValue: AppActionCaller,
+    input: Readonly<{ binding_id: string; resource_ref: unknown }>,
+  ): Promise<AppActionResolveResult> {
+    const resolved = await this.#resolve(callerContext(callerValue), input);
+    return resolved.safe;
+  }
+
+  async prepare(callerValue: AppActionCaller, input: Readonly<{
+    binding_id: string;
+    resource_ref: unknown;
+    selections?: readonly Readonly<{ input_key: string; resource_ref: unknown }>[];
+    user_inputs?: Readonly<Record<string, string>>;
+    idempotency_key: string;
+  }>): Promise<AppActionPrepareResult> {
+    const caller = callerContext(callerValue);
+    const resolved = await this.#resolve(caller, input);
+    const selectionMap = new Map<string, ModuleResourceRefV1>();
+    for (const selection of input.selections ?? []) {
+      if (selectionMap.has(selection.input_key)) {
+        throw actionError('App action selection keys must be unique', 'APP_ACTION_INVALID', 400);
+      }
+      const ref = ModuleResourceRefV1Schema.safeParse(selection.resource_ref);
+      if (!ref.success) {
+        throw actionError('App action selection is invalid', 'APP_ACTION_INVALID', 400);
+      }
+      selectionMap.set(selection.input_key, ref.data);
+    }
+    const userInputs = input.user_inputs ?? {};
+    const expectedSelectionKeys = new Set<string>(resolved.context.action.input_bindings
+      .filter((binding) => binding.source.kind === 'selected_relation_field')
+      .map((binding) => binding.input_key));
+    const expectedUserKeys = new Set<string>(resolved.context.action.input_bindings
+      .filter((binding) => binding.source.kind === 'user_input')
+      .map((binding) => binding.input_key));
+    if (
+      selectionMap.size !== expectedSelectionKeys.size
+      || [...selectionMap.keys()].some((key) => !expectedSelectionKeys.has(key))
+      || Object.keys(userInputs).length !== expectedUserKeys.size
+      || Object.keys(userInputs).some((key) => !expectedUserKeys.has(key))
+    ) throw actionError('App action inputs do not match the reviewed binding', 'APP_ACTION_INVALID', 400);
+
+    const selected = new Map<string, Readonly<{
+      ref: ModuleResourceRefV1;
+      resource: ResourceSafeProjectionV1;
+      relation_key: string;
+      relation_revision: number;
+    }>>();
+    for (const descriptor of resolved.safe.inputs) {
+      if (descriptor.kind !== 'selected_relation_field') continue;
+      const ref = selectionMap.get(descriptor.input_key);
+      const option = ref && descriptor.options.find(
+        (candidate) => resourceRefIdentity(candidate.ref) === resourceRefIdentity(ref),
+      );
+      if (!ref || !option || option.ref.provider.kind !== 'module') {
+        throw actionError('Selected resource is not in the current declared relation', 'APP_ACTION_UNAVAILABLE');
+      }
+      selected.set(descriptor.input_key, {
+        ref,
+        resource: option,
+        relation_key: descriptor.relation_key,
+        relation_revision: descriptor.relation_revision,
+      });
+    }
+
+    // Sensitive materialization starts only after installation, dependency,
+    // caller, connector, provider schema, resource, and relation checks pass.
+    const currentFieldKeys = resolved.context.action.input_bindings.flatMap((binding) => (
+      binding.source.kind === 'resource_field' ? [binding.source.field_key] : []
+    ));
+    const currentFields = await this.fieldReader.read(caller.actor, resolved.resourceRef, currentFieldKeys);
+    if (resolved.safe.resource.revision !== String(currentFields.revision)) {
+      throw actionError('App action resource changed during preparation', 'APP_STALE');
+    }
+    const selectedFields = new Map<string, Awaited<ReturnType<AppActionFieldReaderPort['read']>>>();
+    for (const binding of resolved.context.action.input_bindings) {
+      if (binding.source.kind !== 'selected_relation_field') continue;
+      const item = selected.get(binding.input_key)!;
+      const fields = await this.fieldReader.read(caller.actor, item.ref, [binding.source.target_field_key]);
+      if (item.resource.revision !== String(fields.revision)) {
+        throw actionError('Selected App action resource changed during preparation', 'APP_STALE');
+      }
+      selectedFields.set(binding.input_key, fields);
+    }
+    const providerInput: Record<string, unknown> = { idempotency_key: input.idempotency_key };
+    for (const binding of resolved.context.action.input_bindings) {
+      const source = binding.source;
+      providerInput[binding.input_key] = source.kind === 'resource_field'
+        ? currentFields.fields[source.field_key]
+        : source.kind === 'selected_relation_field'
+          ? selectedFields.get(binding.input_key)?.fields[source.target_field_key]
+          : userInputs[binding.input_key];
+    }
+    const parsedProviderInput = SandboxEmailSendInputSchema.safeParse(providerInput);
+    if (!parsedProviderInput.success) {
+      throw actionError('Resolved App action input is invalid', 'APP_ACTION_INVALID', 400);
+    }
+    const resourceEvidence: AppActionResourceEvidence[] = [actionResourceEvidence(currentFields)];
+    for (const value of selectedFields.values()) {
+      resourceEvidence.push(actionResourceEvidence(value));
+    }
+    resourceEvidence.sort((left, right) => resourceRefIdentity(left.ref).localeCompare(resourceRefIdentity(right.ref)));
+    const relationEvidence = [...selected.values()].map((item) => ({
+      source_ref: resolved.resourceRef,
+      relation_key: item.relation_key,
+      revision: item.relation_revision,
+      selected_ref: item.ref,
+    })).sort((left, right) => left.relation_key.localeCompare(right.relation_key));
+    const authorityVector: AppActionAuthorityVector = Object.freeze({
+      schema_version: APP_ACTION_AUTHORITY_VERSION,
+      caller_surface: caller.surface,
+      installation: {
+        id: resolved.context.installation.id,
+        lifecycle_epoch: resolved.context.installation.lifecycle_epoch,
+        grant_epoch: resolved.context.installation.grant_epoch,
+      },
+      app_version: {
+        id: resolved.context.version.id,
+        manifest_digest: resolved.context.version.manifest_digest,
+        package_digest: resolved.context.version.package_digest,
+      },
+      grant: { id: resolved.context.grant.id, snapshot_digest: resolved.context.grant.snapshot_digest },
+      binding: {
+        id: resolved.context.binding.id,
+        action_key: resolved.context.binding.action_key,
+        binding_digest: resolved.context.binding.binding_digest,
+        connector_authorization_version: resolved.context.binding.connector_authorization_version,
+      },
+      dependencies: resolved.context.dependencies.map((lock) => ({
+        dependency_key: lock.dependency_key,
+        installation_id: lock.dependency_installation_id,
+        version_id: lock.dependency_version_id,
+        lifecycle_epoch: lock.dependency_lifecycle_epoch,
+        lock_digest: lock.lock_digest,
+      })),
+      provider: {
+        connection_id: resolved.context.binding.mcp_connection_id,
+        snapshot_id: resolved.context.provider_snapshot_id,
+        snapshot_digest: resolved.context.provider_snapshot_digest,
+        operation_name: resolved.context.binding.operation_name,
+        operation_schema_digest: resolved.context.binding.operation_schema_digest,
+      },
+      run_authorization: resolved.runAuthorization,
+      resources: resourceEvidence,
+      relations: relationEvidence,
+    });
+    const replay = replayIdentity(resolved.context, caller, input.idempotency_key);
+    const safePreview = AppRunSafePreviewSchema.parse({
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      title: resolved.context.action.label,
+      summary: 'One reviewed external action for one selected related resource.',
+      resource_refs: [
+        resolved.safe.resource,
+        ...[...selected.values()].map((item) => item.resource),
+      ].map((item) => ({
+        resource_kind: `${item.ref.provider.kind}:${item.ref.provider.provider_instance_id}:${item.ref.resource_type}`,
+        resource_id: item.ref.resource_id,
+        label: item.label,
+      })),
+      fields: {
+        app_id: resolved.context.installation.app_id,
+        action_key: resolved.context.action.key,
+        selected_resource_count: selected.size,
+      },
+    });
+    const inputCandidate = await this.preparedInput.protect({
+      org_id: caller.actor.org_id,
+      replay_identity: replay,
+      binding_identity: {
+        app_installation_id: resolved.context.installation.id,
+        app_version_id: resolved.context.version.id,
+        grant_snapshot_id: resolved.context.grant.id,
+        binding_id: resolved.context.binding.id,
+        binding_digest: resolved.context.binding.binding_digest,
+      },
+      provider_input: parsedProviderInput.data,
+    });
+    return Object.freeze({
+      action: actionItem(resolved.context),
+      safe_preview: safePreview,
+      input_candidate: inputCandidate,
+      replay_identity: replay,
+      authority_vector: authorityVector,
+      authority_digest: digestAppGrantValue(authorityVector),
+    });
+  }
+
+  async #captureAuthority(caller: CallerContext, context: ActionContext) {
+    try {
+      return await this.liveAuthority.captureForPreparation({
+        org_id: caller.actor.org_id,
+        authenticated_subject: caller.authenticated_subject,
+        execution_actor: caller.execution_actor,
+        provider_instance_id: context.binding.mcp_connection_id,
+        provider_snapshot_id: context.binding.provider_snapshot_id,
+        operation_name: context.binding.operation_name,
+        policy: {
+          risk_class: context.binding.risk_class,
+          review_requirement: context.binding.review_requirement,
+          review_scope: context.binding.review_scope,
+          retry_class: context.binding.retry_class,
+        },
+        required_token_scopes: caller.actor.source === 'mcp' ? ['read:modules'] : [],
+        token_authorities: caller.token_authorities,
+      });
+    } catch {
+      throw actionError('Current caller authority does not permit this App action', 'APP_ACCESS_DENIED', 403);
+    }
+  }
+
+  async #assertLiveProvider(context: ActionContext): Promise<void> {
+    let live: CapabilityDiscoveryResult;
+    try {
+      live = await this.capability.discover({
+        provider_kind: 'mcp',
+        mode: 'refresh',
+        org_id: context.installation.org_id,
+        provider_instance_id: context.binding.mcp_connection_id,
+        overrides: [...context.overrides],
+      });
+    } catch {
+      throw actionError('App action provider discovery failed', 'APP_PROVIDER_UNAVAILABLE', 503);
+    }
+    const operation = live.snapshot?.operations.find(
+      (candidate) => candidate.identity.operation_name === context.binding.operation_name,
+    );
+    const tool = live.tools.find((candidate) => candidate.originalName === context.binding.operation_name);
+    if (
+      !live.snapshot
+      || live.snapshot.provider.org_id !== context.installation.org_id
+      || live.snapshot.provider.provider_kind !== 'mcp'
+      || live.snapshot.provider.provider_instance_id !== context.binding.mcp_connection_id
+      || live.snapshot.snapshot_digest !== context.provider_snapshot_digest
+      || !operation
+      || operation.schema_digest !== context.binding.operation_schema_digest
+      || !sandboxEmailOperationMatches(operation)
+      || !tool
+      || !sandboxEmailToolMatches(tool)
+    ) throw actionError('App action provider schema changed after review', 'APP_PROVIDER_UNAVAILABLE', 503);
+  }
+
+  async #resolve(caller: CallerContext, input: Readonly<{
+    binding_id: string;
+    resource_ref: unknown;
+  }>): Promise<Readonly<{
+    context: ActionContext;
+    resourceRef: ModuleResourceRefV1;
+    runAuthorization: AppRunAuthorizationSnapshot;
+    safe: AppActionResolveResult;
+  }>> {
+    if (!input.binding_id || input.binding_id !== input.binding_id.trim()) {
+      throw actionError('App action binding identity is invalid', 'APP_ACTION_INVALID', 400);
+    }
+    const context = await loadActionContext(caller.actor.org_id, input.binding_id);
+    const resourceRef = assertPlacement(context, input.resource_ref);
+    const runAuthorization = await this.#captureAuthority(caller, context);
+    await this.#assertLiveProvider(context);
+    const resource = actionResourceProjection(await resourceAuthorizationService.resolve(
+      { org_id: caller.actor.org_id, actor: caller.actor },
+      resourceRef,
+    ));
+    const inputs: AppActionResolvedInput[] = [];
+    for (const binding of context.action.input_bindings) {
+      const source = binding.source;
+      if (source.kind === 'resource_field') {
+        inputs.push({ input_key: binding.input_key, kind: 'resource_field' });
+        continue;
+      }
+      if (source.kind === 'user_input') {
+        inputs.push({
+          input_key: binding.input_key,
+          kind: 'user_input',
+          input_type: source.input_type,
+          label: source.label,
+          required: true,
+        });
+        continue;
+      }
+      const target = context.resources.get(source.target_resource_requirement_key);
+      if (!target) throw actionError('App action relation target is unavailable', 'APP_DEPENDENCY_UNHEALTHY');
+      const relation = await listResourceRelation(caller.actor, {
+        schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
+        source: resourceRef,
+        relation_key: source.relation_field_key,
+      });
+      const options = relation.items.flatMap((item) => (
+        item.state === 'available'
+        && item.ref.provider.kind === 'module'
+        && item.ref.provider.provider_instance_id === target.module_installation_id
+        && item.ref.resource_type === target.requirement.resource_type
+          ? [actionResourceProjection(item.resource)]
+          : []
+      ));
+      inputs.push({
+        input_key: binding.input_key,
+        kind: 'selected_relation_field',
+        relation_key: source.relation_field_key,
+        relation_revision: relation.revision,
+        options,
+      });
+    }
+    return Object.freeze({
+      context,
+      resourceRef,
+      runAuthorization,
+      safe: Object.freeze({ action: actionItem(context), resource, inputs }),
+    });
+  }
+}
+
+export const appActionService = new AppActionService();

@@ -544,6 +544,8 @@ const V1_HANDLER_MATRIX = handlerMatrix({
   authoring: 'app-kit:v1',
   inspect: 'app-service:inspect-v1',
   stage: 'app-service:stage-v1-requested-grant',
+  review: 'app-review-service:prepare-v1',
+  activate: 'app-review-service:activate-v1',
 });
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({

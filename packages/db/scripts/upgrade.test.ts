@@ -69,7 +69,7 @@ test('App v0 schema keeps active versions and Module ownership tenant-bound', ()
     ],
   );
   assert.ok(version.indexes.some((item) => item.config.name === 'app_versions_one_active_unique'));
-  assert.ok(binding.indexes.some((item) => item.config.name === 'app_module_bindings_owned_module_unique'));
+  assert.ok(binding.indexes.some((item) => item.config.name === 'app_module_bindings_owner_idx'));
 });
 
 test('App v0 supported upgrade contains the same tables and constraints as fresh schema', () => {
@@ -162,6 +162,44 @@ test('connected App grant foundation is additive, tenant-bound, immutable, and d
   assert.match(applyExtrasSource, /0\.3\.0-preview\.23-connected-app-grants-foundation\.sql/);
   assert.match(applyExtrasSource, /'app_grant_snapshots_append_only_trigger'/);
   assert.match(applyExtrasSource, /'app_runs_app_action_binding_fk'/);
+});
+
+test('connected App review lifecycle preserves history and keeps execution denied', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.24');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  const version = getTableConfig(appVersions);
+  const installation = getTableConfig(appInstallations);
+
+  assert.ok(version.columns.some((column) => column.name === 'superseded_at'));
+  assert.ok(version.checks.some((item) => item.name === 'app_versions_lifecycle_check'));
+  assert.ok(installation.checks.some((item) => item.name === 'app_installations_grant_pointer_shape_check'));
+  for (const boundary of [
+    'app_installations_grant_pointer_shape_check',
+    'app_module_bindings_owner_trigger',
+    'app_module_bindings_immutable_trigger',
+    'app_installations_grant_coherence_trigger',
+    'app_installations_epoch_cas_trigger',
+    'app_versions_grant_coherence_trigger',
+    'mcp_tool_overrides_parent_authorization_trigger',
+    'mcp_tool_overrides_org_connection_fk',
+    'app_grant_snapshots_one_successor_unique',
+    'app_grant_snapshots_one_root_unique',
+    'APP_EFFECTIVE_GRANT_REQUIRED',
+    'APP_MODULE_OWNER_MISMATCH',
+  ]) {
+    assert.match(sql, new RegExp(boundary, 'i'));
+  }
+  assert.match(sql, /state IN \('staged', 'active', 'superseded', 'failed'\)/i);
+  assert.match(sql, /DROP INDEX IF EXISTS app_module_bindings_owned_module_unique/i);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.24-connected-app-review-lifecycle\.sql/);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.16-declarative-apps-v0\.sql/);
+  assert.match(applyExtrasSource, /failed to remove obsolete App Module owner index/);
+  assert.match(applyExtrasSource, /app_grant_snapshots_lineage_trigger/);
+  assert.match(applyExtrasSource, /deft_schema_migrations/);
+  assert.ok(getTableConfig(appRuns).checks.some((item) => item.name === 'app_runs_app_origin_disabled_check'));
 });
 
 test('governed App Run fresh schema is tenant-bound and keeps ciphertext separate', () => {

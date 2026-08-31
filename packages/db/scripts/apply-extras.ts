@@ -39,37 +39,85 @@ async function main() {
       console.log(`[apply-extras] applied ${file}`);
     }
 
-    const appsV0File = '0.3.0-preview.16-declarative-apps-v0.sql';
-    await client.query(readFileSync(resolve(upgradesDir, appsV0File), 'utf8'));
-    console.log(`[apply-extras] applied ${appsV0File}`);
+    const connectedLifecycleInstalled = (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_trigger
+         WHERE tgname = 'app_installations_grant_coherence_trigger'
+           AND NOT tgisinternal
+      ) AS installed
+    `)).rows[0]?.installed === true;
+    const connectedFoundationInstalled = (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_trigger
+         WHERE tgname = 'app_grant_snapshots_lineage_trigger'
+           AND NOT tgisinternal
+      ) AS installed
+    `)).rows[0]?.installed === true;
+    const ledgerExists = (await client.query<{ installed: boolean }>(`
+      SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS installed
+    `)).rows[0]?.installed === true;
+    const connectedLifecycleRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1 FROM deft_schema_migrations
+         WHERE version = '0.3.0-preview.24'
+      ) AS installed
+    `)).rows[0]?.installed === true;
+    // Fresh pushes already contain the current declarative-App tables from
+    // schema.ts, so .16 must not be replayed unchanged: retain its circular
+    // active-version FK while omitting the obsolete one-binding-per-Module
+    // index. Reconcile only .24 whenever either the
+    // durable migration ledger or an earlier connected-foundation trigger
+    // proves this is an existing App database, even if a .24 trigger is being
+    // repaired.
+    if (!connectedLifecycleInstalled && !connectedFoundationInstalled && !connectedLifecycleRecorded) {
+      const appsV0File = '0.3.0-preview.16-declarative-apps-v0.sql';
+      const appsV0Sql = readFileSync(resolve(upgradesDir, appsV0File), 'utf8');
+      const currentAppsV0Sql = appsV0Sql.replace(
+        /CREATE UNIQUE INDEX IF NOT EXISTS app_module_bindings_owned_module_unique[^;]+;\s*/,
+        '',
+      );
+      if (currentAppsV0Sql === appsV0Sql) {
+        throw new Error('failed to remove obsolete App Module owner index from fresh-schema extras');
+      }
+      await client.query(currentAppsV0Sql);
+      console.log(`[apply-extras] applied ${appsV0File} without obsolete owner index`);
 
-    const appRunsFoundationFile = '0.3.0-preview.17-governed-app-runs-foundation.sql';
-    await client.query(readFileSync(resolve(upgradesDir, appRunsFoundationFile), 'utf8'));
-    console.log(`[apply-extras] applied ${appRunsFoundationFile}`);
+      const appRunsFoundationFile = '0.3.0-preview.17-governed-app-runs-foundation.sql';
+      await client.query(readFileSync(resolve(upgradesDir, appRunsFoundationFile), 'utf8'));
+      console.log(`[apply-extras] applied ${appRunsFoundationFile}`);
 
-    const appRunEngineHardeningFile = '0.3.0-preview.18-governed-app-run-engine-hardening.sql';
-    await client.query(readFileSync(resolve(upgradesDir, appRunEngineHardeningFile), 'utf8'));
-    console.log(`[apply-extras] applied ${appRunEngineHardeningFile}`);
+      const appRunEngineHardeningFile = '0.3.0-preview.18-governed-app-run-engine-hardening.sql';
+      await client.query(readFileSync(resolve(upgradesDir, appRunEngineHardeningFile), 'utf8'));
+      console.log(`[apply-extras] applied ${appRunEngineHardeningFile}`);
 
-    const appRunCutoverGateFile = '0.3.0-preview.19-governed-app-run-cutover-gate.sql';
-    await client.query(readFileSync(resolve(upgradesDir, appRunCutoverGateFile), 'utf8'));
-    console.log(`[apply-extras] applied ${appRunCutoverGateFile}`);
+      const appRunCutoverGateFile = '0.3.0-preview.19-governed-app-run-cutover-gate.sql';
+      await client.query(readFileSync(resolve(upgradesDir, appRunCutoverGateFile), 'utf8'));
+      console.log(`[apply-extras] applied ${appRunCutoverGateFile}`);
 
-    const appRunLiveAuthorityFile = '0.3.0-preview.20-app-run-live-authority-versions.sql';
-    await client.query(readFileSync(resolve(upgradesDir, appRunLiveAuthorityFile), 'utf8'));
-    console.log(`[apply-extras] applied ${appRunLiveAuthorityFile}`);
+      const appRunLiveAuthorityFile = '0.3.0-preview.20-app-run-live-authority-versions.sql';
+      await client.query(readFileSync(resolve(upgradesDir, appRunLiveAuthorityFile), 'utf8'));
+      console.log(`[apply-extras] applied ${appRunLiveAuthorityFile}`);
 
-    const appRunAncestryGuardFile = '0.3.0-preview.21-app-run-ancestry-guard.sql';
-    await client.query(readFileSync(resolve(upgradesDir, appRunAncestryGuardFile), 'utf8'));
-    console.log(`[apply-extras] applied ${appRunAncestryGuardFile}`);
+      const appRunAncestryGuardFile = '0.3.0-preview.21-app-run-ancestry-guard.sql';
+      await client.query(readFileSync(resolve(upgradesDir, appRunAncestryGuardFile), 'utf8'));
+      console.log(`[apply-extras] applied ${appRunAncestryGuardFile}`);
 
-    const resourceRelationsFile = '0.3.0-preview.22-resource-relations.sql';
-    await client.query(readFileSync(resolve(upgradesDir, resourceRelationsFile), 'utf8'));
-    console.log(`[apply-extras] applied ${resourceRelationsFile}`);
+      const resourceRelationsFile = '0.3.0-preview.22-resource-relations.sql';
+      await client.query(readFileSync(resolve(upgradesDir, resourceRelationsFile), 'utf8'));
+      console.log(`[apply-extras] applied ${resourceRelationsFile}`);
 
-    const connectedAppGrantsFile = '0.3.0-preview.23-connected-app-grants-foundation.sql';
-    await client.query(readFileSync(resolve(upgradesDir, connectedAppGrantsFile), 'utf8'));
-    console.log(`[apply-extras] applied ${connectedAppGrantsFile}`);
+      const connectedAppGrantsFile = '0.3.0-preview.23-connected-app-grants-foundation.sql';
+      await client.query(readFileSync(resolve(upgradesDir, connectedAppGrantsFile), 'utf8'));
+      console.log(`[apply-extras] applied ${connectedAppGrantsFile}`);
+
+      const connectedAppReviewFile = '0.3.0-preview.24-connected-app-review-lifecycle.sql';
+      await client.query(readFileSync(resolve(upgradesDir, connectedAppReviewFile), 'utf8'));
+      console.log(`[apply-extras] applied ${connectedAppReviewFile}`);
+    } else {
+      const connectedAppReviewFile = '0.3.0-preview.24-connected-app-review-lifecycle.sql';
+      await client.query(readFileSync(resolve(upgradesDir, connectedAppReviewFile), 'utf8'));
+      console.log(`[apply-extras] reconciled ${connectedAppReviewFile}`);
+    }
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
@@ -134,13 +182,13 @@ async function main() {
       'resource_relation_receipts_org_set_fk',
       'capability_provider_snapshots_org_provider_id_unique',
       'mcp_connections_org_id_id_unique',
+      'mcp_tool_overrides_org_connection_fk',
       'app_installations_org_id_app_id_unique',
       'app_installations_active_grant_snapshot_fk',
-      'app_installations_grant_pointer_dormant_check',
+      'app_installations_grant_pointer_shape_check',
       'app_versions_org_installation_identity_unique',
       'app_versions_requested_grant_snapshot_fk',
       'app_versions_protocol_supported_check',
-      'app_versions_protocol_stage_gate_check',
       'app_versions_connected_request_check',
       'app_grant_snapshots_app_installation_fk',
       'app_grant_snapshots_app_version_fk',
@@ -190,7 +238,7 @@ async function main() {
       'app_installations_org_lineage_unique',
       'app_versions_one_active_unique',
       'app_module_bindings_app_module_unique',
-      'app_module_bindings_owned_module_unique',
+      'app_module_bindings_owner_idx',
       'app_developer_pairings_code_hash_unique',
       'app_developer_pairings_session_hash_unique',
       'capability_provider_snapshots_identity_digest_unique',
@@ -208,6 +256,8 @@ async function main() {
       'resource_relation_edges_active_position_unique',
       'resource_relation_receipts_idempotency_unique',
       'app_grant_snapshots_one_requested_unique',
+      'app_grant_snapshots_one_successor_unique',
+      'app_grant_snapshots_one_root_unique',
       'app_dependency_locks_grant_key_unique',
       'app_dependency_locks_grant_installation_unique',
       'app_action_bindings_grant_action_unique',
@@ -261,6 +311,12 @@ async function main() {
       'app_dependency_locks_append_only_trigger',
       'app_action_bindings_append_only_trigger',
       'app_versions_identity_trigger',
+      'app_module_bindings_owner_trigger',
+      'app_module_bindings_immutable_trigger',
+      'app_installations_grant_coherence_trigger',
+      'app_installations_epoch_cas_trigger',
+      'app_versions_grant_coherence_trigger',
+      'mcp_tool_overrides_parent_authorization_trigger',
     ];
     const installedAppRunTriggers = await client.query<{ tgname: string }>(
       `SELECT tgname

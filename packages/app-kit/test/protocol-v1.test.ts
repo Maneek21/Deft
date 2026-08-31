@@ -154,9 +154,9 @@ describe('App Protocol v1 authoring contract', () => {
     assert.equal(isDeftAppProtocolOperationSupported('1', 'authoring'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'inspect'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'stage'), true);
-    assert.equal(isDeftAppProtocolOperationSupported('1', 'review'), false);
+    assert.equal(isDeftAppProtocolOperationSupported('1', 'review'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'route'), false);
-    assert.equal(isDeftAppProtocolOperationSupported('1', 'activate'), false);
+    assert.equal(isDeftAppProtocolOperationSupported('1', 'activate'), true);
     assert.equal(isDeftAppProtocolOperationSupported('1', 'invoke'), false);
     for (const support of Object.values(DEFT_APP_PROTOCOL_SUPPORT)) {
       assert.ok(Object.keys(support.atoms).length > 0);

@@ -7,7 +7,6 @@ import {
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   agentActions,
-  capabilityProviderSnapshots,
   mcpToolOverrides,
 } from '@deft/db/schema';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
@@ -26,6 +25,7 @@ import type { AppRunRuntime } from './app-run-runtime.js';
 import { getAppRunRuntime } from './app-run-runtime.js';
 import { canonicalMcpToolName } from './mcp-runtime.js';
 import { db } from './db.js';
+import { persistCapabilityProviderSnapshot } from './capability-provider-snapshot-repository.js';
 
 export type GovernedCapabilityInvocationOptions = Readonly<{
   /** Trusted host evidence, never parsed from provider or model input. */
@@ -172,7 +172,7 @@ export class PostgresGovernedCapabilityExecutor {
       );
     }
 
-    const snapshotId = await this.#persistSnapshot(discovery.snapshot);
+    const snapshotId = await persistCapabilityProviderSnapshot(discovery.snapshot);
     const runtime = await this.runtime();
     const initiatingActor = { actor_type: 'human' as const, user_id: request.actor.user_id };
     const executionActor = request.actor.agent_employee_id
@@ -272,31 +272,6 @@ export class PostgresGovernedCapabilityExecutor {
       return null;
     }
     return action;
-  }
-
-  async #persistSnapshot(
-    snapshot: NonNullable<Awaited<ReturnType<McpCapabilityProvider['discover']>>['snapshot']>,
-  ): Promise<string> {
-    const id = crypto.randomUUID();
-    await db.insert(capabilityProviderSnapshots).values({
-      id,
-      org_id: snapshot.provider.org_id,
-      provider_kind: snapshot.provider.provider_kind,
-      provider_instance_id: snapshot.provider.provider_instance_id,
-      adapter_contract_version: snapshot.adapter_contract_version,
-      snapshot_digest: snapshot.snapshot_digest,
-      safe_snapshot: snapshot,
-      captured_at: new Date(snapshot.captured_at),
-    }).onConflictDoNothing();
-    const [stored] = await db.select({ id: capabilityProviderSnapshots.id })
-      .from(capabilityProviderSnapshots).where(and(
-        eq(capabilityProviderSnapshots.org_id, snapshot.provider.org_id),
-        eq(capabilityProviderSnapshots.provider_kind, snapshot.provider.provider_kind),
-        eq(capabilityProviderSnapshots.provider_instance_id, snapshot.provider.provider_instance_id),
-        eq(capabilityProviderSnapshots.snapshot_digest, snapshot.snapshot_digest),
-      )).limit(1);
-    if (!stored) throw new Error('APP_RUN_PROVIDER_UNAVAILABLE');
-    return stored.id;
   }
 
   async #result(

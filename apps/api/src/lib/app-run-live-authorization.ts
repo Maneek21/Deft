@@ -25,7 +25,7 @@ import type {
   AppRunSafeView,
   AppRunTransaction,
 } from './app-run-repository.js';
-import { canonicalMcpToolName, isMcpToolEnabled } from './mcp-runtime.js';
+import { canonicalMcpToolName, isMcpToolEnabled } from './mcp-tool-identity.js';
 
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
 
@@ -43,6 +43,7 @@ export type AppRunAuthorizationCapture = Readonly<{
   provider_snapshot_id: string;
   operation_name: string;
   policy: AppRunPolicySnapshot;
+  required_token_scopes?: readonly string[];
   token_authorities?: readonly TokenAuthority[];
 }>;
 
@@ -96,6 +97,29 @@ function sameAuthorityRefs(
 export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorizer {
   async capture(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot> {
     return db.transaction((tx) => this.#capture(tx, input));
+  }
+
+  /** Read-only preparation gate for future effects. It captures the same live
+   * authority vector as Run submission and additionally rejects an already
+   * exhausted employee budget without reserving or consuming a slot. */
+  async captureForPreparation(
+    input: AppRunAuthorizationCapture,
+  ): Promise<AppRunAuthorizationSnapshot> {
+    return db.transaction(async (tx) => {
+      const snapshot = await this.#capture(tx, input);
+      if (input.execution_actor.actor_type === 'agent_employee' && input.policy.risk_class !== 'read') {
+        const [available] = await tx.select({ id: agentEmployees.id }).from(agentEmployees).where(and(
+          eq(agentEmployees.org_id, input.org_id),
+          eq(agentEmployees.id, input.execution_actor.agent_employee_id),
+          eq(agentEmployees.is_active, true),
+          eq(agentEmployees.is_deleted, false),
+          eq(agentEmployees.unhealthy, false),
+          sql`${agentEmployees.daily_action_count} < ${agentEmployees.max_daily_actions}`,
+        )).limit(1);
+        if (!available) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      }
+      return snapshot;
+    });
   }
 
   async authorizeApproval(input: Readonly<{
@@ -441,6 +465,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         isNull(mcpTokens.revoked_at),
       )).limit(1);
       if (!row) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      if ((input.required_token_scopes ?? []).some((scope) => !row.scopes.includes(scope))) {
+        throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      }
       const subjectMatches = input.authenticated_subject.actor_type === 'human'
         ? row.principal_kind === 'human' && row.user_id === input.authenticated_subject.user_id
         : input.authenticated_subject.actor_type === 'agent_employee'
@@ -468,6 +495,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       sql`${oauthAccessTokens.expires_at} > now()`,
     )).limit(1);
     if (!row) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    if ((input.required_token_scopes ?? []).some((scope) => !row.scopes.includes(scope))) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
     return {
       authority_kind: 'token_scope',
       authority_id: row.id,

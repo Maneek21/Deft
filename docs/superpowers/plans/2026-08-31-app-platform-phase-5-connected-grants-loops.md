@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–2 complete; PR A ready |
+| Status | Loops 0–4 complete; PR B ready for review |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -257,6 +257,37 @@ drift, dependency loss, ownership, data retention, and concurrent review CAS.
 a token, follow a newer dependency/provider implicitly, or inherit grants from
 a different lineage.
 
+**Closeout:** passed on the no-execution boundary. Owner/admin review now pins
+one exact installed dependency version, declared resources and fields, an
+existing MCP connector, alias-normalized connector policy, one fresh provider
+snapshot/schema, the private action binding, and Deft's immutable host policy.
+Activation revalidates those facts under sorted tenant-bound locks and swaps
+the App, effective-grant, and additive App-owned Module pointers in one
+transaction. Permission carry-forward is limited to a byte-equivalent
+authority surface; widening or incompatible changes require explicit policy
+acceptance. Disable clears the live grant pointer and advances both lifecycle
+epochs, while re-enable requires a fresh review and creates a linear immutable
+successor snapshot.
+
+The database now enforces one effective-grant root and one successor per node,
+append-only App/Module binding history, immutable App-version supersession,
+tenant-bound connector overrides, exact grant/version coherence, and mandatory
+lifecycle/grant epoch advancement. Upgrade proof preserved existing Campaign
+records while adding the optional body field, retained both historical
+App-version bindings, rejected Module-set shrink, and rolled every pointer and
+record version back after an injected failure. Connector, override, dependency,
+provider-schema, reviewer, cross-tenant, stale-CAS, and concurrent-activation
+paths fail closed. Protocol v0 activation/disable/re-enable remains compatible,
+and App-origin submission is still denied by both service and database.
+
+Focused certification passed on a newly recreated disposable PostgreSQL
+database: schema push, ordered extras, a second idempotent extras pass, Protocol
+v0 lifecycle, connected staging/review/revocation/upgrade, connector and
+Capability Service regressions, App-origin denial, App Kit contracts, database
+upgrade checks, and API typecheck. Local PostgreSQL still lacks pgvector, so the
+already documented test-only `vector` shim was used; real-pgvector supported
+upgrade and release-host evidence remain Loop 7 work.
+
 ## Loop 4 — AppActionService dry-run and live input resolution
 
 **Purpose:** establish one deep caller seam before enabling effects.
@@ -287,6 +318,21 @@ materialization.
 
 **Stop condition:** reopen the gate if two surfaces need different policy code
 or if sensitive resolved values must enter previews, logs, events, or receipts.
+
+**Closeout:** passed on the dry-run/no-effect boundary. One AppActionService now
+owns list, resolve, and prepare for UI, Defty, employee-runtime, and human-MCP
+callers. It rechecks exact installation/grant/binding/dependency/provider
+membership, live caller and token authority, the current Campaign relation, and
+declared scalar fields before sealing a short-lived Run-owned input candidate.
+All returned resource labels and field evidence are explicitly projected so
+recipient, subject, and body values remain confined to the provider-input and
+encryption boundary. The focused disposable-PostgreSQL proof covers four-surface
+parity, unrelated selection, membership/token-scope/relation/schema/field
+revocation, and zero Capability invocation, Run, approval, or provider effect.
+The reused connected-grant lifecycle suite covers dependency, grant, and
+connector invalidation; architecture tests prove those checks precede scalar
+materialization and prevent App lifecycle/surface bypasses. Local certification
+used the documented test-only `vector` shim; real pgvector remains Loop 7.
 
 ## Loop 5 — Exact App-origin Run cutover
 
