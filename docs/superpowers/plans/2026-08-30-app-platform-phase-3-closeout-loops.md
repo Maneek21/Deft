@@ -2,13 +2,13 @@
 
 | Field | Value |
 |---|---|
-| **Status** | In execution; Loops 0–5 complete, Loop 6 consolidated delta certification next |
-| **Date** | 2026-08-30 |
+| **Status** | Complete; Loops 0–9 merged, released, and certified |
+| **Date** | 2026-08-30; completed 2026-08-31 |
 | **Architecture source** | `docs/superpowers/plans/2026-08-29-full-surface-app-platform.md` |
 | **Delivery source** | `docs/superpowers/plans/2026-08-30-full-surface-app-platform-delivery-plan.md` |
-| **Merged base** | PR C merge on `origin/master` at `9c8e9ac9` |
-| **Local closeout baseline** | PR D C4–D2 replay at `ee513a35`, plus split-control checkpoint `5cf88c51`; local-only and unreleased |
-| **Outcome** | Merge and release the guarded Phase 3 execution substrate with Run draining separated from legacy MCP intake, then hand Phase 4 one immutable supported baseline. |
+| **Merged base** | PR C #273 at `9c8e9ac9`; PR D #274 at `4bad79d8`; fix-forward #275 at `6d39e0e` |
+| **Released closeout baseline** | `v0.3.0-preview.14` at `6d39e0e`, digest `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
+| **Outcome** | Complete. The guarded Phase 3 execution substrate is released at `v0.3.0-preview.14`, Run draining remains separate from legacy MCP intake, and Phase 4 has one immutable supported baseline. |
 
 ## Decision
 
@@ -27,11 +27,11 @@ Do not redesign the completed engine. Do not begin ResourceRef, App grants,
 App-origin execution, connected App UI, or Authoring Kit beta work inside these
 trains.
 
-## Current immutable facts
+## Final immutable facts
 
-- `origin/master` includes the Phase 3 foundation, engine, and PR C trust/data
-  completion through merge `9c8e9ac9`.
-- The original Phase 3 source worktree carried this historical local chain:
+- `origin/master` includes the Phase 3 foundation, engine, PR C trust/data
+  completion, guarded PR D runtime, and the release-gate compatibility repair.
+- The original Phase 3 source worktree carried this historical review chain:
   - `4c4f48c1` — C0 engine/cutover hardening;
   - `e6274c41` — C1 live authority and budget evidence;
   - `c3670207` — C2 approval compatibility projection;
@@ -39,15 +39,10 @@ trains.
   - `ffdab418` — C4 runtime/worker composition;
   - `944b265f` — C5 legacy capability cutover;
   - `5050b0f1` — local certification documentation.
-- PR C replayed C0–C3 and merged as #273. Original hashes remain historical;
-  PR D was rebuilt from the merge as `1e4ac5a7` (C4), `bd28ff6f` (C5), and
-  `ee513a35` (historical certification), then added split controls at
-  `5cf88c51`. No PR D hash is released or an operational rollback floor.
-- Before Loop 0, the revised delivery and closeout plans plus the intended
-  canonical-plan header/pointer edits existed only in the dirty main worktree.
-  The dirty main copy of the canonical plan predates newer Phase 1–3 evidence,
-  so only its reviewed header/pointer intent may be applied to the current
-  tracked body; the dirty originals and unrelated Hermes work remain untouched.
+- PR C replayed C0–C3 and merged as #273. PR D was rebuilt from that merge,
+  merged as #274, and certified with the narrow #275 fix-forward. Original
+  source hashes remain historical review evidence; the operational floor is the
+  immutable release above.
 - Additive migrations `.19`–`.21` are implemented and tested. Preserve them;
   rewriting their history provides no functional value and invalidates useful
   evidence.
@@ -55,9 +50,9 @@ trains.
   `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` independently controls new legacy
   MCP admission. The invalid off/on state is rejected at startup.
 - App origin, system origin, and automation origin remain fail-closed.
-- The current local host lacks pgvector and a running Docker release
-  environment. Do not retry those known local limitations; run their gates once
-  on release-capable infrastructure.
+- The release-capable host passed pgvector upgrade, recovery, rotation, drain,
+  quiescence, and immutable rollback gates. The detailed result is
+  `docs/superpowers/audits/2026-08-31-app-platform-phase-3-release-certification.md`.
 
 ## Frozen rollout-control contract
 
@@ -508,7 +503,11 @@ Create a read-only Phase 4 loop plan against the exact released baseline. Freeze
 - focused acceptance matrix, release environment, exclusions, and stop
   conditions.
 
-No Phase 4 code begins before the Phase 3 release evidence record exists.
+No Phase 4 code begins before the Phase 3 release evidence record exists. That
+record now exists at
+`docs/superpowers/audits/2026-08-31-app-platform-phase-3-release-certification.md`;
+the read-only handoff is
+`docs/superpowers/plans/2026-08-31-app-platform-phase-4-resource-participation-loops.md`.
 
 ## Phase 3 closeout exclusions
 

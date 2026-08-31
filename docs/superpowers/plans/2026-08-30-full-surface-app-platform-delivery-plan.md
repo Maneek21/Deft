@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Active execution plan; Phases 0–2 and Phase 3 PR C merged, guarded PR D closeout in progress |
-| **Date** | 2026-08-30 |
+| **Status** | Active execution plan; Phases 0–3 released and certified; Phase 4 is next |
+| **Date** | 2026-08-30; Phase 3 release baseline frozen 2026-08-31 |
 | **Architecture source** | `docs/superpowers/plans/2026-08-29-full-surface-app-platform.md` |
-| **Execution baseline** | Phase 1 `bdb137ee`; Phase 2 `9ba7b7c8`; Phase 3 PR C merge `9c8e9ac9`; PR D replay `ee513a35` plus split-control checkpoint `5cf88c51` (unreleased) |
+| **Execution baseline** | Phase 1 `bdb137ee`; Phase 2 `9ba7b7c8`; Phase 3 release `v0.3.0-preview.14` at `6d39e0e`, digest `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
 | **North star** | A community member can ask Codex to build any feasible Deft App, install it on an ordinary self-hosted workspace, and have it participate through governed resources, knowledge, agents, capabilities, experiences, automation, runtimes, sync, and public ingress as required by that App. |
 
 ## Decision
@@ -84,70 +84,36 @@ trusted API, web, or worker processes.
   preserving additive `.19`–`.21`, release/budget evidence, approval ownership,
   ancestry, receipts, Attention, and internal repair invariants.
 
-The remaining PR D chain is local-only and unreleased: `1e4ac5a7` (C4 replay)
--> `bd28ff6f` (C5 replay) -> `ee513a35` (historical certification replay) ->
-`5cf88c51` (split controls) -> `a6f2eed2` (closeout contract) -> `fe66113f`
-(restart-transition certification). Original C0–D2 hashes remain historical
-review evidence. None of these hashes is a supported rollback floor; the floor
-is the eventual immutable released image revision recorded by the release gate.
+- **Phase 3 PR D (#274):** guarded runtime, split controls, rollout transition,
+  and operations contract merged at `4bad79d8`.
+- **Phase 3 fix-forward (#275):** the release gate repaired the Hello Workspace
+  package-byte/parsed-manifest digest mismatch without changing Run, migration,
+  token, connector, UI, or control contracts. The immutable certified baseline
+  is `v0.3.0-preview.14` at `6d39e0e`, image digest
+  `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788`.
 
 No completed phase is restarted or redesigned. Later work must consume these
 deep services rather than create parallel execution, package, or authorization
 paths.
 
-### Phase 3 closeout gate
+### Phase 3 closeout result
 
-The historical C0–D2 work through `5050b0f1` is preserved as review evidence,
-not treated as proof of the newer split-control contract or as an App-facing
-feature. PR D's new checkpoint and consolidated matrix own closeout evidence.
+The closeout gate passed. App Runs are canonical execution state;
+`agent_actions` remains the compatibility approval projection and legacy
+receipts remain historical. Migrations `.17`–`.21` are additive and recorded.
+`AppRunOperationsService` remains internal. App/system/automation origins remain
+closed. The legacy MCP canary is default-off, has no shadow call or governed-to-
+legacy fallback, and is supported only as a documented self-host opt-in.
 
-Before it merges:
+The release gate covered immutable source/image provenance, pgvector install and
+upgrade, connector ciphertext continuity, all four rollout states,
+deterministic-provider replay, Hello Workspace lifecycle, matched backup/
+restore, three-purpose key rotation and retirement refusal, pause/drain/resume,
+quiescence, and actual rollback to the supported predecessor. See the
+[immutable release certification](../audits/2026-08-31-app-platform-phase-3-release-certification.md).
 
-1. Record the dual-ledger exit: App Runs are canonical execution state;
-   `agent_actions` is the current approval projection and legacy receipts remain
-   historical compatibility. After native App approval/Run UI and Phase 6
-   parity are proven, no new App path may depend on the compatibility ledger.
-2. Preserve the already tested additive `.19`–`.21` migrations by default.
-   Consolidate them only if repository policy requires one unreleased train to
-   equal one migration, no supported or retained environment has recorded
-   their checksums, disposable environments are reset, and the resulting
-   upgrade/engine evidence is rerun.
-3. Describe `AppRunOperationsService` as an internal repair primitive with a
-   runbook/SQL operator path. Do not claim a public operations surface until
-   one exists.
-4. Keep `origin = app`, system/automation origins, and broad rollout fail-closed
-   until later phases provide their host-owned authority sources.
-5. Keep the exact legacy MCP intake path default-off, with no shadow provider
-   call and no fallback after a governed attempt begins.
-6. Keep Run runtime/key availability separate from legacy-connector cutover;
-   reject intake-on/engine-off and document the three safe combinations. Add an
-   App-origin control only with Phase 5's real grants/bindings entrance.
-   Enabling community Apps must not implicitly migrate all existing MCP traffic.
-7. Split-control checkpoint `5cf88c51` supersedes `5050b0f1` for rollout
-   evidence. Complete its flag-combination, startup, queue-deferral, keyring,
-   rollback, and compatibility delta before PR D is certified.
-
-Recommended review shape:
-
-- **PR C — trust and data completion:** C0–C3 release fencing, live authority,
-  budget evidence, approval adapter, selected ancestry constraints, receipts,
-  Attention, and repair invariants.
-- **PR D — guarded runtime and certification:** C4–C5 composition, exact
-  default-off legacy canary, rollback/key runbook, and the certification record.
-
-PR D may stack on PR C only while commit ancestry is preserved. If PR C is
-squash-merged or rewritten, rebuild/rebase PR D on the resulting default branch
-and recertify the changed delta rather than treating old hashes as evidence.
-
-Merge evidence is limited to changed boundaries plus one consolidated delta
-matrix: shared contracts, final upgrade representation, App Run database suite,
-engine-off/intake-off, engine-on/intake-off, and engine-on/intake-on modes in one
-disposable-database fixture, focused
-approval/trust/connector/worker/crypto/architecture tests, repository typecheck,
-and one production source build. Browser testing is required only if web code
-changes. Production-image, current-schema, backup/restore, rollback, and
-deterministic-provider browser drills remain rollout gates and run once on the
-release candidate.
+The exact Phase 4 implementation handoff is
+[Resource participation loops](2026-08-31-app-platform-phase-4-resource-participation-loops.md).
 
 ## Revised delivery graph
 

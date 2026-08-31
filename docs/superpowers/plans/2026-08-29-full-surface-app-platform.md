@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Canonical capability map and threat model; Phase 3 PR C merged and guarded PR D closeout in progress; release gate pending |
-| **Date** | 2026-08-29; execution rebaseline 2026-08-30 |
-| **Baseline inspected** | `origin/master` at PR C merge `9c8e9ac9`; PR D is replayed from that exact merge and remains unreleased |
+| **Status** | Canonical capability map and threat model; Phases 0–3 released and certified; Phase 4 planning handoff ready |
+| **Date** | 2026-08-29; execution rebaseline 2026-08-30; Phase 3 release certification 2026-08-31 |
+| **Baseline inspected** | `v0.3.0-preview.14` at `6d39e0e`, immutable image digest `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
 | **First delivery principle** | Build one safe participation protocol in stages; do not turn `deft.module.json` into an arbitrary plugin runtime. |
 | **Relationship to earlier work** | Supersedes the provisional App Protocol v2 implementation sequence while retaining its certified Module, Capability, App Run, and approval-boundary decisions as design input. Absorbs the useful resource-graph and solution-composition ideas from the modular work-management proposal. |
@@ -778,15 +778,16 @@ and the staged secret/rollback decision. Phase 3 is not one big-bang PR; migrati
 identifiers must be re-confirmed at the implementation boundary even though the
 planning branch is now rebased onto the Phase 2 merge.
 
-**Implementation status (2026-08-30):** PRs A and B merged the frozen contracts,
+**Implementation status (2026-08-31):** PRs A and B merged the frozen contracts,
 purpose-separated key service, additive schema, lifecycle, and fake-provider
 engine. PR C (#273) merged release/budget evidence, live authority, approval
 compatibility, ancestry, receipts, Attention, and internal repair invariants.
-PR D now contains the pinned worker runtime plus separate exact default-off Run
-engine/drain and legacy MCP intake controls. Its local consolidated gate and
-cross-process approval/drain transition passed at `fe66113f`; remote PR and
-immutable release-artifact gates remain. App origin remains disabled; existing
-connector ciphertext and legacy receipt writers are unchanged.
+PR D (#274) merged the pinned worker runtime plus separate exact default-off Run
+engine/drain and legacy MCP intake controls. The immutable release gate found
+and fixed one unrelated App-package digest compatibility defect in #275, then
+certified `v0.3.0-preview.14` at `6d39e0e`. The legacy MCP canary is supported
+only as an explicit self-host opt-in; App origin remains disabled. See the
+[Phase 3 release evidence](../audits/2026-08-31-app-platform-phase-3-release-certification.md).
 
 - [x] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
 - [x] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.
@@ -800,7 +801,7 @@ connector ciphertext and legacy receipt writers are unchanged.
 - [x] Enforce the actor/App-grant intersection for App origins and the exact current legacy policy for compatibility origins before approval and again immediately before execution.
 - [x] Recheck membership, employee health/budget, token scope, connector, schema digest, provider, assignment, grants/policy source, and bound authorization versions at execution.
 - [x] Add sanitized receipts, metrics, Attention, internal bounded inspection/repair primitives, and compatibility adapters without rewriting existing action receipts or claiming a public Operations surface.
-- [x] Separate disabled-by-default Run engine/drain and legacy MCP intake controls, reject intake without the engine, and retain a bounded drain-first rollback path; immutable release certification remains the D2 gate.
+- [x] Separate disabled-by-default Run engine/drain and legacy MCP intake controls, reject intake without the engine, and retain a bounded drain-first rollback path; immutable release certification passed at `v0.3.0-preview.14`.
 
 **Acceptance evidence:** auto and reviewed calls create one Run and at most one provider call; capability cycles stop before a second call and child Runs cannot reset budgets; no pseudo-App grant exists; legacy Runs are not App-discoverable; `always` review cannot be bypassed by an Autonomous employee; payload limits and terminal purge preserve only the declared sanitized residue; restart/replay, encryption/signer/fingerprint rotation, supported-image rollback, low-entropy guessing resistance, unknown-outcome, and ciphertext-leakage tests pass.
 
@@ -978,7 +979,13 @@ Do not begin with custom UI, runtime hosting, or Email Lite. The first shippable
 
 This milestone creates a narrow but real user loop while adding no executable App code, new connector authority, background execution, or custom network surface. It also prevents the protocol and tooling from drifting apart.
 
-The next internal milestone extracts CapabilityService with behavior parity. App Runs and the Secret Service follow; Resource Service/privacy follows that. Only after those gates pass does the same package expand into connected grants and Proof A. Governed automation comes next, followed by custom experiences, runtimes, sync, and public ingress as separately revocable planes.
+That first milestone, CapabilityService, and governed App Runs are now delivered
+through `v0.3.0-preview.14`. The next internal milestone is the Phase 4 Resource
+Service/privacy seam described in the current delivery plan and the exact
+[Phase 4 loop handoff](2026-08-31-app-platform-phase-4-resource-participation-loops.md).
+Only after that gate passes does the package expand into connected grants and
+Proof A. Governed automation follows, then custom experiences, runtimes, sync,
+and public ingress as separately revocable planes.
 
 ## Migration and rollback strategy
 
