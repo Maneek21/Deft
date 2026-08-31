@@ -1,14 +1,20 @@
 # App Platform Phase 3 certification checkpoints
 
-- Date: 2026-08-30; consolidated PR D gate 2026-08-31
+- Date: 2026-08-30; consolidated PR D and immutable release gates 2026-08-31
 - Historical pre-split baseline: `5050b0f1` with C5 source checkpoint
   `944b265f`; useful review evidence, superseded for rollout certification
 - Current PR D certification checkpoint: `fe66113f` on PR C merge `9c8e9ac9`;
   split-control source checkpoint `5cf88c51`
-- Current result: consolidated local PR D gate passed; remote PR checks and the
-  immutable release-artifact gate remain
-- Rollout decision: off/off by default; merge alone does not make the legacy MCP
-  canary supported
+- Released baseline: `v0.3.0-preview.14` at `6d39e0e`, image digest
+  `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788`
+- Current result: PASS. PR D, fix-forward App compatibility, remote CI/security,
+  immutable publishing, upgrade, recovery, rotation, drain, quiescence, and
+  rollback gates passed.
+- Rollout decision: off/off remains the default. The legacy MCP canary is
+  supported only as an explicit self-host opt-in using the documented split
+  controls. App origin remains disabled until Phase 5 grants and bindings.
+- Detailed release record:
+  `2026-08-31-app-platform-phase-3-release-certification.md`
 
 ## Current split-control delta
 
@@ -88,30 +94,28 @@ explicit release-candidate gates. The one production source build is delegated
 to normal PR CI against the exact pushed tip; run it locally only if that CI job
 does not execute.
 
-## Remaining PR D remote gate
+## PR D remote gate — complete
 
-- Inspect the committed audit delta and open PR D from the exact checkpoint.
-- Require normal PR CI, including the production source build, API tests,
-  typecheck, upgrade/image jobs, and security checks, to pass.
-- Keep the branch unmerged until human review; passing PR D does not satisfy the
-  separate release-artifact gate below.
+- PR D #274 merged after the required typecheck, API, upgrade, production-image,
+  browser, Hermes, dependency, and CodeQL checks passed.
+- The Hello Workspace release gate then exposed a package-byte versus parsed-
+  manifest digest mismatch. The smallest boundary repair shipped in #275 with
+  a deterministic red/green regression and the same full remote check set.
+- The merged fix-forward revision is `6d39e0e`; no Run state machine, migration,
+  token, connector, UI, or rollout-control contract changed.
 
-## Remaining release-artifact gates
+## Release-artifact gates — complete
 
-- Build and identify the immutable merged candidate image and its supported
-  predecessor; record both digests and migration ledgers.
-- Prove a current pgvector-backed fresh install and supported upgrade through
-  `.21` on release-capable infrastructure.
-- Run deterministic-provider canary and approval/browser smoke without claiming
-  a public Run UI.
-- Back up and restore database, uploads/App artifacts where applicable, and all
-  Run keyrings at consistent points; exercise rotation and referenced-key
-  retirement refusal.
-- Disable intake, drain and quiesce governed work, then perform the actual
-  supported image rollback drill.
-- Record the first released image containing the final split-control contract as
-  the operational rollback floor.
+- The supported predecessor is `v0.3.0-preview.12` at `23694ef8`, digest
+  `sha256:34b306e53e5c959468a973a50aaeb3b59235c56e631d67003f7780d18002d24b`.
+- The target is `v0.3.0-preview.14` at `6d39e0e`, digest
+  `sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788`.
+- Upgrade through `.21`, deterministic-provider canary, App lifecycle,
+  matched backup/restore, three-purpose key rotation, retirement refusal,
+  pause/drain/resume, exact quiescence, and immutable image rollback passed.
+- This target image is the first operational rollback floor containing the
+  final split-control and durable job-pause contract.
 
-Until those gates pass, App origin remains disabled, the legacy MCP canary stays
-default-off and unsupported for production widening, and no local source hash
-is an operational rollback floor.
+App origin remains disabled. The legacy MCP canary may be enabled only through
+the documented self-host controls after a matched backup and canary; the
+release does not authorize default-on production widening.
