@@ -120,14 +120,23 @@ export const APP_DEVELOPER_PAIRING_ENABLED =
 export const APP_RUNS_ENABLED = process.env.DEFT_APP_RUNS_ENABLED === 'true';
 export const APP_RUN_LEGACY_MCP_CUTOVER_ENABLED =
   process.env.DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED === 'true';
+export const APP_RUN_APP_ORIGIN_ENABLED =
+  process.env.DEFT_APP_RUN_APP_ORIGIN_ENABLED === 'true';
 
 export function validateAppRunRolloutConfiguration(
   appRunsEnabled: boolean,
   legacyMcpCutoverEnabled: boolean,
+  appOriginEnabled = false,
+  appsEnabled = false,
 ): void {
   if (legacyMcpCutoverEnabled && !appRunsEnabled) {
     throw new Error(
       'DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=true requires DEFT_APP_RUNS_ENABLED=true',
+    );
+  }
+  if (appOriginEnabled && (!appRunsEnabled || !appsEnabled)) {
+    throw new Error(
+      'DEFT_APP_RUN_APP_ORIGIN_ENABLED=true requires DEFT_APP_RUNS_ENABLED=true and DEFT_APPS_ENABLED=true',
     );
   }
 }
@@ -135,5 +144,7 @@ export function validateAppRunRolloutConfiguration(
 validateAppRunRolloutConfiguration(
   APP_RUNS_ENABLED,
   APP_RUN_LEGACY_MCP_CUTOVER_ENABLED,
+  APP_RUN_APP_ORIGIN_ENABLED,
+  APPS_ENABLED,
 );
 validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYRINGS);

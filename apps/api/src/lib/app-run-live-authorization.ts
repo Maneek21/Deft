@@ -1,24 +1,42 @@
 import { createHash } from 'node:crypto';
+import type { z } from 'zod';
 import {
   APP_RUN_CONTRACT_VERSIONS,
   AppRunAuthorizationSnapshotSchema,
+  AppRunSafePreviewSchema,
   CapabilityProviderDiscoverySnapshotSchema,
+  ModuleResourceRefV1Schema,
+  RESOURCE_CONTRACT_VERSIONS,
   canonicalCapabilityJson,
   type AppRunActor,
   type AppRunAuthorizationSnapshot,
   type AppRunPolicySnapshot,
+  type AppRunSubmission,
+  type ModuleResourceRefV1,
 } from '@deft/shared';
+import { DeftAppManifestV1Schema } from '@deft/app-kit';
 import {
   agentEmployees,
+  appActionBindings,
+  appDependencyLocks,
+  appGrantSnapshots,
+  appInstallations,
+  appModuleBindings,
   appRuns,
+  appVersions,
   capabilityProviderSnapshots,
   mcpConnections,
   mcpTokens,
   mcpToolOverrides,
+  moduleInstallations,
+  moduleRecords,
+  moduleVersions,
   oauthAccessTokens,
   orgMembers,
+  resourceRelationEdges,
+  resourceRelationSets,
 } from '@deft/db/schema';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import type { AppRunExecutionAuthorizer } from './app-run-authorization.js';
 import type {
@@ -26,6 +44,15 @@ import type {
   AppRunTransaction,
 } from './app-run-repository.js';
 import { canonicalMcpToolName, isMcpToolEnabled } from './mcp-tool-identity.js';
+import { digestAppGrantValue } from './app-grant-service.js';
+import {
+  APP_RUN_APP_AUTHORITY_KINDS,
+  AppRunCallerSurfaceSchema,
+  appRelationAuthorityId,
+  appResourceAuthorityId,
+  projectPreparedAppAuthorityRefs,
+  type AppRunPreparedAuthorityVector,
+} from './app-run-prepared-input.js';
 
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
 
@@ -50,10 +77,64 @@ export type AppRunAuthorizationCapture = Readonly<{
 type InternalRunAuthorization = Readonly<{
   authorization_snapshot: Record<string, unknown>;
   provider_snapshot_id: string;
+  origin_app_installation_id: string | null;
+  origin_app_version_id: string | null;
+  origin_app_binding_key: string | null;
+  origin_app_grant_snapshot_id: string | null;
+  safe_preview: Record<string, unknown>;
   budget_reserved_at: Date | null;
   budget_reserved_count: number | null;
   budget_limit_at_reservation: number | null;
 }>;
+
+type AppVectorCaptureInput = Readonly<{
+  org_id: string;
+  initiating_actor: AppRunActor;
+  execution_actor: AppRunActor;
+  installation_id: string;
+  app_version_id: string;
+  binding_key: string;
+  grant_snapshot_id: string;
+  provider_instance_id: string;
+  provider_snapshot_id: string;
+  provider_snapshot_digest: string;
+  operation_name: string;
+  policy: AppRunPolicySnapshot;
+  base_authorization: AppRunAuthorizationSnapshot;
+  caller_surface: z.infer<typeof AppRunCallerSurfaceSchema>;
+  resource_refs: readonly ModuleResourceRefV1[];
+  relation_refs: readonly Readonly<{
+    source_ref: ModuleResourceRefV1;
+    relation_key: string;
+    selected_ref: ModuleResourceRefV1;
+  }>[];
+}>;
+
+export type AppRunPreparedAppVerification = Readonly<{
+  submission: AppRunSubmission;
+  authority_vector: AppRunPreparedAuthorityVector;
+}>;
+
+const APP_AUTHORITY_KINDS = new Set<string>(APP_RUN_APP_AUTHORITY_KINDS);
+
+function isAppAuthorityRef(ref: AuthorityRef): boolean {
+  return APP_AUTHORITY_KINDS.has(ref.authority_kind);
+}
+
+function actorMatchesSurface(
+  actor: AppRunActor,
+  surface: z.infer<typeof AppRunCallerSurfaceSchema>,
+  hasToken: boolean,
+): boolean {
+  if (surface === 'human:ui' || surface === 'defty') {
+    return actor.actor_type === 'human' && !hasToken;
+  }
+  if (surface === 'human:mcp') return actor.actor_type === 'human' && hasToken;
+  if (surface === 'agent_employee:runtime') {
+    return actor.actor_type === 'agent_employee' && !hasToken;
+  }
+  return actor.actor_type === 'agent_employee' && hasToken;
+}
 
 function authorityVersion(domain: string, value: unknown): string {
   return `sha256:${createHash('sha256')
@@ -122,6 +203,79 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     });
   }
 
+  /** Trusted App submission verifier. The encrypted candidate supplies the
+   * immutable prepared vector; every row is rederived in the Run insertion
+   * transaction before an approval can be linked. */
+  async capturePreparedAppInTransaction(
+    tx: AppRunTransaction,
+    input: AppRunPreparedAppVerification,
+  ): Promise<AppRunAuthorizationSnapshot> {
+    const { submission, authority_vector: prepared } = input;
+    if (
+      submission.origin.origin_kind !== 'app'
+      || submission.org_id !== submission.operation.provider.org_id
+      || submission.origin.installation_id !== prepared.installation.id
+      || submission.origin.app_version_id !== prepared.app_version.id
+      || submission.origin.binding_key !== prepared.binding.action_key
+      || submission.origin.grant_snapshot_id !== prepared.grant.id
+      || submission.operation.provider.provider_instance_id !== prepared.provider.connection_id
+      || submission.operation.operation_name !== prepared.provider.operation_name
+      || submission.provider_snapshot_digest !== prepared.provider.snapshot_digest
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+
+    const tokenAuthorities = prepared.run_authorization.authority_refs
+      .filter((ref) => ref.authority_kind === 'token_scope')
+      .map((ref) => ({ token_id: ref.authority_id }));
+    const currentBase = await this.#capture(tx, {
+      org_id: submission.org_id,
+      authenticated_subject: submission.initiating_actor,
+      execution_actor: submission.execution_actor,
+      provider_instance_id: prepared.provider.connection_id,
+      provider_snapshot_id: prepared.provider.snapshot_id,
+      operation_name: prepared.provider.operation_name,
+      policy: submission.policy,
+      required_token_scopes: prepared.caller_surface.endsWith(':mcp') ? ['read:modules'] : [],
+      token_authorities: await Promise.all(tokenAuthorities.map(async ({ token_id }) => ({
+        token_id,
+        token_kind: await this.#tokenKind(tx, submission.org_id, token_id),
+      }))),
+    });
+    if (!sameAuthorityRefs(prepared.run_authorization.authority_refs, currentBase.authority_refs)) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const currentApp = await this.#captureAppVector(tx, {
+      org_id: submission.org_id,
+      initiating_actor: submission.initiating_actor,
+      execution_actor: submission.execution_actor,
+      installation_id: submission.origin.installation_id,
+      app_version_id: submission.origin.app_version_id,
+      binding_key: submission.origin.binding_key,
+      grant_snapshot_id: submission.origin.grant_snapshot_id,
+      provider_instance_id: submission.operation.provider.provider_instance_id,
+      provider_snapshot_id: prepared.provider.snapshot_id,
+      provider_snapshot_digest: submission.provider_snapshot_digest,
+      operation_name: submission.operation.operation_name,
+      policy: submission.policy,
+      base_authorization: currentBase,
+      caller_surface: prepared.caller_surface,
+      resource_refs: prepared.resources.map((resource) => resource.ref),
+      relation_refs: prepared.relations.map((relation) => ({
+        source_ref: relation.source_ref,
+        relation_key: relation.relation_key,
+        selected_ref: relation.selected_ref,
+      })),
+    });
+    const preparedRefs = projectPreparedAppAuthorityRefs(prepared);
+    const currentRefs = projectPreparedAppAuthorityRefs(currentApp);
+    if (!sameAuthorityRefs(preparedRefs, currentRefs)) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    return AppRunAuthorizationSnapshotSchema.parse({
+      ...currentBase,
+      authority_refs: [...currentBase.authority_refs, ...currentRefs],
+    });
+  }
+
   async authorizeApproval(input: Readonly<{
     org_id: string;
     run: AppRunSafeView;
@@ -139,10 +293,30 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   async authorizeApprovalInTransaction(
     tx: AppRunTransaction,
     run: AppRunSafeView,
+    now: Date = new Date(),
   ): Promise<boolean> {
+    // Approval is the execution release boundary. Reuse the prepare-stage
+    // authorizer so an employee budget slot is reserved atomically before the
+    // approval and attempt are committed; a later scheduler call can then only
+    // observe that same reservation.
+    return this.authorizeExecution({
+      org_id: run.org_id,
+      run,
+      tx,
+      stage: 'prepare',
+      now,
+    });
+  }
+
+  async authorizeDelivery(input: Readonly<{
+    org_id: string;
+    run: AppRunSafeView;
+  }>): Promise<boolean> {
     try {
-      const internal = await this.#loadInternalRun(tx, run.org_id, run.id);
-      return internal !== null && await this.#matchesLiveState(tx, run, internal);
+      return await db.transaction(async (tx) => {
+        const internal = await this.#loadInternalRun(tx, input.org_id, input.run.id);
+        return internal !== null && await this.#matchesLiveState(tx, input.run, internal);
+      });
     } catch {
       return false;
     }
@@ -213,6 +387,11 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     const [row] = await tx.select({
       authorization_snapshot: appRuns.authorization_snapshot,
       provider_snapshot_id: appRuns.provider_snapshot_id,
+      origin_app_installation_id: appRuns.origin_app_installation_id,
+      origin_app_version_id: appRuns.origin_app_version_id,
+      origin_app_binding_key: appRuns.origin_app_binding_key,
+      origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
+      safe_preview: appRuns.safe_preview,
       budget_reserved_at: appRuns.budget_reserved_at,
       budget_reserved_count: appRuns.budget_reserved_count,
       budget_limit_at_reservation: appRuns.budget_limit_at_reservation,
@@ -231,7 +410,12 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || actorIdentity(stored.authenticated_subject) !== run.initiating_actor_id
     ) return false;
 
-    const tokenAuthorities = stored.authority_refs
+    const storedBaseRefs = stored.authority_refs.filter((ref) => !isAppAuthorityRef(ref));
+    const storedAppRefs = stored.authority_refs.filter(isAppAuthorityRef);
+    const surfaceRef = storedAppRefs.find((ref) => ref.authority_kind === 'app_surface');
+    const surface = surfaceRef ? AppRunCallerSurfaceSchema.parse(surfaceRef.authority_id) : null;
+    if ((run.origin_kind === 'app') !== (surface !== null)) return false;
+    const tokenAuthorities = storedBaseRefs
       .filter((ref) => ref.authority_kind === 'token_scope')
       .map((ref) => ({ token_id: ref.authority_id }));
     const current = await this.#capture(tx, {
@@ -247,12 +431,414 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         review_scope: run.review_scope,
         retry_class: run.retry_class,
       },
+      required_token_scopes: surface?.endsWith(':mcp') ? ['read:modules'] : [],
       token_authorities: await Promise.all(tokenAuthorities.map(async ({ token_id }) => ({
         token_id,
         token_kind: await this.#tokenKind(tx, run.org_id, token_id),
       }))),
     });
-    return sameAuthorityRefs(stored.authority_refs, current.authority_refs);
+    if (!sameAuthorityRefs(storedBaseRefs, current.authority_refs)) return false;
+    if (!surface) return storedAppRefs.length === 0;
+    const currentApp = await this.#captureAppVectorFromRun(
+      tx,
+      run,
+      internal,
+      current,
+      surface,
+      storedAppRefs,
+    );
+    return sameAuthorityRefs(storedAppRefs, projectPreparedAppAuthorityRefs(currentApp));
+  }
+
+  async #captureAppVectorFromRun(
+    tx: AppRunTransaction,
+    run: AppRunSafeView,
+    internal: InternalRunAuthorization,
+    baseAuthorization: AppRunAuthorizationSnapshot,
+    callerSurface: z.infer<typeof AppRunCallerSurfaceSchema>,
+    storedAppRefs: readonly AuthorityRef[],
+  ): Promise<AppRunPreparedAuthorityVector> {
+    if (
+      !internal.origin_app_installation_id
+      || !internal.origin_app_version_id
+      || !internal.origin_app_binding_key
+      || !internal.origin_app_grant_snapshot_id
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const preview = AppRunSafePreviewSchema.parse(internal.safe_preview);
+    const resourceRefs = preview.resource_refs.map((resource) => {
+      const match = /^module:([^:]+):([^:]+)$/u.exec(resource.resource_kind);
+      if (!match) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      return ModuleResourceRefV1Schema.parse({
+        schema_version: RESOURCE_CONTRACT_VERSIONS.ref,
+        provider: { kind: 'module', provider_instance_id: match[1] },
+        resource_type: match[2],
+        resource_id: resource.resource_id,
+      });
+    });
+    if (resourceRefs.length < 2) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const relationRefs = await this.#relationRefsFromStored(
+      tx,
+      run.org_id,
+      resourceRefs,
+      storedAppRefs.filter((ref) => ref.authority_kind === 'relation'),
+    );
+    const [snapshot] = await tx.select({
+      snapshot_digest: capabilityProviderSnapshots.snapshot_digest,
+    }).from(capabilityProviderSnapshots).where(and(
+      eq(capabilityProviderSnapshots.org_id, run.org_id),
+      eq(capabilityProviderSnapshots.id, internal.provider_snapshot_id),
+    )).limit(1);
+    if (!snapshot) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    return this.#captureAppVector(tx, {
+      org_id: run.org_id,
+      initiating_actor: runActor(run.initiating_actor_type, run.initiating_actor_id),
+      execution_actor: runActor(run.execution_actor_type, run.execution_actor_id),
+      installation_id: internal.origin_app_installation_id,
+      app_version_id: internal.origin_app_version_id,
+      binding_key: internal.origin_app_binding_key,
+      grant_snapshot_id: internal.origin_app_grant_snapshot_id,
+      provider_instance_id: run.provider_instance_id,
+      provider_snapshot_id: internal.provider_snapshot_id,
+      provider_snapshot_digest: snapshot.snapshot_digest,
+      operation_name: run.operation_name,
+      policy: {
+        risk_class: run.risk_class,
+        review_requirement: run.review_requirement,
+        review_scope: run.review_scope,
+        retry_class: run.retry_class,
+      },
+      base_authorization: baseAuthorization,
+      caller_surface: callerSurface,
+      resource_refs: resourceRefs,
+      relation_refs: relationRefs,
+    });
+  }
+
+  async #relationRefsFromStored(
+    tx: AppRunTransaction,
+    orgId: string,
+    resources: readonly ModuleResourceRefV1[],
+    stored: readonly AuthorityRef[],
+  ): Promise<AppVectorCaptureInput['relation_refs']> {
+    const source = resources[0]!;
+    const targets = new Map(resources.slice(1).map((ref) => [appResourceAuthorityId(ref), ref]));
+    const sets = await tx.select().from(resourceRelationSets).where(and(
+      eq(resourceRelationSets.org_id, orgId),
+      eq(resourceRelationSets.source_provider_kind, source.provider.kind),
+      eq(resourceRelationSets.source_provider_instance_id, source.provider.provider_instance_id),
+      eq(resourceRelationSets.source_resource_type, source.resource_type),
+      eq(resourceRelationSets.source_resource_id, source.resource_id),
+    ));
+    if (sets.length === 0) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const edges = await tx.select().from(resourceRelationEdges).where(and(
+      eq(resourceRelationEdges.org_id, orgId),
+      inArray(resourceRelationEdges.relation_set_id, sets.map((set) => set.id)),
+      eq(resourceRelationEdges.is_deleted, false),
+    ));
+    const expectedIds = new Set(stored.map((ref) => ref.authority_id));
+    const result: Array<AppVectorCaptureInput['relation_refs'][number]> = [];
+    for (const set of sets) {
+      for (const edge of edges.filter((candidate) => candidate.relation_set_id === set.id)) {
+        const selected = ModuleResourceRefV1Schema.safeParse({
+          schema_version: RESOURCE_CONTRACT_VERSIONS.ref,
+          provider: {
+            kind: edge.target_provider_kind,
+            provider_instance_id: edge.target_provider_instance_id,
+          },
+          resource_type: edge.target_resource_type,
+          resource_id: edge.target_resource_id,
+        });
+        if (!selected.success || !targets.has(appResourceAuthorityId(selected.data))) continue;
+        const relation = {
+          source_ref: source,
+          relation_key: set.relation_key,
+          selected_ref: selected.data,
+        };
+        if (expectedIds.has(appRelationAuthorityId(relation))) result.push(relation);
+      }
+    }
+    if (result.length !== stored.length) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    return result;
+  }
+
+  async #captureAppVector(
+    tx: AppRunTransaction,
+    input: AppVectorCaptureInput,
+  ): Promise<AppRunPreparedAuthorityVector> {
+    const hasToken = input.base_authorization.authority_refs.some(
+      (ref) => ref.authority_kind === 'token_scope',
+    );
+    if (
+      !actorMatchesSurface(input.initiating_actor, input.caller_surface, hasToken)
+      || !actorMatchesSurface(input.execution_actor, input.caller_surface, hasToken)
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    if (input.initiating_actor.actor_type === 'human') {
+      const [member] = await tx.select({ role: orgMembers.role }).from(orgMembers).where(and(
+        eq(orgMembers.org_id, input.org_id),
+        eq(orgMembers.user_id, input.initiating_actor.user_id),
+        eq(orgMembers.is_active, true),
+      )).limit(1);
+      if (!member || member.role === 'guest') throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+
+    const [installation] = await tx.select().from(appInstallations).where(and(
+      eq(appInstallations.org_id, input.org_id),
+      eq(appInstallations.id, input.installation_id),
+      eq(appInstallations.state, 'active'),
+      eq(appInstallations.active_version_id, input.app_version_id),
+      eq(appInstallations.active_grant_snapshot_id, input.grant_snapshot_id),
+      eq(appInstallations.active_grant_snapshot_kind, 'effective'),
+    )).limit(1);
+    const [version] = await tx.select().from(appVersions).where(and(
+      eq(appVersions.org_id, input.org_id),
+      eq(appVersions.installation_id, input.installation_id),
+      eq(appVersions.id, input.app_version_id),
+      eq(appVersions.protocol_version, '1'),
+      eq(appVersions.state, 'active'),
+    )).limit(1);
+    const [grant] = await tx.select().from(appGrantSnapshots).where(and(
+      eq(appGrantSnapshots.org_id, input.org_id),
+      eq(appGrantSnapshots.app_installation_id, input.installation_id),
+      eq(appGrantSnapshots.app_version_id, input.app_version_id),
+      eq(appGrantSnapshots.id, input.grant_snapshot_id),
+      eq(appGrantSnapshots.snapshot_kind, 'effective'),
+    )).limit(1);
+    const [binding] = await tx.select().from(appActionBindings).where(and(
+      eq(appActionBindings.org_id, input.org_id),
+      eq(appActionBindings.app_installation_id, input.installation_id),
+      eq(appActionBindings.app_version_id, input.app_version_id),
+      eq(appActionBindings.grant_snapshot_id, input.grant_snapshot_id),
+      eq(appActionBindings.action_key, input.binding_key),
+      eq(appActionBindings.provider_kind, 'mcp'),
+      eq(appActionBindings.mcp_connection_id, input.provider_instance_id),
+      eq(appActionBindings.provider_snapshot_id, input.provider_snapshot_id),
+      eq(appActionBindings.operation_name, input.operation_name),
+    )).limit(1);
+    if (!installation || !version || !grant || !binding) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    if (
+      grant.snapshot_digest !== digestAppGrantValue(grant.canonical_snapshot)
+      || grant.manifest_digest !== version.manifest_digest
+      || grant.package_digest !== version.package_digest
+      || binding.binding_digest !== digestAppGrantValue(binding.canonical_binding)
+      || binding.risk_class !== input.policy.risk_class
+      || binding.review_requirement !== input.policy.review_requirement
+      || binding.review_scope !== input.policy.review_scope
+      || binding.retry_class !== input.policy.retry_class
+      || binding.retention_class !== 'standard'
+      || binding.automation_eligibility !== 'forbidden'
+      || binding.provider_idempotency_key_required !== true
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+
+    const [providerSnapshot] = await tx.select().from(capabilityProviderSnapshots).where(and(
+      eq(capabilityProviderSnapshots.org_id, input.org_id),
+      eq(capabilityProviderSnapshots.id, input.provider_snapshot_id),
+      eq(capabilityProviderSnapshots.provider_kind, 'mcp'),
+      eq(capabilityProviderSnapshots.provider_instance_id, input.provider_instance_id),
+      eq(capabilityProviderSnapshots.snapshot_digest, input.provider_snapshot_digest),
+    )).limit(1);
+    if (!providerSnapshot) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const snapshot = CapabilityProviderDiscoverySnapshotSchema.parse(providerSnapshot.safe_snapshot);
+    const operation = snapshot.operations.find(
+      (candidate) => candidate.identity.operation_name === input.operation_name,
+    );
+    if (
+      snapshot.snapshot_digest !== providerSnapshot.snapshot_digest
+      || !operation
+      || operation.schema_digest !== binding.operation_schema_digest
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+
+    const dependencyRows = await tx.select().from(appDependencyLocks).where(and(
+      eq(appDependencyLocks.org_id, input.org_id),
+      eq(appDependencyLocks.app_installation_id, input.installation_id),
+      eq(appDependencyLocks.app_version_id, input.app_version_id),
+      eq(appDependencyLocks.grant_snapshot_id, input.grant_snapshot_id),
+      eq(appDependencyLocks.grant_snapshot_kind, 'effective'),
+    ));
+    const dependencies: AppRunPreparedAuthorityVector['dependencies'][number][] = [];
+    for (const dependency of dependencyRows) {
+      const [current] = await tx.select().from(appInstallations).where(and(
+        eq(appInstallations.org_id, input.org_id),
+        eq(appInstallations.id, dependency.dependency_installation_id),
+        eq(appInstallations.app_id, dependency.required_app_id),
+        eq(appInstallations.state, 'active'),
+        eq(appInstallations.active_version_id, dependency.dependency_version_id),
+        eq(appInstallations.lifecycle_epoch, dependency.dependency_lifecycle_epoch),
+      )).limit(1);
+      const [dependencyVersion] = await tx.select().from(appVersions).where(and(
+        eq(appVersions.org_id, input.org_id),
+        eq(appVersions.installation_id, dependency.dependency_installation_id),
+        eq(appVersions.id, dependency.dependency_version_id),
+        eq(appVersions.manifest_digest, dependency.dependency_manifest_digest),
+        eq(appVersions.package_digest, dependency.dependency_package_digest),
+        eq(appVersions.state, 'active'),
+      )).limit(1);
+      if (
+        !current
+        || !dependencyVersion
+        || dependency.lock_digest !== digestAppGrantValue(dependency.canonical_lock)
+      ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      dependencies.push({
+        dependency_key: dependency.dependency_key,
+        installation_id: dependency.dependency_installation_id,
+        version_id: dependency.dependency_version_id,
+        lifecycle_epoch: dependency.dependency_lifecycle_epoch,
+        lock_digest: dependency.lock_digest,
+      });
+    }
+    dependencies.sort((left, right) => left.dependency_key.localeCompare(right.dependency_key));
+
+    const manifest = DeftAppManifestV1Schema.parse(version.manifest);
+    const dependencyByKey = new Map(dependencyRows.map((row) => [row.dependency_key, row]));
+    const resourceAncestry = new Set<string>();
+    for (const requirement of manifest.resource_requirements) {
+      const dependency = requirement.source.kind === 'dependency_module'
+        ? dependencyByKey.get(requirement.source.dependency_key)
+        : undefined;
+      const ownerInstallationId = requirement.source.kind === 'included_module'
+        ? installation.id
+        : dependency?.dependency_installation_id;
+      const ownerVersionId = requirement.source.kind === 'included_module'
+        ? version.id
+        : dependency?.dependency_version_id;
+      if (!ownerInstallationId || !ownerVersionId) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      const [moduleBinding] = await tx.select({
+        module_installation_id: appModuleBindings.module_installation_id,
+        version: moduleVersions.version,
+        is_active: moduleVersions.is_active,
+      }).from(appModuleBindings).innerJoin(moduleVersions, and(
+        eq(moduleVersions.org_id, appModuleBindings.org_id),
+        eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+        eq(moduleVersions.id, appModuleBindings.module_version_id),
+      )).where(and(
+        eq(appModuleBindings.org_id, input.org_id),
+        eq(appModuleBindings.app_installation_id, ownerInstallationId),
+        eq(appModuleBindings.app_version_id, ownerVersionId),
+        eq(appModuleBindings.module_id, requirement.source.module_id),
+      )).limit(1);
+      if (
+        !moduleBinding
+        || !moduleBinding.is_active
+        || moduleBinding.version !== requirement.source.version
+      ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      resourceAncestry.add(
+        `${moduleBinding.module_installation_id}\0${requirement.resource_type}`,
+      );
+    }
+
+    const resources: AppRunPreparedAuthorityVector['resources'][number][] = [];
+    for (const ref of input.resource_refs) {
+      if (!resourceAncestry.has(`${ref.provider.provider_instance_id}\0${ref.resource_type}`)) {
+        throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      }
+      const [moduleInstallation] = await tx.select().from(moduleInstallations).where(and(
+        eq(moduleInstallations.org_id, input.org_id),
+        eq(moduleInstallations.id, ref.provider.provider_instance_id),
+        eq(moduleInstallations.is_enabled, true),
+        eq(moduleInstallations.is_deleted, false),
+      )).limit(1);
+      const [activeVersion] = await tx.select().from(moduleVersions).where(and(
+        eq(moduleVersions.org_id, input.org_id),
+        eq(moduleVersions.installation_id, ref.provider.provider_instance_id),
+        eq(moduleVersions.is_active, true),
+      )).limit(1);
+      const [record] = await tx.select().from(moduleRecords).where(and(
+        eq(moduleRecords.org_id, input.org_id),
+        eq(moduleRecords.installation_id, ref.provider.provider_instance_id),
+        eq(moduleRecords.collection_key, ref.resource_type),
+        eq(moduleRecords.id, ref.resource_id),
+        eq(moduleRecords.is_deleted, false),
+      )).limit(1);
+      if (!moduleInstallation || !activeVersion || !record) {
+        throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      }
+      if (
+        (input.caller_surface === 'defty' || input.caller_surface.startsWith('agent_employee:'))
+        && moduleInstallation.agent_access === 'none'
+      ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      const [validatedVersion] = await tx.select().from(moduleVersions).where(and(
+        eq(moduleVersions.org_id, input.org_id),
+        eq(moduleVersions.installation_id, ref.provider.provider_instance_id),
+        eq(moduleVersions.id, record.validated_version_id),
+      )).limit(1);
+      if (!validatedVersion) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      resources.push({
+        ref,
+        revision: record.revision,
+        active_manifest_digest: activeVersion.manifest_digest,
+        validated_manifest_digest: validatedVersion.manifest_digest,
+        updated_at: record.updated_at.toISOString(),
+      });
+    }
+    resources.sort((left, right) => appResourceAuthorityId(left.ref).localeCompare(
+      appResourceAuthorityId(right.ref),
+    ));
+
+    const resourceIds = new Set(resources.map((resource) => appResourceAuthorityId(resource.ref)));
+    const relations: AppRunPreparedAuthorityVector['relations'][number][] = [];
+    for (const relation of input.relation_refs) {
+      if (
+        !resourceIds.has(appResourceAuthorityId(relation.source_ref))
+        || !resourceIds.has(appResourceAuthorityId(relation.selected_ref))
+      ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      const [set] = await tx.select().from(resourceRelationSets).where(and(
+        eq(resourceRelationSets.org_id, input.org_id),
+        eq(resourceRelationSets.source_provider_kind, relation.source_ref.provider.kind),
+        eq(resourceRelationSets.source_provider_instance_id, relation.source_ref.provider.provider_instance_id),
+        eq(resourceRelationSets.source_resource_type, relation.source_ref.resource_type),
+        eq(resourceRelationSets.source_resource_id, relation.source_ref.resource_id),
+        eq(resourceRelationSets.relation_key, relation.relation_key),
+      )).limit(1);
+      if (!set) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      const [edge] = await tx.select({ id: resourceRelationEdges.id }).from(resourceRelationEdges).where(and(
+        eq(resourceRelationEdges.org_id, input.org_id),
+        eq(resourceRelationEdges.relation_set_id, set.id),
+        eq(resourceRelationEdges.target_provider_kind, relation.selected_ref.provider.kind),
+        eq(resourceRelationEdges.target_provider_instance_id, relation.selected_ref.provider.provider_instance_id),
+        eq(resourceRelationEdges.target_resource_type, relation.selected_ref.resource_type),
+        eq(resourceRelationEdges.target_resource_id, relation.selected_ref.resource_id),
+        eq(resourceRelationEdges.is_deleted, false),
+      )).limit(1);
+      if (!edge) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      relations.push({ ...relation, revision: set.revision });
+    }
+    relations.sort((left, right) => appRelationAuthorityId(left).localeCompare(
+      appRelationAuthorityId(right),
+    ));
+
+    return {
+      schema_version: 'deft.app_action_authority.v1',
+      caller_surface: input.caller_surface,
+      installation: {
+        id: installation.id,
+        lifecycle_epoch: installation.lifecycle_epoch,
+        grant_epoch: installation.grant_epoch,
+      },
+      app_version: {
+        id: version.id,
+        manifest_digest: version.manifest_digest,
+        package_digest: version.package_digest,
+      },
+      grant: { id: grant.id, snapshot_digest: grant.snapshot_digest },
+      binding: {
+        id: binding.id,
+        action_key: binding.action_key,
+        binding_digest: binding.binding_digest,
+        connector_authorization_version: binding.connector_authorization_version,
+      },
+      dependencies,
+      provider: {
+        connection_id: binding.mcp_connection_id,
+        snapshot_id: binding.provider_snapshot_id,
+        snapshot_digest: providerSnapshot.snapshot_digest,
+        operation_name: binding.operation_name,
+        operation_schema_digest: binding.operation_schema_digest,
+      },
+      run_authorization: input.base_authorization,
+      resources,
+      relations,
+    };
   }
 
   async #capture(

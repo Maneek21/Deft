@@ -67,6 +67,19 @@ test('legacy MCP cutover flag has only the two intake-boundary consumers', async
   assert.deepEqual(consumers.sort(), expectedConsumers);
 });
 
+test('App-origin Run intake flag defaults in env and is consumed only by Run composition', async () => {
+  const consumers: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    if (sourcePath === 'lib/env.ts') continue;
+    const source = await readFile(path, 'utf8');
+    if (/\b(?:DEFT_APP_RUN_APP_ORIGIN_ENABLED|APP_RUN_APP_ORIGIN_ENABLED)\b/.test(source)) {
+      consumers.push(sourcePath);
+    }
+  }
+  assert.deepEqual(consumers, ['lib/app-run-runtime.ts']);
+});
+
 test('C5 selects one composed worker-owned attempt entrance through Capability Service', async () => {
   const capabilityService = await readFile(join(sourceRoot, 'lib/capability-service.ts'), 'utf8');
   const worker = await readFile(join(sourceRoot, 'workers/index.ts'), 'utf8');
@@ -107,8 +120,19 @@ test('only the MCP adapter calls the low-level client and governed execution is 
 
   const provider = await readFile(join(sourceRoot, 'lib/capability-providers/mcp.ts'), 'utf8');
   const executor = await readFile(join(sourceRoot, 'lib/app-run-provider-executor.ts'), 'utf8');
+  const capabilityService = await readFile(join(sourceRoot, 'lib/capability-service.ts'), 'utf8');
+  const attemptRunner = await readFile(join(sourceRoot, 'lib/app-run-attempt-runner.ts'), 'utf8');
+  const mcpRuntime = await readFile(join(sourceRoot, 'lib/mcp-runtime.ts'), 'utf8');
   assert.match(provider, /resolvePinnedExecutable/);
   assert.match(provider, /provider_instance_id/);
+  assert.match(provider, /discoverToolDiscovery\(config\)/);
+  assert.match(provider, /snapshot\.snapshot_digest !== request\.dispatch_pin\.provider_snapshot_digest/);
+  assert.match(provider, /operation\.schema_digest !== request\.dispatch_pin\.operation_schema_digest/);
+  assert.match(executor, /capabilityService\.invokePinned\(request\)/);
+  assert.match(capabilityService, /this\.mcpProvider\.executePinned/);
+  assert.match(attemptRunner, /loadAppProviderDispatchPin/);
+  assert.match(attemptRunner, /dispatch_pin: boundary\.dispatch_pin/);
+  assert.match(mcpRuntime, /app_run_authorization_version, expectedAuthorizationVersion/);
   assert.doesNotMatch(executor, /connection_slug/);
   assert.doesNotMatch(executor, /mcpClientManager/);
 });

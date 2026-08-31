@@ -44,7 +44,7 @@ import { closeDb } from '../src/lib/db.js';
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
 if (!DATABASE_URL) throw new Error('App Run engine DB tests require DEFT_TEST_DATABASE_URL');
-if (process.env.CI !== 'true' && !/phase3|test|ci|acceptance/i.test(new URL(DATABASE_URL).pathname)) {
+if (process.env.CI !== 'true' && !/phase3|phase5|test|ci|acceptance/i.test(new URL(DATABASE_URL).pathname)) {
   throw new Error('App Run engine DB tests require an explicitly disposable database');
 }
 
@@ -57,9 +57,21 @@ const digest = `sha256:${'a'.repeat(64)}`;
 const { Client } = pg;
 let client: pg.Client;
 const providers: EnvironmentAppRunKeyProvider[] = [];
+const retainedEncryptionKeyIds = new Set<string>();
+const retainedSigningKeyIds = new Set<string>();
+const retainedFingerprintKeyIds = new Set<string>();
 
 function key(seed: number): string {
   return Buffer.alloc(32, seed).toString('base64');
+}
+
+function retainedKeys(ids: ReadonlySet<string>, seed: number, exclude: ReadonlySet<string> = new Set()) {
+  // This suite shares a retained disposable database. Foreign-org rows are
+  // never decrypted here, but the production startup guard correctly requires
+  // every referenced key ID to remain present.
+  return Object.fromEntries([...ids]
+    .filter((keyId) => !exclude.has(keyId))
+    .map((keyId) => [keyId, key(seed)]));
 }
 
 function keyProvider(
@@ -68,11 +80,25 @@ function keyProvider(
 ): EnvironmentAppRunKeyProvider {
   const provider = parseEnvironmentAppRunKeyrings(JSON.stringify({
     schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
-    run_encryption: { current: 'enc-v1', keys: { 'enc-v1': key(1) } },
-    receipt_signing: { current: 'sig-v1', keys: { 'sig-v1': key(2) } },
+    run_encryption: {
+      current: 'enc-v1',
+      keys: { ...retainedKeys(retainedEncryptionKeyIds, 11), 'enc-v1': key(1) },
+    },
+    receipt_signing: {
+      current: 'sig-v1',
+      keys: { ...retainedKeys(retainedSigningKeyIds, 12), 'sig-v1': key(2) },
+    },
     fingerprint: {
       current: fingerprintCurrent,
-      keys: includeOld ? { 'fp-v1': key(3), 'fp-old': key(4) } : { 'fp-v1': key(3) },
+      keys: {
+        ...retainedKeys(
+          retainedFingerprintKeyIds,
+          13,
+          includeOld ? new Set() : new Set(['fp-old']),
+        ),
+        'fp-v1': key(3),
+        ...(includeOld ? { 'fp-old': key(4) } : {}),
+      },
     },
   }));
   providers.push(provider);
@@ -146,6 +172,17 @@ const trusted = {
 before(async () => {
   client = new Client({ connectionString: DATABASE_URL });
   await client.connect();
+  const [encryptionRefs, signingRefs, fingerprintRefs] = await Promise.all([
+    client.query<{ key_version: string }>('SELECT DISTINCT key_version FROM app_run_secret_payloads'),
+    client.query<{ key_version: string }>('SELECT DISTINCT signing_key_version AS key_version FROM app_run_receipts'),
+    client.query<{ key_version: string }>(`
+      SELECT idempotency_key_version AS key_version FROM app_runs
+      UNION SELECT input_fingerprint_key_version AS key_version FROM app_runs
+    `),
+  ]);
+  for (const row of encryptionRefs.rows) retainedEncryptionKeyIds.add(row.key_version);
+  for (const row of signingRefs.rows) retainedSigningKeyIds.add(row.key_version);
+  for (const row of fingerprintRefs.rows) retainedFingerprintKeyIds.add(row.key_version);
   await client.query('INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)', [ORG_ID, 'App Run Test', ORG_ID]);
   await client.query(
     'INSERT INTO users (id, email, name) VALUES ($1, $2, $3)',
@@ -173,7 +210,7 @@ after(async () => {
   await closeDb();
 });
 
-test('App-origin submission remains service- and database-denied', async () => {
+test('raw App-origin submission remains service-denied and incomplete database ancestry is rejected', async () => {
   const setup = service();
   const beforeCount = await client.query<{ count: string }>(
     'SELECT count(*) FROM app_runs WHERE org_id = $1',
@@ -220,7 +257,7 @@ test('App-origin submission remains service- and database-denied', async () => {
       [ORG_ID, forbiddenId, randomUUID(), randomUUID(), randomUUID(), legitimate.id],
     ),
     (error: any) => error?.code === '23514'
-      && error?.constraint === 'app_runs_app_origin_disabled_check',
+      && error?.constraint === 'app_runs_app_origin_coherence_check',
   );
 });
 
@@ -316,14 +353,27 @@ function receiptRotationKeyProvider(
 ): EnvironmentAppRunKeyProvider {
   const provider = parseEnvironmentAppRunKeyrings(JSON.stringify({
     schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
-    run_encryption: { current: 'enc-v1', keys: { 'enc-v1': key(1) } },
+    run_encryption: {
+      current: 'enc-v1',
+      keys: { ...retainedKeys(retainedEncryptionKeyIds, 11), 'enc-v1': key(1) },
+    },
     receipt_signing: {
       current,
       keys: includeV1
-        ? { 'sig-v1': key(2), 'sig-v2': key(5) }
-        : { 'sig-v2': key(5) },
+        ? { ...retainedKeys(retainedSigningKeyIds, 12), 'sig-v1': key(2), 'sig-v2': key(5) }
+        : {
+            ...retainedKeys(retainedSigningKeyIds, 12, new Set(['sig-v1'])),
+            'sig-v2': key(5),
+          },
     },
-    fingerprint: { current: 'fp-v1', keys: { 'fp-v1': key(3), 'fp-old': key(4) } },
+    fingerprint: {
+      current: 'fp-v1',
+      keys: {
+        ...retainedKeys(retainedFingerprintKeyIds, 13),
+        'fp-v1': key(3),
+        'fp-old': key(4),
+      },
+    },
   }));
   providers.push(provider);
   return provider;
@@ -478,6 +528,53 @@ test('live authority revocation is sticky and the execution budget is reserved e
     setup.repository, setup.secretRepository, setup.secrets, executor, live,
   );
   assert.equal(await runner.prepareAttempt(ORG_ID, stale.id), null);
+
+  const exhaustedApproval = await setup.service.submit(
+    liveTrusted,
+    await liveSubmission(`live-exhausted-approval-${suffix}`, alwaysPolicy),
+  );
+  const [exhaustedAction] = (await client.query<{ id: string }>(
+    `SELECT id FROM agent_actions WHERE org_id = $1 AND app_run_id = $2`,
+    [ORG_ID, exhaustedApproval.id],
+  )).rows;
+  assert.ok(exhaustedAction);
+  await client.query(
+    `UPDATE agent_employees SET daily_action_count = max_daily_actions WHERE id = $1`,
+    [employeeId],
+  );
+  const exhaustedResolver = new PostgresAppRunApprovalResolver(
+    setup.repository,
+    live,
+    () => new Date(),
+    undefined,
+    undefined,
+    runner,
+  );
+  assert.equal((await exhaustedResolver.approve(exhaustedAction.id, USER_ID)).status, 'error');
+  const exhaustedState = await client.query<{
+    run_state: string;
+    action_state: string;
+    execution_release_kind: string | null;
+    budget_reserved_count: number | null;
+    attempts: string;
+  }>(
+    `SELECT r.state AS run_state, a.approval_status AS action_state,
+            r.execution_release_kind, r.budget_reserved_count,
+            (SELECT count(*) FROM app_run_attempts x
+              WHERE x.org_id = r.org_id AND x.run_id = r.id) AS attempts
+       FROM app_runs r JOIN agent_actions a
+         ON a.org_id = r.org_id AND a.app_run_id = r.id
+      WHERE r.org_id = $1 AND r.id = $2`,
+    [ORG_ID, exhaustedApproval.id],
+  );
+  assert.deepEqual(exhaustedState.rows[0], {
+    run_state: 'expired',
+    action_state: 'expired',
+    execution_release_kind: null,
+    budget_reserved_count: null,
+    attempts: '0',
+  });
+  await client.query(`UPDATE agent_employees SET daily_action_count = 0 WHERE id = $1`, [employeeId]);
 
   const fresh = await setup.service.submit(
     liveTrusted,

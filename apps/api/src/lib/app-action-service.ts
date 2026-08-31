@@ -54,7 +54,11 @@ import {
   PostgresAppRunLiveAuthorization,
   type AppRunAuthorizationCapture,
 } from './app-run-live-authorization.js';
-import type { AppRunPreparedInputCandidate } from './app-run-prepared-input.js';
+import type {
+  AppRunPreparedInputCandidate,
+  AppRunPreparedInputPayload,
+} from './app-run-prepared-input.js';
+import type { AppRunSafeView } from './app-run-repository.js';
 import { isMcpToolEnabled } from './mcp-tool-identity.js';
 import { readModuleRecordScalarFields } from './module-service.js';
 import { resourceAuthorizationService } from './resource-provider-adapters.js';
@@ -178,6 +182,14 @@ export type AppActionPrepareResult = Readonly<{
   authority_digest: `sha256:${string}`;
 }>;
 
+export type AppActionPrepareInput = Readonly<{
+  binding_id: string;
+  resource_ref: unknown;
+  selections?: readonly Readonly<{ input_key: string; resource_ref: unknown }>[];
+  user_inputs?: Readonly<Record<string, string>>;
+  idempotency_key: string;
+}>;
+
 type ActionContext = Readonly<{
   installation: InstallationRow;
   version: VersionRow;
@@ -232,7 +244,29 @@ export interface AppActionPreparedInputPort {
       binding_digest: string;
     }>;
     provider_input: unknown;
+    app_run?: Readonly<{
+      initiating_actor: AppRunActor;
+      execution_actor: AppRunActor;
+      safe_preview: unknown;
+      authority_vector: unknown;
+      authority_digest: string;
+    }>;
   }>): Promise<AppRunPreparedInputCandidate> | AppRunPreparedInputCandidate;
+  open(
+    orgId: string,
+    candidate: AppRunPreparedInputCandidate,
+  ): Promise<AppRunPreparedInputPayload> | AppRunPreparedInputPayload;
+}
+
+export interface AppActionRunPort {
+  submitPreparedApp(
+    context: Readonly<{
+      org_id: string;
+      initiating_actor: AppRunActor;
+      execution_actor: AppRunActor;
+    }>,
+    candidate: AppRunPreparedInputCandidate,
+  ): Promise<AppRunSafeView>;
 }
 
 export interface AppActionFieldReaderPort {
@@ -259,6 +293,23 @@ const lazyPreparedInput: AppActionPreparedInputPort = Object.freeze({
     const { getAppRunRuntime } = await import('./app-run-runtime.js');
     return (await getAppRunRuntime()).inputPreparation.protect(input);
   },
+  async open(
+    orgId: Parameters<AppActionPreparedInputPort['open']>[0],
+    candidate: Parameters<AppActionPreparedInputPort['open']>[1],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).inputPreparation.open(orgId, candidate);
+  },
+});
+
+const lazyRuns: AppActionRunPort = Object.freeze({
+  async submitPreparedApp(
+    context: Parameters<AppActionRunPort['submitPreparedApp']>[0],
+    candidate: Parameters<AppActionRunPort['submitPreparedApp']>[1],
+  ) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).service.submitPreparedApp(context, candidate);
+  },
 });
 
 function actionError(message: string, code: 'APP_ACTION_INVALID' | 'APP_ACTION_UNAVAILABLE' | 'APP_ACCESS_DENIED' | 'APP_DEPENDENCY_UNHEALTHY' | 'APP_PROVIDER_UNAVAILABLE' | 'APP_NOT_FOUND' | 'APP_STALE', status: 400 | 403 | 404 | 409 | 503 = 409) {
@@ -267,6 +318,16 @@ function actionError(message: string, code: 'APP_ACTION_INVALID' | 'APP_ACTION_U
 
 function sameCanonical(left: unknown, right: unknown): boolean {
   return canonicalCapabilityJson(left) === canonicalCapabilityJson(right);
+}
+
+function preparedActionFacts(payload: AppRunPreparedInputPayload) {
+  return {
+    schema_version: payload.schema_version,
+    replay_identity: payload.replay_identity,
+    binding_identity: payload.binding_identity,
+    provider_input: payload.provider_input,
+    app_run: payload.app_run,
+  };
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -743,6 +804,7 @@ export class AppActionService {
     private readonly liveAuthority: AppActionLiveAuthorityPort = new PostgresAppRunLiveAuthorization(),
     private readonly preparedInput: AppActionPreparedInputPort = lazyPreparedInput,
     private readonly fieldReader: AppActionFieldReaderPort = defaultFieldReader,
+    private readonly runs: AppActionRunPort = lazyRuns,
   ) {}
 
   async list(callerValue: AppActionCaller, input: Readonly<{ resource_ref: unknown }>): Promise<AppActionListResult> {
@@ -779,13 +841,7 @@ export class AppActionService {
     return resolved.safe;
   }
 
-  async prepare(callerValue: AppActionCaller, input: Readonly<{
-    binding_id: string;
-    resource_ref: unknown;
-    selections?: readonly Readonly<{ input_key: string; resource_ref: unknown }>[];
-    user_inputs?: Readonly<Record<string, string>>;
-    idempotency_key: string;
-  }>): Promise<AppActionPrepareResult> {
+  async prepare(callerValue: AppActionCaller, input: AppActionPrepareInput): Promise<AppActionPrepareResult> {
     const caller = callerContext(callerValue);
     const resolved = await this.#resolve(caller, input);
     const selectionMap = new Map<string, ModuleResourceRefV1>();
@@ -947,6 +1003,13 @@ export class AppActionService {
         binding_digest: resolved.context.binding.binding_digest,
       },
       provider_input: parsedProviderInput.data,
+      app_run: {
+        initiating_actor: caller.authenticated_subject,
+        execution_actor: caller.execution_actor,
+        safe_preview: safePreview,
+        authority_vector: authorityVector,
+        authority_digest: digestAppGrantValue(authorityVector),
+      },
     });
     return Object.freeze({
       action: actionItem(resolved.context),
@@ -956,6 +1019,51 @@ export class AppActionService {
       authority_vector: authorityVector,
       authority_digest: digestAppGrantValue(authorityVector),
     });
+  }
+
+  async invoke(
+    callerValue: AppActionCaller,
+    input: AppActionPrepareInput & Readonly<{ input_candidate: AppRunPreparedInputCandidate }>,
+  ): Promise<AppRunSafeView> {
+    const caller = callerContext(callerValue);
+    let original: AppRunPreparedInputPayload;
+    try {
+      original = await this.preparedInput.open(caller.actor.org_id, input.input_candidate);
+    } catch {
+      throw actionError('Prepared App action input is invalid or expired', 'APP_ACTION_INVALID', 400);
+    }
+    const app = original.app_run;
+    if (
+      !app
+      || app.authority_vector.caller_surface !== caller.surface
+      || !sameCanonical(app.initiating_actor, caller.authenticated_subject)
+      || !sameCanonical(app.execution_actor, caller.execution_actor)
+    ) throw actionError('Prepared App action belongs to a different caller surface', 'APP_ACCESS_DENIED', 403);
+
+    const current = await this.prepare(callerValue, {
+      binding_id: input.binding_id,
+      resource_ref: input.resource_ref,
+      selections: input.selections,
+      user_inputs: input.user_inputs,
+      idempotency_key: input.idempotency_key,
+    });
+    let currentPayload: AppRunPreparedInputPayload;
+    try {
+      currentPayload = await this.preparedInput.open(caller.actor.org_id, current.input_candidate);
+    } catch {
+      throw actionError('Revalidated App action input could not be authenticated', 'APP_STALE');
+    }
+    if (!sameCanonical(preparedActionFacts(original), preparedActionFacts(currentPayload))) {
+      throw actionError('Prepared App action changed before invocation', 'APP_STALE');
+    }
+
+    // submitPreparedApp owns another authenticated open and the in-transaction
+    // re-derivation of every pinned authority. This seam cannot call a provider.
+    return this.runs.submitPreparedApp({
+      org_id: caller.actor.org_id,
+      initiating_actor: caller.authenticated_subject,
+      execution_actor: caller.execution_actor,
+    }, current.input_candidate);
   }
 
   async #captureAuthority(caller: CallerContext, context: ActionContext) {

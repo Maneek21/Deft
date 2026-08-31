@@ -31,6 +31,7 @@ import {
   AppActionService,
   type AppActionCaller,
   type AppActionPreparedInputPort,
+  type AppActionRunPort,
 } from '../src/lib/app-action-service.js';
 import { closeDb, db } from '../src/lib/db.js';
 import {
@@ -44,8 +45,11 @@ import {
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
 import {
   APP_RUN_PREPARED_INPUT_VERSION,
+  projectPreparedAppAuthorityRefs,
   type AppRunPreparedInputCandidate,
+  type AppRunPreparedInputPayload,
 } from '../src/lib/app-run-prepared-input.js';
+import type { AppRunSafeView } from '../src/lib/app-run-repository.js';
 import {
   createModuleRecord,
   deftyModuleActor,
@@ -343,10 +347,45 @@ test('App actions resolve and prepare one reviewed relation identically across f
   });
 
   const protectedInputs: Parameters<AppActionPreparedInputPort['protect']>[0][] = [];
+  const preparedPayloads = new Map<string, AppRunPreparedInputPayload>();
+  const openedCandidates: string[] = [];
   const preparedInput: AppActionPreparedInputPort = {
     protect(input) {
       protectedInputs.push(input);
-      return candidate(`loop4-candidate-${protectedInputs.length}`);
+      const protectedCandidate = candidate(`loop4-candidate-${protectedInputs.length}`);
+      const appRun = input.app_run;
+      preparedPayloads.set(protectedCandidate.candidate_id, {
+        schema_version: APP_RUN_PREPARED_INPUT_VERSION,
+        expires_at: protectedCandidate.expires_at,
+        replay_identity: input.replay_identity,
+        binding_identity: input.binding_identity,
+        provider_input: input.provider_input,
+        ...(appRun ? {
+          app_run: {
+            ...appRun,
+            authority_vector: appRun.authority_vector,
+            authority_refs: projectPreparedAppAuthorityRefs(appRun.authority_vector),
+          },
+        } : {}),
+      } as AppRunPreparedInputPayload);
+      return protectedCandidate;
+    },
+    open(candidateOrgId, protectedCandidate) {
+      assert.equal(candidateOrgId, orgId);
+      openedCandidates.push(protectedCandidate.candidate_id);
+      const payload = preparedPayloads.get(protectedCandidate.candidate_id);
+      if (!payload) throw new Error('Prepared input candidate is unavailable');
+      return payload;
+    },
+  };
+  const submittedRuns: Array<Readonly<{
+    context: Parameters<AppActionRunPort['submitPreparedApp']>[0];
+    candidate: AppRunPreparedInputCandidate;
+  }>> = [];
+  const runs: AppActionRunPort = {
+    async submitPreparedApp(context, protectedCandidate) {
+      submittedRuns.push({ context, candidate: protectedCandidate });
+      return { id: `loop5-run-${submittedRuns.length}` } as AppRunSafeView;
     },
   };
   let fieldReads = 0;
@@ -360,6 +399,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
         return readModuleRecordScalarFields(actor, ref, fieldKeys);
       },
     },
+    runs,
   );
   const sandboxEffect = new Phase4SandboxEmailProvider();
   const callers: ReadonlyArray<Readonly<{ name: string; caller: AppActionCaller }>> = [
@@ -399,6 +439,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
   const beforeEffects = await effectCounts(orgId);
   const semanticResults: Array<Readonly<{ list: unknown; resolve: unknown; preview: unknown }>> = [];
   const replayBySurface = new Map<string, string>();
+  const preparedBySurface = new Map<string, Awaited<ReturnType<AppActionService['prepare']>>>();
   for (const surface of callers) {
     const listed = await service.list(surface.caller, { resource_ref: campaignRef });
     assert.deepEqual(listed.actions.map((item) => item.binding_id), [binding.id]);
@@ -438,6 +479,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
     }
     semanticResults.push({ list: listed, resolve: resolved, preview: prepared.safe_preview });
     replayBySurface.set(surface.name, prepared.replay_identity);
+    preparedBySurface.set(surface.name, prepared);
   }
   for (const result of semanticResults.slice(1)) assert.deepEqual(result, semanticResults[0]);
   assert.equal(replayBySurface.get('defty'), replayBySurface.get('ui'));
@@ -445,6 +487,55 @@ test('App actions resolve and prepare one reviewed relation identically across f
   assert.notEqual(replayBySurface.get('employee'), replayBySurface.get('ui'));
   assert.equal(protectedInputs.length, callers.length);
   assert.equal(fieldReads, callers.length * 2);
+
+  const uiPrepared = preparedBySurface.get('ui');
+  if (!uiPrepared) throw new Error('UI preparation result is missing');
+  const invokeInput = {
+    binding_id: binding.id,
+    resource_ref: campaignRef,
+    selections: [{ input_key: 'to', resource_ref: contactRef }],
+    user_inputs: {},
+    idempotency_key: `loop4-send-${suffix}`,
+    input_candidate: uiPrepared.input_candidate,
+  } as const;
+  const beforeInvokeProtects = protectedInputs.length;
+  const invoked = await service.invoke(callers[0]!.caller, invokeInput);
+  assert.equal(invoked.id, 'loop5-run-1');
+  assert.equal(protectedInputs.length, beforeInvokeProtects + 1, 'invoke must reprepare exactly once');
+  assert.deepEqual(openedCandidates.slice(-2), [
+    uiPrepared.input_candidate.candidate_id,
+    submittedRuns[0]!.candidate.candidate_id,
+  ]);
+  assert.notEqual(submittedRuns[0]!.candidate.candidate_id, uiPrepared.input_candidate.candidate_id);
+  assert.equal(
+    submittedRuns[0]!.candidate.candidate_id,
+    `loop4-candidate-${protectedInputs.length}`,
+    'invoke must submit only the freshly revalidated candidate',
+  );
+  assert.deepEqual(submittedRuns[0]!.context, {
+    org_id: orgId,
+    initiating_actor: { actor_type: 'human', user_id: ownerUserId },
+    execution_actor: { actor_type: 'human', user_id: ownerUserId },
+  });
+
+  let beforeProtect = protectedInputs.length;
+  await assert.rejects(
+    service.invoke(callers[0]!.caller, {
+      ...invokeInput,
+      idempotency_key: `loop4-changed-${suffix}`,
+    }),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_STALE',
+  );
+  assert.equal(protectedInputs.length, beforeProtect + 1, 'stale invoke must still perform one live reprepare');
+  assert.equal(submittedRuns.length, 1, 'a changed prepared input must never reach App Run submission');
+
+  beforeProtect = protectedInputs.length;
+  await assert.rejects(
+    service.invoke(callers[1]!.caller, invokeInput),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_ACCESS_DENIED',
+  );
+  assert.equal(protectedInputs.length, beforeProtect, 'cross-surface candidate use must fail before reprepare');
+  assert.equal(submittedRuns.length, 1);
 
   const prepare = (caller: AppActionCaller, selectedRef: ModuleResourceRefV1 = contactRef) => service.prepare(caller, {
     binding_id: binding.id,
@@ -455,7 +546,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
   });
 
   let beforeReads = fieldReads;
-  let beforeProtect = protectedInputs.length;
+  beforeProtect = protectedInputs.length;
   await assert.rejects(
     prepare(callers[0]!.caller, unrelatedRef),
     (error: unknown) => error instanceof AppError && error.code === 'APP_ACTION_UNAVAILABLE',

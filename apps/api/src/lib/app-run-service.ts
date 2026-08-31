@@ -4,10 +4,12 @@ import {
   APP_RUN_LIMITS,
   AppRunAuthorizationSnapshotSchema,
   AppRunSafeOutcomeSchema,
+  canonicalCapabilityJson,
   idempotencyDeadline,
   parseAppRunSubmission,
   retentionDeadline,
   type AppRunActor,
+  type AppRunAuthorizationSnapshot,
   type AppRunErrorCode,
   type AppRunRetentionClass,
   type AppRunRetryClass,
@@ -49,6 +51,14 @@ import {
   noOpAppRunAttentionProjector,
   type AppRunAttentionProjector,
 } from './app-run-attention.js';
+import type {
+  AppRunPreparedInputCandidate,
+  AppRunPreparedInputPayload,
+} from './app-run-prepared-input.js';
+import { APP_RUN_APP_AUTHORITY_KINDS } from './app-run-prepared-input.js';
+import type {
+  AppRunPreparedAppVerification,
+} from './app-run-live-authorization.js';
 
 export type AppRunTrustedContext = Readonly<{
   org_id: string;
@@ -56,9 +66,37 @@ export type AppRunTrustedContext = Readonly<{
   execution_actor: AppRunActor;
 }>;
 
+export interface AppRunPreparedInputOpener {
+  open(orgId: string, candidate: AppRunPreparedInputCandidate): AppRunPreparedInputPayload;
+}
+
+export interface AppRunPreparedAppAuthorizer {
+  capturePreparedAppInTransaction(
+    tx: Parameters<Parameters<PostgresAppRunRepository['transaction']>[0]>[0],
+    input: AppRunPreparedAppVerification,
+  ): Promise<AppRunAuthorizationSnapshot>;
+  authorizeDelivery(input: Readonly<{
+    org_id: string;
+    run: AppRunSafeView;
+  }>): Promise<boolean>;
+}
+
 function sameActor(left: AppRunActor, right: AppRunActor): boolean {
   return left.actor_type === right.actor_type && appRunActorId(left) === appRunActorId(right);
 }
+
+function canonicalAuthorization(value: AppRunAuthorizationSnapshot): string {
+  return canonicalCapabilityJson({
+    ...value,
+    authority_refs: [...value.authority_refs].sort((left, right) => {
+      const leftKey = `${left.authority_kind}\0${left.authority_id}`;
+      const rightKey = `${right.authority_kind}\0${right.authority_id}`;
+      return leftKey.localeCompare(rightKey);
+    }),
+  });
+}
+
+const APP_AUTHORITY_KINDS = new Set<string>(APP_RUN_APP_AUTHORITY_KINDS);
 
 function derivedSubmissionLock(submission: AppRunSubmission, parentRunId: string | null): string {
   const actor = appRunActorId(submission.initiating_actor);
@@ -166,6 +204,32 @@ function replayExecutionMatches(run: AppRunSafeView, submission: AppRunSubmissio
     && run.origin_kind === submission.origin.origin_kind;
 }
 
+export function appRunReplayAuthorityMatches(
+  replay: Readonly<{
+    origin_app_installation_id: string | null;
+    origin_app_version_id: string | null;
+    origin_app_binding_key: string | null;
+    origin_app_grant_snapshot_id: string | null;
+    authorization_snapshot: Record<string, unknown>;
+  }>,
+  submission: AppRunSubmission,
+): boolean {
+  if (submission.origin.origin_kind !== 'app') return true;
+  if (
+    replay.origin_app_installation_id !== submission.origin.installation_id
+    || replay.origin_app_version_id !== submission.origin.app_version_id
+    || replay.origin_app_binding_key !== submission.origin.binding_key
+    || replay.origin_app_grant_snapshot_id !== submission.origin.grant_snapshot_id
+  ) return false;
+  try {
+    return canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(
+      replay.authorization_snapshot,
+    )) === canonicalAuthorization(submission.authorization_snapshot);
+  } catch {
+    return false;
+  }
+}
+
 export class AppRunService {
   constructor(
     private readonly repository: PostgresAppRunRepository,
@@ -178,10 +242,78 @@ export class AppRunService {
     private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
     private readonly attemptScheduler: AppRunAttemptScheduler = noOpAppRunAttemptScheduler,
+    private readonly preparedInput?: AppRunPreparedInputOpener,
+    private readonly appLiveAuthorization?: AppRunPreparedAppAuthorizer,
+    private readonly appOriginEnabled: () => boolean = () => false,
   ) {}
 
   async submit(context: AppRunTrustedContext, rawSubmission: unknown): Promise<AppRunSafeView> {
     return this.#submit(context, rawSubmission, null);
+  }
+
+  /** The only App-origin intake. All origin, provider, policy, actor, preview,
+   * authority, and input facts come from one authenticated prepared candidate;
+   * ordinary submit() continues to reject App origin unconditionally. */
+  async submitPreparedApp(
+    context: AppRunTrustedContext,
+    candidate: AppRunPreparedInputCandidate,
+  ): Promise<AppRunSafeView> {
+    if (!this.appOriginEnabled() || !this.preparedInput || !this.appLiveAuthorization) {
+      throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    }
+    let prepared: AppRunPreparedInputPayload;
+    try {
+      prepared = this.preparedInput.open(context.org_id, candidate);
+    } catch {
+      throw new AppRunError('APP_RUN_INPUT_INVALID');
+    }
+    const app = prepared.app_run;
+    if (
+      !app
+      || !sameActor(context.initiating_actor, app.initiating_actor)
+      || !sameActor(context.execution_actor, app.execution_actor)
+    ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const vector = app.authority_vector;
+    const authorizationSnapshot = AppRunAuthorizationSnapshotSchema.parse({
+      ...vector.run_authorization,
+      authority_refs: [
+        ...vector.run_authorization.authority_refs,
+        ...app.authority_refs,
+      ],
+    });
+    return this.#submit(context, {
+      schema_version: vector.run_authorization.schema_version,
+      org_id: context.org_id,
+      initiating_actor: app.initiating_actor,
+      execution_actor: app.execution_actor,
+      origin: {
+        origin_kind: 'app',
+        installation_id: vector.installation.id,
+        app_version_id: vector.app_version.id,
+        binding_key: vector.binding.action_key,
+        grant_snapshot_id: vector.grant.id,
+      },
+      operation: {
+        provider: {
+          org_id: context.org_id,
+          provider_kind: 'mcp',
+          provider_instance_id: vector.provider.connection_id,
+        },
+        operation_name: vector.provider.operation_name,
+      },
+      provider_snapshot_digest: vector.provider.snapshot_digest,
+      policy: {
+        risk_class: 'external_write',
+        review_requirement: 'always',
+        review_scope: 'per_invocation',
+        retry_class: 'idempotent_with_key',
+      },
+      retention_class: 'standard',
+      idempotency_key: `app-action:${prepared.replay_identity}`,
+      input: prepared.provider_input,
+      authorization_snapshot: authorizationSnapshot,
+      safe_preview: app.safe_preview,
+    }, null, vector);
   }
 
   async submitChild(
@@ -199,6 +331,7 @@ export class AppRunService {
     context: AppRunTrustedContext,
     rawSubmission: unknown,
     parentRunId: string | null,
+    trustedAppVector?: AppRunPreparedAppVerification['authority_vector'],
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -211,7 +344,11 @@ export class AppRunService {
       || !sameActor(context.initiating_actor, submission.initiating_actor)
       || !sameActor(context.execution_actor, submission.execution_actor)
       || !sameActor(context.initiating_actor, submission.authorization_snapshot.authenticated_subject)
-      || submission.origin.origin_kind === 'app'
+      || (submission.origin.origin_kind === 'app' && !trustedAppVector)
+      || (submission.origin.origin_kind !== 'app' && trustedAppVector !== undefined)
+      || (!trustedAppVector && submission.authorization_snapshot.authority_refs.some(
+        (ref) => APP_AUTHORITY_KINDS.has(ref.authority_kind),
+      ))
       || (submission.origin.origin_kind === 'legacy_connector'
         && submission.origin.connection_id !== submission.operation.provider.provider_instance_id)
     ) {
@@ -232,6 +369,21 @@ export class AppRunService {
 
     const submitted = await this.repository.transaction(async (tx) => {
       await this.repository.acquireSubmissionLock(tx, lock);
+      if (trustedAppVector) {
+        if (!this.appLiveAuthorization) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+        let live: AppRunAuthorizationSnapshot;
+        try {
+          live = await this.appLiveAuthorization.capturePreparedAppInTransaction(tx, {
+            submission,
+            authority_vector: trustedAppVector,
+          });
+        } catch {
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        }
+        if (
+          canonicalAuthorization(live) !== canonicalAuthorization(submission.authorization_snapshot)
+        ) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
       const replay = await this.repository.findReplay(
         tx,
         submission,
@@ -243,10 +395,23 @@ export class AppRunService {
         const sameInput = inputCandidates.some((candidate) =>
           candidate.key_version === replay.input_fingerprint_key_version
           && candidate.fingerprint === replay.input_fingerprint);
-        if (!sameInput || !replayExecutionMatches(replay, submission)) {
+        if (
+          !sameInput
+          || !replayExecutionMatches(replay, submission)
+          || !appRunReplayAuthorityMatches(replay, submission)
+        ) {
           throw new AppRunError('APP_RUN_IDEMPOTENCY_CONFLICT');
         }
-        const { input_fingerprint: _fingerprint, input_fingerprint_key_version: _version, ...safe } = replay;
+        const {
+          input_fingerprint: _fingerprint,
+          input_fingerprint_key_version: _version,
+          origin_app_installation_id: _installation,
+          origin_app_version_id: _appVersion,
+          origin_app_binding_key: _binding,
+          origin_app_grant_snapshot_id: _grant,
+          authorization_snapshot: _authorization,
+          ...safe
+        } = replay;
         return safe;
       }
       const lineage = parentRunId === null
@@ -423,6 +588,13 @@ export class AppRunService {
   }>> {
     const run = await this.requiredRun(orgId, runId);
     await this.assertAuthorized('result', orgId, actor, run);
+    if (
+      run.origin_kind === 'app'
+      && (!this.appLiveAuthorization || !await this.appLiveAuthorization.authorizeDelivery({
+        org_id: orgId,
+        run,
+      }))
+    ) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
     if (run.result_purged_at || run.result_expires_at <= this.now()) {
       throw new AppRunError('APP_RUN_RESULT_EXPIRED');
     }

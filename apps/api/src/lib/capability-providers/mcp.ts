@@ -103,8 +103,15 @@ export interface McpCapabilityRuntime {
     orgId: string,
     connectionId: string,
     operationName: string,
+    expectedAuthorizationVersion?: number,
   ): Promise<ExecutableMcpConnectionResult>;
 }
+
+export type McpPinnedDispatchPin = Readonly<{
+  connector_authorization_version: number;
+  provider_snapshot_digest: string;
+  operation_schema_digest: string;
+}>;
 
 export type McpPinnedExecutionResult =
   | Readonly<{ status: 'not_attempted' }>
@@ -288,23 +295,59 @@ export class McpCapabilityProvider {
     provider_instance_id: string;
     operation_name: string;
     input: Record<string, unknown>;
+    dispatch_pin?: McpPinnedDispatchPin;
     signal?: AbortSignal;
   }>): Promise<McpPinnedExecutionResult> {
     if (request.signal?.aborted) return { status: 'not_attempted' };
     const resolvePinned = this.runtime.resolvePinnedExecutable;
     if (!resolvePinned) return { status: 'not_attempted' };
-    const resolved = await resolvePinned(
-      request.org_id,
-      request.provider_instance_id,
-      request.operation_name,
-    );
+    const resolved = request.dispatch_pin
+      ? await resolvePinned(
+        request.org_id,
+        request.provider_instance_id,
+        request.operation_name,
+        request.dispatch_pin.connector_authorization_version,
+      )
+      : await resolvePinned(
+        request.org_id,
+        request.provider_instance_id,
+        request.operation_name,
+      );
     if (!resolved.connection) return { status: 'not_attempted' };
+    if (
+      request.dispatch_pin
+      && resolved.connection.app_run_authorization_version
+        !== request.dispatch_pin.connector_authorization_version
+    ) return { status: 'not_attempted' };
 
     let config: MCPConnectionConfig;
     try {
       config = toConnectionConfig(resolved.connection);
     } catch {
       return { status: 'not_attempted' };
+    }
+    if (request.signal?.aborted) return { status: 'not_attempted' };
+
+    if (request.dispatch_pin) {
+      let snapshot: Readonly<CapabilityProviderDiscoverySnapshot> | null;
+      try {
+        const discovery = await this.client.discoverToolDiscovery(config);
+        // Dispatch must recompute from the just-refreshed response even when a
+        // client reuses and mutates the same provider-tools array instance.
+        this.snapshotCache.delete(discovery.providerTools);
+        snapshot = await this.snapshotFor(resolved.connection, discovery.providerTools);
+      } catch {
+        return { status: 'not_attempted' };
+      }
+      const operation = snapshot?.operations.find(
+        (candidate) => candidate.identity.operation_name === request.operation_name,
+      );
+      if (
+        !snapshot
+        || snapshot.snapshot_digest !== request.dispatch_pin.provider_snapshot_digest
+        || !operation
+        || operation.schema_digest !== request.dispatch_pin.operation_schema_digest
+      ) return { status: 'not_attempted' };
     }
     if (request.signal?.aborted) return { status: 'not_attempted' };
 

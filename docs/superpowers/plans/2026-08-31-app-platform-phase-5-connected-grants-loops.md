@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–4 complete; PR B ready for review |
+| Status | Loops 0–5 complete; PR C continues with Loop 6 |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -368,6 +368,27 @@ Run/receipt identity, crash recovery, and stale claim/session denial.
 **Stop condition:** no cutover if any App-origin Run can persist without all
 four installation/version/binding/grant identities or can reach a provider
 without CapabilityService.
+
+**Closeout:** passed on the exact one-action cutover. Raw App-origin submission
+remains denied, while the authenticated AppActionService path re-prepares the
+candidate, rederives its tenant-bound installation/version/effective-grant/
+binding/dependency/resource/relation authority in the Run transaction, and
+persists the four exact App ancestry fields under composite foreign keys. The
+default-off App-origin flag is composed only at the Run boundary. Approval,
+claim, provider-call, and result delivery all recheck live authority; approval
+also reserves employee budget atomically. Replay requires the same canonical
+App authority snapshot, not merely the same provider input.
+
+The retained-database compound proof creates one Run and one approval under
+concurrent invocation, performs no effect before approval, dispatches once
+through CapabilityService using the immutable provider ID plus reviewed
+connector-version/provider-snapshot/operation-schema pin, records approval and
+terminal receipts, returns the authorized retained result, and then blocks
+delivery and a second approved Run after connector revocation. The focused
+shared/AppAction/Capability/architecture/rollout/Run-engine matrix and API
+typecheck pass. The test fixture now tolerates retained foreign key-version
+references without weakening the production key check. Real pgvector and the
+release-host matrix remain deliberately deferred to Loop 7.
 
 ## Loop 6 — Native management and four-surface parity
 

@@ -47,6 +47,8 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   assert.match(service, /this\.capability\.discover\s*\(/);
   assert.match(service, /getAppRunRuntime\s*\(/);
   assert.match(service, /inputPreparation\.protect\s*\(/);
+  assert.match(service, /inputPreparation\.open\s*\(/);
+  assert.match(service, /service\.submitPreparedApp\s*\(/);
 
   const prepareStart = service.indexOf('async prepare(');
   const prepareResolve = service.indexOf('const resolved = await this.#resolve', prepareStart);
@@ -57,6 +59,18 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   const resolveContext = service.indexOf('loadActionContext(', resolveStart);
   const resolveResource = service.indexOf('resourceAuthorizationService.resolve', resolveStart);
   assert.ok(resolveStart >= 0 && resolveContext > resolveStart && resolveResource > resolveContext);
+
+  const invokeStart = service.indexOf('async invoke(');
+  const invokePrepare = service.indexOf('await this.prepare(', invokeStart);
+  const invokeFreshOpen = service.indexOf('this.preparedInput.open', invokePrepare);
+  const invokeSubmit = service.indexOf('this.runs.submitPreparedApp', invokeFreshOpen);
+  assert.ok(
+    invokeStart >= 0
+      && invokePrepare > invokeStart
+      && invokeFreshOpen > invokePrepare
+      && invokeSubmit > invokeFreshOpen,
+  );
+  assert.match(service.slice(invokeSubmit), /current\.input_candidate/);
 
   const contextStart = service.indexOf('async function loadActionContext(');
   const contextEnd = service.indexOf('\nfunction assertPlacement(', contextStart);
@@ -111,6 +125,10 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
       reviewManagementConsumers.push(sourcePath);
     }
 
+    if (/\.submitPreparedApp\s*\(/.test(source)) {
+      appActionBypassViolations.push(`${sourcePath}:submitPreparedApp`);
+    }
+
     // Existing legacy/native Capability Service and agent_actions paths remain
     // out of scope. Once an adapter names AppActionService, it must not also
     // compose any lower-level App action execution or persistence boundary.
@@ -121,6 +139,7 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
       /capabilityService\.invoke\s*\(/,
       /(?:PinnedMcp)?AppRunProviderExecutor|capability-providers\/mcp/,
       /(?:AppRunService|appRunService|\.service)\.submit\s*\(/,
+      /\.submitPreparedApp\s*\(/,
       /\.insert\s*\(\s*(?:appRuns|agentActions)\s*\)/,
     ];
     for (const pattern of forbidden) {
