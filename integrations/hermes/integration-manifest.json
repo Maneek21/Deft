@@ -1,8 +1,8 @@
 {
   "schema": "deft.hermes.integration.v2",
   "integration_version": "0.5.1",
-  "deft_release": "0.3.0-preview.13",
-  "deft_release_compatibility": "=0.3.0-preview.13",
+  "deft_release": "0.3.0-preview.14",
+  "deft_release_compatibility": "=0.3.0-preview.14",
   "agent_channel_protocols": [
     "deft.agent_channel.v2"
   ],

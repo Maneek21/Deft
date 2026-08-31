@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.14] — 2026-08-31
+
+### Fixed
+
+- Declarative Apps built by the public App Kit are no longer rejected when a
+  valid included Module omits schema-defaulted fields such as
+  `required: false`. Package artifact integrity and host-side Module semantic
+  validation remain independently enforced.
+
 ## [0.3.0-preview.13] — 2026-08-27
 
 ### Added
@@ -386,7 +395,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.13...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.14...HEAD
+[0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
 [0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13
 [0.3.0-preview.12]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12
 [0.3.0-preview.11]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.11

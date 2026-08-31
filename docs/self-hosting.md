@@ -71,7 +71,7 @@ workflow and carry GitHub build provenance. Verify checksums and the image
 digest before deploying or installing the Hermes bundle:
 
 ```bash
-export TAG=v0.3.0-preview.13
+export TAG=v0.3.0-preview.14
 export VERSION="${TAG#v}"
 export IMAGE=ghcr.io/maneek21/deft
 export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
