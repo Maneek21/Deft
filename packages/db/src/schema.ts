@@ -1823,6 +1823,143 @@ export const moduleMutationReceipts = pgTable('module_mutation_receipts', {
   ),
 ]);
 
+// Generic, host-owned resource relations. Resource tuples are opaque
+// addresses, never authority: every read/write must re-resolve endpoints via
+// the owning service. Sets retain a revision even when empty so replace/unlink
+// has a durable optimistic-concurrency boundary.
+export const resourceRelationSets = pgTable('resource_relation_sets', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  source_provider_kind: text('source_provider_kind').$type<'module' | 'core'>().notNull(),
+  source_provider_instance_id: text('source_provider_instance_id').notNull(),
+  source_resource_type: text('source_resource_type').notNull(),
+  source_resource_id: text('source_resource_id').notNull(),
+  relation_key: text('relation_key').notNull(),
+  revision: integer('revision').default(0).notNull(),
+  updated_by_actor_type: text('updated_by_actor_type').$type<'human' | 'defty' | 'agent_employee' | 'system'>().notNull(),
+  updated_by_actor_id: text('updated_by_actor_id').notNull(),
+  ...timestamps(),
+}, (t) => [
+  unique('resource_relation_sets_org_id_id_unique').on(t.org_id, t.id),
+  uniqueIndex('resource_relation_sets_identity_unique').on(
+    t.org_id,
+    t.source_provider_kind,
+    t.source_provider_instance_id,
+    t.source_resource_type,
+    t.source_resource_id,
+    t.relation_key,
+  ),
+  index('resource_relation_sets_source_idx').on(
+    t.org_id,
+    t.source_provider_kind,
+    t.source_provider_instance_id,
+    t.source_resource_type,
+    t.source_resource_id,
+  ),
+  check('resource_relation_sets_provider_check', sql`(
+    ${t.source_provider_kind} = 'module'
+    OR (
+      ${t.source_provider_kind} = 'core'
+      AND ${t.source_provider_instance_id} = 'tasks'
+      AND ${t.source_resource_type} = 'task'
+    )
+  )`),
+  check('resource_relation_sets_revision_check', sql`${t.revision} >= 0`),
+  check('resource_relation_sets_relation_key_check', sql`${t.relation_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
+  check('resource_relation_sets_actor_check', sql`${t.updated_by_actor_type} IN ('human', 'defty', 'agent_employee', 'system')`),
+]);
+
+export const resourceRelationEdges = pgTable('resource_relation_edges', {
+  ...id(),
+  ...orgId(),
+  relation_set_id: text('relation_set_id').notNull(),
+  target_provider_kind: text('target_provider_kind').$type<'module' | 'core'>().notNull(),
+  target_provider_instance_id: text('target_provider_instance_id').notNull(),
+  target_resource_type: text('target_resource_type').notNull(),
+  target_resource_id: text('target_resource_id').notNull(),
+  position: integer('position').notNull(),
+  created_by_actor_type: text('created_by_actor_type').$type<'human' | 'defty' | 'agent_employee' | 'system'>().notNull(),
+  created_by_actor_id: text('created_by_actor_id').notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.relation_set_id],
+    foreignColumns: [resourceRelationSets.org_id, resourceRelationSets.id],
+    name: 'resource_relation_edges_org_set_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('resource_relation_edges_active_target_unique').on(
+    t.org_id,
+    t.relation_set_id,
+    t.target_provider_kind,
+    t.target_provider_instance_id,
+    t.target_resource_type,
+    t.target_resource_id,
+  ).where(sql`${t.is_deleted} = false`),
+  uniqueIndex('resource_relation_edges_active_position_unique').on(
+    t.org_id,
+    t.relation_set_id,
+    t.position,
+  ).where(sql`${t.is_deleted} = false`),
+  index('resource_relation_edges_target_idx').on(
+    t.org_id,
+    t.target_provider_kind,
+    t.target_provider_instance_id,
+    t.target_resource_type,
+    t.target_resource_id,
+    t.is_deleted,
+  ),
+  check('resource_relation_edges_provider_check', sql`(
+    ${t.target_provider_kind} = 'module'
+    OR (
+      ${t.target_provider_kind} = 'core'
+      AND ${t.target_provider_instance_id} = 'tasks'
+      AND ${t.target_resource_type} = 'task'
+    )
+  )`),
+  check('resource_relation_edges_position_check', sql`${t.position} >= 0`),
+  check('resource_relation_edges_actor_check', sql`${t.created_by_actor_type} IN ('human', 'defty', 'agent_employee', 'system')`),
+  check('resource_relation_edges_deleted_state_check', sql`(
+    ${t.is_deleted} AND ${t.deleted_at} IS NOT NULL
+  ) OR (
+    NOT ${t.is_deleted} AND ${t.deleted_at} IS NULL
+  )`),
+]);
+
+export const resourceRelationReceipts = pgTable('resource_relation_receipts', {
+  ...id(),
+  ...orgId(),
+  relation_set_id: text('relation_set_id').notNull(),
+  actor_type: text('actor_type').$type<'human' | 'defty' | 'agent_employee' | 'system'>().notNull(),
+  actor_id: text('actor_id').notNull(),
+  operation: text('operation').$type<'replace'>().default('replace').notNull(),
+  idempotency_key: text('idempotency_key').notNull(),
+  input_digest: text('input_digest').notNull(),
+  result_revision: integer('result_revision').notNull(),
+  result_refs: jsonb('result_refs').$type<unknown[]>().notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.relation_set_id],
+    foreignColumns: [resourceRelationSets.org_id, resourceRelationSets.id],
+    name: 'resource_relation_receipts_org_set_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('resource_relation_receipts_idempotency_unique').on(
+    t.org_id,
+    t.actor_type,
+    t.actor_id,
+    t.operation,
+    t.idempotency_key,
+  ),
+  check('resource_relation_receipts_actor_check', sql`${t.actor_type} IN ('human', 'defty', 'agent_employee', 'system')`),
+  check('resource_relation_receipts_operation_check', sql`${t.operation} = 'replace'`),
+  check('resource_relation_receipts_idempotency_check', sql`${t.idempotency_key} ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$'`),
+  check('resource_relation_receipts_digest_check', sql`${t.input_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('resource_relation_receipts_revision_check', sql`${t.result_revision} >= 1`),
+  check('resource_relation_receipts_refs_check', sql`jsonb_typeof(${t.result_refs}) = 'array'`),
+]);
+
 // org_spend_caps + clawhub_allowlist retired in self-hosted v1 delete
 // sweep (migration 0053). Self-hosted runs on operator-owned API keys
 // and the ClawHub surface is gone.

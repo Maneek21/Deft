@@ -9,6 +9,7 @@ import { z } from 'zod';
 export const RESOURCE_CONTRACT_VERSIONS = Object.freeze({
   ref: 'deft.resource_ref.v1',
   safe_projection: 'deft.resource_safe_projection.v1',
+  relation: 'deft.resource_relation.v1',
 } as const);
 
 export const RESOURCE_LIMITS = Object.freeze({
@@ -19,6 +20,9 @@ export const RESOURCE_LIMITS = Object.freeze({
   label_chars: 200,
   href_chars: 2_048,
   revision_chars: 128,
+  refs_per_relation: 100,
+  relation_key_chars: 48,
+  idempotency_key_chars: 128,
 } as const);
 
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/u;
@@ -114,6 +118,100 @@ export const ResourceSafeProjectionV1Schema = z.strictObject({
 });
 
 export type ResourceSafeProjectionV1 = z.infer<typeof ResourceSafeProjectionV1Schema>;
+
+export function resourceRefIdentity(ref: ResourceRefV1): string {
+  return [
+    ref.provider.kind,
+    ref.provider.provider_instance_id,
+    ref.resource_type,
+    ref.resource_id,
+  ].join('\u0000');
+}
+
+const ResourceRelationKeySchema = z
+  .string()
+  .min(1)
+  .max(RESOURCE_LIMITS.relation_key_chars)
+  .regex(/^[a-z][a-z0-9_]*$/, 'Relation key must be lowercase snake_case');
+
+const ResourceRelationIdempotencyKeySchema = z
+  .string()
+  .min(1)
+  .max(RESOURCE_LIMITS.idempotency_key_chars)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/, 'Idempotency key contains unsupported characters');
+
+export const ResourceRelationReplaceInputV1Schema = z
+  .strictObject({
+    schema_version: z.literal(RESOURCE_CONTRACT_VERSIONS.relation),
+    source: ResourceRefV1Schema,
+    relation_key: ResourceRelationKeySchema,
+    refs: z.array(ResourceRefV1Schema).max(RESOURCE_LIMITS.refs_per_relation),
+    expected_revision: z.number().int().nonnegative(),
+    idempotency_key: ResourceRelationIdempotencyKeySchema,
+  })
+  .superRefine((input, ctx) => {
+    const seen = new Set<string>();
+    input.refs.forEach((ref, index) => {
+      const identity = resourceRefIdentity(ref);
+      if (seen.has(identity)) {
+        ctx.addIssue({ code: 'custom', path: ['refs', index], message: 'Resource references must be unique' });
+      }
+      seen.add(identity);
+    });
+  });
+
+export const ResourceRelationReplaceResultV1Schema = z.strictObject({
+  schema_version: z.literal(RESOURCE_CONTRACT_VERSIONS.relation),
+  source: ResourceRefV1Schema,
+  relation_key: ResourceRelationKeySchema,
+  revision: z.number().int().positive(),
+  refs: z.array(ResourceRefV1Schema).max(RESOURCE_LIMITS.refs_per_relation),
+  replayed: z.boolean(),
+});
+
+export const ResourceRelationListInputV1Schema = z.strictObject({
+  schema_version: z.literal(RESOURCE_CONTRACT_VERSIONS.relation),
+  source: ResourceRefV1Schema,
+  relation_key: ResourceRelationKeySchema,
+});
+
+export const ResourceRelationResolvedItemV1Schema = z.discriminatedUnion('state', [
+  z.strictObject({
+    state: z.literal('available'),
+    ref: ResourceRefV1Schema,
+    resource: ResourceSafeProjectionV1Schema,
+  }),
+  z.strictObject({
+    state: z.literal('unavailable'),
+    ref: ResourceRefV1Schema,
+  }),
+]);
+
+export const ResourceRelationListResultV1Schema = z.strictObject({
+  schema_version: z.literal(RESOURCE_CONTRACT_VERSIONS.relation),
+  source: ResourceRefV1Schema,
+  relation_key: ResourceRelationKeySchema,
+  revision: z.number().int().nonnegative(),
+  items: z.array(ResourceRelationResolvedItemV1Schema).max(RESOURCE_LIMITS.refs_per_relation),
+});
+
+export type ResourceRelationReplaceInputV1 = z.infer<typeof ResourceRelationReplaceInputV1Schema>;
+export type ResourceRelationReplaceResultV1 = z.infer<typeof ResourceRelationReplaceResultV1Schema>;
+export type ResourceRelationListInputV1 = z.infer<typeof ResourceRelationListInputV1Schema>;
+export type ResourceRelationListResultV1 = z.infer<typeof ResourceRelationListResultV1Schema>;
+
+export const ResourceRelationErrorCodeSchema = z.enum([
+  'RESOURCE_RELATION_INVALID',
+  'RESOURCE_RELATION_ACCESS_DENIED',
+  'RESOURCE_RELATION_NOT_FOUND',
+  'RESOURCE_RELATION_REVISION_CONFLICT',
+  'RESOURCE_RELATION_IDEMPOTENCY_CONFLICT',
+  'RESOURCE_RELATION_TARGET_MISMATCH',
+  'RESOURCE_RELATION_OPERATION_UNSUPPORTED',
+  'RESOURCE_RELATION_FAILURE',
+]);
+
+export type ResourceRelationErrorCode = z.infer<typeof ResourceRelationErrorCodeSchema>;
 
 export const ResourceAuthorizationErrorCodeSchema = z.enum([
   'RESOURCE_CONTEXT_INVALID',

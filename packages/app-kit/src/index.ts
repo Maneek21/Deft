@@ -244,7 +244,7 @@ type ModuleIdentity = { schema_version: string; id: string; version: string };
 function parseModuleArtifactIdentity(value: unknown): ModuleIdentity {
   return z
     .strictObject({
-      schema_version: z.literal('1'),
+      schema_version: z.union([z.literal('1'), z.literal('2')]),
       id: AppIdSchema,
       version: AppSemverSchema,
     })

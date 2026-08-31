@@ -18,14 +18,14 @@ const collection: ModuleCollection = {
   titleField: 'name',
   subtitleFields: [],
   fields: [
-    { key: 'name', label: 'Name', type: 'text', required: true, description: null, options: [], multiple: false, targetCollection: null },
-    { key: 'active', label: 'Active', type: 'boolean', required: false, description: null, options: [], multiple: false, targetCollection: null },
+    { key: 'name', label: 'Name', type: 'text', required: true, description: null, options: [], multiple: false, targetCollection: null, targetModuleId: null, targetResourceType: null },
+    { key: 'active', label: 'Active', type: 'boolean', required: false, description: null, options: [], multiple: false, targetCollection: null, targetModuleId: null, targetResourceType: null },
     {
-      key: 'status', label: 'Status', type: 'single_select', required: false, description: null, multiple: false, targetCollection: null,
+      key: 'status', label: 'Status', type: 'single_select', required: false, description: null, multiple: false, targetCollection: null, targetModuleId: null, targetResourceType: null,
       options: [{ value: 'open', label: 'Open' }, { value: 'closed', label: 'Closed' }],
     },
-    { key: 'owner', label: 'Owner', type: 'member', required: false, description: null, options: [], multiple: false, targetCollection: null },
-    { key: 'starts_at', label: 'Starts at', type: 'datetime', required: false, description: null, options: [], multiple: false, targetCollection: null },
+    { key: 'owner', label: 'Owner', type: 'member', required: false, description: null, options: [], multiple: false, targetCollection: null, targetModuleId: null, targetResourceType: null },
+    { key: 'starts_at', label: 'Starts at', type: 'datetime', required: false, description: null, options: [], multiple: false, targetCollection: null, targetModuleId: null, targetResourceType: null },
   ],
   views: [],
 };

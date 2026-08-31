@@ -56,8 +56,8 @@ import {
   getModuleSchema,
   listModuleSummaries,
   queryModuleRecords,
-  searchModuleRecords,
 } from './module-service.js';
+import { searchAuthorizedModuleResources as searchModuleRecords } from './resource-search-service.js';
 import { listModuleRecordTaskLinks } from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';

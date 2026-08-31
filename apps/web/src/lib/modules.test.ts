@@ -21,7 +21,10 @@ import {
   normalizeModuleManifest,
   normalizeModuleRecordPage,
   normalizeModuleRelationsResponse,
+  normalizeResourceOptionsResponse,
+  normalizeResourceRelationResponse,
   previewModuleManifestJson,
+  resourceRefPayload,
   resolveModuleManifestUpload,
   resolveModuleView,
   validateModuleRecordValues,
@@ -473,4 +476,62 @@ test('coerces comma-separated tag input and never persists relation fields in re
     name: 'Ada',
     labels: ['customer', 'champion'],
   });
+});
+
+test('normalizes Module v2 resource references without persisting them as record data', () => {
+  const manifest = normalizeModuleManifest({
+    schema_version: '2',
+    id: 'org.deft.reference.campaigns',
+    slug: 'campaigns',
+    version: '2.0.0',
+    name: 'Campaigns',
+    collections: [{
+      key: 'campaigns',
+      name: 'Campaigns',
+      fields: [
+        { key: 'name', label: 'Name', type: 'text', required: true },
+        {
+          key: 'contacts',
+          label: 'Contacts',
+          type: 'resource_ref',
+          target: { module_id: 'org.deft.reference.contacts', resource_type: 'contacts' },
+          multiple: true,
+        },
+      ],
+    }],
+  });
+  const field = manifest.collections[0]!.fields[1]!;
+  assert.equal(manifest.schemaVersion, '2');
+  assert.equal(field.type, 'resource_ref');
+  assert.equal(field.targetModuleId, 'org.deft.reference.contacts');
+  assert.equal(field.targetResourceType, 'contacts');
+  assert.equal(field.multiple, true);
+  assert.deepEqual(moduleRecordPayload(manifest.collections[0]!, {
+    name: 'Launch',
+    contacts: ['contact-1'],
+  }), { name: 'Launch' });
+});
+
+test('normalizes live resource relation and picker projections without accepting malformed entries', () => {
+  const wireRef = {
+    schema_version: 'deft.resource_ref.v1',
+    provider: { kind: 'module', provider_instance_id: 'contacts-installation' },
+    resource_type: 'contacts',
+    resource_id: 'contact-1',
+  };
+  const relation = normalizeResourceRelationResponse({ relation: {
+    revision: 3,
+    items: [
+      { state: 'available', ref: wireRef, resource: { ref: wireRef, label: 'Ada', href: '/modules/contacts/contacts/contact-1' } },
+      { state: 'unavailable', ref: { ...wireRef, resource_id: 'contact-2' } },
+      { state: 'available', ref: wireRef, resource: { ref: wireRef } },
+    ],
+  } });
+  assert.equal(relation.revision, 3);
+  assert.deepEqual(relation.items.map((item) => item.state), ['available', 'unavailable']);
+  assert.deepEqual(resourceRefPayload(relation.items[0]!.ref), wireRef);
+  assert.deepEqual(normalizeResourceOptionsResponse({ options: [
+    { ref: wireRef, label: 'Ada' },
+    { ref: { ...wireRef, schema_version: 'unknown' }, label: 'Rejected' },
+  ] }).map((option) => option.label), ['Ada']);
 });

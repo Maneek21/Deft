@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
   validateModuleRecordData,
-  type DeftModuleManifestV1,
-  type ModuleField,
+  type DeftModuleManifest,
+  type ModuleFieldV2,
   type ModuleRecordData,
 } from '@deft/shared/modules';
 import { buildActionGraph } from './agent-action-graph.js';
@@ -19,7 +19,7 @@ type CsvImportTarget = {
   moduleName: string;
   moduleSlug: string;
   manifestDigest: string;
-  manifest: DeftModuleManifestV1;
+  manifest: DeftModuleManifest;
   collectionKey: string;
   collectionName: string;
   collectionSingularName?: string;
@@ -102,7 +102,7 @@ function promptContainsName(prompt: string, value: string): boolean {
   return normalizedValue.length > 0 && normalizedPrompt.includes(`_${normalizedValue}_`);
 }
 
-function coerceCell(field: ModuleField, rawValue: string): unknown {
+function coerceCell(field: ModuleFieldV2, rawValue: string): unknown {
   const trimmed = rawValue.trim();
   if (!trimmed) return undefined;
   switch (field.type) {
@@ -139,6 +139,7 @@ function coerceCell(field: ModuleField, rawValue: string): unknown {
         ? trimmed.split(';').map((item) => item.trim()).filter(Boolean)
         : trimmed;
     case 'relation':
+    case 'resource_ref':
       throw new Error('is a relation; import the scalar display field or link records after import');
     case 'text':
     case 'long_text':
@@ -153,7 +154,7 @@ function coerceCell(field: ModuleField, rawValue: string): unknown {
 
 export function compileCsvRows(
   parsed: ParsedCsv,
-  manifest: DeftModuleManifestV1,
+  manifest: DeftModuleManifest,
   collectionKey: string,
 ): ModuleRecordData[] {
   const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);

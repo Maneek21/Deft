@@ -17,7 +17,7 @@ async function typescriptFiles(directory: string): Promise<string[]> {
   return nested.flat();
 }
 
-test('PR A Resource authorization seam is dormant and owns no data or effect path', async () => {
+test('Phase 4 Resource authorization stays closed and owns no external effect path', async () => {
   const service = await readFile(join(apiSourceRoot, 'lib/resource-authorization.ts'), 'utf8');
   assert.doesNotMatch(
     service,
@@ -31,14 +31,42 @@ test('PR A Resource authorization seam is dormant and owns no data or effect pat
   assert.doesNotMatch(providers, /\bregister\s*\(/);
 
   const routeConsumers: string[] = [];
+  const generalizedResourceRoutes: string[] = [];
   for (const path of await typescriptFiles(join(apiSourceRoot, 'routes'))) {
     const source = await readFile(path, 'utf8');
     if (/resource-authorization|ResourceAuthorizationService|ResourceRefV1/.test(source)) {
       routeConsumers.push(relative(apiSourceRoot, path).replaceAll('\\', '/'));
     }
+    if (/['"]\/api\/resources(?:\/|['"])/.test(source)) {
+      generalizedResourceRoutes.push(relative(apiSourceRoot, path).replaceAll('\\', '/'));
+    }
   }
-  assert.deepEqual(routeConsumers, []);
+  assert.deepEqual(routeConsumers, ['routes/modules.ts']);
+  assert.deepEqual(generalizedResourceRoutes, []);
 
   const appKitSource = await readFile(join(repositoryRoot, 'packages/app-kit/src/index.ts'), 'utf8');
   assert.doesNotMatch(appKitSource, /ResourceRef|resource_requirements|capability_requirements/);
+});
+
+test('bounded search callers use the live authorization wrapper and relations cannot execute effects', async () => {
+  const rawSearchImporters: string[] = [];
+  for (const path of await typescriptFiles(apiSourceRoot)) {
+    const sourcePath = relative(apiSourceRoot, path).replaceAll('\\', '/');
+    const source = await readFile(path, 'utf8');
+    if (/import\s*\{\s*searchModuleRecords\s*\}\s*from\s*['"].*module-service\.js['"]/.test(source)) {
+      rawSearchImporters.push(sourcePath);
+    }
+  }
+  assert.deepEqual(rawSearchImporters, ['lib/resource-search-service.ts']);
+
+  const search = await readFile(join(apiSourceRoot, 'lib/resource-search-service.ts'), 'utf8');
+  assert.match(search, /resourceAuthorizationService\.resolve/);
+  assert.match(search, /Search indexes nominate candidates only/);
+
+  const relations = await readFile(join(apiSourceRoot, 'lib/resource-relation-service.ts'), 'utf8');
+  assert.match(relations, /resourceAuthorizationService\.resolve/);
+  assert.doesNotMatch(
+    relations,
+    /CapabilityService|capabilityService|mcpClientManager|executeTool|connector|\bfetch\s*\(/,
+  );
 });

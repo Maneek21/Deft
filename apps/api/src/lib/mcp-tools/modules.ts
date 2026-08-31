@@ -28,9 +28,9 @@ import {
   preflightModuleMutationWithExecutor,
   queryModuleRecords,
   sanitizeModuleActionParamsForHistory,
-  searchModuleRecords,
   updateModuleRecord,
 } from '../module-service.js';
+import { searchAuthorizedModuleResources as searchModuleRecords } from '../resource-search-service.js';
 import { isModuleError } from '../module-errors.js';
 import { asPseudoResult, getApprovalTier, shouldAutoExecute } from '../agent-approval.js';
 import { generateReceipt } from '../receipts.js';

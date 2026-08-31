@@ -5,6 +5,7 @@ export type Phase4ResourceParityIds = Readonly<{
   org_id: string;
   other_org_id: string;
   owner_user_id: string;
+  other_owner_user_id: string;
   employee_user_id: string;
   employee_id: string;
   allowed_project_id: string;
@@ -24,6 +25,7 @@ export async function seedPhase4ResourceParity(
     org_id: `phase4-resource-org-${suffix}`,
     other_org_id: `phase4-resource-other-${suffix}`,
     owner_user_id: `phase4-resource-owner-${suffix}`,
+    other_owner_user_id: `phase4-resource-other-user-${suffix}`,
     employee_user_id: `phase4-resource-employee-user-${suffix}`,
     employee_id: `phase4-resource-employee-${suffix}`,
     allowed_project_id: `phase4-resource-project-allowed-${suffix}`,
@@ -34,7 +36,7 @@ export async function seedPhase4ResourceParity(
     deleted_task_id: `phase4-resource-task-deleted-${suffix}`,
     other_org_task_id: `phase4-resource-task-other-${suffix}`,
   };
-  const otherUserId = `phase4-resource-other-user-${suffix}`;
+  const otherUserId = ids.other_owner_user_id;
   const otherProjectId = `phase4-resource-other-project-${suffix}`;
 
   await client.query(

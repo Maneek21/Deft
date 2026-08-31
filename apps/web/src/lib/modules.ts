@@ -1,9 +1,9 @@
 import {
   MODULE_LIMITS,
-  digestModuleManifest,
-  parseDeftModuleManifest,
-  parseDeftModuleManifestJson,
-  type DeftModuleManifestV1,
+  digestSupportedModuleManifest as digestModuleManifest,
+  parseSupportedDeftModuleManifest as parseDeftModuleManifest,
+  parseSupportedDeftModuleManifestJson as parseDeftModuleManifestJson,
+  type DeftModuleManifest,
 } from '@deft/shared/modules';
 
 export type ModuleFieldType =
@@ -19,7 +19,8 @@ export type ModuleFieldType =
   | 'multi_select'
   | 'member'
   | 'tags'
-  | 'relation';
+  | 'relation'
+  | 'resource_ref';
 
 export type ModuleFieldOption = {
   value: string;
@@ -37,6 +38,8 @@ export type ModuleField = {
   defaultValue?: unknown;
   multiple: boolean;
   targetCollection: string | null;
+  targetModuleId: string | null;
+  targetResourceType: string | null;
 };
 
 export type ModuleCollection = {
@@ -105,7 +108,7 @@ export type BundledModule = {
 };
 
 export type ModuleManifestPreview = {
-  manifest: DeftModuleManifestV1;
+  manifest: DeftModuleManifest;
   moduleId: string;
   slug: string;
   name: string;
@@ -165,6 +168,33 @@ export type ModuleRelationReplacePayload = {
   idempotency_key: string;
 };
 
+export type ResourceRef = {
+  schemaVersion: 'deft.resource_ref.v1';
+  providerKind: 'module' | 'core';
+  providerInstanceId: string;
+  resourceType: string;
+  resourceId: string;
+};
+
+export type ResourceProjection = {
+  ref: ResourceRef;
+  label: string;
+  href: string | null;
+  revision: string | null;
+  updatedAt: string | null;
+};
+
+export type ResourceRelationItem = {
+  state: 'available' | 'unavailable';
+  ref: ResourceRef;
+  resource: ResourceProjection | null;
+};
+
+export type ResourceRelation = {
+  revision: number;
+  items: ResourceRelationItem[];
+};
+
 export type ModuleRecordActivity = {
   id: string;
   action: string;
@@ -203,7 +233,7 @@ function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function parseManifestValue(value: unknown): DeftModuleManifestV1 {
+function parseManifestValue(value: unknown): DeftModuleManifest {
   if (typeof value !== 'string') return parseDeftModuleManifest(value);
   let parsed: unknown;
   try {
@@ -237,6 +267,8 @@ export function normalizeModuleManifest(value: unknown, _fallbackSlug = ''): Mod
           defaultValue: 'default' in field ? field.default : undefined,
           multiple: asBoolean(rawField.multiple),
           targetCollection: asString(rawField.target_collection),
+          targetModuleId: asString(asRecord(rawField.target).module_id),
+          targetResourceType: asString(asRecord(rawField.target).resource_type),
         };
       }),
       titleField: collection.search?.title_field ?? collection.fields[0]?.key ?? null,
@@ -452,6 +484,84 @@ export function normalizeModuleRelationsResponse(value: unknown): ModuleRelation
   });
 }
 
+function normalizeResourceRef(value: unknown): ResourceRef | null {
+  const row = asRecord(value);
+  const provider = asRecord(row.provider);
+  const kind = provider.kind;
+  const providerInstanceId = asString(provider.provider_instance_id);
+  const resourceType = asString(row.resource_type);
+  const resourceId = asString(row.resource_id);
+  if (
+    row.schema_version !== 'deft.resource_ref.v1'
+    || (kind !== 'module' && kind !== 'core')
+    || !providerInstanceId
+    || !resourceType
+    || !resourceId
+  ) return null;
+  return {
+    schemaVersion: 'deft.resource_ref.v1',
+    providerKind: kind,
+    providerInstanceId,
+    resourceType,
+    resourceId,
+  };
+}
+
+function normalizeResourceProjection(value: unknown): ResourceProjection | null {
+  const row = asRecord(value);
+  const ref = normalizeResourceRef(row.ref);
+  const label = asString(row.label);
+  if (!ref || !label) return null;
+  return {
+    ref,
+    label,
+    href: asString(row.href),
+    revision: asString(row.revision),
+    updatedAt: asString(row.updated_at),
+  };
+}
+
+export function normalizeResourceRelationResponse(value: unknown): ResourceRelation {
+  const body = asRecord(value);
+  const relation = asRecord(body.relation ?? value);
+  const revision = typeof relation.revision === 'number' && relation.revision >= 0
+    ? relation.revision
+    : 0;
+  const items = Array.isArray(relation.items) ? relation.items.flatMap((candidate) => {
+    const item = asRecord(candidate);
+    const ref = normalizeResourceRef(item.ref);
+    if (!ref || (item.state !== 'available' && item.state !== 'unavailable')) return [];
+    const resource = item.state === 'available' ? normalizeResourceProjection(item.resource) : null;
+    if (item.state === 'available' && !resource) return [];
+    return [{ state: item.state, ref, resource } satisfies ResourceRelationItem];
+  }) : [];
+  return { revision, items };
+}
+
+export function normalizeResourceOptionsResponse(value: unknown): ResourceProjection[] {
+  const body = asRecord(value);
+  const options = Array.isArray(body.options) ? body.options : [];
+  return options.map(normalizeResourceProjection).filter(
+    (option): option is ResourceProjection => Boolean(option),
+  );
+}
+
+export function resourceRefPayload(ref: ResourceRef): Record<string, unknown> {
+  return {
+    schema_version: ref.schemaVersion,
+    provider: {
+      kind: ref.providerKind,
+      provider_instance_id: ref.providerInstanceId,
+    },
+    resource_type: ref.resourceType,
+    resource_id: ref.resourceId,
+  };
+}
+
+export function resourceRefKey(ref: ResourceRef): string {
+  return [ref.providerKind, ref.providerInstanceId, ref.resourceType, ref.resourceId].join(':');
+}
+
 export function normalizeModuleMemberGroupsResponse(value: unknown): ModuleMemberGroup[] {
   const body = asRecord(value);
   const rows = Array.isArray(body.members) ? body.members : [];
@@ -484,6 +594,7 @@ export function formatModuleRecordFieldValue(record: ModuleRecord, field: Module
       ?.members.map((reference) => reference.label) ?? [];
     return labels.length > 0 ? labels.join(', ') : '—';
   }
+  if (field.type === 'resource_ref') return '—';
   return formatModuleFieldValue(record.data[field.key], field);
 }
 
@@ -781,7 +892,7 @@ export function moduleRecordPayload(
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const field of collection.fields) {
-    if (field.type === 'relation') continue;
+    if (field.type === 'relation' || field.type === 'resource_ref') continue;
     const value = values[field.key];
     if (field.type === 'number') {
       if (value !== '' && value !== null && value !== undefined) payload[field.key] = Number(value);

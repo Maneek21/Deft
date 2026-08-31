@@ -14,9 +14,13 @@ import {
   normalizeModuleRecordPage,
   normalizeModuleRecordResponse,
   normalizeModuleRelationsResponse,
+  normalizeResourceOptionsResponse,
+  normalizeResourceRelationResponse,
   type BundledModule,
   type ModuleInstallation,
   type ModuleRecord,
+  type ResourceProjection,
+  type ResourceRelation,
 } from '@/lib/modules';
 import {
   normalizeModuleSavedViewsResponse,
@@ -189,6 +193,48 @@ export function useModuleRelations(slug: string, recordId: string, enabled = tru
   });
   const relations = useMemo(() => normalizeModuleRelationsResponse(swr.data), [swr.data]);
   return { ...swr, relations };
+}
+
+export function useResourceRelation(
+  slug: string,
+  recordId: string,
+  fieldKey: string,
+  enabled = true,
+) {
+  const key = slug && recordId && fieldKey && enabled
+    ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/resource-relations/${encodeURIComponent(fieldKey)}`
+    : null;
+  const swr = useSWR<unknown>(key, fetchModuleJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+  });
+  const relation = useMemo<ResourceRelation>(
+    () => normalizeResourceRelationResponse(swr.data),
+    [swr.data],
+  );
+  return { ...swr, relation };
+}
+
+export function useResourceRelationOptions(
+  slug: string,
+  recordId: string,
+  fieldKey: string,
+  query: string,
+  enabled = true,
+) {
+  const suffix = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+  const key = slug && recordId && fieldKey && enabled
+    ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/resource-relations/${encodeURIComponent(fieldKey)}/options${suffix}`
+    : null;
+  const swr = useSWR<unknown>(key, fetchModuleJson, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: true,
+  });
+  const options = useMemo<ResourceProjection[]>(
+    () => normalizeResourceOptionsResponse(swr.data),
+    [swr.data],
+  );
+  return { ...swr, options };
 }
 
 export function useModuleRecordActivity(recordId: string, enabled = true) {

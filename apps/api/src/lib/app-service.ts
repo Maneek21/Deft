@@ -12,7 +12,7 @@ import {
   type DeftAppPackageV0,
 } from '@deft/app-kit';
 import {
-  parseDeftModuleManifest,
+  parseSupportedDeftModuleManifest as parseDeftModuleManifest,
   type ModuleActor,
 } from '@deft/shared/modules';
 import { db } from './db.js';
@@ -329,6 +329,66 @@ export async function disableAppInstallation(
   await invalidateModuleCatalogCaches(actor.org_id);
   emitAppChange(actor.org_id, { change: 'disabled', installation_id: disabled.installation.id });
   return view(disabled.installation, disabled.version);
+}
+
+export async function enableAppInstallation(
+  actor: ModuleActor,
+  installationId: string,
+  expectedLifecycleEpoch: number,
+): Promise<AppInstallationView> {
+  assertHumanManager(actor);
+  const enabled = await db.transaction(async (tx) => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
+    await acquireAppLock(tx, actor.org_id, installationId);
+    const [installation] = await tx.select().from(appInstallations).where(and(
+      eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installationId),
+    )).limit(1).for('update');
+    if (!installation || !installation.active_version_id) throw new AppError('App installation not found', 'APP_NOT_FOUND', 404);
+    if (installation.state !== 'disabled') throw new AppError('Only a disabled App can be enabled', 'APP_STATE_CONFLICT', 409);
+    if (installation.lifecycle_epoch !== expectedLifecycleEpoch) throw new AppError('App lifecycle changed', 'APP_STALE', 409);
+    const bindings = await tx.select().from(appModuleBindings).where(and(
+      eq(appModuleBindings.org_id, actor.org_id),
+      eq(appModuleBindings.app_installation_id, installation.id),
+      eq(appModuleBindings.app_version_id, installation.active_version_id),
+    ));
+    for (const binding of bindings) {
+      await tx.update(moduleInstallations).set({
+        is_enabled: true,
+        disabled_at: null,
+        updated_by_actor_type: actor.kind,
+        updated_by_actor_id: actor.actor_id,
+      }).where(and(
+        eq(moduleInstallations.org_id, actor.org_id),
+        eq(moduleInstallations.id, binding.module_installation_id),
+      ));
+    }
+    const [updated] = await tx.update(appInstallations).set({
+      state: 'active',
+      lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
+      disabled_at: null,
+      updated_by_actor_type: actor.kind,
+      updated_by_actor_id: actor.actor_id,
+    }).where(and(eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installation.id))).returning();
+    const [version] = await tx.select().from(appVersions).where(and(
+      eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
+    )).limit(1);
+    if (!updated || !version) throw new Error('App enable update returned no row');
+    await insertAppAudit(tx, actor, 'app.enable', installation.id, { state: 'disabled' }, {
+      state: 'active', lifecycle_epoch: updated.lifecycle_epoch, data_preserved: true,
+    });
+    return { installation: updated, version, bindings };
+  });
+  for (const binding of enabled.bindings) {
+    getIO()?.to(`org-members:${actor.org_id}`).emit('module:changed', {
+      change: 'configured',
+      installation_id: binding.module_installation_id,
+      module_id: binding.module_id,
+      enabled: true,
+    });
+  }
+  await invalidateModuleCatalogCaches(actor.org_id);
+  emitAppChange(actor.org_id, { change: 'enabled', installation_id: enabled.installation.id });
+  return view(enabled.installation, enabled.version);
 }
 
 export async function listAppInstallations(actor: ModuleActor): Promise<AppInstallationView[]> {

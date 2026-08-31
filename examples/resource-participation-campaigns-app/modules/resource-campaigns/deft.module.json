@@ -1,8 +1,8 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "id": "org.deft.reference.resource-campaigns",
   "slug": "resource-campaigns",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": "Resource Campaigns",
   "description": "Campaigns owned by an independent Phase 4 proof App.",
   "icon": "megaphone",
@@ -25,14 +25,25 @@
           ],
           "default": "draft"
         },
+        {
+          "key": "contacts",
+          "label": "Contacts",
+          "type": "resource_ref",
+          "target": {
+            "module_id": "org.deft.reference.resource-contacts",
+            "resource_type": "contacts"
+          },
+          "multiple": true,
+          "display": "label"
+        },
         { "key": "scheduled_for", "label": "Scheduled for", "type": "datetime" },
         { "key": "audience_notes", "label": "Audience notes", "type": "long_text" }
       ],
       "views": [
-        { "key": "all", "name": "All campaigns", "type": "table", "fields": ["name", "subject", "status", "scheduled_for"] },
+        { "key": "all", "name": "All campaigns", "type": "table", "fields": ["name", "subject", "status", "contacts", "scheduled_for"] },
         { "key": "board", "name": "Campaign status", "type": "board", "group_by": "status", "fields": ["name", "subject", "scheduled_for"] },
         { "key": "form", "name": "Campaign form", "type": "form", "fields": ["name", "subject", "status", "scheduled_for", "audience_notes"] },
-        { "key": "detail", "name": "Campaign details", "type": "detail", "fields": ["name", "subject", "status", "scheduled_for", "audience_notes"] }
+        { "key": "detail", "name": "Campaign details", "type": "detail", "fields": ["name", "subject", "status", "contacts", "scheduled_for", "audience_notes"] }
       ],
       "search": {
         "title_field": "name",
