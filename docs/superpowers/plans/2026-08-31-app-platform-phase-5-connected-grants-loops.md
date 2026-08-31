@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loops 0–3 complete; PR A ready; PR B continues with Loop 4 |
+| Status | Loops 0–4 complete; PR B ready for review |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -318,6 +318,21 @@ materialization.
 
 **Stop condition:** reopen the gate if two surfaces need different policy code
 or if sensitive resolved values must enter previews, logs, events, or receipts.
+
+**Closeout:** passed on the dry-run/no-effect boundary. One AppActionService now
+owns list, resolve, and prepare for UI, Defty, employee-runtime, and human-MCP
+callers. It rechecks exact installation/grant/binding/dependency/provider
+membership, live caller and token authority, the current Campaign relation, and
+declared scalar fields before sealing a short-lived Run-owned input candidate.
+All returned resource labels and field evidence are explicitly projected so
+recipient, subject, and body values remain confined to the provider-input and
+encryption boundary. The focused disposable-PostgreSQL proof covers four-surface
+parity, unrelated selection, membership/token-scope/relation/schema/field
+revocation, and zero Capability invocation, Run, approval, or provider effect.
+The reused connected-grant lifecycle suite covers dependency, grant, and
+connector invalidation; architecture tests prove those checks precede scalar
+materialization and prevent App lifecycle/surface bypasses. Local certification
+used the documented test-only `vector` shim; real pgvector remains Loop 7.
 
 ## Loop 5 — Exact App-origin Run cutover
 

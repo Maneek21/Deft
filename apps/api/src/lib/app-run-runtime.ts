@@ -12,6 +12,7 @@ import { PostgresAppRunRepository } from './app-run-repository.js';
 import { postgresAppRunAttemptQueue } from './app-run-scheduler.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
+import { AppRunPreparedInputService } from './app-run-prepared-input.js';
 import { AppRunService } from './app-run-service.js';
 import { APP_RUNS_ENABLED } from './env.js';
 
@@ -19,6 +20,7 @@ export type AppRunRuntime = Readonly<{
   keys: EnvironmentAppRunKeyProvider;
   repository: PostgresAppRunRepository;
   secretRepository: AppRunSecretRepository;
+  inputPreparation: AppRunPreparedInputService;
   liveAuthorization: PostgresAppRunLiveAuthorization;
   service: AppRunService;
   attemptRunner: AppRunAttemptRunner;
@@ -33,6 +35,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
   const secrets = new AppRunSecretService(keys);
   const repository = new PostgresAppRunRepository();
   const secretRepository = new AppRunSecretRepository(secrets);
+  const inputPreparation = new AppRunPreparedInputService(secrets);
   const liveAuthorization = new PostgresAppRunLiveAuthorization();
   const accessAuthorization = new PostgresAppRunAuthorizer();
   const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
@@ -90,6 +93,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     keys,
     repository,
     secretRepository,
+    inputPreparation,
     liveAuthorization,
     service,
     attemptRunner,

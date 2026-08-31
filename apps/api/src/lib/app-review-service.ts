@@ -22,7 +22,6 @@ import {
 } from '@deft/app-kit';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
 import {
-  canonicalCapabilityJson,
   CapabilityProviderDiscoverySnapshotSchema,
   type CapabilityProviderDiscoverySnapshot,
 } from '@deft/shared';
@@ -41,7 +40,15 @@ import {
 } from './app-grant-service.js';
 import { capabilityService, type CapabilityDiscoveryResult } from './capability-service.js';
 import { persistCapabilityProviderSnapshotWithExecutor } from './capability-provider-snapshot-repository.js';
-import { canonicalMcpToolName, isMcpToolEnabled } from './mcp-tool-identity.js';
+import { isMcpToolEnabled } from './mcp-tool-identity.js';
+import {
+  CONNECTED_APP_ACTION_BINDING_VERSION,
+  CONNECTED_APP_SANDBOX_OPERATION_NAME,
+  normalizeConnectedMcpOverrides,
+  sandboxEmailActionBindingMatches,
+  sandboxEmailOperationMatches,
+  sandboxEmailToolMatches,
+} from './app-connected-contract.js';
 import {
   assertCurrentModuleManagerWithExecutor,
   installModuleFromManifestWithExecutor,
@@ -60,8 +67,6 @@ type Connection = typeof mcpConnections.$inferSelect;
 
 const REVIEW_VERSION = 'deft.app_grant_review.v1' as const;
 const DEPENDENCY_LOCK_VERSION = 'deft.app_dependency_lock.v1' as const;
-const ACTION_BINDING_VERSION = 'deft.app_action_binding.v1' as const;
-const SANDBOX_OPERATION_NAME = 'send_email' as const;
 
 export type AppConnectorSelection = Readonly<{
   connector_requirement_key: string;
@@ -130,7 +135,7 @@ type ReviewActionBinding = Readonly<{
   mcp_connection_id: string;
   provider_snapshot_digest: string;
   provider_adapter_contract_version: string;
-  operation_name: typeof SANDBOX_OPERATION_NAME;
+  operation_name: typeof CONNECTED_APP_SANDBOX_OPERATION_NAME;
   operation_schema_digest: string;
   connector_authorization_version: number;
   canonical_binding: Readonly<Record<string, unknown>>;
@@ -181,33 +186,6 @@ export interface AppReviewCapabilityPort {
     provider_instance_id: string;
     overrides?: MCPToolOverride[];
   }): Promise<CapabilityDiscoveryResult>;
-}
-
-function normalizedMcpOverrides(
-  rows: readonly Pick<typeof mcpToolOverrides.$inferSelect, 'tool_name' | 'trust_tier_override' | 'is_disabled'>[],
-): MCPToolOverride[] {
-  const byName = new Map<string, MCPToolOverride>();
-  const rank = { 'auto-execute': 0, 'quick-approve': 1, 'full-review': 2 } as const;
-  for (const row of rows) {
-    const toolName = canonicalMcpToolName(row.tool_name);
-    const approvalTier = row.trust_tier_override === 'auto'
-      ? 'auto-execute' as const
-      : row.trust_tier_override === 'quick'
-        ? 'quick-approve' as const
-        : row.trust_tier_override === 'full'
-          ? 'full-review' as const
-          : undefined;
-    const existing = byName.get(toolName);
-    const strictestTier = existing?.approvalTier && approvalTier
-      ? (rank[existing.approvalTier] >= rank[approvalTier] ? existing.approvalTier : approvalTier)
-      : existing?.approvalTier ?? approvalTier;
-    byName.set(toolName, {
-      toolName,
-      ...(strictestTier ? { approvalTier: strictestTier } : {}),
-      disabled: Boolean(existing?.disabled || row.is_disabled),
-    });
-  }
-  return [...byName.values()].sort((left, right) => left.toolName.localeCompare(right.toolName));
 }
 
 function assertHumanManager(
@@ -445,7 +423,7 @@ async function loadReviewContext(
       eq(mcpConnections.is_active, true),
     )).limit(1);
     if (!connection) throw appError('The selected connector is unavailable', 'APP_PROVIDER_UNAVAILABLE');
-    if (!isMcpToolEnabled(connection.enabled_tools, connection.slug, SANDBOX_OPERATION_NAME)) {
+    if (!isMcpToolEnabled(connection.enabled_tools, connection.slug, CONNECTED_APP_SANDBOX_OPERATION_NAME)) {
       throw appError('The selected connector does not enable the required operation', 'APP_PROVIDER_UNAVAILABLE');
     }
     const overrideRows = await executor.select({
@@ -456,9 +434,9 @@ async function loadReviewContext(
       eq(mcpToolOverrides.org_id, actor.org_id),
       eq(mcpToolOverrides.mcp_connection_id, connection.id),
     ));
-    const overrides = normalizedMcpOverrides(overrideRows);
+    const overrides = normalizeConnectedMcpOverrides(overrideRows);
     if (overrides.some((override) => (
-      override.toolName === SANDBOX_OPERATION_NAME && override.disabled
+      override.toolName === CONNECTED_APP_SANDBOX_OPERATION_NAME && override.disabled
     ))) {
       throw appError('The selected connector operation is disabled', 'APP_PROVIDER_UNAVAILABLE');
     }
@@ -476,16 +454,6 @@ async function loadReviewContext(
     connections,
     connector_overrides: connectorOverrides,
   };
-}
-
-function schemaMatchesSandboxContract(operation: CapabilityProviderDiscoverySnapshot['operations'][number]): boolean {
-  return canonicalCapabilityJson({
-    input_schema: operation.input_schema,
-    output_schema: operation.output_schema,
-  }) === canonicalCapabilityJson({
-    input_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
-    output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
-  });
 }
 
 async function discoverProviderEvidence(
@@ -508,9 +476,11 @@ async function discoverProviderEvidence(
     }
     const snapshot = result.snapshot;
     const operation = snapshot?.operations.find(
-      (item) => item.identity.operation_name === SANDBOX_OPERATION_NAME,
+      (item) => item.identity.operation_name === CONNECTED_APP_SANDBOX_OPERATION_NAME,
     );
-    const filteredTool = result.tools.find((tool: MCPTool) => tool.originalName === SANDBOX_OPERATION_NAME);
+    const filteredTool = result.tools.find((tool: MCPTool) => (
+      tool.originalName === CONNECTED_APP_SANDBOX_OPERATION_NAME
+    ));
     if (
       !snapshot
       || snapshot.provider.org_id !== actor.org_id
@@ -518,14 +488,8 @@ async function discoverProviderEvidence(
       || snapshot.provider.provider_instance_id !== connection.id
       || !operation
       || !filteredTool
-      || !schemaMatchesSandboxContract(operation)
-      || canonicalCapabilityJson({
-        input_schema: filteredTool.inputSchema,
-        output_schema: filteredTool.outputSchema,
-      }) !== canonicalCapabilityJson({
-        input_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
-        output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
-      })
+      || !sandboxEmailOperationMatches(operation)
+      || !sandboxEmailToolMatches(filteredTool)
     ) {
       throw appError('Provider does not implement the required sandbox email contract', 'APP_PROVIDER_UNAVAILABLE');
     }
@@ -569,6 +533,12 @@ function validateResourceAndActionContracts(context: ReviewContext): void {
     resourceModules.set(requirement.key, module);
   }
   for (const action of context.manifest.actions) {
+    if (!sandboxEmailActionBindingMatches(action)) {
+      throw appError(
+        'The action input mapping is outside the supported connected App contract',
+        'APP_DEPENDENCY_UNHEALTHY',
+      );
+    }
     const placement = context.manifest.resource_requirements.find(
       (item) => item.key === action.placement.resource_requirement_key,
     )!;
@@ -670,7 +640,7 @@ function buildReview(
         interface_version: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.version,
       });
       const canonicalBinding = canonicalizeAppGrantValue({
-        binding_version: ACTION_BINDING_VERSION,
+        binding_version: CONNECTED_APP_ACTION_BINDING_VERSION,
         action_key: action.key,
         capability_requirement_key: action.capability_requirement_key,
         connector_requirement_key: action.connector_requirement_key,
@@ -679,7 +649,7 @@ function buildReview(
         mcp_connection_id: provider.connection.id,
         provider_snapshot_digest: provider.snapshot.snapshot_digest,
         provider_adapter_contract_version: provider.snapshot.adapter_contract_version,
-        operation_name: SANDBOX_OPERATION_NAME,
+        operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
         operation_schema_digest: provider.operation.schema_digest,
         connector_authorization_version: provider.connection.app_run_authorization_version,
         host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
@@ -695,7 +665,7 @@ function buildReview(
         mcp_connection_id: provider.connection.id,
         provider_snapshot_digest: provider.snapshot.snapshot_digest,
         provider_adapter_contract_version: provider.snapshot.adapter_contract_version,
-        operation_name: SANDBOX_OPERATION_NAME,
+        operation_name: CONNECTED_APP_SANDBOX_OPERATION_NAME,
         operation_schema_digest: provider.operation.schema_digest,
         connector_authorization_version: provider.connection.app_run_authorization_version,
         canonical_binding: canonicalBinding,
@@ -1411,7 +1381,7 @@ export async function inspectConnectedAppHealth(
       eq(mcpToolOverrides.org_id, actorValue.org_id),
       eq(mcpToolOverrides.mcp_connection_id, binding.mcp_connection_id),
     ));
-    const overrides = normalizedMcpOverrides(overrideRows);
+    const overrides = normalizeConnectedMcpOverrides(overrideRows);
     if (
       !connection
       || !connection.is_active

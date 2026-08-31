@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { DeftAppManifestV0Schema } from '@deft/app-kit';
 import { buildRequestedAppGrantProjection } from '../src/lib/app-grant-service.js';
+import { sandboxEmailActionBindingMatches } from '../src/lib/app-connected-contract.js';
 import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -69,6 +70,23 @@ test('Protocol v0 staging projection is an empty compatibility request', () => {
   assert.equal(projection.classification.provider_access, false);
   assert.equal(projection.classification.review_required, false);
   assert.deepEqual(projection.classification.actions, []);
+});
+
+test('connected sandbox actions accept only the frozen resource-backed input mapping', async () => {
+  const built = await buildPhase5ConnectedAppPackage();
+  const action = built.package.manifest.actions[0]!;
+  assert.equal(sandboxEmailActionBindingMatches(action), true);
+
+  const unsupported = {
+    ...action,
+    input_bindings: action.input_bindings.map((binding) => binding.input_key === 'subject'
+      ? {
+          ...binding,
+          source: { kind: 'user_input' as const, input_type: 'text' as const, label: 'Subject' },
+        }
+      : binding),
+  } as typeof action;
+  assert.equal(sandboxEmailActionBindingMatches(unsupported), false);
 });
 
 test('grant staging code has no provider, connector runtime, approval, or Run dependency', () => {
