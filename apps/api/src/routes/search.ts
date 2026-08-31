@@ -4,7 +4,8 @@ import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
-import { humanModuleActor, searchModuleRecords } from '../lib/module-service.js';
+import { humanModuleActor } from '../lib/module-service.js';
+import { searchAuthorizedModuleResources as searchModuleRecords } from '../lib/resource-search-service.js';
 
 export const searchRoutes = new Hono();
 

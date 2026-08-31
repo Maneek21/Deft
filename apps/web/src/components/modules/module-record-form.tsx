@@ -56,8 +56,13 @@ export function ModuleRecordFormDialog({
   const fields = useMemo(() => {
     const configuredFields = getModuleCollectionFields(collection, 'form');
     const selected = (configuredFields.length > 0 ? configuredFields : collection.fields)
-      .filter((field) => field.type !== 'relation');
-    const required = collection.fields.filter((field) => field.type !== 'relation' && field.required && !selected.some((candidate) => candidate.key === field.key));
+      .filter((field) => field.type !== 'relation' && field.type !== 'resource_ref');
+    const required = collection.fields.filter((field) => (
+      field.type !== 'relation'
+      && field.type !== 'resource_ref'
+      && field.required
+      && !selected.some((candidate) => candidate.key === field.key)
+    ));
     return [...selected, ...required];
   }, [collection]);
 

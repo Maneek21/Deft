@@ -1,0 +1,26 @@
+{
+  "schema_version": "0",
+  "id": "org.deft.reference.resource-campaigns-app",
+  "version": "2.0.0",
+  "name": "Resource Campaigns",
+  "description": "An independent Campaigns App for the Resource participation proof.",
+  "license": "AGPL-3.0-only",
+  "compatibility": { "app_protocol": "0" },
+  "modules": [
+    {
+      "module_id": "org.deft.reference.resource-campaigns",
+      "version": "2.0.0",
+      "manifest_path": "modules/resource-campaigns/deft.module.json",
+      "manifest_digest": "sha256:f2331b26b9accd8652bdf0c4e54a9ef9c49344493f9fb5618bbeb9f9e56ae0f2"
+    }
+  ],
+  "navigation": [
+    {
+      "key": "resource_campaigns",
+      "label": "Resource Campaigns",
+      "module_id": "org.deft.reference.resource-campaigns",
+      "collection_key": "campaigns",
+      "view_key": "all"
+    }
+  ]
+}

@@ -63,6 +63,10 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appRunAncestryGuardFile), 'utf8'));
     console.log(`[apply-extras] applied ${appRunAncestryGuardFile}`);
 
+    const resourceRelationsFile = '0.3.0-preview.22-resource-relations.sql';
+    await client.query(readFileSync(resolve(upgradesDir, resourceRelationsFile), 'utf8'));
+    console.log(`[apply-extras] applied ${resourceRelationsFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -121,6 +125,9 @@ async function main() {
       'mcp_tool_overrides_app_run_authorization_version_check',
       'mcp_tokens_app_run_authorization_version_check',
       'oauth_access_tokens_app_run_authorization_version_check',
+      'resource_relation_sets_org_id_id_unique',
+      'resource_relation_edges_org_set_fk',
+      'resource_relation_receipts_org_set_fk',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
       `SELECT conname
@@ -161,6 +168,10 @@ async function main() {
       'app_run_events_sequence_unique',
       'app_run_receipts_key_unique',
       'agent_action_app_run_unique',
+      'resource_relation_sets_identity_unique',
+      'resource_relation_edges_active_target_unique',
+      'resource_relation_edges_active_position_unique',
+      'resource_relation_receipts_idempotency_unique',
     ];
     const installedIndexes = await client.query<{ relname: string }>(
       `SELECT relname

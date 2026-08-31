@@ -22,6 +22,8 @@ import {
   moduleSavedViews,
   moduleVersions,
   orgMembers,
+  resourceRelationEdges,
+  resourceRelationSets,
   users,
 } from '@deft/db/schema';
 import {
@@ -32,14 +34,14 @@ import {
   ModuleSavedViewConfigSchema,
   ModuleRecordValidationError,
   getModuleOperationInputJsonSchema,
-  digestModuleManifest,
+  digestSupportedModuleManifest as digestModuleManifest,
   formatModuleRecordResourceId,
-  parseDeftModuleManifest,
+  parseSupportedDeftModuleManifest as parseDeftModuleManifest,
   parseModuleRecordResourceId,
   parseModuleRecordData,
   projectModuleRecordSearch,
   validateModuleFieldValue,
-  type DeftModuleManifestV1,
+  type DeftModuleManifest as DeftModuleManifestV1,
   type ModuleActor,
   type ModuleRecord,
   type ModuleRecordArchiveRequest,
@@ -57,10 +59,11 @@ import {
   type ModuleRelationGroup,
   type ModuleMemberGroup,
   type ModuleSummary,
-  type ModuleField,
+  type ModuleFieldV2 as ModuleField,
   type ModuleMutationResult,
   type ModuleOperationName,
 } from '@deft/shared/modules';
+import type { ModuleResourceRefV1 } from '@deft/shared/resources';
 import { db } from './db.js';
 import { getIO } from '../socket.js';
 import { getBundledModule, listBundledModules } from './bundled-modules.js';
@@ -1569,7 +1572,9 @@ export async function assertModuleAuditReadAccess(
   );
 }
 
-function moduleFieldExample(field: Exclude<ModuleField, { type: 'relation' }>): unknown {
+function moduleFieldExample(
+  field: Exclude<ModuleField, { type: 'relation' } | { type: 'resource_ref' }>,
+): unknown {
   switch (field.type) {
     case 'text':
     case 'long_text':
@@ -1645,10 +1650,15 @@ export async function getModuleSchema(
       },
     },
     collection_contracts: manifest.collections.map((collection) => {
-      const relationFields = collection.fields.filter(
+      const fields = collection.fields as ModuleField[];
+      const relationFields = fields.filter(
         (field): field is Extract<ModuleField, { type: 'relation' }> => field.type === 'relation',
       );
-      const scalarFields = collection.fields.filter((field) => field.type !== 'relation');
+      const scalarFields = fields.filter(
+        (field): field is Exclude<ModuleField, { type: 'relation' } | { type: 'resource_ref' }> => (
+          field.type !== 'relation' && field.type !== 'resource_ref'
+        ),
+      );
       const requiredScalarFields = scalarFields.filter((field) => field.required);
       const exampleScalarFields = requiredScalarFields.length > 0
         ? requiredScalarFields
@@ -1984,6 +1994,86 @@ export async function upgradeModuleInstallationToManifest(
       }
     }
 
+    const resourceRelationSetsForModule = await tx
+      .select()
+      .from(resourceRelationSets)
+      .where(and(
+        eq(resourceRelationSets.org_id, actor.org_id),
+        eq(resourceRelationSets.source_provider_kind, 'module'),
+        eq(resourceRelationSets.source_provider_instance_id, current.installation.id),
+      ))
+      .for('update');
+    const resourceSetIds = resourceRelationSetsForModule.map((set) => set.id);
+    const resourceEdges = resourceSetIds.length === 0
+      ? []
+      : await tx
+        .select()
+        .from(resourceRelationEdges)
+        .where(and(
+          eq(resourceRelationEdges.org_id, actor.org_id),
+          inArray(resourceRelationEdges.relation_set_id, resourceSetIds),
+          eq(resourceRelationEdges.is_deleted, false),
+        ))
+        .for('update');
+    const resourceEdgesBySet = new Map<string, typeof resourceEdges>();
+    for (const edge of resourceEdges) {
+      const group = resourceEdgesBySet.get(edge.relation_set_id);
+      if (group) group.push(edge);
+      else resourceEdgesBySet.set(edge.relation_set_id, [edge]);
+    }
+    const targetInstallationIds = [...new Set(resourceEdges
+      .filter((edge) => edge.target_provider_kind === 'module')
+      .map((edge) => edge.target_provider_instance_id))];
+    const targetInstallations = targetInstallationIds.length === 0
+      ? []
+      : await tx
+        .select({ id: moduleInstallations.id, module_id: moduleInstallations.module_id })
+        .from(moduleInstallations)
+        .where(and(
+          eq(moduleInstallations.org_id, actor.org_id),
+          inArray(moduleInstallations.id, targetInstallationIds),
+        ));
+    const targetModuleByInstallation = new Map(
+      targetInstallations.map((installation) => [installation.id, installation.module_id]),
+    );
+    for (const set of resourceRelationSetsForModule) {
+      const source = recordById.get(set.source_resource_id);
+      const collection = source && manifest.collections.find(
+        (candidate) => candidate.key === source.collection_key,
+      );
+      const field = (collection?.fields as ModuleField[] | undefined)?.find(
+        (candidate) => candidate.key === set.relation_key,
+      );
+      const edges = resourceEdgesBySet.get(set.id) ?? [];
+      if (!source || !field || field.type !== 'resource_ref') {
+        throw new ModuleError(
+          `Existing resource relation ${set.relation_key} is incompatible with module version ${manifest.version}`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+        );
+      }
+      if (!field.multiple && edges.length > 1) {
+        throw new ModuleError(
+          `Existing resource relation ${field.key} has multiple targets but the new manifest is singular`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+        );
+      }
+      for (const edge of edges) {
+        if (
+          edge.target_provider_kind !== 'module'
+          || edge.target_resource_type !== field.target.resource_type
+          || targetModuleByInstallation.get(edge.target_provider_instance_id) !== field.target.module_id
+        ) {
+          throw new ModuleError(
+            `Existing resource relation ${field.key} has an incompatible target interface`,
+            'MODULE_VALIDATION_ERROR',
+            409,
+          );
+        }
+      }
+    }
+
     const savedViews = await tx
       .select()
       .from(moduleSavedViews)
@@ -2126,7 +2216,12 @@ export async function updateModuleInstallation(
       'read',
       { allowDisabledForAdmin: true, lock: true },
     );
-    await assertModuleLifecycleNotOwnedByApp(tx, actor.org_id, row.installation.id);
+    // The App owns enable/disable and version lifecycle, but agent_access is a
+    // host-admin policy outside declarative App authority and remains locally
+    // configurable for App-owned Modules.
+    if (changes.enabled !== undefined) {
+      await assertModuleLifecycleNotOwnedByApp(tx, actor.org_id, row.installation.id);
+    }
     const nextEnabled = changes.enabled ?? row.installation.is_enabled;
     const nextAgentAccess = changes.agent_access ?? row.installation.agent_access;
     const [installation] = await tx
@@ -2818,6 +2913,72 @@ export async function getModuleRecord(
   return record;
 }
 
+export type ModuleRelationEndpoint = Readonly<{
+  ref: ModuleResourceRefV1;
+  installation: ModuleInstallationView;
+  record: Readonly<{
+    id: string;
+    collection_key: string;
+    revision: number;
+    label: string;
+    updated_at: Date;
+  }>;
+}>;
+
+/**
+ * Transaction-local authorization and locking for generic relation writes.
+ * Callers must acquire endpoints in deterministic order. ModuleService remains
+ * the sole owner of Module access, lifecycle, manifest, and record policy.
+ */
+export async function resolveModuleRelationEndpointWithExecutor(
+  executor: ModuleDbExecutor,
+  actorValue: ModuleActor,
+  ref: ModuleResourceRefV1,
+  mode: 'read' | 'write',
+): Promise<ModuleRelationEndpoint> {
+  const actor = validatedActor(actorValue);
+  const row = await findInstallation(
+    executor,
+    actor,
+    { installationId: ref.provider.provider_instance_id },
+    mode,
+    { lock: true },
+  );
+  const manifest = await verifyManifest(row.version);
+  const collection = manifest.collections.find((item) => item.key === ref.resource_type);
+  if (!collection) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+
+  let recordQuery = executor
+    .select()
+    .from(moduleRecords)
+    .where(and(
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.installation_id, row.installation.id),
+      eq(moduleRecords.id, ref.resource_id),
+      eq(moduleRecords.collection_key, ref.resource_type),
+      eq(moduleRecords.is_deleted, false),
+    ))
+    .limit(1);
+  if ('for' in recordQuery) {
+    recordQuery = (recordQuery as typeof recordQuery & {
+      for: (strength: 'update') => typeof recordQuery;
+    }).for('update');
+  }
+  const [record] = await recordQuery;
+  if (!record) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  return {
+    ref,
+    installation: toInstallationView(row, manifest),
+    record: {
+      id: record.id,
+      collection_key: record.collection_key,
+      revision: record.revision,
+      label: record.search_title || record.id,
+      updated_at: record.updated_at,
+    },
+  };
+}
+
 function collectionFor(
   manifest: DeftModuleManifestV1,
   collectionKey: string,
@@ -2874,8 +3035,8 @@ function assertModuleFilterCompatibility(
   field: ModuleField,
   filter: ModuleRecordQueryRequest['filters'][number],
 ): void {
-  if (field.type === 'relation') {
-    moduleValidationError('Relation fields must be queried through the relation endpoint');
+  if (field.type === 'relation' || field.type === 'resource_ref') {
+    moduleValidationError('Reference fields must be queried through the relation endpoint');
   }
   if (filter.operator === 'eq' || filter.operator === 'neq') {
     assertValidModuleFilterValue(field, filter.value, filter.operator);
@@ -3052,7 +3213,7 @@ function moduleSortExpression(
   if (field.type === 'multi_select') {
     throw new ModuleError('Cannot sort by a multi-select field', 'MODULE_VALIDATION_ERROR', 400);
   }
-  if (isJsonArrayModuleField(field) || field.type === 'relation') {
+  if (isJsonArrayModuleField(field) || field.type === 'relation' || field.type === 'resource_ref') {
     throw new ModuleError('Cannot sort by an array or relation field', 'MODULE_VALIDATION_ERROR', 400);
   }
   return typedModuleFieldExpression(field);
@@ -3464,7 +3625,8 @@ async function resolveModuleRecordFields(
 
   return records.map((record) => {
     const collection = collectionFor(manifest, record.collection_key);
-    const relations: ModuleRelationGroup[] = collection.fields
+    const fields = collection.fields as ModuleField[];
+    const relations: ModuleRelationGroup[] = fields
       .filter((field): field is Extract<ModuleField, { type: 'relation' }> => field.type === 'relation')
       .map((field) => ({
         field_key: field.key,
@@ -3475,7 +3637,7 @@ async function resolveModuleRecordFields(
           ))
           .map(referenceFor),
       }));
-    const members: ModuleMemberGroup[] = collection.fields
+    const members: ModuleMemberGroup[] = fields
       .filter((field): field is Extract<ModuleField, { type: 'member' }> => field.type === 'member')
       .map((field) => {
         const raw = record.data[field.key];
@@ -3677,6 +3839,7 @@ export async function searchModuleRecords(
     items.push({
       resource_id: formatModuleRecordResourceId(row.record.id),
       record_id: row.record.id,
+      installation_id: row.installation.id,
       module_id: row.installation.module_id,
       module_slug: row.installation.slug,
       module_name: manifest.name,

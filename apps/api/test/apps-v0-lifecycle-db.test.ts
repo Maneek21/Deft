@@ -16,6 +16,7 @@ import { db, closeDb } from '../src/lib/db.js';
 import {
   activateAppInstallation,
   disableAppInstallation,
+  enableAppInstallation,
   listActiveAppNavigation,
   stageAppPackage,
 } from '../src/lib/app-service.js';
@@ -170,6 +171,12 @@ test('App activation is atomic, tenant-bound, zero-rights while staged, and pres
   assert.equal(disabled.state, 'disabled');
   assert.equal((await listActiveAppNavigation(actor)).some((item) => item.module_slug === suffix), false);
   assert.equal((await db.select().from(moduleRecords).where(eq(moduleRecords.id, recordId))).length, 1);
+  const reenabled = await enableAppInstallation(actor, disabled.id, disabled.lifecycle_epoch);
+  assert.equal(reenabled.state, 'active');
+  assert.ok((await listActiveAppNavigation(actor)).some((item) => item.module_slug === suffix));
+  assert.equal((await db.select().from(moduleRecords).where(eq(moduleRecords.id, recordId))).length, 1);
+  const disabledAgain = await disableAppInstallation(actor, reenabled.id, reenabled.lifecycle_epoch);
+  assert.equal(disabledAgain.state, 'disabled');
   await assert.rejects(
     () => updateModuleInstallation(actor, suffix, { enabled: true }),
     /owned by an App/,

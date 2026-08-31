@@ -3,6 +3,8 @@ import { describe, test } from 'node:test';
 import {
   DeftModuleManifestV1Schema,
   type DeftModuleManifestV1Input,
+  DeftModuleManifestV2Schema,
+  type DeftModuleManifestV2Input,
   MODULE_LIMITS,
   MODULE_OPERATION_DEFINITIONS,
   MODULE_OPERATION_NAMES,
@@ -15,11 +17,15 @@ import {
   ModuleSavedViewConfigSchema,
   ModuleRecordUpdateRequestSchema,
   canonicalModuleManifestJson,
+  canonicalSupportedModuleManifestJson,
   digestModuleManifest,
+  digestSupportedModuleManifest,
   formatModuleRecordResourceId,
   getDeftModuleManifestV1JsonSchema,
+  getDeftModuleManifestV2JsonSchema,
   parseDeftModuleManifest,
   parseDeftModuleManifestJson,
+  parseSupportedDeftModuleManifest,
   parseModuleRecordResourceId,
   projectModuleRecordSearch,
   validateModuleRecordData,
@@ -89,6 +95,37 @@ function contactsManifest(): DeftModuleManifestV1Input {
         ],
       },
     ],
+  };
+}
+
+function campaignsManifestV2(): DeftModuleManifestV2Input {
+  return {
+    schema_version: '2',
+    id: 'community.deft.campaigns',
+    slug: 'campaigns',
+    version: '2.0.0',
+    name: 'Campaigns',
+    collections: [{
+      key: 'campaigns',
+      name: 'Campaigns',
+      fields: [
+        { key: 'name', label: 'Name', type: 'text', required: true },
+        {
+          key: 'contacts',
+          label: 'Contacts',
+          type: 'resource_ref',
+          target: { module_id: 'community.deft.contacts', resource_type: 'contacts' },
+          multiple: true,
+        },
+      ],
+      search: { title_field: 'name', fields: ['name'] },
+      views: [{
+        key: 'all_campaigns',
+        name: 'All campaigns',
+        type: 'table',
+        fields: ['name', 'contacts'],
+      }],
+    }],
   };
 }
 
@@ -333,6 +370,75 @@ describe('deft.module.json v1 manifest', () => {
     assert.equal(jsonSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
     assert.equal(jsonSchema.type, 'object');
     assert.equal(jsonSchema.additionalProperties, false);
+  });
+});
+
+describe('deft.module.json v2 resource references', () => {
+  test('adds only a strict optional host-resolved resource_ref field', () => {
+    const parsed = parseSupportedDeftModuleManifest(campaignsManifestV2());
+    assert.equal(parsed.schema_version, '2');
+    const field = parsed.collections[0]!.fields[1]!;
+    assert.equal(field.type, 'resource_ref');
+    if (field.type === 'resource_ref') {
+      assert.equal(field.required, false);
+      assert.equal(field.display, 'label');
+      assert.equal(field.target.module_id, 'community.deft.contacts');
+    }
+
+    assert.equal(DeftModuleManifestV2Schema.safeParse({
+      ...campaignsManifestV2(),
+      collections: [{
+        ...campaignsManifestV2().collections[0]!,
+        fields: [{
+          ...campaignsManifestV2().collections[0]!.fields[1]!,
+          required: true,
+        }],
+      }],
+    }).success, false);
+    assert.throws(() => parseSupportedDeftModuleManifest({
+      ...campaignsManifestV2(),
+      collections: [{
+        ...campaignsManifestV2().collections[0]!,
+        fields: [{
+          ...campaignsManifestV2().collections[0]!.fields[1]!,
+          org_id: 'spoofed',
+        }],
+      }],
+    }));
+  });
+
+  test('keeps v1 parsing, canonical bytes, and digest exactly on the v1 path', async () => {
+    const v1 = contactsManifest();
+    assert.equal(
+      canonicalSupportedModuleManifestJson(v1),
+      canonicalModuleManifestJson(v1),
+    );
+    assert.equal(
+      await digestSupportedModuleManifest(v1),
+      await digestModuleManifest(v1),
+    );
+    assert.equal(parseDeftModuleManifest(v1).schema_version, '1');
+    assert.throws(() => parseDeftModuleManifest(campaignsManifestV2()));
+  });
+
+  test('does not permit resource references in inline record data or search indexing', () => {
+    const result = validateModuleRecordData(campaignsManifestV2(), 'campaigns', {
+      name: 'Launch',
+      contacts: ['contact_1'],
+    });
+    assert.equal(result.success, false);
+    if (!result.success) assert.match(result.issues[0]?.message ?? '', /relation endpoint/i);
+
+    const searchable = campaignsManifestV2();
+    searchable.collections[0]!.search!.fields.push('contacts');
+    assert.throws(() => parseSupportedDeftModuleManifest(searchable), /Search cannot directly index relation/);
+  });
+
+  test('exports a strict v2 authoring schema', () => {
+    const jsonSchema = getDeftModuleManifestV2JsonSchema();
+    assert.equal(jsonSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
+    assert.equal(jsonSchema.type, 'object');
+    assert.equal(DeftModuleManifestV2Schema.safeParse(campaignsManifestV2()).success, true);
   });
 });
 

@@ -6,6 +6,7 @@ import { humanModuleActor } from '../lib/module-service.js';
 import {
   activateAppInstallation,
   disableAppInstallation,
+  enableAppInstallation,
   getAppInstallation,
   inspectAppPackageJson,
   listActiveAppNavigation,
@@ -150,6 +151,21 @@ appRoutes.post('/:installationId/disable', async (c) => {
     const body = disableSchema.parse(await c.req.json());
     return c.json({
       app: await disableAppInstallation(
+        managerFromContext(c),
+        IdSchema.parse(c.req.param('installationId')),
+        body.expected_lifecycle_epoch,
+      ),
+    });
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.post('/:installationId/enable', async (c) => {
+  try {
+    const body = disableSchema.parse(await c.req.json());
+    return c.json({
+      app: await enableAppInstallation(
         managerFromContext(c),
         IdSchema.parse(c.req.param('installationId')),
         body.expected_lifecycle_epoch,

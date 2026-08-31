@@ -9,6 +9,7 @@ import { useSetPageContext } from '@/components/app-header-context';
 import { ModuleRecordActivity } from '@/components/modules/module-record-activity';
 import { ModuleRecordFormDialog } from '@/components/modules/module-record-form';
 import { ModuleRecordRelations } from '@/components/modules/module-record-relations';
+import { ModuleResourceRelations } from '@/components/modules/module-resource-relations';
 import { ModuleRecordTaskLinks } from '@/components/modules/module-record-task-links';
 import { ModuleErrorState, ModuleLoadingState } from '@/components/modules/module-primitives';
 import { api } from '@/lib/api';
@@ -110,7 +111,7 @@ export default function ModuleRecordDetailPage() {
 
   const configuredFields = getModuleCollectionFields(collection, 'detail');
   const fields = (configuredFields.length > 0 ? configuredFields : collection.fields)
-    .filter((field) => field.type !== 'relation');
+    .filter((field) => field.type !== 'relation' && field.type !== 'resource_ref');
 
   return (
     <div className="h-full overflow-y-auto pb-[max(1.5rem,env(safe-area-inset-bottom))]">
@@ -205,6 +206,12 @@ export default function ModuleRecordDetailPage() {
                 await recordState.mutate();
                 await refreshModuleCaches(installedModule.slug);
               }}
+            />
+            <ModuleResourceRelations
+              slug={installedModule.slug}
+              collection={collection}
+              recordId={record.id}
+              canWrite={canWrite}
             />
             <ModuleRecordActivity resourceId={record.resourceId} fields={collection.fields} />
           </aside>

@@ -32,6 +32,9 @@ import {
   moduleRecords,
   moduleSavedViews,
   moduleVersions,
+  resourceRelationEdges,
+  resourceRelationReceipts,
+  resourceRelationSets,
   files,
   messageAttachments,
   messages,
@@ -728,6 +731,36 @@ test('module relations/views fresh-install and supported-upgrade SQL stay identi
     upgradeSql,
     /module_saved_views_active_name_unique[\s\S]*owner_user_id,[\s\S]*name[\s\S]*WHERE is_deleted = false/i,
   );
+});
+
+test('resource relation substrate is additive, tenant-bound, and replay-safe', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.22',
+  );
+  assert.ok(migration, 'resource relation migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.22-resource-relations\.sql/);
+  assert.match(upgradeSql, /resource_relation_sets_identity_unique/i);
+  assert.match(upgradeSql, /resource_relation_edges_active_target_unique[\s\S]*WHERE is_deleted = false/i);
+  assert.match(upgradeSql, /resource_relation_edges_active_position_unique[\s\S]*WHERE is_deleted = false/i);
+  assert.match(upgradeSql, /FOREIGN KEY \(org_id, relation_set_id\)[\s\S]*REFERENCES resource_relation_sets\(org_id, id\)/i);
+  assert.match(upgradeSql, /source_provider_instance_id = 'tasks'[\s\S]*source_resource_type = 'task'/i);
+  assert.match(upgradeSql, /target_provider_instance_id = 'tasks'[\s\S]*target_resource_type = 'task'/i);
+  assert.doesNotMatch(upgradeSql, /ALTER TABLE module_record_relations|UPDATE module_record_relations/i);
+
+  const sets = getTableConfig(resourceRelationSets);
+  const edges = getTableConfig(resourceRelationEdges);
+  const receipts = getTableConfig(resourceRelationReceipts);
+  assert.ok(sets.uniqueConstraints.some((item) => item.name === 'resource_relation_sets_org_id_id_unique'));
+  assert.ok(sets.indexes.some((item) => item.config.name === 'resource_relation_sets_identity_unique'));
+  assert.deepEqual(edges.foreignKeys.map((key) => key.getName()), ['resource_relation_edges_org_set_fk']);
+  assert.ok(edges.indexes.some((item) => item.config.name === 'resource_relation_edges_active_target_unique'));
+  assert.ok(edges.indexes.some((item) => item.config.name === 'resource_relation_edges_active_position_unique'));
+  assert.deepEqual(receipts.foreignKeys.map((key) => key.getName()), ['resource_relation_receipts_org_set_fk']);
+  assert.ok(receipts.indexes.some((item) => item.config.name === 'resource_relation_receipts_idempotency_unique'));
 });
 
 test('Agent Channel lease schema converges across fresh installs and supported upgrades', () => {

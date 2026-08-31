@@ -54,7 +54,8 @@ import {
   parseModuleRecordResourceId,
   type ModuleOperationName,
 } from '@deft/shared/modules';
-import { humanModuleActor, getModuleRecord, searchModuleRecords } from '../module-service.js';
+import { humanModuleActor, getModuleRecord } from '../module-service.js';
+import { searchAuthorizedModuleResources as searchModuleRecords } from '../resource-search-service.js';
 import {
   visibleModuleActionScopeSql,
   visibleModuleActionSql,

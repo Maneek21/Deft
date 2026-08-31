@@ -1,9 +1,9 @@
 import {
   MODULE_LIMITS,
   ModuleManifestDigestSchema,
-  digestModuleManifest,
-  parseDeftModuleManifestJson,
-  type DeftModuleManifestV1,
+  digestSupportedModuleManifest as digestModuleManifest,
+  parseSupportedDeftModuleManifestJson as parseDeftModuleManifestJson,
+  type DeftModuleManifest as DeftModuleManifestV1,
 } from '@deft/shared/modules';
 import { ModuleError } from './module-errors.js';
 

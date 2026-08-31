@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "id": "org.deft.reference.resource-contacts",
+  "slug": "resource-contacts",
+  "version": "1.0.0",
+  "name": "Resource Contacts",
+  "description": "Contacts owned by an independent Phase 4 proof App.",
+  "icon": "users",
+  "collections": [
+    {
+      "key": "contacts",
+      "name": "Contacts",
+      "singular_name": "Contact",
+      "fields": [
+        { "key": "name", "label": "Name", "type": "text", "required": true },
+        { "key": "email", "label": "Email", "type": "email" },
+        { "key": "company", "label": "Company", "type": "text" },
+        {
+          "key": "status",
+          "label": "Status",
+          "type": "single_select",
+          "options": [
+            { "value": "lead", "label": "Lead" },
+            { "value": "active", "label": "Active" },
+            { "value": "inactive", "label": "Inactive" }
+          ],
+          "default": "active"
+        }
+      ],
+      "views": [
+        { "key": "all", "name": "All contacts", "type": "table", "fields": ["name", "email", "company", "status"] },
+        { "key": "form", "name": "Contact form", "type": "form", "fields": ["name", "email", "company", "status"] },
+        { "key": "detail", "name": "Contact details", "type": "detail", "fields": ["name", "email", "company", "status"] }
+      ],
+      "search": {
+        "title_field": "name",
+        "subtitle_fields": ["company", "email"],
+        "fields": ["name", "email", "company", "status"]
+      }
+    }
+  ],
+  "navigation": { "default_collection": "contacts", "default_view": "all" }
+}

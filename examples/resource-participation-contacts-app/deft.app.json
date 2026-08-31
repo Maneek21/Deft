@@ -1,0 +1,26 @@
+{
+  "schema_version": "0",
+  "id": "org.deft.reference.resource-contacts-app",
+  "version": "1.0.0",
+  "name": "Resource Contacts",
+  "description": "An independent Contacts App for the Resource participation proof.",
+  "license": "AGPL-3.0-only",
+  "compatibility": { "app_protocol": "0" },
+  "modules": [
+    {
+      "module_id": "org.deft.reference.resource-contacts",
+      "version": "1.0.0",
+      "manifest_path": "modules/resource-contacts/deft.module.json",
+      "manifest_digest": "sha256:394040ab9dc442711e39f53cfbc7304968f448b7ab663cb09e04b620c18d8251"
+    }
+  ],
+  "navigation": [
+    {
+      "key": "resource_contacts",
+      "label": "Resource Contacts",
+      "module_id": "org.deft.reference.resource-contacts",
+      "collection_key": "contacts",
+      "view_key": "all"
+    }
+  ]
+}

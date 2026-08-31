@@ -11,6 +11,7 @@ import { SEMVER_REGEX } from './schemas';
 
 export const DEFT_MODULE_MANIFEST_FILENAME = 'deft.module.json';
 export const DEFT_MODULE_MANIFEST_SCHEMA_VERSION = '1' as const;
+export const DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2 = '2' as const;
 
 export const MODULE_LIMITS = Object.freeze({
   manifest_bytes: 128 * 1024,
@@ -199,6 +200,31 @@ export const ModuleFieldSchema = z.discriminatedUnion('type', [
     target_collection: ModuleKeySchema,
     multiple: z.boolean().default(false),
   }),
+]);
+
+/**
+ * Schema v2 adds only a host-resolved resource reference. The declaration is
+ * identity-only: it cannot carry tenant, grant, connector, URL, or execution
+ * authority. Required cross-resource writes are intentionally deferred until
+ * record and relation mutation can share one public atomic contract.
+ */
+export const ModuleResourceReferenceFieldSchema = z.strictObject({
+  key: ModuleFieldKeySchema,
+  label: ModuleDisplayNameSchema,
+  description: ModuleDescriptionSchema.optional(),
+  required: z.literal(false).default(false),
+  type: z.literal('resource_ref'),
+  target: z.strictObject({
+    module_id: ModuleIdSchema,
+    resource_type: ModuleKeySchema,
+  }),
+  multiple: z.boolean().default(false),
+  display: z.literal('label').default('label'),
+});
+
+export const ModuleFieldV2Schema = z.discriminatedUnion('type', [
+  ...ModuleFieldSchema.options,
+  ModuleResourceReferenceFieldSchema,
 ]);
 
 export const ModuleSearchSchema = z.strictObject({
@@ -518,6 +544,41 @@ export const ModuleCollectionSchema = z
     }
   });
 
+export const ModuleCollectionV2Schema = z
+  .strictObject({
+    key: ModuleKeySchema,
+    name: ModuleDisplayNameSchema,
+    singular_name: ModuleDisplayNameSchema.optional(),
+    description: ModuleDescriptionSchema.optional(),
+    fields: z.array(ModuleFieldV2Schema).min(1).max(MODULE_LIMITS.fields_per_collection),
+    search: ModuleSearchSchema.optional(),
+    views: z.array(ModuleViewSchema).max(MODULE_LIMITS.views_per_collection).optional(),
+  })
+  .superRefine((collection, ctx) => {
+    // Reuse the exact v1 collection invariants by projecting resource refs to
+    // the already non-inline v1 relation shape. This keeps defaults, views,
+    // search restrictions, duplicate checks, and all scalar behavior aligned.
+    const compatible = ModuleCollectionSchema.safeParse({
+      ...collection,
+      fields: collection.fields.map((field) => field.type === 'resource_ref'
+        ? {
+            key: field.key,
+            label: field.label,
+            description: field.description,
+            required: false,
+            type: 'relation' as const,
+            target_collection: field.target.resource_type,
+            multiple: field.multiple,
+          }
+        : field),
+    });
+    if (!compatible.success) {
+      for (const issue of compatible.error.issues) {
+        ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+      }
+    }
+  });
+
 export const DeftModuleManifestV1Schema = z
   .strictObject({
     schema_version: z.literal(DEFT_MODULE_MANIFEST_SCHEMA_VERSION),
@@ -577,10 +638,82 @@ export const DeftModuleManifestV1Schema = z
     }
   });
 
+export const DeftModuleManifestV2Schema = z
+  .strictObject({
+    schema_version: z.literal(DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2),
+    id: ModuleIdSchema,
+    slug: ModuleSlugSchema,
+    version: ModuleSemverSchema,
+    name: ModuleDisplayNameSchema,
+    description: ModuleDescriptionSchema.optional(),
+    icon: ModuleIconTokenSchema.optional(),
+    collections: z
+      .array(ModuleCollectionV2Schema)
+      .min(1)
+      .max(MODULE_LIMITS.collections_per_module),
+    navigation: ModuleNavigationSchema.optional(),
+  })
+  .superRefine((manifest, ctx) => {
+    addDuplicateIssues(
+      manifest.collections.map((collection) => collection.key),
+      ['collections'],
+      ctx,
+      'Collection keys',
+    );
+    const collectionByKey = new Map(
+      manifest.collections.map((collection) => [collection.key, collection]),
+    );
+    manifest.collections.forEach((collection, collectionIndex) => {
+      collection.fields.forEach((field, fieldIndex) => {
+        const target = field.type === 'relation'
+          ? { module_id: manifest.id, resource_type: field.target_collection }
+          : field.type === 'resource_ref'
+            ? field.target
+            : null;
+        if (target?.module_id === manifest.id && !collectionByKey.has(target.resource_type)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['collections', collectionIndex, 'fields', fieldIndex],
+            message: `Reference target collection does not exist: ${target.resource_type}`,
+          });
+        }
+      });
+    });
+    if (manifest.navigation) {
+      const defaultCollection = collectionByKey.get(manifest.navigation.default_collection);
+      if (!defaultCollection) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['navigation', 'default_collection'],
+          message: 'Default collection must reference a declared collection',
+        });
+      } else if (
+        manifest.navigation.default_view
+        && !defaultCollection.views?.some((view) => view.key === manifest.navigation?.default_view)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['navigation', 'default_view'],
+          message: 'Default view must belong to the default collection',
+        });
+      }
+    }
+  });
+
+export const DeftModuleManifestSchema = z.union([
+  DeftModuleManifestV1Schema,
+  DeftModuleManifestV2Schema,
+]);
+
 export type DeftModuleManifestV1 = z.infer<typeof DeftModuleManifestV1Schema>;
 export type DeftModuleManifestV1Input = z.input<typeof DeftModuleManifestV1Schema>;
+export type DeftModuleManifestV2 = z.infer<typeof DeftModuleManifestV2Schema>;
+export type DeftModuleManifestV2Input = z.input<typeof DeftModuleManifestV2Schema>;
+export type DeftModuleManifest = z.infer<typeof DeftModuleManifestSchema>;
+export type DeftModuleManifestInput = z.input<typeof DeftModuleManifestSchema>;
 export type ModuleCollection = z.infer<typeof ModuleCollectionSchema>;
 export type ModuleField = z.infer<typeof ModuleFieldSchema>;
+export type ModuleFieldV2 = z.infer<typeof ModuleFieldV2Schema>;
 export type ModuleView = z.infer<typeof ModuleViewSchema>;
 
 export function parseDeftModuleManifest(value: unknown): DeftModuleManifestV1 {
@@ -606,6 +739,27 @@ export function parseDeftModuleManifestJson(value: string): DeftModuleManifestV1
   return parseDeftModuleManifest(parsed);
 }
 
+export function parseSupportedDeftModuleManifest(value: unknown): DeftModuleManifest {
+  const parsed = DeftModuleManifestSchema.parse(value);
+  const serialized = JSON.stringify(parsed);
+  if (new TextEncoder().encode(serialized).byteLength > MODULE_LIMITS.manifest_bytes) {
+    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+  }
+  return parsed;
+}
+
+export function parseSupportedDeftModuleManifestJson(value: string): DeftModuleManifest {
+  if (new TextEncoder().encode(value).byteLength > MODULE_LIMITS.manifest_bytes) {
+    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+  }
+  try {
+    return parseSupportedDeftModuleManifest(JSON.parse(value) as unknown);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('Manifest is not valid JSON', { cause: error });
+    throw error;
+  }
+}
+
 /**
  * Machine-readable authoring schema. Runtime consumers must still use the Zod
  * parser because cross-field references and uniqueness are enforced by
@@ -616,6 +770,17 @@ export function getDeftModuleManifestV1JsonSchema(): Record<string, unknown> {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'Deft declarative module manifest v1',
     ...z.toJSONSchema(DeftModuleManifestV1Schema, {
+      target: 'draft-2020-12',
+      unrepresentable: 'any',
+    }),
+  } as Record<string, unknown>;
+}
+
+export function getDeftModuleManifestV2JsonSchema(): Record<string, unknown> {
+  return {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    title: 'Deft declarative module manifest v2',
+    ...z.toJSONSchema(DeftModuleManifestV2Schema, {
       target: 'draft-2020-12',
       unrepresentable: 'any',
     }),
@@ -671,6 +836,20 @@ export async function digestModuleManifest(value: unknown): Promise<ModuleManife
   return ModuleManifestDigestSchema.parse(`sha256:${hex}`);
 }
 
+export function canonicalSupportedModuleManifestJson(value: unknown): string {
+  return JSON.stringify(canonicalizeJson(parseSupportedDeftModuleManifest(value)));
+}
+
+export async function digestSupportedModuleManifest(value: unknown): Promise<ModuleManifestDigest> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('Web Crypto SHA-256 is unavailable in this runtime');
+  }
+  const bytes = new TextEncoder().encode(canonicalSupportedModuleManifestJson(value));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return ModuleManifestDigestSchema.parse(`sha256:${hex}`);
+}
+
 export type ModuleRecordFieldValue = string | number | boolean | string[];
 export type ModuleRecordData = Record<string, ModuleRecordFieldValue>;
 
@@ -706,7 +885,7 @@ function validationIssue(
 }
 
 export function validateModuleFieldValue(
-  field: ModuleField,
+  field: ModuleFieldV2,
   value: unknown,
 ): ModuleRecordValidationIssue | null {
   switch (field.type) {
@@ -811,6 +990,7 @@ export function validateModuleFieldValue(
       return null;
     }
     case 'relation':
+    case 'resource_ref':
       return validationIssue(
         field.key,
         'invalid_value',
@@ -824,7 +1004,7 @@ export function validateModuleRecordData(
   collectionKey: string,
   dataValue: unknown,
 ): ModuleRecordValidationResult {
-  const manifest = parseDeftModuleManifest(manifestValue);
+  const manifest = parseSupportedDeftModuleManifest(manifestValue);
   const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);
   if (!collection) {
     return {
@@ -918,7 +1098,7 @@ function sliceUnicode(value: string, max: number): string {
   return lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? sliced.slice(0, -1) : sliced;
 }
 
-function fieldProjectionText(field: ModuleField, value: ModuleRecordFieldValue | undefined): string {
+function fieldProjectionText(field: ModuleFieldV2, value: ModuleRecordFieldValue | undefined): string {
   if (value === undefined) return '';
   if (field.type === 'single_select' && typeof value === 'string') {
     return field.options.find((option) => option.value === value)?.label ?? value;
@@ -936,7 +1116,7 @@ export function projectModuleRecordSearch(
   collectionKey: string,
   dataValue: unknown,
 ): ModuleRecordSearchProjection | null {
-  const manifest = parseDeftModuleManifest(manifestValue);
+  const manifest = parseSupportedDeftModuleManifest(manifestValue);
   const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);
   if (!collection) throw new ModuleRecordValidationError([
     validationIssue(null, 'invalid_collection', `Unknown collection: ${collectionKey}`),
@@ -1384,6 +1564,7 @@ export const ModuleSummarySchema = z.strictObject({
 export const ModuleSearchHitSchema = z.strictObject({
   resource_id: ModuleRecordResourceIdSchema,
   record_id: OpaqueIdSchema,
+  installation_id: OpaqueIdSchema,
   module_id: ModuleIdSchema,
   module_slug: ModuleSlugSchema,
   module_name: ModuleDisplayNameSchema,
@@ -1438,7 +1619,7 @@ export const MODULE_OPERATION_RESULT_SCHEMAS = Object.freeze({
     installation_id: OpaqueIdSchema,
     enabled: z.boolean(),
     manifest_digest: ModuleManifestDigestSchema,
-    manifest: DeftModuleManifestV1Schema,
+    manifest: DeftModuleManifestSchema,
     operation_contracts: z.strictObject({
       module_record_create: ModuleOperationContractSchema,
       module_record_update: ModuleOperationContractSchema,

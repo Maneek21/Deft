@@ -18,8 +18,8 @@ import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wi
 import {
   deftyModuleActor,
   employeeModuleActor,
-  searchModuleRecords,
 } from './module-service.js';
+import { searchAuthorizedModuleResources as searchModuleRecords } from './resource-search-service.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────

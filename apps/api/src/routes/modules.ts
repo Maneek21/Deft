@@ -18,6 +18,11 @@ import {
 } from '@deft/shared/modules';
 import type { AuthUser } from '../middleware/auth.js';
 import {
+  RESOURCE_CONTRACT_VERSIONS,
+  ResourceRelationReplaceInputV1Schema,
+  type ModuleResourceRefV1,
+} from '@deft/shared/resources';
+import {
   archiveModuleRecord,
   createModuleSavedView,
   createModuleRecord,
@@ -44,6 +49,12 @@ import {
 } from '../lib/module-service.js';
 import { isModuleError, ModuleError } from '../lib/module-errors.js';
 import { parseModuleManifestUpload } from '../lib/module-manifest-upload.js';
+import {
+  listResourceRelation,
+  replaceResourceRelation,
+  ResourceRelationError,
+} from '../lib/resource-relation-service.js';
+import { resourceAuthorizationService } from '../lib/resource-provider-adapters.js';
 
 export const moduleRoutes = new Hono();
 
@@ -107,6 +118,11 @@ const updateBodySchema = z
   });
 const archiveBodySchema = ModuleRecordArchiveRequestSchema.omit({ record_id: true });
 const recordQueryBodySchema = ModuleRecordQueryRequestSchema.omit({ module_id: true });
+const resourceRelationReplaceBodySchema = z.strictObject({
+  refs: ResourceRelationReplaceInputV1Schema.shape.refs,
+  expected_revision: ResourceRelationReplaceInputV1Schema.shape.expected_revision,
+  idempotency_key: ResourceRelationReplaceInputV1Schema.shape.idempotency_key,
+});
 
 function actorFromContext(c: Context) {
   const user = c.get('user') as AuthUser;
@@ -131,6 +147,9 @@ function moduleManagerFromContext(c: Context) {
 }
 
 function moduleFailure(c: Context, error: unknown) {
+  if (error instanceof ResourceRelationError) {
+    return c.json({ error: error.message, code: error.code }, error.status);
+  }
   if (isModuleError(error)) {
     return c.json({
       error: error.message,
@@ -147,6 +166,19 @@ function moduleFailure(c: Context, error: unknown) {
   }
   console.error('[modules] request failed:', error);
   return c.json({ error: 'Module request failed', code: 'INTERNAL_ERROR' }, 500);
+}
+
+function moduleResourceRef(
+  installationId: string,
+  resourceType: string,
+  resourceId: string,
+): ModuleResourceRefV1 {
+  return {
+    schema_version: RESOURCE_CONTRACT_VERSIONS.ref,
+    provider: { kind: 'module', provider_instance_id: installationId },
+    resource_type: resourceType,
+    resource_id: resourceId,
+  };
 }
 
 moduleRoutes.get('/', async (c) => {
@@ -403,6 +435,90 @@ moduleRoutes.put('/:slug/records/:recordId/relations/:fieldKey', async (c) => {
           idempotencyKey: body.idempotency_key,
         },
       ),
+    });
+  } catch (error) {
+    return moduleFailure(c, error);
+  }
+});
+
+moduleRoutes.get('/:slug/records/:recordId/resource-relations/:fieldKey', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    const fieldKey = ModuleFieldKeySchema.parse(c.req.param('fieldKey'));
+    const installation = await getModuleInstallation(actor, { slug });
+    const record = await getModuleRecord(actor, c.req.param('recordId'));
+    if (record.installation_id !== installation.id) {
+      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    }
+    return c.json({
+      relation: await listResourceRelation(actor, {
+        schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
+        source: moduleResourceRef(installation.id, record.collection_key, record.id),
+        relation_key: fieldKey,
+      }),
+    });
+  } catch (error) {
+    return moduleFailure(c, error);
+  }
+});
+
+moduleRoutes.get('/:slug/records/:recordId/resource-relations/:fieldKey/options', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    const fieldKey = ModuleFieldKeySchema.parse(c.req.param('fieldKey'));
+    const query = z.string().trim().max(200).default('').parse(c.req.query('q') ?? '');
+    const installation = await getModuleInstallation(actor, { slug });
+    const record = await getModuleRecord(actor, c.req.param('recordId'));
+    if (record.installation_id !== installation.id || installation.manifest.schema_version !== '2') {
+      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    }
+    const collection = installation.manifest.collections.find((item) => item.key === record.collection_key);
+    const field = collection?.fields.find((item) => item.key === fieldKey);
+    if (!field || field.type !== 'resource_ref') {
+      throw new ResourceRelationError('Resource relation field not found', 'RESOURCE_RELATION_NOT_FOUND', 404);
+    }
+    const target = await getModuleInstallation(actor, { moduleId: field.target.module_id });
+    const references = await listModuleRecordReferences(
+      actor,
+      target.slug,
+      field.target.resource_type,
+    );
+    const options = [];
+    for (const reference of references) {
+      if (query && !reference.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())) continue;
+      options.push(await resourceAuthorizationService.resolve(
+        { org_id: actor.org_id, actor },
+        moduleResourceRef(target.id, field.target.resource_type, reference.id),
+      ));
+    }
+    return c.json({ options });
+  } catch (error) {
+    return moduleFailure(c, error);
+  }
+});
+
+moduleRoutes.put('/:slug/records/:recordId/resource-relations/:fieldKey', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    const fieldKey = ModuleFieldKeySchema.parse(c.req.param('fieldKey'));
+    const body = resourceRelationReplaceBodySchema.parse(await c.req.json().catch(() => null));
+    const installation = await getModuleInstallation(actor, { slug });
+    const record = await getModuleRecord(actor, c.req.param('recordId'));
+    if (record.installation_id !== installation.id) {
+      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    }
+    return c.json({
+      relation: await replaceResourceRelation(actor, {
+        schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
+        source: moduleResourceRef(installation.id, record.collection_key, record.id),
+        relation_key: fieldKey,
+        refs: body.refs,
+        expected_revision: body.expected_revision,
+        idempotency_key: body.idempotency_key,
+      }),
     });
   } catch (error) {
     return moduleFailure(c, error);
