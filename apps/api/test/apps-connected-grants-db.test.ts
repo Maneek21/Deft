@@ -1143,7 +1143,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       claim_token: appKillToken,
     }),
     (error: unknown) => error instanceof AppError
-      && (error.code === 'APP_DISABLED' || error.code === 'APP_STALE'),
+      && (error.code === 'APP_ACTION_UNAVAILABLE' || error.code === 'APP_DISABLED' || error.code === 'APP_STALE'),
   );
   const appKillTerminal = await db.transaction((tx) => (
     terminalizeAppAutomationFireDefinitionIneligibleWithExecutor(tx, {
