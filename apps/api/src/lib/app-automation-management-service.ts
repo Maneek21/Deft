@@ -168,11 +168,16 @@ export async function createManagedAppAutomation(
   rawInput: z.input<typeof AppAutomationCreateRequestSchema>,
 ) {
   const input = AppAutomationCreateRequestSchema.parse(rawInput);
-  const reviewInput = await resolveReviewInput(actor, appInstallationId, input);
+  const {
+    expected_review_digest: expectedReviewDigest,
+    accept_code_owned_policy: acceptCodeOwnedPolicy,
+    ...reviewRequest
+  } = input;
+  const reviewInput = await resolveReviewInput(actor, appInstallationId, reviewRequest);
   return createReviewedAppAutomationDefinition(actor, {
     ...reviewInput,
-    expected_review_digest: input.expected_review_digest as `sha256:${string}`,
-    accept_code_owned_policy: input.accept_code_owned_policy,
+    expected_review_digest: expectedReviewDigest as `sha256:${string}`,
+    accept_code_owned_policy: acceptCodeOwnedPolicy,
   });
 }
 

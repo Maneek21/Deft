@@ -294,6 +294,11 @@ test('automation authoring and management stay generic and derive resource pins 
   );
   assert.match(management, /keep the original actor for approval\/audit/);
   assert.doesNotMatch(management, /source:\s*'rest'\s*\}\s*,\s*\{/);
+  assert.match(
+    management,
+    /expected_review_digest:\s*expectedReviewDigest[\s\S]*?accept_code_owned_policy:\s*acceptCodeOwnedPolicy[\s\S]*?\.\.\.reviewRequest[\s\S]*?resolveReviewInput\(actor, appInstallationId, reviewRequest\)/,
+    'create-only proof fields must be removed before strict review-request validation',
+  );
   assert.match(management, /digestAppGrantValue\(record\.data\)/);
   assert.match(management, /prepareAppAutomationDefinitionReview/);
   assert.match(management, /createReviewedAppAutomationDefinition/);
