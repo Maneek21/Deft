@@ -369,21 +369,19 @@ function parseContinuitySnapshot(value: unknown): ContinuitySnapshot {
 async function loadCertificationKeyInventory(): Promise<CertificationKeyInventory> {
   type KeyRow = { key_id: string };
   return withClient(async (client) => {
-    const [runEncryption, receiptSigning, fingerprint] = await Promise.all([
-      client.query<KeyRow>(
-        'SELECT DISTINCT key_version AS key_id FROM app_run_secret_payloads ORDER BY key_id',
-      ),
-      client.query<KeyRow>(
-        'SELECT DISTINCT signing_key_version AS key_id FROM app_run_receipts ORDER BY key_id',
-      ),
-      client.query<KeyRow>(
-        `SELECT DISTINCT key_id FROM (
-           SELECT idempotency_key_version AS key_id FROM app_runs
-           UNION
-           SELECT input_fingerprint_key_version AS key_id FROM app_runs
-         ) AS referenced_keys ORDER BY key_id`,
-      ),
-    ]);
+    const runEncryption = await client.query<KeyRow>(
+      'SELECT DISTINCT key_version AS key_id FROM app_run_secret_payloads ORDER BY key_id',
+    );
+    const receiptSigning = await client.query<KeyRow>(
+      'SELECT DISTINCT signing_key_version AS key_id FROM app_run_receipts ORDER BY key_id',
+    );
+    const fingerprint = await client.query<KeyRow>(
+      `SELECT DISTINCT key_id FROM (
+         SELECT idempotency_key_version AS key_id FROM app_runs
+         UNION
+         SELECT input_fingerprint_key_version AS key_id FROM app_runs
+       ) AS referenced_keys ORDER BY key_id`,
+    );
     return Object.freeze({
       run_encryption: runEncryption.rows.map((row) => row.key_id),
       receipt_signing: receiptSigning.rows.map((row) => row.key_id),

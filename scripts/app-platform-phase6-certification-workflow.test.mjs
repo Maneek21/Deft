@@ -18,11 +18,15 @@ const offlineHook = readFileSync(
   new URL('./ci/app-platform-phase6-certification-offline.sh', import.meta.url),
   'utf8',
 );
+const browserSmoke = readFileSync(
+  new URL('./ci/app-platform-phase6-browser-smoke.mjs', import.meta.url),
+  'utf8',
+);
 const pnpmExecWrapper = readFileSync(
   new URL('./ci/pnpm-exec-wrapper.mjs', import.meta.url),
   'utf8',
 );
-const executionSurface = `${workflow}\n${orchestrator}\n${setupHook}\n${offlineHook}\n${pnpmExecWrapper}`;
+const executionSurface = `${workflow}\n${orchestrator}\n${setupHook}\n${offlineHook}\n${browserSmoke}\n${pnpmExecWrapper}`;
 
 const CANDIDATE_COMMIT = '16875df2f6c9dc2bc3d850de6758b7dd56767a05';
 const CANDIDATE_PLACEHOLDER = '__PRODUCT_CANDIDATE_SHA__';
@@ -156,6 +160,16 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(offlineHook, /\[\[ "\$after_total" == "\$before_total" \]\]/);
   assert.match(offlineHook, /invocation_failed_without_creating_a_run/);
+});
+
+test('browser proof correlates the exact invoked Run before approving it through Inbox UI', () => {
+  assert.match(browserSmoke, /PACKED_PROVIDER_RUN_ID_INVALID/);
+  assert.match(browserSmoke, /approval\?\.params\?\.run_id === invokedRunId/);
+  assert.match(browserSmoke, /getByRole\('button', \{ name: 'Approve App action', exact: true \}\)\.nth\(approvalIndex\)/);
+  assert.doesNotMatch(
+    browserSmoke,
+    /getByText\('Connected campaign', \{ exact: true \}\)\.first\(\)/,
+  );
 });
 
 test('only bounded safe evidence and the exact candidate image are retained', () => {
