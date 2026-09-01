@@ -1,154 +1,144 @@
-# App Platform Phase 5 — local release certification
+# App Platform Phase 5 — immutable release certification
 
-- Date: 2026-09-01
-- Candidate branch: `codex/app-platform-phase5-cutover`
-- Phase 4 immutable baseline: `ec79592e669bdf915fad8a5d2480f0625d819a4c`
-- Merged candidate: `161ca65fcb79cdb76fee315b2ba9974ff145a47e` (`#280`)
-- Status: **local candidate and exact-merge CI passed; immutable non-publishing release-host gate pending**
+| Field | Certified value |
+|---|---|
+| Date | 2026-09-01 |
+| Status | **PASS — Phase 5 complete** |
+| Product candidate | `438a283a885f0ddc1b0aa34ef7a467d09ab163c8` (`#286`; correction over the original `#280` merge) |
+| Certifier merge | `70a4b9844f0587e4a09a0041472c4f4974f16549` (`#285`) |
+| Phase 4 baseline | `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
+| Supported predecessor | `ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788` (`6d39e0e0413c82d36c9481849ae582fdf805d1a6`) |
+| Definitive run | [App Platform Phase 5 Certification 33469721507](https://github.com/Maneek21/Deft/actions/runs/33469721507) on exact `master` |
+| Publication | None; the gate was read-only and `published: false` |
 
-## Certified local claim
+## Certified claim
 
-The candidate proves one Protocol v1 connected Campaigns App can consume a
-live-authorized Contact, obtain one exact reviewed sandbox-email binding, and
-create a governed App-origin Run through human UI, Defty, employee, and human
-MCP adapters. All four adapters enter the same AppActionService, capability,
-approval, Run, receipt, and result path. Surface and token authority are part of
-the replay identity, so equivalent raw keys cannot collide across principals or
-authorization surfaces.
+Phase 5 establishes the internal connected-App kernel. One Protocol v1
+Campaigns App can consume a live-authorized Contact, receive one exact reviewed
+sandbox-email binding, and create governed App-origin Runs through human UI,
+Defty, employee, and human MCP adapters. Equivalent authority enters the same
+AppActionService, CapabilityService, approval, AppRun, result, and signed-receipt
+path while actor, token, and surface identity remain distinct replay boundaries.
 
-This is not the final Phase 5 release certificate. That certificate requires an
-immutable merged commit and exact production image on a release-capable host.
+Staging remains non-executable. Effective authority is host-owned, immutable,
+tenant-scoped, and rechecked at effect boundaries. Apps cannot select providers,
+receive connector credentials, lower the policy floor, bypass approval, or call
+CapabilityService directly. App-origin intake and the connected planes remain
+disabled by default.
 
-## Candidate changes covered
+This certificate permits Phase 6 external-author work. It does not yet permit a
+general full-surface App-platform claim.
 
-- The private connected-interface registry is closed, code-owned, and contains
-  its provider binding, policy floor, input bindings, and permitted field types.
-- App staging remains non-executable; explicit review creates exact immutable
-  grant and binding ancestry.
-- App-origin Runs recheck live App, version, dependency, grant, relation,
-  connector, provider schema, actor, employee, membership, token, and budget
-  authority at the effect boundaries.
-- Developer install refuses Protocol v1 before consuming a pairing session, and
-  the CLI refuses it before requesting or exchanging a pairing code.
-- Uninstall refuses current dependents and otherwise requires an explicit data
-  retention decision; it never silently cascades.
-- Contacts v0, Campaigns v0, and connected Campaigns v1 are exact checked source
-  proofs built by the public App Kit CLI.
-- App-origin intake remains disabled by default. The Apps-enabled production
-  candidate exists only in CI; the official release default stays off until the
-  Phase 6 beta gate.
-- Rollback now closes both App-origin and legacy MCP intake before stopping the
-  shared Run engine.
+## Immutable run evidence
 
-## Local evidence
+The final workflow checked out the certifier at `70a4b984` and independently
+checked out the product candidate at `438a283a`. The Apps-enabled image reports
+the exact candidate revision and has local image ID
+`sha256:53f48909138dadf057847e29bdd0c5cac992d4180b8025f4d67b2a7a39737b05`.
 
-The consolidated non-API matrix passed:
+The retained GitHub artifacts are:
 
-- App Kit: 16/16.
-- Shared contracts: 63/63.
-- Supported upgrade and self-host upgrade contract: 30/30.
-- Relevant web contract tests: 32/32.
-- Release workflow contract: 10/10.
-- Module provenance verification: 1 checked vendored Module.
-- Web lint: passed.
-- Repository typecheck: passed across App Kit, shared, API, and web.
-- Single final Apps-enabled production build: passed; `/settings/apps` was
-  included in the optimized Next.js route output.
+- `app-platform-phase5-safe-33469721507-1`: 209,304 bytes,
+  `sha256:40689d1ab9c914477a2efa8efb8528d2a53a6019d400f18962a8ed119876d256`.
+- `app-platform-phase5-image-33469721507-1`: 281,457,225 bytes,
+  `sha256:f28bc0188de4880dbb57b162246f97aaf9f4996545737537460c39703bfb680d`.
+- The uncompressed candidate image archive records
+  `sha256:f8d08a41383ec4e293b91998eff240640fdc45d8d57d40c7917b91dede867e18`.
+- The matched database dump records
+  `sha256:e0cc79c8e4e23b1289d6fe1edceb317ce28c8b6702500be721e739375b6341d1`.
+- The deterministic disposable certification keyring records
+  `sha256:11130982d2d2f40e08e0aba999c3f92d38d6452f889c5d377f452d49daa8b9fe`.
 
-The focused API matrix ran on PostgreSQL 16 using a clean disposable database
-whose schema was cloned from the already-upgraded retained Phase 5 database.
-This avoided both a new infrastructure bootstrap and any retry of unavailable
-local pgvector. Its consolidated pass recorded 221 passing tests and six
-intentional legacy-mode skips. Three test-isolation collisions were then closed
-with direct evidence:
+The exact proof package identities remain:
 
-- The pairing fixture received its own unique email and passed 2/2.
-- The rollout transition ran alone against a clean schema, as required by its
-  key-inventory invariant, and passed 1/1.
-- The updated requested-grant digest passed 5/5 after the registry contract was
-  frozen.
+- Contacts v0: `sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8`.
+- Campaigns predecessor v0: `sha256:0f478f5a761590f1f5874c7a0d0dc3382436b5e7f44c0c6ad6591cd577476344`.
+- Connected Campaigns v1: `sha256:973ec7076daf7405a7a4d8b48509ef6f99b1b1cc4b787961104c73f23b7f770d`.
+- Connected Module v2 artifact: `sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208`.
+- Installed normalized Module v2 manifest:
+  `sha256:70a2c14dffc15b7e8aa1e056a53b5933fa351e305d86e13ebf467bf8159287f2`.
 
-Together, the focused API evidence covers connected contracts, install/review,
-AppActionService and native adapters, App-origin cutover, existing App Run
-safety, capability parity, Phase 4 resource compatibility, connector/trust/scope
-boundaries, approval routing, exact proof packages, upgrade/rollback, and
-operator rollout transitions.
+## Upgrade, recovery, and predecessor compatibility
 
-All Loop 7 certification databases were removed after the pass. The previously
-retained `deft_phase5_loop4_20260831` database remains online and untouched for
-the existing handoff.
+The run created a fresh PostgreSQL 16 database with real pgvector `0.8.6`,
+started from the exact Phase 4 baseline, and used the supported upgrade path.
+The migration ledger contains 23 entries through `0.3.0-preview.25`.
 
-The exact proof package digests are:
+The source and restored snapshots matched at
+`sha256:de8535e3fcb94e312a640392910e40af3ec8e191c14c650cee3e952c65343eda`:
 
-- Contacts v0: `sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8`
-- Campaigns predecessor v0: `sha256:0f478f5a761590f1f5874c7a0d0dc3382436b5e7f44c0c6ad6591cd577476344`
-- Connected Campaigns v1: `sha256:973ec7076daf7405a7a4d8b48509ef6f99b1b1cc4b787961104c73f23b7f770d`
-- Connected Module v2: `sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208`
+- 20 continuity tables and 129 total rows matched.
+- All referenced run-encryption, receipt-signing, and fingerprint key versions
+  were present after restore.
+- Eight App-origin Runs were retained; four successful Runs had decryptable
+  inputs and outputs.
+- All nine retained receipts verified.
+- Three App package digests and one normalized Module manifest digest verified.
+- The supported predecessor image read the upgraded resource successfully and
+  returned revision 1 of `Ada Lovelace`.
 
-## Non-gating diagnostics
+## Browser, secrecy, and cleanup evidence
 
-A broad monolithic API run against the retained Loop 4 database was rejected as
-certification evidence: retained fixed IDs caused state collisions and the
-database name intentionally failed older Phase 2/3-only reset guards. A second
-clean diagnostic run confirmed the Phase 5 action, lifecycle, capability, and
-upgrade lanes, while also reproducing pre-existing order-sensitive Hermes tests
-outside this phase. It was stopped once continuing no longer added relevant
-evidence. No Phase 5 requirement is being inferred from those unrelated tests.
+Authenticated `/settings/apps` evidence passed at 1440×900 and 390×844. Both
+viewports rendered the connected Campaigns proof and two App cards with zero
+horizontal overflow. The evidence reports:
 
-## Local limitations
+- Apps surface loaded: true.
+- Secret markers absent from rendered text and markup: true.
+- Browser errors absent: true.
+- Connected requested/effective authority, dependency provenance, exact action
+  binding, health controls, and recent governed Runs visible on both surfaces.
 
-- Local PostgreSQL has no pgvector installation. `CREATE EXTENSION vector` was
-  not retried; the real extension remains a release-host requirement.
-- Docker Desktop is installed, but its engine is unavailable through the local
-  Docker inference socket. Docker image construction was not retried.
-- PR C is merged and its exact merge commit passed CI and security. That CI
-  image was ephemeral, so it does not provide the durable image digest,
-  matched recovery set, predecessor read, or restored-key continuity required
-  by this gate.
+The workflow uploaded safe evidence even during failed preflight iterations,
+kept the large image archive separate, and confirmed removal of its disposable
+containers, volumes, networks, and databases. The retained local
+`deft_phase5_loop4_20260831` database was outside the workflow and remained
+untouched.
 
-## Immutable release-host gate
+## Supporting validation
 
-Run the manual, read-only
-`.github/workflows/app-platform-phase5-certification.yml` lane. It checks out
-the exact merged Phase 5 commit independently of the later certifier commit,
-publishes nothing, and certifies:
+The corrected product PR and certifier PR each passed repository CI and
+security: API tests, typecheck, supported upgrade, Hermes employee release gate,
+production image and browser smoke, final web build, dependency audit/review,
+and CodeQL. Focused local evidence also covered App Kit/contracts, capability
+parity, AppAction/AppRun lifecycle, live authorization, approval/revocation,
+connector and trust boundaries, proof-package determinism, and rollback.
 
-1. Record the immutable commit and candidate image digest.
-2. Create a fresh pgvector-backed schema and run the supported upgrade from the
-   immutable Phase 4 baseline.
-3. Back up and restore the database and purpose-separated App Run key material.
-4. Build/run the Apps-enabled production image and perform authenticated
-   desktop/mobile browser smoke through `/settings/apps` and the connected proof.
-5. Read the upgraded data with the supported predecessor image, restore the
-   candidate, and prove the accepted Run/receipt remains coherent.
-6. Archive the exact evidence and remove release-host disposable resources.
+Local PostgreSQL did not provide pgvector and the local Docker engine was
+unavailable; those checks were deliberately not retried locally. The definitive
+GitHub release-host run supplied both requirements instead of substituting a
+weaker proof.
 
-The workflow may update this audit to PASS only after its immutable GitHub run,
-safe evidence artifact, candidate archive digest, browser evidence, and cleanup
-result are inspected. Adding the workflow does not itself satisfy the gate.
+## Gate hardening history
 
-Known Phase 4 release assets for that pass:
+The gate failed closed while it was being completed:
 
-- Candidate image: `deft-phase4@sha256:cc985cca14ed6f3429ce0e3d923ec095707d7aec871c0c8164cb3e3748c60771`
-- Database dump SHA-256: `004ae7624267be863e5f7a27dfe8e479076404da2b33d50fabec6963754e70bd`
-- Supported predecessor image: `ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788`
+1. Certifier-only fixes preserved the migration ledger, made predecessor output
+   parseable, and distinguished the artifact digest from the installed semantic
+   Module digest.
+2. The release proof exposed provider idempotency keys whose base64url digest
+   could begin with `-` or `_`. PR `#286` preserved all valid historical keys
+   byte-for-byte and added an injective `d` prefix only for those invalid cases,
+   with deterministic retry regression vectors.
+3. The first corrected-candidate run passed desktop rendering but revealed that
+   the certifier expected a desktop-only compact `h1` at mobile width. PR `#285`
+   added a red-then-green responsive title contract and retained semantic `h1`
+   checking on desktop.
 
-Until this gate passes, Phase 5 remains locally certified but not complete.
+No proof was weakened or waived. The corrected branch preflight passed in run
+`33469116839`, and the exact-`master` run above passed independently.
 
-## Phase 6 handoff
+## Phase 6 handoff and non-claims
 
-Phase 6 should begin only from the merged Phase 5 contracts:
+Phase 6 may now begin from product candidate `438a283a` plus certifier/audit
+history. Its bounded outcome is a **Connected App Platform beta** in which an
+independent author can use packed public artifacts to build, validate, stage,
+operate, upgrade, disable, recover, and inspect a Tier 2 connected App without
+editing Deft core.
 
-1. Extend the public authoring kit, types, CLI, lock format, doctor guidance,
-   host simulator, and fake provider only for the proven Phase 4–5 contracts.
-2. Build Contacts and Campaigns from clean external directories with packed,
-   version-matched artifacts and no monorepo-private imports.
-3. Exercise the entire native stage/review/bind/activate/search/relate/invoke/
-   approve/receipt/upgrade/disable/re-enable workflow.
-4. Re-run adversarial and four-surface parity proof from the external-author
-   boundary.
-5. Conduct a clean external-author trial and release certification.
-
-The resulting claim may be **Connected App Platform beta**. It does not include
-automation, custom experiences, external runtimes, sync, public ingress, or an
-arbitrary full-surface App promise.
+Phase 6 must preserve Protocol v0/v1 lock and package bytes, keep local staging
+at zero authority, and reuse the existing review, grant, action, Run, receipt,
+and provider seams. Automation, custom App experiences, arbitrary runtimes,
+specialized sync, anonymous/public ingress, marketplace, billing, and the
+general “build any feasible full-surface App” promise remain explicitly out of
+scope until their later tracks and compound proofs pass.

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | PR C merged at `161ca65f`; Loop 7 local and exact-merge CI passed; immutable non-publishing release-host certification remains |
+| Status | **Complete.** PR C merged at `161ca65f`; the provider-idempotency correction merged at `438a283a`; the immutable non-publishing exact-`master` gate passed at certifier merge `70a4b984` in run `33469721507` |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
@@ -474,9 +474,10 @@ revocation, upgrade/rollback, uninstall refusal, developer pairing, deterministi
 proof packages, capability/resource seams, operator rollback, and the
 Apps-enabled candidate lane are covered by the focused certification matrix.
 Repository typecheck passes. The official release default remains off until the
-Phase 6 beta gate. The immutable release-host pass cannot run truthfully before
-PR C is merged and an exact commit/image digest exists, so Phase 5 is not yet
-marked complete. See
+Phase 6 beta gate. The immutable release-host pass subsequently certified exact
+product candidate `438a283a` from exact `master` certifier `70a4b984`, including
+real pgvector, upgrade, backup/restore, predecessor read, candidate image,
+desktop/mobile evidence, and cleanup. Phase 5 is complete. See
 `docs/superpowers/audits/2026-09-01-app-platform-phase-5-release-certification.md`.
 
 ## PR train
