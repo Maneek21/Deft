@@ -59,6 +59,7 @@ import {
   buildPhase5ConnectedAppPackage,
   buildPhase5ConnectedPredecessorAppPackage,
   buildPhase5DependencyAppPackage,
+  buildTrackAAutomatedConnectedAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
@@ -559,6 +560,127 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
   assert.equal(unboundDeleteResponse.status, 200);
   assert.equal((await db.select().from(mcpConnections)
     .where(eq(mcpConnections.id, unboundConnectionId))).length, 0);
+});
+
+test('Protocol v2 stages with zero authority and activates only through connected review', async () => {
+  const orgId = randomUUID();
+  const userId = randomUUID();
+  await db.insert(orgs).values({
+    id: orgId,
+    name: 'Protocol v2 lifecycle',
+    slug: `track-a-v2-${randomUUID()}`,
+  });
+  await db.insert(users).values({
+    id: userId,
+    email: `track-a-v2-${randomUUID()}@example.test`,
+    name: 'Protocol v2 owner',
+  });
+  await db.insert(orgMembers).values({
+    id: randomUUID(),
+    org_id: orgId,
+    user_id: userId,
+    role: 'owner',
+    is_active: true,
+  });
+  const actor = humanModuleActor({ orgId, userId, role: 'owner' });
+
+  const dependencyBuilt = await buildPhase5DependencyAppPackage();
+  const dependencyStaged = await stageAppPackage(actor, dependencyBuilt.json);
+  await activateAppInstallation(
+    actor,
+    dependencyStaged.id,
+    dependencyStaged.package_digest,
+  );
+
+  const built = await buildTrackAAutomatedConnectedAppPackage();
+  const staged = await stageAppPackage(actor, built.json);
+  assert.equal(staged.state, 'staged');
+  assert.equal(staged.manifest.compatibility.app_protocol, '2');
+  assert.equal(staged.active_version_id, null);
+
+  const [version] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.id, staged.version_id),
+  ));
+  const [requested] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.id, version!.requested_grant_snapshot_id!),
+  ));
+  assert.ok(version);
+  assert.ok(requested);
+  assert.equal(version.protocol_version, '2');
+  assert.equal(requested.classification.executable, false);
+  assert.equal(requested.classification.provider_access, false);
+  assert.deepEqual(
+    (requested.canonical_snapshot as any).requirements.automation_requests,
+    built.package.manifest.automation_requests,
+  );
+  assert.equal((await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, orgId),
+  ))[0]?.value, 0);
+  await assert.rejects(
+    activateAppInstallation(actor, staged.id, staged.package_digest),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
+  );
+
+  const connectionId = randomUUID();
+  await db.insert(mcpConnections).values({
+    id: connectionId,
+    org_id: orgId,
+    name: 'Protocol v2 sandbox mail',
+    slug: `track-a-v2-mail-${randomUUID()}`,
+    server_url: 'https://track-a-v2.example.test/mcp',
+    transport: 'streamable-http',
+    auth_type: 'none',
+    is_active: true,
+    created_by: userId,
+  });
+  const { capability } = await sandboxReviewCapability(orgId, connectionId);
+  const request = {
+    app_version_id: version.id,
+    expected_package_digest: version.package_digest,
+    expected_requested_snapshot_digest: requested.snapshot_digest,
+    expected_lifecycle_epoch: staged.lifecycle_epoch,
+    expected_grant_epoch: staged.grant_epoch,
+    connector_selections: [{
+      connector_requirement_key: 'mail_provider',
+      mcp_connection_id: connectionId,
+    }],
+  };
+  const management = await getConnectedAppGrantManagement(actor, staged.id);
+  assert.equal(management.review_target?.protocol_version, '2');
+  assert.deepEqual(
+    (management.review_target?.requested_authority as any)?.requirements.automation_requests,
+    built.package.manifest.automation_requests,
+  );
+  const review = await prepareConnectedAppReview(actor, staged.id, request, capability);
+  await activateConnectedAppInstallation(actor, staged.id, {
+    ...request,
+    expected_review_digest: review.review_digest,
+    accept_host_policy: true,
+  }, capability);
+
+  const [active] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, orgId),
+    eq(appInstallations.id, staged.id),
+  ));
+  const [effective] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.id, active!.active_grant_snapshot_id!),
+  ));
+  assert.equal(active?.state, 'active');
+  assert.equal(active?.active_version_id, version.id);
+  assert.equal((effective?.canonical_snapshot as any).app.protocol_version, '2');
+  assert.equal((await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, orgId),
+  ))[0]?.value, 0);
+
+  const disabled = await disableAppInstallation(actor, staged.id, active!.lifecycle_epoch);
+  assert.equal(disabled.state, 'disabled');
+  await assert.rejects(
+    enableAppInstallation(actor, staged.id, disabled.lifecycle_epoch),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
+  );
 });
 
 test('explicit connected review activates atomically, rejects stale CAS, and re-reviews after revocation', async () => {

@@ -19,8 +19,6 @@ import {
   canonicalAppPrivateInterfaceIdentity,
   DEFT_APP_DEVELOPER_COMPATIBILITY,
   projectDeftAppRequestedAuthority,
-  type DeftAppManifestV1,
-  type DeftAppPackageV1,
   type DeftAppPrivateInterfaceDescriptorV1,
 } from '@deft/app-kit';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
@@ -51,7 +49,11 @@ import {
   connectedAppPrivateInterfaceRegistryKey,
   connectedAppToolMatches,
   getConnectedAppPrivateInterface,
+  isConnectedAppProtocolVersion,
   normalizeConnectedMcpOverrides,
+  type ConnectedAppProtocolVersion,
+  type ConnectedDeftAppManifest,
+  type ConnectedDeftAppPackage,
 } from './app-connected-contract.js';
 import {
   assertCurrentModuleManagerWithExecutor,
@@ -86,7 +88,7 @@ function selectConnectedReviewTargetVersion<TVersion extends ConnectedReviewTarg
     : null;
   const stagedVersion = versions
     .filter((version) => (
-      version.protocol_version === '1'
+      isConnectedAppProtocolVersion(version.protocol_version)
       && version.state === 'staged'
       && (!activeVersion || compareAppSemver(activeVersion.version, version.version) < 0)
     ))
@@ -96,7 +98,13 @@ function selectConnectedReviewTargetVersion<TVersion extends ConnectedReviewTarg
       || right.id.localeCompare(left.id)
     ))[0] ?? null;
   return stagedVersion
-    ?? (installation.state === 'disabled' && activeVersion?.protocol_version === '1' ? activeVersion : null);
+    ?? (
+      installation.state === 'disabled'
+      && activeVersion
+      && isConnectedAppProtocolVersion(activeVersion.protocol_version)
+        ? activeVersion
+        : null
+    );
 }
 
 function connectedReviewActivationKind(
@@ -192,7 +200,7 @@ type ModuleDescriptor = Readonly<{
 }>;
 
 type DependencyContext = Readonly<{
-  dependency: DeftAppManifestV1['dependencies'][number];
+  dependency: ConnectedDeftAppManifest['dependencies'][number];
   installation: Installation;
   version: Version;
   modules: ReadonlyMap<string, ModuleDescriptor>;
@@ -202,9 +210,9 @@ type ReviewContext = Readonly<{
   installation: Installation;
   version: Version;
   requested: RequestedSnapshot;
-  manifest: DeftAppManifestV1;
+  manifest: ConnectedDeftAppManifest;
   private_interfaces: ReadonlyMap<string, DeftAppPrivateInterfaceDescriptorV1>;
-  package: DeftAppPackageV1;
+  package: ConnectedDeftAppPackage;
   included_modules: ReadonlyMap<string, ModuleDescriptor>;
   dependencies: readonly DependencyContext[];
   connections: ReadonlyMap<string, Connection>;
@@ -254,7 +262,7 @@ function appError(message: string, code: 'APP_STALE' | 'APP_DEPENDENCY_UNHEALTHY
 }
 
 function exactConnectorSelections(
-  manifest: DeftAppManifestV1,
+  manifest: ConnectedDeftAppManifest,
   selections: readonly AppConnectorSelection[],
 ): Map<string, string> {
   const selected = new Map<string, string>();
@@ -275,7 +283,7 @@ function exactConnectorSelections(
   return selected;
 }
 
-async function includedModuleDescriptors(packageValue: DeftAppPackageV1): Promise<Map<string, ModuleDescriptor>> {
+async function includedModuleDescriptors(packageValue: ConnectedDeftAppPackage): Promise<Map<string, ModuleDescriptor>> {
   const descriptors = new Map<string, ModuleDescriptor>();
   for (const reference of packageValue.manifest.modules) {
     const artifact = packageValue.artifacts.find((item) => item.path === reference.manifest_path);
@@ -304,7 +312,7 @@ async function includedModuleDescriptors(packageValue: DeftAppPackageV1): Promis
 async function loadDependencyContext(
   executor: ReviewExecutor,
   orgId: string,
-  dependency: DeftAppManifestV1['dependencies'][number],
+  dependency: ConnectedDeftAppManifest['dependencies'][number],
 ): Promise<DependencyContext> {
   const [row] = await executor.select({ installation: appInstallations, version: appVersions })
     .from(appInstallations)
@@ -429,11 +437,11 @@ async function loadReviewContext(
       throw appError('The staged App version is no longer newer than the active version', 'APP_STALE');
     }
   }
-  if (version.protocol_version !== '1' || !version.requested_grant_snapshot_id) {
-    throw new AppError('Only staged App Protocol v1 versions use connected review', 'APP_PROTOCOL_UNSUPPORTED', 409);
+  if (!isConnectedAppProtocolVersion(version.protocol_version) || !version.requested_grant_snapshot_id) {
+    throw new AppError('Only staged connected App Protocol versions use connected review', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
-  const manifest = version.manifest as DeftAppManifestV1;
-  const packageValue = version.package as unknown as DeftAppPackageV1;
+  const manifest = version.manifest as ConnectedDeftAppManifest;
+  const packageValue = version.package as unknown as ConnectedDeftAppPackage;
   const privateInterfaces = new Map<string, DeftAppPrivateInterfaceDescriptorV1>();
   const uniquePrivateInterfaces = new Map<string, DeftAppPrivateInterfaceDescriptorV1>();
   for (const requirement of manifest.capability_requirements) {
@@ -595,7 +603,7 @@ async function discoverProviderEvidence(
 
 function moduleForRequirement(
   context: ReviewContext,
-  requirement: DeftAppManifestV1['resource_requirements'][number],
+  requirement: ConnectedDeftAppManifest['resource_requirements'][number],
 ): ModuleDescriptor {
   if (requirement.source.kind === 'included_module') {
     const module = context.included_modules.get(requirement.source.module_id);
@@ -1129,7 +1137,7 @@ export async function activateConnectedAppInstallation(
         version_id: context.version.id,
         id: context.installation.app_id,
         version: context.version.version,
-        protocol_version: '1',
+        protocol_version: context.version.protocol_version,
         manifest_digest: context.version.manifest_digest,
         package_digest: context.version.package_digest,
       },
@@ -1333,8 +1341,10 @@ export async function getConnectedAppGrantManagement(
         && snapshot.snapshot_kind === 'requested'
       )) ?? null
     : null;
-  const requestedAuthority = reviewTargetVersion?.protocol_version === '1' && requestedSnapshot
-    ? projectDeftAppRequestedAuthority(reviewTargetVersion.manifest as DeftAppManifestV1)
+  const requestedAuthority = reviewTargetVersion
+    && isConnectedAppProtocolVersion(reviewTargetVersion.protocol_version)
+    && requestedSnapshot
+    ? projectDeftAppRequestedAuthority(reviewTargetVersion.manifest as ConnectedDeftAppManifest)
     : null;
 
   const effective = await latestEffectiveSnapshot(db, installation);
@@ -1447,8 +1457,8 @@ export async function getConnectedAppGrantManagement(
         eq(mcpToolOverrides.org_id, actorValue.org_id),
         inArray(mcpToolOverrides.mcp_connection_id, connectionIds),
       ));
-  const manifest = reviewTargetVersion?.protocol_version === '1'
-    ? reviewTargetVersion.manifest as DeftAppManifestV1
+  const manifest = reviewTargetVersion && isConnectedAppProtocolVersion(reviewTargetVersion.protocol_version)
+    ? reviewTargetVersion.manifest as ConnectedDeftAppManifest
     : null;
   const capabilityByKey = new Map(
     (manifest?.capability_requirements ?? []).map((requirement) => [requirement.key, requirement]),
@@ -1570,7 +1580,7 @@ export async function getConnectedAppGrantManagement(
       activation_kind: activationKind,
       app_version_id: reviewTargetVersion.id,
       version: reviewTargetVersion.version,
-      protocol_version: '1' as const,
+      protocol_version: reviewTargetVersion.protocol_version as ConnectedAppProtocolVersion,
       package_format: typeof reviewTargetVersion.package_format === 'string'
         ? reviewTargetVersion.package_format
         : null,

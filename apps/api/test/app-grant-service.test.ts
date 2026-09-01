@@ -9,7 +9,10 @@ import {
   connectedAppActionBindingMatches,
   getConnectedAppPrivateInterface,
 } from '../src/lib/app-connected-contract.js';
-import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
+import {
+  buildPhase5ConnectedAppPackage,
+  buildTrackAAutomatedConnectedAppPackage,
+} from './fixtures/phase5-connected-app-package.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const INSTALLATION_ID = '22222222-2222-4222-8222-222222222222';
@@ -77,6 +80,26 @@ test('Protocol v0 staging projection is an empty compatibility request', () => {
   assert.equal(projection.classification.provider_access, false);
   assert.equal(projection.classification.review_required, false);
   assert.deepEqual(projection.classification.actions, []);
+});
+
+test('Protocol v2 staging projection records requests but remains non-executable', async () => {
+  const built = await buildTrackAAutomatedConnectedAppPackage();
+  const projection = buildRequestedAppGrantProjection({
+    organization_id: ORG_ID,
+    app_installation_id: INSTALLATION_ID,
+    app_version_id: VERSION_ID,
+    manifest: built.package.manifest,
+    manifest_digest: built.package.manifest_digest,
+    package_digest: built.digest,
+  });
+
+  assert.equal(projection.classification.authority_state, 'requested_only');
+  assert.equal(projection.classification.executable, false);
+  assert.equal(projection.classification.provider_access, false);
+  assert.deepEqual(
+    (projection.canonical_snapshot as any).requirements.automation_requests,
+    built.package.manifest.automation_requests,
+  );
 });
 
 test('connected sandbox actions accept only the frozen resource-backed input mapping', async () => {

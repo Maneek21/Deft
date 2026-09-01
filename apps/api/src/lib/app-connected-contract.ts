@@ -3,6 +3,9 @@ import {
   SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE,
   SandboxEmailSendInputSchema,
   type DeftAppManifestV1,
+  type DeftAppManifestV2,
+  type DeftAppPackageV1,
+  type DeftAppPackageV2,
   type DeftAppPrivateInterfaceDescriptorV1,
 } from '@deft/app-kit';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
@@ -13,6 +16,14 @@ import {
 import { canonicalMcpToolName } from './mcp-tool-identity.js';
 
 export const CONNECTED_APP_ACTION_BINDING_VERSION = 'deft.app_action_binding.v1' as const;
+
+export type ConnectedAppProtocolVersion = '1' | '2';
+export type ConnectedDeftAppManifest = DeftAppManifestV1 | DeftAppManifestV2;
+export type ConnectedDeftAppPackage = DeftAppPackageV1 | DeftAppPackageV2;
+
+export function isConnectedAppProtocolVersion(value: string): value is ConnectedAppProtocolVersion {
+  return value === '1' || value === '2';
+}
 
 type StoredMcpOverride = Readonly<{
   tool_name: string;
@@ -70,8 +81,9 @@ export function normalizeConnectedMcpOverrides(
   return [...byName.values()].sort((left, right) => left.toolName.localeCompare(right.toolName));
 }
 
-/** Resolve only code-owned Protocol-v1 private interfaces. Unknown identities
- * return null so every caller can fail closed with its own structured error. */
+/** Resolve only the frozen code-owned private interfaces shared by connected
+ * App Protocols v1 and v2. Unknown identities return null so every caller can
+ * fail closed with its own structured error. */
 export function getConnectedAppPrivateInterface(
   value: PrivateInterfaceReference | null | undefined,
 ): DeftAppPrivateInterfaceDescriptorV1 | null {
@@ -113,7 +125,7 @@ export function connectedAppToolMatches(
  * callback, expression, or schema is executed. */
 export function connectedAppActionBindingMatches(
   privateInterface: DeftAppPrivateInterfaceDescriptorV1,
-  action: DeftAppManifestV1['actions'][number],
+  action: ConnectedDeftAppManifest['actions'][number],
 ): boolean {
   const constraints = privateInterface.action_binding.inputs;
   if (action.input_bindings.length !== constraints.length) return false;
