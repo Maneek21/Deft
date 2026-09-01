@@ -92,8 +92,13 @@ async function assertAppsSurface(page, viewport, markers, apiFailures) {
   if (new URL(page.url()).pathname.startsWith('/login')) {
     throw new Error(`${viewport.name} Apps surface redirected to login`);
   }
-  await page.getByRole('heading', { name: 'Apps', exact: true }).first()
-    .waitFor({ state: 'visible', timeout: 20_000 });
+  // PageHeader intentionally hides compact headings below the md breakpoint;
+  // AppHeader carries the route title there. Assert the visible title contract
+  // for each viewport instead of requiring a desktop-only h1 on mobile.
+  const surfaceTitle = viewport.width < 768
+    ? page.getByText('Settings · Apps', { exact: true })
+    : page.getByRole('heading', { name: 'Apps', exact: true });
+  await surfaceTitle.first().waitFor({ state: 'visible', timeout: 20_000 });
   await page.waitForFunction((mustShowConnected) => {
     const text = document.body.innerText;
     return mustShowConnected

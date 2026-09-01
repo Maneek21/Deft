@@ -10,9 +10,13 @@ const orchestrator = readFileSync(
   new URL('./ci/certify-app-platform-phase5.sh', import.meta.url),
   'utf8',
 );
+const browserSmoke = readFileSync(
+  new URL('./ci/app-platform-phase5-browser-smoke.mjs', import.meta.url),
+  'utf8',
+);
 const executionSurface = `${workflow}\n${orchestrator}`;
 
-const CANDIDATE_COMMIT = '161ca65fcb79cdb76fee315b2ba9974ff145a47e';
+const CANDIDATE_COMMIT = '438a283a885f0ddc1b0aa34ef7a467d09ab163c8';
 const PHASE4_BASELINE_COMMIT = 'ec79592e669bdf915fad8a5d2480f0625d819a4c';
 const PREDECESSOR_IMAGE = 'ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788';
 
@@ -86,6 +90,13 @@ test('certification uses real pgvector and proves matched backup, restore, and k
   assert.match(orchestrator, /host_uid="\$\(id -u\)"/);
   assert.match(orchestrator, /host_gid="\$\(id -g\)"/);
   assert.equal(occurrences(orchestrator, "chown \"$HOST_UID:$HOST_GID\""), 3);
+  const demoSeed = orchestrator.indexOf('pnpm --filter @deft/db seed:demo');
+  const candidateUpgrade = orchestrator.indexOf('pnpm db:upgrade && pnpm module:verify');
+  assert.notEqual(demoSeed, -1);
+  assert.notEqual(candidateUpgrade, -1);
+  assert.ok(demoSeed < candidateUpgrade, 'destructive demo seed must precede the migration ledger');
+  assert.equal(occurrences(orchestrator, 'seed:demo'), 1);
+  assert.match(orchestrator, /seed-platform-bundles\.ts/);
 });
 
 test('certification carries the Phase 4 and Phase 5 probes plus browser evidence', () => {
@@ -99,6 +110,22 @@ test('certification carries the Phase 4 and Phase 5 probes plus browser evidence
   assert.match(orchestrator, /DEFT_APPS_ENABLED=true/);
   assert.match(orchestrator, /DEFT_APP_RUNS_ENABLED=true/);
   assert.match(orchestrator, /DEFT_APP_RUN_APP_ORIGIN_ENABLED=true/);
+  const predecessorProbe = orchestrator.slice(
+    orchestrator.indexOf('docker pull "$predecessor_image"'),
+    orchestrator.indexOf('> "$safe_dir/predecessor-read.json"'),
+  );
+  assert.match(predecessorProbe, /JWT_SECRET=phase5-cert-jwt-not-for-prod/);
+  assert.match(predecessorProbe, /JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod/);
+  assert.match(predecessorProbe, /ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes/);
+  assert.match(predecessorProbe, /DOTENV_CONFIG_QUIET=true/);
+  assert.match(orchestrator, /JSON\.parse\(readFileSync\(process\.argv\[2\], 'utf8'\)\)/);
+  assert.match(orchestrator, /deft\.app_platform\.phase5\.predecessor_read\.v1/);
+});
+
+test('browser evidence follows the responsive Apps title contract', () => {
+  assert.match(browserSmoke, /viewport\.width\s*<\s*768/);
+  assert.match(browserSmoke, /getByText\('Settings · Apps',\s*\{\s*exact:\s*true\s*\}\)/);
+  assert.match(browserSmoke, /getByRole\('heading',\s*\{\s*name:\s*'Apps',\s*exact:\s*true\s*\}\)/);
 });
 
 test('evidence uploads even on failure and disposable resources are always removed', () => {

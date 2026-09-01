@@ -90,6 +90,7 @@ docker exec "$source_container" psql -U postgres -d "$database_name" -Atc \
   cd "$phase4_root"
   pnpm --filter @deft/app-kit build
   DATABASE_URL="$source_url_host" pnpm db:push-full
+  DATABASE_URL="$source_url_host" pnpm --filter @deft/db seed:demo
   DATABASE_URL="$source_url_host" DEFT_TEST_DATABASE_URL="$source_url_host" \
     JWT_SECRET=phase5-cert-jwt-not-for-prod \
     JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
@@ -115,7 +116,7 @@ docker image inspect "$candidate_tag" > "$safe_dir/candidate-image-inspect.json"
 printf '%s\n' "$image_revision" > "$safe_dir/candidate-image-revision.txt"
 
 run_candidate "$source_url_container" 'pnpm db:upgrade && pnpm module:verify'
-run_candidate "$source_url_container" 'pnpm db:seed:demo'
+run_candidate "$source_url_container" 'pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts'
 docker run --rm --network "$network" \
   -v "${phase5_root}/examples:/app/examples:ro" \
   -e DATABASE_URL="$source_url_container" \
@@ -203,12 +204,29 @@ printf '%s\n' "$predecessor_revision" > "$safe_dir/predecessor-image-revision.tx
 docker run --rm --network "$network" \
   -v "${certifier_root}/apps/api/test/phase5-predecessor-read-probe.ts:/app/apps/api/test/phase5-predecessor-read-probe.ts:ro" \
   -e DATABASE_URL="$restore_url_container" \
+  -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
+  -e JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
+  -e ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
+  -e DOTENV_CONFIG_QUIET=true \
   -e DEFT_PROBE_ORG_ID="$probe_org" \
   -e DEFT_PROBE_EMPLOYEE_ID="$probe_employee" \
   -e DEFT_PROBE_RECORD_ID="$probe_record" \
   --entrypoint sh "$predecessor_image" \
   -c 'pnpm --filter @deft/api exec tsx test/phase5-predecessor-read-probe.ts' \
   > "$safe_dir/predecessor-read.json"
+EXPECTED_PROBE_ORG="$probe_org" EXPECTED_PROBE_RECORD="$probe_record" \
+node --input-type=module - "$safe_dir/predecessor-read.json" <<'NODE'
+import { readFileSync } from 'node:fs';
+const evidence = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+if (
+  evidence?.schema !== 'deft.app_platform.phase5.predecessor_read.v1'
+  || evidence?.result !== 'passed'
+  || evidence?.resource?.org_id !== process.env.EXPECTED_PROBE_ORG
+  || evidence?.resource?.record_id !== process.env.EXPECTED_PROBE_RECORD
+  || !Number.isInteger(evidence?.resource?.revision)
+  || evidence?.resource?.name !== 'Ada Lovelace'
+) throw new Error('Predecessor read evidence is invalid');
+NODE
 
 docker run --rm --network "$network" \
   -v "${certifier_root}/scripts/ci/app-platform-phase5-certification-probe.ts:/app/scripts/ci/app-platform-phase5-certification-probe.ts:ro" \
