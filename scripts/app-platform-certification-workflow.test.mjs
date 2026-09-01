@@ -89,8 +89,8 @@ test('certification uses real pgvector and proves matched backup, restore, and k
   assert.match(orchestrator, /restored-verification\.json/);
   assert.match(orchestrator, /host_uid="\$\(id -u\)"/);
   assert.match(orchestrator, /host_gid="\$\(id -g\)"/);
-  assert.equal(occurrences(orchestrator, "chown \"$HOST_UID:$HOST_GID\""), 4);
-  assert.equal(occurrences(orchestrator, 'certification-probe.ts keyring'), 2);
+  assert.equal(occurrences(orchestrator, "chown \"$HOST_UID:$HOST_GID\""), 5);
+  assert.equal(occurrences(orchestrator, 'certification-probe.ts keyring'), 3);
   const demoSeed = orchestrator.indexOf('pnpm --filter @deft/db seed:demo');
   const candidateUpgrade = orchestrator.indexOf('pnpm db:upgrade && pnpm module:verify');
   assert.notEqual(demoSeed, -1);

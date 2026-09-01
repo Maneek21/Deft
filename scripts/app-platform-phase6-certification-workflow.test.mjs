@@ -138,7 +138,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   assert.match(orchestrator, /git -C "\$candidate_root" rev-parse HEAD/);
   assert.match(orchestrator, /test\/app-origin-run-lifecycle-db\.test\.ts/);
   assert.match(orchestrator, /run_extension_hook "\$setup_hook" setup/);
-  assert.equal(occurrences(orchestrator, 'certification-probe.ts keyring'), 2);
+  assert.equal(occurrences(orchestrator, 'certification-probe.ts keyring'), 3);
   assert.match(
     orchestrator,
     /certification-probe\.ts keyring[\s\S]*run_extension_hook "\$setup_hook" setup[\s\S]*certification-probe\.ts keyring[\s\S]*app-run-keyring\.sha256/,
