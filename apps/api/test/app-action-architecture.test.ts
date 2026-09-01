@@ -233,6 +233,16 @@ test('automation worker cutover is host-only and reuses AppAction plus AppRun wi
   const automationSource = service.slice(start, service.indexOf('\n  async inspectRun(', start));
   assert.doesNotMatch(automationSource, /capabilityService\.invoke|\.executeTool\s*\(|\.insert\s*\(\s*appRuns/);
   assert.match(automationSource, /automation_claim_token: input\.claim_token/);
+  assert.match(
+    automationSource,
+    /captureForPreparation\([\s\S]*?allow_automation_execution: true/,
+    'the host automation seam must recapture the automation actor and policy before sealing the Run',
+  );
+  assert.equal(
+    (service.match(/allow_automation_execution:\s*true/g) ?? []).length,
+    1,
+    'only invokeApprovedAutomation may opt into automation preparation authority',
+  );
 
   const runService = await readFile(join(sourceRoot, 'lib/app-run-service.ts'), 'utf8');
   assert.match(runService, /expected_claim_token: automationClaimToken!/);

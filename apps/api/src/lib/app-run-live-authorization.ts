@@ -100,6 +100,10 @@ export type AppRunAuthorizationCapture = Readonly<{
   policy: AppRunPolicySnapshot;
   required_token_scopes?: readonly string[];
   token_authorities?: readonly AppRunTokenAuthority[];
+  /** Host-only automation preparation. External callers never control this
+   * input; the AppAction automation seam opts in after validating a claimed
+   * fire and the exact approved definition. */
+  allow_automation_execution?: boolean;
 }>;
 
 type InternalRunAuthorization = Readonly<{

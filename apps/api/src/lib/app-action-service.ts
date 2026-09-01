@@ -1427,10 +1427,40 @@ export class AppActionService {
       || relation.revision !== initial.definition.selected_relation_revision
     ) throw actionError('Pinned automation relation changed before execution', 'APP_STALE');
 
+    const initiatingActor: AppRunActor = { actor_type: 'human', user_id: initial.approver.user_id };
+    const executionActor: AppRunActor = {
+      actor_type: 'automation',
+      automation_id: initial.definition.id,
+      user_id: initial.approver.user_id,
+    };
+    let runAuthorization: AppRunAuthorizationSnapshot;
+    try {
+      runAuthorization = await this.liveAuthority.captureForPreparation({
+        org_id: input.organization_id,
+        authenticated_subject: initiatingActor,
+        execution_actor: executionActor,
+        provider_instance_id: prepared.authority_vector.provider.connection_id,
+        provider_snapshot_id: prepared.authority_vector.provider.snapshot_id,
+        operation_name: prepared.authority_vector.provider.operation_name,
+        policy: {
+          risk_class: APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class,
+          review_requirement: APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement,
+          review_scope: APP_AUTOMATION_POLICY_V1.review_scope,
+          retry_class: APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class,
+        },
+        required_token_scopes: [],
+        token_authorities: [],
+        allow_automation_execution: true,
+      });
+    } catch {
+      throw actionError('Current automation authority does not permit this App action', 'APP_STALE');
+    }
+
     const authorityVector: AppRunPreparedAuthorityVectorV2 = {
       ...prepared.authority_vector,
       schema_version: 'deft.app_action_authority.v2',
       caller_surface: 'automation',
+      run_authorization: runAuthorization,
       dependencies: prepared.authority_vector.dependencies.map((dependency) => ({ ...dependency })),
       resources,
       relations: prepared.authority_vector.relations.map((candidate) => ({ ...candidate })),
@@ -1468,12 +1498,6 @@ export class AppActionService {
           max_pending_org_fires: initial.definition.max_pending_org_fires,
         },
       },
-    };
-    const initiatingActor: AppRunActor = { actor_type: 'human', user_id: initial.approver.user_id };
-    const executionActor: AppRunActor = {
-      actor_type: 'automation',
-      automation_id: initial.definition.id,
-      user_id: initial.approver.user_id,
     };
     const candidate = await this.preparedInput.protect({
       org_id: input.organization_id,
