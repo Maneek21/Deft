@@ -678,6 +678,8 @@ export const appRuns = pgTable('app_runs', {
   origin_app_version_id: text('origin_app_version_id'),
   origin_app_binding_key: text('origin_app_binding_key'),
   origin_app_grant_snapshot_id: text('origin_app_grant_snapshot_id'),
+  origin_app_automation_definition_id: text('origin_app_automation_definition_id'),
+  origin_app_automation_fire_id: text('origin_app_automation_fire_id'),
   state: text('state').$type<
     | 'pending'
     | 'pending_approval'
@@ -712,7 +714,8 @@ export const appRuns = pgTable('app_runs', {
   result_expires_at: timestamp('result_expires_at').notNull(),
   idempotency_expires_at: timestamp('idempotency_expires_at').notNull(),
   attempt_limit: integer('attempt_limit').notNull(),
-  execution_release_kind: text('execution_release_kind').$type<'policy_satisfied' | 'approved'>(),
+  execution_release_kind: text('execution_release_kind')
+    .$type<'policy_satisfied' | 'approved' | 'approved_automation_definition'>(),
   execution_released_at: timestamp('execution_released_at'),
   budget_reserved_at: timestamp('budget_reserved_at'),
   budget_reserved_count: integer('budget_reserved_count'),
@@ -793,6 +796,33 @@ export const appRuns = pgTable('app_runs', {
     ],
     name: 'app_runs_app_action_binding_fk',
   }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.origin_app_automation_definition_id],
+    foreignColumns: [appAutomationDefinitions.org_id, appAutomationDefinitions.id],
+    name: 'app_runs_automation_definition_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.origin_app_automation_definition_id,
+      t.origin_app_automation_fire_id,
+    ],
+    foreignColumns: [
+      appAutomationFires.org_id,
+      appAutomationFires.definition_id,
+      appAutomationFires.id,
+    ],
+    name: 'app_runs_automation_fire_fk',
+  }).onDelete('restrict'),
+  unique('app_runs_automation_lineage_unique').on(
+    t.org_id,
+    t.origin_app_automation_definition_id,
+    t.origin_app_automation_fire_id,
+    t.id,
+  ),
+  uniqueIndex('app_runs_automation_fire_unique')
+    .on(t.org_id, t.origin_app_automation_definition_id, t.origin_app_automation_fire_id)
+    .where(sql`${t.origin_app_automation_fire_id} IS NOT NULL`),
   index('app_runs_idempotency_lookup_idx').on(
     t.org_id,
     t.initiating_actor_type,
@@ -807,6 +837,11 @@ export const appRuns = pgTable('app_runs', {
   index('app_runs_org_state_idx').on(t.org_id, t.state, t.created_at),
   index('app_runs_root_idx').on(t.org_id, t.root_run_id, t.created_at),
   index('app_runs_parent_idx').on(t.org_id, t.parent_run_id),
+  index('app_runs_automation_lineage_idx').on(
+    t.org_id,
+    t.origin_app_automation_definition_id,
+    t.origin_app_automation_fire_id,
+  ),
   index('app_runs_secret_expiry_idx').on(t.state, t.input_expires_at, t.result_expires_at),
   index('app_runs_idempotency_expiry_idx').on(t.idempotency_expires_at),
   check('app_runs_origin_check', sql`${t.origin_kind} IN ('core', 'legacy_connector', 'app')`),
@@ -822,15 +857,34 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
       AND ${t.risk_class} = 'external_write'
       AND ${t.review_requirement} = 'always'
-      AND ${t.review_scope} = 'per_invocation'
       AND ${t.retry_class} = 'idempotent_with_key'
       AND ${t.retention_class} = 'standard'
+      AND (
+        (
+          ${t.review_scope} = 'per_invocation'
+          AND ${t.origin_app_automation_definition_id} IS NULL
+          AND ${t.origin_app_automation_fire_id} IS NULL
+          AND ${t.initiating_actor_type} <> 'automation'
+          AND ${t.execution_actor_type} <> 'automation'
+        ) OR (
+          ${t.review_scope} = 'approved_automation_definition'
+          AND ${t.origin_app_automation_definition_id} IS NOT NULL
+          AND ${t.origin_app_automation_fire_id} IS NOT NULL
+          AND ${t.initiating_actor_type} = 'human'
+          AND ${t.execution_actor_type} = 'automation'
+          AND ${t.execution_actor_id} = ${t.origin_app_automation_definition_id}
+        )
+      )
     ) OR (
       ${t.origin_kind} <> 'app'
       AND ${t.origin_app_installation_id} IS NULL
       AND ${t.origin_app_version_id} IS NULL
       AND ${t.origin_app_binding_key} IS NULL
       AND ${t.origin_app_grant_snapshot_id} IS NULL
+      AND ${t.origin_app_automation_definition_id} IS NULL
+      AND ${t.origin_app_automation_fire_id} IS NULL
+      AND ${t.initiating_actor_type} <> 'automation'
+      AND ${t.execution_actor_type} <> 'automation'
     )
   `),
   check('app_runs_app_binding_key_check', sql`
@@ -887,7 +941,16 @@ export const appRuns = pgTable('app_runs', {
       ${t.execution_release_kind} IS NOT NULL
       AND ${t.execution_released_at} IS NOT NULL
       AND (
-        (${t.review_requirement} = 'always' AND ${t.execution_release_kind} = 'approved')
+        (
+          ${t.review_requirement} = 'always'
+          AND ${t.review_scope} = 'per_invocation'
+          AND ${t.execution_release_kind} = 'approved'
+        )
+        OR (
+          ${t.review_requirement} = 'always'
+          AND ${t.review_scope} = 'approved_automation_definition'
+          AND ${t.execution_release_kind} = 'approved_automation_definition'
+        )
         OR (${t.review_requirement} = 'policy' AND ${t.execution_release_kind} IN ('policy_satisfied', 'approved'))
       )
     )
@@ -1528,8 +1591,9 @@ export const appVersions = pgTable('app_versions', {
   manifest_digest: text('manifest_digest').notNull(),
   package_digest: text('package_digest').notNull(),
   package: jsonb('package').$type<Record<string, unknown>>().notNull(),
-  // Nullable preserves pre-.23 Protocol v0 rows. New v0/v1 staging writes an
-  // immutable compatibility/request projection; only v1 requires the pointer.
+  // Nullable preserves pre-.23 Protocol v0 rows. New v0/v1/v2 staging writes
+  // an immutable compatibility/request projection; connected protocols require
+  // the pointer.
   requested_grant_snapshot_id: text('requested_grant_snapshot_id'),
   provenance: jsonb('provenance').$type<Record<string, unknown> | null>(),
   state: text('state').$type<'staged' | 'active' | 'superseded' | 'failed'>().default('staged').notNull(),
@@ -1554,7 +1618,7 @@ export const appVersions = pgTable('app_versions', {
   uniqueIndex('app_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
-  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1')`),
+  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2')`),
   check('app_versions_connected_request_check', sql`
     ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
   `),
@@ -1892,6 +1956,14 @@ export const appActionBindings = pgTable('app_action_bindings', {
   }).onDelete('restrict'),
   unique('app_action_bindings_grant_action_unique')
     .on(t.org_id, t.grant_snapshot_id, t.action_key),
+  unique('app_action_bindings_automation_identity_unique').on(
+    t.org_id,
+    t.app_installation_id,
+    t.app_version_id,
+    t.grant_snapshot_id,
+    t.action_key,
+    t.id,
+  ),
   unique('app_action_bindings_run_identity_unique').on(
     t.org_id,
     t.app_installation_id,
@@ -1942,6 +2014,348 @@ export const appActionBindings = pgTable('app_action_bindings', {
   check('app_action_bindings_json_check', sql`
     jsonb_typeof(${t.canonical_binding}) = 'object'
     AND octet_length(${t.canonical_binding}::text) <= 65536
+  `),
+]);
+
+// ═══ APP AUTOMATION FOUNDATION (DORMANT TRACK A) ═══
+// Definitions are host-authored review records, not executable schedules.
+// Only their lifecycle state and epoch may change after creation. Fires are a
+// durable identity/claim ledger for the later scheduler cutover; this package
+// does not enqueue or execute them.
+export const appAutomationDefinitions = pgTable('app_automation_definitions', {
+  ...id(),
+  ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  app_manifest_digest: text('app_manifest_digest').notNull(),
+  app_package_digest: text('app_package_digest').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
+  grant_snapshot_digest: text('grant_snapshot_digest').notNull(),
+  action_binding_id: text('action_binding_id').notNull(),
+  action_key: text('action_key').notNull(),
+  interface_identity: text('interface_identity').notNull(),
+  automation_request_key: text('automation_request_key').notNull(),
+  automation_request_digest: text('automation_request_digest').notNull(),
+  installation_lifecycle_epoch: integer('installation_lifecycle_epoch').notNull(),
+  installation_grant_epoch: integer('installation_grant_epoch').notNull(),
+  provider_kind: text('provider_kind').$type<'mcp'>().notNull(),
+  mcp_connection_id: text('mcp_connection_id').notNull(),
+  provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  provider_snapshot_digest: text('provider_snapshot_digest').notNull(),
+  operation_name: text('operation_name').notNull(),
+  operation_schema_digest: text('operation_schema_digest').notNull(),
+  binding_digest: text('binding_digest').notNull(),
+  connector_authorization_version: integer('connector_authorization_version').notNull(),
+  placement_resource_ref: jsonb('placement_resource_ref').$type<Record<string, unknown>>().notNull(),
+  placement_resource_revision: text('placement_resource_revision').notNull(),
+  placement_content_digest: text('placement_content_digest').notNull(),
+  selected_resource_ref: jsonb('selected_resource_ref').$type<Record<string, unknown>>().notNull(),
+  selected_resource_revision: text('selected_resource_revision').notNull(),
+  selected_content_digest: text('selected_content_digest').notNull(),
+  selected_relation_input_key: text('selected_relation_input_key').notNull(),
+  selected_relation_key: text('selected_relation_key').notNull(),
+  selected_relation_revision: integer('selected_relation_revision').notNull(),
+  schedule_kind: text('schedule_kind').$type<'daily_local_time'>().notNull(),
+  local_time: text('local_time').notNull(),
+  timezone: text('timezone').notNull(),
+  misfire_policy: text('misfire_policy').$type<'catch_up_within_15m'>().notNull(),
+  catch_up_window_minutes: integer('catch_up_window_minutes').default(15).notNull(),
+  max_actions_per_fire: integer('max_actions_per_fire').default(1).notNull(),
+  max_org_runs_per_utc_day: integer('max_org_runs_per_utc_day').default(100).notNull(),
+  max_pending_org_fires: integer('max_pending_org_fires').default(25).notNull(),
+  valid_from: timestamp('valid_from').notNull(),
+  valid_until: timestamp('valid_until').notNull(),
+  policy_version: text('policy_version').$type<'1'>().notNull(),
+  policy_digest: text('policy_digest').notNull(),
+  authorization_vector: jsonb('authorization_vector').$type<Record<string, unknown>>().notNull(),
+  authorization_digest: text('authorization_digest').notNull(),
+  canonical_definition: jsonb('canonical_definition').$type<Record<string, unknown>>().notNull(),
+  definition_digest: text('definition_digest').notNull(),
+  state: text('state')
+    .$type<'active' | 'paused' | 'revoked' | 'expired'>()
+    .default('active')
+    .notNull(),
+  definition_epoch: integer('definition_epoch').default(1).notNull(),
+  created_by_user_id: text('created_by_user_id').notNull(),
+  approved_by_user_id: text('approved_by_user_id').notNull(),
+  approver_authorization_version: integer('approver_authorization_version').notNull(),
+  approved_at: timestamp('approved_at').notNull(),
+  state_changed_at: timestamp('state_changed_at').defaultNow().notNull(),
+  revoked_at: timestamp('revoked_at'),
+  expired_at: timestamp('expired_at'),
+  ...timestamps(),
+}, (t) => [
+  unique('app_automation_definitions_org_id_id_unique').on(t.org_id, t.id),
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id],
+    foreignColumns: [appInstallations.org_id, appInstallations.id],
+    name: 'app_automation_definitions_app_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.app_installation_id, t.app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
+    name: 'app_automation_definitions_app_version_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.app_installation_id,
+      t.app_version_id,
+      t.grant_snapshot_id,
+      t.grant_snapshot_kind,
+    ],
+    foreignColumns: [
+      appGrantSnapshots.org_id,
+      appGrantSnapshots.app_installation_id,
+      appGrantSnapshots.app_version_id,
+      appGrantSnapshots.id,
+      appGrantSnapshots.snapshot_kind,
+    ],
+    name: 'app_automation_definitions_grant_snapshot_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [
+      t.org_id,
+      t.app_installation_id,
+      t.app_version_id,
+      t.grant_snapshot_id,
+      t.action_key,
+      t.action_binding_id,
+    ],
+    foreignColumns: [
+      appActionBindings.org_id,
+      appActionBindings.app_installation_id,
+      appActionBindings.app_version_id,
+      appActionBindings.grant_snapshot_id,
+      appActionBindings.action_key,
+      appActionBindings.id,
+    ],
+    name: 'app_automation_definitions_action_binding_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('app_automation_definitions_digest_unique').on(t.org_id, t.definition_digest),
+  index('app_automation_definitions_app_request_idx').on(
+    t.org_id,
+    t.app_installation_id,
+    t.app_version_id,
+    t.automation_request_key,
+  ),
+  index('app_automation_definitions_eligibility_idx').on(t.org_id, t.state, t.valid_until),
+  check('app_automation_definitions_key_check', sql`
+    ${t.action_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.automation_request_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.selected_relation_input_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.selected_relation_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.action_key} !~ '^(deft|core|system)(_|$)'
+    AND ${t.automation_request_key} !~ '^(deft|core|system)(_|$)'
+    AND ${t.selected_relation_input_key} !~ '^(deft|core|system)(_|$)'
+    AND ${t.selected_relation_key} !~ '^(deft|core|system)(_|$)'
+  `),
+  check('app_automation_definitions_provider_check', sql`${t.provider_kind} = 'mcp'`),
+  check('app_automation_definitions_grant_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
+  check('app_automation_definitions_schedule_check', sql`
+    ${t.schedule_kind} = 'daily_local_time'
+    AND ${t.local_time} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    AND octet_length(${t.timezone}) BETWEEN 1 AND 128
+    AND ${t.timezone} !~ '[[:cntrl:]]'
+    AND ${t.misfire_policy} = 'catch_up_within_15m'
+    AND ${t.catch_up_window_minutes} = 15
+  `),
+  check('app_automation_definitions_budget_check', sql`
+    ${t.max_actions_per_fire} = 1
+    AND ${t.max_org_runs_per_utc_day} BETWEEN 1 AND 100
+    AND ${t.max_pending_org_fires} BETWEEN 1 AND 25
+  `),
+  check('app_automation_definitions_validity_check', sql`
+    ${t.valid_from} = ${t.approved_at}
+    AND ${t.valid_until} > ${t.valid_from}
+    AND ${t.valid_until} <= ${t.approved_at} + interval '30 days'
+  `),
+  check('app_automation_definitions_epoch_check', sql`${t.definition_epoch} >= 1`),
+  check('app_automation_definitions_state_check', sql`
+    ${t.state} IN ('active', 'paused', 'revoked', 'expired')
+  `),
+  check('app_automation_definitions_approval_shape_check', sql`
+    (
+      ${t.state} IN ('active', 'paused')
+      AND ${t.definition_epoch} >= 1
+      AND ${t.revoked_at} IS NULL
+      AND ${t.expired_at} IS NULL
+    ) OR (
+      ${t.state} = 'revoked'
+      AND ${t.definition_epoch} >= 2
+      AND ${t.revoked_at} IS NOT NULL
+      AND ${t.expired_at} IS NULL
+    ) OR (
+      ${t.state} = 'expired'
+      AND ${t.definition_epoch} >= 2
+      AND ${t.revoked_at} IS NULL
+      AND ${t.expired_at} IS NOT NULL
+    )
+  `),
+  check('app_automation_definitions_digest_check', sql`
+    ${t.automation_request_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.app_manifest_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.app_package_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.grant_snapshot_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.operation_schema_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.binding_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.provider_snapshot_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.placement_content_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.selected_content_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.policy_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.authorization_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.definition_digest} ~ '^sha256:[a-f0-9]{64}$'
+  `),
+  check('app_automation_definitions_resource_revision_check', sql`
+    octet_length(${t.placement_resource_revision}) BETWEEN 1 AND 128
+    AND ${t.placement_resource_revision} !~ '[[:cntrl:]]'
+    AND octet_length(${t.selected_resource_revision}) BETWEEN 1 AND 128
+    AND ${t.selected_resource_revision} !~ '[[:cntrl:]]'
+  `),
+  check('app_automation_definitions_policy_check', sql`
+    ${t.policy_version} = '1'
+    AND ${t.connector_authorization_version} >= 1
+    AND ${t.approver_authorization_version} >= 1
+    AND ${t.installation_lifecycle_epoch} >= 0
+    AND ${t.installation_grant_epoch} >= 1
+    AND ${t.selected_relation_revision} >= 0
+  `),
+  check('app_automation_definitions_json_check', sql`
+    jsonb_typeof(${t.placement_resource_ref}) = 'object'
+    AND jsonb_typeof(${t.selected_resource_ref}) = 'object'
+    AND jsonb_typeof(${t.authorization_vector}) = 'object'
+    AND jsonb_typeof(${t.canonical_definition}) = 'object'
+    AND ${t.placement_resource_ref}->>'schema_version' = 'deft.resource_ref.v1'
+    AND ${t.placement_resource_ref}#>>'{provider,kind}' = 'module'
+    AND ${t.selected_resource_ref}->>'schema_version' = 'deft.resource_ref.v1'
+    AND ${t.selected_resource_ref}#>>'{provider,kind}' = 'module'
+  `),
+  check('app_automation_definitions_json_size_check', sql`
+    octet_length(${t.placement_resource_ref}::text) <= 4096
+    AND octet_length(${t.selected_resource_ref}::text) <= 4096
+    AND octet_length(${t.authorization_vector}::text) <= 65536
+    AND octet_length(${t.canonical_definition}::text) <= 131072
+  `),
+]);
+
+export const appAutomationFires = pgTable('app_automation_fires', {
+  ...id(),
+  ...orgId(),
+  definition_id: text('definition_id').notNull(),
+  definition_epoch: integer('definition_epoch').notNull(),
+  logical_local_date: text('logical_local_date').notNull(),
+  local_time: text('local_time').notNull(),
+  timezone: text('timezone').notNull(),
+  resolved_at_utc: timestamp('resolved_at_utc'),
+  fire_identity: text('fire_identity').notNull(),
+  state: text('state')
+    .$type<'pending' | 'claimed' | 'run_created' | 'skipped' | 'dead_letter'>()
+    .default('pending')
+    .notNull(),
+  attempt_count: integer('attempt_count').default(0).notNull(),
+  claim_owner: text('claim_owner'),
+  claim_token: text('claim_token'),
+  claimed_at: timestamp('claimed_at'),
+  lease_expires_at: timestamp('lease_expires_at'),
+  app_run_id: text('app_run_id'),
+  terminal_reason: text('terminal_reason')
+    .$type<'run_created' | 'dst_gap' | 'misfire_skipped' | 'attempts_exhausted' | 'definition_ineligible'>(),
+  terminal_at: timestamp('terminal_at'),
+  ...timestamps(),
+}, (t) => [
+  unique('app_automation_fires_org_definition_id_unique').on(t.org_id, t.definition_id, t.id),
+  foreignKey({
+    columns: [t.org_id, t.definition_id],
+    foreignColumns: [appAutomationDefinitions.org_id, appAutomationDefinitions.id],
+    name: 'app_automation_fires_definition_fk',
+  }).onDelete('restrict'),
+  // The reverse fire -> Run FK is installed by .26/apply-extras. Keeping the
+  // circular half out of Drizzle avoids an inference cycle while deployed
+  // schemas still enforce the exact org/definition/fire/run tuple.
+  uniqueIndex('app_automation_fires_identity_unique').on(t.org_id, t.fire_identity),
+  uniqueIndex('app_automation_fires_occurrence_unique').on(
+    t.org_id,
+    t.definition_id,
+    t.definition_epoch,
+    t.logical_local_date,
+    t.local_time,
+    t.timezone,
+  ),
+  uniqueIndex('app_automation_fires_definition_day_unique').on(
+    t.org_id,
+    t.definition_id,
+    t.logical_local_date,
+  ),
+  uniqueIndex('app_automation_fires_one_active_unique')
+    .on(t.org_id, t.definition_id)
+    .where(sql`${t.state} IN ('pending', 'claimed')`),
+  index('app_automation_fires_claim_idx').on(t.state, t.resolved_at_utc, t.lease_expires_at),
+  index('app_automation_fires_org_state_idx').on(t.org_id, t.state, t.created_at),
+  check('app_automation_fires_epoch_check', sql`${t.definition_epoch} >= 1`),
+  check('app_automation_fires_occurrence_check', sql`
+    ${t.logical_local_date} ~ '^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$'
+    AND ${t.local_time} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    AND octet_length(${t.timezone}) BETWEEN 1 AND 128
+    AND ${t.timezone} !~ '[[:cntrl:]]'
+  `),
+  check('app_automation_fires_identity_check', sql`${t.fire_identity} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_automation_fires_resolution_check', sql`
+    (
+      ${t.state} = 'skipped'
+      AND ${t.terminal_reason} = 'dst_gap'
+      AND ${t.resolved_at_utc} IS NULL
+    ) OR (
+      (${t.state} <> 'skipped' OR ${t.terminal_reason} IS DISTINCT FROM 'dst_gap')
+      AND ${t.resolved_at_utc} IS NOT NULL
+    )
+  `),
+  check('app_automation_fires_attempt_check', sql`${t.attempt_count} BETWEEN 0 AND 3`),
+  check('app_automation_fires_state_check', sql`
+    ${t.state} IN ('pending', 'claimed', 'run_created', 'skipped', 'dead_letter')
+  `),
+  check('app_automation_fires_claim_shape_check', sql`
+    (
+      ${t.state} = 'pending'
+      AND ${t.claim_owner} IS NULL
+      AND ${t.claim_token} IS NULL
+      AND ${t.claimed_at} IS NULL
+      AND ${t.lease_expires_at} IS NULL
+      AND ${t.app_run_id} IS NULL
+      AND ${t.terminal_reason} IS NULL
+      AND ${t.terminal_at} IS NULL
+    ) OR (
+      ${t.state} = 'claimed'
+      AND ${t.attempt_count} BETWEEN 1 AND 3
+      AND ${t.claim_owner} IS NOT NULL
+      AND ${t.claim_token} IS NOT NULL
+      AND ${t.claimed_at} IS NOT NULL
+      AND ${t.lease_expires_at} > ${t.claimed_at}
+      AND ${t.app_run_id} IS NULL
+      AND ${t.terminal_reason} IS NULL
+      AND ${t.terminal_at} IS NULL
+    ) OR (
+      ${t.state} = 'run_created'
+      AND ${t.attempt_count} BETWEEN 1 AND 3
+      AND ${t.app_run_id} IS NOT NULL
+      AND ${t.terminal_reason} = 'run_created'
+      AND ${t.terminal_at} IS NOT NULL
+    ) OR (
+      ${t.state} = 'skipped'
+      AND ${t.app_run_id} IS NULL
+      AND ${t.terminal_reason} IN ('dst_gap', 'misfire_skipped', 'definition_ineligible')
+      AND ${t.terminal_at} IS NOT NULL
+    ) OR (
+      ${t.state} = 'dead_letter'
+      AND ${t.attempt_count} = 3
+      AND ${t.app_run_id} IS NULL
+      AND ${t.terminal_reason} = 'attempts_exhausted'
+      AND ${t.terminal_at} IS NOT NULL
+    )
+  `),
+  check('app_automation_fires_claim_text_check', sql`
+    (${t.claim_owner} IS NULL OR (octet_length(${t.claim_owner}) BETWEEN 1 AND 128 AND ${t.claim_owner} !~ '[[:cntrl:]]'))
+    AND (${t.claim_token} IS NULL OR (octet_length(${t.claim_token}) BETWEEN 1 AND 128 AND ${t.claim_token} !~ '[[:cntrl:]]'))
   `),
 ]);
 

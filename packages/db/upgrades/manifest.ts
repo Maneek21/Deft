@@ -147,6 +147,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.25-app-origin-run-cutover.sql',
       description: 'Permit exact tenant-bound App-origin Run ancestry behind the production rollout gate',
     },
+    {
+      version: '0.3.0-preview.26',
+      file: '0.3.0-preview.26-app-automation-foundation.sql',
+      description: 'Add dormant approved App automation definitions, fire identities, and exact Run lineage',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 
