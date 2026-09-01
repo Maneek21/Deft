@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -15,6 +15,24 @@ import { MCPClientManager } from '@deft/mcp';
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
 const providerSource = resolve(repositoryRoot, 'examples', 'app-platform-sandbox-email-provider');
 const proofBundlePath = resolve(repositoryRoot, 'examples', 'app-platform-connected-proof-bundle.json');
+const packedPayloadFiles = ['README.md', 'package.json', 'server.mjs'] as const;
+
+async function packedPayloadProof(root: string) {
+  const schema = 'deft.app_platform.packed_payload.v1';
+  const files = await Promise.all(packedPayloadFiles.map(async (path) => {
+    const bytes = await readFile(resolve(root, path));
+    return {
+      path,
+      byte_length: bytes.length,
+      digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    };
+  }));
+  return {
+    schema,
+    files,
+    digest: `sha256:${createHash('sha256').update(JSON.stringify({ schema, files })).digest('hex')}`,
+  };
+}
 
 function runPnpm(args: string[], cwd: string) {
   const npmExecPath = process.env.npm_execpath
@@ -54,11 +72,6 @@ test('packed standalone sandbox provider conforms through the official stdio tra
     assert.equal(proofBundle.schema, 'deft.app_platform.connected_proof_bundle.v1');
     assert.equal(proofBundle.app_kit.version, DEFT_APP_KIT_VERSION);
     assert.equal(archives[0], providerPin.artifact.filename);
-    assert.equal((await stat(archive)).size, providerPin.artifact.byte_length);
-    assert.equal(
-      `sha256:${createHash('sha256').update(await readFile(archive)).digest('hex')}`,
-      providerPin.artifact.digest,
-    );
     const contactsLock = JSON.parse(await readFile(
       resolve(repositoryRoot, proofBundle.dependencies.contacts.lock_path),
       'utf8',
@@ -78,13 +91,14 @@ test('packed standalone sandbox provider conforms through the official stdio tra
     }, null, 2), 'utf8');
     runPnpm(['--dir', consumer, 'install', '--ignore-workspace', '--offline'], repositoryRoot);
 
-    const serverPath = resolve(
+    const installedProviderRoot = resolve(
       consumer,
       'node_modules',
       '@deft',
       'app-platform-sandbox-email-provider',
-      'server.mjs',
     );
+    assert.deepEqual(await packedPayloadProof(installedProviderRoot), providerPin.artifact.content);
+    const serverPath = resolve(installedProviderRoot, 'server.mjs');
     assert.match(await readFile(serverPath, 'utf8'), /server\/discover/);
     process.env.DEFT_SELF_HOSTED = 'true';
     process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = 'true';

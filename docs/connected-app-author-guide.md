@@ -14,10 +14,13 @@ import private Deft packages.
 The
 [machine-readable connected proof bundle](../examples/app-platform-connected-proof-bundle.json)
 is the source of truth for the proof inputs. It records the pinned Contacts App
-package digest and the separately packed sandbox-email provider artifact digest
-and retrieval path. Verify the artifacts against those recorded values rather
-than copying a digest from prose. The connected template depends on the exact
-Contacts App and does not bundle or copy its records.
+package digest and the separately packed sandbox-email provider's canonical
+payload digest and retrieval path. The provider pin hashes the exact packed file
+paths, lengths, and contents; raw `.tgz` wrapper bytes are not the identity
+because tar metadata differs across operating systems. Verify the installed
+payload against the recorded values rather than copying a digest from prose.
+The connected template depends on the exact Contacts App and does not bundle or
+copy its records.
 
 To create the App Kit tarball from a matching Deft checkout:
 
