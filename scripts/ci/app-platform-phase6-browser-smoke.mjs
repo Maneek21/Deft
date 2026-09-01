@@ -603,7 +603,16 @@ async function exerciseTrackAAutomation(
   }, { timeout: 20_000 });
   await dialog.getByRole('button', { name: 'Review schedule', exact: true }).click();
   const reviewResponse = await reviewResponsePromise;
-  requireCondition(reviewResponse.ok(), 'AUTOMATION_REVIEW_FAILED');
+  if (!reviewResponse.ok()) {
+    const failureBody = await reviewResponse.json().catch(() => null);
+    const responseCode = typeof failureBody?.code === 'string'
+      && /^[A-Z][A-Z0-9_]{0,63}$/.test(failureBody.code)
+      ? failureBody.code
+      : 'UNKNOWN';
+    throw new CertificationFailure(
+      `AUTOMATION_REVIEW_FAILED_${reviewResponse.status()}_${responseCode}`,
+    );
+  }
   const reviewBody = await reviewResponse.json().catch(() => null);
   const review = reviewBody?.review;
   requireCondition(
