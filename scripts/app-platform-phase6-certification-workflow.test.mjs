@@ -113,7 +113,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   assert.match(workflow, /APP_PLATFORM_CANDIDATE_ROOT=\$GITHUB_WORKSPACE\/\.cert\/phase6-candidate/);
   assert.match(workflow, /APP_PLATFORM_BASELINE_ROOT=\$GITHUB_WORKSPACE\/\.cert\/phase4-baseline/);
   assert.match(workflow, /APP_PLATFORM_RESOURCE_PREFIX:\s*deft-p6-cert-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
-  assert.match(workflow, /APP_PLATFORM_DATABASE_NAME:\s*deft_phase5_phase6_release_test/);
+  assert.match(workflow, /APP_PLATFORM_DATABASE_NAME:\s*deft_phase4_phase5_phase6_release_test/);
   assert.match(
     workflow,
     /APP_PLATFORM_SETUP_HOOK:[^\n]*app-platform-phase6-certification-setup\.sh/,

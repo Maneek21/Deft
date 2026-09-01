@@ -19,7 +19,7 @@ env:
   APP_PLATFORM_RESOURCE_PREFIX: deft-p6-cert-${{ github.run_id }}-${{ github.run_attempt }}
   APP_PLATFORM_CANDIDATE_TAG: deft:phase6-cert-${{ github.run_id }}-${{ github.run_attempt }}
   APP_PLATFORM_COMPOSE_PROJECT: deft-p6-compose-${{ github.run_id }}-${{ github.run_attempt }}
-  APP_PLATFORM_DATABASE_NAME: deft_phase5_phase6_release_test
+  APP_PLATFORM_DATABASE_NAME: deft_phase4_phase5_phase6_release_test
 
 jobs:
   certify:
