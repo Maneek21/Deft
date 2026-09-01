@@ -16,7 +16,7 @@ function occurrences(source, value) {
 }
 
 test('Track A setup delegates Phase 6 and adds only the frozen automation prerequisites', () => {
-  assert.match(setupHook, /d390f2c004979ab3b36bb24832d74d1e59538324/);
+  assert.match(setupHook, /ff5a3fae3e21b80fe51849e6cd8023d5228389d0/);
   assert.match(setupHook, /bash "\$phase6_setup"/);
   assert.equal(occurrences(setupHook, 'docker run '), 1);
   assert.doesNotMatch(setupHook, /docker compose|browser-smoke|certify-app-platform/);
