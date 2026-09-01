@@ -160,6 +160,10 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(offlineHook, /\[\[ "\$after_total" == "\$before_total" \]\]/);
   assert.match(offlineHook, /invocation_failed_without_creating_a_run/);
+  assert.match(
+    offlineHook,
+    /docker exec -i "\$restore_container" psql[\s\S]*?<<'SQL'[\s\S]*?WHERE u\.email = :'proof_email'[\s\S]*?^SQL$/m,
+  );
 });
 
 test('browser proof correlates the exact invoked Run before approving it through Inbox UI', () => {
