@@ -389,9 +389,13 @@ async function main(): Promise<void> {
   if (command === 'check') {
     const built = await buildProject(false);
     const protocol = built.package.manifest.compatibility.app_protocol;
-    console.log(protocol === '0'
-      ? `Valid App Protocol v0 package ${built.digest}; connected permissions: none`
-      : `Valid App Protocol v1 connected package ${built.digest}; staging grants zero authority; review and activation are explicit; execution is rollout-gated`);
+    if (protocol === '0') {
+      console.log(`Valid App Protocol v0 package ${built.digest}; connected permissions: none`);
+    } else if (protocol === '1') {
+      console.log(`Valid App Protocol v1 connected package ${built.digest}; staging grants zero authority; review and activation are explicit; execution is rollout-gated`);
+    } else {
+      console.log(`Valid App Protocol v2 automation-request package ${built.digest}; staging grants zero authority; automation requests are requested-only and non-executable; provider access: none`);
+    }
     return;
   }
   if (command === 'build') {

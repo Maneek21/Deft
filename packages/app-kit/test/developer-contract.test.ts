@@ -48,11 +48,13 @@ test('freezes one additive App Kit and protocol-flow compatibility contract', as
     protocol_flows: {
       '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
       '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
+      '2': { package_format: 'deft.app.package.v2', install_mode: 'stage_only' },
     },
   });
   assert.equal(Object.isFrozen(DEFT_APP_DEVELOPER_COMPATIBILITY), true);
   assert.equal(Object.isFrozen(DEFT_APP_DEVELOPER_COMPATIBILITY.app_kit.versions), true);
   assert.equal(Object.isFrozen(DEFT_APP_DEVELOPER_COMPATIBILITY.protocol_flows['1']), true);
+  assert.equal(Object.isFrozen(DEFT_APP_DEVELOPER_COMPATIBILITY.protocol_flows['2']), true);
   assert.deepEqual(
     resolveDeftAppDeveloperProtocolFlow(DEFT_APP_DEVELOPER_COMPATIBILITY, '0'),
     { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
@@ -61,10 +63,15 @@ test('freezes one additive App Kit and protocol-flow compatibility contract', as
     resolveDeftAppDeveloperProtocolFlow(DEFT_APP_DEVELOPER_COMPATIBILITY, '1'),
     { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
   );
-  assert.throws(
-    () => resolveDeftAppDeveloperProtocolFlow(DEFT_APP_DEVELOPER_COMPATIBILITY, '2'),
-    /does not support App Protocol v2/,
+  assert.deepEqual(
+    resolveDeftAppDeveloperProtocolFlow(DEFT_APP_DEVELOPER_COMPATIBILITY, '2'),
+    { package_format: 'deft.app.package.v2', install_mode: 'stage_only' },
   );
+  const { '2': _v2, ...legacyProtocolFlows } = DEFT_APP_DEVELOPER_COMPATIBILITY.protocol_flows;
+  assert.throws(() => resolveDeftAppDeveloperProtocolFlow({
+    ...DEFT_APP_DEVELOPER_COMPATIBILITY,
+    protocol_flows: legacyProtocolFlows,
+  }, '2'), /does not support App Protocol v2/);
   assert.throws(
     () => resolveDeftAppDeveloperProtocolFlow({
       ...DEFT_APP_DEVELOPER_COMPATIBILITY,
