@@ -42,6 +42,22 @@ test('deterministic disposable keyring exactly matches the Phase 5 lifecycle fix
   });
 });
 
+test('disposable keyring deterministically includes every referenced historical key ID', () => {
+  const keyring = deterministicCertificationKeyring({
+    run_encryption: ['enc-old', 'enc-v1'],
+    receipt_signing: ['sig-old'],
+    fingerprint: ['fp-old', 'fp-v1'],
+  });
+  assert.deepEqual(Object.keys(keyring.run_encryption.keys), ['enc-old', 'enc-v1']);
+  assert.deepEqual(Object.keys(keyring.receipt_signing.keys), ['sig-old', 'sig-v1']);
+  assert.deepEqual(Object.keys(keyring.fingerprint.keys), ['fp-old', 'fp-v1']);
+  assert.equal(
+    keyring.run_encryption.keys['enc-old'],
+    deterministicCertificationKeyring({ run_encryption: ['enc-old'] })
+      .run_encryption.keys['enc-old'],
+  );
+});
+
 test('CLI modes require the exact output and expected-snapshot surfaces', () => {
   assert.deepEqual(parseCliArgs(['keyring', '--output', 'keys.json']), {
     mode: 'keyring', output: resolve('keys.json'),

@@ -54,6 +54,12 @@ type CliOptions = Readonly<{
   expectedSnapshot?: string;
 }>;
 
+type CertificationKeyInventory = Readonly<{
+  run_encryption: readonly string[];
+  receipt_signing: readonly string[];
+  fingerprint: readonly string[];
+}>;
+
 type QueryResult<Row extends Record<string, unknown>> = Readonly<{
   rows: Row[];
   rowCount: number | null;
@@ -133,20 +139,32 @@ function deterministicKey(purpose: string, keyId: string): string {
     .digest('base64');
 }
 
-export function deterministicCertificationKeyring() {
+function deterministicKeyMap(
+  purpose: keyof CertificationKeyInventory,
+  current: string,
+  referenced: readonly string[] = [],
+): Record<string, string> {
+  return Object.fromEntries([...new Set([current, ...referenced])]
+    .sort()
+    .map((keyId) => [keyId, deterministicKey(purpose, keyId)]));
+}
+
+export function deterministicCertificationKeyring(
+  inventory: Partial<CertificationKeyInventory> = {},
+) {
   return {
     schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
     run_encryption: {
       current: 'enc-v1',
-      keys: { 'enc-v1': deterministicKey('run_encryption', 'enc-v1') },
+      keys: deterministicKeyMap('run_encryption', 'enc-v1', inventory.run_encryption),
     },
     receipt_signing: {
       current: 'sig-v1',
-      keys: { 'sig-v1': deterministicKey('receipt_signing', 'sig-v1') },
+      keys: deterministicKeyMap('receipt_signing', 'sig-v1', inventory.receipt_signing),
     },
     fingerprint: {
       current: 'fp-v1',
-      keys: { 'fp-v1': deterministicKey('fingerprint', 'fp-v1') },
+      keys: deterministicKeyMap('fingerprint', 'fp-v1', inventory.fingerprint),
     },
   } as const;
 }
@@ -348,8 +366,34 @@ function parseContinuitySnapshot(value: unknown): ContinuitySnapshot {
   return parsed;
 }
 
+async function loadCertificationKeyInventory(): Promise<CertificationKeyInventory> {
+  type KeyRow = { key_id: string };
+  return withClient(async (client) => {
+    const [runEncryption, receiptSigning, fingerprint] = await Promise.all([
+      client.query<KeyRow>(
+        'SELECT DISTINCT key_version AS key_id FROM app_run_secret_payloads ORDER BY key_id',
+      ),
+      client.query<KeyRow>(
+        'SELECT DISTINCT signing_key_version AS key_id FROM app_run_receipts ORDER BY key_id',
+      ),
+      client.query<KeyRow>(
+        `SELECT DISTINCT key_id FROM (
+           SELECT idempotency_key_version AS key_id FROM app_runs
+           UNION
+           SELECT input_fingerprint_key_version AS key_id FROM app_runs
+         ) AS referenced_keys ORDER BY key_id`,
+      ),
+    ]);
+    return Object.freeze({
+      run_encryption: runEncryption.rows.map((row) => row.key_id),
+      receipt_signing: receiptSigning.rows.map((row) => row.key_id),
+      fingerprint: fingerprint.rows.map((row) => row.key_id),
+    });
+  });
+}
+
 async function generateKeyring(output: string): Promise<void> {
-  const keyring = deterministicCertificationKeyring();
+  const keyring = deterministicCertificationKeyring(await loadCertificationKeyInventory());
   await writeJson(output, keyring, true);
   const serialized = canonicalCapabilityJson(keyring);
   console.log(JSON.stringify({
@@ -362,6 +406,11 @@ async function generateKeyring(output: string): Promise<void> {
       run_encryption: keyring.run_encryption.current,
       receipt_signing: keyring.receipt_signing.current,
       fingerprint: keyring.fingerprint.current,
+    },
+    key_counts: {
+      run_encryption: Object.keys(keyring.run_encryption.keys).length,
+      receipt_signing: Object.keys(keyring.receipt_signing.keys).length,
+      fingerprint: Object.keys(keyring.fingerprint.keys).length,
     },
   }));
 }
