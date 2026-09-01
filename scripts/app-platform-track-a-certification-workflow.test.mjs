@@ -79,6 +79,13 @@ test('candidate, Phase 6 baseline, and supported predecessor are immutable and v
   assert.match(orchestrator, /\[\[ "\$predecessor_revision" == "\$predecessor_commit" \]\]/);
 });
 
+test('the disposable database activates inherited Phase 5 and Track A proofs', () => {
+  assert.match(
+    workflow,
+    /APP_PLATFORM_DATABASE_NAME:\s*deft_phase5_phase6_track_a_release_test/,
+  );
+});
+
 test('candidate receives one dependency install, typecheck, production build, and packed proof', () => {
   assert.equal(occurrences(workflow, 'pnpm install --frozen-lockfile'), 3);
   assert.equal(occurrences(workflow, 'run: pnpm typecheck'), 1);
