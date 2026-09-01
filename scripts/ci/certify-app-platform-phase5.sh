@@ -86,6 +86,7 @@ run_candidate() {
     -e DEFT_APP_RUNS_ENABLED=true \
     -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
     -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
+    -e DEFT_APP_RUN_KEYRINGS="${keyring_json:-}" \
     --entrypoint sh "$candidate_tag" -c "$2"
 }
 
@@ -155,6 +156,16 @@ image_revision="$(docker image inspect "$candidate_tag" --format '{{index .Confi
 docker image inspect "$candidate_tag" > "$safe_dir/candidate-image-inspect.json"
 printf '%s\n' "$image_revision" > "$safe_dir/candidate-image-revision.txt"
 
+docker run --rm --network "$network" \
+  -v "${certifier_root}/scripts/ci/app-platform-phase5-certification-probe.ts:/app/scripts/ci/app-platform-phase5-certification-probe.ts:ro" \
+  -v "${recovery_dir}:/recovery" \
+  -e DATABASE_URL="$source_url_container" -e DEFT_TEST_DATABASE_URL="$source_url_container" \
+  -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
+  --entrypoint sh "$candidate_tag" \
+  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts keyring --output /recovery/app-run-keyrings.json && chown "$HOST_UID:$HOST_GID" /recovery/app-run-keyrings.json'
+chmod 600 "$keyring_path"
+keyring_json="$(tr -d '\n' < "$keyring_path")"
+
 run_candidate "$source_url_container" 'pnpm db:upgrade && pnpm module:verify'
 run_candidate "$source_url_container" 'pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts'
 docker run --rm --network "$network" \
@@ -168,6 +179,7 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUNS_ENABLED=true \
   -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
+  -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm --filter @deft/api exec tsx --test test/phase5-proof-package-determinism.test.ts test/phase5-sandbox-email-provider.test.ts test/app-origin-run-lifecycle-db.test.ts'
 

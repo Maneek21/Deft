@@ -154,11 +154,18 @@ test('automation is explicitly enabled in every candidate boot and the setup hoo
 test('candidate boots enable the rollout prerequisites before automation', () => {
   assert.match(
     orchestrator,
-    /run_candidate\(\) \{[\s\S]*?-e DEFT_APPS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUNS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \\\r?\n\s+-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled"/,
+    /run_candidate\(\) \{[\s\S]*?-e DEFT_APPS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUNS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \\\r?\n\s+-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled" \\\r?\n\s+-e DEFT_APP_RUN_KEYRINGS="\$\{keyring_json:-\}"/,
   );
   assert.match(
     orchestrator,
-    /-v "\$\{candidate_root\}\/examples:\/app\/examples:ro"[\s\S]*?-e DEFT_APPS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUNS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \\\r?\n\s+-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled"/,
+    /-v "\$\{candidate_root\}\/examples:\/app\/examples:ro"[\s\S]*?-e DEFT_APPS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUNS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \\\r?\n\s+-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled" \\\r?\n\s+-e DEFT_APP_RUN_KEYRINGS="\$keyring_json"/,
+  );
+});
+
+test('a disposable keyring exists before the first rollout-enabled candidate boot', () => {
+  assert.match(
+    orchestrator,
+    /candidate-image-revision\.txt"[\s\S]*?certification-probe\.ts keyring --output \/recovery\/app-run-keyrings\.json[\s\S]*?keyring_json="\$\(tr -d '\\n' < "\$keyring_path"\)"[\s\S]*?run_candidate "\$source_url_container" 'pnpm db:upgrade/,
   );
 });
 
@@ -192,7 +199,7 @@ test('the exact candidate database matrix includes grants and the automation lif
   assert.match(setupProbe, /appAutomationDefinitions/);
   assert.match(
     orchestrator,
-    /-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled" \\\r?\n\s+--entrypoint sh "\$candidate_tag" \\\r?\n\s+-c '[^']*test\/app-origin-run-lifecycle-db\.test\.ts'/,
+    /-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled" \\\r?\n\s+-e DEFT_APP_RUN_KEYRINGS="\$keyring_json" \\\r?\n\s+--entrypoint sh "\$candidate_tag" \\\r?\n\s+-c '[^']*test\/app-origin-run-lifecycle-db\.test\.ts'/,
   );
   assert.match(orchestrator, /run_extension_hook "\$setup_hook" setup/);
 });
