@@ -1,0 +1,12 @@
+{
+  "schema": "deft.app_platform.track_a.browser_fixture.v1",
+  "app_id": "org.deft.reference.resource-campaigns-app",
+  "app_version": "4.0.0",
+  "module_slug": "resource-campaigns",
+  "collection_key": "campaigns",
+  "record_label": "Connected campaign",
+  "action_label": "Send campaign email",
+  "request_label": "Daily campaign send",
+  "timezone": "UTC",
+  "schedule_lead_minutes": 120
+}
