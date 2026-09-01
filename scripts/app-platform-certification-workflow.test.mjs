@@ -10,6 +10,10 @@ const orchestrator = readFileSync(
   new URL('./ci/certify-app-platform-phase5.sh', import.meta.url),
   'utf8',
 );
+const browserSmoke = readFileSync(
+  new URL('./ci/app-platform-phase5-browser-smoke.mjs', import.meta.url),
+  'utf8',
+);
 const executionSurface = `${workflow}\n${orchestrator}`;
 
 const CANDIDATE_COMMIT = '438a283a885f0ddc1b0aa34ef7a467d09ab163c8';
@@ -116,6 +120,12 @@ test('certification carries the Phase 4 and Phase 5 probes plus browser evidence
   assert.match(predecessorProbe, /DOTENV_CONFIG_QUIET=true/);
   assert.match(orchestrator, /JSON\.parse\(readFileSync\(process\.argv\[2\], 'utf8'\)\)/);
   assert.match(orchestrator, /deft\.app_platform\.phase5\.predecessor_read\.v1/);
+});
+
+test('browser evidence follows the responsive Apps title contract', () => {
+  assert.match(browserSmoke, /viewport\.width\s*<\s*768/);
+  assert.match(browserSmoke, /getByText\('Settings · Apps',\s*\{\s*exact:\s*true\s*\}\)/);
+  assert.match(browserSmoke, /getByRole\('heading',\s*\{\s*name:\s*'Apps',\s*exact:\s*true\s*\}\)/);
 });
 
 test('evidence uploads even on failure and disposable resources are always removed', () => {
