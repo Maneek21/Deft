@@ -100,7 +100,7 @@ jobs:
         env:
           PNPM_CONFIG_IGNORE_SCRIPTS: 'true'
         run: |
-          npm_execpath="$(readlink -f "$(command -v pnpm)")" \
+          npm_execpath="${GITHUB_WORKSPACE}/scripts/ci/pnpm-exec-wrapper.mjs" \
             pnpm --filter @deft/app-kit exec tsx --test test/packed-external.test.ts
 
       - name: Run immutable Phase 6 host certification

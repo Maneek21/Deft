@@ -18,7 +18,11 @@ const offlineHook = readFileSync(
   new URL('./ci/app-platform-phase6-certification-offline.sh', import.meta.url),
   'utf8',
 );
-const executionSurface = `${workflow}\n${orchestrator}\n${setupHook}\n${offlineHook}`;
+const pnpmExecWrapper = readFileSync(
+  new URL('./ci/pnpm-exec-wrapper.mjs', import.meta.url),
+  'utf8',
+);
+const executionSurface = `${workflow}\n${orchestrator}\n${setupHook}\n${offlineHook}\n${pnpmExecWrapper}`;
 
 const CANDIDATE_COMMIT = '16875df2f6c9dc2bc3d850de6758b7dd56767a05';
 const CANDIDATE_PLACEHOLDER = '__PRODUCT_CANDIDATE_SHA__';
@@ -99,8 +103,9 @@ test('three dependency roots are installed before one candidate typecheck and pr
   );
   assert.match(
     workflow,
-    /Build exact Phase 6 candidate once[\s\S]*?Verify packed App Kit external authoring from exact candidate[\s\S]*?PNPM_CONFIG_IGNORE_SCRIPTS:\s*'true'[\s\S]*?npm_execpath="\$\(readlink -f "\$\(command -v pnpm\)"\)" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/packed-external\.test\.ts[\s\S]*?Run immutable Phase 6 host certification/,
+    /Build exact Phase 6 candidate once[\s\S]*?Verify packed App Kit external authoring from exact candidate[\s\S]*?PNPM_CONFIG_IGNORE_SCRIPTS:\s*'true'[\s\S]*?npm_execpath="\$\{GITHUB_WORKSPACE\}\/scripts\/ci\/pnpm-exec-wrapper\.mjs" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/packed-external\.test\.ts[\s\S]*?Run immutable Phase 6 host certification/,
   );
+  assert.match(pnpmExecWrapper, /spawnSync\(command, args, \{ stdio: 'inherit' \}\)/);
 });
 
 test('shared gate receives the Phase 6 roots, hooks, and exact isolated resources', () => {
