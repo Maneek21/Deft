@@ -29,6 +29,7 @@ test('Track A setup delegates Phase 6 and adds only the frozen automation prereq
   assert.match(setupProbe, /stageAppUpgrade/);
   assert.match(setupProbe, /prepareConnectedAppReview/);
   assert.match(setupProbe, /activateConnectedAppInstallation/);
+  assert.match(setupProbe, /assert\.equal\(packed\.package_format, 'deft\.app\.package\.v2'\)/);
   assert.match(setupProbe, /appAutomationDefinitions/);
   assert.match(setupProbe, /assert\.equal\(definitionsAfter\.length, 0\)/);
   assert.match(setupProbe, /assert\.equal\(campaignRecords\.length, 1\)/);
