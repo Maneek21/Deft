@@ -84,6 +84,27 @@ test('the disposable database activates inherited Phase 5 and Track A proofs', (
     workflow,
     /APP_PLATFORM_DATABASE_NAME:\s*deft_phase5_phase6_track_a_release_test/,
   );
+  assert.match(
+    workflow,
+    /APP_PLATFORM_EXPECTED_LATEST_MIGRATION:\s*0\.3\.0-preview\.26/,
+  );
+  assert.match(workflow, /APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY:\s*'true'/);
+  assert.equal(
+    occurrences(
+      orchestrator,
+      '-e APP_PLATFORM_EXPECTED_LATEST_MIGRATION="$expected_latest_migration"',
+    ),
+    2,
+  );
+  assert.equal(
+    occurrences(
+      orchestrator,
+      '-e APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY="$include_track_a_continuity"',
+    ),
+    2,
+  );
+  assert.match(setupProbe, /appAutomationDefinitions/);
+  assert.match(orchestrator, /include_track_a_continuity=.*false/);
 });
 
 test('candidate receives one dependency install, typecheck, production build, and packed proof', () => {

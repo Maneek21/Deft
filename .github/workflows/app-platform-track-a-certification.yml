@@ -20,6 +20,8 @@ env:
   APP_PLATFORM_CANDIDATE_TAG: deft:track-a-cert-${{ github.run_id }}-${{ github.run_attempt }}
   APP_PLATFORM_COMPOSE_PROJECT: deft-track-a-compose-${{ github.run_id }}-${{ github.run_attempt }}
   APP_PLATFORM_DATABASE_NAME: deft_phase5_phase6_track_a_release_test
+  APP_PLATFORM_EXPECTED_LATEST_MIGRATION: 0.3.0-preview.26
+  APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY: 'true'
   DEFT_APP_AUTOMATIONS_ENABLED: 'true'
 
 jobs:
