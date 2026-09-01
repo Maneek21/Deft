@@ -49,11 +49,15 @@ export type AppRunImmediateExecution = Readonly<{
   provider_result?: AppRunProviderExecutionResult;
 }>;
 
-function providerIdempotencyKey(runId: string): string {
-  return createHash('sha256')
+export function appRunProviderIdempotencyKey(runId: string): string {
+  const digest = createHash('sha256')
     .update('deft.app_run.provider_idempotency.v1\0')
     .update(runId)
     .digest('base64url');
+  // The frozen provider interface requires an alphanumeric first character.
+  // Preserve every already-valid v1 key byte-for-byte and distinguish the
+  // corrected form by length only when base64url begins with "-" or "_".
+  return /^[A-Za-z0-9]/.test(digest) ? digest : `d${digest}`;
 }
 
 function boundedLeaseMs(value: number): number {
@@ -127,7 +131,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     }
 
     const stableProviderKey = claimed.run.retry_class === 'idempotent_with_key'
-      ? providerIdempotencyKey(runId)
+      ? appRunProviderIdempotencyKey(runId)
       : undefined;
     const stopHeartbeat = this.#startLeaseHeartbeat(claimed);
     let result: AppRunProviderExecutionResult;
@@ -384,7 +388,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     const attemptNumber = (last?.attempt_number ?? 0) + 1;
     if (attemptNumber > run.attempt_limit) return null;
     const providerKey = run.retry_class === 'idempotent_with_key'
-      ? providerIdempotencyKey(run.id)
+      ? appRunProviderIdempotencyKey(run.id)
       : null;
     const providerFingerprint = providerKey
       ? this.secrets.fingerprintText('idempotency', providerKey)
