@@ -82,6 +82,9 @@ run_candidate() {
     -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
     -e JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
     -e ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
+    -e DEFT_APPS_ENABLED=true \
+    -e DEFT_APP_RUNS_ENABLED=true \
+    -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
     -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
     --entrypoint sh "$candidate_tag" -c "$2"
 }
@@ -161,6 +164,9 @@ docker run --rm --network "$network" \
   -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
   -e JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
   -e ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
+  -e DEFT_APPS_ENABLED=true \
+  -e DEFT_APP_RUNS_ENABLED=true \
+  -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm --filter @deft/api exec tsx --test test/phase5-proof-package-determinism.test.ts test/phase5-sandbox-email-provider.test.ts test/app-origin-run-lifecycle-db.test.ts'
