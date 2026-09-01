@@ -42,8 +42,10 @@ const EXPECTED_APP_PACKAGE_DIGESTS = Object.freeze([
   'sha256:973ec7076daf7405a7a4d8b48509ef6f99b1b1cc4b787961104c73f23b7f770d',
 ] as const);
 
+// Module versions persist the normalized semantic manifest digest. The distinct
+// package-artifact digest is already pinned by the exact App package digest.
 const EXPECTED_MODULE_MANIFEST_DIGEST =
-  'sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208';
+  'sha256:70a2c14dffc15b7e8aa1e056a53b5933fa351e305d86e13ebf467bf8159287f2';
 const EXPECTED_LATEST_MIGRATION = '0.3.0-preview.25';
 
 type CliOptions = Readonly<{

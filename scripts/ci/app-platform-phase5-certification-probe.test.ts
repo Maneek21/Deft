@@ -1,13 +1,26 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
+import { digestSupportedModuleManifest } from '../../packages/shared/src/index.js';
 import {
   __test,
   assembleContinuitySnapshot,
   deterministicCertificationKeyring,
   parseCliArgs,
 } from './app-platform-phase5-certification-probe.js';
+
+test('persisted proof Module digest matches the normalized connected manifest', async () => {
+  const manifest = JSON.parse(await readFile(new URL(
+    '../../examples/connected-resource-campaigns-app/modules/resource-campaigns/deft.module.json',
+    import.meta.url,
+  ), 'utf8')) as unknown;
+  assert.equal(
+    await digestSupportedModuleManifest(manifest),
+    __test.EXPECTED_MODULE_MANIFEST_DIGEST,
+  );
+});
 
 test('deterministic disposable keyring exactly matches the Phase 5 lifecycle fixture', () => {
   const keyring = deterministicCertificationKeyring();

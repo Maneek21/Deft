@@ -113,6 +113,9 @@ test('certification carries the Phase 4 and Phase 5 probes plus browser evidence
   assert.match(predecessorProbe, /JWT_SECRET=phase5-cert-jwt-not-for-prod/);
   assert.match(predecessorProbe, /JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod/);
   assert.match(predecessorProbe, /ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes/);
+  assert.match(predecessorProbe, /DOTENV_CONFIG_QUIET=true/);
+  assert.match(orchestrator, /JSON\.parse\(readFileSync\(process\.argv\[2\], 'utf8'\)\)/);
+  assert.match(orchestrator, /deft\.app_platform\.phase5\.predecessor_read\.v1/);
 });
 
 test('evidence uploads even on failure and disposable resources are always removed', () => {
