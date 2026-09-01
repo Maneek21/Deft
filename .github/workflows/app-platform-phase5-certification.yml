@@ -1,0 +1,121 @@
+name: App Platform Phase 5 Certification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-platform-phase5-certification
+  cancel-in-progress: false
+
+env:
+  PHASE5_CANDIDATE_SHA: 161ca65fcb79cdb76fee315b2ba9974ff145a47e
+  PHASE4_BASELINE_SHA: ec79592e669bdf915fad8a5d2480f0625d819a4c
+  PREDECESSOR_IMAGE: ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788
+  PREDECESSOR_COMMIT: 6d39e0e0413c82d36c9481849ae582fdf805d1a6
+
+jobs:
+  certify:
+    name: Immutable non-publishing release-host gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout certification orchestration
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Checkout exact Phase 5 candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.PHASE5_CANDIDATE_SHA }}
+          path: .cert/phase5-candidate
+          fetch-depth: 1
+
+      - name: Checkout exact Phase 4 baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.PHASE4_BASELINE_SHA }}
+          path: .cert/phase4-baseline
+          fetch-depth: 1
+
+      - name: Verify immutable source identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          certifier_sha="$(git rev-parse HEAD)"
+          candidate_sha="$(git -C .cert/phase5-candidate rev-parse HEAD)"
+          baseline_sha="$(git -C .cert/phase4-baseline rev-parse HEAD)"
+          [[ "$candidate_sha" == "$PHASE5_CANDIDATE_SHA" ]]
+          [[ "$baseline_sha" == "$PHASE4_BASELINE_SHA" ]]
+          {
+            echo "CERTIFIER_SHA=$certifier_sha"
+            echo "PHASE5_ROOT=$GITHUB_WORKSPACE/.cert/phase5-candidate"
+            echo "PHASE4_ROOT=$GITHUB_WORKSPACE/.cert/phase4-baseline"
+            echo "DEFT_APP_PLATFORM_EVIDENCE_DIR=$RUNNER_TEMP/deft-phase5-evidence"
+          } >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          version: 11.10.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Install certifier dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for desktop and mobile evidence
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install exact Phase 4 dependencies
+        working-directory: .cert/phase4-baseline
+        run: pnpm install --frozen-lockfile
+
+      - name: Run immutable Phase 5 host certification
+        env:
+          CERTIFIER_ROOT: ${{ github.workspace }}
+          PHASE5_ROOT: ${{ env.PHASE5_ROOT }}
+          PHASE4_ROOT: ${{ env.PHASE4_ROOT }}
+          EVIDENCE_DIR: ${{ env.DEFT_APP_PLATFORM_EVIDENCE_DIR }}
+        run: bash scripts/ci/certify-app-platform-phase5.sh
+
+      - name: Upload safe certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-platform-phase5-safe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DEFT_APP_PLATFORM_EVIDENCE_DIR }}/safe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Upload exact candidate image archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-platform-phase5-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DEFT_APP_PLATFORM_EVIDENCE_DIR }}/candidate-image.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Confirm isolated resource cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          prefix="deft-p5-cert-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker ps -a --format '{{.Names}}' | grep -Fx "$prefix-source"; then exit 1; fi
+          if docker ps -a --format '{{.Names}}' | grep -Fx "$prefix-restore"; then exit 1; fi
+          if docker ps -a --format '{{.Names}}' | grep -Fx "$prefix-app"; then exit 1; fi
+          if docker network ls --format '{{.Name}}' | grep -Fx "$prefix-network"; then exit 1; fi
+          if docker volume ls --format '{{.Name}}' | grep -Fx "$prefix-source-data"; then exit 1; fi
+          if docker volume ls --format '{{.Name}}' | grep -Fx "$prefix-restore-data"; then exit 1; fi

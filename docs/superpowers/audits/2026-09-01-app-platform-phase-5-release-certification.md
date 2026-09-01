@@ -3,7 +3,8 @@
 - Date: 2026-09-01
 - Candidate branch: `codex/app-platform-phase5-cutover`
 - Phase 4 immutable baseline: `ec79592e669bdf915fad8a5d2480f0625d819a4c`
-- Status: **local candidate passed; immutable release-host gate pending**
+- Merged candidate: `161ca65fcb79cdb76fee315b2ba9974ff145a47e` (`#280`)
+- Status: **local candidate and exact-merge CI passed; immutable non-publishing release-host gate pending**
 
 ## Certified local claim
 
@@ -100,11 +101,17 @@ evidence. No Phase 5 requirement is being inferred from those unrelated tests.
   not retried; the real extension remains a release-host requirement.
 - Docker Desktop is installed, but its engine is unavailable through the local
   Docker inference socket. Docker image construction was not retried.
-- No immutable candidate image or release commit exists before PR C is merged.
+- PR C is merged and its exact merge commit passed CI and security. That CI
+  image was ephemeral, so it does not provide the durable image digest,
+  matched recovery set, predecessor read, or restored-key continuity required
+  by this gate.
 
 ## Immutable release-host gate
 
-After PR C merges, certify the exact merged commit on the release host:
+Run the manual, read-only
+`.github/workflows/app-platform-phase5-certification.yml` lane. It checks out
+the exact merged Phase 5 commit independently of the later certifier commit,
+publishes nothing, and certifies:
 
 1. Record the immutable commit and candidate image digest.
 2. Create a fresh pgvector-backed schema and run the supported upgrade from the
@@ -115,6 +122,10 @@ After PR C merges, certify the exact merged commit on the release host:
 5. Read the upgraded data with the supported predecessor image, restore the
    candidate, and prove the accepted Run/receipt remains coherent.
 6. Archive the exact evidence and remove release-host disposable resources.
+
+The workflow may update this audit to PASS only after its immutable GitHub run,
+safe evidence artifact, candidate archive digest, browser evidence, and cleanup
+result are inspected. Adding the workflow does not itself satisfy the gate.
 
 Known Phase 4 release assets for that pass:
 
