@@ -361,7 +361,14 @@ async function reviewAndActivate(page, card, activationKind) {
     .waitFor({ state: 'visible', timeout: 20_000 });
 }
 
-async function invokePackedProviderThroughUi(page, manifest, markers, receiptScreenshotPath) {
+async function invokePackedProviderThroughUi(
+  page,
+  manifest,
+  markers,
+  receiptScreenshotPath,
+  setStage,
+) {
+  setStage('packed_provider_campaign_list');
   await page.goto(`${webUrl}/modules/resource-campaigns/campaigns`, { waitUntil: 'domcontentloaded' });
   const campaignLinks = page.getByRole('link', { name: 'Connected campaign', exact: true });
   await campaignLinks.first().waitFor({ state: 'visible', timeout: 20_000 });
@@ -369,35 +376,88 @@ async function invokePackedProviderThroughUi(page, manifest, markers, receiptScr
     ...new Set(links.map((link) => link.getAttribute('href')).filter(Boolean)),
   ]);
   requireCondition(campaignHrefs.length === 1, 'CONNECTED_CAMPAIGN_NOT_UNIQUE');
+  const campaignRecordId = decodeURIComponent(
+    new URL(campaignHrefs[0], webUrl).pathname.split('/').filter(Boolean).at(-1) ?? '',
+  );
+  requireCondition(
+    campaignRecordId.length > 0 && campaignRecordId.length <= 512,
+    'CONNECTED_CAMPAIGN_ID_INVALID',
+  );
   await campaignLinks.first().click();
+  setStage('packed_provider_campaign_record');
   await page.getByRole('heading', { name: 'Connected campaign', exact: true, level: 1 })
     .waitFor({ state: 'visible', timeout: 20_000 });
 
   const actions = page.locator('section[aria-label="App actions"]');
   await actions.waitFor({ state: 'visible', timeout: 20_000 });
   await actions.getByRole('button', { name: 'Send campaign email', exact: true }).click();
+  setStage('packed_provider_action_review');
   const actionDialog = page.getByRole('dialog');
   await actionDialog.getByRole('heading', { name: 'Send campaign email', exact: true })
     .waitFor({ state: 'visible', timeout: 20_000 });
   await actionDialog.getByRole('button', { name: 'Review action', exact: true }).click();
   await actionDialog.getByRole('button', { name: 'Confirm and run', exact: true })
     .waitFor({ state: 'visible', timeout: 20_000 });
+  const invocationResponsePromise = page.waitForResponse((response) => {
+    const pathname = new URL(response.url()).pathname;
+    return response.request().method() === 'POST' && pathname === '/api/app-actions/invoke';
+  }, { timeout: 20_000 });
   await actionDialog.getByRole('button', { name: 'Confirm and run', exact: true }).click();
+  setStage('packed_provider_action_submission');
+  const invocationResponse = await invocationResponsePromise;
+  requireCondition(invocationResponse.ok(), 'PACKED_PROVIDER_INVOCATION_FAILED');
+  const invocationBody = await invocationResponse.json().catch(() => null);
+  const invokedRunId = invocationBody?.run?.id;
+  requireCondition(
+    typeof invokedRunId === 'string' && invokedRunId.length > 0 && invokedRunId.length <= 512,
+    'PACKED_PROVIDER_RUN_ID_INVALID',
+  );
   const inboxLink = actionDialog.getByRole('link', { name: 'Review approval in Inbox', exact: true });
   await inboxLink.waitFor({ state: 'visible', timeout: 20_000 });
   await assertSafeRenderedSurface(page, markers, 'PACKED_PROVIDER_ACTION');
+  const attentionResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET'
+      && url.pathname === '/api/attention'
+      && url.searchParams.get('lane') === 'needs_you'
+      && url.searchParams.get('state') === 'open';
+  }, { timeout: 20_000 });
   await inboxLink.click();
 
+  setStage('packed_provider_inbox_navigation');
   await page.getByRole('heading', { name: 'Inbox', exact: true, level: 1 })
     .waitFor({ state: 'visible', timeout: 20_000 });
-  const campaignLabel = page.getByText('Connected campaign', { exact: true }).first();
-  await campaignLabel.waitFor({ state: 'visible', timeout: 20_000 });
-  const approvalCard = campaignLabel.locator(
-    'xpath=ancestor::div[.//button[normalize-space(.)="Approve App action"]][1]',
+  setStage('packed_provider_inbox_correlation');
+  const attentionResponse = await attentionResponsePromise;
+  requireCondition(attentionResponse.ok(), 'PACKED_PROVIDER_ATTENTION_FAILED');
+  const attentionBody = await attentionResponse.json().catch(() => null);
+  const reviewableItems = Array.isArray(attentionBody?.items)
+    ? attentionBody.items.filter((item) => item?.kind === 'approval' && item?.approval)
+    : [];
+  const approvalIndex = reviewableItems.findIndex(
+    (item) => item.approval?.action === 'app_run_invoke'
+      && item.approval?.params?.run_id === invokedRunId,
+  );
+  requireCondition(approvalIndex >= 0, 'PACKED_PROVIDER_APPROVAL_NOT_LISTED');
+  const targetApproval = reviewableItems[approvalIndex]?.approval;
+  const targetPreview = targetApproval?.params?.safe_preview;
+  const targetResourceRefs = Array.isArray(targetPreview?.resource_refs)
+    ? targetPreview.resource_refs
+    : [];
+  requireCondition(
+    targetPreview?.title === 'Send campaign email'
+      && targetResourceRefs.some((ref) => ref?.resource_id === campaignRecordId),
+    'PACKED_PROVIDER_APPROVAL_PREVIEW_INVALID',
+  );
+  const approveButton = page
+    .getByRole('button', { name: 'Approve App action', exact: true }).nth(approvalIndex);
+  await approveButton.waitFor({ state: 'visible', timeout: 20_000 });
+  const approvalCard = approveButton.locator(
+    'xpath=ancestor::div[contains(@class, "max-w-[460px]")][1]',
   );
   await approvalCard.getByText('Send campaign email', { exact: true })
     .waitFor({ state: 'visible', timeout: 20_000 });
-  const approveButton = approvalCard.getByRole('button', { name: 'Approve App action', exact: true });
+  setStage('packed_provider_inbox_approval');
   const approvalResponse = page.waitForResponse((response) => {
     const pathname = new URL(response.url()).pathname;
     return response.request().method() === 'POST'
@@ -406,6 +466,7 @@ async function invokePackedProviderThroughUi(page, manifest, markers, receiptScr
   await approveButton.click();
   requireCondition((await approvalResponse).ok(), 'PACKED_PROVIDER_APPROVAL_FAILED');
 
+  setStage('packed_provider_run_inspection');
   await openApps(page, desktopViewport);
   const card = await waitForApp(page, manifest.id, 'active', manifest.version);
   const recentRuns = card.getByRole('heading', { name: 'Recent Runs', exact: true });
@@ -419,6 +480,7 @@ async function invokePackedProviderThroughUi(page, manifest, markers, receiptScr
   } catch {
     throw new CertificationFailure('PACKED_PROVIDER_RUN_NOT_SUCCEEDED');
   }
+  setStage('packed_provider_receipt');
   await openAndVerifyReceipt(
     page,
     card,
@@ -526,8 +588,10 @@ async function main() {
       desktop: { console: 0, page: 0, api: 0 },
       mobile: { console: 0, page: 0, api: 0 },
     },
+    failed_stage: null,
   };
   let browser;
+  let currentStage = 'initialization';
   try {
     markers = secretMarkers();
     evidence.target_origin = safeOrigin(webUrl);
@@ -537,6 +601,7 @@ async function main() {
     ]);
     evidence.upgrade.expected_version = manifest.version;
 
+    currentStage = 'phase5_browser_baseline';
     await runPhase5Baseline();
     evidence.baseline.phase5_browser_smoke = true;
 
@@ -545,8 +610,10 @@ async function main() {
     const page = await context.newPage();
     failureTracking = installFailureTracking(page);
 
+    currentStage = 'authenticated_login';
     await login(page);
     evidence.checks.authenticated_login = true;
+    currentStage = 'desktop_apps_contract';
     await openApps(page, desktopViewport);
     let card = await waitForApp(page, manifest.id, 'active');
     await assertConnectedContract(card, appKit);
@@ -557,9 +624,11 @@ async function main() {
     evidence.checks.desktop_safe_receipt_visible = true;
     evidence.screenshots.desktop_receipt = relativeEvidencePath(desktopReceiptPath);
 
+    currentStage = 'desktop_upgrade_staging';
     await stageUpgrade(page, card, manifest, packagePath);
     evidence.checks.upgrade_staged_through_file_ui = true;
     card = await waitForApp(page, manifest.id, 'active');
+    currentStage = 'desktop_upgrade_activation';
     await reviewAndActivate(page, card, 'upgrade');
     card = await waitForApp(page, manifest.id, 'active', manifest.version);
     evidence.checks.upgrade_exact_review_accepted_and_activated = true;
@@ -568,6 +637,7 @@ async function main() {
     await page.screenshot({ path: desktopUpgradePath, fullPage: true });
     evidence.screenshots.desktop_upgraded = relativeEvidencePath(desktopUpgradePath);
 
+    currentStage = 'desktop_disable';
     await card.getByRole('button', { name: 'Disable', exact: true }).click();
     await page.getByRole('status')
       .filter({ hasText: `${manifest.name} is disabled. Its data is preserved.` })
@@ -575,6 +645,7 @@ async function main() {
     await waitForApp(page, manifest.id, 'disabled', manifest.version);
     await openApps(page, desktopViewport);
     card = await waitForApp(page, manifest.id, 'disabled', manifest.version);
+    currentStage = 'desktop_reenable';
     await reviewAndActivate(page, card, 'reenable');
     card = await waitForApp(page, manifest.id, 'active', manifest.version);
     evidence.checks.disabled_then_freshly_reviewed_and_reenabled = true;
@@ -583,9 +654,16 @@ async function main() {
     await page.screenshot({ path: desktopReenabledPath, fullPage: true });
     evidence.screenshots.desktop_reenabled = relativeEvidencePath(desktopReenabledPath);
 
-    await invokePackedProviderThroughUi(page, manifest, markers, desktopReceiptPath);
+    await invokePackedProviderThroughUi(
+      page,
+      manifest,
+      markers,
+      desktopReceiptPath,
+      (stage) => { currentStage = stage; },
+    );
     evidence.checks.packed_provider_invoked_through_ui = true;
 
+    currentStage = 'mobile_apps_contract';
     failureTracking.setPhase('mobile');
     await openApps(page, mobileViewport);
     card = await waitForApp(page, manifest.id, 'active', manifest.version);
@@ -618,6 +696,7 @@ async function main() {
   } catch (error) {
     evidence.completed_at = new Date().toISOString();
     evidence.error_code = errorCode(error);
+    evidence.failed_stage = currentStage;
     throw error;
   } finally {
     if (failureTracking) evidence.observed_failures = failureTracking.counts;

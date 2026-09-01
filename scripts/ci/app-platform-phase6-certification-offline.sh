@@ -14,17 +14,18 @@ keyring_json="${DEFT_APP_RUN_KEYRINGS:?DEFT_APP_RUN_KEYRINGS is required}"
 proof_email="${DEFT_TEST_EMAIL:?DEFT_TEST_EMAIL is required}"
 
 read -r proof_org before_total before_succeeded before_failed < <(
-  docker exec "$restore_container" psql -U postgres -d "$database_name" -qAt -F ' ' \
-    -v proof_email="$proof_email" -c "
-      SELECT om.org_id,
-             count(ar.id),
-             count(ar.id) FILTER (WHERE ar.state = 'succeeded'),
-             count(ar.id) FILTER (WHERE ar.state = 'failed')
-        FROM users u
-        JOIN org_members om ON om.user_id = u.id AND om.is_active = true
-        LEFT JOIN app_runs ar ON ar.org_id = om.org_id AND ar.origin_kind = 'app'
-       WHERE u.email = :'proof_email'
-       GROUP BY om.org_id"
+  docker exec -i "$restore_container" psql -U postgres -d "$database_name" -qAt -F ' ' \
+    -v proof_email="$proof_email" <<'SQL'
+SELECT om.org_id,
+       count(ar.id),
+       count(ar.id) FILTER (WHERE ar.state = 'succeeded'),
+       count(ar.id) FILTER (WHERE ar.state = 'failed')
+  FROM users u
+  JOIN org_members om ON om.user_id = u.id AND om.is_active = true
+  LEFT JOIN app_runs ar ON ar.org_id = om.org_id AND ar.origin_kind = 'app'
+ WHERE u.email = :'proof_email'
+ GROUP BY om.org_id
+SQL
 )
 [[ "$proof_org" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
 [[ "$before_total" =~ ^[0-9]+$ && "$before_succeeded" =~ ^[0-9]+$ && "$before_failed" =~ ^[0-9]+$ ]]

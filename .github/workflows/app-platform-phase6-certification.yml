@@ -19,7 +19,7 @@ env:
   APP_PLATFORM_RESOURCE_PREFIX: deft-p6-cert-${{ github.run_id }}-${{ github.run_attempt }}
   APP_PLATFORM_CANDIDATE_TAG: deft:phase6-cert-${{ github.run_id }}-${{ github.run_attempt }}
   APP_PLATFORM_COMPOSE_PROJECT: deft-p6-compose-${{ github.run_id }}-${{ github.run_attempt }}
-  APP_PLATFORM_DATABASE_NAME: deft_phase5_phase6_release_test
+  APP_PLATFORM_DATABASE_NAME: deft_phase4_phase5_phase6_release_test
 
 jobs:
   certify:
@@ -94,6 +94,14 @@ jobs:
       - name: Build exact Phase 6 candidate once
         working-directory: .cert/phase6-candidate
         run: pnpm build
+
+      - name: Verify packed App Kit external authoring from exact candidate
+        working-directory: .cert/phase6-candidate
+        env:
+          PNPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: |
+          npm_execpath="${GITHUB_WORKSPACE}/scripts/ci/pnpm-exec-wrapper.mjs" \
+            pnpm --filter @deft/app-kit exec tsx --test test/packed-external.test.ts
 
       - name: Run immutable Phase 6 host certification
         env:

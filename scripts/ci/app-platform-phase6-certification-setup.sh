@@ -136,13 +136,16 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
   --entrypoint sh "$candidate_tag" -c '
     pnpm --filter @deft/shared exec tsx --test test/capabilities.test.ts test/app-runs.test.ts &&
-    pnpm --filter @deft/app-kit exec tsx --test test/*.test.ts &&
-    pnpm --filter @deft/api exec tsx --test \
+    pnpm --filter @deft/app-kit exec tsx --test \
+      test/app-kit.test.ts \
+      test/cli.test.ts \
+      test/developer-contract.test.ts \
+      test/protocol-v1.test.ts &&
+    pnpm --filter @deft/api exec tsx --test --test-concurrency=1 \
       test/capability-service.test.ts \
       test/capability-immediate-execution-db.test.ts \
       test/app-action-service-db.test.ts \
       test/app-origin-run-cutover-db.test.ts \
-      test/app-origin-run-lifecycle-db.test.ts \
       test/apps-connected-grants-db.test.ts \
       test/app-run-engine-db.test.ts \
       test/app-run-receipt-inspection.test.ts \

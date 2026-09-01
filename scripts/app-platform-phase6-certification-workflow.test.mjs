@@ -18,7 +18,15 @@ const offlineHook = readFileSync(
   new URL('./ci/app-platform-phase6-certification-offline.sh', import.meta.url),
   'utf8',
 );
-const executionSurface = `${workflow}\n${orchestrator}\n${setupHook}\n${offlineHook}`;
+const browserSmoke = readFileSync(
+  new URL('./ci/app-platform-phase6-browser-smoke.mjs', import.meta.url),
+  'utf8',
+);
+const pnpmExecWrapper = readFileSync(
+  new URL('./ci/pnpm-exec-wrapper.mjs', import.meta.url),
+  'utf8',
+);
+const executionSurface = `${workflow}\n${orchestrator}\n${setupHook}\n${offlineHook}\n${browserSmoke}\n${pnpmExecWrapper}`;
 
 const CANDIDATE_COMMIT = '16875df2f6c9dc2bc3d850de6758b7dd56767a05';
 const CANDIDATE_PLACEHOLDER = '__PRODUCT_CANDIDATE_SHA__';
@@ -97,6 +105,11 @@ test('three dependency roots are installed before one candidate typecheck and pr
     workflow.indexOf('run: pnpm typecheck') < workflow.indexOf('run: pnpm build'),
     'candidate typecheck must precede its single production build',
   );
+  assert.match(
+    workflow,
+    /Build exact Phase 6 candidate once[\s\S]*?Verify packed App Kit external authoring from exact candidate[\s\S]*?PNPM_CONFIG_IGNORE_SCRIPTS:\s*'true'[\s\S]*?npm_execpath="\$\{GITHUB_WORKSPACE\}\/scripts\/ci\/pnpm-exec-wrapper\.mjs" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/packed-external\.test\.ts[\s\S]*?Run immutable Phase 6 host certification/,
+  );
+  assert.match(pnpmExecWrapper, /spawnSync\(command, args, \{ stdio: 'inherit' \}\)/);
 });
 
 test('shared gate receives the Phase 6 roots, hooks, and exact isolated resources', () => {
@@ -104,7 +117,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   assert.match(workflow, /APP_PLATFORM_CANDIDATE_ROOT=\$GITHUB_WORKSPACE\/\.cert\/phase6-candidate/);
   assert.match(workflow, /APP_PLATFORM_BASELINE_ROOT=\$GITHUB_WORKSPACE\/\.cert\/phase4-baseline/);
   assert.match(workflow, /APP_PLATFORM_RESOURCE_PREFIX:\s*deft-p6-cert-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
-  assert.match(workflow, /APP_PLATFORM_DATABASE_NAME:\s*deft_phase5_phase6_release_test/);
+  assert.match(workflow, /APP_PLATFORM_DATABASE_NAME:\s*deft_phase4_phase5_phase6_release_test/);
   assert.match(
     workflow,
     /APP_PLATFORM_SETUP_HOOK:[^\n]*app-platform-phase6-certification-setup\.sh/,
@@ -119,7 +132,13 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(workflow, /run:\s*bash scripts\/ci\/certify-app-platform-phase5\.sh/);
   assert.match(orchestrator, /git -C "\$candidate_root" rev-parse HEAD/);
+  assert.match(orchestrator, /test\/app-origin-run-lifecycle-db\.test\.ts/);
   assert.match(orchestrator, /run_extension_hook "\$setup_hook" setup/);
+  assert.equal(occurrences(orchestrator, 'certification-probe.ts keyring'), 2);
+  assert.match(
+    orchestrator,
+    /certification-probe\.ts keyring[\s\S]*run_extension_hook "\$setup_hook" setup[\s\S]*certification-probe\.ts keyring[\s\S]*app-run-keyring\.sha256/,
+  );
   assert.match(orchestrator, /node "\$browser_script"/);
   assert.match(orchestrator, /run_extension_hook "\$offline_hook" offline/);
   assert.match(setupHook, /SELECT count\(\*\) FROM mcp_connections WHERE slug LIKE 'loop5-mail-%'/);
@@ -130,11 +149,32 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(
     setupHook,
-    /pnpm --filter @deft\/app-kit exec tsx --test test\/\*\.test\.ts/,
+    /pnpm --filter @deft\/app-kit exec tsx --test \\\r?\n\s+test\/app-kit\.test\.ts \\\r?\n\s+test\/cli\.test\.ts \\\r?\n\s+test\/developer-contract\.test\.ts \\\r?\n\s+test\/protocol-v1\.test\.ts/,
   );
   assert.doesNotMatch(setupHook, /pnpm --filter @deft\/app-kit test/);
+  assert.doesNotMatch(setupHook, /packed-external\.test\.ts/);
+  assert.doesNotMatch(setupHook, /app-origin-run-lifecycle-db\.test\.ts/);
+  assert.match(
+    setupHook,
+    /pnpm --filter @deft\/api exec tsx --test --test-concurrency=1 \\\r?\n\s+test\/capability-service\.test\.ts/,
+  );
   assert.match(offlineHook, /\[\[ "\$after_total" == "\$before_total" \]\]/);
   assert.match(offlineHook, /invocation_failed_without_creating_a_run/);
+  assert.match(
+    offlineHook,
+    /docker exec -i "\$restore_container" psql[\s\S]*?<<'SQL'[\s\S]*?WHERE u\.email = :'proof_email'[\s\S]*?^SQL$/m,
+  );
+});
+
+test('browser proof correlates the exact invoked Run before approving it through Inbox UI', () => {
+  assert.match(browserSmoke, /PACKED_PROVIDER_RUN_ID_INVALID/);
+  assert.match(browserSmoke, /approval\?\.params\?\.run_id === invokedRunId/);
+  assert.match(browserSmoke, /ref\?\.resource_id === campaignRecordId/);
+  assert.match(browserSmoke, /getByRole\('button', \{ name: 'Approve App action', exact: true \}\)\.nth\(approvalIndex\)/);
+  assert.doesNotMatch(
+    browserSmoke,
+    /getByText\('Connected campaign', \{ exact: true \}\)\.first\(\)/,
+  );
 });
 
 test('only bounded safe evidence and the exact candidate image are retained', () => {
