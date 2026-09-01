@@ -22,7 +22,7 @@ const executionSurface = [
   pnpmExecWrapper,
 ].join('\n');
 
-const CANDIDATE_COMMIT = 'ff5a3fae3e21b80fe51849e6cd8023d5228389d0';
+const CANDIDATE_COMMIT = '919f6b41e007d922478ded14d8554c00b24b7401';
 const PHASE6_BASELINE_COMMIT = '16875df2f6c9dc2bc3d850de6758b7dd56767a05';
 const PREDECESSOR_IMAGE =
   'ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788';
@@ -137,6 +137,11 @@ test('one shared orchestration pass owns image, upgrade, restore, predecessor, b
   assert.match(orchestrator, /cat "\$restore_log" >&2/);
   assert.match(orchestrator, /rm -f "\$restore_log"/);
   assert.match(orchestrator, /probe_row="\$\(/);
+  assert.equal(
+    occurrences(orchestrator, "replace(encode(convert_to(mr.data->>"),
+    2,
+    'predecessor probe values must remain single-line when PostgreSQL wraps Base64 output',
+  );
   assert.match(orchestrator, /DEFT_PROBE_NAME_BASE64="\$probe_name_base64"/);
   assert.match(orchestrator, /DEFT_PROBE_EMAIL_BASE64="\$probe_email_base64"/);
   assert.doesNotMatch(orchestrator, /mr\.data->>'name' = 'Ada Lovelace'/);
