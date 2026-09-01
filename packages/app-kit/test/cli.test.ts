@@ -354,3 +354,87 @@ test('external authoring loop checks and builds Protocol v1 deterministically wi
     await new Promise<void>((resolveClose, reject) => host.close((error) => error ? reject(error) : resolveClose()));
   }
 });
+
+test('Protocol v2 check, build, requested-authority, and doctor paths stay stage-only', async () => {
+  const project = await mkdtemp(resolve(tmpdir(), 'deft-automation-request-app-kit-'));
+  const initialized = run(project, 'init', '--template', 'connected');
+  assert.equal(initialized.status, 0, initialized.stderr);
+
+  const manifestPath = resolve(project, 'deft.app.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as any;
+  manifest.schema_version = '2';
+  manifest.compatibility = { app_protocol: '2' };
+  manifest.automation_requests = [{
+    key: 'daily_campaign_send',
+    label: 'Daily campaign send',
+    trigger: { kind: 'daily_local_time' },
+    action_key: 'send_campaign_email',
+  }];
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+  const checked = run(project, 'check');
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.match(checked.stdout, /Protocol v2 automation-request package/);
+  assert.match(checked.stdout, /staging grants zero authority/);
+  assert.match(checked.stdout, /requested-only and non-executable/);
+  assert.match(checked.stdout, /provider access: none/);
+
+  const first = run(project, 'build');
+  assert.equal(first.status, 0, first.stderr);
+  const firstPackage = await readFile(resolve(project, '.deft', 'app.deftapp.json'), 'utf8');
+  const firstLock = await readFile(resolve(project, 'deft.app.lock.json'), 'utf8');
+  const firstReport = await readFile(resolve(project, '.deft', 'requested-authority.json'), 'utf8');
+  assert.equal((JSON.parse(firstPackage) as any).package_format, 'deft.app.package.v2');
+  assert.equal((JSON.parse(firstLock) as any).schema, 'deft.app.lock.v2');
+  assert.deepEqual((JSON.parse(firstLock) as any).permissions, []);
+  const report = JSON.parse(firstReport) as any;
+  assert.equal(report.schema, 'deft.app.requested_authority.v2');
+  assert.equal(report.app.protocol_version, '2');
+  assert.deepEqual(report.requested_authority.requirements.automation_requests, manifest.automation_requests);
+  assert.equal(report.requested_authority.classification.authority_state, 'requested_only');
+  assert.equal(report.requested_authority.classification.executable, false);
+  assert.equal(report.requested_authority.classification.provider_access, false);
+
+  const second = run(project, 'build');
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(await readFile(resolve(project, '.deft', 'app.deftapp.json'), 'utf8'), firstPackage);
+  assert.equal(await readFile(resolve(project, 'deft.app.lock.json'), 'utf8'), firstLock);
+  assert.equal(await readFile(resolve(project, '.deft', 'requested-authority.json'), 'utf8'), firstReport);
+
+  const host = createServer((request, response) => {
+    if (request.url !== '/api/app-developer/status') {
+      response.writeHead(500).end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      app_protocol: '0',
+      audience: 'app-developer',
+      single_use_install: true,
+      compatibility: {
+        schema: 'deft.app_developer.compatibility.v1',
+        app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.1'] },
+        protocol_flows: {
+          '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
+          '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
+          '2': { package_format: 'deft.app.package.v2', install_mode: 'stage_only' },
+        },
+      },
+    }));
+  });
+  await new Promise<void>((resolveListen) => host.listen(0, '127.0.0.1', resolveListen));
+  const address = host.address();
+  if (!address || typeof address === 'string') throw new Error('Expected a TCP test server');
+  try {
+    const hostUrl = `http://127.0.0.1:${address.port}`;
+    const diagnosed = await runAsync(project, '', 'doctor', '--url', hostUrl);
+    assert.equal(diagnosed.status, 0, diagnosed.stderr);
+    assert.equal(
+      diagnosed.stdout.trim(),
+      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.1; App Protocol v2; `
+      + `package format deft.app.package.v2; install mode stage_only; host ${hostUrl}`,
+    );
+  } finally {
+    await new Promise<void>((resolveClose, reject) => host.close((error) => error ? reject(error) : resolveClose()));
+  }
+});

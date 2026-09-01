@@ -14,8 +14,9 @@ import {
   moduleVersions,
 } from '@deft/db/schema';
 import {
+  APP_AUTOMATION_POLICY_V1,
   DeftAppManifestV1Schema,
-  type DeftAppManifestV1,
+  DeftAppManifestV2Schema,
   type DeftAppPrivateInterfaceDescriptorV1,
 } from '@deft/app-kit';
 import type { MCPToolOverride } from '@deft/mcp';
@@ -46,8 +47,10 @@ import {
   connectedAppOperationMatches,
   connectedAppToolMatches,
   getConnectedAppPrivateInterface,
+  isConnectedAppProtocolVersion,
   normalizeConnectedMcpOverrides,
   parseConnectedAppProviderInput,
+  type ConnectedDeftAppManifest,
 } from './app-connected-contract.js';
 import type { CapabilityDiscoveryResult } from './capability-service.js';
 import {
@@ -60,12 +63,23 @@ import type {
   AppRunPreparedInputCandidate,
   AppRunPreparedInputPayload,
 } from './app-run-prepared-input.js';
+import {
+  digestPreparedAppAuthority,
+  type AppRunPreparedAuthorityVectorV2,
+} from './app-run-prepared-input.js';
 import type { AppRunSafeView } from './app-run-repository.js';
 import type { AppRunReceiptReader, AppRunVerifiedReceiptView } from './app-run-receipts.js';
 import { isMcpToolEnabled } from './mcp-tool-identity.js';
 import { readModuleRecordScalarFields } from './module-service.js';
 import { resourceAuthorizationService } from './resource-provider-adapters.js';
 import { listResourceRelation } from './resource-relation-service.js';
+import { APP_AUTOMATIONS_ENABLED } from './env.js';
+import {
+  postgresAppAutomationVerificationReadPort,
+  type AppAutomationVerificationContext,
+  type AppAutomationVerificationReadPort,
+} from './app-automation-repository.js';
+import { APP_AUTOMATION_POLICY_DIGEST } from './app-automation-definition-service.js';
 
 const APP_ACTION_AUTHORITY_VERSION = 'deft.app_action_authority.v1' as const;
 const APP_ACTION_REPLAY_VERSION = 'deft.app_action_replay.v2' as const;
@@ -196,17 +210,24 @@ export type AppActionPrepareInput = Readonly<{
   idempotency_key: string;
 }>;
 
+export type AppActionAutomationInvokeInput = Readonly<{
+  organization_id: string;
+  definition_id: string;
+  fire_id: string;
+  claim_token: string;
+}>;
+
 type ActionContext = Readonly<{
   installation: InstallationRow;
   version: VersionRow;
   grant: GrantRow;
   binding: BindingRow;
-  manifest: DeftAppManifestV1;
-  action: DeftAppManifestV1['actions'][number];
+  manifest: ConnectedDeftAppManifest;
+  action: ConnectedDeftAppManifest['actions'][number];
   private_interface: DeftAppPrivateInterfaceDescriptorV1;
   dependencies: readonly DependencyLockRow[];
   resources: ReadonlyMap<string, Readonly<{
-    requirement: DeftAppManifestV1['resource_requirements'][number];
+    requirement: ConnectedDeftAppManifest['resource_requirements'][number];
     module_installation_id: string;
     module_version_id: string;
     module_manifest_digest: string;
@@ -522,7 +543,7 @@ async function loadRequirementModule(
   orgId: string,
   appInstallationId: string,
   appVersionId: string,
-  requirement: DeftAppManifestV1['resource_requirements'][number],
+  requirement: ConnectedDeftAppManifest['resource_requirements'][number],
   locks: ReadonlyMap<string, DependencyLockRow>,
 ): Promise<ActionContext['resources'] extends ReadonlyMap<string, infer T> ? T : never> {
   const ownerInstallationId = requirement.source.kind === 'included_module'
@@ -575,7 +596,7 @@ async function assertGrantAuthoritySurface(input: Readonly<{
   installation: InstallationRow;
   version: VersionRow;
   grant: GrantRow;
-  manifest: DeftAppManifestV1;
+  manifest: ConnectedDeftAppManifest;
   dependencies: readonly DependencyLockRow[];
 }>): Promise<void> {
   const [bindingRows, includedRows] = await Promise.all([
@@ -699,7 +720,7 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
     || installation.active_grant_snapshot_kind !== 'effective'
     || !version
     || version.state !== 'active'
-    || version.protocol_version !== '1'
+    || !isConnectedAppProtocolVersion(version.protocol_version)
     || !grant
     || grant.snapshot_kind !== 'effective'
     || grant.app_version_id !== version.id
@@ -709,7 +730,9 @@ async function loadActionContext(orgId: string, bindingId: string): Promise<Acti
   if (digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) {
     throw actionError('App effective grant failed integrity validation', 'APP_STALE');
   }
-  const manifest = DeftAppManifestV1Schema.parse(version.manifest);
+  const manifest = version.protocol_version === '2'
+    ? DeftAppManifestV2Schema.parse(version.manifest)
+    : DeftAppManifestV1Schema.parse(version.manifest);
   const action = manifest.actions.find((candidate) => candidate.key === binding.action_key);
   const capabilityRequirement = action
     ? manifest.capability_requirements.find((candidate) => candidate.key === action.capability_requirement_key)
@@ -897,6 +920,34 @@ function assertPlacement(context: ActionContext, refValue: unknown): ModuleResou
   return parsed.data;
 }
 
+function automationExecutionIdentity(context: AppAutomationVerificationContext): unknown {
+  return {
+    definition: {
+      id: context.definition.id,
+      org_id: context.definition.org_id,
+      state: context.definition.state,
+      epoch: context.definition.definition_epoch,
+      digest: context.definition.definition_digest,
+      authorization_digest: context.definition.authorization_digest,
+      approved_by_user_id: context.definition.approved_by_user_id,
+      approver_authorization_version: context.definition.approver_authorization_version,
+      valid_from: context.definition.valid_from.toISOString(),
+      valid_until: context.definition.valid_until.toISOString(),
+    },
+    fire: {
+      id: context.fire.id,
+      definition_id: context.fire.definition_id,
+      definition_epoch: context.fire.definition_epoch,
+      state: context.fire.state,
+      claim_token: context.fire.claim_token,
+      fire_identity: context.fire.fire_identity,
+      app_run_id: context.fire.app_run_id,
+      resolved_at_utc: context.fire.resolved_at_utc?.toISOString() ?? null,
+    },
+    approver: context.approver,
+  };
+}
+
 export class AppActionService {
   constructor(
     private readonly capability: AppActionCapabilityPort = lazyCapability,
@@ -906,6 +957,9 @@ export class AppActionService {
     private readonly runs: AppActionRunPort = lazyRuns,
     private readonly runReads: AppActionRunReadPort = lazyRunReads,
     private readonly receiptReads: AppRunReceiptReader = lazyReceiptReads,
+    private readonly automationVerification: AppAutomationVerificationReadPort =
+      postgresAppAutomationVerificationReadPort,
+    private readonly appAutomationsEnabled: () => boolean = () => APP_AUTOMATIONS_ENABLED,
   ) {}
 
   async list(callerValue: AppActionCaller, input: Readonly<{ resource_ref: unknown }>): Promise<AppActionListResult> {
@@ -1172,6 +1226,181 @@ export class AppActionService {
       initiating_actor: caller.authenticated_subject,
       execution_actor: caller.execution_actor,
     }, current.input_candidate);
+  }
+
+  /** Host-only execution seam for an exact, already-claimed automation fire.
+   * It deliberately has no route or scanner and still enters the same
+   * prepare -> AppRun path used by interactive App actions. */
+  async invokeApprovedAutomation(input: AppActionAutomationInvokeInput): Promise<AppRunSafeView> {
+    if (!this.appAutomationsEnabled()) {
+      throw actionError('App automations are disabled', 'APP_ACCESS_DENIED', 403);
+    }
+    const initial = await this.automationVerification.load({
+      organization_id: input.organization_id,
+      definition_id: input.definition_id,
+      fire_id: input.fire_id,
+    });
+    const checkedAt = new Date();
+    if (
+      !initial
+      || initial.definition.org_id !== input.organization_id
+      || initial.definition.id !== input.definition_id
+      || initial.definition.state !== 'active'
+      || initial.definition.valid_from > checkedAt
+      || initial.definition.valid_until <= checkedAt
+      || initial.fire.definition_id !== initial.definition.id
+      || initial.fire.definition_epoch !== initial.definition.definition_epoch
+      || initial.fire.claim_token !== input.claim_token
+      || !(
+        (initial.fire.state === 'claimed'
+          && initial.fire.app_run_id === null
+          && initial.fire.lease_expires_at !== null
+          && initial.fire.lease_expires_at > checkedAt)
+        || (initial.fire.state === 'run_created' && initial.fire.app_run_id !== null)
+      )
+      || initial.fire.resolved_at_utc === null
+      || initial.approver.user_id !== initial.definition.approved_by_user_id
+      || initial.approver.authorization_version !== initial.definition.approver_authorization_version
+    ) throw actionError('App automation fire authority is stale', 'APP_STALE');
+
+    const actor: Extract<ModuleActor, { kind: 'human' }> = {
+      kind: 'human',
+      org_id: input.organization_id,
+      actor_id: initial.approver.user_id,
+      role: initial.approver.role,
+      source: 'ui',
+      scopes: [],
+    };
+    const placementRef = ModuleResourceRefV1Schema.parse(initial.definition.placement_resource_ref);
+    const selectedRef = ModuleResourceRefV1Schema.parse(initial.definition.selected_resource_ref);
+    const idempotencyKey = `app-automation:${initial.fire.fire_identity}`;
+    const prepared = await this.prepare({ actor }, {
+      binding_id: initial.definition.action_binding_id,
+      resource_ref: placementRef,
+      selections: [{
+        input_key: initial.definition.selected_relation_input_key,
+        resource_ref: selectedRef,
+      }],
+      idempotency_key: idempotencyKey,
+    });
+    let payload: AppRunPreparedInputPayload;
+    try {
+      payload = await this.preparedInput.open(input.organization_id, prepared.input_candidate);
+    } catch {
+      throw actionError('Prepared automation input could not be authenticated', 'APP_STALE');
+    }
+    if (!payload.app_run) throw actionError('Prepared automation input is incomplete', 'APP_STALE');
+
+    const placementIdentity = resourceRefIdentity(placementRef);
+    const selectedIdentity = resourceRefIdentity(selectedRef);
+    const resources = prepared.authority_vector.resources.map((resource) => {
+      const identity = resourceRefIdentity(resource.ref);
+      const expectedRevision = identity === placementIdentity
+        ? initial.definition.placement_resource_revision
+        : identity === selectedIdentity
+          ? initial.definition.selected_resource_revision
+          : null;
+      const contentDigest = identity === placementIdentity
+        ? initial.definition.placement_content_digest
+        : identity === selectedIdentity
+          ? initial.definition.selected_content_digest
+          : null;
+      if (expectedRevision === null || contentDigest === null
+        || String(resource.revision) !== expectedRevision) {
+        throw actionError('Pinned automation resources changed before execution', 'APP_STALE');
+      }
+      return { ...resource, content_digest: contentDigest };
+    });
+    const relation = prepared.authority_vector.relations.find((candidate) => (
+      resourceRefIdentity(candidate.source_ref) === placementIdentity
+      && candidate.relation_key === initial.definition.selected_relation_key
+      && resourceRefIdentity(candidate.selected_ref) === selectedIdentity
+    ));
+    if (
+      resources.length !== 2
+      || new Set(resources.map((resource) => resourceRefIdentity(resource.ref))).size !== 2
+      || !relation
+      || relation.revision !== initial.definition.selected_relation_revision
+    ) throw actionError('Pinned automation relation changed before execution', 'APP_STALE');
+
+    const authorityVector: AppRunPreparedAuthorityVectorV2 = {
+      ...prepared.authority_vector,
+      schema_version: 'deft.app_action_authority.v2',
+      caller_surface: 'automation',
+      dependencies: prepared.authority_vector.dependencies.map((dependency) => ({ ...dependency })),
+      resources,
+      relations: prepared.authority_vector.relations.map((candidate) => ({ ...candidate })),
+      automation: {
+        request: {
+          key: initial.definition.automation_request_key,
+          digest: initial.definition.automation_request_digest,
+        },
+        definition: {
+          id: initial.definition.id,
+          epoch: initial.definition.definition_epoch,
+          digest: initial.definition.definition_digest,
+          authorization_digest: initial.definition.authorization_digest,
+          approved_by_user_id: initial.definition.approved_by_user_id,
+          approved_at: initial.definition.approved_at.toISOString(),
+          valid_from: initial.definition.valid_from.toISOString(),
+          valid_until: initial.definition.valid_until.toISOString(),
+        },
+        fire: {
+          id: initial.fire.id,
+          identity: initial.fire.fire_identity,
+          logical_local_date: initial.fire.logical_local_date,
+          local_time: initial.fire.local_time,
+          timezone: initial.fire.timezone,
+          resolved_at_utc: initial.fire.resolved_at_utc.toISOString(),
+        },
+        policy: {
+          key: APP_AUTOMATION_POLICY_V1.key,
+          version: APP_AUTOMATION_POLICY_V1.version,
+          digest: APP_AUTOMATION_POLICY_DIGEST,
+        },
+        budgets: {
+          max_actions_per_fire: 1,
+          max_org_runs_per_utc_day: initial.definition.max_org_runs_per_utc_day,
+          max_pending_org_fires: initial.definition.max_pending_org_fires,
+        },
+      },
+    };
+    const initiatingActor: AppRunActor = { actor_type: 'human', user_id: initial.approver.user_id };
+    const executionActor: AppRunActor = {
+      actor_type: 'automation',
+      automation_id: initial.definition.id,
+      user_id: initial.approver.user_id,
+    };
+    const candidate = await this.preparedInput.protect({
+      org_id: input.organization_id,
+      replay_identity: prepared.replay_identity,
+      binding_identity: payload.binding_identity,
+      provider_input: payload.provider_input,
+      app_run: {
+        initiating_actor: initiatingActor,
+        execution_actor: executionActor,
+        safe_preview: prepared.safe_preview,
+        authority_vector: authorityVector,
+        authority_digest: digestPreparedAppAuthority(authorityVector),
+      },
+    });
+
+    const current = await this.automationVerification.load({
+      organization_id: input.organization_id,
+      definition_id: input.definition_id,
+      fire_id: input.fire_id,
+    });
+    if (!current || !sameCanonical(
+      automationExecutionIdentity(initial),
+      automationExecutionIdentity(current),
+    ) || current.fire.claim_token !== input.claim_token) {
+      throw actionError('App automation fire changed before Run creation', 'APP_STALE');
+    }
+    return this.runs.submitPreparedApp({
+      org_id: input.organization_id,
+      initiating_actor: initiatingActor,
+      execution_actor: executionActor,
+    }, candidate);
   }
 
   async inspectRun(callerValue: AppActionCaller, runId: string): Promise<AppRunSafeView> {

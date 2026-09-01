@@ -99,6 +99,11 @@ export type AppRunLineageInsert = Readonly<{
   budget_limit_at_reservation: number | null;
 }>;
 
+export type AppRunAutomationLineageInsert = Readonly<{
+  definition_id: string;
+  fire_id: string;
+}>;
+
 export class PostgresAppRunRepository {
   async transaction<T>(work: (tx: AppRunTransaction) => Promise<T>): Promise<T> {
     return db.transaction(work);
@@ -131,6 +136,8 @@ export class PostgresAppRunRepository {
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
     origin_app_grant_snapshot_id: string | null;
+    origin_app_automation_definition_id: string | null;
+    origin_app_automation_fire_id: string | null;
     authorization_snapshot: Record<string, unknown>;
   }) | null> {
     const actor = actorColumns(submission.initiating_actor);
@@ -146,6 +153,8 @@ export class PostgresAppRunRepository {
       origin_app_version_id: appRuns.origin_app_version_id,
       origin_app_binding_key: appRuns.origin_app_binding_key,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
+      origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
+      origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
       authorization_snapshot: appRuns.authorization_snapshot,
     }).from(appRuns).where(and(
       eq(appRuns.org_id, submission.org_id),
@@ -259,6 +268,7 @@ export class PostgresAppRunRepository {
       idempotency_expires_at: Date;
       attempt_limit: number;
       lineage?: AppRunLineageInsert;
+      automation_lineage?: AppRunAutomationLineageInsert;
       now: Date;
     }>,
   ): Promise<AppRunSafeView> {
@@ -289,7 +299,13 @@ export class PostgresAppRunRepository {
       origin_app_grant_snapshot_id: input.submission.origin.origin_kind === 'app'
         ? input.submission.origin.grant_snapshot_id
         : null,
-      state: input.submission.policy.review_requirement === 'always' ? 'pending_approval' : 'pending',
+      origin_app_automation_definition_id: input.automation_lineage?.definition_id ?? null,
+      origin_app_automation_fire_id: input.automation_lineage?.fire_id ?? null,
+      state: input.submission.policy.review_scope === 'approved_automation_definition'
+        ? 'pending'
+        : input.submission.policy.review_requirement === 'always'
+          ? 'pending_approval'
+          : 'pending',
       risk_class: input.submission.policy.risk_class,
       review_requirement: input.submission.policy.review_requirement,
       review_scope: input.submission.policy.review_scope,
@@ -311,10 +327,13 @@ export class PostgresAppRunRepository {
       budget_reserved_at: input.lineage?.budget_reserved_at ?? null,
       budget_reserved_count: input.lineage?.budget_reserved_count ?? null,
       budget_limit_at_reservation: input.lineage?.budget_limit_at_reservation ?? null,
-      execution_release_kind: input.submission.policy.review_requirement === 'policy'
-        ? 'policy_satisfied'
-        : null,
-      execution_released_at: input.submission.policy.review_requirement === 'policy'
+      execution_release_kind: input.submission.policy.review_scope === 'approved_automation_definition'
+        ? 'approved_automation_definition'
+        : input.submission.policy.review_requirement === 'policy'
+          ? 'policy_satisfied'
+          : null,
+      execution_released_at: input.submission.policy.review_scope === 'approved_automation_definition'
+        || input.submission.policy.review_requirement === 'policy'
         ? input.now
         : null,
       created_at: input.now,

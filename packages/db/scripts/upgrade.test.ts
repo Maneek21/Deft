@@ -18,6 +18,8 @@ import {
   agentChannelConnections,
   appInstallations,
   appActionBindings,
+  appAutomationDefinitions,
+  appAutomationFires,
   appDependencyLocks,
   appGrantSnapshots,
   appModuleBindings,
@@ -249,6 +251,93 @@ test('App-origin Run cutover pins exact tenant ancestry and preserves legacy sha
   const reviewIndex = upgradeManifest.migrations.findIndex((item) => item.version === '0.3.0-preview.24');
   const cutoverIndex = upgradeManifest.migrations.findIndex((item) => item.version === '0.3.0-preview.25');
   assert.equal(cutoverIndex, reviewIndex + 1);
+});
+
+test('App automation foundation is dormant, tenant-bound, immutable, and upgrade-safe', () => {
+  const migration = upgradeManifest.migrations.find((item) => item.version === '0.3.0-preview.26');
+  assert.ok(migration);
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  const definition = getTableConfig(appAutomationDefinitions);
+  const fire = getTableConfig(appAutomationFires);
+  const run = getTableConfig(appRuns);
+  const binding = getTableConfig(appActionBindings);
+  const foreignKeyNames = (config: ReturnType<typeof getTableConfig>) =>
+    config.foreignKeys.map((key) => key.getName());
+
+  for (const table of ['app_automation_definitions', 'app_automation_fires']) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`, 'i'));
+  }
+  assert.match(sql, /protocol_version IN \('0', '1', '2'\)/i);
+  assert.ok(binding.uniqueConstraints.some(
+    (item) => item.name === 'app_action_bindings_automation_identity_unique',
+  ));
+  assert.deepEqual(
+    foreignKeyNames(definition).filter((name) => name.startsWith('app_automation_definitions_')).sort(),
+    [
+      'app_automation_definitions_action_binding_fk',
+      'app_automation_definitions_app_installation_fk',
+      'app_automation_definitions_app_version_fk',
+      'app_automation_definitions_grant_snapshot_fk',
+    ],
+  );
+  assert.deepEqual(foreignKeyNames(fire), ['app_automation_fires_definition_fk']);
+  assert.ok(foreignKeyNames(run).includes('app_runs_automation_definition_fk'));
+  assert.ok(foreignKeyNames(run).includes('app_runs_automation_fire_fk'));
+  assert.ok(definition.checks.some(
+    (item) => item.name === 'app_automation_definitions_approval_shape_check',
+  ));
+  assert.ok(definition.checks.some(
+    (item) => item.name === 'app_automation_definitions_json_size_check',
+  ));
+  assert.ok(fire.checks.some((item) => item.name === 'app_automation_fires_claim_shape_check'));
+  assert.ok(fire.checks.some((item) => item.name === 'app_automation_fires_resolution_check'));
+  for (const indexName of [
+    'app_automation_fires_identity_unique',
+    'app_automation_fires_occurrence_unique',
+    'app_automation_fires_definition_day_unique',
+    'app_automation_fires_one_active_unique',
+  ]) {
+    assert.ok(fire.indexes.some((item) => item.config.name === indexName), indexName);
+  }
+  assert.ok(run.indexes.some((item) => item.config.name === 'app_runs_automation_fire_unique'));
+
+  for (const boundary of [
+    'app_automation_fires_app_run_fk',
+    'app_automation_definitions_guard_trigger',
+    'app_automation_fires_guard_trigger',
+    'app_runs_automation_lineage_trigger',
+    'APP_AUTOMATION_DEFINITION_IMMUTABLE_FIELD',
+    'APP_AUTOMATION_FIRE_IMMUTABLE_FIELD',
+    'APP_AUTOMATION_PENDING_BUDGET_EXCEEDED',
+    'APP_AUTOMATION_RUN_LINEAGE_MISMATCH',
+    'APP_AUTOMATION_RECURSION_FORBIDDEN',
+    'approved_automation_definition',
+    "protocol_version IN ('1', '2')",
+  ]) {
+    assert.match(sql, new RegExp(boundary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+  }
+  assert.match(sql, /pg_advisory_xact_lock[\s\S]*max_pending_org_fires/i);
+  assert.match(sql, /pg_advisory_xact_lock[\s\S]*max_org_runs_per_utc_day/i);
+  assert.match(sql, /IF definition\.id IS NULL\s+OR fire\.id IS NULL/i);
+  assert.doesNotMatch(
+    sql,
+    /PERFORM pg_advisory_xact_lock[\s\S]{0,1000}\bIF NOT FOUND\b/i,
+  );
+  assert.doesNotMatch(sql, /^\s*UPDATE\s+(?:app_versions|app_runs)\b/im);
+  assert.match(applyExtrasSource, /0\.3\.0-preview\.26-app-automation-foundation\.sql/);
+  for (const requiredName of [
+    'app_automation_fires_app_run_fk',
+    'app_automation_fires_one_active_unique',
+    'app_runs_automation_fire_unique',
+    'app_automation_definitions_guard_trigger',
+    'app_runs_automation_lineage_trigger',
+  ]) assert.match(applyExtrasSource, new RegExp(`'${requiredName}'`));
+
+  const cutoverIndex = upgradeManifest.migrations.findIndex((item) => item.version === '0.3.0-preview.25');
+  const automationIndex = upgradeManifest.migrations.findIndex((item) => item.version === '0.3.0-preview.26');
+  assert.equal(automationIndex, cutoverIndex + 1);
 });
 
 test('governed App Run fresh schema is tenant-bound and keeps ciphertext separate', () => {

@@ -123,6 +123,14 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, appOriginCutoverFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${appOriginCutoverFile}`);
 
+    // Track A remains dormant at runtime, but fresh pushes still need the same
+    // v2 protocol checks, definition/fire guards, and exact Run lineage as the
+    // supported upgrade path. Keep this after .25 because .24/.25 reconciliation
+    // restores historical v1-only function bodies and Run checks.
+    const appAutomationFoundationFile = '0.3.0-preview.26-app-automation-foundation.sql';
+    await client.query(readFileSync(resolve(upgradesDir, appAutomationFoundationFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${appAutomationFoundationFile}`);
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -208,12 +216,28 @@ async function main() {
       'app_action_bindings_mcp_connection_fk',
       'app_action_bindings_provider_snapshot_fk',
       'app_action_bindings_run_identity_unique',
+      'app_action_bindings_automation_identity_unique',
       'app_action_bindings_interface_check',
       'app_action_bindings_policy_check',
+      'app_automation_definitions_org_id_id_unique',
+      'app_automation_definitions_app_installation_fk',
+      'app_automation_definitions_app_version_fk',
+      'app_automation_definitions_grant_snapshot_fk',
+      'app_automation_definitions_action_binding_fk',
+      'app_automation_definitions_approval_shape_check',
+      'app_automation_definitions_json_size_check',
+      'app_automation_fires_org_definition_id_unique',
+      'app_automation_fires_definition_fk',
+      'app_automation_fires_app_run_fk',
+      'app_automation_fires_claim_shape_check',
+      'app_automation_fires_resolution_check',
       'app_runs_app_installation_fk',
       'app_runs_app_version_fk',
       'app_runs_app_grant_snapshot_fk',
       'app_runs_app_action_binding_fk',
+      'app_runs_automation_lineage_unique',
+      'app_runs_automation_definition_fk',
+      'app_runs_automation_fire_fk',
       'app_runs_app_origin_coherence_check',
     ];
     const installedConstraints = await client.query<{ conname: string }>(
@@ -266,6 +290,17 @@ async function main() {
       'app_dependency_locks_grant_installation_unique',
       'app_action_bindings_grant_action_unique',
       'app_action_bindings_run_identity_unique',
+      'app_automation_definitions_digest_unique',
+      'app_automation_definitions_app_request_idx',
+      'app_automation_definitions_eligibility_idx',
+      'app_automation_fires_identity_unique',
+      'app_automation_fires_occurrence_unique',
+      'app_automation_fires_definition_day_unique',
+      'app_automation_fires_one_active_unique',
+      'app_automation_fires_claim_idx',
+      'app_automation_fires_org_state_idx',
+      'app_runs_automation_lineage_idx',
+      'app_runs_automation_fire_unique',
     ];
     const installedIndexes = await client.query<{ relname: string }>(
       `SELECT relname
@@ -321,6 +356,9 @@ async function main() {
       'app_installations_epoch_cas_trigger',
       'app_versions_grant_coherence_trigger',
       'mcp_tool_overrides_parent_authorization_trigger',
+      'app_automation_definitions_guard_trigger',
+      'app_automation_fires_guard_trigger',
+      'app_runs_automation_lineage_trigger',
     ];
     const installedAppRunTriggers = await client.query<{ tgname: string }>(
       `SELECT tgname

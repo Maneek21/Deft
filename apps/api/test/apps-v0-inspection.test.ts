@@ -7,7 +7,10 @@ import {
 import { inspectAppPackageJson } from '../src/lib/app-service.js';
 import { AppError } from '../src/lib/app-errors.js';
 import { closeDb } from '../src/lib/db.js';
-import { buildPhase5ConnectedAppPackage } from './fixtures/phase5-connected-app-package.js';
+import {
+  buildPhase5ConnectedAppPackage,
+  buildTrackAAutomatedConnectedAppPackage,
+} from './fixtures/phase5-connected-app-package.js';
 
 after(async () => closeDb());
 
@@ -92,4 +95,22 @@ test('API inspection accepts Protocol v1 without granting authority', async () =
   assert.equal(inspected.package_digest, built.digest);
   assert.equal(inspected.manifest.compatibility.app_protocol, '1');
   assert.deepEqual(inspected.permissions, []);
+});
+
+test('API inspection accepts Protocol v2 automation requests without granting authority', async () => {
+  const built = await buildTrackAAutomatedConnectedAppPackage();
+  const inspected = await inspectAppPackageJson(built.json);
+
+  assert.equal(inspected.package_digest, built.digest);
+  assert.equal(inspected.manifest.compatibility.app_protocol, '2');
+  assert.deepEqual(inspected.permissions, []);
+  assert.deepEqual(
+    inspected.manifest.schema_version === '2' ? inspected.manifest.automation_requests : [],
+    [{
+      key: 'daily_campaign_send',
+      label: 'Send campaign daily',
+      trigger: { kind: 'daily_local_time' },
+      action_key: 'send_campaign_email',
+    }],
+  );
 });

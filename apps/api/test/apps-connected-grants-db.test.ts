@@ -35,6 +35,18 @@ import {
   users,
 } from '@deft/db/schema';
 import { AppError } from '../src/lib/app-errors.js';
+import {
+  createReviewedAppAutomationDefinition,
+  pauseAppAutomationDefinition,
+  persistAppAutomationFire,
+  prepareAppAutomationDefinitionReview,
+  resumeAppAutomationDefinition,
+  revokeAppAutomationDefinition,
+} from '../src/lib/app-automation-definition-service.js';
+import {
+  claimAppAutomationFireWithExecutor,
+  postgresAppAutomationVerificationReadPort,
+} from '../src/lib/app-automation-repository.js';
 import { closeDb, db } from '../src/lib/db.js';
 import { ModuleError } from '../src/lib/module-errors.js';
 import {
@@ -51,6 +63,7 @@ import {
   inspectConnectedAppHealth,
   prepareConnectedAppReview,
 } from '../src/lib/app-review-service.js';
+import { digestAppGrantValue } from '../src/lib/app-grant-service.js';
 import { createModuleRecord, humanModuleActor } from '../src/lib/module-service.js';
 import { replaceResourceRelation } from '../src/lib/resource-relation-service.js';
 import { mcpConnectionRoutes } from '../src/routes/mcp-connections.js';
@@ -59,6 +72,7 @@ import {
   buildPhase5ConnectedAppPackage,
   buildPhase5ConnectedPredecessorAppPackage,
   buildPhase5DependencyAppPackage,
+  buildTrackAAutomatedConnectedAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
@@ -559,6 +573,296 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
   assert.equal(unboundDeleteResponse.status, 200);
   assert.equal((await db.select().from(mcpConnections)
     .where(eq(mcpConnections.id, unboundConnectionId))).length, 0);
+});
+
+test('Protocol v2 stages with zero authority and activates only through connected review', async () => {
+  const orgId = randomUUID();
+  const userId = randomUUID();
+  await db.insert(orgs).values({
+    id: orgId,
+    name: 'Protocol v2 lifecycle',
+    slug: `track-a-v2-${randomUUID()}`,
+  });
+  await db.insert(users).values({
+    id: userId,
+    email: `track-a-v2-${randomUUID()}@example.test`,
+    name: 'Protocol v2 owner',
+  });
+  await db.insert(orgMembers).values({
+    id: randomUUID(),
+    org_id: orgId,
+    user_id: userId,
+    role: 'owner',
+    is_active: true,
+  });
+  const actor = humanModuleActor({ orgId, userId, role: 'owner' });
+
+  const dependencyBuilt = await buildPhase5DependencyAppPackage();
+  const dependencyStaged = await stageAppPackage(actor, dependencyBuilt.json);
+  await activateAppInstallation(
+    actor,
+    dependencyStaged.id,
+    dependencyStaged.package_digest,
+  );
+
+  const built = await buildTrackAAutomatedConnectedAppPackage();
+  const staged = await stageAppPackage(actor, built.json);
+  assert.equal(staged.state, 'staged');
+  assert.equal(staged.manifest.compatibility.app_protocol, '2');
+  assert.equal(staged.active_version_id, null);
+
+  const [version] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.id, staged.version_id),
+  ));
+  const [requested] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.id, version!.requested_grant_snapshot_id!),
+  ));
+  assert.ok(version);
+  assert.ok(requested);
+  assert.equal(version.protocol_version, '2');
+  assert.equal(requested.classification.executable, false);
+  assert.equal(requested.classification.provider_access, false);
+  assert.deepEqual(
+    (requested.canonical_snapshot as any).requirements.automation_requests,
+    built.package.manifest.automation_requests,
+  );
+  assert.equal((await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, orgId),
+  ))[0]?.value, 0);
+  await assert.rejects(
+    activateAppInstallation(actor, staged.id, staged.package_digest),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
+  );
+
+  const connectionId = randomUUID();
+  await db.insert(mcpConnections).values({
+    id: connectionId,
+    org_id: orgId,
+    name: 'Protocol v2 sandbox mail',
+    slug: `track-a-v2-mail-${randomUUID()}`,
+    server_url: 'https://track-a-v2.example.test/mcp',
+    transport: 'streamable-http',
+    auth_type: 'none',
+    is_active: true,
+    created_by: userId,
+  });
+  const { capability } = await sandboxReviewCapability(orgId, connectionId);
+  const request = {
+    app_version_id: version.id,
+    expected_package_digest: version.package_digest,
+    expected_requested_snapshot_digest: requested.snapshot_digest,
+    expected_lifecycle_epoch: staged.lifecycle_epoch,
+    expected_grant_epoch: staged.grant_epoch,
+    connector_selections: [{
+      connector_requirement_key: 'mail_provider',
+      mcp_connection_id: connectionId,
+    }],
+  };
+  const management = await getConnectedAppGrantManagement(actor, staged.id);
+  assert.equal(management.review_target?.protocol_version, '2');
+  assert.deepEqual(
+    (management.review_target?.requested_authority as any)?.requirements.automation_requests,
+    built.package.manifest.automation_requests,
+  );
+  const review = await prepareConnectedAppReview(actor, staged.id, request, capability);
+  await activateConnectedAppInstallation(actor, staged.id, {
+    ...request,
+    expected_review_digest: review.review_digest,
+    accept_host_policy: true,
+  }, capability);
+
+  const [active] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, orgId),
+    eq(appInstallations.id, staged.id),
+  ));
+  const [effective] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.id, active!.active_grant_snapshot_id!),
+  ));
+  assert.equal(active?.state, 'active');
+  assert.equal(active?.active_version_id, version.id);
+  assert.equal((effective?.canonical_snapshot as any).app.protocol_version, '2');
+  assert.equal((await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, orgId),
+  ))[0]?.value, 0);
+
+  const [campaignBinding] = await db.select({ binding: appModuleBindings, version: moduleVersions })
+    .from(appModuleBindings)
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.org_id, appModuleBindings.org_id),
+      eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+      eq(moduleVersions.id, appModuleBindings.module_version_id),
+    ))
+    .where(and(
+      eq(appModuleBindings.org_id, orgId),
+      eq(appModuleBindings.app_installation_id, staged.id),
+      eq(appModuleBindings.app_version_id, version.id),
+    ));
+  const [contactBinding] = await db.select({ binding: appModuleBindings, version: moduleVersions })
+    .from(appModuleBindings)
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.org_id, appModuleBindings.org_id),
+      eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+      eq(moduleVersions.id, appModuleBindings.module_version_id),
+    ))
+    .where(and(
+      eq(appModuleBindings.org_id, orgId),
+      eq(appModuleBindings.app_installation_id, dependencyStaged.id),
+    ));
+  assert.ok(campaignBinding);
+  assert.ok(contactBinding);
+  const contact = await createModuleRecord(actor, {
+    module_id: 'org.deft.reference.resource-contacts',
+    collection_key: 'contacts',
+    data: { name: 'Automation contact', email: 'automation@example.test' },
+    relations: {},
+    expected_manifest_digest: contactBinding.version.manifest_digest,
+    idempotency_key: `track-a-contact-${randomUUID()}`,
+  });
+  const campaign = await createModuleRecord(actor, {
+    module_id: 'org.deft.reference.resource-campaigns',
+    collection_key: 'campaigns',
+    data: {
+      name: 'Automation campaign',
+      subject: 'Track A proof',
+      body: 'One bounded daily action.',
+      status: 'ready',
+    },
+    relations: {},
+    expected_manifest_digest: campaignBinding.version.manifest_digest,
+    idempotency_key: `track-a-campaign-${randomUUID()}`,
+  });
+  assert.ok(contact.record);
+  assert.ok(campaign.record);
+  const placementRef = moduleRef(
+    campaignBinding.binding.module_installation_id,
+    'campaigns',
+    campaign.record.id,
+  );
+  const selectedRef = moduleRef(
+    contactBinding.binding.module_installation_id,
+    'contacts',
+    contact.record.id,
+  );
+  const relation = await replaceResourceRelation(actor, {
+    schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
+    source: placementRef,
+    relation_key: 'contacts',
+    refs: [selectedRef],
+    expected_revision: 0,
+    idempotency_key: `track-a-relation-${randomUUID()}`,
+  });
+  const [actionBinding] = await db.select().from(appActionBindings).where(and(
+    eq(appActionBindings.org_id, orgId),
+    eq(appActionBindings.app_installation_id, staged.id),
+    eq(appActionBindings.app_version_id, version.id),
+    eq(appActionBindings.action_key, 'send_campaign_email'),
+  ));
+  assert.ok(actionBinding);
+  const definitionInput = {
+    app_installation_id: staged.id,
+    app_version_id: version.id,
+    action_binding_id: actionBinding.id,
+    automation_request_key: 'daily_campaign_send',
+    placement: {
+      resource_ref: placementRef,
+      revision: String(campaign.record.revision),
+      content_digest: digestAppGrantValue(campaign.record.data),
+    },
+    selected: {
+      resource_ref: selectedRef,
+      revision: String(contact.record.revision),
+      content_digest: digestAppGrantValue(contact.record.data),
+    },
+    local_time: '09:00',
+    timezone: 'UTC',
+    validity_seconds: 24 * 60 * 60,
+    max_org_runs_per_utc_day: 100,
+    max_pending_org_fires: 25,
+  } as const;
+  const definitionReview = await prepareAppAutomationDefinitionReview(actor, definitionInput);
+  const approvedAt = new Date();
+  const definition = await createReviewedAppAutomationDefinition(actor, {
+    ...definitionInput,
+    expected_review_digest: definitionReview.review_digest,
+    accept_code_owned_policy: true,
+  }, { now: () => approvedAt });
+  assert.equal(definition.state, 'active');
+  assert.equal(definition.interface_identity, actionBinding.interface_identity);
+  assert.equal(definition.selected_relation_revision, relation.revision);
+  assert.equal(definition.approver_authorization_version, 1);
+  assert.equal((definition.authorization_vector as any).organization_id, orgId);
+  assert.equal((definition.authorization_vector as any).approver.user_id, userId);
+  assert.equal((definition.authorization_vector as any).relation.revision, relation.revision);
+
+  const fire = await persistAppAutomationFire({
+    organization_id: orgId,
+    definition_id: definition.id,
+    expected_epoch: definition.definition_epoch,
+    logical_local_date: approvedAt.toISOString().slice(0, 10),
+    resolution: { kind: 'resolved', resolved_at_utc: new Date(approvedAt.getTime() + 60_000) },
+  }, { now: () => new Date(approvedAt.getTime() + 60_000) });
+  const wrongEpochClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch + 1,
+    claim_owner: 'track-a-test',
+    claim_token: randomUUID(),
+    claimed_at: new Date(approvedAt.getTime() + 120_000),
+    lease_expires_at: new Date(approvedAt.getTime() + 180_000),
+  }));
+  assert.equal(wrongEpochClaim, null);
+  const claimed = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch,
+    claim_owner: 'track-a-test',
+    claim_token: randomUUID(),
+    claimed_at: new Date(approvedAt.getTime() + 120_000),
+    lease_expires_at: new Date(approvedAt.getTime() + 180_000),
+  }));
+  assert.equal(claimed?.state, 'claimed');
+  assert.equal(claimed?.attempt_count, 1);
+  const verification = await postgresAppAutomationVerificationReadPort.load({
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+  });
+  assert.equal(verification?.approver.role, 'owner');
+  assert.equal(verification?.approver.authorization_version, 1);
+  assert.equal(verification?.definition.definition_digest, definition.definition_digest);
+  assert.equal(verification?.fire.fire_identity, fire.fire_identity);
+  assert.equal(await postgresAppAutomationVerificationReadPort.load({
+    organization_id: OTHER_ORG_ID,
+    definition_id: definition.id,
+    fire_id: fire.id,
+  }), null);
+
+  const paused = await pauseAppAutomationDefinition(actor, {
+    definition_id: definition.id,
+    expected_epoch: definition.definition_epoch,
+  });
+  const resumed = await resumeAppAutomationDefinition(actor, {
+    definition_id: definition.id,
+    expected_epoch: paused.definition_epoch,
+  });
+  const revokedDefinition = await revokeAppAutomationDefinition(actor, {
+    definition_id: definition.id,
+    expected_epoch: resumed.definition_epoch,
+  });
+  assert.equal(revokedDefinition.state, 'revoked');
+  assert.equal(revokedDefinition.definition_epoch, definition.definition_epoch + 3);
+
+  const disabled = await disableAppInstallation(actor, staged.id, active!.lifecycle_epoch);
+  assert.equal(disabled.state, 'disabled');
+  await assert.rejects(
+    enableAppInstallation(actor, staged.id, disabled.lifecycle_epoch),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
+  );
 });
 
 test('explicit connected review activates atomically, rejects stale CAS, and re-reviews after revocation', async () => {

@@ -39,22 +39,38 @@ export const APP_RUN_APP_AUTHORITY_KINDS = Object.freeze([
   'app_grant',
   'app_binding',
   'app_dependency',
+  'app_automation_request',
+  'app_automation_definition',
+  'app_automation_fire',
+  'app_automation_policy',
   'resource',
   'relation',
 ] as const);
 
-export const AppRunCallerSurfaceSchema = z.enum([
+const AppRunInteractiveCallerSurfaceSchema = z.enum([
   'human:ui',
   'human:mcp',
   'defty',
   'agent_employee:runtime',
   'agent_employee:mcp',
 ]);
+export const AppRunCallerSurfaceSchema = z.enum([
+  ...AppRunInteractiveCallerSurfaceSchema.options,
+  'automation',
+]);
 
 const AuthorityDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const PreparedAuthorityVectorSchema = z.strictObject({
+const PreparedResourceAuthorityV1Schema = z.strictObject({
+  ref: ModuleResourceRefV1Schema,
+  revision: z.number().int().positive(),
+  active_manifest_digest: AuthorityDigestSchema,
+  validated_manifest_digest: AuthorityDigestSchema,
+  updated_at: z.string().datetime({ offset: true }),
+});
+
+export const PreparedAuthorityVectorV1Schema = z.strictObject({
   schema_version: z.literal('deft.app_action_authority.v1'),
-  caller_surface: AppRunCallerSurfaceSchema,
+  caller_surface: AppRunInteractiveCallerSurfaceSchema,
   installation: z.strictObject({
     id: ExactIdentitySchema,
     lifecycle_epoch: z.number().int().nonnegative(),
@@ -90,13 +106,7 @@ const PreparedAuthorityVectorSchema = z.strictObject({
     operation_schema_digest: AuthorityDigestSchema,
   }),
   run_authorization: AppRunAuthorizationSnapshotSchema,
-  resources: z.array(z.strictObject({
-    ref: ModuleResourceRefV1Schema,
-    revision: z.number().int().positive(),
-    active_manifest_digest: AuthorityDigestSchema,
-    validated_manifest_digest: AuthorityDigestSchema,
-    updated_at: z.string().datetime({ offset: true }),
-  })).min(1).max(32),
+  resources: z.array(PreparedResourceAuthorityV1Schema).min(1).max(32),
   relations: z.array(z.strictObject({
     source_ref: ModuleResourceRefV1Schema,
     relation_key: ExactIdentitySchema,
@@ -105,6 +115,64 @@ const PreparedAuthorityVectorSchema = z.strictObject({
   })).min(1).max(16),
 });
 
+export const PreparedAuthorityVectorV2Schema = z.strictObject({
+  ...PreparedAuthorityVectorV1Schema.shape,
+  schema_version: z.literal('deft.app_action_authority.v2'),
+  caller_surface: z.literal('automation'),
+  resources: z.array(PreparedResourceAuthorityV1Schema.extend({
+    content_digest: AuthorityDigestSchema,
+  })).min(1).max(32),
+  automation: z.strictObject({
+    request: z.strictObject({
+      key: ExactIdentitySchema,
+      digest: AuthorityDigestSchema,
+    }),
+    definition: z.strictObject({
+      id: ExactIdentitySchema,
+      epoch: z.number().int().positive(),
+      digest: AuthorityDigestSchema,
+      authorization_digest: AuthorityDigestSchema,
+      approved_by_user_id: ExactIdentitySchema,
+      approved_at: z.string().datetime({ offset: true }),
+      valid_from: z.string().datetime({ offset: true }),
+      valid_until: z.string().datetime({ offset: true }),
+    }),
+    fire: z.strictObject({
+      id: ExactIdentitySchema,
+      identity: AuthorityDigestSchema,
+      logical_local_date: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/),
+      local_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+      timezone: ExactIdentitySchema,
+      resolved_at_utc: z.string().datetime({ offset: true }),
+    }),
+    policy: z.strictObject({
+      key: ExactIdentitySchema,
+      version: z.literal('1'),
+      digest: AuthorityDigestSchema,
+    }),
+    budgets: z.strictObject({
+      max_actions_per_fire: z.literal(1),
+      max_org_runs_per_utc_day: z.number().int().min(1).max(100),
+      max_pending_org_fires: z.number().int().min(1).max(25),
+    }),
+  }),
+}).superRefine((value, ctx) => {
+  if (Date.parse(value.automation.definition.valid_until) <= Date.parse(value.automation.definition.valid_from)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['automation', 'definition', 'valid_until'],
+      message: 'Automation definition validity must be ordered',
+    });
+  }
+});
+
+export const PreparedAuthorityVectorSchema = z.discriminatedUnion('schema_version', [
+  PreparedAuthorityVectorV1Schema,
+  PreparedAuthorityVectorV2Schema,
+]);
+
+export type AppRunPreparedAuthorityVectorV1 = z.infer<typeof PreparedAuthorityVectorV1Schema>;
+export type AppRunPreparedAuthorityVectorV2 = z.infer<typeof PreparedAuthorityVectorV2Schema>;
 export type AppRunPreparedAuthorityVector = z.infer<typeof PreparedAuthorityVectorSchema>;
 
 const APP_AUTHORITY_KIND_SET = new Set<string>(APP_RUN_APP_AUTHORITY_KINDS);
@@ -202,6 +270,28 @@ export function projectPreparedAppAuthorityRefs(
       authority_id: appRelationAuthorityId(relation),
       version: appAuthorityVersion('relation', relation),
     })),
+    ...(vector.schema_version === 'deft.app_action_authority.v2' ? [
+      {
+        authority_kind: 'app_automation_request' as const,
+        authority_id: vector.automation.request.key,
+        version: vector.automation.request.digest,
+      },
+      {
+        authority_kind: 'app_automation_definition' as const,
+        authority_id: vector.automation.definition.id,
+        version: appAuthorityVersion('automation_definition', vector.automation.definition),
+      },
+      {
+        authority_kind: 'app_automation_fire' as const,
+        authority_id: vector.automation.fire.id,
+        version: vector.automation.fire.identity,
+      },
+      {
+        authority_kind: 'app_automation_policy' as const,
+        authority_id: vector.automation.policy.key,
+        version: vector.automation.policy.digest,
+      },
+    ] : []),
   ];
   return AppRunAuthorizationSnapshotSchema.parse({
     ...vector.run_authorization,
@@ -234,6 +324,30 @@ const PreparedAppRunSchema = z.strictObject({
   }
   if (value.authority_refs.some((ref) => !APP_AUTHORITY_KIND_SET.has(ref.authority_kind))) {
     ctx.addIssue({ code: 'custom', path: ['authority_refs'], message: 'Prepared authority refs contain ambient authority' });
+  }
+  if (value.authority_vector.schema_version === 'deft.app_action_authority.v2') {
+    const automation = value.authority_vector.automation;
+    if (
+      value.initiating_actor.actor_type !== 'human'
+      || value.initiating_actor.user_id !== automation.definition.approved_by_user_id
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['initiating_actor'],
+        message: 'Prepared automation approver is invalid',
+      });
+    }
+    if (
+      value.execution_actor.actor_type !== 'automation'
+      || value.execution_actor.automation_id !== automation.definition.id
+      || value.execution_actor.user_id !== automation.definition.approved_by_user_id
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['execution_actor'],
+        message: 'Prepared automation actor is invalid',
+      });
+    }
   }
 });
 

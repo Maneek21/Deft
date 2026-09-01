@@ -14,10 +14,17 @@ import {
   type AppRunSubmission,
   type ModuleResourceRefV1,
 } from '@deft/shared';
-import { DeftAppManifestV1Schema } from '@deft/app-kit';
+import {
+  APP_AUTOMATION_POLICY_V1,
+  canonicalAppPrivateInterfaceIdentity,
+  DeftAppManifestV1Schema,
+  DeftAppManifestV2Schema,
+} from '@deft/app-kit';
 import {
   agentEmployees,
   appActionBindings,
+  appAutomationDefinitions,
+  appAutomationFires,
   appDependencyLocks,
   appGrantSnapshots,
   appInstallations,
@@ -48,6 +55,7 @@ import type {
 } from './app-run-repository.js';
 import { canonicalMcpToolName, isMcpToolEnabled } from './mcp-tool-identity.js';
 import { digestAppGrantValue } from './app-grant-service.js';
+import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
 import {
   APP_RUN_APP_AUTHORITY_KINDS,
   AppRunCallerSurfaceSchema,
@@ -55,7 +63,10 @@ import {
   appResourceAuthorityId,
   projectPreparedAppAuthorityRefs,
   type AppRunPreparedAuthorityVector,
+  type AppRunPreparedAuthorityVectorV1,
+  type AppRunPreparedAuthorityVectorV2,
 } from './app-run-prepared-input.js';
+import { APP_AUTOMATION_POLICY_DIGEST, digestAppAutomationFireIdentity } from './app-automation-definition-service.js';
 
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
 const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
@@ -98,6 +109,8 @@ type InternalRunAuthorization = Readonly<{
   origin_app_version_id: string | null;
   origin_app_binding_key: string | null;
   origin_app_grant_snapshot_id: string | null;
+  origin_app_automation_definition_id: string | null;
+  origin_app_automation_fire_id: string | null;
   safe_preview: Record<string, unknown>;
   budget_reserved_at: Date | null;
   budget_reserved_count: number | null;
@@ -119,6 +132,11 @@ type AppVectorCaptureInput = Readonly<{
   policy: AppRunPolicySnapshot;
   base_authorization: AppRunAuthorizationSnapshot;
   caller_surface: z.infer<typeof AppRunCallerSurfaceSchema>;
+  automation_lineage?: Readonly<{
+    definition_id: string;
+    fire_id: string;
+    expected_run_id?: string;
+  }>;
   resource_refs: readonly ModuleResourceRefV1[];
   relation_refs: readonly Readonly<{
     source_ref: ModuleResourceRefV1;
@@ -143,6 +161,7 @@ function actorMatchesSurface(
   surface: z.infer<typeof AppRunCallerSurfaceSchema>,
   hasToken: boolean,
 ): boolean {
+  if (surface === 'automation') return actor.actor_type === 'automation' && !hasToken;
   if (surface === 'human:ui' || surface === 'defty') {
     return actor.actor_type === 'human' && !hasToken;
   }
@@ -188,11 +207,22 @@ function sameAuthorityRefs(
   return left.every((ref) => expected.has(encode(ref)));
 }
 
+function automationRunPolicyMatches(policy: AppRunPolicySnapshot): boolean {
+  return policy.risk_class === APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class
+    && policy.review_requirement === APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement
+    && policy.review_scope === APP_AUTOMATION_POLICY_V1.review_scope
+    && policy.retry_class === APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class;
+}
+
 /**
  * Host-owned authorization snapshot builder and live verifier for governed
  * Runs. Callers receive only opaque versions; live rows remain authoritative.
  */
 export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorizer {
+  constructor(
+    private readonly appAutomationsEnabled: () => boolean = () => false,
+  ) {}
+
   async capture(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot> {
     return db.transaction((tx) => this.#capture(tx, input));
   }
@@ -237,8 +267,11 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     input: AppRunPreparedAppVerification,
   ): Promise<AppRunAuthorizationSnapshot> {
     const { submission, authority_vector: prepared } = input;
+    const isAutomation = prepared.schema_version === 'deft.app_action_authority.v2';
+    if (isAutomation && !this.appAutomationsEnabled()) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     if (
-      submission.origin.origin_kind !== 'app'
+      (prepared.schema_version !== 'deft.app_action_authority.v1' && !isAutomation)
+      || submission.origin.origin_kind !== 'app'
       || submission.org_id !== submission.operation.provider.org_id
       || submission.origin.installation_id !== prepared.installation.id
       || submission.origin.app_version_id !== prepared.app_version.id
@@ -247,6 +280,21 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || submission.operation.provider.provider_instance_id !== prepared.provider.connection_id
       || submission.operation.operation_name !== prepared.provider.operation_name
       || submission.provider_snapshot_digest !== prepared.provider.snapshot_digest
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    if (
+      isAutomation
+      && (
+        prepared.caller_surface !== 'automation'
+        || submission.initiating_actor.actor_type !== 'human'
+        || submission.execution_actor.actor_type !== 'automation'
+        || submission.execution_actor.automation_id !== prepared.automation.definition.id
+        || submission.execution_actor.user_id !== prepared.automation.definition.approved_by_user_id
+        || submission.initiating_actor.user_id !== prepared.automation.definition.approved_by_user_id
+        || !automationRunPolicyMatches(submission.policy)
+        || prepared.automation.policy.key !== APP_AUTOMATION_POLICY_V1.key
+        || prepared.automation.policy.version !== APP_AUTOMATION_POLICY_V1.version
+        || prepared.automation.policy.digest !== APP_AUTOMATION_POLICY_DIGEST
+      )
     ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
 
     const tokenAuthorities = prepared.run_authorization.authority_refs
@@ -265,6 +313,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         token_id,
         token_kind: await this.#tokenKind(tx, submission.org_id, token_id),
       }))),
+      ...(isAutomation ? { allow_automation_execution: true } : {}),
     });
     if (!sameAuthorityRefs(prepared.run_authorization.authority_refs, currentBase.authority_refs)) {
       throw new Error('APP_RUN_AUTHORIZATION_STALE');
@@ -290,6 +339,12 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         relation_key: relation.relation_key,
         selected_ref: relation.selected_ref,
       })),
+      ...(isAutomation ? {
+        automation_lineage: {
+          definition_id: prepared.automation.definition.id,
+          fire_id: prepared.automation.fire.id,
+        },
+      } : {}),
     });
     const preparedRefs = projectPreparedAppAuthorityRefs(prepared);
     const currentRefs = projectPreparedAppAuthorityRefs(currentApp);
@@ -417,6 +472,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       origin_app_version_id: appRuns.origin_app_version_id,
       origin_app_binding_key: appRuns.origin_app_binding_key,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
+      origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
+      origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
       safe_preview: appRuns.safe_preview,
       budget_reserved_at: appRuns.budget_reserved_at,
       budget_reserved_count: appRuns.budget_reserved_count,
@@ -444,6 +501,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     const tokenAuthorities = storedBaseRefs
       .filter((ref) => ref.authority_kind === 'token_scope')
       .map((ref) => ({ token_id: ref.authority_id }));
+    const isAutomation = surface === 'automation';
+    if (isAutomation && !this.appAutomationsEnabled()) return false;
     const current = await this.#capture(tx, {
       org_id: run.org_id,
       authenticated_subject: stored.authenticated_subject,
@@ -462,6 +521,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         token_id,
         token_kind: await this.#tokenKind(tx, run.org_id, token_id),
       }))),
+      ...(isAutomation ? { allow_automation_execution: true } : {}),
     });
     if (!sameAuthorityRefs(storedBaseRefs, current.authority_refs)) return false;
     if (!surface) return storedAppRefs.length === 0;
@@ -489,6 +549,10 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || !internal.origin_app_version_id
       || !internal.origin_app_binding_key
       || !internal.origin_app_grant_snapshot_id
+      || (callerSurface === 'automation' && (
+        !internal.origin_app_automation_definition_id
+        || !internal.origin_app_automation_fire_id
+      ))
     ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     const preview = AppRunSafePreviewSchema.parse(internal.safe_preview);
     const resourceRefs = preview.resource_refs.map((resource) => {
@@ -537,6 +601,13 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       caller_surface: callerSurface,
       resource_refs: resourceRefs,
       relation_refs: relationRefs,
+      ...(callerSurface === 'automation' ? {
+        automation_lineage: {
+          definition_id: internal.origin_app_automation_definition_id ?? '',
+          fire_id: internal.origin_app_automation_fire_id ?? '',
+          expected_run_id: run.id,
+        },
+      } : {}),
     });
   }
 
@@ -594,7 +665,17 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     const hasToken = input.base_authorization.authority_refs.some(
       (ref) => ref.authority_kind === 'token_scope',
     );
-    if (
+    const isAutomation = input.caller_surface === 'automation';
+    if (isAutomation) {
+      if (
+        !this.appAutomationsEnabled()
+        || !input.automation_lineage
+        || hasToken
+        || input.initiating_actor.actor_type !== 'human'
+        || input.execution_actor.actor_type !== 'automation'
+        || !automationRunPolicyMatches(input.policy)
+      ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    } else if (
       !actorMatchesSurface(input.initiating_actor, input.caller_surface, hasToken)
       || !actorMatchesSurface(input.execution_actor, input.caller_surface, hasToken)
     ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
@@ -619,7 +700,6 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(appVersions.org_id, input.org_id),
       eq(appVersions.installation_id, input.installation_id),
       eq(appVersions.id, input.app_version_id),
-      eq(appVersions.protocol_version, '1'),
       eq(appVersions.state, 'active'),
     )).limit(1);
     const [grant] = await tx.select().from(appGrantSnapshots).where(and(
@@ -640,7 +720,15 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(appActionBindings.provider_snapshot_id, input.provider_snapshot_id),
       eq(appActionBindings.operation_name, input.operation_name),
     )).limit(1);
-    if (!installation || !version || !grant || !binding) {
+    if (
+      !installation
+      || !version
+      || !isConnectedAppProtocolVersion(version.protocol_version)
+      || (isAutomation && version.protocol_version !== '2')
+      || (!isAutomation && version.protocol_version === '2' && input.execution_actor.actor_type === 'automation')
+      || !grant
+      || !binding
+    ) {
       throw new Error('APP_RUN_AUTHORIZATION_STALE');
     }
     if (
@@ -648,10 +736,10 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || grant.manifest_digest !== version.manifest_digest
       || grant.package_digest !== version.package_digest
       || binding.binding_digest !== digestAppGrantValue(binding.canonical_binding)
-      || binding.risk_class !== input.policy.risk_class
-      || binding.review_requirement !== input.policy.review_requirement
-      || binding.review_scope !== input.policy.review_scope
-      || binding.retry_class !== input.policy.retry_class
+      || (!isAutomation && binding.risk_class !== input.policy.risk_class)
+      || (!isAutomation && binding.review_requirement !== input.policy.review_requirement)
+      || (!isAutomation && binding.review_scope !== input.policy.review_scope)
+      || (!isAutomation && binding.retry_class !== input.policy.retry_class)
       || binding.retention_class !== 'standard'
       || binding.automation_eligibility !== 'forbidden'
       || binding.provider_idempotency_key_required !== true
@@ -682,7 +770,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(appDependencyLocks.grant_snapshot_id, input.grant_snapshot_id),
       eq(appDependencyLocks.grant_snapshot_kind, 'effective'),
     ));
-    const dependencies: AppRunPreparedAuthorityVector['dependencies'][number][] = [];
+    const dependencies: AppRunPreparedAuthorityVectorV1['dependencies'][number][] = [];
     for (const dependency of dependencyRows) {
       const [current] = await tx.select().from(appInstallations).where(and(
         eq(appInstallations.org_id, input.org_id),
@@ -715,7 +803,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     }
     dependencies.sort((left, right) => left.dependency_key.localeCompare(right.dependency_key));
 
-    const manifest = DeftAppManifestV1Schema.parse(version.manifest);
+    const manifest = version.protocol_version === '2'
+      ? DeftAppManifestV2Schema.parse(version.manifest)
+      : DeftAppManifestV1Schema.parse(version.manifest);
     const dependencyByKey = new Map(dependencyRows.map((row) => [row.dependency_key, row]));
     const resourceAncestry = new Set<string>();
     for (const requirement of manifest.resource_requirements) {
@@ -753,7 +843,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       );
     }
 
-    const resources: AppRunPreparedAuthorityVector['resources'][number][] = [];
+    const resources: Array<AppRunPreparedAuthorityVectorV2['resources'][number]> = [];
     for (const ref of input.resource_refs) {
       if (!resourceAncestry.has(`${ref.provider.provider_instance_id}\0${ref.resource_type}`)) {
         throw new Error('APP_RUN_AUTHORIZATION_STALE');
@@ -795,6 +885,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         active_manifest_digest: activeVersion.manifest_digest,
         validated_manifest_digest: validatedVersion.manifest_digest,
         updated_at: record.updated_at.toISOString(),
+        content_digest: digestAppGrantValue(record.data),
       });
     }
     resources.sort((left, right) => appResourceAuthorityId(left.ref).localeCompare(
@@ -802,7 +893,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     ));
 
     const resourceIds = new Set(resources.map((resource) => appResourceAuthorityId(resource.ref)));
-    const relations: AppRunPreparedAuthorityVector['relations'][number][] = [];
+    const relations: AppRunPreparedAuthorityVectorV1['relations'][number][] = [];
     for (const relation of input.relation_refs) {
       if (
         !resourceIds.has(appResourceAuthorityId(relation.source_ref))
@@ -833,9 +924,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       appRelationAuthorityId(right),
     ));
 
-    return {
+    const common = {
       schema_version: 'deft.app_action_authority.v1',
-      caller_surface: input.caller_surface,
+      caller_surface: input.caller_surface === 'automation' ? 'human:ui' : input.caller_surface,
       installation: {
         id: installation.id,
         lifecycle_epoch: installation.lifecycle_epoch,
@@ -864,12 +955,197 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       run_authorization: input.base_authorization,
       resources,
       relations,
+    } satisfies AppRunPreparedAuthorityVectorV1;
+    if (!isAutomation) {
+      return {
+        ...common,
+        resources: common.resources.map(({ content_digest: _contentDigest, ...resource }) => resource),
+      };
+    }
+    return this.#captureAutomationVector(tx, input, common);
+  }
+
+  async #captureAutomationVector(
+    tx: AppRunTransaction,
+    input: AppVectorCaptureInput,
+    common: Omit<AppRunPreparedAuthorityVectorV1, 'resources'> & Readonly<{
+      resources: readonly AppRunPreparedAuthorityVectorV2['resources'][number][];
+    }>,
+  ): Promise<AppRunPreparedAuthorityVectorV2> {
+    const lineage = input.automation_lineage;
+    if (!lineage || input.initiating_actor.actor_type !== 'human'
+      || input.execution_actor.actor_type !== 'automation') {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const [[definition], [fire], [approver], [binding], [version]] = await Promise.all([
+      tx.select().from(appAutomationDefinitions).where(and(
+        eq(appAutomationDefinitions.org_id, input.org_id),
+        eq(appAutomationDefinitions.id, lineage.definition_id),
+      )).limit(1),
+      tx.select().from(appAutomationFires).where(and(
+        eq(appAutomationFires.org_id, input.org_id),
+        eq(appAutomationFires.definition_id, lineage.definition_id),
+        eq(appAutomationFires.id, lineage.fire_id),
+      )).limit(1),
+      tx.select().from(orgMembers).where(and(
+        eq(orgMembers.org_id, input.org_id),
+        eq(orgMembers.user_id, input.initiating_actor.user_id),
+        eq(orgMembers.is_active, true),
+      )).limit(1),
+      tx.select().from(appActionBindings).where(and(
+        eq(appActionBindings.org_id, input.org_id),
+        eq(appActionBindings.id, common.binding.id),
+      )).limit(1),
+      tx.select().from(appVersions).where(and(
+        eq(appVersions.org_id, input.org_id),
+        eq(appVersions.id, common.app_version.id),
+      )).limit(1),
+    ]);
+    if (!definition || !fire || !approver || !binding || !version) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const now = new Date();
+    const placement = ModuleResourceRefV1Schema.parse(definition.placement_resource_ref);
+    const selected = ModuleResourceRefV1Schema.parse(definition.selected_resource_ref);
+    const placementEvidence = common.resources.find(
+      (resource) => appResourceAuthorityId(resource.ref) === appResourceAuthorityId(placement),
+    );
+    const selectedEvidence = common.resources.find(
+      (resource) => appResourceAuthorityId(resource.ref) === appResourceAuthorityId(selected),
+    );
+    const relation = common.relations.find((candidate) => (
+      appResourceAuthorityId(candidate.source_ref) === appResourceAuthorityId(placement)
+      && candidate.relation_key === definition.selected_relation_key
+      && appResourceAuthorityId(candidate.selected_ref) === appResourceAuthorityId(selected)
+    ));
+    const manifest = DeftAppManifestV2Schema.parse(version.manifest);
+    const request = manifest.automation_requests.find(
+      (candidate) => candidate.key === definition.automation_request_key,
+    );
+    const expectedFireIdentity = digestAppAutomationFireIdentity({
+      organization_id: input.org_id,
+      definition_id: definition.id,
+      definition_epoch: definition.definition_epoch,
+      logical_local_date: fire.logical_local_date,
+      local_time: fire.local_time,
+      timezone: fire.timezone,
+    });
+    const fireStateMatches = lineage.expected_run_id
+      ? fire.state === 'run_created' && fire.app_run_id === lineage.expected_run_id
+      : (fire.state === 'claimed'
+          && fire.app_run_id === null
+          && fire.lease_expires_at !== null
+          && fire.lease_expires_at > now)
+        || (fire.state === 'run_created' && fire.app_run_id !== null);
+    const expectedInterfaceIdentity = canonicalAppPrivateInterfaceIdentity({
+      organization_id: input.org_id,
+      app_lineage_id: definition.app_installation_id,
+      interface_key: APP_AUTOMATION_POLICY_V1.private_interface.key,
+      interface_version: APP_AUTOMATION_POLICY_V1.private_interface.version,
+    });
+    if (
+      definition.state !== 'active'
+      || definition.definition_epoch !== fire.definition_epoch
+      || definition.valid_from > now
+      || definition.valid_until <= now
+      || definition.approved_by_user_id !== input.initiating_actor.user_id
+      || input.execution_actor.automation_id !== definition.id
+      || input.execution_actor.user_id !== definition.approved_by_user_id
+      || (approver.role !== 'owner' && approver.role !== 'admin')
+      || approver.app_run_authorization_version !== definition.approver_authorization_version
+      || definition.app_installation_id !== common.installation.id
+      || definition.app_version_id !== common.app_version.id
+      || definition.app_manifest_digest !== common.app_version.manifest_digest
+      || definition.app_package_digest !== common.app_version.package_digest
+      || definition.grant_snapshot_id !== common.grant.id
+      || definition.grant_snapshot_digest !== common.grant.snapshot_digest
+      || definition.action_binding_id !== common.binding.id
+      || definition.action_key !== common.binding.action_key
+      || definition.binding_digest !== common.binding.binding_digest
+      || definition.connector_authorization_version !== common.binding.connector_authorization_version
+      || definition.mcp_connection_id !== common.provider.connection_id
+      || definition.provider_snapshot_id !== common.provider.snapshot_id
+      || definition.provider_snapshot_digest !== common.provider.snapshot_digest
+      || definition.operation_name !== common.provider.operation_name
+      || definition.operation_schema_digest !== common.provider.operation_schema_digest
+      || definition.policy_version !== APP_AUTOMATION_POLICY_V1.version
+      || definition.policy_digest !== APP_AUTOMATION_POLICY_DIGEST
+      || digestAppGrantValue(definition.authorization_vector) !== definition.authorization_digest
+      || digestAppGrantValue(definition.canonical_definition) !== definition.definition_digest
+      || binding.risk_class !== APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class
+      || binding.review_requirement !== APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement
+      || binding.review_scope !== APP_AUTOMATION_POLICY_V1.base_host_policy.review_scope
+      || binding.retry_class !== APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class
+      || binding.retention_class !== APP_AUTOMATION_POLICY_V1.base_host_policy.retention_class
+      || binding.automation_eligibility !== APP_AUTOMATION_POLICY_V1.base_host_policy.automation_eligibility
+      || binding.provider_idempotency_key_required
+        !== APP_AUTOMATION_POLICY_V1.base_host_policy.provider_idempotency_key_required
+      || definition.interface_identity !== binding.interface_identity
+      || definition.interface_identity !== expectedInterfaceIdentity
+      || !request
+      || request.action_key !== definition.action_key
+      || digestAppGrantValue(request) !== definition.automation_request_digest
+      || !placementEvidence
+      || String(placementEvidence.revision) !== definition.placement_resource_revision
+      || placementEvidence.content_digest !== definition.placement_content_digest
+      || !selectedEvidence
+      || String(selectedEvidence.revision) !== definition.selected_resource_revision
+      || selectedEvidence.content_digest !== definition.selected_content_digest
+      || !relation
+      || relation.revision !== definition.selected_relation_revision
+      || !fireStateMatches
+      || fire.definition_epoch !== definition.definition_epoch
+      || fire.local_time !== definition.local_time
+      || fire.timezone !== definition.timezone
+      || fire.resolved_at_utc === null
+      || fire.fire_identity !== expectedFireIdentity
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+
+    return {
+      ...common,
+      schema_version: 'deft.app_action_authority.v2',
+      caller_surface: 'automation',
+      resources: [...common.resources],
+      automation: {
+        request: {
+          key: definition.automation_request_key,
+          digest: definition.automation_request_digest,
+        },
+        definition: {
+          id: definition.id,
+          epoch: definition.definition_epoch,
+          digest: definition.definition_digest,
+          authorization_digest: definition.authorization_digest,
+          approved_by_user_id: definition.approved_by_user_id,
+          approved_at: definition.approved_at.toISOString(),
+          valid_from: definition.valid_from.toISOString(),
+          valid_until: definition.valid_until.toISOString(),
+        },
+        fire: {
+          id: fire.id,
+          identity: fire.fire_identity,
+          logical_local_date: fire.logical_local_date,
+          local_time: fire.local_time,
+          timezone: fire.timezone,
+          resolved_at_utc: fire.resolved_at_utc.toISOString(),
+        },
+        policy: {
+          key: APP_AUTOMATION_POLICY_V1.key,
+          version: APP_AUTOMATION_POLICY_V1.version,
+          digest: APP_AUTOMATION_POLICY_DIGEST,
+        },
+        budgets: {
+          max_actions_per_fire: 1,
+          max_org_runs_per_utc_day: definition.max_org_runs_per_utc_day,
+          max_pending_org_fires: definition.max_pending_org_fires,
+        },
+      },
     };
   }
 
   async #capture(
     tx: AppRunTransaction,
-    input: AppRunAuthorizationCapture,
+    input: AppRunAuthorizationCapture & Readonly<{ allow_automation_execution?: boolean }>,
   ): Promise<AppRunAuthorizationSnapshot> {
     const refs = new Map<string, AuthorityRef>();
     const add = (ref: AuthorityRef): void => {
@@ -878,8 +1154,19 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
 
     const employees = new Map<string, typeof agentEmployees.$inferSelect>();
     const captureActor = async (actor: AppRunActor, reserveBudgetAuthority: boolean): Promise<void> => {
-      if (actor.actor_type === 'system' || actor.actor_type === 'automation') {
+      if (actor.actor_type === 'system') {
         throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      }
+      if (actor.actor_type === 'automation') {
+        if (
+          !input.allow_automation_execution
+          || input.execution_actor.actor_type !== 'automation'
+          || actor.automation_id !== input.execution_actor.automation_id
+          || input.authenticated_subject.actor_type !== 'human'
+          || actor.user_id !== input.authenticated_subject.user_id
+          || !automationRunPolicyMatches(input.policy)
+        ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+        return;
       }
       if (actor.actor_type === 'human') {
         add(await this.#membership(tx, input.org_id, actor.user_id));

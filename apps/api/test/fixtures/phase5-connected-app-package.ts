@@ -4,6 +4,7 @@ import {
   prepareModuleArtifact,
   type DeftAppManifestV0Input,
   type DeftAppManifestV1Input,
+  type DeftAppManifestV2Input,
 } from '@deft/app-kit';
 import type { DeftModuleManifestV2Input } from '@deft/shared';
 
@@ -107,4 +108,24 @@ export async function buildPhase5ConnectedAppPackage(options: {
 
 export function buildPhase5ConnectedPredecessorAppPackage() {
   return buildExactV0('resource-participation-campaigns-app');
+}
+
+export async function buildTrackAAutomatedConnectedAppPackage(options: {
+  app_version?: string;
+} = {}) {
+  const connected = await buildPhase5ConnectedAppPackage({
+    app_version: options.app_version,
+  });
+  const manifest: DeftAppManifestV2Input = {
+    ...connected.package.manifest,
+    schema_version: '2',
+    compatibility: { app_protocol: '2' },
+    automation_requests: [{
+      key: 'daily_campaign_send',
+      label: 'Send campaign daily',
+      trigger: { kind: 'daily_local_time' },
+      action_key: 'send_campaign_email',
+    }],
+  };
+  return buildDeftAppPackage({ manifest, artifacts: connected.package.artifacts });
 }

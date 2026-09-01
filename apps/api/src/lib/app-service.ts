@@ -31,6 +31,7 @@ import {
 } from './module-service.js';
 import { AppError } from './app-errors.js';
 import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service.js';
+import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -290,8 +291,8 @@ export async function stageAppUpgrade(
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
   assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
-  if (inspected.manifest.compatibility.app_protocol !== '1') {
-    throw new AppError('Connected App upgrades require App Protocol v1', 'APP_PROTOCOL_UNSUPPORTED', 409);
+  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol)) {
+    throw new AppError('Connected App upgrades require App Protocol v1 or v2', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
   const staged = await db.transaction(async (tx) => {
@@ -330,7 +331,7 @@ export async function stageAppUpgrade(
       org_id: actor.org_id,
       installation_id: installation.id,
       version: inspected.manifest.version,
-      protocol_version: '1',
+      protocol_version: inspected.manifest.compatibility.app_protocol,
       manifest: inspected.manifest,
       manifest_digest: inspected.manifest_digest,
       package_digest: inspected.package_digest,
@@ -488,7 +489,7 @@ export async function disableAppInstallation(
     const [updated] = await tx.update(appInstallations).set({
       state: 'disabled',
       lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
-      ...(version.protocol_version === '1' ? {
+      ...(isConnectedAppProtocolVersion(version.protocol_version) ? {
         active_grant_snapshot_id: null,
         active_grant_snapshot_kind: null,
         grant_epoch: sql`${appInstallations.grant_epoch} + 1`,
@@ -502,7 +503,7 @@ export async function disableAppInstallation(
       state: 'disabled',
       lifecycle_epoch: updated.lifecycle_epoch,
       grant_epoch: updated.grant_epoch,
-      grant_revoked: version.protocol_version === '1',
+      grant_revoked: isConnectedAppProtocolVersion(version.protocol_version),
       data_preserved: true,
     });
     return { installation: updated, version, bindings };
@@ -539,7 +540,7 @@ export async function enableAppInstallation(
       eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
     )).limit(1);
     if (!version) throw new Error('App enable active version returned no row');
-    if (version.protocol_version === '1') {
+    if (isConnectedAppProtocolVersion(version.protocol_version)) {
       throw new AppError(
         'Connected Apps require a fresh review before re-enabling',
         'APP_REVIEW_REQUIRED',

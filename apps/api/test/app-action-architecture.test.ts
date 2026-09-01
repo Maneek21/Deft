@@ -213,3 +213,31 @@ test('App Run approve and reject routes stay on the governed approval resolver',
     /return action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
   );
 });
+
+test('automation execution is host-only and reuses AppAction plus AppRun without a second executor', async () => {
+  const service = await readFile(join(sourceRoot, 'lib/app-action-service.ts'), 'utf8');
+  const start = service.indexOf('async invokeApprovedAutomation(');
+  const firstVerification = service.indexOf('this.automationVerification.load', start);
+  const prepare = service.indexOf('await this.prepare(', firstVerification);
+  const protect = service.indexOf('this.preparedInput.protect', prepare);
+  const secondVerification = service.indexOf('this.automationVerification.load', protect);
+  const submit = service.indexOf('this.runs.submitPreparedApp', secondVerification);
+  assert.ok(
+    start >= 0
+      && firstVerification > start
+      && prepare > firstVerification
+      && protect > prepare
+      && secondVerification > protect
+      && submit > secondVerification,
+  );
+  const automationSource = service.slice(start, service.indexOf('\n  async inspectRun(', start));
+  assert.doesNotMatch(automationSource, /capabilityService\.invoke|\.executeTool\s*\(|\.insert\s*\(\s*appRuns/);
+
+  const consumers: string[] = [];
+  for (const path of await typescriptFiles(sourceRoot)) {
+    const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
+    if (sourcePath === 'lib/app-action-service.ts') continue;
+    if (/\.invokeApprovedAutomation\s*\(/.test(await readFile(path, 'utf8'))) consumers.push(sourcePath);
+  }
+  assert.deepEqual(consumers, [], 'PR A must not expose a route, scanner, queue, or worker cutover');
+});
