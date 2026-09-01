@@ -136,6 +136,10 @@ test('one shared orchestration pass owns image, upgrade, restore, predecessor, b
   assert.doesNotMatch(orchestrator, /pg_restore[^\n]+--clean/);
   assert.match(orchestrator, /cat "\$restore_log" >&2/);
   assert.match(orchestrator, /rm -f "\$restore_log"/);
+  assert.match(orchestrator, /probe_row="\$\(/);
+  assert.match(orchestrator, /DEFT_PROBE_NAME_BASE64="\$probe_name_base64"/);
+  assert.match(orchestrator, /DEFT_PROBE_EMAIL_BASE64="\$probe_email_base64"/);
+  assert.doesNotMatch(orchestrator, /mr\.data->>'name' = 'Ada Lovelace'/);
   assert.equal(occurrences(orchestrator, 'docker pull "$predecessor_image"'), 1);
   assert.equal(occurrences(orchestrator, 'node "$browser_script"'), 1);
   assert.equal(occurrences(orchestrator, 'run_extension_hook "$offline_hook" offline'), 1);

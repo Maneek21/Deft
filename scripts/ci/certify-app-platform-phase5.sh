@@ -260,19 +260,27 @@ if ! docker exec -i "$restore_container" pg_restore -U postgres -d "$database_na
 fi
 rm -f "$restore_log"
 
-read -r probe_org probe_employee probe_record < <(
+probe_row="$(
   docker exec "$restore_container" psql -U postgres -d "$database_name" -At -F ' ' -c "
-    SELECT mr.org_id, ae.id, mr.id
+    SELECT mr.org_id, ae.id, mr.id,
+           encode(convert_to(mr.data->>'name', 'UTF8'), 'base64'),
+           encode(convert_to(mr.data->>'email', 'UTF8'), 'base64')
       FROM module_records mr
       JOIN module_installations mi ON mi.id = mr.installation_id AND mi.org_id = mr.org_id
       JOIN agent_employees ae ON ae.org_id = mr.org_id AND ae.is_active = true AND ae.is_deleted = false
-     WHERE mr.data->>'name' = 'Ada Lovelace'
-       AND mr.is_deleted = false
+     WHERE mr.is_deleted = false
        AND mi.agent_access IN ('read', 'write')
-     ORDER BY mr.created_at
+       AND jsonb_typeof(mr.data->'name') = 'string'
+       AND jsonb_typeof(mr.data->'email') = 'string'
+       AND length(mr.data->>'name') > 0
+       AND length(mr.data->>'email') > 0
+     ORDER BY mr.org_id, mr.id, ae.id
      LIMIT 1"
-)
+)"
+[[ -n "$probe_row" ]]
+read -r probe_org probe_employee probe_record probe_name_base64 probe_email_base64 <<< "$probe_row"
 [[ -n "$probe_org" && -n "$probe_employee" && -n "$probe_record" ]]
+[[ -n "$probe_name_base64" && -n "$probe_email_base64" ]]
 
 docker pull "$predecessor_image"
 predecessor_revision="$(docker image inspect "$predecessor_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
@@ -289,10 +297,13 @@ docker run --rm --network "$network" \
   -e DEFT_PROBE_ORG_ID="$probe_org" \
   -e DEFT_PROBE_EMPLOYEE_ID="$probe_employee" \
   -e DEFT_PROBE_RECORD_ID="$probe_record" \
+  -e DEFT_PROBE_NAME_BASE64="$probe_name_base64" \
+  -e DEFT_PROBE_EMAIL_BASE64="$probe_email_base64" \
   --entrypoint sh "$predecessor_image" \
   -c 'pnpm --filter @deft/api exec tsx test/phase5-predecessor-read-probe.ts' \
   > "$safe_dir/predecessor-read.json"
 EXPECTED_PROBE_ORG="$probe_org" EXPECTED_PROBE_RECORD="$probe_record" \
+EXPECTED_PROBE_NAME_BASE64="$probe_name_base64" \
 node --input-type=module - "$safe_dir/predecessor-read.json" <<'NODE'
 import { readFileSync } from 'node:fs';
 const evidence = JSON.parse(readFileSync(process.argv[2], 'utf8'));
@@ -302,7 +313,8 @@ if (
   || evidence?.resource?.org_id !== process.env.EXPECTED_PROBE_ORG
   || evidence?.resource?.record_id !== process.env.EXPECTED_PROBE_RECORD
   || !Number.isInteger(evidence?.resource?.revision)
-  || evidence?.resource?.name !== 'Ada Lovelace'
+  || Buffer.from(String(evidence?.resource?.name ?? ''), 'utf8').toString('base64')
+    !== process.env.EXPECTED_PROBE_NAME_BASE64
 ) throw new Error('Predecessor read evidence is invalid');
 NODE
 

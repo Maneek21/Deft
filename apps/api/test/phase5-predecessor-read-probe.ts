@@ -11,10 +11,16 @@ function required(name: string): string {
   return value;
 }
 
+function requiredDecodedBase64(name: string): string {
+  return Buffer.from(required(name), "base64").toString("utf8");
+}
+
 async function main(): Promise<void> {
   const orgId = required("DEFT_PROBE_ORG_ID");
   const employeeId = required("DEFT_PROBE_EMPLOYEE_ID");
   const recordId = required("DEFT_PROBE_RECORD_ID");
+  const expectedName = requiredDecodedBase64("DEFT_PROBE_NAME_BASE64");
+  const expectedEmail = requiredDecodedBase64("DEFT_PROBE_EMAIL_BASE64");
   try {
     const record = await getModuleRecord(
       employeeModuleActor({
@@ -25,8 +31,8 @@ async function main(): Promise<void> {
       }),
       recordId,
     );
-    assert.equal(record.data.name, "Ada Lovelace");
-    assert.equal(record.data.email, "ada@phase4.test");
+    assert.equal(record.data.name, expectedName);
+    assert.equal(record.data.email, expectedEmail);
     process.stdout.write(
       `${JSON.stringify({
         schema: "deft.app_platform.phase5.predecessor_read.v1",
