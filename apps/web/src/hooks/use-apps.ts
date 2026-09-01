@@ -13,6 +13,7 @@ import {
 } from '@/lib/apps';
 import { APPS_ENABLED } from '@/lib/feature-flags';
 import type { AppNavigationResponseItem } from '@/lib/app-navigation';
+import { normalizeAppAutomationManagement } from '@/lib/app-automations';
 
 async function fetchJson(path: string): Promise<unknown> {
   const response = await api.get(path);
@@ -75,6 +76,29 @@ export function useAppConnectors(enabled = true) {
     }
   }, [swr.data]);
   return { ...swr, connectors: normalized.connectors, error: swr.error ?? normalized.error };
+}
+
+export function useAppAutomations(installationId: string, enabled = true) {
+  const key = APPS_ENABLED && enabled && installationId
+    ? `/api/apps/${encodeURIComponent(installationId)}/automations`
+    : null;
+  const swr = useSWR<unknown>(key, fetchJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+    refreshInterval: 10_000,
+  });
+  const normalized = useMemo(() => {
+    if (!swr.data) return { automations: null, error: null };
+    try {
+      return { automations: normalizeAppAutomationManagement(swr.data), error: null };
+    } catch (error) {
+      return {
+        automations: null,
+        error: error instanceof Error ? error : new Error('Invalid App automation response.'),
+      };
+    }
+  }, [swr.data]);
+  return { ...swr, automations: normalized.automations, error: swr.error ?? normalized.error };
 }
 
 export async function refreshApps(): Promise<void> {

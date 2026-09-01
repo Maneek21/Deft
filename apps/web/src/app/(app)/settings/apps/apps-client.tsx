@@ -50,7 +50,7 @@ export function AppsClient() {
       if (upgradeTarget && inspection.manifest.id !== upgradeTarget.app_id) {
         throw new Error(`This package is ${inspection.manifest.id}; choose an upgrade for ${upgradeTarget.app_id}.`);
       }
-      if (upgradeTarget && inspection.manifest.compatibility.app_protocol !== '1') {
+      if (upgradeTarget && inspection.manifest.compatibility.app_protocol === '0') {
         throw new Error('Connected App upgrades require an App Protocol v1 package.');
       }
       setPending({ source, inspection, upgradeTarget });
@@ -67,7 +67,7 @@ export function AppsClient() {
       const response = await api.fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/vnd.deft.app.package+json' }, body: pending.source });
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to stage this App.'));
       await refreshApps();
-      const connected = pending.inspection.manifest.compatibility.app_protocol === '1';
+      const connected = pending.inspection.manifest.compatibility.app_protocol !== '0';
       setPending(null);
       setMessage({ tone: 'success', text: pending.upgradeTarget
         ? `${pending.inspection.manifest.name} ${pending.inspection.manifest.version} staged for explicit upgrade review.`
@@ -146,7 +146,7 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
 }
 
 function AppCard({ app, canManage, busy, onActivate, onDisable, onChooseUpgrade }: { app: AppInstallation; canManage: boolean; busy: boolean; onActivate: () => void; onDisable: () => void; onChooseUpgrade: () => void }) {
-  const connected = app.manifest.compatibility.app_protocol === '1';
+  const connected = app.manifest.compatibility.app_protocol !== '0';
   const tone = app.state === 'active' ? 'var(--status-green)' : app.state === 'disabled' ? 'var(--outline)' : 'var(--status-amber)';
   return <article className={`flex min-h-56 flex-col rounded-xl p-4 ${connected ? 'md:col-span-2' : ''}`} style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}>
     <div className="flex items-start gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ background: 'var(--bg-active)', color: 'var(--primary)' }}><AppWindow size={20} /></span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate text-sm font-semibold">{app.name}</h2><span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase" style={{ color: tone, background: 'var(--surface-container-high)' }}>{app.state}</span></div><p className="mt-1 truncate font-mono text-[11px]" style={{ color: 'var(--outline)' }}>{app.app_id}@{app.version}</p></div></div>

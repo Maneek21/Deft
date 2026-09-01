@@ -21,6 +21,7 @@ export type AppActionItem = {
   appVersionId: string;
   actionKey: string;
   label: string;
+  automationRequests: Array<{ key: string; label: string }>;
 };
 
 export type AppActionInput =
@@ -169,6 +170,15 @@ function normalizeResource(value: unknown): ResourceProjection {
 
 function normalizeAction(value: unknown): AppActionItem {
   const row = object(value, 'App action');
+  const automationRequests = Array.isArray(row.automation_requests)
+    ? row.automation_requests.map((entry) => {
+      const request = object(entry, 'App automation request');
+      return {
+        key: stringValue(request.key, 'App automation request key'),
+        label: stringValue(request.label, 'App automation request label'),
+      };
+    })
+    : [];
   return {
     bindingId: stringValue(row.binding_id, 'App action binding'),
     installationId: stringValue(row.installation_id, 'App installation'),
@@ -176,6 +186,7 @@ function normalizeAction(value: unknown): AppActionItem {
     appVersionId: stringValue(row.app_version_id, 'App version'),
     actionKey: stringValue(row.action_key, 'App action key'),
     label: stringValue(row.label, 'App action label'),
+    automationRequests,
   };
 }
 

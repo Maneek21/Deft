@@ -268,3 +268,23 @@ test('automation worker cutover is host-only and reuses AppAction plus AppRun wi
   }
   assert.equal(routes.length, 0, 'automation execution must not gain a public route');
 });
+
+test('automation authoring and management stay generic and derive resource pins on the host', async () => {
+  const management = await readFile(
+    join(sourceRoot, 'lib/app-automation-management-service.ts'),
+    'utf8',
+  );
+  const routes = await readFile(join(sourceRoot, 'routes/apps.ts'), 'utf8');
+  assert.doesNotMatch(management, /campaign|contact|newsletter/i);
+  assert.doesNotMatch(management, /capabilityService\.invoke|\.executeTool\s*\(/);
+  assert.match(management, /appActionService\.prepare/);
+  assert.match(management, /digestAppGrantValue\(record\.data\)/);
+  assert.match(management, /prepareAppAutomationDefinitionReview/);
+  assert.match(management, /createReviewedAppAutomationDefinition/);
+  assert.match(management, /retry:[\s\S]*?eligible: false/);
+  assert.doesNotMatch(management, /authorization_vector:[\s\S]*?projectDefinition/);
+  assert.match(routes, /managerFromContext\(c\)[\s\S]*?automations/);
+  assert.match(routes, /automations\/review/);
+  assert.match(routes, /automations\/:definitionId\/pause/);
+  assert.match(routes, /automations\/:definitionId\/resume/);
+});

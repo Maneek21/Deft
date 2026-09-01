@@ -311,6 +311,16 @@ dead-letter settlement are covered by focused tests. The real PostgreSQL
 integration extension remains part of PR B's consolidated remote gate; the
 available local database is an older schema and is not certification evidence.
 
+Loop A.4 is implemented as an integration candidate. App Kit alpha.2 publishes
+the bounded schedule contract, pure simulator, doctor/conformance support, and
+an independently packed Campaign v4 proof while retaining alpha.1
+compatibility. The generic host surface derives immutable resource pins on the
+server, offers explicit review/create and pause/resume paths, and reports the
+schedule, next/last fire, Run, budgets, dead letters, retry eligibility, and
+kill-switch state without Campaign-specific core branches. Desktop/mobile
+browser evidence remains intentionally consolidated into Loop A.5's one final
+release run.
+
 ### Loop A.0 — Freeze the first automated proof
 
 **Purpose:** add one useful unattended plane without inventing a workflow

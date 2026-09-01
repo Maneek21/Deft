@@ -110,6 +110,7 @@ export type AppActionListItem = Readonly<{
   app_version_id: string;
   action_key: string;
   label: string;
+  automation_requests: readonly Readonly<{ key: string; label: string }>[];
 }>;
 
 export type AppActionListResult = Readonly<{
@@ -484,6 +485,12 @@ function callerContext(value: AppActionCaller): CallerContext {
 }
 
 function actionItem(context: ActionContext): AppActionListItem {
+  const automationRequests = context.version.protocol_version === '2'
+    && 'automation_requests' in context.manifest
+    ? context.manifest.automation_requests
+      .filter((request) => request.action_key === context.action.key)
+      .map((request) => ({ key: request.key, label: request.label }))
+    : [];
   return Object.freeze({
     binding_id: context.binding.id,
     installation_id: context.installation.id,
@@ -491,6 +498,7 @@ function actionItem(context: ActionContext): AppActionListItem {
     app_version_id: context.version.id,
     action_key: context.action.key,
     label: context.action.label,
+    automation_requests: automationRequests,
   });
 }
 

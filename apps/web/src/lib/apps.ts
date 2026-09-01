@@ -64,10 +64,23 @@ export type AppManifestV1 = AppManifestBase & {
   }>;
 };
 
-export type AppManifest = AppManifestV0 | AppManifestV1;
+export type AppManifestV2 = Omit<AppManifestV1, 'schema_version' | 'compatibility'> & {
+  schema_version: '2';
+  compatibility: { app_protocol: '2' };
+  automation_requests: Array<{
+    key: string;
+    label: string;
+    trigger: { kind: 'daily_local_time' };
+    action_key: string;
+  }>;
+};
 
-export function isConnectedAppManifest(manifest: AppManifest): manifest is AppManifestV1 {
-  return manifest.compatibility.app_protocol === '1';
+export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2;
+export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
+export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1' | 'deft.app.package.v2';
+
+export function isConnectedAppManifest(manifest: AppManifest): manifest is ConnectedAppManifest {
+  return manifest.compatibility.app_protocol !== '0';
 }
 
 export type AppInstallation = {
@@ -89,7 +102,7 @@ export type AppInstallation = {
 
 export type AppInspection = {
   manifest: AppManifest;
-  package_format: 'deft.app.package.v0' | 'deft.app.package.v1';
+  package_format: AppPackageFormat;
   manifest_digest: string;
   package_digest: string;
   canonical_package_json: string;
@@ -99,10 +112,10 @@ export type AppInspection = {
 export type AppGrantVersion = {
   id: string;
   version: string;
-  protocol_version: '0' | '1';
+  protocol_version: '0' | '1' | '2';
   state: string;
   manifest: AppManifest;
-  package_format: 'deft.app.package.v0' | 'deft.app.package.v1';
+  package_format: AppPackageFormat;
   provenance: AppManifestBase['provenance'] | null;
   provenance_trust: 'local_unsigned';
   package_digest: string;
@@ -214,6 +227,7 @@ export type AppHostCompatibility = {
   protocol_flows: {
     '0': { package_format: 'deft.app.package.v0'; install_mode: 'stage_and_activate' };
     '1': { package_format: 'deft.app.package.v1'; install_mode: 'stage_only' };
+    '2': { package_format: 'deft.app.package.v2'; install_mode: 'stage_only' };
   };
 };
 
@@ -221,11 +235,11 @@ export type ConnectedAppReviewTarget = {
   activation_kind: 'initial' | 'upgrade' | 'reenable';
   app_version_id: string;
   version: string;
-  protocol_version: '1';
-  package_format: 'deft.app.package.v1';
+  protocol_version: '1' | '2';
+  package_format: 'deft.app.package.v1' | 'deft.app.package.v2';
   package_digest: string;
   manifest_digest: string;
-  manifest: AppManifestV1;
+  manifest: ConnectedAppManifest;
   provenance: AppManifestBase['provenance'] | null;
   provenance_trust: 'local_unsigned';
   requested_snapshot_id: string;
@@ -365,8 +379,10 @@ function stringValue(value: unknown, label: string): string {
   return value;
 }
 
-function packageFormat(value: unknown): 'deft.app.package.v0' | 'deft.app.package.v1' {
-  if (value !== 'deft.app.package.v0' && value !== 'deft.app.package.v1') {
+function packageFormat(value: unknown): AppPackageFormat {
+  if (value !== 'deft.app.package.v0'
+    && value !== 'deft.app.package.v1'
+    && value !== 'deft.app.package.v2') {
     throw new Error('Invalid App package format.');
   }
   return value;
@@ -459,7 +475,7 @@ function normalizeManifest(value: unknown): AppManifest {
   const row = object(value, 'App manifest');
   const compatibility = object(row.compatibility, 'App compatibility');
   const protocol = compatibility.app_protocol;
-  if (protocol !== '0' && protocol !== '1') throw new Error('Unsupported App protocol.');
+  if (protocol !== '0' && protocol !== '1' && protocol !== '2') throw new Error('Unsupported App protocol.');
   if (row.schema_version !== protocol) throw new Error('App manifest protocol and schema do not match.');
   const base: AppManifestBase = {
     id: stringValue(row.id, 'App identity'),
@@ -486,10 +502,8 @@ function normalizeManifest(value: unknown): AppManifest {
     } : {}),
   };
   if (protocol === '0') return { ...base, schema_version: '0', compatibility: { app_protocol: '0' } };
-  return {
+  const connected = {
     ...base,
-    schema_version: '1',
-    compatibility: { app_protocol: '1' },
     dependencies: recordArray(row.dependencies ?? [], 'App dependencies').map((entry) => ({
       key: stringValue(entry.key, 'App dependency key'),
       app_id: stringValue(entry.app_id, 'App dependency identity'),
@@ -536,11 +550,33 @@ function normalizeManifest(value: unknown): AppManifest {
           ),
         },
         input_bindings: recordArray(entry.input_bindings ?? [], 'App action input bindings').map((binding) => {
-          if (binding.input_key !== 'to' && binding.input_key !== 'subject' && binding.input_key !== 'body_text') {
+          const inputKey = binding.input_key;
+          if (inputKey !== 'to' && inputKey !== 'subject' && inputKey !== 'body_text') {
             throw new Error('Unsupported App action input key.');
           }
-          return { input_key: binding.input_key, source: normalizeActionInputSource(binding.source) };
+          return {
+            input_key: inputKey as 'to' | 'subject' | 'body_text',
+            source: normalizeActionInputSource(binding.source),
+          };
         }),
+      };
+    }),
+  };
+  if (protocol === '1') {
+    return { ...connected, schema_version: '1', compatibility: { app_protocol: '1' } };
+  }
+  return {
+    ...connected,
+    schema_version: '2',
+    compatibility: { app_protocol: '2' },
+    automation_requests: recordArray(row.automation_requests ?? [], 'App automation requests').map((entry) => {
+      const trigger = object(entry.trigger, 'App automation trigger');
+      if (trigger.kind !== 'daily_local_time') throw new Error('Unsupported App automation trigger.');
+      return {
+        key: stringValue(entry.key, 'App automation request key'),
+        label: stringValue(entry.label, 'App automation request label'),
+        trigger: { kind: 'daily_local_time' as const },
+        action_key: stringValue(entry.action_key, 'App automation action key'),
       };
     }),
   };
@@ -666,12 +702,18 @@ function normalizeHostCompatibility(value: unknown): AppHostCompatibility {
   const flows = object(row.protocol_flows, 'App protocol flows');
   const v0 = object(flows['0'], 'App Protocol v0 flow');
   const v1 = object(flows['1'], 'App Protocol v1 flow');
-  if (v0.install_mode !== 'stage_and_activate' || v1.install_mode !== 'stage_only') {
+  const v2 = object(flows['2'], 'App Protocol v2 flow');
+  if (v0.install_mode !== 'stage_and_activate'
+    || v1.install_mode !== 'stage_only'
+    || v2.install_mode !== 'stage_only') {
     throw new Error('Invalid App install flow.');
   }
   const v0Format = packageFormat(v0.package_format);
   const v1Format = packageFormat(v1.package_format);
-  if (v0Format !== 'deft.app.package.v0' || v1Format !== 'deft.app.package.v1') {
+  const v2Format = packageFormat(v2.package_format);
+  if (v0Format !== 'deft.app.package.v0'
+    || v1Format !== 'deft.app.package.v1'
+    || v2Format !== 'deft.app.package.v2') {
     throw new Error('Invalid App protocol package format.');
   }
   return {
@@ -683,6 +725,7 @@ function normalizeHostCompatibility(value: unknown): AppHostCompatibility {
     protocol_flows: {
       '0': { package_format: v0Format, install_mode: 'stage_and_activate' },
       '1': { package_format: v1Format, install_mode: 'stage_only' },
+      '2': { package_format: v2Format, install_mode: 'stage_only' },
     },
   };
 }
@@ -693,7 +736,8 @@ function normalizeConnectedAppReviewTarget(value: unknown): ConnectedAppReviewTa
   if (row.activation_kind !== 'initial' && row.activation_kind !== 'upgrade' && row.activation_kind !== 'reenable') {
     throw new Error('Invalid connected App activation kind.');
   }
-  if (row.protocol_version !== '1' || packageFormat(row.package_format) !== 'deft.app.package.v1') {
+  if ((row.protocol_version !== '1' && row.protocol_version !== '2')
+    || packageFormat(row.package_format) !== `deft.app.package.v${row.protocol_version}`) {
     throw new Error('Invalid connected App review protocol.');
   }
   if (row.provenance_trust !== 'local_unsigned') throw new Error('Invalid App provenance trust.');
@@ -755,8 +799,8 @@ function normalizeConnectedAppReviewTarget(value: unknown): ConnectedAppReviewTa
     activation_kind: row.activation_kind,
     app_version_id: stringValue(row.app_version_id, 'App review version identity'),
     version: stringValue(row.version, 'App review version'),
-    protocol_version: '1',
-    package_format: 'deft.app.package.v1',
+    protocol_version: row.protocol_version,
+    package_format: packageFormat(row.package_format) as 'deft.app.package.v1' | 'deft.app.package.v2',
     package_digest: stringValue(row.package_digest, 'App review package digest'),
     manifest_digest: stringValue(row.manifest_digest, 'App review manifest digest'),
     manifest,
@@ -805,7 +849,9 @@ export function normalizeAppGrantManagement(value: unknown): AppGrantManagement 
     },
     compatibility: normalizeHostCompatibility(root.compatibility),
     versions: recordArray(root.versions ?? [], 'App grant versions').map((row) => {
-      if (row.protocol_version !== '0' && row.protocol_version !== '1') throw new Error('Invalid App protocol version.');
+      if (row.protocol_version !== '0' && row.protocol_version !== '1' && row.protocol_version !== '2') {
+        throw new Error('Invalid App protocol version.');
+      }
       if (row.provenance_trust !== 'local_unsigned') throw new Error('Invalid App version provenance trust.');
       const manifest = normalizeManifest(row.manifest);
       return {

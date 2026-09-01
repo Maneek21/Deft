@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, CheckCircle2, Loader2, Play, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock3, Loader2, Play, ShieldCheck } from 'lucide-react';
 import { AppDialog } from '@/components/overlay-primitives';
 import { useAppActions, useAppRun, useAppRunResult } from '@/hooks/use-app-actions';
 import {
@@ -19,8 +19,17 @@ import {
   type JsonValue,
 } from '@/lib/app-actions';
 import { resourceRefKey, resourceRefPayload, type ResourceRef } from '@/lib/modules';
+import { useAuth } from '@/lib/auth-context';
+import {
+  createAppAutomation,
+  prepareAppAutomation,
+  type AppAutomationReview,
+  type AppAutomationScheduleInput,
+} from '@/lib/app-automations';
 
 export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resourceRef: ResourceRef; enabled?: boolean }) {
+  const { user } = useAuth();
+  const canManageAutomations = user?.role === 'owner' || user?.role === 'admin';
   const actionsState = useAppActions(resourceRef, enabled);
   const [open, setOpen] = useState(false);
   const [resolved, setResolved] = useState<AppActionResolveResult | null>(null);
@@ -30,7 +39,13 @@ export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resour
   const [executionInput, setExecutionInput] = useState<AppActionExecutionInput | null>(null);
   const [submittedRun, setSubmittedRun] = useState<AppRunView | null>(null);
   const [intentKey, setIntentKey] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'resolve' | 'prepare' | 'invoke' | null>(null);
+  const [automationMode, setAutomationMode] = useState(false);
+  const [automationReview, setAutomationReview] = useState<AppAutomationReview | null>(null);
+  const [automationCreated, setAutomationCreated] = useState(false);
+  const [automationRequestKey, setAutomationRequestKey] = useState('');
+  const [localTime, setLocalTime] = useState('09:00');
+  const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const [busy, setBusy] = useState<'resolve' | 'prepare' | 'invoke' | 'automation-review' | 'automation-create' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const runState = useAppRun(submittedRun?.id ?? null);
   const run = runState.data ?? submittedRun;
@@ -38,15 +53,20 @@ export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resour
     run?.id ?? null,
     Boolean(run?.state === 'succeeded' && run.safeOutcome?.resultStatus === 'retained'),
   );
+  const automationSelectionInputs = resolved?.inputs.filter((input) => input.kind === 'selected_relation_field') ?? [];
+  const automationSelectionReady = automationSelectionInputs.length === 1
+    && Boolean(selections[automationSelectionInputs[0].inputKey]);
 
   if (!enabled || (!actionsState.isLoading && !actionsState.error && actionsState.actions.length === 0)) return null;
 
   const begin = async (action: AppActionItem) => {
     setOpen(true); setBusy('resolve'); setError(null); setResolved(null); setPrepared(null); setExecutionInput(null); setSubmittedRun(null);
     setUserInputs({}); setSelections({}); setIntentKey(createAppActionIntentKey());
+    setAutomationMode(false); setAutomationReview(null); setAutomationCreated(false); setAutomationRequestKey('');
     try {
       const next = await resolveAppAction(action.bindingId, resourceRef);
       setResolved(next);
+      setAutomationRequestKey(next.action.automationRequests[0]?.key ?? '');
       setSelections(Object.fromEntries(next.inputs.flatMap((input) => input.kind === 'selected_relation_field' && input.options.length === 1
         ? [[input.inputKey, input.options[0].ref]]
         : [])));
@@ -108,9 +128,56 @@ export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resour
     }
   };
 
+  const automationInput = (): AppAutomationScheduleInput | null => {
+    if (!resolved || !automationRequestKey) return null;
+    const selected = resolved.inputs.filter((input) => input.kind === 'selected_relation_field');
+    if (selected.length !== 1) return null;
+    const selectedRef = selections[selected[0].inputKey];
+    if (!selectedRef) { setError(`Choose ${humanize(selected[0].inputKey)}.`); return null; }
+    return {
+      bindingId: resolved.action.bindingId,
+      automationRequestKey,
+      placement: resourceRef,
+      selection: { inputKey: selected[0].inputKey, resourceRef: selectedRef },
+      localTime,
+      timezone,
+      validitySeconds: 30 * 24 * 60 * 60,
+      maxOrgRunsPerUtcDay: 100,
+      maxPendingOrgFires: 25,
+    };
+  };
+
+  const reviewAutomation = async () => {
+    const input = automationInput();
+    if (!input) return;
+    setBusy('automation-review'); setError(null);
+    try {
+      setAutomationReview(await prepareAppAutomation(resolved!.action.installationId, input));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to review this automation.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirmAutomation = async () => {
+    const input = automationInput();
+    if (!input || !automationReview || !resolved) return;
+    setBusy('automation-create'); setError(null);
+    try {
+      await createAppAutomation(resolved.action.installationId, input, automationReview.reviewDigest);
+      setAutomationCreated(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to create this automation.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const close = () => {
     if (busy) return;
     setOpen(false); setResolved(null); setPrepared(null); setExecutionInput(null); setSubmittedRun(null); setIntentKey(null); setError(null);
+    setAutomationMode(false); setAutomationReview(null); setAutomationCreated(false); setAutomationRequestKey('');
   };
 
   return (
@@ -126,12 +193,12 @@ export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resour
         title={resolved?.action.label ?? 'App action'}
         description="Deft resolves fields and relations under the App’s reviewed authority. Provider input stays sealed."
         width={520}
-        footer={<ActionFooter busy={busy} resolved={resolved} prepared={prepared} run={run} onClose={close} onPrepare={() => void prepare()} onInvoke={() => void invoke()} />}
+        footer={<ActionFooter busy={busy} resolved={resolved} prepared={prepared} run={run} canManageAutomations={canManageAutomations} automationSelectionReady={automationSelectionReady} automationMode={automationMode} automationReview={automationReview} automationCreated={automationCreated} onClose={close} onPrepare={() => void prepare()} onInvoke={() => void invoke()} onBeginAutomation={() => { setAutomationMode(true); setError(null); }} onReviewAutomation={() => void reviewAutomation()} onConfirmAutomation={() => void confirmAutomation()} />}
       >
         {busy === 'resolve' && <div className="flex min-h-28 items-center justify-center"><Loader2 className="animate-spin" aria-label="Resolving App action" /></div>}
         {error && <p role="alert" className="mb-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--error)', background: 'var(--danger-subtle)' }}>{error}</p>}
         {runState.error && <p role="alert" className="mb-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--error)', background: 'var(--danger-subtle)' }}>{runState.error instanceof Error ? runState.error.message : 'Run status is unavailable.'}</p>}
-        {resolved && !prepared && !run && <div className="space-y-3">{resolved.inputs.map((input) => {
+        {resolved && !prepared && !run && !automationMode && <div className="space-y-3">{resolved.inputs.map((input) => {
           if (input.kind === 'resource_field') return <ReadOnlyInput key={input.inputKey} label={humanize(input.inputKey)} value="From this record" />;
           if (input.kind === 'selected_relation_field') return <label key={input.inputKey} className="block text-xs font-medium">{humanize(input.inputKey)}<select className="mt-1 min-h-11 w-full rounded-lg px-3 text-xs" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }} value={selections[input.inputKey] ? resourceRefKey(selections[input.inputKey]) : ''} onChange={(event) => {
             const option = input.options.find((candidate) => resourceRefKey(candidate.ref) === event.target.value);
@@ -144,6 +211,9 @@ export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resour
           }}><option value="">Choose a related resource</option>{input.options.map((option) => <option key={resourceRefKey(option.ref)} value={resourceRefKey(option.ref)}>{option.label}</option>)}</select>{input.options.length === 0 && <span className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>No authorized related resource is available.</span>}</label>;
           return <label key={input.inputKey} className="block text-xs font-medium">{input.label}<input type={input.inputType} required value={userInputs[input.inputKey] ?? ''} onChange={(event) => { setUserInputs((current) => ({ ...current, [input.inputKey]: event.target.value })); setError(null); }} className="mt-1 min-h-11 w-full rounded-lg px-3 text-xs" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }} /></label>;
         })}</div>}
+        {resolved && automationMode && !automationReview && !automationCreated && <div className="space-y-3"><p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Create one approved daily schedule for the currently selected resources. Deft rechecks them before every Run.</p>{resolved.action.automationRequests.length > 1 && <label className="block text-xs font-medium">Automation<select value={automationRequestKey} onChange={(event) => setAutomationRequestKey(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg px-3 text-xs" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }}>{resolved.action.automationRequests.map((request) => <option key={request.key} value={request.key}>{request.label}</option>)}</select></label>}<label className="block text-xs font-medium">Local time<input type="time" value={localTime} onChange={(event) => setLocalTime(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg px-3 text-xs" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }} /></label><label className="block text-xs font-medium">IANA timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg px-3 text-xs" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }} /></label><ReadOnlyInput label="Policy" value="One action per fire · 15 minute catch-up · 30 day approval · 100 Runs/day" /></div>}
+        {automationReview && !automationCreated && <div className="space-y-3"><div className="flex items-start gap-2 rounded-xl p-3" style={{ background: 'rgba(48,164,108,.10)' }}><ShieldCheck size={16} className="mt-0.5 flex-shrink-0" style={{ color: 'var(--status-green)' }} /><div><h3 className="text-sm font-semibold">Approved automation definition</h3><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Daily at {automationReview.schedule.localTime} · {automationReview.schedule.timezone}. Valid for {Math.round(automationReview.validitySeconds / 86400)} days under policy v{automationReview.policyVersion}.</p></div></div><AutomationResourcePin label="Placement resource" pin={automationReview.placement} /><AutomationResourcePin label="Selected resource" pin={automationReview.selected} /><p className="text-[11px]" style={{ color: 'var(--outline)' }}>Creating this definition permits unattended external writes only for these pinned resources and this exact reviewed action.</p></div>}
+        {automationCreated && <div role="status" className="flex items-start gap-2 rounded-xl p-3" style={{ background: 'rgba(48,164,108,.10)' }}><CheckCircle2 size={16} style={{ color: 'var(--status-green)' }} /><div><h3 className="text-sm font-semibold">Automation created</h3><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Manage its schedule, state, Runs, and dead letters in Settings · Apps.</p></div></div>}
         {prepared && !run && <SafePreview preview={prepared.safePreview} />}
         {run && <RunStatus run={run} polling={runState.isLoading || runState.isValidating} result={resultState.data?.value} resultError={resultState.error} />}
       </AppDialog>
@@ -151,16 +221,44 @@ export function ModuleRecordAppActions({ resourceRef, enabled = true }: { resour
   );
 }
 
-function ActionFooter({ busy, resolved, prepared, run, onClose, onPrepare, onInvoke }: {
-  busy: 'resolve' | 'prepare' | 'invoke' | null;
+function ActionFooter({ busy, resolved, prepared, run, canManageAutomations, automationSelectionReady, automationMode, automationReview, automationCreated, onClose, onPrepare, onInvoke, onBeginAutomation, onReviewAutomation, onConfirmAutomation }: {
+  busy: 'resolve' | 'prepare' | 'invoke' | 'automation-review' | 'automation-create' | null;
   resolved: AppActionResolveResult | null;
   prepared: AppActionPrepared | null;
   run: AppRunView | null;
+  canManageAutomations: boolean;
+  automationSelectionReady: boolean;
+  automationMode: boolean;
+  automationReview: AppAutomationReview | null;
+  automationCreated: boolean;
   onClose: () => void;
   onPrepare: () => void;
   onInvoke: () => void;
+  onBeginAutomation: () => void;
+  onReviewAutomation: () => void;
+  onConfirmAutomation: () => void;
 }) {
-  return <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" className="deft-pill min-h-11" disabled={Boolean(busy)} onClick={onClose}>{run && isTerminalAppRun(run.state) ? 'Done' : 'Cancel'}</button>{resolved && !prepared && !run && <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={Boolean(busy)} onClick={onPrepare}>{busy === 'prepare' && <Loader2 size={13} className="animate-spin" />} Review action</button>}{prepared && !run && <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={Boolean(busy)} onClick={onInvoke}>{busy === 'invoke' && <Loader2 size={13} className="animate-spin" />} Confirm and run</button>}</div>;
+  const done = Boolean(run && isTerminalAppRun(run.state)) || automationCreated;
+  const canSchedule = resolved
+    && !prepared
+    && !run
+    && !automationMode
+    && canManageAutomations
+    && automationSelectionReady
+    && resolved.action.automationRequests.length > 0;
+  return <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+    <button type="button" className="deft-pill min-h-11" disabled={Boolean(busy)} onClick={onClose}>{done ? 'Done' : 'Cancel'}</button>
+    {canSchedule && <button type="button" className="deft-pill min-h-11" disabled={Boolean(busy)} onClick={onBeginAutomation}><Clock3 size={13} /> Schedule daily</button>}
+    {resolved && !prepared && !run && !automationMode && <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={Boolean(busy)} onClick={onPrepare}>{busy === 'prepare' && <Loader2 size={13} className="animate-spin" />} Review action</button>}
+    {automationMode && !automationReview && !automationCreated && <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={Boolean(busy)} onClick={onReviewAutomation}>{busy === 'automation-review' && <Loader2 size={13} className="animate-spin" />} Review schedule</button>}
+    {automationReview && !automationCreated && <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={Boolean(busy)} onClick={onConfirmAutomation}>{busy === 'automation-create' && <Loader2 size={13} className="animate-spin" />} Approve and create</button>}
+    {prepared && !run && <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={Boolean(busy)} onClick={onInvoke}>{busy === 'invoke' && <Loader2 size={13} className="animate-spin" />} Confirm and run</button>}
+  </div>;
+}
+
+function AutomationResourcePin({ label, pin }: { label: string; pin: AppAutomationReview['placement'] }) {
+  const { resourceRef } = pin;
+  return <div className="rounded-lg px-3 py-2.5" style={{ background: 'var(--surface-container-high)' }}><p className="text-[11px] font-semibold">{label}</p><code className="mt-1 block break-all text-[11px]">{resourceRef.providerKind}:{resourceRef.providerInstanceId}:{resourceRef.resourceType}:{resourceRef.resourceId}</code><code className="mt-1 block break-all text-[10px]" style={{ color: 'var(--outline)' }}>revision {pin.revision} · {pin.contentDigest}</code></div>;
 }
 
 function ReadOnlyInput({ label, value }: { label: string; value: string }) {
