@@ -130,7 +130,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(
     setupHook,
-    /npm_execpath="\$\(readlink -f "\$\(command -v pnpm\)"\)" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/\*\.test\.ts/,
+    /npm_config_ignore_scripts=true \\\r?\n\s+npm_execpath="\$\(readlink -f "\$\(command -v pnpm\)"\)" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/\*\.test\.ts/,
   );
   assert.doesNotMatch(setupHook, /pnpm --filter @deft\/app-kit test/);
   assert.match(offlineHook, /\[\[ "\$after_total" == "\$before_total" \]\]/);
