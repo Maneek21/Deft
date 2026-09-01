@@ -128,6 +128,11 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
     setupHook,
     /app_run_authorization_version = app_run_authorization_version \+ 1/,
   );
+  assert.match(
+    setupHook,
+    /pnpm --filter @deft\/app-kit exec tsx --test test\/\*\.test\.ts/,
+  );
+  assert.doesNotMatch(setupHook, /pnpm --filter @deft\/app-kit test/);
   assert.match(offlineHook, /\[\[ "\$after_total" == "\$before_total" \]\]/);
   assert.match(offlineHook, /invocation_failed_without_creating_a_run/);
 });
