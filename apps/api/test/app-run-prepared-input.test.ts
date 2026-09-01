@@ -458,6 +458,72 @@ describe('App Run prepared input', () => {
     }, submission), false);
   });
 
+  test('automation replay additionally requires the exact persisted definition and fire lineage', () => {
+    const vector = automationAuthorityVector();
+    const submission = parseAppRunSubmission({
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      org_id: 'org-1',
+      initiating_actor: { actor_type: 'human', user_id: 'owner-1' },
+      execution_actor: {
+        actor_type: 'automation',
+        automation_id: vector.automation.definition.id,
+        user_id: 'owner-1',
+      },
+      origin: {
+        origin_kind: 'app',
+        installation_id: vector.installation.id,
+        app_version_id: vector.app_version.id,
+        binding_key: vector.binding.action_key,
+        grant_snapshot_id: vector.grant.id,
+      },
+      operation: {
+        provider: {
+          org_id: 'org-1',
+          provider_kind: 'mcp',
+          provider_instance_id: vector.provider.connection_id,
+        },
+        operation_name: vector.provider.operation_name,
+      },
+      provider_snapshot_digest: vector.provider.snapshot_digest,
+      policy: {
+        risk_class: 'external_write',
+        review_requirement: 'always',
+        review_scope: 'approved_automation_definition',
+        retry_class: 'idempotent_with_key',
+      },
+      retention_class: 'standard',
+      idempotency_key: `app-automation:${vector.automation.fire.identity}`,
+      input: { idempotency_key: vector.automation.fire.identity },
+      authorization_snapshot: {
+        ...vector.run_authorization,
+        authority_refs: [
+          ...vector.run_authorization.authority_refs,
+          ...projectPreparedAppAuthorityRefs(vector),
+        ],
+      },
+      safe_preview: {
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        title: 'Send scheduled campaign email',
+        resource_refs: [],
+      },
+    });
+    const replay = {
+      origin_app_installation_id: vector.installation.id,
+      origin_app_version_id: vector.app_version.id,
+      origin_app_binding_key: vector.binding.action_key,
+      origin_app_grant_snapshot_id: vector.grant.id,
+      origin_app_automation_definition_id: vector.automation.definition.id,
+      origin_app_automation_fire_id: vector.automation.fire.id,
+      authorization_snapshot: submission.authorization_snapshot,
+    };
+    assert.equal(appRunReplayAuthorityMatches(replay, submission, vector), true);
+    assert.equal(appRunReplayAuthorityMatches({
+      ...replay,
+      origin_app_automation_fire_id: 'different-fire',
+    }, submission, vector), false);
+    assert.equal(appRunReplayAuthorityMatches(replay, submission), false);
+  });
+
   test('keeps relation revision in authority version but out of relation identity', () => {
     const [relation] = appAuthorityVector().relations;
     assert.ok(relation);

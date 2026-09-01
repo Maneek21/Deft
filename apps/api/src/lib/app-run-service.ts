@@ -61,6 +61,7 @@ import { APP_RUN_APP_AUTHORITY_KINDS } from './app-run-prepared-input.js';
 import type {
   AppRunPreparedAppVerification,
 } from './app-run-live-authorization.js';
+import { bindAppAutomationFireRunWithExecutor } from './app-automation-repository.js';
 
 export type AppRunTrustedContext = Readonly<{
   org_id: string;
@@ -212,9 +213,12 @@ export function appRunReplayAuthorityMatches(
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
     origin_app_grant_snapshot_id: string | null;
+    origin_app_automation_definition_id?: string | null;
+    origin_app_automation_fire_id?: string | null;
     authorization_snapshot: Record<string, unknown>;
   }>,
   submission: AppRunSubmission,
+  trustedAppVector?: AppRunPreparedAppVerification['authority_vector'],
 ): boolean {
   if (submission.origin.origin_kind !== 'app') return true;
   if (
@@ -222,6 +226,15 @@ export function appRunReplayAuthorityMatches(
     || replay.origin_app_version_id !== submission.origin.app_version_id
     || replay.origin_app_binding_key !== submission.origin.binding_key
     || replay.origin_app_grant_snapshot_id !== submission.origin.grant_snapshot_id
+  ) return false;
+  if (trustedAppVector?.schema_version === 'deft.app_action_authority.v2') {
+    if (
+      replay.origin_app_automation_definition_id !== trustedAppVector.automation.definition.id
+      || replay.origin_app_automation_fire_id !== trustedAppVector.automation.fire.id
+    ) return false;
+  } else if (
+    replay.origin_app_automation_definition_id != null
+    || replay.origin_app_automation_fire_id != null
   ) return false;
   try {
     return canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(
@@ -414,7 +427,7 @@ export class AppRunService {
         if (
           !sameInput
           || !replayExecutionMatches(replay, submission)
-          || !appRunReplayAuthorityMatches(replay, submission)
+          || !appRunReplayAuthorityMatches(replay, submission, trustedAppVector)
         ) {
           throw new AppRunError('APP_RUN_IDEMPOTENCY_CONFLICT');
         }
@@ -425,6 +438,8 @@ export class AppRunService {
           origin_app_version_id: _appVersion,
           origin_app_binding_key: _binding,
           origin_app_grant_snapshot_id: _grant,
+          origin_app_automation_definition_id: _automationDefinition,
+          origin_app_automation_fire_id: _automationFire,
           authorization_snapshot: _authorization,
           ...safe
         } = replay;
@@ -464,8 +479,24 @@ export class AppRunService {
           ? Math.min(APP_RUN_DEFAULT_ATTEMPT_LIMIT, lineage.parent.attempt_limit)
           : APP_RUN_DEFAULT_ATTEMPT_LIMIT,
         lineage: lineageInsert,
+        automation_lineage: trustedAppVector?.schema_version === 'deft.app_action_authority.v2'
+          ? {
+              definition_id: trustedAppVector.automation.definition.id,
+              fire_id: trustedAppVector.automation.fire.id,
+            }
+          : undefined,
         now,
       });
+      if (trustedAppVector?.schema_version === 'deft.app_action_authority.v2') {
+        const bound = await bindAppAutomationFireRunWithExecutor(tx, {
+          organization_id: submission.org_id,
+          definition_id: trustedAppVector.automation.definition.id,
+          fire_id: trustedAppVector.automation.fire.id,
+          app_run_id: run.id,
+          terminal_at: now,
+        });
+        if (!bound) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
       await this.secretRepository.insertInput(tx, {
         org_id: submission.org_id,
         run_id: runId,
