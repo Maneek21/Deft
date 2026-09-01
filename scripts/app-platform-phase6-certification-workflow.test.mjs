@@ -128,6 +128,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(workflow, /run:\s*bash scripts\/ci\/certify-app-platform-phase5\.sh/);
   assert.match(orchestrator, /git -C "\$candidate_root" rev-parse HEAD/);
+  assert.match(orchestrator, /test\/app-origin-run-lifecycle-db\.test\.ts/);
   assert.match(orchestrator, /run_extension_hook "\$setup_hook" setup/);
   assert.match(orchestrator, /node "\$browser_script"/);
   assert.match(orchestrator, /run_extension_hook "\$offline_hook" offline/);
@@ -143,6 +144,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.doesNotMatch(setupHook, /pnpm --filter @deft\/app-kit test/);
   assert.doesNotMatch(setupHook, /packed-external\.test\.ts/);
+  assert.doesNotMatch(setupHook, /app-origin-run-lifecycle-db\.test\.ts/);
   assert.match(
     setupHook,
     /pnpm --filter @deft\/api exec tsx --test --test-concurrency=1 \\\r?\n\s+test\/capability-service\.test\.ts/,

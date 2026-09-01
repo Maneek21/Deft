@@ -146,7 +146,6 @@ docker run --rm --network "$network" \
       test/capability-immediate-execution-db.test.ts \
       test/app-action-service-db.test.ts \
       test/app-origin-run-cutover-db.test.ts \
-      test/app-origin-run-lifecycle-db.test.ts \
       test/apps-connected-grants-db.test.ts \
       test/app-run-engine-db.test.ts \
       test/app-run-receipt-inspection.test.ts \
