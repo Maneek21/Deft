@@ -94,6 +94,10 @@ describe('App Run contract', () => {
       'app_grant',
       'app_binding',
       'app_dependency',
+      'app_automation_request',
+      'app_automation_definition',
+      'app_automation_fire',
+      'app_automation_policy',
       'resource',
       'relation',
     ] as const;
