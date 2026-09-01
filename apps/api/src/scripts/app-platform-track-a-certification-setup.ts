@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     package_format?: string;
     manifest?: { id?: string; version?: string; schema_version?: string; compatibility?: { app_protocol?: string } };
   };
-  assert.equal(packed.package_format, 'deft.app.package.v1');
+  assert.equal(packed.package_format, 'deft.app.package.v2');
   assert.equal(packed.manifest?.id, CAMPAIGN_APP_ID);
   assert.equal(packed.manifest?.version, '4.0.0');
   assert.equal(packed.manifest?.schema_version, '2');
