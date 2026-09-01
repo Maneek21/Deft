@@ -90,6 +90,7 @@ docker exec "$source_container" psql -U postgres -d "$database_name" -Atc \
   cd "$phase4_root"
   pnpm --filter @deft/app-kit build
   DATABASE_URL="$source_url_host" pnpm db:push-full
+  DATABASE_URL="$source_url_host" pnpm --filter @deft/db seed:demo
   DATABASE_URL="$source_url_host" DEFT_TEST_DATABASE_URL="$source_url_host" \
     JWT_SECRET=phase5-cert-jwt-not-for-prod \
     JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
@@ -115,7 +116,7 @@ docker image inspect "$candidate_tag" > "$safe_dir/candidate-image-inspect.json"
 printf '%s\n' "$image_revision" > "$safe_dir/candidate-image-revision.txt"
 
 run_candidate "$source_url_container" 'pnpm db:upgrade && pnpm module:verify'
-run_candidate "$source_url_container" 'pnpm db:seed:demo'
+run_candidate "$source_url_container" 'pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts'
 docker run --rm --network "$network" \
   -v "${phase5_root}/examples:/app/examples:ro" \
   -e DATABASE_URL="$source_url_container" \

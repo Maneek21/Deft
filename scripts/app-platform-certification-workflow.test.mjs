@@ -86,6 +86,13 @@ test('certification uses real pgvector and proves matched backup, restore, and k
   assert.match(orchestrator, /host_uid="\$\(id -u\)"/);
   assert.match(orchestrator, /host_gid="\$\(id -g\)"/);
   assert.equal(occurrences(orchestrator, "chown \"$HOST_UID:$HOST_GID\""), 3);
+  const demoSeed = orchestrator.indexOf('pnpm --filter @deft/db seed:demo');
+  const candidateUpgrade = orchestrator.indexOf('pnpm db:upgrade && pnpm module:verify');
+  assert.notEqual(demoSeed, -1);
+  assert.notEqual(candidateUpgrade, -1);
+  assert.ok(demoSeed < candidateUpgrade, 'destructive demo seed must precede the migration ledger');
+  assert.equal(occurrences(orchestrator, 'seed:demo'), 1);
+  assert.match(orchestrator, /seed-platform-bundles\.ts/);
 });
 
 test('certification carries the Phase 4 and Phase 5 probes plus browser evidence', () => {
