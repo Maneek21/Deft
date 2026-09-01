@@ -34,6 +34,16 @@ This plan uses five review trains:
 
 Each train is independently reviewable and preserves a deny-by-default cutover.
 
+For speed, Phase 6 executes as three bounded review trains rather than seven
+serial handoffs. PR A freezes contracts first, then parallelizes the App Kit
+template, Protocol v1 stage-only API path, and packed proof/provider work before
+one integration pass. PR B freezes safe lifecycle response shapes first, then
+parallelizes API wiring, Settings reuse, and only the newly exposed adversarial
+cases. PR C is evidence-only: product changes are allowed only for a blocker
+demonstrated by the independent trial or immutable gate. A Phase 5 evidence
+coverage map is created in Loop 6.0 so unchanged kernel proofs are referenced,
+not rerun during ordinary implementation.
+
 ## Shared invariants
 
 - Preserve Protocol v0 package, lock, install, activation, digest, and rejection
@@ -92,8 +102,12 @@ deterministic to an external author without granting authority.
 - Generate the connected scaffold from code-owned template content, including
   a Module v2 Campaign resource, exact Contacts dependency, one sandbox action,
   an App brief, and scoped AGENTS guidance.
-- Keep Protocol v0 lock bytes unchanged. Protocol v1 lockfiles expose a clearly
-  named requested-authority projection and never label it effective authority.
+- Keep Protocol v0 and Protocol v1 lock bytes unchanged. Emit the clearly named
+  requested-authority projection as a separate deterministic author report;
+  never write it into the v1 lock or label it effective authority.
+- Assign the changed packed App Kit a unique prerelease version. Developer
+  status advertises an additive protocol/flow/tooling compatibility structure
+  while retaining the legacy `app_protocol: "0"` scalar exactly.
 - Pin projection clone safety, deterministic canonical bytes, absence of
   secrets/host IDs, and the exact host-policy floor in tests.
 
@@ -116,11 +130,12 @@ crossing review, binding, or activation.
   while retaining the legacy Protocol v0 scalar.
 - Make `doctor` compare the local package protocol with the exact flow advertised
   by the host. A v0-only host rejects a v1 package before token consumption.
-- Add a thin public contract simulator for package/host-flow compatibility,
-  requested-authority review, closed input resolution, and deterministic fake
-  provider results. It must call the exact exported validators, input resolver,
-  and conformance vectors; it cannot duplicate host authorization, activation,
-  AppAction, or AppRun logic. Use a tiny HTTP fixture only for transport tests.
+- Add a thin public contract checker for package/host-flow compatibility,
+  requested-authority review, static binding validation, and frozen provider
+  vectors. It must call the exact exported validators and conformance vectors;
+  it must not simulate live authorization, activation, relations, AppAction,
+  AppRun, or the database-bound input resolver. Use a tiny HTTP fixture only
+  for transport tests.
 
 **Evidence:** v0 pairing compatibility, v1 stage-only database proof,
 single-use/revocation tests, CLI host compatibility tests, zero executable
@@ -140,6 +155,13 @@ not an artifact of workspace links.
 - Keep contract/schema constants and conformance vectors in App Kit. Package a
   separate narrow proof-only stdio sandbox provider artifact exposing only
   `send_email`; do not make the portable App Kit own a Node/MCP runtime.
+- Freeze one public proof bundle containing the exact Contacts dependency and
+  the separately packed provider, including their digests and retrieval path.
+  The connected template never relies on an unpublished workspace package.
+- For the self-host proof only, mount the packed provider read-only and
+  explicitly allowlist its pinned `node` launcher. Document that narrow
+  operator wiring; do not broaden the production container into a generic
+  runtime or silently rely on a host workspace path.
 - Keep the API fixture and external provider as independent implementations
   against the same conformance vectors so the proof does not pass by sharing
   implementation code.
@@ -171,8 +193,9 @@ supported administrator and author journey.
 - Make disable and re-enable explicit; re-enable revalidates live membership,
   dependency, connector, provider schema, grant, binding, and authority version
   rather than reviving stale authority.
-- Expose receipt verification and bounded safe Run/result metadata to an
-  authorized actor in the connected journey.
+- Expose receipt verification and bounded safe Run/result metadata only after
+  verifying the receipt signature plus tenant and caller authorization; no
+  provider secret, ciphertext, or cross-actor metadata crosses the response.
 - Exercise stage, review, bind, activate, open, search, cite, relate, invoke,
   approve, inspect receipt, upgrade, disable, and re-enable with Campaign
   referencing Contact rather than copying it.
@@ -201,7 +224,9 @@ conditions.
 - Make queue backlog, pending approval, attempts/retry, retained ciphertext,
   provider snapshots, action discovery, payload limits, retention, cleanup,
   degraded mode, and referenced-key inventory observable with bounded safe
-  summaries.
+  summaries. Implement this as one manager-only projection over existing Run
+  operations, queue health, key inventory, and connected health—not a second
+  generic operations framework.
 - Prove offline boot: the App/local resources open without network, while the
   connector is reported unhealthy and invocation fails safely.
 - Prove the ordinary self-host operator path for key generation, validation,
