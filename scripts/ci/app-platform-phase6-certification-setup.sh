@@ -136,7 +136,8 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
   --entrypoint sh "$candidate_tag" -c '
     pnpm --filter @deft/shared exec tsx --test test/capabilities.test.ts test/app-runs.test.ts &&
-    pnpm --filter @deft/app-kit exec tsx --test test/*.test.ts &&
+    npm_execpath="$(readlink -f "$(command -v pnpm)")" \
+      pnpm --filter @deft/app-kit exec tsx --test test/*.test.ts &&
     pnpm --filter @deft/api exec tsx --test \
       test/capability-service.test.ts \
       test/capability-immediate-execution-db.test.ts \
