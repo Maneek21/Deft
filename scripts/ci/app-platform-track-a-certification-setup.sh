@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 [[ "${CERTIFICATION_STAGE:?CERTIFICATION_STAGE is required}" == "setup" ]]
-[[ "${CANDIDATE_SHA:?CANDIDATE_SHA is required}" == "2f4db0834d9563a359169f84f9d79e471c77f056" ]]
+[[ "${CANDIDATE_SHA:?CANDIDATE_SHA is required}" == "d390f2c004979ab3b36bb24832d74d1e59538324" ]]
 candidate_root="${CANDIDATE_ROOT:?CANDIDATE_ROOT is required}"
 certifier_root="${CERTIFIER_ROOT:?CERTIFIER_ROOT is required}"
 candidate_tag="${CANDIDATE_TAG:?CANDIDATE_TAG is required}"
