@@ -106,6 +106,13 @@ test('certification carries the Phase 4 and Phase 5 probes plus browser evidence
   assert.match(orchestrator, /DEFT_APPS_ENABLED=true/);
   assert.match(orchestrator, /DEFT_APP_RUNS_ENABLED=true/);
   assert.match(orchestrator, /DEFT_APP_RUN_APP_ORIGIN_ENABLED=true/);
+  const predecessorProbe = orchestrator.slice(
+    orchestrator.indexOf('docker pull "$predecessor_image"'),
+    orchestrator.indexOf('> "$safe_dir/predecessor-read.json"'),
+  );
+  assert.match(predecessorProbe, /JWT_SECRET=phase5-cert-jwt-not-for-prod/);
+  assert.match(predecessorProbe, /JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod/);
+  assert.match(predecessorProbe, /ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes/);
 });
 
 test('evidence uploads even on failure and disposable resources are always removed', () => {

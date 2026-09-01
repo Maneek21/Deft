@@ -204,6 +204,9 @@ printf '%s\n' "$predecessor_revision" > "$safe_dir/predecessor-image-revision.tx
 docker run --rm --network "$network" \
   -v "${certifier_root}/apps/api/test/phase5-predecessor-read-probe.ts:/app/apps/api/test/phase5-predecessor-read-probe.ts:ro" \
   -e DATABASE_URL="$restore_url_container" \
+  -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
+  -e JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
+  -e ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
   -e DEFT_PROBE_ORG_ID="$probe_org" \
   -e DEFT_PROBE_EMPLOYEE_ID="$probe_employee" \
   -e DEFT_PROBE_RECORD_ID="$probe_record" \
