@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { APP_LIMITS } from '@deft/app-kit';
+import {
+  APP_LIMITS,
+  DEFT_APP_DEVELOPER_COMPATIBILITY,
+  resolveDeftAppDeveloperProtocolFlow,
+} from '@deft/app-kit';
 import { activateAppInstallation, inspectAppPackageJson, stageAppPackage } from '../lib/app-service.js';
 import { claimAppDeveloperSession, exchangeAppDeveloperPairing } from '../lib/app-developer-pairing.js';
 import { AppError, isAppError } from '../lib/app-errors.js';
@@ -21,7 +25,12 @@ function fail(c: any, error: unknown) {
   return c.json({ error: 'Developer request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 
-appDeveloperRoutes.get('/status', (c) => c.json({ app_protocol: '0', audience: 'app-developer', single_use_install: true }));
+appDeveloperRoutes.get('/status', (c) => c.json({
+  app_protocol: '0',
+  audience: 'app-developer',
+  single_use_install: true,
+  compatibility: DEFT_APP_DEVELOPER_COMPATIBILITY,
+}));
 
 appDeveloperRoutes.post('/pair/exchange', async (c) => {
   try {
@@ -42,20 +51,18 @@ appDeveloperRoutes.post('/install', async (c) => {
       return c.json({ error: 'App package is too large', code: 'APP_INVALID_PACKAGE' }, 413);
     }
     const inspected = await inspectAppPackageJson(packageJson);
-    if (inspected.manifest.compatibility.app_protocol !== '0') {
-      throw new AppError(
-        `App Protocol v${inspected.manifest.compatibility.app_protocol} packages must use the workspace review flow`,
-        'APP_REVIEW_REQUIRED',
-        409,
-        {
-          app_protocol: inspected.manifest.compatibility.app_protocol,
-          required_flow: 'workspace_review',
-        },
-      );
+    const installFlow = resolveDeftAppDeveloperProtocolFlow(
+      DEFT_APP_DEVELOPER_COMPATIBILITY,
+      inspected.manifest.compatibility.app_protocol,
+    );
+    if (installFlow.package_format !== inspected.package.package_format) {
+      throw new AppError('App package format does not match its developer install flow', 'APP_INVALID_PACKAGE', 400);
     }
     const actor = await claimAppDeveloperSession(token);
     const staged = await stageAppPackage(actor, packageJson);
-    const app = await activateAppInstallation(actor, staged.id, staged.package_digest);
+    const app = installFlow.install_mode === 'stage_and_activate'
+      ? await activateAppInstallation(actor, staged.id, staged.package_digest)
+      : staged;
     return c.json({ app }, 201);
   } catch (error) {
     return fail(c, error);

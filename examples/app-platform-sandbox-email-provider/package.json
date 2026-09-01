@@ -1,0 +1,18 @@
+{
+  "name": "@deft/app-platform-sandbox-email-provider",
+  "version": "0.1.0-alpha.1",
+  "description": "Dependency-free stdio MCP provider for the Deft connected App proof.",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "deft-app-platform-sandbox-email-provider": "./server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

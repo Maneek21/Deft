@@ -1,0 +1,34 @@
+{
+  "schema": "deft.app_platform.connected_proof_bundle.v1",
+  "app_kit": {
+    "package": "@deft/app-kit",
+    "version": "0.1.0-alpha.1",
+    "source_path": "packages/app-kit",
+    "pack_command": "pnpm --dir packages/app-kit pack --pack-destination <output-directory> --json"
+  },
+  "dependencies": {
+    "contacts": {
+      "app_id": "org.deft.reference.resource-contacts-app",
+      "version": "1.0.0",
+      "source_path": "examples/resource-participation-contacts-app",
+      "lock_path": "examples/resource-participation-contacts-app/deft.app.lock.json",
+      "package_digest": "sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8",
+      "manifest_digest": "sha256:d25831fbc3b87881db689ce1cf2beeb2256324be9c7e4a3f780e70534513e1ed"
+    }
+  },
+  "providers": {
+    "sandbox_email": {
+      "package": "@deft/app-platform-sandbox-email-provider",
+      "version": "0.1.0-alpha.1",
+      "source_path": "examples/app-platform-sandbox-email-provider",
+      "pack_command": "pnpm --dir examples/app-platform-sandbox-email-provider pack --pack-destination <output-directory> --json",
+      "artifact": {
+        "filename": "deft-app-platform-sandbox-email-provider-0.1.0-alpha.1.tgz",
+        "byte_length": 15164,
+        "digest": "sha256:9650e78b52de6635b22e3bf6199001ee3dc84b371dba8704252bc9e23afb6b46"
+      },
+      "transport": "stdio",
+      "network_egress": false
+    }
+  }
+}

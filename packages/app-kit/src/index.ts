@@ -8,6 +8,87 @@ export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V1 = '1' as const;
 export const DEFT_APP_PROTOCOL_VERSION_V1 = '1' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V1 = 'deft.app.package.v1' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
+export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.1' as const;
+export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
+export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH = '.deft/requested-authority.json' as const;
+
+const DeftAppDeveloperProtocolV0FlowSchema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT),
+  install_mode: z.literal('stage_and_activate'),
+});
+
+const DeftAppDeveloperProtocolV1FlowSchema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V1),
+  install_mode: z.literal('stage_only'),
+});
+
+export const DeftAppDeveloperCompatibilitySchema = z.strictObject({
+  schema: z.literal(DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA),
+  app_kit: z.strictObject({
+    package: z.literal(DEFT_APP_KIT_PACKAGE_NAME),
+    versions: z.array(z.string().min(1)).min(1),
+  }),
+  protocol_flows: z.strictObject({
+    '0': DeftAppDeveloperProtocolV0FlowSchema,
+    '1': DeftAppDeveloperProtocolV1FlowSchema,
+  }),
+}).superRefine((value, ctx) => {
+  if (new Set(value.app_kit.versions).size !== value.app_kit.versions.length) {
+    ctx.addIssue({ code: 'custom', path: ['app_kit', 'versions'], message: 'App Kit versions must be unique' });
+  }
+});
+
+export type DeftAppDeveloperCompatibility = z.infer<typeof DeftAppDeveloperCompatibilitySchema>;
+export type DeftAppDeveloperProtocol = keyof DeftAppDeveloperCompatibility['protocol_flows'];
+export type DeftAppDeveloperProtocolFlow =
+  DeftAppDeveloperCompatibility['protocol_flows'][DeftAppDeveloperProtocol];
+export type DeftAppDeveloperInstallMode = DeftAppDeveloperProtocolFlow['install_mode'];
+
+export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
+  schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
+  app_kit: Object.freeze({
+    package: DEFT_APP_KIT_PACKAGE_NAME,
+    versions: Object.freeze([DEFT_APP_KIT_VERSION]),
+  }),
+  protocol_flows: Object.freeze({
+    '0': Object.freeze({
+      package_format: DEFT_APP_PACKAGE_FORMAT,
+      install_mode: 'stage_and_activate' as const,
+    }),
+    '1': Object.freeze({
+      package_format: DEFT_APP_PACKAGE_FORMAT_V1,
+      install_mode: 'stage_only' as const,
+    }),
+  }),
+});
+
+export function parseDeftAppDeveloperCompatibility(value: unknown): DeftAppDeveloperCompatibility {
+  return DeftAppDeveloperCompatibilitySchema.parse(value);
+}
+
+export function resolveDeftAppDeveloperProtocolFlow(
+  value: unknown,
+  protocol: string,
+): DeftAppDeveloperProtocolFlow {
+  const compatibility = parseDeftAppDeveloperCompatibility(value);
+  if (!compatibility.app_kit.versions.includes(DEFT_APP_KIT_VERSION)) {
+    throw new Error(`Host does not support ${DEFT_APP_KIT_PACKAGE_NAME} ${DEFT_APP_KIT_VERSION}`);
+  }
+  if (protocol !== DEFT_APP_PROTOCOL_VERSION && protocol !== DEFT_APP_PROTOCOL_VERSION_V1) {
+    throw new Error(`Host does not support App Protocol v${protocol}`);
+  }
+  return compatibility.protocol_flows[protocol];
+}
+
+export function resolveDeftAppDeveloperInstallFlow(
+  value: unknown,
+  protocol: string,
+): DeftAppDeveloperInstallMode {
+  return resolveDeftAppDeveloperProtocolFlow(value, protocol).install_mode;
+}
 
 export const APP_LIMITS = Object.freeze({
   manifest_bytes: 128 * 1024,
@@ -300,6 +381,46 @@ export const SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE = Object.freeze({
       Object.freeze(['subject', 'body_text'] as const),
     ]),
   }),
+} as const);
+
+/**
+ * Public, inert conformance data for independently implemented proof
+ * providers. This contains no transport, provider loading, or execution code.
+ */
+export const SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS = Object.freeze({
+  schema: 'deft.app.sandbox_email_send.conformance.v1',
+  valid: Object.freeze({
+    input: Object.freeze({
+      to: 'ada@example.test',
+      subject: 'Analytical Engines',
+      body_text: 'Hello Ada',
+      idempotency_key: 'campaign:one/contact:ada',
+    }),
+    output: Object.freeze({
+      message_id: 'sandbox_a90928f63948386da7c8a7a4',
+      status: 'accepted' as const,
+    }),
+  }),
+  invalid: Object.freeze([
+    Object.freeze({
+      label: 'invalid_email',
+      input: Object.freeze({
+        to: 'not-email',
+        subject: 'Analytical Engines',
+        body_text: 'Hello Ada',
+        idempotency_key: 'campaign:invalid/contact:ada',
+      }),
+    }),
+    Object.freeze({
+      label: 'header_injection',
+      input: Object.freeze({
+        to: 'ada@example.test',
+        subject: 'Analytical Engines\r\nBcc: attacker@example.test',
+        body_text: 'Hello Ada',
+        idempotency_key: 'campaign:header/contact:ada',
+      }),
+    }),
+  ]),
 } as const);
 
 export const DeftAppDependencyRequirementV1Schema = z.strictObject({
@@ -683,6 +804,167 @@ export type DeftAppPackageV1 = z.infer<typeof DeftAppPackageV1Schema>;
 export type DeftAppPackage = z.infer<typeof DeftAppPackageSchema>;
 export type DeftAppPackageArtifactV0 = z.infer<typeof DeftAppPackageArtifactV0Schema>;
 export type AppDigest = z.infer<typeof AppDigestSchema>;
+
+const SandboxEmailHostPolicySchema = z.strictObject({
+  risk_class: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.risk_class),
+  review_requirement: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_requirement),
+  review_scope: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.review_scope),
+  egress_class: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.egress_class),
+  retry_class: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retry_class),
+  retention_class: z.literal(SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.retention_class),
+  automation_eligibility: z.literal(
+    SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.automation_eligibility,
+  ),
+  provider_idempotency_key_required: z.literal(
+    SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy.provider_idempotency_key_required,
+  ),
+});
+
+export const DeftAppRequestedAuthorityProjectionSchema = z.strictObject({
+  requirements: z.strictObject({
+    dependencies: z.array(DeftAppDependencyRequirementV1Schema).max(APP_LIMITS.dependencies),
+    resources: z.array(DeftAppResourceRequirementV1Schema).max(APP_LIMITS.resource_requirements),
+    capabilities: z.array(DeftAppCapabilityRequirementV1Schema).max(APP_LIMITS.capability_requirements),
+    connectors: z.array(DeftAppConnectorRequirementV1Schema).max(APP_LIMITS.connector_requirements),
+    actions: z.array(DeftAppActionBindingV1Schema).max(APP_LIMITS.actions),
+  }),
+  resource_rights: z.array(z.strictObject({
+    requirement_key: AppMachineKeyV1Schema,
+    source: DeftAppResourceRequirementV1Schema.shape.source,
+    resource_type: AppMachineKeyV1Schema,
+    fields: z.array(AppMachineKeyV1Schema).min(1).max(APP_LIMITS.resource_fields_per_requirement),
+    right: z.literal('read'),
+  })).max(APP_LIMITS.resource_requirements),
+  classification: z.strictObject({
+    authority_state: z.literal('requested_only'),
+    executable: z.literal(false),
+    provider_access: z.literal(false),
+    review_required: z.boolean(),
+    actions: z.array(z.strictObject({
+      action_key: AppAuthorityKeyV1Schema,
+      capability_requirement_key: AppAuthorityKeyV1Schema,
+      host_policy: SandboxEmailHostPolicySchema,
+    })).max(APP_LIMITS.actions),
+  }),
+});
+
+export const DeftAppRequestedAuthorityReportSchema = z.strictObject({
+  schema: z.literal(DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA),
+  app: z.strictObject({
+    id: AppIdSchema,
+    version: AppSemverSchema,
+    protocol_version: z.union([
+      z.literal(DEFT_APP_PROTOCOL_VERSION),
+      z.literal(DEFT_APP_PROTOCOL_VERSION_V1),
+    ]),
+  }),
+  requested_authority: DeftAppRequestedAuthorityProjectionSchema,
+});
+
+export type DeftAppRequestedAuthorityProjection =
+  z.infer<typeof DeftAppRequestedAuthorityProjectionSchema>;
+export type DeftAppRequestedAuthorityReport = z.infer<typeof DeftAppRequestedAuthorityReportSchema>;
+
+/**
+ * Project only App-authored requested authority. Host identities, effective
+ * grants, connector/provider selection, tokens, and lineage never enter this
+ * portable report.
+ */
+export function projectDeftAppRequestedAuthority(
+  value: DeftAppManifestInput | DeftAppManifest,
+): DeftAppRequestedAuthorityProjection {
+  const manifest = parseDeftAppManifest(value);
+  const connected = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
+    ? manifest
+    : null;
+  const projection = {
+    requirements: connected
+      ? {
+          dependencies: connected.dependencies,
+          resources: connected.resource_requirements,
+          capabilities: connected.capability_requirements,
+          connectors: connected.connector_requirements,
+          actions: connected.actions,
+        }
+      : { dependencies: [], resources: [], capabilities: [], connectors: [], actions: [] },
+    resource_rights: connected
+      ? connected.resource_requirements.map((requirement) => ({
+          requirement_key: requirement.key,
+          source: requirement.source,
+          resource_type: requirement.resource_type,
+          fields: requirement.fields,
+          right: 'read' as const,
+        }))
+      : [],
+    classification: {
+      authority_state: 'requested_only' as const,
+      executable: false as const,
+      provider_access: false as const,
+      review_required: connected !== null,
+      actions: connected
+        ? connected.actions.map((action) => ({
+            action_key: action.key,
+            capability_requirement_key: action.capability_requirement_key,
+            host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
+          }))
+        : [],
+    },
+  };
+  return DeftAppRequestedAuthorityProjectionSchema.parse(canonicalizeJson(projection));
+}
+
+export function buildDeftAppRequestedAuthorityReport(
+  value: DeftAppManifestInput | DeftAppManifest,
+): DeftAppRequestedAuthorityReport {
+  const manifest = parseDeftAppManifest(value);
+  return DeftAppRequestedAuthorityReportSchema.parse({
+    schema: DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA,
+    app: {
+      id: manifest.id,
+      version: manifest.version,
+      protocol_version: manifest.compatibility.app_protocol,
+    },
+    requested_authority: projectDeftAppRequestedAuthority(manifest),
+  });
+}
+
+export function canonicalDeftAppRequestedAuthorityReportJson(
+  value: DeftAppManifestInput | DeftAppManifest,
+): string {
+  return JSON.stringify(canonicalizeJson(buildDeftAppRequestedAuthorityReport(value)), null, 2);
+}
+
+/**
+ * Validate only portable authoring contracts. Package verification performs
+ * the static Module/resource/action binding checks; this helper does not
+ * inspect a workspace, resolve effective grants, or call a provider.
+ */
+export async function checkDeftAppDeveloperContract(input: {
+  package_json: string;
+  host_compatibility: unknown;
+}) {
+  const verified = await verifyDeftAppPackageJson(input.package_json);
+  const protocol = verified.package.manifest.compatibility.app_protocol;
+  const installFlow = resolveDeftAppDeveloperProtocolFlow(input.host_compatibility, protocol);
+  if (installFlow.package_format !== verified.package.package_format) {
+    throw new Error(`Host advertises an incompatible package format for App Protocol v${protocol}`);
+  }
+  return {
+    schema: DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA,
+    package: {
+      format: verified.package.package_format,
+      digest: verified.digest,
+      protocol_version: protocol,
+    },
+    install_flow: installFlow,
+    requested_authority: buildDeftAppRequestedAuthorityReport(verified.package.manifest),
+    sandbox_email_conformance: {
+      schema: SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.schema,
+      valid_input: SandboxEmailSendInputSchema.parse(SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input),
+      expected_output: SandboxEmailSendOutputSchema.parse(SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.output),
+    },
+  };
+}
 
 function recordWithString(value: unknown, key: string): string | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;

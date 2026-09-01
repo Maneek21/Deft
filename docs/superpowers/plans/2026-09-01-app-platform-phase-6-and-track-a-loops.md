@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Planned; implementation is gated on a passing immutable Phase 5 release-host certification and merged audit |
+| Status | Loop 6.0 sealed from merged Phase 5 audit `c0da089d`; Phase 6 PR A implemented and locally validated, merge certification pending |
 | Architecture source | `docs/superpowers/plans/2026-08-29-full-surface-app-platform.md` |
 | Delivery source | `docs/superpowers/plans/2026-08-30-full-surface-app-platform-delivery-plan.md` |
 | Phase 6 outcome | An independent author can build, stage, install, operate, upgrade, disable, recover, and inspect a Tier 2 connected App using published contracts and tooling only |
@@ -83,6 +83,37 @@ connected kernel.
 
 **Stop condition:** do not merge Phase 6 behavior if Phase 5 restore, receipt,
 predecessor, browser, or cleanup evidence is missing.
+
+**Sealed dependency (2026-09-01):** Phase 5 product candidate `438a283a`,
+certifier `70a4b984`, definitive run `33469721507`, and audit merge `c0da089d`
+all passed. The safe artifact is
+`sha256:40689d1ab9c914477a2efa8efb8528d2a53a6019d400f18962a8ed119876d256`;
+the separately retained image artifact is
+`sha256:f28bc0188de4880dbb57b162246f97aaf9f4996545737537460c39703bfb680d`.
+Real pgvector `0.8.6`, 23 migrations through `0.3.0-preview.25`, matching
+source/restored continuity hash
+`sha256:de8535e3fcb94e312a640392910e40af3ec8e191c14c650cee3e952c65343eda`,
+9/9 verified receipts, predecessor read, desktop/mobile proof, and isolated
+cleanup are recorded in the Phase 5 audit.
+
+The unchanged kernel evidence reused by Phase 6 is frozen as follows:
+
+- Contacts v0 package:
+  `sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8`.
+- Connected Campaigns v1 package:
+  `sha256:973ec7076daf7405a7a4d8b48509ef6f99b1b1cc4b787961104c73f23b7f770d`.
+- Connected Module v2 artifact:
+  `sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208`.
+- Existing v1 requested-grant snapshot:
+  `sha256:2464c10f3a480c8d5d7f75c7923f8231a311bcdeb6dbfb584c8a0d7449572bed`.
+- Supported predecessor:
+  `ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788`.
+- `DEFT_APPS_ENABLED`, developer pairing, App Runs, App-origin intake, and
+  legacy MCP cutover remain separate exact-`true`, default-off flags.
+
+Phase 6 ordinary development references these immutable proofs and reruns only
+changed contracts. Its final beta gate repeats the compound release evidence
+once from the exact merged candidate.
 
 ### Loop 6.1 — Shared authoring contract and connected template
 
