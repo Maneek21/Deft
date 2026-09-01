@@ -132,6 +132,10 @@ test('one shared orchestration pass owns image, upgrade, restore, predecessor, b
   assert.equal(occurrences(orchestrator, "'pnpm db:upgrade && pnpm module:verify'"), 1);
   assert.equal(occurrences(orchestrator, 'pg_dump -U postgres'), 1);
   assert.equal(occurrences(orchestrator, 'pg_restore -U postgres'), 1);
+  assert.match(orchestrator, /pg_restore -U postgres[^\n]+\\\s*\n\s*--exit-on-error/);
+  assert.doesNotMatch(orchestrator, /pg_restore[^\n]+--clean/);
+  assert.match(orchestrator, /cat "\$restore_log" >&2/);
+  assert.match(orchestrator, /rm -f "\$restore_log"/);
   assert.equal(occurrences(orchestrator, 'docker pull "$predecessor_image"'), 1);
   assert.equal(occurrences(orchestrator, 'node "$browser_script"'), 1);
   assert.equal(occurrences(orchestrator, 'run_extension_hook "$offline_hook" offline'), 1);

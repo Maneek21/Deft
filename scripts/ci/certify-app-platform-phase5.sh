@@ -252,7 +252,13 @@ docker run -d --name "$restore_container" --network "$network" \
 wait_for_postgres "$restore_container"
 docker exec "$restore_container" psql -U postgres -d "$database_name" -v ON_ERROR_STOP=1 \
   -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-docker exec -i "$restore_container" pg_restore -U postgres -d "$database_name" --clean --if-exists < "$dump_path"
+restore_log="$safe_dir/database-restore.log"
+if ! docker exec -i "$restore_container" pg_restore -U postgres -d "$database_name" \
+  --exit-on-error < "$dump_path" > "$restore_log" 2>&1; then
+  cat "$restore_log" >&2
+  exit 1
+fi
+rm -f "$restore_log"
 
 read -r probe_org probe_employee probe_record < <(
   docker exec "$restore_container" psql -U postgres -d "$database_name" -At -F ' ' -c "
