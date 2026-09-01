@@ -42,6 +42,15 @@ function requireCondition(condition, code) {
   if (!condition) throw new CertificationFailure(code);
 }
 
+async function throwSafeResponseFailure(response, prefix) {
+  const failureBody = await response.json().catch(() => null);
+  const responseCode = typeof failureBody?.code === 'string'
+    && /^[A-Z][A-Z0-9_]{0,63}$/.test(failureBody.code)
+    ? failureBody.code
+    : 'UNKNOWN';
+  throw new CertificationFailure(`${prefix}_${response.status()}_${responseCode}`);
+}
+
 function errorCode(error) {
   return error instanceof CertificationFailure ? error.code : 'UNEXPECTED_BROWSER_FAILURE';
 }
@@ -604,14 +613,7 @@ async function exerciseTrackAAutomation(
   await dialog.getByRole('button', { name: 'Review schedule', exact: true }).click();
   const reviewResponse = await reviewResponsePromise;
   if (!reviewResponse.ok()) {
-    const failureBody = await reviewResponse.json().catch(() => null);
-    const responseCode = typeof failureBody?.code === 'string'
-      && /^[A-Z][A-Z0-9_]{0,63}$/.test(failureBody.code)
-      ? failureBody.code
-      : 'UNKNOWN';
-    throw new CertificationFailure(
-      `AUTOMATION_REVIEW_FAILED_${reviewResponse.status()}_${responseCode}`,
-    );
+    await throwSafeResponseFailure(reviewResponse, 'AUTOMATION_REVIEW_FAILED');
   }
   const reviewBody = await reviewResponse.json().catch(() => null);
   const review = reviewBody?.review;
@@ -651,7 +653,9 @@ async function exerciseTrackAAutomation(
   }, { timeout: 20_000 });
   await dialog.getByRole('button', { name: 'Approve and create', exact: true }).click();
   const createResponse = await createResponsePromise;
-  requireCondition(createResponse.status() === 201, 'AUTOMATION_CREATE_FAILED');
+  if (createResponse.status() !== 201) {
+    await throwSafeResponseFailure(createResponse, 'AUTOMATION_CREATE_FAILED');
+  }
   await dialog.getByRole('heading', { name: 'Automation created', exact: true })
     .waitFor({ state: 'visible', timeout: 20_000 });
   await dialog.getByRole('button', { name: 'Done', exact: true }).click();
