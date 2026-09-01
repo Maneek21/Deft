@@ -1,0 +1,177 @@
+name: App Platform Track A Certification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-platform-track-a-certification
+  cancel-in-progress: false
+
+env:
+  APP_PLATFORM_CANDIDATE_SHA: 2f4db0834d9563a359169f84f9d79e471c77f056
+  APP_PLATFORM_BASELINE_SHA: 16875df2f6c9dc2bc3d850de6758b7dd56767a05
+  PREDECESSOR_IMAGE: ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788
+  PREDECESSOR_COMMIT: 6d39e0e0413c82d36c9481849ae582fdf805d1a6
+  APP_PLATFORM_CERT_PHASE: track_a
+  APP_PLATFORM_RESOURCE_PREFIX: deft-track-a-cert-${{ github.run_id }}-${{ github.run_attempt }}
+  APP_PLATFORM_CANDIDATE_TAG: deft:track-a-cert-${{ github.run_id }}-${{ github.run_attempt }}
+  APP_PLATFORM_COMPOSE_PROJECT: deft-track-a-compose-${{ github.run_id }}-${{ github.run_attempt }}
+  APP_PLATFORM_DATABASE_NAME: deft_phase6_track_a_release_test
+  DEFT_APP_AUTOMATIONS_ENABLED: 'true'
+
+jobs:
+  certify:
+    name: Immutable governed automation gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout certification orchestration
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Checkout exact Track A product candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.APP_PLATFORM_CANDIDATE_SHA }}
+          path: .cert/track-a-candidate
+          fetch-depth: 1
+
+      - name: Checkout exact Phase 6 baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.APP_PLATFORM_BASELINE_SHA }}
+          path: .cert/phase6-baseline
+          fetch-depth: 1
+
+      - name: Verify immutable source identities and Track A mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          certifier_sha="$(git rev-parse HEAD)"
+          candidate_sha="$(git -C .cert/track-a-candidate rev-parse HEAD)"
+          baseline_sha="$(git -C .cert/phase6-baseline rev-parse HEAD)"
+          [[ "$candidate_sha" == "$APP_PLATFORM_CANDIDATE_SHA" ]]
+          [[ "$baseline_sha" == "$APP_PLATFORM_BASELINE_SHA" ]]
+          [[ "$DEFT_APP_AUTOMATIONS_ENABLED" == "true" ]]
+          {
+            echo "CERTIFIER_SHA=$certifier_sha"
+            echo "APP_PLATFORM_CANDIDATE_ROOT=$GITHUB_WORKSPACE/.cert/track-a-candidate"
+            echo "APP_PLATFORM_BASELINE_ROOT=$GITHUB_WORKSPACE/.cert/phase6-baseline"
+            echo "EVIDENCE_DIR=$RUNNER_TEMP/deft-track-a-evidence"
+            echo "DEFT_APP_PLATFORM_AUTOMATION_BROWSER_FIXTURE=$RUNNER_TEMP/deft-track-a-evidence/safe/track-a-browser-fixture.json"
+          } >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          version: 11.10.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Install certifier dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install exact Track A candidate dependencies
+        working-directory: .cert/track-a-candidate
+        run: pnpm install --frozen-lockfile
+
+      - name: Install exact Phase 6 baseline dependencies
+        working-directory: .cert/phase6-baseline
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for desktop and mobile evidence
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck exact Track A candidate
+        working-directory: .cert/track-a-candidate
+        run: pnpm typecheck
+
+      - name: Build exact Track A candidate once
+        working-directory: .cert/track-a-candidate
+        run: pnpm build
+
+      - name: Verify packed App Kit external authoring from exact candidate
+        working-directory: .cert/track-a-candidate
+        env:
+          PNPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: |
+          npm_execpath="${GITHUB_WORKSPACE}/scripts/ci/pnpm-exec-wrapper.mjs" \
+            pnpm --filter @deft/app-kit exec tsx --test test/packed-external.test.ts
+
+      - name: Run immutable Track A host certification
+        env:
+          CERTIFIER_ROOT: ${{ github.workspace }}
+          APP_PLATFORM_SETUP_HOOK: ${{ github.workspace }}/scripts/ci/app-platform-track-a-certification-setup.sh
+          APP_PLATFORM_OFFLINE_HOOK: ${{ github.workspace }}/scripts/ci/app-platform-phase6-certification-offline.sh
+          APP_PLATFORM_BROWSER_SCRIPT: ${{ github.workspace }}/scripts/ci/app-platform-phase6-browser-smoke.mjs
+        run: |
+          set -euo pipefail
+          [[ "$DEFT_APP_AUTOMATIONS_ENABLED" == "true" ]]
+          [[ -n "$DEFT_APP_PLATFORM_AUTOMATION_BROWSER_FIXTURE" ]]
+          bash scripts/ci/certify-app-platform-phase5.sh
+
+      - name: Upload bounded safe certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-platform-track-a-safe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_DIR }}/safe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Upload exact candidate image archive
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-platform-track-a-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_DIR }}/candidate-image.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Remove and confirm isolated resources
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+
+          docker rm -f \
+            "$APP_PLATFORM_RESOURCE_PREFIX-source" \
+            "$APP_PLATFORM_RESOURCE_PREFIX-restore" \
+            "$APP_PLATFORM_RESOURCE_PREFIX-app" >/dev/null 2>&1 || true
+          docker network rm "$APP_PLATFORM_RESOURCE_PREFIX-network" >/dev/null 2>&1 || true
+          docker volume rm \
+            "$APP_PLATFORM_RESOURCE_PREFIX-source-data" \
+            "$APP_PLATFORM_RESOURCE_PREFIX-restore-data" >/dev/null 2>&1 || true
+
+          mapfile -t compose_containers < <(
+            docker ps -aq --filter "label=com.docker.compose.project=$APP_PLATFORM_COMPOSE_PROJECT"
+          )
+          if ((${#compose_containers[@]})); then docker rm -f "${compose_containers[@]}" >/dev/null; fi
+          mapfile -t compose_networks < <(
+            docker network ls -q --filter "label=com.docker.compose.project=$APP_PLATFORM_COMPOSE_PROJECT"
+          )
+          if ((${#compose_networks[@]})); then docker network rm "${compose_networks[@]}" >/dev/null; fi
+          mapfile -t compose_volumes < <(
+            docker volume ls -q --filter "label=com.docker.compose.project=$APP_PLATFORM_COMPOSE_PROJECT"
+          )
+          if ((${#compose_volumes[@]})); then docker volume rm "${compose_volumes[@]}" >/dev/null; fi
+          docker image rm "$APP_PLATFORM_CANDIDATE_TAG" >/dev/null 2>&1 || true
+
+          [[ -z "$(docker ps -aq --filter "name=^/${APP_PLATFORM_RESOURCE_PREFIX}-(source|restore|app)$")" ]]
+          [[ -z "$(docker network ls -q --filter "name=^${APP_PLATFORM_RESOURCE_PREFIX}-network$")" ]]
+          [[ -z "$(docker volume ls -q --filter "name=^${APP_PLATFORM_RESOURCE_PREFIX}-(source|restore)-data$")" ]]
+          [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$APP_PLATFORM_COMPOSE_PROJECT")" ]]
+          [[ -z "$(docker network ls -q --filter "label=com.docker.compose.project=$APP_PLATFORM_COMPOSE_PROJECT")" ]]
+          [[ -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$APP_PLATFORM_COMPOSE_PROJECT")" ]]
+          if docker image inspect "$APP_PLATFORM_CANDIDATE_TAG" >/dev/null 2>&1; then exit 1; fi

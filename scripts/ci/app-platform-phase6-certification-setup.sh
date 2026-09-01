@@ -133,6 +133,7 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUNS_ENABLED=true \
   -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false \
+  -e DEFT_APP_AUTOMATIONS_ENABLED="${DEFT_APP_AUTOMATIONS_ENABLED:-false}" \
   -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
   --entrypoint sh "$candidate_tag" -c '
     pnpm --filter @deft/shared exec tsx --test test/capabilities.test.ts test/app-runs.test.ts &&

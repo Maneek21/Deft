@@ -12,6 +12,8 @@ safe_dir="${SAFE_EVIDENCE_DIR:?SAFE_EVIDENCE_DIR is required}"
 certifier_root="${CERTIFIER_ROOT:?CERTIFIER_ROOT is required}"
 keyring_json="${DEFT_APP_RUN_KEYRINGS:?DEFT_APP_RUN_KEYRINGS is required}"
 proof_email="${DEFT_TEST_EMAIL:?DEFT_TEST_EMAIL is required}"
+app_automations_enabled="${DEFT_APP_AUTOMATIONS_ENABLED:-false}"
+[[ "$app_automations_enabled" == "true" || "$app_automations_enabled" == "false" ]]
 
 read -r proof_org before_total before_succeeded before_failed < <(
   docker exec -i "$restore_container" psql -U postgres -d "$database_name" -qAt -F ' ' \
@@ -40,6 +42,7 @@ docker run -d --name "$app_container" --network "$network" -p 3000:3000 -p 3001:
   -e DEFT_APP_RUNS_ENABLED=true \
   -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false \
+  -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
   -e DEFT_SELF_HOSTED=true \
   -e DEFT_MCP_ENABLE_UNSAFE_STDIO=true \
