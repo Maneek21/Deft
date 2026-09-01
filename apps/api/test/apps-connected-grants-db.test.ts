@@ -8,6 +8,7 @@ import {
   canonicalAppPrivateInterfaceIdentity,
 } from '@deft/app-kit';
 import {
+  APP_RUN_CONTRACT_VERSIONS,
   CAPABILITY_CONTRACT_VERSIONS,
   RESOURCE_CONTRACT_VERSIONS,
   createCapabilityProviderDiscoverySnapshot,
@@ -35,6 +36,7 @@ import {
   users,
 } from '@deft/db/schema';
 import { AppError } from '../src/lib/app-errors.js';
+import { AppActionService } from '../src/lib/app-action-service.js';
 import {
   createReviewedAppAutomationDefinition,
   pauseAppAutomationDefinition,
@@ -48,7 +50,15 @@ import {
   postgresAppAutomationVerificationReadPort,
   recoverExpiredAppAutomationFireClaimWithExecutor,
   settleFailedAppAutomationFireClaimWithExecutor,
+  terminalizeAppAutomationFireDefinitionIneligibleWithExecutor,
 } from '../src/lib/app-automation-repository.js';
+import { PostgresAppRunAuthorizer } from '../src/lib/app-run-authorization.js';
+import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
+import { AppRunPreparedInputService } from '../src/lib/app-run-prepared-input.js';
+import { PostgresAppRunRepository } from '../src/lib/app-run-repository.js';
+import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
+import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
+import { AppRunService } from '../src/lib/app-run-service.js';
 import { closeDb, db } from '../src/lib/db.js';
 import { ModuleError } from '../src/lib/module-errors.js';
 import {
@@ -66,7 +76,11 @@ import {
   prepareConnectedAppReview,
 } from '../src/lib/app-review-service.js';
 import { digestAppGrantValue } from '../src/lib/app-grant-service.js';
-import { createModuleRecord, humanModuleActor } from '../src/lib/module-service.js';
+import {
+  createModuleRecord,
+  humanModuleActor,
+  readModuleRecordScalarFields,
+} from '../src/lib/module-service.js';
 import { replaceResourceRelation } from '../src/lib/resource-relation-service.js';
 import { mcpConnectionRoutes } from '../src/routes/mcp-connections.js';
 import { appRoutes } from '../src/routes/apps.js';
@@ -76,6 +90,7 @@ import {
   buildPhase5DependencyAppPackage,
   buildTrackAAutomatedConnectedAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
+import { databaseCompleteAppRunTestKeyrings } from './fixtures/app-run-test-keyrings.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
@@ -577,7 +592,7 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
     .where(eq(mcpConnections.id, unboundConnectionId))).length, 0);
 });
 
-test('Protocol v2 stages with zero authority and activates only through connected review', async () => {
+test('Protocol v2 review and automation lifecycle converge on one governed Run', async (t) => {
   const orgId = randomUUID();
   const userId = randomUUID();
   await db.insert(orgs).values({
@@ -764,34 +779,53 @@ test('Protocol v2 stages with zero authority and activates only through connecte
   ));
   assert.ok(actionBinding);
   const approvedAt = new Date();
-  const scheduledAt = new Date(Math.floor(approvedAt.getTime() / 60_000) * 60_000 + 60_000);
-  const definitionInput = {
-    app_installation_id: staged.id,
-    app_version_id: version.id,
-    action_binding_id: actionBinding.id,
-    automation_request_key: 'daily_campaign_send',
-    placement: {
-      resource_ref: placementRef,
-      revision: String(campaign.record.revision),
-      content_digest: digestAppGrantValue(campaign.record.data),
-    },
-    selected: {
-      resource_ref: selectedRef,
-      revision: String(contact.record.revision),
-      content_digest: digestAppGrantValue(contact.record.data),
-    },
-    local_time: scheduledAt.toISOString().slice(11, 16),
-    timezone: 'UTC',
-    validity_seconds: 24 * 60 * 60,
-    max_org_runs_per_utc_day: 100,
-    max_pending_org_fires: 25,
-  } as const;
-  const definitionReview = await prepareAppAutomationDefinitionReview(actor, definitionInput);
-  const definition = await createReviewedAppAutomationDefinition(actor, {
-    ...definitionInput,
-    expected_review_digest: definitionReview.review_digest,
-    accept_code_owned_policy: true,
-  }, { now: () => approvedAt });
+  const scheduleBase = Math.floor(approvedAt.getTime() / 60_000) * 60_000;
+  const createDefinition = async (
+    minuteOffset: number,
+    maxOrgRunsPerUtcDay = 100,
+  ) => {
+    const scheduledAt = new Date(scheduleBase + minuteOffset * 60_000);
+    const input = {
+      app_installation_id: staged.id,
+      app_version_id: version.id,
+      action_binding_id: actionBinding.id,
+      automation_request_key: 'daily_campaign_send',
+      placement: {
+        resource_ref: placementRef,
+        revision: String(campaign.record.revision),
+        content_digest: digestAppGrantValue(campaign.record.data),
+      },
+      selected: {
+        resource_ref: selectedRef,
+        revision: String(contact.record.revision),
+        content_digest: digestAppGrantValue(contact.record.data),
+      },
+      local_time: scheduledAt.toISOString().slice(11, 16),
+      timezone: 'UTC',
+      validity_seconds: 24 * 60 * 60,
+      max_org_runs_per_utc_day: maxOrgRunsPerUtcDay,
+      max_pending_org_fires: 25,
+    } as const;
+    const review = await prepareAppAutomationDefinitionReview(actor, input);
+    const definition = await createReviewedAppAutomationDefinition(actor, {
+      ...input,
+      expected_review_digest: review.review_digest,
+      accept_code_owned_policy: true,
+    }, { now: () => approvedAt });
+    return { definition, scheduledAt };
+  };
+  const persistFire = ({ definition, scheduledAt }: Awaited<ReturnType<typeof createDefinition>>) => (
+    persistAppAutomationFire({
+      organization_id: orgId,
+      definition_id: definition.id,
+      expected_epoch: definition.definition_epoch,
+      logical_local_date: scheduledAt.toISOString().slice(0, 10),
+      resolution: { kind: 'resolved' as const, resolved_at_utc: scheduledAt },
+    }, { now: () => new Date(scheduledAt.getTime() + 60_000) })
+  );
+
+  const primary = await createDefinition(1);
+  const definition = primary.definition;
   assert.equal(definition.state, 'active');
   assert.equal(definition.interface_identity, actionBinding.interface_identity);
   assert.equal(definition.selected_relation_revision, relation.revision);
@@ -800,21 +834,55 @@ test('Protocol v2 stages with zero authority and activates only through connecte
   assert.equal((definition.authorization_vector as any).approver.user_id, userId);
   assert.equal((definition.authorization_vector as any).relation.revision, relation.revision);
 
-  const fire = await persistAppAutomationFire({
-    organization_id: orgId,
-    definition_id: definition.id,
-    expected_epoch: definition.definition_epoch,
-    logical_local_date: scheduledAt.toISOString().slice(0, 10),
-    resolution: { kind: 'resolved', resolved_at_utc: scheduledAt },
-  }, { now: () => new Date(scheduledAt.getTime() + 60_000) });
-  const duplicateFire = await persistAppAutomationFire({
-    organization_id: orgId,
-    definition_id: definition.id,
-    expected_epoch: definition.definition_epoch,
-    logical_local_date: scheduledAt.toISOString().slice(0, 10),
-    resolution: { kind: 'resolved', resolved_at_utc: scheduledAt },
-  }, { now: () => new Date(scheduledAt.getTime() + 60_000) });
+  const [fire, duplicateFire] = await Promise.all([
+    persistFire(primary),
+    persistFire(primary),
+  ]);
   assert.equal(duplicateFire.id, fire.id);
+  const claimAt = new Date(primary.scheduledAt.getTime() + 60_000);
+  const leaseExpiresAt = new Date(primary.scheduledAt.getTime() + 10 * 60_000);
+  const keys = await databaseCompleteAppRunTestKeyrings('loop5-lifecycle');
+  t.after(() => keys.destroy());
+  const secrets = new AppRunSecretService(keys);
+  const preparedInputs = new AppRunPreparedInputService(secrets);
+  const repository = new PostgresAppRunRepository();
+  const secretRepository = new AppRunSecretRepository(secrets);
+  const liveAuthorization = new PostgresAppRunLiveAuthorization(() => true);
+  const runService = new AppRunService(
+    repository,
+    secretRepository,
+    secrets,
+    keys,
+    new PostgresAppRunAuthorizer(),
+    () => claimAt,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    preparedInputs,
+    liveAuthorization,
+    () => true,
+    () => true,
+  );
+  const automationActions = new AppActionService(
+    capability,
+    liveAuthorization,
+    preparedInputs,
+    { read: readModuleRecordScalarFields },
+    {
+      submitPreparedApp: (context, candidate) => runService.submitPreparedApp(context, candidate),
+    },
+    undefined,
+    undefined,
+    postgresAppAutomationVerificationReadPort,
+    () => true,
+  );
+  const exactAutomation = {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+  };
+  await automationActions.preflightApprovedAutomation(exactAutomation);
   const wrongEpochClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
     organization_id: orgId,
     definition_id: definition.id,
@@ -822,117 +890,271 @@ test('Protocol v2 stages with zero authority and activates only through connecte
     expected_epoch: definition.definition_epoch + 1,
     claim_owner: 'track-a-test',
     claim_token: randomUUID(),
-    claimed_at: new Date(approvedAt.getTime() + 120_000),
-    lease_expires_at: new Date(approvedAt.getTime() + 180_000),
+    claimed_at: claimAt,
+    lease_expires_at: leaseExpiresAt,
   }));
   assert.equal(wrongEpochClaim, null);
-  const firstClaimToken = randomUUID();
-  const claimed = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
-    organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
-    expected_epoch: definition.definition_epoch,
-    claim_owner: 'track-a-test',
-    claim_token: firstClaimToken,
-    claimed_at: new Date(approvedAt.getTime() + 120_000),
-    lease_expires_at: new Date(approvedAt.getTime() + 180_000),
-  }));
+  const claimTokens = [randomUUID(), randomUUID()] as const;
+  const concurrentClaims = await Promise.all(claimTokens.map((claimToken, index) => (
+    db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+      organization_id: orgId,
+      definition_id: definition.id,
+      fire_id: fire.id,
+      expected_epoch: definition.definition_epoch,
+      claim_owner: `track-a-worker-${index + 1}`,
+      claim_token: claimToken,
+      claimed_at: claimAt,
+      lease_expires_at: leaseExpiresAt,
+    }))
+  )));
+  const claimed = concurrentClaims.find((value) => value !== null) ?? null;
+  const firstClaimToken = claimed?.claim_token;
+  assert.equal(concurrentClaims.filter((value) => value !== null).length, 1);
   assert.equal(claimed?.state, 'claimed');
   assert.equal(claimed?.attempt_count, 1);
+  assert.ok(firstClaimToken);
+  const runCountBefore = (await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, orgId),
+  ))[0]?.value ?? 0;
+  const createdRun = await automationActions.invokeApprovedAutomation({
+    ...exactAutomation,
+    claim_token: firstClaimToken,
+  });
+  assert.equal(createdRun.contract_version, APP_RUN_CONTRACT_VERSIONS.run);
+  assert.equal(createdRun.origin_kind, 'app');
+  assert.equal(createdRun.execution_actor_type, 'automation');
+  assert.equal(createdRun.execution_actor_id, definition.id);
+  assert.equal(createdRun.root_run_id, createdRun.id);
+  assert.equal(createdRun.parent_run_id, null);
+  assert.equal(createdRun.depth, 0);
+  assert.equal(createdRun.risk_class, actionBinding.risk_class);
+  assert.equal(createdRun.review_requirement, actionBinding.review_requirement);
+  assert.equal(createdRun.review_scope, 'approved_automation_definition');
+  assert.equal(createdRun.retry_class, actionBinding.retry_class);
+  assert.equal(createdRun.execution_release_kind, 'approved_automation_definition');
+  const [persistedRun] = await db.select().from(appRuns).where(and(
+    eq(appRuns.org_id, orgId),
+    eq(appRuns.id, createdRun.id),
+  ));
+  assert.equal(persistedRun?.origin_app_binding_key, actionBinding.action_key);
+  assert.equal(persistedRun?.origin_app_grant_snapshot_id, effective?.id);
+  assert.equal(persistedRun?.origin_app_automation_definition_id, definition.id);
+  assert.equal(persistedRun?.origin_app_automation_fire_id, fire.id);
+  const runCreatedVerification = await postgresAppAutomationVerificationReadPort.load(
+    exactAutomation,
+  );
+  assert.equal(runCreatedVerification?.fire.state, 'run_created');
+  assert.equal(runCreatedVerification?.fire.app_run_id, createdRun.id);
+  const replayedRun = await automationActions.invokeApprovedAutomation({
+    ...exactAutomation,
+    claim_token: firstClaimToken,
+  });
+  assert.equal(replayedRun.id, createdRun.id);
+  assert.equal((await db.select({ value: count() }).from(appRuns).where(
+    eq(appRuns.org_id, orgId),
+  ))[0]?.value, runCountBefore + 1);
+
+  const budgetLimited = await createDefinition(1, 1);
+  const budgetFire = await persistFire(budgetLimited);
+  assert.equal(await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: budgetLimited.definition.id,
+    fire_id: budgetFire.id,
+    expected_epoch: budgetLimited.definition.definition_epoch,
+    claim_owner: 'track-a-budget-worker',
+    claim_token: randomUUID(),
+    claimed_at: new Date(budgetLimited.scheduledAt.getTime() + 60_000),
+    lease_expires_at: new Date(budgetLimited.scheduledAt.getTime() + 10 * 60_000),
+  })), null);
+
+  const retryCase = await createDefinition(3);
+  const retryFire = await persistFire(retryCase);
+  const retryClaimAt = new Date(retryCase.scheduledAt.getTime() + 60_000);
+  const retryDefinition = retryCase.definition;
+  const retryFirstClaimToken = randomUUID();
+  const retryClaimed = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
+    expected_epoch: retryDefinition.definition_epoch,
+    claim_owner: 'track-a-recovery-worker',
+    claim_token: retryFirstClaimToken,
+    claimed_at: retryClaimAt,
+    lease_expires_at: new Date(retryClaimAt.getTime() + 60_000),
+  }));
+  assert.equal(retryClaimed?.state, 'claimed');
   assert.equal(await db.transaction((tx) => recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
     organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
-    expected_epoch: definition.definition_epoch,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
+    expected_epoch: retryDefinition.definition_epoch,
     expected_claim_token: 'wrong-token',
-    recovered_at: new Date(approvedAt.getTime() + 181_000),
+    recovered_at: new Date(retryClaimAt.getTime() + 61_000),
   })), null);
   const recovered = await db.transaction((tx) => recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
     organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
-    expected_epoch: definition.definition_epoch,
-    expected_claim_token: firstClaimToken,
-    recovered_at: new Date(approvedAt.getTime() + 181_000),
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
+    expected_epoch: retryDefinition.definition_epoch,
+    expected_claim_token: retryFirstClaimToken,
+    recovered_at: new Date(retryClaimAt.getTime() + 61_000),
   }));
   assert.equal(recovered?.state, 'pending');
   const secondClaimToken = randomUUID();
   const secondClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
     organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
-    expected_epoch: definition.definition_epoch,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
+    expected_epoch: retryDefinition.definition_epoch,
     claim_owner: 'track-a-test-retry',
     claim_token: secondClaimToken,
-    claimed_at: new Date(approvedAt.getTime() + 182_000),
-    lease_expires_at: new Date(approvedAt.getTime() + 242_000),
+    claimed_at: new Date(retryClaimAt.getTime() + 62_000),
+    lease_expires_at: new Date(retryClaimAt.getTime() + 122_000),
   }));
   assert.equal(secondClaim?.attempt_count, 2);
   const released = await db.transaction((tx) => settleFailedAppAutomationFireClaimWithExecutor(tx, {
     organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
-    expected_epoch: definition.definition_epoch,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
+    expected_epoch: retryDefinition.definition_epoch,
     expected_claim_token: secondClaimToken,
-    failed_at: new Date(approvedAt.getTime() + 183_000),
+    failed_at: new Date(retryClaimAt.getTime() + 63_000),
   }));
   assert.equal(released?.state, 'pending');
   const thirdClaimToken = randomUUID();
   const thirdClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
     organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
-    expected_epoch: definition.definition_epoch,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
+    expected_epoch: retryDefinition.definition_epoch,
     claim_owner: 'track-a-test-final-retry',
     claim_token: thirdClaimToken,
-    claimed_at: new Date(approvedAt.getTime() + 184_000),
-    lease_expires_at: new Date(approvedAt.getTime() + 244_000),
+    claimed_at: new Date(retryClaimAt.getTime() + 64_000),
+    lease_expires_at: new Date(retryClaimAt.getTime() + 124_000),
   }));
   assert.equal(thirdClaim?.attempt_count, 3);
   const deadLettered = await db.transaction((tx) => (
     recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
       organization_id: orgId,
-      definition_id: definition.id,
-      fire_id: fire.id,
-      expected_epoch: definition.definition_epoch,
+      definition_id: retryDefinition.id,
+      fire_id: retryFire.id,
+      expected_epoch: retryDefinition.definition_epoch,
       expected_claim_token: thirdClaimToken,
-      recovered_at: new Date(approvedAt.getTime() + 245_000),
+      recovered_at: new Date(retryClaimAt.getTime() + 125_000),
     })
   ));
   assert.equal(deadLettered?.state, 'dead_letter');
   assert.equal(deadLettered?.terminal_reason, 'attempts_exhausted');
   const verification = await postgresAppAutomationVerificationReadPort.load({
     organization_id: orgId,
-    definition_id: definition.id,
-    fire_id: fire.id,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
   });
   assert.equal(verification?.approver.role, 'owner');
   assert.equal(verification?.approver.authorization_version, 1);
-  assert.equal(verification?.definition.definition_digest, definition.definition_digest);
-  assert.equal(verification?.fire.fire_identity, fire.fire_identity);
+  assert.equal(verification?.definition.definition_digest, retryDefinition.definition_digest);
+  assert.equal(verification?.fire.fire_identity, retryFire.fire_identity);
   assert.equal(await postgresAppAutomationVerificationReadPort.load({
     organization_id: OTHER_ORG_ID,
-    definition_id: definition.id,
-    fire_id: fire.id,
+    definition_id: retryDefinition.id,
+    fire_id: retryFire.id,
   }), null);
 
   const paused = await pauseAppAutomationDefinition(actor, {
-    definition_id: definition.id,
-    expected_epoch: definition.definition_epoch,
+    definition_id: retryDefinition.id,
+    expected_epoch: retryDefinition.definition_epoch,
   });
   const resumed = await resumeAppAutomationDefinition(actor, {
-    definition_id: definition.id,
+    definition_id: retryDefinition.id,
     expected_epoch: paused.definition_epoch,
   });
   const revokedDefinition = await revokeAppAutomationDefinition(actor, {
-    definition_id: definition.id,
+    definition_id: retryDefinition.id,
     expected_epoch: resumed.definition_epoch,
   });
   assert.equal(revokedDefinition.state, 'revoked');
-  assert.equal(revokedDefinition.definition_epoch, definition.definition_epoch + 3);
+  assert.equal(revokedDefinition.definition_epoch, retryDefinition.definition_epoch + 3);
+
+  const pauseRace = await createDefinition(4);
+  const pauseRaceFire = await persistFire(pauseRace);
+  const pauseRaceExact = {
+    organization_id: orgId,
+    definition_id: pauseRace.definition.id,
+    fire_id: pauseRaceFire.id,
+  };
+  await automationActions.preflightApprovedAutomation(pauseRaceExact);
+  const pauseRaceToken = randomUUID();
+  const pauseRaceClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    ...pauseRaceExact,
+    expected_epoch: pauseRace.definition.definition_epoch,
+    claim_owner: 'track-a-pause-race-worker',
+    claim_token: pauseRaceToken,
+    claimed_at: new Date(pauseRace.scheduledAt.getTime() + 60_000),
+    lease_expires_at: new Date(pauseRace.scheduledAt.getTime() + 10 * 60_000),
+  }));
+  assert.equal(pauseRaceClaim?.state, 'claimed');
+  await pauseAppAutomationDefinition(actor, {
+    definition_id: pauseRace.definition.id,
+    expected_epoch: pauseRace.definition.definition_epoch,
+  });
+  await assert.rejects(
+    automationActions.invokeApprovedAutomation({
+      ...pauseRaceExact,
+      claim_token: pauseRaceToken,
+    }),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_STALE',
+  );
+  const pauseRaceTerminal = await db.transaction((tx) => (
+    terminalizeAppAutomationFireDefinitionIneligibleWithExecutor(tx, {
+      ...pauseRaceExact,
+      expected_epoch: pauseRace.definition.definition_epoch,
+      expected_state: 'claimed',
+      expected_claim_token: pauseRaceToken,
+      terminal_at: new Date(),
+    })
+  ));
+  assert.equal(pauseRaceTerminal?.state, 'skipped');
+  assert.equal(pauseRaceTerminal?.terminal_reason, 'definition_ineligible');
+
+  const appKillRace = await createDefinition(5);
+  const appKillFire = await persistFire(appKillRace);
+  const appKillExact = {
+    organization_id: orgId,
+    definition_id: appKillRace.definition.id,
+    fire_id: appKillFire.id,
+  };
+  await automationActions.preflightApprovedAutomation(appKillExact);
+  const appKillToken = randomUUID();
+  const appKillClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    ...appKillExact,
+    expected_epoch: appKillRace.definition.definition_epoch,
+    claim_owner: 'track-a-app-kill-worker',
+    claim_token: appKillToken,
+    claimed_at: new Date(appKillRace.scheduledAt.getTime() + 60_000),
+    lease_expires_at: new Date(appKillRace.scheduledAt.getTime() + 10 * 60_000),
+  }));
+  assert.equal(appKillClaim?.state, 'claimed');
 
   const disabled = await disableAppInstallation(actor, staged.id, active!.lifecycle_epoch);
   assert.equal(disabled.state, 'disabled');
+  await assert.rejects(
+    automationActions.invokeApprovedAutomation({
+      ...appKillExact,
+      claim_token: appKillToken,
+    }),
+    (error: unknown) => error instanceof AppError
+      && (error.code === 'APP_DISABLED' || error.code === 'APP_STALE'),
+  );
+  const appKillTerminal = await db.transaction((tx) => (
+    terminalizeAppAutomationFireDefinitionIneligibleWithExecutor(tx, {
+      ...appKillExact,
+      expected_epoch: appKillRace.definition.definition_epoch,
+      expected_state: 'claimed',
+      expected_claim_token: appKillToken,
+      terminal_at: new Date(),
+    })
+  ));
+  assert.equal(appKillTerminal?.state, 'skipped');
   await assert.rejects(
     enableAppInstallation(actor, staged.id, disabled.lifecycle_epoch),
     (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',

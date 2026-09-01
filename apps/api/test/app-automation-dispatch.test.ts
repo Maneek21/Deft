@@ -101,22 +101,37 @@ test('a live prior claim defers, while a run-created replay is a no-op', async (
   assert.equal(invoked, false);
 });
 
-test('stale authority terminalizes the exact claim; transient failure releases it', async () => {
-  const terminalized: unknown[] = [];
+test('a pause or kill after preflight terminalizes only the exact claimed fire', async () => {
+  const calls: string[] = [];
   await dispatchAppAutomationFire(port({
-    invoke: async () => { throw new AppError('stale', 'APP_STALE', 409); },
+    preflight: async () => { calls.push('preflight'); },
+    claim: async (input) => {
+      calls.push('claim');
+      return fire({ state: 'claimed', attempt_count: 1, claim_token: input.claim_token });
+    },
+    invoke: async () => {
+      calls.push('invoke');
+      throw new AppError('stale', 'APP_STALE', 409);
+    },
     terminalize: async (input) => {
-      terminalized.push(input);
+      calls.push('terminalize');
+      assert.equal(input.expected_state, 'claimed');
+      assert.equal(input.expected_claim_token, 'claim-1');
+      assert.equal(input.expected_epoch, delivery.definition_epoch);
       return fire({ state: 'skipped', terminal_reason: 'definition_ineligible' });
     },
   }), delivery, now);
-  assert.equal(terminalized.length, 1);
+  assert.deepEqual(calls, ['preflight', 'claim', 'invoke', 'terminalize']);
+});
 
+test('a transient invocation failure releases the exact claim for bounded recovery', async () => {
   const failure = new Error('temporary');
   let settled = false;
   await assert.rejects(dispatchAppAutomationFire(port({
     invoke: async () => { throw failure; },
-    settleFailure: async () => {
+    settleFailure: async (input) => {
+      assert.equal(input.expected_claim_token, 'claim-1');
+      assert.equal(input.expected_epoch, delivery.definition_epoch);
       settled = true;
       return fire({ state: 'pending', attempt_count: 1 });
     },
