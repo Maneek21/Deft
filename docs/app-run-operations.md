@@ -101,6 +101,21 @@ Encryption-key loss prevents retained input/result recovery; signing-key loss
 prevents receipt verification; fingerprint-key loss prevents safe replay
 matching. None can be reconstructed from database contents.
 
+## Inspect bounded App operations
+
+An authenticated workspace owner or admin can read `GET /api/apps/operations`.
+The endpoint rechecks current organization membership and returns the
+`deft.app_operations.v1` projection: bounded Run and attempt counts, queue
+health, approval and cleanup pressure, connected-App health, retention and
+payload ceilings, and whether every referenced key version is configured.
+
+This is a read-only health surface, not a repair API. It omits provider and
+actor identities, grant snapshots, raw input and result payloads, ciphertext,
+receipt signatures, key IDs, and key material. A member, a demoted manager, an
+agent, or a request while the Run engine is disabled cannot use it. Resolve the
+reported degraded reason through the existing App lifecycle or recovery
+runbook; do not infer permission to replay an unknown provider outcome.
+
 ## Disable and rollback
 
 The normal entrance rollback is to set the affected intake flag false while

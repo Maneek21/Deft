@@ -1,39 +1,51 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-phase5_sha="${PHASE5_CANDIDATE_SHA:?PHASE5_CANDIDATE_SHA is required}"
-phase4_sha="${PHASE4_BASELINE_SHA:?PHASE4_BASELINE_SHA is required}"
+cert_phase="${APP_PLATFORM_CERT_PHASE:-phase5}"
+candidate_sha="${APP_PLATFORM_CANDIDATE_SHA:-${PHASE5_CANDIDATE_SHA:?PHASE5_CANDIDATE_SHA or APP_PLATFORM_CANDIDATE_SHA is required}}"
+baseline_sha="${APP_PLATFORM_BASELINE_SHA:-${PHASE4_BASELINE_SHA:?PHASE4_BASELINE_SHA or APP_PLATFORM_BASELINE_SHA is required}}"
 predecessor_image="${PREDECESSOR_IMAGE:?PREDECESSOR_IMAGE is required}"
 predecessor_commit="${PREDECESSOR_COMMIT:?PREDECESSOR_COMMIT is required}"
 certifier_root="${CERTIFIER_ROOT:?CERTIFIER_ROOT is required}"
-phase5_root="${PHASE5_ROOT:?PHASE5_ROOT is required}"
-phase4_root="${PHASE4_ROOT:?PHASE4_ROOT is required}"
+candidate_root="${APP_PLATFORM_CANDIDATE_ROOT:-${PHASE5_ROOT:?PHASE5_ROOT or APP_PLATFORM_CANDIDATE_ROOT is required}}"
+baseline_root="${APP_PLATFORM_BASELINE_ROOT:-${PHASE4_ROOT:?PHASE4_ROOT or APP_PLATFORM_BASELINE_ROOT is required}}"
 evidence_root="${EVIDENCE_DIR:?EVIDENCE_DIR is required}"
+browser_script="${APP_PLATFORM_BROWSER_SCRIPT:-${certifier_root}/scripts/ci/app-platform-phase5-browser-smoke.mjs}"
+setup_hook="${APP_PLATFORM_SETUP_HOOK:-}"
+offline_hook="${APP_PLATFORM_OFFLINE_HOOK:-}"
 
 run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 run_attempt="${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
-prefix="deft-p5-cert-${run_id}-${run_attempt}"
+prefix="${APP_PLATFORM_RESOURCE_PREFIX:-deft-p5-cert-${run_id}-${run_attempt}}"
 network="${prefix}-network"
 source_container="${prefix}-source"
 restore_container="${prefix}-restore"
 app_container="${prefix}-app"
 source_volume="${prefix}-source-data"
 restore_volume="${prefix}-restore-data"
-candidate_tag="deft:phase5-cert-${run_id}-${run_attempt}"
-database_name="deft_phase4_phase5_release_test"
-postgres_password="phase5-cert-postgres"
+candidate_tag="${APP_PLATFORM_CANDIDATE_TAG:-deft:${cert_phase}-cert-${run_id}-${run_attempt}}"
+database_name="${APP_PLATFORM_DATABASE_NAME:-deft_phase4_phase5_release_test}"
+postgres_password="${APP_PLATFORM_POSTGRES_PASSWORD:-phase5-cert-postgres}"
 host_port=55432
 source_url_host="postgres://postgres:${postgres_password}@127.0.0.1:${host_port}/${database_name}"
 source_url_container="postgres://postgres:${postgres_password}@${source_container}:5432/${database_name}"
 restore_url_container="postgres://postgres:${postgres_password}@${restore_container}:5432/${database_name}"
 safe_dir="${evidence_root}/safe"
-recovery_dir="${RUNNER_TEMP:?RUNNER_TEMP is required}/deft-phase5-recovery-${run_id}-${run_attempt}"
+recovery_dir="${RUNNER_TEMP:?RUNNER_TEMP is required}/deft-${cert_phase}-recovery-${run_id}-${run_attempt}"
 keyring_path="${recovery_dir}/app-run-keyrings.json"
 restored_keyring_path="${recovery_dir}/restored-app-run-keyrings.json"
 dump_path="${recovery_dir}/database.dump"
 candidate_archive="${evidence_root}/candidate-image.tar.zst"
+app_docker_args_file="${recovery_dir}/app-docker-args.txt"
+upgrade_package_path="${recovery_dir}/phase6-upgrade.deftapp.json"
 host_uid="$(id -u)"
 host_gid="$(id -g)"
+
+[[ "$cert_phase" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]
+[[ "$run_id" =~ ^[0-9]+$ && "$run_attempt" =~ ^[0-9]+$ ]]
+[[ "$prefix" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]
+[[ "$candidate_tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]]
+[[ "$database_name" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]
 
 mkdir -p "$safe_dir" "$recovery_dir"
 chmod 700 "$recovery_dir"
@@ -43,8 +55,9 @@ cleanup() {
   docker rm -f "$app_container" "$restore_container" "$source_container" >/dev/null 2>&1
   docker network rm "$network" >/dev/null 2>&1
   docker volume rm "$restore_volume" "$source_volume" >/dev/null 2>&1
-  rm -f "$keyring_path" "$restored_keyring_path" "$dump_path"
-  rmdir "$recovery_dir" >/dev/null 2>&1
+  if [[ "$recovery_dir" == "${RUNNER_TEMP}/deft-${cert_phase}-recovery-${run_id}-${run_attempt}" ]]; then
+    rm -rf -- "$recovery_dir"
+  fi
 }
 trap cleanup EXIT
 
@@ -70,8 +83,28 @@ run_candidate() {
     --entrypoint sh "$candidate_tag" -c "$2"
 }
 
-[[ "$(git -C "$phase5_root" rev-parse HEAD)" == "$phase5_sha" ]]
-[[ "$(git -C "$phase4_root" rev-parse HEAD)" == "$phase4_sha" ]]
+run_extension_hook() {
+  local hook="$1"
+  local stage="$2"
+  if [[ -z "$hook" ]]; then return 0; fi
+  [[ -f "$hook" ]]
+  CERTIFICATION_STAGE="$stage" CERT_PHASE="$cert_phase" \
+  CERTIFIER_ROOT="$certifier_root" CANDIDATE_ROOT="$candidate_root" \
+  CANDIDATE_SHA="$candidate_sha" BASELINE_ROOT="$baseline_root" \
+  BASELINE_SHA="$baseline_sha" CANDIDATE_TAG="$candidate_tag" \
+  CERT_NETWORK="$network" SOURCE_CONTAINER="$source_container" \
+  RESTORE_CONTAINER="$restore_container" APP_CONTAINER="$app_container" \
+  SOURCE_DATABASE_URL="$source_url_container" RESTORE_DATABASE_URL="$restore_url_container" \
+  DATABASE_NAME="$database_name" POSTGRES_PASSWORD="$postgres_password" \
+  SAFE_EVIDENCE_DIR="$safe_dir" RECOVERY_DIR="$recovery_dir" \
+  APP_DOCKER_ARGS_FILE="$app_docker_args_file" UPGRADE_PACKAGE_PATH="$upgrade_package_path" \
+  DEFT_APP_RUN_KEYRINGS="${restored_keyring_json:-${keyring_json:-}}" \
+  DEFT_TEST_EMAIL="${proof_email:-}" \
+  bash "$hook"
+}
+
+[[ "$(git -C "$candidate_root" rev-parse HEAD)" == "$candidate_sha" ]]
+[[ "$(git -C "$baseline_root" rev-parse HEAD)" == "$baseline_sha" ]]
 
 docker network create "$network" >/dev/null
 docker volume create "$source_volume" >/dev/null
@@ -87,7 +120,7 @@ docker exec "$source_container" psql -U postgres -d "$database_name" -Atc \
   "SELECT extversion FROM pg_extension WHERE extname = 'vector'" > "$safe_dir/pgvector-version.txt"
 
 (
-  cd "$phase4_root"
+  cd "$baseline_root"
   pnpm --filter @deft/app-kit build
   DATABASE_URL="$source_url_host" pnpm db:push-full
   DATABASE_URL="$source_url_host" pnpm --filter @deft/db seed:demo
@@ -102,23 +135,23 @@ docker buildx build --load \
   --tag "$candidate_tag" \
   --iidfile "$safe_dir/candidate-buildkit-iid.txt" \
   --metadata-file "$safe_dir/candidate-buildkit-metadata.json" \
-  --build-arg "VCS_REF=$phase5_sha" \
+  --build-arg "VCS_REF=$candidate_sha" \
   --build-arg NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000 \
   --build-arg NEXT_PUBLIC_API_URL=http://127.0.0.1:3001 \
   --build-arg NEXT_PUBLIC_WS_URL=http://127.0.0.1:3001 \
   --build-arg NEXT_PUBLIC_FEATURE_HUDDLES=true \
   --build-arg NEXT_PUBLIC_FEATURE_APPS=true \
-  "$phase5_root"
+  "$candidate_root"
 
 image_revision="$(docker image inspect "$candidate_tag" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
-[[ "$image_revision" == "$phase5_sha" ]]
+[[ "$image_revision" == "$candidate_sha" ]]
 docker image inspect "$candidate_tag" > "$safe_dir/candidate-image-inspect.json"
 printf '%s\n' "$image_revision" > "$safe_dir/candidate-image-revision.txt"
 
 run_candidate "$source_url_container" 'pnpm db:upgrade && pnpm module:verify'
 run_candidate "$source_url_container" 'pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts'
 docker run --rm --network "$network" \
-  -v "${phase5_root}/examples:/app/examples:ro" \
+  -v "${candidate_root}/examples:/app/examples:ro" \
   -e DATABASE_URL="$source_url_container" \
   -e DEFT_TEST_DATABASE_URL="$source_url_container" \
   -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
@@ -156,6 +189,7 @@ keyring_hash="$(sha256sum "$keyring_path" | cut -d ' ' -f 1)"
 printf '%s\n' "$keyring_hash" > "$safe_dir/app-run-keyring.sha256"
 
 keyring_json="$(tr -d '\n' < "$keyring_path")"
+run_extension_hook "$setup_hook" setup
 docker run --rm --network "$network" \
   -v "${certifier_root}/scripts/ci/app-platform-phase5-certification-probe.ts:/app/scripts/ci/app-platform-phase5-certification-probe.ts:ro" \
   -v "${safe_dir}:/evidence" \
@@ -244,6 +278,8 @@ docker run --rm --network "$network" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts verify --expected-snapshot /evidence/source-snapshot.json --output /evidence/restored-verification.json && chown "$HOST_UID:$HOST_GID" /evidence/restored-verification.json'
 
+app_docker_args=()
+if [[ -s "$app_docker_args_file" ]]; then mapfile -t app_docker_args < "$app_docker_args_file"; fi
 docker run -d --name "$app_container" --network "$network" -p 3000:3000 -p 3001:3001 \
   -e DATABASE_URL="$restore_url_container" \
   -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
@@ -258,6 +294,7 @@ docker run -d --name "$app_container" --network "$network" -p 3000:3000 -p 3001:
   -e NEXT_PUBLIC_API_URL=http://127.0.0.1:3001 \
   -e NEXT_PUBLIC_WS_URL=http://127.0.0.1:3001 \
   -e NEXT_PUBLIC_FEATURE_APPS=true \
+  "${app_docker_args[@]}" \
   "$candidate_tag" >/dev/null
 for attempt in $(seq 1 45); do
   if curl --fail --silent http://127.0.0.1:3001/health >/dev/null \
@@ -276,7 +313,10 @@ JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
 ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
 DEFT_APP_PLATFORM_EVIDENCE_DIR="$safe_dir" \
 DEFT_APP_PLATFORM_BROWSER_EVIDENCE="$safe_dir/browser-evidence.json" \
-node "$certifier_root/scripts/ci/app-platform-phase5-browser-smoke.mjs"
+DEFT_APP_PLATFORM_UPGRADE_PACKAGE="$upgrade_package_path" \
+node "$browser_script"
+
+run_extension_hook "$offline_hook" offline
 
 docker save "$candidate_tag" | zstd -T0 -10 -o "$candidate_archive"
 sha256sum "$candidate_archive" | cut -d ' ' -f 1 > "$safe_dir/candidate-image-archive.sha256"
@@ -285,21 +325,21 @@ docker exec "$restore_container" psql -U postgres -d "$database_name" -Atc \
   > "$safe_dir/migration-ledger.txt"
 
 CERTIFIER_SHA="${CERTIFIER_SHA:?CERTIFIER_SHA is required}" \
-PHASE5_CANDIDATE_SHA="$phase5_sha" PHASE4_BASELINE_SHA="$phase4_sha" \
+CERT_PHASE="$cert_phase" CANDIDATE_SHA="$candidate_sha" BASELINE_SHA="$baseline_sha" \
 PREDECESSOR_IMAGE="$predecessor_image" IMAGE_REVISION="$image_revision" \
 node --input-type=module - "$safe_dir/certification-summary.json" <<'NODE'
 import { writeFileSync } from 'node:fs';
 const output = process.argv[2];
 writeFileSync(output, `${JSON.stringify({
-  schema: 'deft.app_platform.phase5.release_host.v1',
+  schema: `deft.app_platform.${process.env.CERT_PHASE}.release_host.v1`,
   result: 'passed',
   certifier_sha: process.env.CERTIFIER_SHA,
-  candidate_sha: process.env.PHASE5_CANDIDATE_SHA,
-  baseline_sha: process.env.PHASE4_BASELINE_SHA,
+  candidate_sha: process.env.CANDIDATE_SHA,
+  baseline_sha: process.env.BASELINE_SHA,
   candidate_revision: process.env.IMAGE_REVISION,
   predecessor_image: process.env.PREDECESSOR_IMAGE,
   published: false,
 }, null, 2)}\n`, { mode: 0o644 });
 NODE
 
-echo 'Phase 5 immutable non-publishing certification passed.'
+echo "${cert_phase} immutable non-publishing certification passed."

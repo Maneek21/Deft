@@ -60,10 +60,10 @@ test('certification checks the exact candidate revision and builds without publi
   assert.match(workflow, /baseline_sha="\$\(git -C \.cert\/phase4-baseline rev-parse HEAD\)"/);
   assert.match(workflow, /\[\[ "\$baseline_sha" == "\$PHASE4_BASELINE_SHA" \]\]/);
   assert.match(workflow, /bash scripts\/ci\/certify-app-platform-phase5\.sh/);
-  assert.match(orchestrator, /git -C "\$phase5_root" rev-parse HEAD/);
+  assert.match(orchestrator, /git -C "\$candidate_root" rev-parse HEAD/);
   assert.match(orchestrator, /docker buildx build --load/);
   assert.match(orchestrator, /org\.opencontainers\.image\.revision/);
-  assert.match(orchestrator, /\[\[ "\$image_revision" == "\$phase5_sha" \]\]/);
+  assert.match(orchestrator, /\[\[ "\$image_revision" == "\$candidate_sha" \]\]/);
   for (const forbidden of [
     /docker\s+push\b/,
     /push:\s*true\b/,

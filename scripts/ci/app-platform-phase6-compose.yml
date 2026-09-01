@@ -1,0 +1,21 @@
+x-phase6-candidate: &phase6-candidate
+  image: ${DEFT_CERT_CANDIDATE_IMAGE:?DEFT_CERT_CANDIDATE_IMAGE is required}
+  pull_policy: never
+  build: !reset null
+  env_file: !override ${DEFT_CERT_ENV_FILE:?DEFT_CERT_ENV_FILE is required}
+
+services:
+  deft:
+    <<: *phase6-candidate
+
+  init:
+    <<: *phase6-candidate
+
+  upgrade:
+    <<: *phase6-candidate
+
+  doctor:
+    <<: *phase6-candidate
+
+  smoke:
+    <<: *phase6-candidate
