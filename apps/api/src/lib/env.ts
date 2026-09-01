@@ -122,12 +122,16 @@ export const APP_RUN_LEGACY_MCP_CUTOVER_ENABLED =
   process.env.DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED === 'true';
 export const APP_RUN_APP_ORIGIN_ENABLED =
   process.env.DEFT_APP_RUN_APP_ORIGIN_ENABLED === 'true';
+// Track A automation is an independent, deny-by-default privileged plane.
+export const APP_AUTOMATIONS_ENABLED =
+  process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';
 
 export function validateAppRunRolloutConfiguration(
   appRunsEnabled: boolean,
   legacyMcpCutoverEnabled: boolean,
   appOriginEnabled = false,
   appsEnabled = false,
+  appAutomationsEnabled = false,
 ): void {
   if (legacyMcpCutoverEnabled && !appRunsEnabled) {
     throw new Error(
@@ -139,6 +143,11 @@ export function validateAppRunRolloutConfiguration(
       'DEFT_APP_RUN_APP_ORIGIN_ENABLED=true requires DEFT_APP_RUNS_ENABLED=true and DEFT_APPS_ENABLED=true',
     );
   }
+  if (appAutomationsEnabled && (!appsEnabled || !appRunsEnabled || !appOriginEnabled)) {
+    throw new Error(
+      'DEFT_APP_AUTOMATIONS_ENABLED=true requires DEFT_APPS_ENABLED=true, DEFT_APP_RUNS_ENABLED=true, and DEFT_APP_RUN_APP_ORIGIN_ENABLED=true',
+    );
+  }
 }
 
 validateAppRunRolloutConfiguration(
@@ -146,5 +155,6 @@ validateAppRunRolloutConfiguration(
   APP_RUN_LEGACY_MCP_CUTOVER_ENABLED,
   APP_RUN_APP_ORIGIN_ENABLED,
   APPS_ENABLED,
+  APP_AUTOMATIONS_ENABLED,
 );
 validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYRINGS);

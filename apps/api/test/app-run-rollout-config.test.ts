@@ -11,9 +11,44 @@ test('App Run rollout accepts the three safe engine and legacy MCP intake states
   assert.doesNotThrow(() => validateAppRunRolloutConfiguration(true, false));
   assert.doesNotThrow(() => validateAppRunRolloutConfiguration(true, true));
   assert.doesNotThrow(() => validateAppRunRolloutConfiguration(true, false, true, true));
+  assert.doesNotThrow(() => validateAppRunRolloutConfiguration(true, false, true, true, true));
   assert.throws(
     () => validateAppRunRolloutConfiguration(true, false, true, false),
     /requires DEFT_APP_RUNS_ENABLED=true and DEFT_APPS_ENABLED=true/,
+  );
+});
+
+test('App automation intake defaults off and requires the complete connected Run stack', () => {
+  const defaulted = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--eval',
+      "import('./src/lib/env.ts').then((env) => { if (env.APP_AUTOMATIONS_ENABLED) process.exit(2); })",
+    ],
+    {
+      cwd: apiRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DEFT_APPS_ENABLED: 'false',
+        DEFT_APP_RUNS_ENABLED: 'false',
+        DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'false',
+        DEFT_APP_AUTOMATIONS_ENABLED: 'TRUE',
+        DEFT_APP_RUN_KEYRINGS: '',
+      },
+    },
+  );
+  assert.equal(defaulted.status, 0, `${defaulted.stdout}\n${defaulted.stderr}`);
+
+  assert.throws(
+    () => validateAppRunRolloutConfiguration(true, false, false, false, true),
+    /requires DEFT_APPS_ENABLED=true, DEFT_APP_RUNS_ENABLED=true, and DEFT_APP_RUN_APP_ORIGIN_ENABLED=true/,
+  );
+  assert.throws(
+    () => validateAppRunRolloutConfiguration(true, false, false, true, true),
+    /requires DEFT_APPS_ENABLED=true, DEFT_APP_RUNS_ENABLED=true, and DEFT_APP_RUN_APP_ORIGIN_ENABLED=true/,
   );
 });
 
