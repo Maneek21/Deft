@@ -290,6 +290,17 @@ executor, approval ledger, retry loop, or provider route.
 
 ## Track A — Bounded governed automation
 
+**PR A implementation status (2026-09-01):** Loops A.0–A.2 are implemented
+as a dormant, default-off candidate. Protocol v2 requests remain requested-only;
+owners/admins create an immutable host-derived definition; one exact fire may
+be inserted and claimed through host-only seams; and that claimed fire enters
+the existing AppActionService, AppRunService, authorization, provider, receipt,
+and replay path. There is intentionally no schedule scanner, queue consumer,
+route, or UI cutover in PR A. Static migration parity, focused contracts, and
+API typecheck pass locally. Actual `.26` PostgreSQL execution remains a CI/release
+host requirement because the local environment has no disposable pgvector-
+capable PostgreSQL and Docker is unavailable.
+
 ### Loop A.0 — Freeze the first automated proof
 
 **Purpose:** add one useful unattended plane without inventing a workflow
