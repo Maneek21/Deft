@@ -86,6 +86,7 @@ docker exec "$source_container" psql -U postgres -d "$database_name" -Atc \
 
 (
   cd "$phase4_root"
+  pnpm --filter @deft/app-kit build
   DATABASE_URL="$source_url_host" pnpm db:push-full
   DATABASE_URL="$source_url_host" DEFT_TEST_DATABASE_URL="$source_url_host" \
     JWT_SECRET=phase5-cert-jwt-not-for-prod \
