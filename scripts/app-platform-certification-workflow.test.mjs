@@ -86,6 +86,7 @@ test('certification uses real pgvector and proves matched backup, restore, and k
 });
 
 test('certification carries the Phase 4 and Phase 5 probes plus browser evidence', () => {
+  assert.match(orchestrator, /pnpm --filter @deft\/app-kit build/);
   assert.match(orchestrator, /resource-participation-apps-db\.test\.ts/);
   assert.match(orchestrator, /app-origin-run-lifecycle-db\.test\.ts/);
   assert.match(orchestrator, /app-platform-phase5-browser-smoke\.mjs/);
