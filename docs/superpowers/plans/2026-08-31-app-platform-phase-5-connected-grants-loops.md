@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loop 7 local candidate complete; immutable release-host gate waits for PR C merge |
+| Status | PR C merged at `161ca65f`; Loop 7 local and exact-merge CI passed; immutable non-publishing release-host certification remains |
 | Base candidate | Merged Phase 4 commit `ec79592e669bdf915fad8a5d2480f0625d819a4c` |
 | Outcome | One installed App can request, receive, expose, and invoke one exact governed capability through the same host-owned path on every interactive actor surface |
 | Proof | Campaign resource + selected Contact resource -> approved sandbox MCP email -> one App Run, provider call, receipt, and result identity |
