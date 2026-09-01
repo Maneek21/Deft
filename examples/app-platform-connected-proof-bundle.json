@@ -1,0 +1,53 @@
+{
+  "schema": "deft.app_platform.connected_proof_bundle.v1",
+  "app_kit": {
+    "package": "@deft/app-kit",
+    "version": "0.1.0-alpha.1",
+    "source_path": "packages/app-kit",
+    "pack_command": "pnpm --dir packages/app-kit pack --pack-destination <output-directory> --json"
+  },
+  "dependencies": {
+    "contacts": {
+      "app_id": "org.deft.reference.resource-contacts-app",
+      "version": "1.0.0",
+      "source_path": "examples/resource-participation-contacts-app",
+      "lock_path": "examples/resource-participation-contacts-app/deft.app.lock.json",
+      "package_digest": "sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8",
+      "manifest_digest": "sha256:d25831fbc3b87881db689ce1cf2beeb2256324be9c7e4a3f780e70534513e1ed"
+    }
+  },
+  "providers": {
+    "sandbox_email": {
+      "package": "@deft/app-platform-sandbox-email-provider",
+      "version": "0.1.0-alpha.1",
+      "source_path": "examples/app-platform-sandbox-email-provider",
+      "pack_command": "pnpm --dir examples/app-platform-sandbox-email-provider pack --pack-destination <output-directory> --json",
+      "artifact": {
+        "filename": "deft-app-platform-sandbox-email-provider-0.1.0-alpha.1.tgz",
+        "content": {
+          "schema": "deft.app_platform.packed_payload.v1",
+          "files": [
+            {
+              "path": "README.md",
+              "byte_length": 1322,
+              "digest": "sha256:942acfd4bc6275f6d192e5524e71b0a0fbc3749b28f37fdc01490fae31cdd423"
+            },
+            {
+              "path": "package.json",
+              "byte_length": 420,
+              "digest": "sha256:22e3e69107b59bd2ca29a9b7c669067ce9771ff4b5daf955ee5f1f20b85a5e14"
+            },
+            {
+              "path": "server.mjs",
+              "byte_length": 7167,
+              "digest": "sha256:d012d12a1cbcef05387a76b82ad550f59f6efdaabf4d56f71b10cdfedfb1302f"
+            }
+          ],
+          "digest": "sha256:afae01e8e248a6adfaa6503c675e4074356083b34b7ec126b2582425df2091a1"
+        }
+      },
+      "transport": "stdio",
+      "network_egress": false
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@deft/app-kit",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Portable authoring and packaging contract for declarative Deft apps.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -25,7 +25,7 @@
     "README.md"
   ],
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

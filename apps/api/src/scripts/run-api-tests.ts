@@ -30,6 +30,12 @@ if (!runningInCi && process.env.DATABASE_URL === configuredDatabaseUrl) {
   process.exit(1);
 }
 
+// The API suite is the contract gate for both supported developer install
+// flows. Force the otherwise opt-in feature flags in the disposable test
+// process so pairing coverage cannot silently turn into skipped tests.
+process.env.DEFT_APPS_ENABLED = 'true';
+process.env.DEFT_APP_DEVELOPER_PAIRING_ENABLED = 'true';
+
 const pnpmCli = process.env.npm_execpath;
 if (!pnpmCli) {
   console.error('[run-api-tests] Run this script through pnpm so npm_execpath is available');

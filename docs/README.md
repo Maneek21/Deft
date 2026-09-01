@@ -13,6 +13,7 @@
 
 ## Operator and integration guides
 
+- [Connected App author guide](connected-app-author-guide.md)
 - [Hermes native employee integration](../integrations/hermes/deft-platform/README.md)
 - [Legacy Hermes Agent Channel bridge rollback](hermes-agent-channel-service.md)
 - Public product capabilities: [FEATURES.md](../FEATURES.md)

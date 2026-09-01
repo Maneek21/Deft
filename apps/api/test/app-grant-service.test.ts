@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { DeftAppManifestV0Schema } from '@deft/app-kit';
+import { DeftAppManifestV0Schema, projectDeftAppRequestedAuthority } from '@deft/app-kit';
 import { buildRequestedAppGrantProjection } from '../src/lib/app-grant-service.js';
 import {
   connectedAppActionBindingMatches,
@@ -41,6 +41,10 @@ test('Protocol v1 staging projection is deterministic and explicitly non-executa
   assert.equal(first.classification.provider_access, false);
   assert.equal(first.classification.review_required, true);
   assert.doesNotMatch(JSON.stringify(first.canonical_snapshot), /deft\.private\.v1:/);
+  const portable = projectDeftAppRequestedAuthority(built.package.manifest);
+  assert.deepEqual((first.canonical_snapshot as any).requirements, portable.requirements);
+  assert.deepEqual(first.resource_rights, portable.resource_rights);
+  assert.deepEqual(first.classification, portable.classification);
 });
 
 test('Protocol v0 staging projection is an empty compatibility request', () => {

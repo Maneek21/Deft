@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { appGrantSnapshots } from '@deft/db/schema';
 import {
-  SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
+  projectDeftAppRequestedAuthority,
   type DeftAppManifest,
-  type DeftAppManifestV1,
 } from '@deft/app-kit';
 import { db } from './db.js';
 
@@ -49,16 +48,6 @@ export function digestAppGrantValue(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}`;
 }
 
-function v1RequestedRequirements(manifest: DeftAppManifestV1) {
-  return {
-    dependencies: manifest.dependencies,
-    resources: manifest.resource_requirements,
-    capabilities: manifest.capability_requirements,
-    connectors: manifest.connector_requirements,
-    actions: manifest.actions,
-  };
-}
-
 export function buildRequestedAppGrantProjection(input: {
   organization_id: string;
   app_installation_id: string;
@@ -68,31 +57,10 @@ export function buildRequestedAppGrantProjection(input: {
   package_digest: string;
 }): RequestedAppGrantProjection {
   const protocol = input.manifest.compatibility.app_protocol;
-  const requirements = protocol === '1'
-    ? v1RequestedRequirements(input.manifest as DeftAppManifestV1)
-    : { dependencies: [], resources: [], capabilities: [], connectors: [], actions: [] };
-  const resourceRights = protocol === '1'
-    ? (input.manifest as DeftAppManifestV1).resource_requirements.map((requirement) => ({
-        requirement_key: requirement.key,
-        source: requirement.source,
-        resource_type: requirement.resource_type,
-        fields: requirement.fields,
-        right: 'read',
-      }))
-    : [];
-  const classification = {
-    authority_state: 'requested_only',
-    executable: false,
-    provider_access: false,
-    review_required: protocol === '1',
-    actions: protocol === '1'
-      ? (input.manifest as DeftAppManifestV1).actions.map((action) => ({
-          action_key: action.key,
-          capability_requirement_key: action.capability_requirement_key,
-          host_policy: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.host_policy,
-        }))
-      : [],
-  };
+  const portable = projectDeftAppRequestedAuthority(input.manifest);
+  const requirements = portable.requirements;
+  const resourceRights = portable.resource_rights;
+  const classification = portable.classification;
   const canonicalSnapshot = canonicalizeAppGrantValue({
     snapshot_version: APP_GRANT_SNAPSHOT_VERSION,
     snapshot_kind: 'requested',

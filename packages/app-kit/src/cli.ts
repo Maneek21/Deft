@@ -5,10 +5,15 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import {
   buildDeftAppPackage,
+  canonicalDeftAppRequestedAuthorityReportJson,
+  checkDeftAppDeveloperContract,
+  DEFT_APP_PACKAGE_FORMAT,
+  DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH,
   parseDeftAppManifest,
   prepareModuleArtifact,
   type DeftAppManifestInput,
   type DeftAppManifestV0Input,
+  type DeftAppManifestV1Input,
 } from './index.js';
 
 const cwd = process.cwd();
@@ -34,7 +39,22 @@ async function assertRegularUnslinkedFile(relativePath: string): Promise<string>
   return current;
 }
 
-async function initialize(): Promise<void> {
+type AppTemplate = 'declarative' | 'connected';
+
+function parseInitTemplate(): AppTemplate {
+  const args = process.argv.slice(4);
+  if (args.length === 0) return 'declarative';
+  if (
+    args.length !== 2
+    || args[0] !== '--template'
+    || (args[1] !== 'declarative' && args[1] !== 'connected')
+  ) {
+    throw new Error('Usage: deft app init [--template declarative|connected]');
+  }
+  return args[1];
+}
+
+async function initializeDeclarative(): Promise<void> {
   const manifestPath = resolve(cwd, 'deft.app.json');
   if (await exists(manifestPath)) throw new Error('deft.app.json already exists');
   const modulePath = 'modules/hello-workspace/deft.module.json';
@@ -91,6 +111,148 @@ async function initialize(): Promise<void> {
   console.log(`Initialized ${manifest.name} in ${cwd}`);
 }
 
+async function initializeConnected(): Promise<void> {
+  const manifestPath = resolve(cwd, 'deft.app.json');
+  if (await exists(manifestPath)) throw new Error('deft.app.json already exists');
+  const modulePath = 'modules/connected-campaigns/deft.module.json';
+  const moduleManifest = {
+    schema_version: '2',
+    id: 'community.example.connected-campaigns',
+    slug: 'connected-campaigns',
+    version: '1.0.0',
+    name: 'Connected Campaigns',
+    description: 'Campaign resources that reference Contacts owned by a dependency App.',
+    collections: [{
+      key: 'campaigns',
+      name: 'Campaigns',
+      singular_name: 'Campaign',
+      fields: [
+        { key: 'subject', label: 'Subject', type: 'text', required: true },
+        { key: 'body', label: 'Body', type: 'long_text', required: true },
+        {
+          key: 'contacts',
+          label: 'Contacts',
+          type: 'resource_ref',
+          target: { module_id: 'org.deft.reference.resource-contacts', resource_type: 'contacts' },
+          multiple: true,
+          display: 'label',
+        },
+      ],
+      views: [
+        { key: 'all', name: 'All campaigns', type: 'table', fields: ['subject', 'contacts'] },
+        { key: 'detail', name: 'Campaign details', type: 'detail', fields: ['subject', 'body', 'contacts'] },
+      ],
+      search: { title_field: 'subject', subtitle_fields: [], fields: ['subject', 'body'] },
+    }],
+    navigation: { default_collection: 'campaigns', default_view: 'all' },
+  };
+  const artifact = await prepareModuleArtifact({ path: modulePath, manifest: moduleManifest });
+  const manifest: DeftAppManifestV1Input = {
+    schema_version: '1',
+    id: 'community.example.connected-campaigns-app',
+    version: '1.0.0',
+    name: 'Connected Campaigns',
+    description: 'A connected Deft App that relates Campaigns to Contacts and requests sandbox email.',
+    license: 'AGPL-3.0-only',
+    compatibility: { app_protocol: '1' },
+    modules: [{
+      module_id: moduleManifest.id,
+      version: moduleManifest.version,
+      manifest_path: modulePath,
+      manifest_digest: artifact.digest,
+    }],
+    navigation: [{
+      key: 'campaigns', label: 'Campaigns', module_id: moduleManifest.id,
+      collection_key: 'campaigns', view_key: 'all',
+    }],
+    dependencies: [{
+      key: 'contacts_app',
+      app_id: 'org.deft.reference.resource-contacts-app',
+      version: '1.0.0',
+    }],
+    resource_requirements: [
+      {
+        key: 'campaign',
+        source: { kind: 'included_module', module_id: moduleManifest.id, version: moduleManifest.version },
+        resource_type: 'campaigns',
+        fields: ['subject', 'body', 'contacts'],
+      },
+      {
+        key: 'contact',
+        source: {
+          kind: 'dependency_module',
+          dependency_key: 'contacts_app',
+          module_id: 'org.deft.reference.resource-contacts',
+          version: '1.0.0',
+        },
+        resource_type: 'contacts',
+        fields: ['email'],
+      },
+    ],
+    capability_requirements: [{
+      key: 'send_email',
+      interface: {
+        kind: 'private', namespace: 'app_lineage', key: 'sandbox_email_send', version: '1',
+      },
+    }],
+    connector_requirements: [{ key: 'mail_provider', provider_kind: 'mcp' }],
+    actions: [{
+      key: 'send_campaign_email',
+      label: 'Send campaign email',
+      capability_requirement_key: 'send_email',
+      connector_requirement_key: 'mail_provider',
+      placement: { kind: 'resource_detail', resource_requirement_key: 'campaign' },
+      input_bindings: [
+        {
+          input_key: 'to',
+          source: {
+            kind: 'selected_relation_field',
+            source_resource_requirement_key: 'campaign',
+            relation_field_key: 'contacts',
+            target_resource_requirement_key: 'contact',
+            target_field_key: 'email',
+            selection: 'one',
+          },
+        },
+        {
+          input_key: 'subject',
+          source: { kind: 'resource_field', resource_requirement_key: 'campaign', field_key: 'subject' },
+        },
+        {
+          input_key: 'body_text',
+          source: { kind: 'resource_field', resource_requirement_key: 'campaign', field_key: 'body' },
+        },
+      ],
+    }],
+  };
+  await writeJson(resolve(cwd, modulePath), moduleManifest);
+  await writeJson(manifestPath, manifest);
+  await writeFile(resolve(cwd, 'APP_BRIEF.md'), [
+    '# App brief',
+    '',
+    'Describe the connected workspace outcome, the resources it relates, and why each requested authority is needed.',
+    '',
+  ].join('\n'), 'utf8');
+  await writeFile(resolve(cwd, 'AGENTS.md'), [
+    '# Connected Deft App',
+    '',
+    '- Build only through the published `@deft/app-kit` manifest, Module, and package contracts.',
+    '- Keep staging at zero authority. A workspace owner or admin reviews, binds, and activates requests.',
+    '- Never add credentials, provider endpoints, executable code, arbitrary mapping, policy overrides, or Deft core edits.',
+    '- Keep Contacts as an exact dependency and reference its records; do not copy them into Campaigns.',
+    '- The sandbox email action is single-recipient, human-initiated, and always requires host review.',
+    '- App Protocol v1 does not provide automation, custom UI, runtime, sync, or public ingress.',
+    '',
+  ].join('\n'), 'utf8');
+  await writeFile(resolve(cwd, '.gitignore'), '.deft/\n', 'utf8');
+  console.log(`Initialized ${manifest.name} in ${cwd}`);
+}
+
+async function initialize(template: AppTemplate): Promise<void> {
+  if (template === 'connected') return initializeConnected();
+  return initializeDeclarative();
+}
+
 async function buildProject(writeOutput: boolean) {
   const source = JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as DeftAppManifestInput;
   const artifacts = [];
@@ -115,6 +277,11 @@ async function buildProject(writeOutput: boolean) {
       artifacts: built.package.artifacts.map(({ path, digest, byte_length, media_type }) => ({ path, digest, byte_length, media_type })),
       permissions: [],
     });
+    await writeFile(
+      resolve(cwd, DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH),
+      `${canonicalDeftAppRequestedAuthorityReportJson(manifest)}\n`,
+      'utf8',
+    );
   }
   return built;
 }
@@ -128,13 +295,51 @@ async function hostUrl(): Promise<string> {
   return (option('--url') ?? process.env.DEFT_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 }
 
-async function doctor(): Promise<void> {
-  const url = await hostUrl();
+type DeveloperStatus = {
+  app_protocol?: string;
+  audience?: string;
+  single_use_install?: boolean;
+  compatibility?: unknown;
+};
+
+async function readDeveloperStatus(url: string): Promise<DeveloperStatus> {
   const response = await fetch(`${url}/api/app-developer/status`);
   if (!response.ok) throw new Error(`Deft App developer pairing is unavailable at ${url} (${response.status})`);
-  const status = await response.json() as { app_protocol?: string; audience?: string };
-  if (status.app_protocol !== '0' || status.audience !== 'app-developer') throw new Error('Host is not compatible with App Protocol v0');
-  console.log(`Compatible App Protocol v0 host: ${url}`);
+  const status = await response.json() as DeveloperStatus;
+  if (
+    status.app_protocol !== '0'
+    || status.audience !== 'app-developer'
+    || status.single_use_install !== true
+  ) {
+    throw new Error('Host does not implement the Deft App developer pairing contract');
+  }
+  return status;
+}
+
+async function compatibleFlow(url: string, built: Awaited<ReturnType<typeof buildProject>>) {
+  const status = await readDeveloperStatus(url);
+  const protocol = built.package.manifest.compatibility.app_protocol;
+  const flow = status.compatibility === undefined
+    ? (() => {
+        if (protocol !== '0') throw new Error('Host supports only App Protocol v0 developer installs');
+        return { package_format: DEFT_APP_PACKAGE_FORMAT, install_mode: 'stage_and_activate' as const };
+      })()
+    : (await checkDeftAppDeveloperContract({
+        package_json: built.json,
+        host_compatibility: status.compatibility,
+      })).install_flow;
+  if (flow.package_format !== built.package.package_format) {
+    throw new Error(`Host advertises an incompatible package format for App Protocol v${protocol}`);
+  }
+  return flow;
+}
+
+async function doctor(): Promise<void> {
+  const built = await buildProject(false);
+  const url = await hostUrl();
+  const flow = await compatibleFlow(url, built);
+  const protocol = built.package.manifest.compatibility.app_protocol;
+  console.log(`Compatible App Protocol v${protocol} ${flow.install_mode} host: ${url}`);
 }
 
 async function readPairingCode(): Promise<string> {
@@ -151,10 +356,7 @@ async function readPairingCode(): Promise<string> {
 async function installLocal(): Promise<void> {
   const url = await hostUrl();
   const built = await buildProject(true);
-  const protocol = built.package.manifest.compatibility.app_protocol;
-  if (protocol !== '0') {
-    throw new Error(`App Protocol v${protocol} packages must use the workspace review flow`);
-  }
+  const flow = await compatibleFlow(url, built);
   const code = await readPairingCode();
   if (!code) throw new Error('A one-time pairing code is required on stdin');
   const exchange = await fetch(`${url}/api/app-developer/pair/exchange`, {
@@ -169,13 +371,15 @@ async function installLocal(): Promise<void> {
   });
   if (!installed.ok) throw new Error(`Install failed (${installed.status}): ${await installed.text()}`);
   const result = await installed.json() as { app: { name: string; state: string } };
-  console.log(`Installed ${result.app.name} (${result.app.state})`);
+  console.log(flow.install_mode === 'stage_only'
+    ? `Staged ${result.app.name} (${result.app.state}) for workspace review.`
+    : `Installed ${result.app.name} (${result.app.state})`);
 }
 
 async function main(): Promise<void> {
   const [domain, command] = process.argv.slice(2);
   if (domain !== 'app') throw new Error('Usage: deft app <init|check|build|doctor|install-local>');
-  if (command === 'init') return initialize();
+  if (command === 'init') return initialize(parseInitTemplate());
   if (command === 'check') {
     const built = await buildProject(false);
     const protocol = built.package.manifest.compatibility.app_protocol;
