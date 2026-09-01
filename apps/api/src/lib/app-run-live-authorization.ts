@@ -55,6 +55,7 @@ import {
   appResourceAuthorityId,
   projectPreparedAppAuthorityRefs,
   type AppRunPreparedAuthorityVector,
+  type AppRunPreparedAuthorityVectorV1,
 } from './app-run-prepared-input.js';
 
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
@@ -118,7 +119,7 @@ type AppVectorCaptureInput = Readonly<{
   operation_name: string;
   policy: AppRunPolicySnapshot;
   base_authorization: AppRunAuthorizationSnapshot;
-  caller_surface: z.infer<typeof AppRunCallerSurfaceSchema>;
+  caller_surface: AppRunPreparedAuthorityVectorV1['caller_surface'];
   resource_refs: readonly ModuleResourceRefV1[];
   relation_refs: readonly Readonly<{
     source_ref: ModuleResourceRefV1;
@@ -193,6 +194,10 @@ function sameAuthorityRefs(
  * Runs. Callers receive only opaque versions; live rows remain authoritative.
  */
 export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorizer {
+  constructor(
+    private readonly appAutomationsEnabled: () => boolean = () => false,
+  ) {}
+
   async capture(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot> {
     return db.transaction((tx) => this.#capture(tx, input));
   }
@@ -238,7 +243,12 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   ): Promise<AppRunAuthorizationSnapshot> {
     const { submission, authority_vector: prepared } = input;
     if (
-      submission.origin.origin_kind !== 'app'
+      prepared.schema_version === 'deft.app_action_authority.v2'
+      && !this.appAutomationsEnabled()
+    ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    if (
+      prepared.schema_version !== 'deft.app_action_authority.v1'
+      || submission.origin.origin_kind !== 'app'
       || submission.org_id !== submission.operation.provider.org_id
       || submission.origin.installation_id !== prepared.installation.id
       || submission.origin.app_version_id !== prepared.app_version.id
@@ -465,6 +475,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     });
     if (!sameAuthorityRefs(storedBaseRefs, current.authority_refs)) return false;
     if (!surface) return storedAppRefs.length === 0;
+    if (surface === 'automation') return false;
     const currentApp = await this.#captureAppVectorFromRun(
       tx,
       run,
@@ -481,9 +492,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     run: AppRunSafeView,
     internal: InternalRunAuthorization,
     baseAuthorization: AppRunAuthorizationSnapshot,
-    callerSurface: z.infer<typeof AppRunCallerSurfaceSchema>,
+    callerSurface: AppRunPreparedAuthorityVectorV1['caller_surface'],
     storedAppRefs: readonly AuthorityRef[],
-  ): Promise<AppRunPreparedAuthorityVector> {
+  ): Promise<AppRunPreparedAuthorityVectorV1> {
     if (
       !internal.origin_app_installation_id
       || !internal.origin_app_version_id
@@ -590,7 +601,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   async #captureAppVector(
     tx: AppRunTransaction,
     input: AppVectorCaptureInput,
-  ): Promise<AppRunPreparedAuthorityVector> {
+  ): Promise<AppRunPreparedAuthorityVectorV1> {
     const hasToken = input.base_authorization.authority_refs.some(
       (ref) => ref.authority_kind === 'token_scope',
     );
@@ -682,7 +693,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(appDependencyLocks.grant_snapshot_id, input.grant_snapshot_id),
       eq(appDependencyLocks.grant_snapshot_kind, 'effective'),
     ));
-    const dependencies: AppRunPreparedAuthorityVector['dependencies'][number][] = [];
+    const dependencies: AppRunPreparedAuthorityVectorV1['dependencies'][number][] = [];
     for (const dependency of dependencyRows) {
       const [current] = await tx.select().from(appInstallations).where(and(
         eq(appInstallations.org_id, input.org_id),
@@ -753,7 +764,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       );
     }
 
-    const resources: AppRunPreparedAuthorityVector['resources'][number][] = [];
+    const resources: AppRunPreparedAuthorityVectorV1['resources'][number][] = [];
     for (const ref of input.resource_refs) {
       if (!resourceAncestry.has(`${ref.provider.provider_instance_id}\0${ref.resource_type}`)) {
         throw new Error('APP_RUN_AUTHORIZATION_STALE');
@@ -802,7 +813,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     ));
 
     const resourceIds = new Set(resources.map((resource) => appResourceAuthorityId(resource.ref)));
-    const relations: AppRunPreparedAuthorityVector['relations'][number][] = [];
+    const relations: AppRunPreparedAuthorityVectorV1['relations'][number][] = [];
     for (const relation of input.relation_refs) {
       if (
         !resourceIds.has(appResourceAuthorityId(relation.source_ref))

@@ -16,6 +16,7 @@ import {
   type AppRunRiskClass,
   type AppRunSubmission,
 } from '@deft/shared';
+import { APP_AUTOMATION_POLICY_V1 } from '@deft/app-kit';
 import {
   assertAppRunReferencedKeysAvailable,
   type AppRunKeyProvider,
@@ -246,6 +247,7 @@ export class AppRunService {
     private readonly preparedInput?: AppRunPreparedInputOpener,
     private readonly appLiveAuthorization?: AppRunPreparedAppAuthorizer,
     private readonly appOriginEnabled: () => boolean = () => false,
+    private readonly appAutomationsEnabled: () => boolean = () => false,
   ) {}
 
   async submit(context: AppRunTrustedContext, rawSubmission: unknown): Promise<AppRunSafeView> {
@@ -275,6 +277,10 @@ export class AppRunService {
       || !sameActor(context.execution_actor, app.execution_actor)
     ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
     const vector = app.authority_vector;
+    const isAutomation = vector.schema_version === 'deft.app_action_authority.v2';
+    if (isAutomation && !this.appAutomationsEnabled()) {
+      throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    }
     const authorizationSnapshot = AppRunAuthorizationSnapshotSchema.parse({
       ...vector.run_authorization,
       authority_refs: [
@@ -303,14 +309,23 @@ export class AppRunService {
         operation_name: vector.provider.operation_name,
       },
       provider_snapshot_digest: vector.provider.snapshot_digest,
-      policy: {
+      policy: isAutomation ? {
+        risk_class: APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class,
+        review_requirement: APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement,
+        review_scope: APP_AUTOMATION_POLICY_V1.review_scope,
+        retry_class: APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class,
+      } : {
         risk_class: 'external_write',
         review_requirement: 'always',
         review_scope: 'per_invocation',
         retry_class: 'idempotent_with_key',
       },
-      retention_class: 'standard',
-      idempotency_key: `app-action:${prepared.replay_identity}`,
+      retention_class: isAutomation
+        ? APP_AUTOMATION_POLICY_V1.base_host_policy.retention_class
+        : 'standard',
+      idempotency_key: isAutomation
+        ? `app-automation:${vector.automation.fire.identity}`
+        : `app-action:${prepared.replay_identity}`,
       input: prepared.provider_input,
       authorization_snapshot: authorizationSnapshot,
       safe_preview: app.safe_preview,

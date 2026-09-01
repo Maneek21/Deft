@@ -114,6 +114,59 @@ function appAuthorityVector() {
   };
 }
 
+function automationAuthorityVector() {
+  const base = appAuthorityVector();
+  return {
+    ...base,
+    schema_version: 'deft.app_action_authority.v2' as const,
+    caller_surface: 'automation' as const,
+    run_authorization: {
+      ...base.run_authorization,
+      authenticated_subject: { actor_type: 'human' as const, user_id: 'owner-1' },
+      authority_refs: [{
+        authority_kind: 'membership' as const,
+        authority_id: 'owner-1',
+        version: digest('6'),
+      }],
+    },
+    resources: base.resources.map((resource, index) => ({
+      ...resource,
+      content_digest: index === 0 ? digest('a') : digest('b'),
+    })),
+    automation: {
+      request: { key: 'daily_campaign', digest: digest('c') },
+      definition: {
+        id: 'automation-definition-1',
+        epoch: 1,
+        digest: digest('d'),
+        authorization_digest: digest('e'),
+        approved_by_user_id: 'owner-1',
+        approved_at: '2026-08-31T11:00:00.000Z',
+        valid_from: '2026-08-31T11:00:00.000Z',
+        valid_until: '2026-09-30T11:00:00.000Z',
+      },
+      fire: {
+        id: 'automation-fire-1',
+        identity: digest('f'),
+        logical_local_date: '2026-09-01',
+        local_time: '09:30',
+        timezone: 'Asia/Calcutta',
+        resolved_at_utc: '2026-09-01T04:00:00.000Z',
+      },
+      policy: {
+        key: 'sandbox_email_send_approved_automation',
+        version: '1' as const,
+        digest: digest('1'),
+      },
+      budgets: {
+        max_actions_per_fire: 1 as const,
+        max_org_runs_per_utc_day: 100,
+        max_pending_org_fires: 25,
+      },
+    },
+  };
+}
+
 describe('App Run prepared input', () => {
   test('protects provider input without exposing plaintext and preserves replay and binding identity', () => {
     const { provider, service: secrets } = createSecrets();
@@ -274,6 +327,60 @@ describe('App Run prepared input', () => {
           authority_digest: authorityDigest,
         },
       }), /APP_RUN_PREPARED_INPUT_INVALID/);
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  test('binds v2 automation candidates to the approved human, definition, fire, policy, and content', () => {
+    const { provider, service: secrets } = createSecrets();
+    const preparedInputs = new AppRunPreparedInputService(secrets);
+    const authorityVector = automationAuthorityVector();
+    const appRun = {
+      initiating_actor: { actor_type: 'human' as const, user_id: 'owner-1' },
+      execution_actor: {
+        actor_type: 'automation' as const,
+        automation_id: 'automation-definition-1',
+        user_id: 'owner-1',
+      },
+      safe_preview: {
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        title: 'Send scheduled campaign email',
+        resource_refs: [],
+      },
+      authority_vector: authorityVector,
+      authority_digest: digestPreparedAppAuthority(authorityVector),
+    };
+
+    try {
+      const candidate = preparedInputs.protect({
+        org_id: 'org-1',
+        replay_identity: digest('2'),
+        binding_identity: bindingIdentity,
+        provider_input: { idempotency_key: authorityVector.automation.fire.identity },
+        app_run: appRun,
+      });
+      const opened = preparedInputs.open('org-1', candidate);
+      assert.equal(opened.app_run?.authority_vector.schema_version, 'deft.app_action_authority.v2');
+      assert.deepEqual(
+        new Set(opened.app_run?.authority_refs.map((ref) => ref.authority_kind)),
+        new Set([
+          'app_surface', 'app_installation', 'app_version', 'app_grant',
+          'app_binding', 'resource', 'relation', 'app_automation_request',
+          'app_automation_definition', 'app_automation_fire', 'app_automation_policy',
+        ]),
+      );
+
+      assert.throws(() => preparedInputs.protect({
+        org_id: 'org-1',
+        replay_identity: digest('2'),
+        binding_identity: bindingIdentity,
+        provider_input: { idempotency_key: authorityVector.automation.fire.identity },
+        app_run: {
+          ...appRun,
+          execution_actor: { actor_type: 'human', user_id: 'owner-1' },
+        },
+      }), /Prepared automation actor is invalid/);
     } finally {
       provider.destroy();
     }
