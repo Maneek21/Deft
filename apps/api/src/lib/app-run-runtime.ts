@@ -7,7 +7,7 @@ import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } fro
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import { AppRunOperationsService } from './app-run-operations.js';
 import { PinnedMcpAppRunProviderExecutor } from './app-run-provider-executor.js';
-import { PostgresAppRunReceiptWriter } from './app-run-receipts.js';
+import { PostgresAppRunReceiptReader, PostgresAppRunReceiptWriter } from './app-run-receipts.js';
 import { PostgresAppRunRepository } from './app-run-repository.js';
 import { postgresAppRunAttemptQueue } from './app-run-scheduler.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
@@ -25,6 +25,7 @@ export type AppRunRuntime = Readonly<{
   service: AppRunService;
   attemptRunner: AppRunAttemptRunner;
   approvalResolver: PostgresAppRunApprovalResolver;
+  receiptReader: PostgresAppRunReceiptReader;
   operations: AppRunOperationsService;
 }>;
 
@@ -39,6 +40,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
   const liveAuthorization = new PostgresAppRunLiveAuthorization();
   const accessAuthorization = new PostgresAppRunAuthorizer();
   const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
+  const receiptReader = new PostgresAppRunReceiptReader(secrets);
   const attention = new PostgresAppRunAttentionProjector();
   const clock = () => new Date();
   const attemptRunner = new AppRunAttemptRunner(
@@ -101,6 +103,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     service,
     attemptRunner,
     approvalResolver,
+    receiptReader,
     operations,
   });
 }

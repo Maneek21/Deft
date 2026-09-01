@@ -30,6 +30,15 @@ appRunRoutes.get('/:runId/result', async (c) => {
   }
 });
 
+appRunRoutes.get('/:runId/receipts', async (c) => {
+  try {
+    const runId = RunIdSchema.parse(c.req.param('runId'));
+    return c.json(await appActionService.inspectReceipts(callerFromContext(c), runId));
+  } catch (error) {
+    return appHttpFailure(c, error, 'App Run', 'app-runs');
+  }
+});
+
 appRunRoutes.get('/:runId', async (c) => {
   try {
     const runId = RunIdSchema.parse(c.req.param('runId'));

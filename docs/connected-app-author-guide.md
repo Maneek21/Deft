@@ -1,9 +1,10 @@
 # Connected App author guide
 
-This guide covers the Phase 6 PR A proof: an independent author can create,
-check, build, verify host compatibility, and locally stage one App Protocol v1
-connected App using packed public artifacts. The handoff ends at a staged App
-with zero authority.
+This guide covers the Phase 6 connected-App journey through its native
+lifecycle: an independent author can create, check, build, verify host
+compatibility, and locally stage one App Protocol v1 connected App using packed
+public artifacts; an authorized workspace operator can then review, bind,
+activate, inspect, upgrade, disable, and freshly re-enable it in Deft.
 
 The current authoring artifact is `@deft/app-kit@0.1.0-alpha.1`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
@@ -167,6 +168,11 @@ Wrong App Kit versions, missing protocol flows, and package-format mismatches
 also fail. `install-local` performs this same compatibility preflight before it
 reads or exchanges a pairing code.
 
+On success, `doctor` reports the exact App Kit package and version, App Protocol
+version, package format, install mode, and host URL. This is compatibility
+evidence only; it does not verify a registry, publisher identity, or package
+signature and does not establish trust.
+
 `doctor` checks App Kit/protocol/package compatibility only. It does not check
 connector health, simulate grants, activate an App, resolve relations, invoke a
 provider, or prove App Run readiness.
@@ -194,14 +200,46 @@ The result depends on the protocol:
 | v0 | Stage and activate the declarative App | No connected authority exists in v0 |
 | v1 | Leave the installation/version in `staged` | Zero effective grant, dependency lock, action binding, connector change, provider call, approval, or App Run |
 
-For v1, stop at the staged result. Hand the installable package, lockfile,
-requested-authority report, exact App Kit artifact identity, and proof-bundle
-identity to the owner/admin. Review, dependency selection, provider binding,
-effective-grant creation, and activation are host-owned operations; none can be
-encoded in the App package or requested-authority report. This PR A authoring
-slice does not promise a connected lifecycle UI for that handoff.
+For v1, the author stops at the staged result. Hand the installable package,
+lockfile, requested-authority report, exact App Kit artifact identity, and
+proof-bundle identity to the owner/admin. Review, dependency validation,
+provider binding, effective-grant creation, and activation are host-owned
+operations; none can be encoded in the App package or requested-authority
+report.
 
-## 6. Run the proof-only sandbox provider
+## 6. Complete the native operator lifecycle
+
+In **Settings → Apps**, an active owner or admin can inspect the exact staged
+version and package digest, requested resource reads, dependency status,
+lineage-private capability requirement, eligible connector candidates, and
+missing bindings. The screen labels local packages as unsigned and treats any
+declared source repository and commit as an unverified author claim.
+
+The operator selects exact connectors and runs review. Deft refreshes provider
+schemas at review time, computes the deterministic authority diff, and requires
+explicit acceptance of the host-owned approval, retention, egress, and retry
+policy before activation. Reloading the page does not lose the staged target;
+the host derives it from persisted installation and version state.
+
+An active or disabled connected App can stage a higher-version package through
+the same screen. The current version and effective authority remain unchanged
+until the upgrade receives its own exact review and atomic activation. When
+more than one higher version is staged, Deft selects the highest version as the
+only reviewable target; a client cannot activate an older staged package around
+that selection. Disable preserves data but clears active authority. The generic
+legacy enable path is intentionally unavailable for Protocol v1; **Re-enable**
+performs a new review
+against live membership, dependencies, connector authorization, provider
+schema, grant epochs, and bindings before restoring authority.
+
+Recent App Runs expose bounded safe status, policy, retention, and
+server-verified receipt metadata only to a caller already authorized to inspect
+that exact Run. The response omits raw provider envelopes, signatures,
+ciphertext, output payloads, and cross-actor metadata. A manager may therefore
+see a safe recent-Run summary but be denied its receipt detail when they were
+not an authorized Run actor.
+
+## 7. Run the proof-only sandbox provider
 
 The standalone
 [sandbox email provider](../examples/app-platform-sandbox-email-provider/README.md)
@@ -256,24 +294,21 @@ not allowlist a shell, PowerShell, `cmd`, `pnpm`, `npm`, `npx`, a package runner
 or a broad directory. Configuring this proof provider does not bind it to an
 App, grant provider access, or make a staged App executable.
 
-## PR A boundaries
+## Current boundaries
 
 - No self-grant: packages and reports request authority; only the host can
   create effective grants, bindings, and activation state.
-- No App-origin execution: PR A ends at zero-authority staging and makes no
-  provider call, approval, App Run, or receipt promise.
+- No author self-activation: author tooling ends at zero-authority staging;
+  reviewed App-origin execution remains host-owned and feature-gated.
 - No production email: the sandbox provider retains in-memory proof results and
   performs no network egress.
-- No connected lifecycle UI: the author path is CLI/API proof and adds no
-  review, bind, activate, or operating UI promise.
 - No automation: the v1 sandbox action is human-initiated, single-recipient,
   always reviewed by host policy, and forbidden in automation.
 - No external runtime promise: App Kit contains no MCP loader or hosted runtime,
   and the standalone provider is not a general runtime, SMTP adapter, sync
   engine, credential store, or public ingress service.
 
-Staging needs no App Run keyring because it creates no Run. Any later operator
-who separately enables reviewed App-origin execution must follow
+Staging needs no App Run keyring because it creates no Run. An operator who
+enables reviewed App-origin execution must follow
 [Governed App Run operations](app-run-operations.md), including matching
-database/keyring backup and restore; that later execution lifecycle is outside
-this PR A guide.
+database/keyring backup and restore.

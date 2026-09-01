@@ -30,13 +30,14 @@ jobs:
         run: pnpm test:hermes-integration-bundle
       - name: Lint web
         run: pnpm --filter @deft/web lint
-      - name: Test web realtime lifecycle state
+      - name: Test focused web contracts
         run: >-
           pnpm --filter @deft/web exec tsx --test
           src/lib/huddle-state.test.ts
           src/lib/socket.test.ts
           src/lib/space-socket.test.ts
           src/lib/module-collection-nav.test.ts
+          src/lib/apps.test.ts
       - name: Type check API
         run: pnpm --filter @deft/api typecheck
       - name: Type check Web

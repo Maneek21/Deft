@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   appActionBindings,
   appDependencyLocks,
@@ -17,6 +17,8 @@ import {
 } from '@deft/db/schema';
 import {
   canonicalAppPrivateInterfaceIdentity,
+  DEFT_APP_DEVELOPER_COMPATIBILITY,
+  projectDeftAppRequestedAuthority,
   type DeftAppManifestV1,
   type DeftAppPackageV1,
   type DeftAppPrivateInterfaceDescriptorV1,
@@ -60,7 +62,6 @@ import {
 } from './module-service.js';
 import { getIO } from '../socket.js';
 import { compareAppSemver } from './app-service.js';
-import { safeRunSelection } from './app-run-repository.js';
 
 type ReviewExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -70,6 +71,42 @@ type Connection = typeof mcpConnections.$inferSelect;
 
 const REVIEW_VERSION = 'deft.app_grant_review.v1' as const;
 const DEPENDENCY_LOCK_VERSION = 'deft.app_dependency_lock.v1' as const;
+
+type ConnectedReviewTargetVersionCandidate = Pick<
+  Version,
+  'id' | 'version' | 'protocol_version' | 'state' | 'created_at'
+>;
+
+function selectConnectedReviewTargetVersion<TVersion extends ConnectedReviewTargetVersionCandidate>(
+  installation: Pick<Installation, 'state' | 'active_version_id'>,
+  versions: readonly TVersion[],
+): TVersion | null {
+  const activeVersion = installation.active_version_id
+    ? versions.find((version) => version.id === installation.active_version_id) ?? null
+    : null;
+  const stagedVersion = versions
+    .filter((version) => (
+      version.protocol_version === '1'
+      && version.state === 'staged'
+      && (!activeVersion || compareAppSemver(activeVersion.version, version.version) < 0)
+    ))
+    .sort((left, right) => (
+      compareAppSemver(right.version, left.version)
+      || right.created_at.getTime() - left.created_at.getTime()
+      || right.id.localeCompare(left.id)
+    ))[0] ?? null;
+  return stagedVersion
+    ?? (installation.state === 'disabled' && activeVersion?.protocol_version === '1' ? activeVersion : null);
+}
+
+function connectedReviewActivationKind(
+  installation: Pick<Installation, 'active_version_id'>,
+  target: Pick<Version, 'id'> | null,
+): 'initial' | 'upgrade' | 'reenable' | null {
+  if (!target) return null;
+  if (!installation.active_version_id) return 'initial';
+  return target.id !== installation.active_version_id ? 'upgrade' : 'reenable';
+}
 
 export type AppConnectorSelection = Readonly<{
   connector_requirement_key: string;
@@ -351,16 +388,31 @@ async function loadReviewContext(
   if (!['staged', 'active', 'disabled'].includes(installation.state)) {
     throw new AppError('App cannot be reviewed in its current state', 'APP_STATE_CONFLICT', 409);
   }
+  const versionCandidates = await executor.select({
+    id: appVersions.id,
+    version: appVersions.version,
+    protocol_version: appVersions.protocol_version,
+    state: appVersions.state,
+    created_at: appVersions.created_at,
+  }).from(appVersions).where(and(
+    eq(appVersions.org_id, actor.org_id),
+    eq(appVersions.installation_id, installation.id),
+  ));
+  const target = selectConnectedReviewTargetVersion(installation, versionCandidates);
+  if (!target || target.id !== request.app_version_id) {
+    throw appError('The server-selected App review target changed', 'APP_STALE');
+  }
   const [version] = await executor.select().from(appVersions).where(and(
     eq(appVersions.org_id, actor.org_id),
     eq(appVersions.installation_id, installation.id),
-    eq(appVersions.id, request.app_version_id),
+    eq(appVersions.id, target.id),
     eq(appVersions.package_digest, request.expected_package_digest),
   )).limit(1);
+  if (!version) throw appError('The server-selected App review target changed', 'APP_STALE');
   const isReactivation = installation.state === 'disabled'
-    && installation.active_version_id === version?.id
-    && version?.state === 'active';
-  if (!version || (version.state !== 'staged' && !isReactivation)) {
+    && installation.active_version_id === version.id
+    && version.state === 'active';
+  if (version.state !== 'staged' && !isReactivation) {
     throw appError('The staged App version changed before review', 'APP_STALE');
   }
   if (installation.active_version_id && installation.active_version_id !== version.id) {
@@ -863,6 +915,7 @@ export async function prepareConnectedAppReview(
   capability: AppReviewCapabilityPort = capabilityService,
 ): Promise<ConnectedAppReview> {
   assertHumanManager(actorValue);
+  await assertCurrentModuleManagerWithExecutor(db, actorValue);
   const context = await loadReviewContext(db, actorValue, installationId, request);
   const evidence = await discoverProviderEvidence(actorValue, context, capability);
   return buildReview(
@@ -1024,6 +1077,7 @@ export async function activateConnectedAppInstallation(
   testHooks?: { failBeforePointerSwap?: boolean },
 ): Promise<ConnectedAppReview> {
   assertHumanManager(actorValue);
+  await assertCurrentModuleManagerWithExecutor(db, actorValue);
   const before = await loadReviewContext(db, actorValue, installationId, request);
   const discovered = await discoverProviderEvidence(actorValue, before, capability);
   const postCommit: ModuleLifecyclePostCommit[] = [];
@@ -1242,6 +1296,7 @@ export async function getConnectedAppGrantManagement(
   installationId: string,
 ) {
   assertHumanManager(actorValue);
+  await assertCurrentModuleManagerWithExecutor(db, actorValue);
   const [installation] = await db.select().from(appInstallations).where(and(
     eq(appInstallations.org_id, actorValue.org_id),
     eq(appInstallations.id, installationId),
@@ -1252,12 +1307,16 @@ export async function getConnectedAppGrantManagement(
     version: appVersions.version,
     protocol_version: appVersions.protocol_version,
     state: appVersions.state,
+    manifest: appVersions.manifest,
+    package_format: sql<string>`${appVersions.package} ->> 'package_format'`,
+    provenance: appVersions.provenance,
     package_digest: appVersions.package_digest,
     manifest_digest: appVersions.manifest_digest,
     requested_grant_snapshot_id: appVersions.requested_grant_snapshot_id,
     staged_at: appVersions.staged_at,
     activated_at: appVersions.activated_at,
     superseded_at: appVersions.superseded_at,
+    created_at: appVersions.created_at,
   }).from(appVersions).where(and(
     eq(appVersions.org_id, actorValue.org_id),
     eq(appVersions.installation_id, installation.id),
@@ -1266,14 +1325,25 @@ export async function getConnectedAppGrantManagement(
     eq(appGrantSnapshots.org_id, actorValue.org_id),
     eq(appGrantSnapshots.app_installation_id, installation.id),
   )).orderBy(desc(appGrantSnapshots.created_at), desc(appGrantSnapshots.id));
-  const effectiveIds = snapshots
-    .filter((snapshot) => snapshot.snapshot_kind === 'effective')
-    .map((snapshot) => snapshot.id);
-  const dependencies = effectiveIds.length === 0
+  const reviewTargetVersion = selectConnectedReviewTargetVersion(installation, versions);
+  const activationKind = connectedReviewActivationKind(installation, reviewTargetVersion);
+  const requestedSnapshot = reviewTargetVersion?.requested_grant_snapshot_id
+    ? snapshots.find((snapshot) => (
+        snapshot.id === reviewTargetVersion.requested_grant_snapshot_id
+        && snapshot.snapshot_kind === 'requested'
+      )) ?? null
+    : null;
+  const requestedAuthority = reviewTargetVersion?.protocol_version === '1' && requestedSnapshot
+    ? projectDeftAppRequestedAuthority(reviewTargetVersion.manifest as DeftAppManifestV1)
+    : null;
+
+  const effective = await latestEffectiveSnapshot(db, installation);
+  const dependencies = !effective
     ? []
     : (await db.select().from(appDependencyLocks).where(and(
         eq(appDependencyLocks.org_id, actorValue.org_id),
         eq(appDependencyLocks.app_installation_id, installation.id),
+        eq(appDependencyLocks.grant_snapshot_id, effective.id),
       ))).map((lock) => ({
         id: lock.id,
         grant_snapshot_id: lock.grant_snapshot_id,
@@ -1286,11 +1356,12 @@ export async function getConnectedAppGrantManagement(
         ownership: lock.ownership,
         lock_digest: lock.lock_digest,
       }));
-  const bindings = effectiveIds.length === 0
+  const bindings = !effective
     ? []
     : (await db.select().from(appActionBindings).where(and(
         eq(appActionBindings.org_id, actorValue.org_id),
         eq(appActionBindings.app_installation_id, installation.id),
+        eq(appActionBindings.grant_snapshot_id, effective.id),
       ))).map((binding) => ({
         id: binding.id,
         grant_snapshot_id: binding.grant_snapshot_id,
@@ -1300,7 +1371,6 @@ export async function getConnectedAppGrantManagement(
         interface_identity: binding.interface_identity,
         provider_kind: binding.provider_kind,
         mcp_connection_id: binding.mcp_connection_id,
-        provider_snapshot_id: binding.provider_snapshot_id,
         operation_name: binding.operation_name,
         operation_schema_digest: binding.operation_schema_digest,
         connector_authorization_version: binding.connector_authorization_version,
@@ -1316,7 +1386,141 @@ export async function getConnectedAppGrantManagement(
           provider_idempotency_key_required: binding.provider_idempotency_key_required,
         },
       }));
-  const recentRuns = await db.select(safeRunSelection).from(appRuns).where(and(
+
+  const dependencyRequirements = requestedAuthority?.requirements.dependencies ?? [];
+  const dependencyInstallations = dependencyRequirements.length === 0
+    ? []
+    : await db.select().from(appInstallations).where(and(
+        eq(appInstallations.org_id, actorValue.org_id),
+        inArray(appInstallations.app_id, dependencyRequirements.map((item) => item.app_id)),
+      ));
+  const dependencyVersionIds = dependencyInstallations.flatMap(
+    (candidate) => candidate.active_version_id ? [candidate.active_version_id] : [],
+  );
+  const dependencyVersions = dependencyVersionIds.length === 0
+    ? []
+    : await db.select().from(appVersions).where(and(
+        eq(appVersions.org_id, actorValue.org_id),
+        inArray(appVersions.id, dependencyVersionIds),
+      ));
+  const projectedDependencies = dependencyRequirements.map((requirement) => {
+    const candidate = dependencyInstallations.find((item) => item.app_id === requirement.app_id) ?? null;
+    const version = candidate?.active_version_id
+      ? dependencyVersions.find((item) => item.id === candidate.active_version_id) ?? null
+      : null;
+    const status = !candidate || !version
+      ? 'missing' as const
+      : candidate.state !== 'active'
+        ? 'disabled' as const
+        : version.version !== requirement.version
+          ? 'version_mismatch' as const
+          : 'ready' as const;
+    return {
+      ...requirement,
+      status,
+      installation_id: candidate?.id ?? null,
+      active_version: version?.version ?? null,
+      lifecycle_epoch: candidate?.lifecycle_epoch ?? null,
+    };
+  });
+
+  const connectorRequirements = requestedAuthority?.requirements.connectors ?? [];
+  const connections = connectorRequirements.length === 0
+    ? []
+    : await db.select({
+        id: mcpConnections.id,
+        name: mcpConnections.name,
+        slug: mcpConnections.slug,
+        is_active: mcpConnections.is_active,
+        connection_error: mcpConnections.connection_error,
+        enabled_tools: mcpConnections.enabled_tools,
+        app_run_authorization_version: mcpConnections.app_run_authorization_version,
+      }).from(mcpConnections).where(eq(mcpConnections.org_id, actorValue.org_id));
+  const connectionIds = connections.map((connection) => connection.id);
+  const overrides = connectionIds.length === 0
+    ? []
+    : await db.select({
+        mcp_connection_id: mcpToolOverrides.mcp_connection_id,
+        tool_name: mcpToolOverrides.tool_name,
+        is_disabled: mcpToolOverrides.is_disabled,
+      }).from(mcpToolOverrides).where(and(
+        eq(mcpToolOverrides.org_id, actorValue.org_id),
+        inArray(mcpToolOverrides.mcp_connection_id, connectionIds),
+      ));
+  const manifest = reviewTargetVersion?.protocol_version === '1'
+    ? reviewTargetVersion.manifest as DeftAppManifestV1
+    : null;
+  const capabilityByKey = new Map(
+    (manifest?.capability_requirements ?? []).map((requirement) => [requirement.key, requirement]),
+  );
+  const projectedConnectors = connectorRequirements.map((requirement) => {
+    const requiredOperations = [...new Set((manifest?.actions ?? [])
+      .filter((action) => action.connector_requirement_key === requirement.key)
+      .flatMap((action) => {
+        const capability = capabilityByKey.get(action.capability_requirement_key);
+        const privateInterface = getConnectedAppPrivateInterface(capability?.interface);
+        return privateInterface ? [privateInterface.operation_name] : [];
+      }))].sort();
+    const candidates = connections.map((connection) => {
+      const disabledOperations = new Set(overrides
+        .filter((override) => override.mcp_connection_id === connection.id && override.is_disabled)
+        .map((override) => override.tool_name));
+      const eligible = connection.is_active
+        && !connection.connection_error
+        && requiredOperations.every((operation) => (
+          isMcpToolEnabled(connection.enabled_tools, connection.slug, operation)
+          && !disabledOperations.has(operation)
+        ));
+      return {
+        id: connection.id,
+        name: connection.name,
+        status: !connection.is_active
+          ? 'inactive' as const
+          : connection.connection_error
+            ? 'unhealthy' as const
+            : eligible
+              ? 'configured' as const
+              : 'operation_disabled' as const,
+        eligible_for_review: eligible,
+        authorization_version: connection.app_run_authorization_version,
+        provider_schema_check: 'pending_review' as const,
+      };
+    }).sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+    const current = bindings.find((binding) => binding.connector_requirement_key === requirement.key) ?? null;
+    const currentConnection = current
+      ? candidates.find((candidate) => candidate.id === current.mcp_connection_id) ?? null
+      : null;
+    return {
+      ...requirement,
+      required_operations: requiredOperations,
+      current_binding: current && currentConnection ? {
+        mcp_connection_id: current.mcp_connection_id,
+        name: currentConnection.name,
+        binding_digest: current.binding_digest,
+        authorization_version: current.connector_authorization_version,
+        configured: currentConnection.eligible_for_review,
+      } : null,
+      candidates,
+    };
+  });
+  const missingBindingKeys = projectedConnectors
+    .filter((requirement) => !requirement.current_binding?.configured)
+    .map((requirement) => requirement.key);
+
+  const recentRuns = await db.select({
+    id: appRuns.id,
+    state: appRuns.state,
+    operation_name: appRuns.operation_name,
+    risk_class: appRuns.risk_class,
+    review_requirement: appRuns.review_requirement,
+    safe_preview: appRuns.safe_preview,
+    safe_outcome: appRuns.safe_outcome,
+    result_expires_at: appRuns.result_expires_at,
+    result_purged_at: appRuns.result_purged_at,
+    terminal_at: appRuns.terminal_at,
+    created_at: appRuns.created_at,
+    updated_at: appRuns.updated_at,
+  }).from(appRuns).where(and(
     eq(appRuns.org_id, actorValue.org_id),
     eq(appRuns.origin_kind, 'app'),
     eq(appRuns.origin_app_installation_id, installation.id),
@@ -1331,8 +1535,21 @@ export async function getConnectedAppGrantManagement(
       lifecycle_epoch: installation.lifecycle_epoch,
       grant_epoch: installation.grant_epoch,
     },
+    compatibility: DEFT_APP_DEVELOPER_COMPATIBILITY,
     versions: versions.map((version) => ({
-      ...version,
+      id: version.id,
+      version: version.version,
+      protocol_version: version.protocol_version,
+      state: version.state,
+      manifest: version.manifest,
+      package_format: typeof version.package_format === 'string'
+        ? version.package_format
+        : null,
+      provenance: version.provenance,
+      provenance_trust: 'local_unsigned' as const,
+      package_digest: version.package_digest,
+      manifest_digest: version.manifest_digest,
+      requested_grant_snapshot_id: version.requested_grant_snapshot_id,
       staged_at: version.staged_at.toISOString(),
       activated_at: version.activated_at?.toISOString() ?? null,
       superseded_at: version.superseded_at?.toISOString() ?? null,
@@ -1346,14 +1563,45 @@ export async function getConnectedAppGrantManagement(
       resource_rights: snapshot.resource_rights,
       classification: snapshot.classification,
       snapshot_digest: snapshot.snapshot_digest,
-      reviewed_by_actor_type: snapshot.reviewed_by_actor_type,
-      reviewed_by_actor_id: snapshot.reviewed_by_actor_id,
       reviewed_at: snapshot.reviewed_at?.toISOString() ?? null,
       created_at: snapshot.created_at.toISOString(),
     })),
+    review_target: reviewTargetVersion && requestedSnapshot && requestedAuthority && activationKind ? {
+      activation_kind: activationKind,
+      app_version_id: reviewTargetVersion.id,
+      version: reviewTargetVersion.version,
+      protocol_version: '1' as const,
+      package_format: typeof reviewTargetVersion.package_format === 'string'
+        ? reviewTargetVersion.package_format
+        : null,
+      package_digest: reviewTargetVersion.package_digest,
+      manifest_digest: reviewTargetVersion.manifest_digest,
+      manifest: reviewTargetVersion.manifest,
+      provenance: reviewTargetVersion.provenance,
+      provenance_trust: 'local_unsigned' as const,
+      requested_snapshot_id: requestedSnapshot.id,
+      requested_snapshot_digest: requestedSnapshot.snapshot_digest,
+      requested_authority: requestedAuthority,
+      dependency_requirements: projectedDependencies,
+      connector_requirements: projectedConnectors,
+      missing_binding_keys: missingBindingKeys,
+      readiness: {
+        dependencies_ready: projectedDependencies.every((requirement) => requirement.status === 'ready'),
+        connector_candidates_ready: projectedConnectors.every(
+          (requirement) => requirement.candidates.some((candidate) => candidate.eligible_for_review),
+        ),
+      },
+    } : null,
     dependencies,
     action_bindings: bindings,
-    recent_runs: recentRuns,
+    recent_runs: recentRuns.map((run) => ({
+      ...run,
+      result_expires_at: run.result_expires_at.toISOString(),
+      result_purged_at: run.result_purged_at?.toISOString() ?? null,
+      terminal_at: run.terminal_at?.toISOString() ?? null,
+      created_at: run.created_at.toISOString(),
+      updated_at: run.updated_at.toISOString(),
+    })),
   };
 }
 
@@ -1374,6 +1622,7 @@ export async function inspectConnectedAppHealth(
   capability: AppReviewCapabilityPort = capabilityService,
 ): Promise<ConnectedAppHealth> {
   assertHumanManager(actorValue);
+  await assertCurrentModuleManagerWithExecutor(db, actorValue);
   const [installation] = await db.select().from(appInstallations).where(and(
     eq(appInstallations.org_id, actorValue.org_id),
     eq(appInstallations.id, installationId),

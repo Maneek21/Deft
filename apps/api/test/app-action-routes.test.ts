@@ -147,7 +147,11 @@ test('JWT App action routes are strict human:ui adapters over AppActionService',
 
 test('JWT App Run routes delegate actor-scoped reads and map safe Run errors', async (t) => {
   const service = appActionService as any;
-  const original = { inspectRun: service.inspectRun, result: service.result };
+  const original = {
+    inspectRun: service.inspectRun,
+    result: service.result,
+    inspectReceipts: service.inspectReceipts,
+  };
   t.after(() => Object.assign(service, original));
 
   const calls: Array<{ operation: string; caller: any; runId: string }> = [];
@@ -159,6 +163,13 @@ test('JWT App Run routes delegate actor-scoped reads and map safe Run errors', a
     calls.push({ operation: 'result', caller, runId });
     return { run: { id: runId, state: 'succeeded' }, value: { status: 'accepted' } };
   };
+  service.inspectReceipts = async (caller: any, runId: string) => {
+    calls.push({ operation: 'receipts', caller, runId });
+    return {
+      run: { id: runId, state: 'succeeded', operation_name: 'send_email' },
+      receipts: [{ receipt_id: 'receipt-1', verified: true }],
+    };
+  };
 
   const app = testApp();
   const inspected = await app.request('/api/app-runs/run-1');
@@ -167,9 +178,13 @@ test('JWT App Run routes delegate actor-scoped reads and map safe Run errors', a
   const result = await app.request('/api/app-runs/run-1/result');
   assert.equal(result.status, 200);
   assert.deepEqual((await result.json() as any).value, { status: 'accepted' });
+  const receipts = await app.request('/api/app-runs/run-1/receipts');
+  assert.equal(receipts.status, 200);
+  assert.deepEqual((await receipts.json() as any).receipts, [{ receipt_id: 'receipt-1', verified: true }]);
   assert.deepEqual(calls.map((call) => [call.operation, call.runId]), [
     ['inspect', 'run-1'],
     ['result', 'run-1'],
+    ['receipts', 'run-1'],
   ]);
   assert.ok(calls.every((call) => call.caller.actor.source === 'ui'));
 
@@ -179,6 +194,14 @@ test('JWT App Run routes delegate actor-scoped reads and map safe Run errors', a
   assert.deepEqual(await expired.json(), {
     error: 'The exact App Run result is no longer retained',
     code: 'APP_RUN_RESULT_EXPIRED',
+  });
+
+  service.inspectReceipts = async () => { throw new AppRunError('APP_RUN_REPAIR_REQUIRED'); };
+  const invalidReceipt = await app.request('/api/app-runs/run-1/receipts');
+  assert.equal(invalidReceipt.status, 409);
+  assert.deepEqual(await invalidReceipt.json(), {
+    error: 'The App Run requires local repair',
+    code: 'APP_RUN_REPAIR_REQUIRED',
   });
 
   const invalid = await app.request(`/api/app-runs/${'x'.repeat(513)}`);
