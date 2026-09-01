@@ -165,6 +165,7 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
 test('browser proof correlates the exact invoked Run before approving it through Inbox UI', () => {
   assert.match(browserSmoke, /PACKED_PROVIDER_RUN_ID_INVALID/);
   assert.match(browserSmoke, /approval\?\.params\?\.run_id === invokedRunId/);
+  assert.match(browserSmoke, /ref\?\.resource_id === campaignRecordId/);
   assert.match(browserSmoke, /getByRole\('button', \{ name: 'Approve App action', exact: true \}\)\.nth\(approvalIndex\)/);
   assert.doesNotMatch(
     browserSmoke,

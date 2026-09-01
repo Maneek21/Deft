@@ -376,6 +376,13 @@ async function invokePackedProviderThroughUi(
     ...new Set(links.map((link) => link.getAttribute('href')).filter(Boolean)),
   ]);
   requireCondition(campaignHrefs.length === 1, 'CONNECTED_CAMPAIGN_NOT_UNIQUE');
+  const campaignRecordId = decodeURIComponent(
+    new URL(campaignHrefs[0], webUrl).pathname.split('/').filter(Boolean).at(-1) ?? '',
+  );
+  requireCondition(
+    campaignRecordId.length > 0 && campaignRecordId.length <= 512,
+    'CONNECTED_CAMPAIGN_ID_INVALID',
+  );
   await campaignLinks.first().click();
   setStage('packed_provider_campaign_record');
   await page.getByRole('heading', { name: 'Connected campaign', exact: true, level: 1 })
@@ -439,7 +446,7 @@ async function invokePackedProviderThroughUi(
     : [];
   requireCondition(
     targetPreview?.title === 'Send campaign email'
-      && targetResourceRefs.some((ref) => ref?.label === 'Connected campaign'),
+      && targetResourceRefs.some((ref) => ref?.resource_id === campaignRecordId),
     'PACKED_PROVIDER_APPROVAL_PREVIEW_INVALID',
   );
   const approveButton = page
@@ -449,8 +456,6 @@ async function invokePackedProviderThroughUi(
     'xpath=ancestor::div[contains(@class, "max-w-[460px]")][1]',
   );
   await approvalCard.getByText('Send campaign email', { exact: true })
-    .waitFor({ state: 'visible', timeout: 20_000 });
-  await approvalCard.getByText('Connected campaign', { exact: true })
     .waitFor({ state: 'visible', timeout: 20_000 });
   setStage('packed_provider_inbox_approval');
   const approvalResponse = page.waitForResponse((response) => {
