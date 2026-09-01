@@ -7,6 +7,7 @@ import { digestSupportedModuleManifest } from '../../packages/shared/src/index.j
 import {
   __test,
   assembleContinuitySnapshot,
+  certificationContinuityTables,
   classifySucceededPayloadEvidence,
   deterministicCertificationKeyring,
   parseCliArgs,
@@ -93,10 +94,34 @@ test('continuity hash is deterministic, metadata-bound, and contains no row valu
 
   const changed = assembleContinuitySnapshot({ ...input, pgvectorVersion: '0.8.2' });
   assert.notEqual(changed.continuity_sha256, first.continuity_sha256);
+  assert.equal(
+    assembleContinuitySnapshot({
+      ...input,
+      migrations: [{ version: '0.3.0-preview.26', checksum: 'sha256:track-a-migration' }],
+    }, '0.3.0-preview.26').latest_migration,
+    '0.3.0-preview.26',
+  );
+  assert.throws(
+    () => assembleContinuitySnapshot(input, '0.3.0-preview.26'),
+    /PHASE5_MIGRATION_NOT_CURRENT/,
+  );
   assert.deepEqual(__test.parseContinuitySnapshot(first), first);
   assert.throws(
     () => __test.parseContinuitySnapshot({ ...first, continuity_sha256: `sha256:${'0'.repeat(64)}` }),
     /EXPECTED_SNAPSHOT_HASH_INVALID/,
+  );
+});
+
+test('Track A continuity adds only automation authority and fire state', () => {
+  assert.deepEqual(certificationContinuityTables('false'), __test.CONTINUITY_TABLES);
+  assert.deepEqual(certificationContinuityTables('true'), [
+    ...__test.CONTINUITY_TABLES,
+    'app_automation_definitions',
+    'app_automation_fires',
+  ]);
+  assert.throws(
+    () => certificationContinuityTables('app_automation_definitions'),
+    /TRACK_A_CONTINUITY_MODE_INVALID/,
   );
 });
 

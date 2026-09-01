@@ -35,6 +35,10 @@ const CONTINUITY_TABLES = Object.freeze([
   'resource_relation_receipts',
   'resource_relation_sets',
 ] as const);
+const TRACK_A_CONTINUITY_TABLES = Object.freeze([
+  'app_automation_definitions',
+  'app_automation_fires',
+] as const);
 
 const EXPECTED_APP_PACKAGE_DIGESTS = Object.freeze([
   'sha256:1471f0b94da9f6851bd978c315bc22a2dd0343b61a87477e4293b144c54248d8',
@@ -46,7 +50,8 @@ const EXPECTED_APP_PACKAGE_DIGESTS = Object.freeze([
 // package-artifact digest is already pinned by the exact App package digest.
 const EXPECTED_MODULE_MANIFEST_DIGEST =
   'sha256:70a2c14dffc15b7e8aa1e056a53b5933fa351e305d86e13ebf467bf8159287f2';
-const EXPECTED_LATEST_MIGRATION = '0.3.0-preview.25';
+const EXPECTED_LATEST_MIGRATION =
+  process.env.APP_PLATFORM_EXPECTED_LATEST_MIGRATION?.trim() || '0.3.0-preview.25';
 
 type CliOptions = Readonly<{
   mode: 'keyring' | 'snapshot' | 'verify';
@@ -262,7 +267,7 @@ export function assembleContinuitySnapshot(input: Readonly<{
   pgvectorVersion: string;
   migrations: readonly unknown[];
   tables: readonly ContinuityTableSnapshot[];
-}>): ContinuitySnapshot {
+}>, expectedLatestMigration = EXPECTED_LATEST_MIGRATION): ContinuitySnapshot {
   if (input.migrations.length === 0) {
     throw new CertificationProbeError('MIGRATION_LEDGER_EMPTY');
   }
@@ -274,7 +279,7 @@ export function assembleContinuitySnapshot(input: Readonly<{
   if (typeof latestMigration !== 'string' || !latestMigration) {
     throw new CertificationProbeError('MIGRATION_LEDGER_INVALID');
   }
-  if (latestMigration !== EXPECTED_LATEST_MIGRATION) {
+  if (latestMigration !== expectedLatestMigration) {
     throw new CertificationProbeError('PHASE5_MIGRATION_NOT_CURRENT');
   }
   const partial = {
@@ -292,9 +297,20 @@ export function assembleContinuitySnapshot(input: Readonly<{
   });
 }
 
+export function certificationContinuityTables(
+  includeTrackA = process.env.APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY,
+): readonly string[] {
+  if (includeTrackA !== undefined && includeTrackA !== 'true' && includeTrackA !== 'false') {
+    throw new CertificationProbeError('TRACK_A_CONTINUITY_MODE_INVALID');
+  }
+  return includeTrackA === 'true'
+    ? Object.freeze([...CONTINUITY_TABLES, ...TRACK_A_CONTINUITY_TABLES])
+    : CONTINUITY_TABLES;
+}
+
 async function createContinuitySnapshot(client: PgClient): Promise<ContinuitySnapshot> {
   const tables: ContinuityTableSnapshot[] = [];
-  for (const table of CONTINUITY_TABLES) {
+  for (const table of certificationContinuityTables()) {
     const result = await client.query<{ value: unknown }>(
       `SELECT to_jsonb(certification_row) AS value
          FROM (SELECT * FROM "${table}" ORDER BY id) AS certification_row`,
@@ -683,6 +699,7 @@ if (invokedPath && fileURLToPath(import.meta.url) === invokedPath) {
 export const __test = Object.freeze({
   SNAPSHOT_SCHEMA,
   CONTINUITY_TABLES,
+  TRACK_A_CONTINUITY_TABLES,
   EXPECTED_APP_PACKAGE_DIGESTS,
   EXPECTED_MODULE_MANIFEST_DIGEST,
   EXPECTED_LATEST_MIGRATION,

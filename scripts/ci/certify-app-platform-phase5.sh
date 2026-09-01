@@ -14,6 +14,8 @@ browser_script="${APP_PLATFORM_BROWSER_SCRIPT:-${certifier_root}/scripts/ci/app-
 setup_hook="${APP_PLATFORM_SETUP_HOOK:-}"
 offline_hook="${APP_PLATFORM_OFFLINE_HOOK:-}"
 app_automations_enabled="${DEFT_APP_AUTOMATIONS_ENABLED:-false}"
+expected_latest_migration="${APP_PLATFORM_EXPECTED_LATEST_MIGRATION:-0.3.0-preview.25}"
+include_track_a_continuity="${APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY:-false}"
 
 run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 run_attempt="${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
@@ -48,6 +50,8 @@ host_gid="$(id -g)"
 [[ "$candidate_tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]]
 [[ "$database_name" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]
 [[ "$app_automations_enabled" == "true" || "$app_automations_enabled" == "false" ]]
+[[ "$expected_latest_migration" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]
+[[ "$include_track_a_continuity" == "true" || "$include_track_a_continuity" == "false" ]]
 
 mkdir -p "$safe_dir" "$recovery_dir"
 chmod 700 "$recovery_dir"
@@ -227,6 +231,8 @@ docker run --rm --network "$network" \
   -v "${safe_dir}:/evidence" \
   -e DATABASE_URL="$source_url_container" -e DEFT_TEST_DATABASE_URL="$source_url_container" \
   -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
+  -e APP_PLATFORM_EXPECTED_LATEST_MIGRATION="$expected_latest_migration" \
+  -e APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY="$include_track_a_continuity" \
   -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts snapshot --output /evidence/source-snapshot.json && chown "$HOST_UID:$HOST_GID" /evidence/source-snapshot.json'
@@ -307,6 +313,8 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false \
   -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   -e DEFT_APP_RUN_KEYRINGS="$restored_keyring_json" \
+  -e APP_PLATFORM_EXPECTED_LATEST_MIGRATION="$expected_latest_migration" \
+  -e APP_PLATFORM_INCLUDE_TRACK_A_CONTINUITY="$include_track_a_continuity" \
   -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts verify --expected-snapshot /evidence/source-snapshot.json --output /evidence/restored-verification.json && chown "$HOST_UID:$HOST_GID" /evidence/restored-verification.json'
