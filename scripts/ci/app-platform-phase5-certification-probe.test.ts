@@ -7,6 +7,7 @@ import { digestSupportedModuleManifest } from '../../packages/shared/src/index.j
 import {
   __test,
   assembleContinuitySnapshot,
+  classifySucceededPayloadEvidence,
   deterministicCertificationKeyring,
   parseCliArgs,
 } from './app-platform-phase5-certification-probe.js';
@@ -81,4 +82,35 @@ test('continuity hash is deterministic, metadata-bound, and contains no row valu
     () => __test.parseContinuitySnapshot({ ...first, continuity_sha256: `sha256:${'0'.repeat(64)}` }),
     /EXPECTED_SNAPSHOT_HASH_INVALID/,
   );
+});
+
+test('restore evidence accepts only retained or explicitly purged successful payloads', () => {
+  assert.equal(classifySucceededPayloadEvidence({
+    input_purged: false,
+    result_purged: false,
+    retained_input: true,
+    retained_output: true,
+    safe_outcome: { result_status: 'available' },
+  }), 'retained');
+  assert.equal(classifySucceededPayloadEvidence({
+    input_purged: true,
+    result_purged: true,
+    retained_input: false,
+    retained_output: false,
+    safe_outcome: { result_status: 'expired' },
+  }), 'purged');
+  assert.throws(() => classifySucceededPayloadEvidence({
+    input_purged: true,
+    result_purged: true,
+    retained_input: true,
+    retained_output: false,
+    safe_outcome: { result_status: 'expired' },
+  }), /APP_RUN_INPUT_PURGE_EVIDENCE_INVALID/);
+  assert.throws(() => classifySucceededPayloadEvidence({
+    input_purged: true,
+    result_purged: true,
+    retained_input: false,
+    retained_output: false,
+    safe_outcome: { result_status: 'available' },
+  }), /APP_RUN_RESULT_PURGE_EVIDENCE_INVALID/);
 });

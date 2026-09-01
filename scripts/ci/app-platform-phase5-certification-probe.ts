@@ -96,6 +96,33 @@ class CertificationProbeError extends Error {
   }
 }
 
+export function classifySucceededPayloadEvidence(input: Readonly<{
+  input_purged: boolean;
+  result_purged: boolean;
+  retained_input: boolean;
+  retained_output: boolean;
+  safe_outcome: unknown;
+}>): 'retained' | 'purged' {
+  if (input.input_purged === input.retained_input) {
+    throw new CertificationProbeError('APP_RUN_INPUT_PURGE_EVIDENCE_INVALID');
+  }
+  if (input.result_purged === input.retained_output) {
+    throw new CertificationProbeError('APP_RUN_RESULT_PURGE_EVIDENCE_INVALID');
+  }
+  if (input.result_purged) {
+    if (
+      !input.safe_outcome || typeof input.safe_outcome !== 'object'
+      || Array.isArray(input.safe_outcome)
+      || (input.safe_outcome as Record<string, unknown>).result_status !== 'expired'
+    ) throw new CertificationProbeError('APP_RUN_RESULT_PURGE_EVIDENCE_INVALID');
+    return 'purged';
+  }
+  if (!input.retained_input || !input.retained_output) {
+    throw new CertificationProbeError('APP_RUN_RETAINED_SUCCESS_INCOMPLETE');
+  }
+  return 'retained';
+}
+
 function sha256(value: string | Buffer): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
@@ -370,8 +397,21 @@ async function verifyRestore(expectedPath: string, output: string): Promise<void
     throw new CertificationProbeError('RESTORED_CONTINUITY_MISMATCH');
   }
 
-  type RunRow = { id: string; org_id: string; state: string };
+  type RunRow = {
+    id: string;
+    org_id: string;
+    state: string;
+    safe_outcome: unknown;
+    input_purged_at: Date | null;
+    result_purged_at: Date | null;
+  };
   type AttemptRow = { id: string };
+  type SecretPayloadRow = {
+    org_id: string;
+    run_id: string;
+    attempt_id: string | null;
+    payload_kind: 'input' | 'output';
+  };
   type ReceiptRow = {
     envelope: unknown;
     envelope_digest: string;
@@ -396,26 +436,83 @@ async function verifyRestore(expectedPath: string, output: string): Promise<void
     const repository = new repositoryModule.PostgresAppRunRepository();
     const secretRepository = new secretRepositoryModule.AppRunSecretRepository(secrets);
     const inventoryAt = new Date();
-    keyringModule.assertAppRunReferencedKeysAvailable(keys, [
-      ...await repository.activeKeyReferences(inventoryAt),
-      ...await secretRepository.retainedKeyReferences(inventoryAt),
-      ...await secretRepository.receiptSigningKeyReferences(),
-    ]);
+    try {
+      keyringModule.assertAppRunReferencedKeysAvailable(keys, [
+        ...await repository.activeKeyReferences(inventoryAt),
+        ...await secretRepository.retainedKeyReferences(inventoryAt),
+        ...await secretRepository.receiptSigningKeyReferences(),
+      ]);
+    } catch {
+      throw new CertificationProbeError('APP_RUN_KEY_INVENTORY_UNAVAILABLE');
+    }
 
     const runs = await client.query<RunRow>(
-      "SELECT id, org_id, state FROM app_runs WHERE origin_kind = 'app' ORDER BY id",
+      `SELECT id, org_id, state, safe_outcome, input_purged_at, result_purged_at
+         FROM app_runs WHERE origin_kind = 'app' ORDER BY id`,
     );
     const succeeded = runs.rows.filter((run) => run.state === 'succeeded');
     if (succeeded.length < 4) {
       throw new CertificationProbeError('APP_ORIGIN_SUCCESS_PROOF_INCOMPLETE');
     }
 
-    let inputsDecrypted = 0;
-    let outputsDecrypted = 0;
+    const retainedPayloads = await client.query<SecretPayloadRow>(
+      `SELECT org_id, run_id, attempt_id, payload_kind
+         FROM app_run_secret_payloads ORDER BY org_id, run_id, payload_kind, attempt_id`,
+    );
+    let retainedInputsDecrypted = 0;
+    let retainedOutputsDecrypted = 0;
+    for (const payload of retainedPayloads.rows) {
+      try {
+        if (payload.payload_kind === 'input') {
+          if (await secretRepository.readInput(payload.org_id, payload.run_id) === null) {
+            throw new CertificationProbeError('APP_RUN_INPUT_NOT_RECOVERABLE');
+          }
+          retainedInputsDecrypted += 1;
+        } else {
+          if (
+            !payload.attempt_id
+            || await secretRepository.readOutput(
+              payload.org_id,
+              payload.run_id,
+              payload.attempt_id,
+            ) === null
+          ) throw new CertificationProbeError('APP_RUN_OUTPUT_NOT_RECOVERABLE');
+          retainedOutputsDecrypted += 1;
+        }
+      } catch (error) {
+        if (error instanceof CertificationProbeError) throw error;
+        throw new CertificationProbeError(
+          payload.payload_kind === 'input'
+            ? 'APP_RUN_INPUT_NOT_RECOVERABLE'
+            : 'APP_RUN_OUTPUT_NOT_RECOVERABLE',
+        );
+      }
+    }
+    if (retainedInputsDecrypted < 1) {
+      throw new CertificationProbeError('APP_RUN_RETAINED_INPUT_PROOF_INCOMPLETE');
+    }
+
+    let succeededWithRetainedResults = 0;
+    let succeededWithPurgedResults = 0;
+    let succeededInputsDecrypted = 0;
+    let succeededOutputsDecrypted = 0;
     for (const run of succeeded) {
-      const input = await secretRepository.readInput(run.org_id, run.id);
-      if (input === null) throw new CertificationProbeError('APP_RUN_INPUT_NOT_RECOVERABLE');
-      inputsDecrypted += 1;
+      const runPayloads = retainedPayloads.rows.filter((payload) => (
+        payload.org_id === run.org_id && payload.run_id === run.id
+      ));
+      const retainedInput = runPayloads.some((payload) => payload.payload_kind === 'input');
+      const retainedOutput = runPayloads.some((payload) => payload.payload_kind === 'output');
+      const evidence = classifySucceededPayloadEvidence({
+        input_purged: Boolean(run.input_purged_at),
+        result_purged: Boolean(run.result_purged_at),
+        retained_input: retainedInput,
+        retained_output: retainedOutput,
+        safe_outcome: run.safe_outcome,
+      });
+      if (evidence === 'purged') {
+        succeededWithPurgedResults += 1;
+        continue;
+      }
 
       const attempts = await client.query<AttemptRow>(
         `SELECT id FROM app_run_attempts
@@ -425,12 +522,19 @@ async function verifyRestore(expectedPath: string, output: string): Promise<void
       );
       const attempt = attempts.rows[0];
       if (!attempt) throw new CertificationProbeError('APP_RUN_SUCCESS_ATTEMPT_MISSING');
-      const result = await secretRepository.readOutput(run.org_id, run.id, attempt.id);
+      let result: unknown;
+      try {
+        result = await secretRepository.readOutput(run.org_id, run.id, attempt.id);
+      } catch {
+        throw new CertificationProbeError('APP_RUN_OUTPUT_NOT_RECOVERABLE');
+      }
       if (
         !result || typeof result !== 'object' || Array.isArray(result)
-        || result.provider_succeeded !== true
+        || (result as Record<string, unknown>).provider_succeeded !== true
       ) throw new CertificationProbeError('APP_RUN_OUTPUT_NOT_RECOVERABLE');
-      outputsDecrypted += 1;
+      succeededWithRetainedResults += 1;
+      succeededInputsDecrypted += 1;
+      succeededOutputsDecrypted += 1;
     }
 
     const receipts = await client.query<ReceiptRow>(
@@ -477,8 +581,15 @@ async function verifyRestore(expectedPath: string, output: string): Promise<void
       app_origin_runs: {
         total: runs.rows.length,
         succeeded: succeeded.length,
-        inputs_decrypted: inputsDecrypted,
-        outputs_decrypted: outputsDecrypted,
+        succeeded_with_retained_results: succeededWithRetainedResults,
+        succeeded_with_purged_results: succeededWithPurgedResults,
+        inputs_decrypted: succeededInputsDecrypted,
+        outputs_decrypted: succeededOutputsDecrypted,
+      },
+      retained_secret_payloads: {
+        total: retainedPayloads.rows.length,
+        inputs_decrypted: retainedInputsDecrypted,
+        outputs_decrypted: retainedOutputsDecrypted,
       },
       receipts: {
         total: receipts.rows.length,
