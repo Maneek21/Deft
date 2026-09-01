@@ -151,6 +151,17 @@ test('automation is explicitly enabled in every candidate boot and the setup hoo
   assert.match(setupHook, /DEFT_APP_AUTOMATIONS_ENABLED[^\n]*true|true[^\n]*DEFT_APP_AUTOMATIONS_ENABLED/);
 });
 
+test('candidate boots enable the rollout prerequisites before automation', () => {
+  assert.match(
+    orchestrator,
+    /run_candidate\(\) \{[\s\S]*?-e DEFT_APPS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUNS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \\\r?\n\s+-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled"/,
+  );
+  assert.match(
+    orchestrator,
+    /-v "\$\{candidate_root\}\/examples:\/app\/examples:ro"[\s\S]*?-e DEFT_APPS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUNS_ENABLED=true \\\r?\n\s+-e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \\\r?\n\s+-e DEFT_APP_AUTOMATIONS_ENABLED="\$app_automations_enabled"/,
+  );
+});
+
 test('the exact browser fixture is mandatory, so the Phase 6 legacy path cannot pass', () => {
   assert.match(
     workflow,
