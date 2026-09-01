@@ -301,6 +301,16 @@ API typecheck pass locally. Actual `.26` PostgreSQL execution remains a CI/relea
 host requirement because the local environment has no disposable pgvector-
 capable PostgreSQL and Docker is unavailable.
 
+**PR B implementation status (2026-09-01):** Loop A.3 is implemented as a
+focused candidate on top of merged PR A. One default-off singleton scan reuses
+the existing PostgreSQL queue; the domain fire ledger remains authoritative.
+Canonical wall-clock/DST/misfire resolution, bounded cross-tenant paging,
+attempt-scoped delivery recovery, exact claim/lease/epoch/token fencing,
+pre-claim and pre-Run live authorization, budgets, crash recovery, and
+dead-letter settlement are covered by focused tests. The real PostgreSQL
+integration extension remains part of PR B's consolidated remote gate; the
+available local database is an older schema and is not certification evidence.
+
 ### Loop A.0 — Freeze the first automated proof
 
 **Purpose:** add one useful unattended plane without inventing a workflow

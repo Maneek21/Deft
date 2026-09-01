@@ -126,6 +126,45 @@ export async function enqueue(
   `);
 }
 
+/** Enqueue one deduplicated delivery, or re-arm that exact delivery after its
+ * queue-level retries terminal-failed before the domain operation advanced.
+ * Domain state remains the authority for whether the caller invokes this. */
+export async function enqueueOrRearmFailed(
+  queueName: QueueName,
+  jobName: string,
+  data: Record<string, unknown>,
+  opts: EnqueueOptions & Readonly<{ dedupeKey: string }>,
+): Promise<'active' | 'rearmed'> {
+  const dedupeKey = opts.dedupeKey.trim();
+  if (!dedupeKey) throw new Error('Recoverable delivery requires a dedupe key');
+  const executor = opts.executor ?? db;
+  const orgId = inferOrgId(data, opts.orgId);
+  const delay = Math.max(0, opts.delay ?? 0);
+  const maxAttempts = positiveInteger(opts.maxAttempts, 3);
+  await enqueue(queueName, jobName, data, { ...opts, dedupeKey, executor });
+  const rearmed = await executor.execute(sql`
+    UPDATE job_queue
+    SET status = 'pending',
+        data = ${JSON.stringify(data)}::jsonb,
+        attempts = 0,
+        max_attempts = ${maxAttempts},
+        run_at = now() + (${delay} * interval '1 millisecond'),
+        started_at = NULL,
+        completed_at = NULL,
+        error = NULL,
+        locked_by = NULL,
+        lock_token = NULL,
+        lock_expires_at = NULL
+    WHERE org_id IS NOT DISTINCT FROM ${orgId}
+      AND queue = ${queueName}
+      AND name = ${jobName}
+      AND dedupe_key = ${dedupeKey}
+      AND status = 'failed'
+    RETURNING id
+  `);
+  return resultRows(rearmed).length === 1 ? 'rearmed' : 'active';
+}
+
 /** Atomically claim the next due job and establish a renewable ownership lease. */
 export async function dequeueJob(
   queueName: QueueName,

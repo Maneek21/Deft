@@ -46,6 +46,8 @@ import {
 import {
   claimAppAutomationFireWithExecutor,
   postgresAppAutomationVerificationReadPort,
+  recoverExpiredAppAutomationFireClaimWithExecutor,
+  settleFailedAppAutomationFireClaimWithExecutor,
 } from '../src/lib/app-automation-repository.js';
 import { closeDb, db } from '../src/lib/db.js';
 import { ModuleError } from '../src/lib/module-errors.js';
@@ -761,6 +763,8 @@ test('Protocol v2 stages with zero authority and activates only through connecte
     eq(appActionBindings.action_key, 'send_campaign_email'),
   ));
   assert.ok(actionBinding);
+  const approvedAt = new Date();
+  const scheduledAt = new Date(Math.floor(approvedAt.getTime() / 60_000) * 60_000 + 60_000);
   const definitionInput = {
     app_installation_id: staged.id,
     app_version_id: version.id,
@@ -776,14 +780,13 @@ test('Protocol v2 stages with zero authority and activates only through connecte
       revision: String(contact.record.revision),
       content_digest: digestAppGrantValue(contact.record.data),
     },
-    local_time: '09:00',
+    local_time: scheduledAt.toISOString().slice(11, 16),
     timezone: 'UTC',
     validity_seconds: 24 * 60 * 60,
     max_org_runs_per_utc_day: 100,
     max_pending_org_fires: 25,
   } as const;
   const definitionReview = await prepareAppAutomationDefinitionReview(actor, definitionInput);
-  const approvedAt = new Date();
   const definition = await createReviewedAppAutomationDefinition(actor, {
     ...definitionInput,
     expected_review_digest: definitionReview.review_digest,
@@ -801,9 +804,17 @@ test('Protocol v2 stages with zero authority and activates only through connecte
     organization_id: orgId,
     definition_id: definition.id,
     expected_epoch: definition.definition_epoch,
-    logical_local_date: approvedAt.toISOString().slice(0, 10),
-    resolution: { kind: 'resolved', resolved_at_utc: new Date(approvedAt.getTime() + 60_000) },
-  }, { now: () => new Date(approvedAt.getTime() + 60_000) });
+    logical_local_date: scheduledAt.toISOString().slice(0, 10),
+    resolution: { kind: 'resolved', resolved_at_utc: scheduledAt },
+  }, { now: () => new Date(scheduledAt.getTime() + 60_000) });
+  const duplicateFire = await persistAppAutomationFire({
+    organization_id: orgId,
+    definition_id: definition.id,
+    expected_epoch: definition.definition_epoch,
+    logical_local_date: scheduledAt.toISOString().slice(0, 10),
+    resolution: { kind: 'resolved', resolved_at_utc: scheduledAt },
+  }, { now: () => new Date(scheduledAt.getTime() + 60_000) });
+  assert.equal(duplicateFire.id, fire.id);
   const wrongEpochClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
     organization_id: orgId,
     definition_id: definition.id,
@@ -815,18 +826,81 @@ test('Protocol v2 stages with zero authority and activates only through connecte
     lease_expires_at: new Date(approvedAt.getTime() + 180_000),
   }));
   assert.equal(wrongEpochClaim, null);
+  const firstClaimToken = randomUUID();
   const claimed = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
     organization_id: orgId,
     definition_id: definition.id,
     fire_id: fire.id,
     expected_epoch: definition.definition_epoch,
     claim_owner: 'track-a-test',
-    claim_token: randomUUID(),
+    claim_token: firstClaimToken,
     claimed_at: new Date(approvedAt.getTime() + 120_000),
     lease_expires_at: new Date(approvedAt.getTime() + 180_000),
   }));
   assert.equal(claimed?.state, 'claimed');
   assert.equal(claimed?.attempt_count, 1);
+  assert.equal(await db.transaction((tx) => recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch,
+    expected_claim_token: 'wrong-token',
+    recovered_at: new Date(approvedAt.getTime() + 181_000),
+  })), null);
+  const recovered = await db.transaction((tx) => recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch,
+    expected_claim_token: firstClaimToken,
+    recovered_at: new Date(approvedAt.getTime() + 181_000),
+  }));
+  assert.equal(recovered?.state, 'pending');
+  const secondClaimToken = randomUUID();
+  const secondClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch,
+    claim_owner: 'track-a-test-retry',
+    claim_token: secondClaimToken,
+    claimed_at: new Date(approvedAt.getTime() + 182_000),
+    lease_expires_at: new Date(approvedAt.getTime() + 242_000),
+  }));
+  assert.equal(secondClaim?.attempt_count, 2);
+  const released = await db.transaction((tx) => settleFailedAppAutomationFireClaimWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch,
+    expected_claim_token: secondClaimToken,
+    failed_at: new Date(approvedAt.getTime() + 183_000),
+  }));
+  assert.equal(released?.state, 'pending');
+  const thirdClaimToken = randomUUID();
+  const thirdClaim = await db.transaction((tx) => claimAppAutomationFireWithExecutor(tx, {
+    organization_id: orgId,
+    definition_id: definition.id,
+    fire_id: fire.id,
+    expected_epoch: definition.definition_epoch,
+    claim_owner: 'track-a-test-final-retry',
+    claim_token: thirdClaimToken,
+    claimed_at: new Date(approvedAt.getTime() + 184_000),
+    lease_expires_at: new Date(approvedAt.getTime() + 244_000),
+  }));
+  assert.equal(thirdClaim?.attempt_count, 3);
+  const deadLettered = await db.transaction((tx) => (
+    recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
+      organization_id: orgId,
+      definition_id: definition.id,
+      fire_id: fire.id,
+      expected_epoch: definition.definition_epoch,
+      expected_claim_token: thirdClaimToken,
+      recovered_at: new Date(approvedAt.getTime() + 245_000),
+    })
+  ));
+  assert.equal(deadLettered?.state, 'dead_letter');
+  assert.equal(deadLettered?.terminal_reason, 'attempts_exhausted');
   const verification = await postgresAppAutomationVerificationReadPort.load({
     organization_id: orgId,
     definition_id: definition.id,

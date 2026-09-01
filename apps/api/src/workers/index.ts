@@ -14,6 +14,7 @@ import {
   type QueueName,
 } from '../lib/queues.js';
 import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
+import { APP_AUTOMATIONS_ENABLED } from '../lib/env.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -43,6 +44,7 @@ const CRON_DELAYS: Record<string, number> = {
   'chat-observation-backfill': 5 * 60_000,
   'chat-knowledge-batch': 30 * 60_000,
   'attention-maintenance': 15 * 60_000,
+  'app-automation-scan': 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -62,6 +64,7 @@ const CRON_KEYS: Record<string, string> = {
   'chat-observation-backfill': 'cron:chat-observation-backfill',
   'chat-knowledge-batch': 'cron:chat-knowledge-batch',
   'attention-maintenance': 'cron:attention-maintenance',
+  'app-automation-scan': 'cron:app-automation-scan',
 };
 
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
@@ -272,6 +275,14 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
 
 async function getScheduledJobHandler(jobName: string): Promise<JobHandler | null> {
   switch (jobName) {
+    case 'app-automation-scan': {
+      const mod = await import('./handlers/app-automation-scan.js');
+      return mod.handleAppAutomationScan;
+    }
+    case 'app-automation-fire': {
+      const mod = await import('./handlers/app-automation-fire.js');
+      return mod.handleAppAutomationFire;
+    }
     case 'chat-knowledge-batch': {
       const mod = await import('./handlers/chat-knowledge-batch.js');
       return mod.handleChatKnowledgeBatch;
@@ -401,6 +412,7 @@ async function processDequeuedJob(
           name: job.name,
           data: job.data,
           attempts: job.attempts,
+          leaseExpiresAt: job.lockExpiresAt,
           signal,
         };
         await handler(runtimeJob);
@@ -431,7 +443,9 @@ async function processDequeuedJob(
     // A terminally failed occurrence must not stop its recurring chain. If the
     // failure is retryable, the active-cron constraint leaves the retry as the
     // sole occurrence and this insert becomes a no-op.
-    const recurrence = overrides?.recurrence !== undefined
+    const recurrence = job.name === 'app-automation-scan' && !APP_AUTOMATIONS_ENABLED
+      ? null
+      : overrides?.recurrence !== undefined
       ? overrides.recurrence
       : job.cronKey && CRON_DELAYS[job.name]
         ? { cronKey: job.cronKey, delayMs: CRON_DELAYS[job.name]! }
@@ -575,7 +589,8 @@ function trackBackground<T>(promise: Promise<T>): Promise<T> {
 
 async function reconcileRecurringJobs(): Promise<void> {
   await Promise.all(Object.entries(CRON_KEYS)
-    .filter(([jobName]) => jobName !== 'agent-heartbeat')
+    .filter(([jobName]) => jobName !== 'agent-heartbeat'
+      && (jobName !== 'app-automation-scan' || APP_AUTOMATIONS_ENABLED))
     .map(([jobName, cronKey]) => ensureCronJob(
       QUEUE_NAMES.SCHEDULED_JOBS,
       jobName,

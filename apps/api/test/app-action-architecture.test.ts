@@ -214,7 +214,7 @@ test('App Run approve and reject routes stay on the governed approval resolver',
   );
 });
 
-test('automation execution is host-only and reuses AppAction plus AppRun without a second executor', async () => {
+test('automation worker cutover is host-only and reuses AppAction plus AppRun without a second executor', async () => {
   const service = await readFile(join(sourceRoot, 'lib/app-action-service.ts'), 'utf8');
   const start = service.indexOf('async invokeApprovedAutomation(');
   const firstVerification = service.indexOf('this.automationVerification.load', start);
@@ -232,6 +232,16 @@ test('automation execution is host-only and reuses AppAction plus AppRun without
   );
   const automationSource = service.slice(start, service.indexOf('\n  async inspectRun(', start));
   assert.doesNotMatch(automationSource, /capabilityService\.invoke|\.executeTool\s*\(|\.insert\s*\(\s*appRuns/);
+  assert.match(automationSource, /automation_claim_token: input\.claim_token/);
+
+  const runService = await readFile(join(sourceRoot, 'lib/app-run-service.ts'), 'utf8');
+  assert.match(runService, /expected_claim_token: automationClaimToken!/);
+  const automationRepository = await readFile(
+    join(sourceRoot, 'lib/app-automation-repository.ts'),
+    'utf8',
+  );
+  assert.match(automationRepository, /eq\(appAutomationFires\.claim_token, input\.expected_claim_token\)/);
+  assert.match(automationRepository, /gt\(appAutomationFires\.lease_expires_at, input\.terminal_at\)/);
 
   const consumers: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
@@ -239,5 +249,22 @@ test('automation execution is host-only and reuses AppAction plus AppRun without
     if (sourcePath === 'lib/app-action-service.ts') continue;
     if (/\.invokeApprovedAutomation\s*\(/.test(await readFile(path, 'utf8'))) consumers.push(sourcePath);
   }
-  assert.deepEqual(consumers, [], 'PR A must not expose a route, scanner, queue, or worker cutover');
+  assert.deepEqual(consumers, ['lib/app-automation-runtime.ts']);
+  const runtime = await readFile(join(sourceRoot, 'lib/app-automation-runtime.ts'), 'utf8');
+  assert.doesNotMatch(runtime, /capabilityService\.invoke|\.executeTool\s*\(|\.insert\s*\(\s*appRuns/);
+  assert.match(runtime, /enqueueOrRearmFailed/);
+  assert.match(runtime, /attempt:\$\{fire\.attempt_count\}/);
+  assert.match(
+    runtime,
+    /deliverFire:[\s\S]*?db\.transaction\(async \(tx\)[\s\S]*?enqueueOrRearmFailed\([\s\S]*?executor: tx[\s\S]*?chargeFailedAppAutomationFireDeliveryWithExecutor\(tx/,
+    'queue rearm and domain attempt charging must share one transaction',
+  );
+  const queues = await readFile(join(sourceRoot, 'lib/queues.ts'), 'utf8');
+  assert.match(queues, /export async function enqueueOrRearmFailed/);
+  assert.match(queues, /AND status = 'failed'/);
+  const routes: string[] = [];
+  for (const path of await typescriptFiles(join(sourceRoot, 'routes'))) {
+    if (/invokeApprovedAutomation/.test(await readFile(path, 'utf8'))) routes.push(path);
+  }
+  assert.equal(routes.length, 0, 'automation execution must not gain a public route');
 });
