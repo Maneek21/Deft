@@ -726,8 +726,10 @@ async function exerciseTrackAAutomation(
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   requireCondition(overflow <= 2, 'AUTOMATION_MOBILE_HORIZONTAL_OVERFLOW');
   await assertSafeRenderedSurface(page, markers, 'AUTOMATION_MOBILE_MANAGEMENT');
+  setStage('automation_mobile_screenshot');
+  await row.scrollIntoViewIfNeeded();
   const mobileManagementScreenshot = resolve(evidenceDirectory, 'track-a-mobile-management.png');
-  await page.screenshot({ path: mobileManagementScreenshot, fullPage: true });
+  await page.screenshot({ path: mobileManagementScreenshot });
   evidence.screenshots.mobile_management = relativeEvidencePath(mobileManagementScreenshot);
   evidence.checks.mobile_management_summary_visible = true;
   evidence.checks.no_horizontal_overflow = true;
