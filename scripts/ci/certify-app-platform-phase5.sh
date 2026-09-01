@@ -263,8 +263,8 @@ rm -f "$restore_log"
 probe_row="$(
   docker exec "$restore_container" psql -U postgres -d "$database_name" -At -F ' ' -c "
     SELECT mr.org_id, ae.id, mr.id,
-           encode(convert_to(mr.data->>'name', 'UTF8'), 'base64'),
-           encode(convert_to(mr.data->>'email', 'UTF8'), 'base64')
+           replace(encode(convert_to(mr.data->>'name', 'UTF8'), 'base64'), E'\n', ''),
+           replace(encode(convert_to(mr.data->>'email', 'UTF8'), 'base64'), E'\n', '')
       FROM module_records mr
       JOIN module_installations mi ON mi.id = mr.installation_id AND mi.org_id = mr.org_id
       JOIN agent_employees ae ON ae.org_id = mr.org_id AND ae.is_active = true AND ae.is_deleted = false
