@@ -321,6 +321,19 @@ kill-switch state without Campaign-specific core branches. Desktop/mobile
 browser evidence remains intentionally consolidated into Loop A.5's one final
 release run.
 
+Loop A.5 is locally frozen as a release candidate. Existing adversarial suites
+cover schedule/DST/misfire, stale authority, timeout/ambiguity, restart,
+dead-letter, and cleanup behavior; the shared database lifecycle proof now also
+asserts concurrent fire/claim CAS, scheduled AppAction-to-AppRun ancestry and
+replay, budgets, pause/App-disable races, and tenant isolation. The existing
+Phase 6 browser harness has one optional strict Track A fixture mode for exact
+pin review, create, pause/resume, management health, secret absence, and
+desktop/mobile evidence. Focused App Kit, API, web, architecture, typecheck,
+and static certification checks pass locally. Real PostgreSQL execution and the
+single immutable candidate image/upgrade/restore/predecessor/offline/browser/
+cleanup pass remain the release-host gate; no weaker local substitute is
+claimed.
+
 ### Loop A.0 — Freeze the first automated proof
 
 **Purpose:** add one useful unattended plane without inventing a workflow
