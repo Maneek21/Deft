@@ -12,7 +12,7 @@ const orchestrator = readFileSync(
 );
 const executionSurface = `${workflow}\n${orchestrator}`;
 
-const CANDIDATE_COMMIT = '161ca65fcb79cdb76fee315b2ba9974ff145a47e';
+const CANDIDATE_COMMIT = '438a283a885f0ddc1b0aa34ef7a467d09ab163c8';
 const PHASE4_BASELINE_COMMIT = 'ec79592e669bdf915fad8a5d2480f0625d819a4c';
 const PREDECESSOR_IMAGE = 'ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788';
 
