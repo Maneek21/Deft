@@ -287,7 +287,13 @@ test('automation authoring and management stay generic and derive resource pins 
   const routes = await readFile(join(sourceRoot, 'routes/apps.ts'), 'utf8');
   assert.doesNotMatch(management, /campaign|contact|newsletter/i);
   assert.doesNotMatch(management, /capabilityService\.invoke|\.executeTool\s*\(/);
-  assert.match(management, /appActionService\.prepare/);
+  assert.match(
+    management,
+    /appActionService\.prepare\(\{\s*actor: interactiveAutomationActionActor\(actor\),?\s*\}/,
+    'managed review must adapt the interactive REST transport to established human:ui App Action authority',
+  );
+  assert.match(management, /keep the original actor for approval\/audit/);
+  assert.doesNotMatch(management, /source:\s*'rest'\s*\}\s*,\s*\{/);
   assert.match(management, /digestAppGrantValue\(record\.data\)/);
   assert.match(management, /prepareAppAutomationDefinitionReview/);
   assert.match(management, /createReviewedAppAutomationDefinition/);

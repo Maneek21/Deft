@@ -47,6 +47,27 @@ function unavailable(message: string): never {
   throw new AppError(message, 'APP_STALE', 409);
 }
 
+function interactiveAutomationActionActor(
+  actor: ModuleActor,
+): Extract<ModuleActor, { kind: 'human' }> {
+  if (
+    actor.kind !== 'human'
+    || (actor.role !== 'owner' && actor.role !== 'admin')
+    || (actor.source !== 'ui' && actor.source !== 'rest')
+  ) {
+    throw new AppError(
+      'Only interactive workspace owners and admins can manage App automations',
+      'APP_ACCESS_DENIED',
+      403,
+    );
+  }
+  // The /api/apps management adapter authenticates an interactive browser
+  // through its REST route. App Action prepared authority records the caller
+  // surface, not the transport, so keep the original actor for approval/audit
+  // and use the established human:ui surface only for effect-free preparation.
+  return Object.freeze({ ...actor, source: 'ui' });
+}
+
 function refIdentity(ref: AppActionResourceEvidence['ref']): string {
   return `${ref.provider.provider_instance_id}\0${ref.resource_type}\0${ref.resource_id}`;
 }
@@ -88,7 +109,9 @@ async function resolveReviewInput(
       400,
     );
   }
-  const prepared = await appActionService.prepare({ actor }, {
+  const prepared = await appActionService.prepare({
+    actor: interactiveAutomationActionActor(actor),
+  }, {
     binding_id: input.binding_id,
     resource_ref: input.resource_ref,
     selections: input.selections,
