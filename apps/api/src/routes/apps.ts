@@ -24,6 +24,9 @@ import {
 import { isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { createAppDeveloperPairing, revokeAppDeveloperPairing } from '../lib/app-developer-pairing.js';
+import { appOperationsService } from '../lib/app-operations-service.js';
+import { AppRunError } from '../lib/app-run-errors.js';
+import { appHttpFailure } from './app-http-errors.js';
 
 export const appRoutes = new Hono();
 
@@ -98,6 +101,15 @@ function failure(c: Context, error: unknown) {
       error: 'Only active workspace owners and admins can manage Apps',
       code: 'APP_ACCESS_DENIED',
     }, 403);
+  }
+  if (error instanceof AppRunError) {
+    if (error.code === 'APP_RUN_ACCESS_DENIED') {
+      return c.json({
+        error: 'Only active workspace owners and admins can inspect App operations',
+        code: 'APP_ACCESS_DENIED',
+      }, 403);
+    }
+    return appHttpFailure(c, error, 'App Run', 'app-runs');
   }
   if (error && typeof error === 'object' && 'appPayloadTooLarge' in error) {
     return c.json({ error: 'App package is too large', code: 'APP_INVALID_PACKAGE' }, 413);
@@ -227,6 +239,14 @@ appRoutes.get('/', async (c) => {
 appRoutes.get('/navigation', async (c) => {
   try {
     return c.json({ navigation: await listActiveAppNavigation(actorFromContext(c)) });
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.get('/operations', async (c) => {
+  try {
+    return c.json({ operations: await appOperationsService.read(managerFromContext(c)) });
   } catch (error) {
     return failure(c, error);
   }

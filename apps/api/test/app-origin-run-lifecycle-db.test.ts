@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
-import { and, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
 import { SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT } from '@deft/app-kit';
 import {
   APP_RUN_CONTRACT_VERSIONS,
@@ -19,6 +19,7 @@ import {
   appGrantSnapshots,
   appInstallations,
   appRunAttempts,
+  appRunEvents,
   appRunReceipts,
   appRunSecretPayloads,
   appRuns,
@@ -39,13 +40,19 @@ import { AppRunError } from '../src/lib/app-run-errors.js';
 import { parseEnvironmentAppRunKeyrings } from '../src/lib/app-run-keyrings.js';
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
 import { AppRunPreparedInputService } from '../src/lib/app-run-prepared-input.js';
-import { PinnedMcpAppRunProviderExecutor } from '../src/lib/app-run-provider-executor.js';
+import {
+  MCP_APP_RUN_RESULT_VERSION,
+  PinnedMcpAppRunProviderExecutor,
+} from '../src/lib/app-run-provider-executor.js';
 import { PostgresAppRunRepository, type AppRunTransaction } from '../src/lib/app-run-repository.js';
 import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
 import { noOpAppRunAttentionProjector } from '../src/lib/app-run-attention.js';
-import { PostgresAppRunReceiptWriter } from '../src/lib/app-run-receipts.js';
+import {
+  PostgresAppRunReceiptReader,
+  PostgresAppRunReceiptWriter,
+} from '../src/lib/app-run-receipts.js';
 import { CapabilityService, type CapabilityPinnedInvocationRequest } from '../src/lib/capability-service.js';
 import type {
   McpCapabilityDiscoveryRequest,
@@ -112,6 +119,9 @@ test('App actions create governed Runs once across every caller surface and fail
   const employeeUserId = randomUUID();
   const employeeId = randomUUID();
   const mcpTokenId = randomUUID();
+  const secondMcpTokenId = randomUUID();
+  const otherUserId = randomUUID();
+  const otherMcpTokenId = randomUUID();
   const connectionId = randomUUID();
   const connectionSlug = `loop5-mail-${suffix}`;
   const recipient = `loop5-recipient-${suffix}@example.test`;
@@ -133,6 +143,11 @@ test('App actions create governed Runs once across every caller surface and fail
       is_agent: true,
       agent_employee_id: employeeId,
     },
+    {
+      id: otherUserId,
+      email: `loop5-other-${suffix}@example.test`,
+      name: 'Loop 5 other member',
+    },
   ]);
   await db.insert(orgMembers).values([
     {
@@ -146,6 +161,13 @@ test('App actions create governed Runs once across every caller surface and fail
       id: randomUUID(),
       org_id: orgId,
       user_id: employeeUserId,
+      role: 'member',
+      is_active: true,
+    },
+    {
+      id: randomUUID(),
+      org_id: orgId,
+      user_id: otherUserId,
       role: 'member',
       is_active: true,
     },
@@ -220,6 +242,11 @@ test('App actions create governed Runs once across every caller surface and fail
   };
   const sandbox = new Phase4SandboxEmailProvider();
   const pinnedRequests: CapabilityPinnedInvocationRequest[] = [];
+  const forcedPinnedResults: McpPinnedExecutionResult[] = [];
+  let pinnedBlock: Readonly<{
+    entered: () => void;
+    wait: Promise<void>;
+  }> | null = null;
   const providerPort = {
     async discover(request: McpCapabilityDiscoveryRequest): Promise<McpCapabilityDiscoveryResult> {
       assert.equal(request.org_id, orgId);
@@ -231,6 +258,14 @@ test('App actions create governed Runs once across every caller surface and fail
     },
     async executePinned(request: CapabilityPinnedInvocationRequest): Promise<McpPinnedExecutionResult> {
       pinnedRequests.push(request);
+      const block = pinnedBlock;
+      if (block) {
+        pinnedBlock = null;
+        block.entered();
+        await block.wait;
+      }
+      const forced = forcedPinnedResults.shift();
+      if (forced) return forced;
       const effect = await sandbox.invoke({
         to: String(request.input.to),
         subject: String(request.input.subject),
@@ -318,18 +353,44 @@ test('App actions create governed Runs once across every caller surface and fail
     is_deleted: false,
     created_by: ownerUserId,
   });
-  await db.insert(mcpTokens).values({
-    id: mcpTokenId,
-    org_id: orgId,
-    user_id: ownerUserId,
-    agent_employee_id: null,
-    principal_kind: 'human',
-    name: 'Loop 5 human MCP token',
-    token_hash: `loop5-hash-${suffix}`,
-    token_prefix: `loop5-${suffix.slice(0, 8)}`,
-    scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
-    created_by: ownerUserId,
-  });
+  await db.insert(mcpTokens).values([
+    {
+      id: mcpTokenId,
+      org_id: orgId,
+      user_id: ownerUserId,
+      agent_employee_id: null,
+      principal_kind: 'human',
+      name: 'Loop 5 human MCP token',
+      token_hash: `loop5-hash-${suffix}`,
+      token_prefix: `loop5-${suffix.slice(0, 8)}`,
+      scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+      created_by: ownerUserId,
+    },
+    {
+      id: secondMcpTokenId,
+      org_id: orgId,
+      user_id: ownerUserId,
+      agent_employee_id: null,
+      principal_kind: 'human',
+      name: 'Loop 5 second same-actor MCP token',
+      token_hash: `loop5-second-hash-${suffix}`,
+      token_prefix: `loop5-second-${suffix.slice(0, 8)}`,
+      scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+      created_by: ownerUserId,
+    },
+    {
+      id: otherMcpTokenId,
+      org_id: orgId,
+      user_id: otherUserId,
+      agent_employee_id: null,
+      principal_kind: 'human',
+      name: 'Loop 5 other-actor MCP token',
+      token_hash: `loop5-other-hash-${suffix}`,
+      token_prefix: `loop5-other-${suffix.slice(0, 8)}`,
+      scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+      created_by: ownerUserId,
+    },
+  ]);
 
   const [fingerprintRows, encryptionRows, signingRows] = await Promise.all([
     db.select({
@@ -358,6 +419,7 @@ test('App actions create governed Runs once across every caller surface and fail
     const secretRepository = new AppRunSecretRepository(secrets);
     const liveAuthorization = new PostgresAppRunLiveAuthorization();
     const receipts = new PostgresAppRunReceiptWriter(secrets, secretRepository);
+    const receiptReader = new PostgresAppRunReceiptReader(secrets);
     const pinnedExecutor = new PinnedMcpAppRunProviderExecutor({
       executePinned: (request) => capabilities.invokePinned(request),
     });
@@ -402,9 +464,14 @@ test('App actions create governed Runs once across every caller surface and fail
       { read: readModuleRecordScalarFields },
       { submitPreparedApp: (context, candidate) => runService.submitPreparedApp(context, candidate) },
       {
-        inspect: (readOrgId, runId, actor) => runService.inspect(readOrgId, runId, actor),
-        result: (readOrgId, runId, actor) => runService.result(readOrgId, runId, actor),
+        inspect: (readOrgId, runId, actor, requiredAuthorityRef) => (
+          runService.inspect(readOrgId, runId, actor, requiredAuthorityRef)
+        ),
+        result: (readOrgId, runId, actor, requiredAuthorityRef) => (
+          runService.result(readOrgId, runId, actor, requiredAuthorityRef)
+        ),
       },
+      receiptReader,
     );
     const callers: ReadonlyArray<Readonly<{
       name: 'ui' | 'defty' | 'employee' | 'human_mcp';
@@ -660,10 +727,131 @@ test('App actions create governed Runs once across every caller surface and fail
       assert.ok(runReceipts.every((receipt) => receipt.run_id === positive.run.id));
 
     }
+    const successfulRunIds = distinctPositiveRuns.map((positive) => positive.run.id);
+    const successfulEvents = await db.select({
+      run_id: appRunEvents.run_id,
+      sequence: appRunEvents.sequence,
+      event_type: appRunEvents.event_type,
+      payload: appRunEvents.payload,
+    }).from(appRunEvents).where(and(
+      eq(appRunEvents.org_id, orgId),
+      inArray(appRunEvents.run_id, successfulRunIds),
+    )).orderBy(asc(appRunEvents.run_id), asc(appRunEvents.sequence));
+    const successParity: unknown[] = [];
     for (const positive of surfaceRuns) {
       const retained = await actions.result(positive.surface.caller, positive.run.id);
       assert.equal(retained.run.state, 'succeeded');
-      assert.equal((retained.value as { provider_succeeded?: boolean }).provider_succeeded, true);
+      const result = retained.value as Readonly<{
+        schema_version?: string;
+        provider_succeeded?: boolean;
+        output?: Readonly<{
+          schema_version?: string;
+          legacy_output?: Readonly<{ status?: string }>;
+        }>;
+      }>;
+      assert.equal(result.provider_succeeded, true);
+      const receiptBundle = await actions.inspectReceipts(positive.surface.caller, positive.run.id);
+      const persisted = persistedRuns.find((run) => run.id === positive.run.id);
+      if (!persisted) throw new Error(`${positive.surface.name} persisted Run is missing`);
+      const normalizedEvents = successfulEvents
+        .filter((event) => event.run_id === positive.run.id)
+        .map((event) => {
+          const payload = event.payload as Record<string, unknown>;
+          return {
+            event_type: event.event_type,
+            ...(typeof payload.from_state === 'string' ? { from_state: payload.from_state } : {}),
+            ...(typeof payload.to_state === 'string' ? { to_state: payload.to_state } : {}),
+          };
+        });
+      successParity.push({
+        binding: {
+          origin_kind: persisted.origin_kind,
+          binding_key: persisted.origin_app_binding_key,
+          operation_name: retained.run.operation_name,
+        },
+        policy: {
+          risk_class: retained.run.risk_class,
+          review_requirement: retained.run.review_requirement,
+          review_scope: retained.run.review_scope,
+          retry_class: retained.run.retry_class,
+          retention_class: retained.run.retention_class,
+        },
+        state: retained.run.state,
+        safe_preview: retained.run.safe_preview,
+        safe_outcome: retained.run.safe_outcome,
+        result: {
+          schema_version: result.schema_version,
+          provider_succeeded: result.provider_succeeded,
+          output_schema_version: result.output?.schema_version,
+          legacy_status: result.output?.legacy_output?.status,
+        },
+        transitions: normalizedEvents,
+        receipts: receiptBundle.receipts.map((receipt) => ({
+          receipt_kind: receipt.receipt_kind,
+          run_state: receipt.run_state,
+          verified: receipt.verified,
+        })),
+      });
+    }
+    const successBaseline = successParity[0];
+    assert.ok(successBaseline);
+    assert.ok((successBaseline as { transitions: Array<{ to_state?: string }> }).transitions
+      .some((event) => event.to_state === 'succeeded'));
+    for (const normalized of successParity.slice(1)) assert.deepEqual(normalized, successBaseline);
+    assert.equal(
+      (await actions.inspectRun(humanMcpRun.surface.caller, humanMcpRun.run.id)).id,
+      humanMcpRun.run.id,
+      'the original live token must inspect its Run',
+    );
+    assert.equal(
+      (await actions.inspectReceipts(humanMcpRun.surface.caller, humanMcpRun.run.id)).receipts.length,
+      2,
+      'the original live token must inspect verified receipts',
+    );
+
+    const alternateTokenCallers: ReadonlyArray<Readonly<{
+      label: string;
+      caller: AppActionCaller;
+    }>> = [
+      {
+        label: 'second token for the same actor',
+        caller: {
+          actor: humanModuleActor({
+            orgId,
+            userId: ownerUserId,
+            role: 'owner',
+            source: 'mcp',
+            scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+          }),
+          token_authorities: [{ token_kind: 'mcp', token_id: secondMcpTokenId }],
+        },
+      },
+      {
+        label: 'different actor and token',
+        caller: {
+          actor: humanModuleActor({
+            orgId,
+            userId: otherUserId,
+            role: 'member',
+            source: 'mcp',
+            scopes: ['read:modules', 'read:apps', 'invoke:apps', 'read:app-runs'],
+          }),
+          token_authorities: [{ token_kind: 'mcp', token_id: otherMcpTokenId }],
+        },
+      },
+    ];
+    for (const alternate of alternateTokenCallers) {
+      for (const read of [
+        () => actions.inspectRun(alternate.caller, humanMcpRun.run.id),
+        () => actions.result(alternate.caller, humanMcpRun.run.id),
+        () => actions.inspectReceipts(alternate.caller, humanMcpRun.run.id),
+      ]) {
+        await assert.rejects(
+          read,
+          (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_ACCESS_DENIED',
+          `${alternate.label} read another token's Run`,
+        );
+      }
     }
     assert.equal(sandbox.callCount, distinctPositiveRuns.length, 'each caller-authority Run must produce one provider effect');
     assert.equal(pinnedRequests.length, distinctPositiveRuns.length);
@@ -674,6 +862,319 @@ test('App actions create governed Runs once across every caller surface and fail
       assert.deepEqual(request.dispatch_pin, dispatchPin);
       assert.equal(Object.hasOwn(request, 'connection_slug'), false);
     }
+
+    const approvedRun = async (label: string) => {
+      const input = actionInput(`loop7-${label}-${suffix}`);
+      const prepared = await actions.prepare(callers[0]!.caller, input);
+      const run = await actions.invoke(callers[0]!.caller, {
+        ...input,
+        input_candidate: prepared.input_candidate,
+      });
+      const [approval] = await db.select().from(agentActions).where(and(
+        eq(agentActions.org_id, orgId),
+        eq(agentActions.source, 'app_run'),
+        eq(agentActions.app_run_id, run.id),
+      ));
+      if (!approval) throw new Error(`${label} App-origin approval is missing`);
+      assert.equal((await approvalResolver.approve(approval.id, ownerUserId)).status, 'approved');
+      const [attempt] = await db.select().from(appRunAttempts).where(and(
+        eq(appRunAttempts.org_id, orgId),
+        eq(appRunAttempts.run_id, run.id),
+        eq(appRunAttempts.attempt_number, 1),
+      ));
+      if (!attempt) throw new Error(`${label} App-origin attempt is missing`);
+      return { run, attempt };
+    };
+    const verifiedReceiptKinds = async (runId: string) => {
+      const bundle = await actions.inspectReceipts(callers[0]!.caller, runId);
+      assert.equal(bundle.receipts.every((receipt) => receipt.verified), true);
+      return bundle.receipts.map((receipt) => receipt.receipt_kind).sort();
+    };
+
+    const retryCase = await approvedRun('indeterminate-retry');
+
+    const retryRequestStart = pinnedRequests.length;
+    forcedPinnedResults.push({ status: 'indeterminate' });
+    const ambiguous = await attemptRunner.runImmediate(
+      orgId,
+      retryCase.run.id,
+      retryCase.attempt.id,
+      'loop7-indeterminate-worker',
+    );
+    assert.equal(ambiguous.run.state, 'running');
+    assert.deepEqual(ambiguous.provider_result, { status: 'indeterminate' });
+    const retryAttempts = await db.select().from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, orgId),
+      eq(appRunAttempts.run_id, retryCase.run.id),
+    )).orderBy(asc(appRunAttempts.attempt_number));
+    assert.equal(retryAttempts.length, 2);
+    assert.equal(retryAttempts[0]?.state, 'unknown_outcome');
+    assert.equal(retryAttempts[1]?.state, 'pending');
+    assert.equal(retryAttempts[1]?.retry_of_attempt_id, retryAttempts[0]?.id);
+
+    const recovered = await attemptRunner.runImmediate(
+      orgId,
+      retryCase.run.id,
+      retryAttempts[1]!.id,
+      'loop7-retry-worker',
+    );
+    assert.equal(recovered.run.state, 'succeeded');
+    const retryRequests = pinnedRequests.slice(retryRequestStart);
+    assert.equal(retryRequests.length, 2);
+    assert.equal(
+      retryRequests[0]?.input.idempotency_key,
+      retryRequests[1]?.input.idempotency_key,
+      'App-origin ambiguity retry must preserve the provider idempotency key',
+    );
+    assert.equal(typeof retryRequests[0]?.input.idempotency_key, 'string');
+    const retryResult = await actions.result(callers[0]!.caller, retryCase.run.id);
+    assert.equal(retryResult.run.state, 'succeeded');
+    assert.equal((retryResult.value as { provider_succeeded?: boolean }).provider_succeeded, true);
+    const retryReceiptBundle = await actions.inspectReceipts(callers[0]!.caller, retryCase.run.id);
+    assert.deepEqual(
+      retryReceiptBundle.receipts.map((receipt) => receipt.receipt_kind),
+      ['approval', 'attempt_terminal', 'attempt_terminal'],
+    );
+    assert.equal(retryReceiptBundle.receipts.every((receipt) => receipt.verified), true);
+    assert.equal(
+      (retryResult.value as { output?: { schema_version?: string } }).output?.schema_version,
+      MCP_APP_RUN_RESULT_VERSION,
+    );
+    assert.equal(sandbox.callCount, distinctPositiveRuns.length + 1);
+
+    const failureCase = await approvedRun('provider-declared-failure');
+    const failureEffectsBefore = sandbox.callCount;
+    forcedPinnedResults.push({
+      status: 'returned',
+      provider_succeeded: false,
+      output: { code: 'recipient_rejected' },
+      error: 'recipient rejected',
+      duration_ms: 1,
+    });
+    const providerFailure = await attemptRunner.runImmediate(
+      orgId,
+      failureCase.run.id,
+      failureCase.attempt.id,
+      'loop7-provider-failure-worker',
+    );
+    assert.equal(providerFailure.run.state, 'failed');
+    assert.deepEqual(providerFailure.run.safe_outcome, {
+      success: false,
+      provider_call_attempted: true,
+      result_status: 'retained',
+      error_code: 'APP_RUN_PROVIDER_ERROR',
+    });
+    assert.equal(sandbox.callCount, failureEffectsBefore);
+    const failureResult = await actions.result(callers[0]!.caller, failureCase.run.id);
+    assert.equal(
+      (failureResult.value as { provider_succeeded?: boolean }).provider_succeeded,
+      false,
+    );
+    assert.deepEqual(
+      await verifiedReceiptKinds(failureCase.run.id),
+      ['approval', 'attempt_terminal'],
+    );
+
+    const timeoutCase = await approvedRun('pre-aborted-timeout');
+    const timeoutRequestsBefore = pinnedRequests.length;
+    const timeoutController = new AbortController();
+    timeoutController.abort();
+    const timedOut = await attemptRunner.runImmediate(
+      orgId,
+      timeoutCase.run.id,
+      timeoutCase.attempt.id,
+      'loop7-timeout-worker',
+      timeoutController.signal,
+    );
+    assert.equal(timedOut.run.state, 'failed');
+    assert.deepEqual(timedOut.provider_result, {
+      status: 'not_attempted',
+      error_code: 'APP_RUN_PROVIDER_TIMEOUT',
+    });
+    assert.deepEqual(timedOut.run.safe_outcome, {
+      success: false,
+      provider_call_attempted: false,
+      result_status: 'unavailable',
+      error_code: 'APP_RUN_PROVIDER_TIMEOUT',
+    });
+    assert.equal(pinnedRequests.length, timeoutRequestsBefore);
+    await assert.rejects(
+      actions.result(callers[0]!.caller, timeoutCase.run.id),
+      (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_RESULT_EXPIRED',
+    );
+    assert.deepEqual(
+      await verifiedReceiptKinds(timeoutCase.run.id),
+      ['approval', 'attempt_terminal'],
+    );
+
+    const claimedCase = await approvedRun('stale-claimed-recovery');
+    const claimedAt = new Date(Date.now() - 2_000);
+    const [staleClaim] = await db.update(appRunAttempts).set({
+      state: 'claimed',
+      claim_owner: 'loop7-stale-claimed-worker',
+      claim_token: randomUUID(),
+      claimed_at: claimedAt,
+      lease_expires_at: new Date(claimedAt.getTime() + 1_000),
+      updated_at: claimedAt,
+    }).where(and(
+      eq(appRunAttempts.org_id, orgId),
+      eq(appRunAttempts.id, claimedCase.attempt.id),
+    )).returning();
+    assert.ok(staleClaim);
+    const claimedRequestsBefore = pinnedRequests.length;
+    const claimedEffectsBefore = sandbox.callCount;
+    assert.equal(await attemptRunner.recoverRun(orgId, claimedCase.run.id), 1);
+    const claimedAttempts = await db.select().from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, orgId),
+      eq(appRunAttempts.run_id, claimedCase.run.id),
+    )).orderBy(asc(appRunAttempts.attempt_number));
+    assert.equal(claimedAttempts.length, 2);
+    assert.equal(claimedAttempts[0]?.state, 'failed');
+    assert.equal(claimedAttempts[0]?.error_code, 'APP_RUN_PROVIDER_UNAVAILABLE');
+    assert.equal(claimedAttempts[1]?.retry_of_attempt_id, claimedAttempts[0]?.id);
+    assert.equal(pinnedRequests.length, claimedRequestsBefore);
+    assert.equal((await attemptRunner.runImmediate(
+      orgId,
+      claimedCase.run.id,
+      claimedAttempts[1]!.id,
+      'loop7-stale-claimed-retry-worker',
+    )).run.state, 'succeeded');
+    assert.equal(pinnedRequests.length, claimedRequestsBefore + 1);
+    assert.equal(sandbox.callCount, claimedEffectsBefore + 1);
+    assert.deepEqual(
+      await verifiedReceiptKinds(claimedCase.run.id),
+      ['approval', 'attempt_terminal', 'attempt_terminal'],
+    );
+
+    const startedCase = await approvedRun('stale-provider-call-started-recovery');
+    let releasePinned!: () => void;
+    const pinnedWait = new Promise<void>((resolve) => { releasePinned = resolve; });
+    let markPinnedEntered!: () => void;
+    const pinnedEntered = new Promise<void>((resolve) => { markPinnedEntered = resolve; });
+    pinnedBlock = { entered: markPinnedEntered, wait: pinnedWait };
+    let recoveryNow = new Date();
+    const recoveryRunner = new AppRunAttemptRunner(
+      repository,
+      secretRepository,
+      secrets,
+      pinnedExecutor,
+      liveAuthorization,
+      () => recoveryNow,
+      1_000,
+      60_000,
+      receipts,
+    );
+    const startedRequestsBefore = pinnedRequests.length;
+    const startedEffectsBefore = sandbox.callCount;
+    const lateProvider = recoveryRunner.runImmediate(
+      orgId,
+      startedCase.run.id,
+      startedCase.attempt.id,
+      'loop7-stale-provider-call-worker',
+    );
+    await pinnedEntered;
+    recoveryNow = new Date(recoveryNow.getTime() + 2_000);
+    let startedRecoveryCount = 0;
+    try {
+      startedRecoveryCount = await recoveryRunner.recoverRun(orgId, startedCase.run.id);
+    } finally {
+      releasePinned();
+    }
+    await lateProvider;
+    assert.equal(startedRecoveryCount, 1);
+    const startedAttempts = await db.select().from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, orgId),
+      eq(appRunAttempts.run_id, startedCase.run.id),
+    )).orderBy(asc(appRunAttempts.attempt_number));
+    assert.equal(startedAttempts.length, 2);
+    assert.equal(startedAttempts[0]?.state, 'unknown_outcome');
+    assert.equal(startedAttempts[1]?.retry_of_attempt_id, startedAttempts[0]?.id);
+    assert.equal((await recoveryRunner.runImmediate(
+      orgId,
+      startedCase.run.id,
+      startedAttempts[1]!.id,
+      'loop7-provider-call-retry-worker',
+    )).run.state, 'succeeded');
+    const startedRequests = pinnedRequests.slice(startedRequestsBefore);
+    assert.equal(startedRequests.length, 2);
+    assert.equal(
+      startedRequests[0]?.input.idempotency_key,
+      startedRequests[1]?.input.idempotency_key,
+    );
+    assert.equal(typeof startedRequests[0]?.input.idempotency_key, 'string');
+    assert.equal(sandbox.callCount, startedEffectsBefore + 1);
+    assert.deepEqual(
+      await verifiedReceiptKinds(startedCase.run.id),
+      ['approval', 'attempt_terminal', 'attempt_terminal'],
+    );
+
+    const repairCase = await approvedRun('post-result-finalization-repair');
+    const repairRequestsBefore = pinnedRequests.length;
+    const repairEffectsBefore = sandbox.callCount;
+    const originalTransition = repository.transition.bind(repository);
+    let injectFinalizationFailure = true;
+    repository.transition = async (tx, input) => {
+      if (
+        injectFinalizationFailure
+        && input.run.id === repairCase.run.id
+        && input.state === 'succeeded'
+      ) {
+        injectFinalizationFailure = false;
+        throw new Error('injected App-origin finalization failure');
+      }
+      return originalTransition(tx, input);
+    };
+    try {
+      await assert.rejects(
+        attemptRunner.runImmediate(
+          orgId,
+          repairCase.run.id,
+          repairCase.attempt.id,
+          'loop7-finalization-failure-worker',
+        ),
+        /injected App-origin finalization failure/,
+      );
+    } finally {
+      repository.transition = originalTransition;
+    }
+    const [knownResultAttempt] = await db.select().from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, orgId),
+      eq(appRunAttempts.id, repairCase.attempt.id),
+    ));
+    assert.equal(knownResultAttempt?.state, 'provider_call_started');
+    assert.ok(knownResultAttempt?.provider_call_finished_at);
+    assert.ok(knownResultAttempt?.safe_outcome);
+    const repairNow = new Date(Date.now() + 2 * 60_000);
+    const repairRunner = new AppRunAttemptRunner(
+      repository,
+      secretRepository,
+      secrets,
+      pinnedExecutor,
+      liveAuthorization,
+      () => repairNow,
+      60_000,
+      20_000,
+      receipts,
+    );
+    assert.equal(await repairRunner.recoverRun(orgId, repairCase.run.id), 1);
+    assert.equal(pinnedRequests.length, repairRequestsBefore + 1);
+    assert.equal(sandbox.callCount, repairEffectsBefore + 1);
+    const repairedResult = await actions.result(callers[0]!.caller, repairCase.run.id);
+    assert.equal(repairedResult.run.state, 'succeeded');
+    assert.equal((repairedResult.value as { provider_succeeded?: boolean }).provider_succeeded, true);
+    assert.deepEqual(
+      await verifiedReceiptKinds(repairCase.run.id),
+      ['approval', 'attempt_terminal'],
+    );
+    assert.ok(await runService.purgeExpiredSecrets(
+      new Date(repairedResult.run.result_expires_at.getTime() + 1),
+      1_000,
+    ));
+    await assert.rejects(
+      actions.result(callers[0]!.caller, repairCase.run.id),
+      (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_RESULT_EXPIRED',
+    );
+    assert.equal(sandbox.callCount, distinctPositiveRuns.length + 4);
 
     const pendingRun = async (surface: typeof callers[number], label: string): Promise<AppRunSafeView> => {
       const input = actionInput(`loop7-stale-${label}-${suffix}`);
@@ -851,7 +1352,7 @@ test('App actions create governed Runs once across every caller surface and fail
       (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_AUTHORIZATION_STALE',
     );
     await attemptRunner.runImmediate(orgId, connectorRun.id, connectorAttempt.id, 'loop7-revoked-worker');
-    assert.equal(sandbox.callCount, distinctPositiveRuns.length, 'revoked connector reached the provider');
+    assert.equal(sandbox.callCount, distinctPositiveRuns.length + 4, 'revoked connector reached the provider');
 
     const [[runCount], [approvalCount]] = await Promise.all([
       db.select({ value: count() }).from(appRuns).where(eq(appRuns.org_id, orgId)),
@@ -860,8 +1361,8 @@ test('App actions create governed Runs once across every caller surface and fail
         eq(agentActions.source, 'app_run'),
       )),
     ]);
-    assert.equal(runCount?.value, distinctPositiveRuns.length + 4);
-    assert.equal(approvalCount?.value, distinctPositiveRuns.length + 4);
+    assert.equal(runCount?.value, distinctPositiveRuns.length + 10);
+    assert.equal(approvalCount?.value, distinctPositiveRuns.length + 10);
   } finally {
     keys.destroy();
   }

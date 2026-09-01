@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { db } from './db.js';
 
 export type QueueWorkerStatus = {
@@ -94,7 +94,8 @@ export function summarizeQueueHealth(
  * missing lease is treated as expired so legacy or partially-migrated rows are
  * visible instead of silently disappearing from health output.
  */
-export async function getQueueHealthSnapshot(
+async function queryQueueHealthSnapshot(
+  where: SQL,
   workerStatus: QueueWorkerStatus,
   now = new Date(),
 ): Promise<QueueHealthSnapshot> {
@@ -122,8 +123,31 @@ export async function getQueueHealthSnapshot(
           AND completed_at >= now() - interval '24 hours'
       )::int AS recent_terminal_failures
     FROM job_queue
+    WHERE ${where}
   `);
   const rows = (result as { rows?: QueueHealthRow[] }).rows
     ?? (result as unknown as QueueHealthRow[]);
   return summarizeQueueHealth(rows[0], workerStatus, now);
+}
+
+export async function getQueueHealthSnapshot(
+  workerStatus: QueueWorkerStatus,
+  now = new Date(),
+): Promise<QueueHealthSnapshot> {
+  return queryQueueHealthSnapshot(sql`true`, workerStatus, now);
+}
+
+/** Tenant-aware queue health for one bounded job family. Process heartbeat
+ * fields remain shared, while every persisted queue aggregate is scoped. */
+export async function getOrgQueueHealthSnapshot(
+  orgId: string,
+  jobName: string,
+  workerStatus: QueueWorkerStatus,
+  now = new Date(),
+): Promise<QueueHealthSnapshot> {
+  return queryQueueHealthSnapshot(
+    sql`org_id = ${orgId} AND name = ${jobName}`,
+    workerStatus,
+    now,
+  );
 }

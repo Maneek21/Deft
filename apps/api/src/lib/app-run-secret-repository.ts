@@ -144,19 +144,26 @@ export class AppRunSecretRepository {
       : undefined;
   }
 
-  async retainedKeyReferences(now: Date): Promise<readonly { purpose: 'run_encryption'; key_id: string }[]> {
+  async retainedKeyReferences(
+    now: Date,
+    orgId?: string,
+  ): Promise<readonly { purpose: 'run_encryption'; key_id: string }[]> {
     const rows = await db.selectDistinct({ key_id: appRunSecretPayloads.key_version })
       .from(appRunSecretPayloads)
-      .where(sql`${appRunSecretPayloads.expires_at} > ${now}`);
+      .where(and(
+        sql`${appRunSecretPayloads.expires_at} > ${now}`,
+        ...(orgId ? [eq(appRunSecretPayloads.org_id, orgId)] : []),
+      ));
     return rows.map((row) => ({ purpose: 'run_encryption' as const, key_id: row.key_id }));
   }
 
-  async receiptSigningKeyReferences(): Promise<readonly {
+  async receiptSigningKeyReferences(orgId?: string): Promise<readonly {
     purpose: 'receipt_signing';
     key_id: string;
   }[]> {
     const rows = await db.selectDistinct({ key_id: appRunReceipts.signing_key_version })
-      .from(appRunReceipts);
+      .from(appRunReceipts)
+      .where(orgId ? eq(appRunReceipts.org_id, orgId) : undefined);
     return rows.map((row) => ({ purpose: 'receipt_signing' as const, key_id: row.key_id }));
   }
 

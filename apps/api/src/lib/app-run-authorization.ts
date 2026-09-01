@@ -1,10 +1,16 @@
-import type { AppRunActor } from '@deft/shared';
-import { agentEmployees, orgMembers } from '@deft/db/schema';
+import { AppRunAuthorizationSnapshotSchema, type AppRunActor } from '@deft/shared';
+import { agentEmployees, appRuns, orgMembers } from '@deft/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { db } from './db.js';
 import type { AppRunSafeView, AppRunTransaction } from './app-run-repository.js';
 
 export type AppRunAccessAction = 'inspect' | 'result' | 'cancel' | 'reconcile';
+
+export type AppRunReadAuthorityRef = Readonly<{
+  authority_kind: 'token_scope';
+  authority_id: string;
+  version: string;
+}>;
 
 export interface AppRunAuthorizer {
   authorize(input: Readonly<{
@@ -12,6 +18,7 @@ export interface AppRunAuthorizer {
     org_id: string;
     actor: AppRunActor;
     run: AppRunSafeView;
+    required_authority_ref: AppRunReadAuthorityRef | null;
   }>): Promise<boolean>;
 }
 
@@ -41,6 +48,25 @@ function actorMatchesRun(actor: AppRunActor, run: AppRunSafeView): boolean {
 export class PostgresAppRunAuthorizer implements AppRunAuthorizer {
   async authorize(input: Parameters<AppRunAuthorizer['authorize']>[0]): Promise<boolean> {
     if (input.org_id !== input.run.org_id || !actorMatchesRun(input.actor, input.run)) return false;
+    if (input.required_authority_ref) {
+      const required = input.required_authority_ref;
+      const [stored] = await db.select({
+        authorization_snapshot: appRuns.authorization_snapshot,
+      }).from(appRuns).where(and(
+        eq(appRuns.org_id, input.org_id),
+        eq(appRuns.id, input.run.id),
+      )).limit(1);
+      if (!stored) return false;
+      const snapshot = AppRunAuthorizationSnapshotSchema.safeParse(stored.authorization_snapshot);
+      if (
+        !snapshot.success
+        || !snapshot.data.authority_refs.some((ref) => (
+          ref.authority_kind === required.authority_kind
+          && ref.authority_id === required.authority_id
+          && ref.version === required.version
+        ))
+      ) return false;
+    }
     if (input.actor.actor_type === 'human') {
       const [membership] = await db.select({ id: orgMembers.id }).from(orgMembers).where(and(
         eq(orgMembers.org_id, input.org_id),

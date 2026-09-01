@@ -389,14 +389,32 @@ test('App actions resolve and prepare one reviewed relation identically across f
       return { id: `loop5-run-${submittedRuns.length}` } as AppRunSafeView;
     },
   };
-  const runReadCalls: Array<Readonly<{ kind: 'inspect' | 'result'; org_id: string; run_id: string; actor: unknown }>> = [];
+  const runReadCalls: Array<Readonly<{
+    kind: 'inspect' | 'result';
+    org_id: string;
+    run_id: string;
+    actor: unknown;
+    required_authority_ref: unknown;
+  }>> = [];
   const runReads: AppActionRunReadPort = {
-    async inspect(readOrgId, runId, actor) {
-      runReadCalls.push({ kind: 'inspect', org_id: readOrgId, run_id: runId, actor });
+    async inspect(readOrgId, runId, actor, requiredAuthorityRef) {
+      runReadCalls.push({
+        kind: 'inspect',
+        org_id: readOrgId,
+        run_id: runId,
+        actor,
+        required_authority_ref: requiredAuthorityRef,
+      });
       return { id: runId } as AppRunSafeView;
     },
-    async result(readOrgId, runId, actor) {
-      runReadCalls.push({ kind: 'result', org_id: readOrgId, run_id: runId, actor });
+    async result(readOrgId, runId, actor, requiredAuthorityRef) {
+      runReadCalls.push({
+        kind: 'result',
+        org_id: readOrgId,
+        run_id: runId,
+        actor,
+        required_authority_ref: requiredAuthorityRef,
+      });
       return { run: { id: runId } as AppRunSafeView, value: { status: 'delivered' } };
     },
   };
@@ -460,6 +478,16 @@ test('App actions resolve and prepare one reviewed relation identically across f
     { kind: 'inspect', actor: { actor_type: 'human', user_id: ownerUserId } },
     { kind: 'result', actor: { actor_type: 'human', user_id: ownerUserId } },
   ]);
+  assert.equal(runReadCalls[0]?.required_authority_ref, null);
+  assert.deepEqual(runReadCalls[1]?.required_authority_ref, {
+    authority_kind: 'token_scope',
+    authority_id: mcpTokenId,
+    version: (runReadCalls[1]?.required_authority_ref as { version: string }).version,
+  });
+  assert.match(
+    (runReadCalls[1]?.required_authority_ref as { version: string }).version,
+    /^sha256:[a-f0-9]{64}$/,
+  );
 
   await db.update(mcpTokens).set({ scopes: ['read:modules', 'read:apps', 'invoke:apps'] }).where(and(
     eq(mcpTokens.org_id, orgId),
