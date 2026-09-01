@@ -7,15 +7,20 @@ import {
   buildDeftAppPackage,
   canonicalDeftAppRequestedAuthorityReportJson,
   checkDeftAppDeveloperContract,
+  DeftAppLockV2Schema,
   DEFT_APP_KIT_PACKAGE_NAME,
   DEFT_APP_KIT_VERSION,
   DEFT_APP_PACKAGE_FORMAT,
   DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH,
+  diffDeftAppRequestedAuthority,
   parseDeftAppManifest,
   prepareModuleArtifact,
+  simulateDeftAppAutomation,
+  type DeftAppAutomationSimulationInput,
   type DeftAppManifestInput,
   type DeftAppManifestV0Input,
   type DeftAppManifestV1Input,
+  type DeftAppManifestV2Input,
 } from './index.js';
 
 const cwd = process.cwd();
@@ -41,7 +46,7 @@ async function assertRegularUnslinkedFile(relativePath: string): Promise<string>
   return current;
 }
 
-type AppTemplate = 'declarative' | 'connected';
+type AppTemplate = 'declarative' | 'connected' | 'connected-automation';
 
 function parseInitTemplate(): AppTemplate {
   const args = process.argv.slice(4);
@@ -49,9 +54,9 @@ function parseInitTemplate(): AppTemplate {
   if (
     args.length !== 2
     || args[0] !== '--template'
-    || (args[1] !== 'declarative' && args[1] !== 'connected')
+    || (args[1] !== 'declarative' && args[1] !== 'connected' && args[1] !== 'connected-automation')
   ) {
-    throw new Error('Usage: deft app init [--template declarative|connected]');
+    throw new Error('Usage: deft app init [--template declarative|connected|connected-automation]');
   }
   return args[1];
 }
@@ -113,7 +118,7 @@ async function initializeDeclarative(): Promise<void> {
   console.log(`Initialized ${manifest.name} in ${cwd}`);
 }
 
-async function initializeConnected(): Promise<void> {
+async function initializeConnected(automation: boolean): Promise<void> {
   const manifestPath = resolve(cwd, 'deft.app.json');
   if (await exists(manifestPath)) throw new Error('deft.app.json already exists');
   const modulePath = 'modules/connected-campaigns/deft.module.json';
@@ -149,14 +154,12 @@ async function initializeConnected(): Promise<void> {
     navigation: { default_collection: 'campaigns', default_view: 'all' },
   };
   const artifact = await prepareModuleArtifact({ path: modulePath, manifest: moduleManifest });
-  const manifest: DeftAppManifestV1Input = {
-    schema_version: '1',
+  const connectedManifest: Omit<DeftAppManifestV1Input, 'schema_version' | 'compatibility'> = {
     id: 'community.example.connected-campaigns-app',
     version: '1.0.0',
     name: 'Connected Campaigns',
     description: 'A connected Deft App that relates Campaigns to Contacts and requests sandbox email.',
     license: 'AGPL-3.0-only',
-    compatibility: { app_protocol: '1' },
     modules: [{
       module_id: moduleManifest.id,
       version: moduleManifest.version,
@@ -227,6 +230,23 @@ async function initializeConnected(): Promise<void> {
       ],
     }],
   };
+  const manifest: DeftAppManifestV1Input | DeftAppManifestV2Input = automation
+    ? {
+        ...connectedManifest,
+        schema_version: '2',
+        compatibility: { app_protocol: '2' },
+        automation_requests: [{
+          key: 'daily_campaign_send',
+          label: 'Daily campaign send',
+          trigger: { kind: 'daily_local_time' },
+          action_key: 'send_campaign_email',
+        }],
+      }
+    : {
+        ...connectedManifest,
+        schema_version: '1',
+        compatibility: { app_protocol: '1' },
+      };
   await writeJson(resolve(cwd, modulePath), moduleManifest);
   await writeJson(manifestPath, manifest);
   await writeFile(resolve(cwd, 'APP_BRIEF.md'), [
@@ -242,8 +262,12 @@ async function initializeConnected(): Promise<void> {
     '- Keep staging at zero authority. A workspace owner or admin reviews, binds, and activates requests.',
     '- Never add credentials, provider endpoints, executable code, arbitrary mapping, policy overrides, or Deft core edits.',
     '- Keep Contacts as an exact dependency and reference its records; do not copy them into Campaigns.',
-    '- The sandbox email action is single-recipient, human-initiated, and always requires host review.',
-    '- App Protocol v1 does not provide automation, custom UI, runtime, sync, or public ingress.',
+    automation
+      ? '- The automation request is declarative and requested-only. The host owns schedule, timezone, pins, budgets, policy, approval, and execution.'
+      : '- The sandbox email action is single-recipient, human-initiated, and always requires host review.',
+    automation
+      ? '- App Protocol v2 provides only bounded daily scheduling; it does not provide workflows, custom UI, runtime, sync, or public ingress.'
+      : '- App Protocol v1 does not provide automation, custom UI, runtime, sync, or public ingress.',
     '',
   ].join('\n'), 'utf8');
   await writeFile(resolve(cwd, '.gitignore'), '.deft/\n', 'utf8');
@@ -251,7 +275,9 @@ async function initializeConnected(): Promise<void> {
 }
 
 async function initialize(template: AppTemplate): Promise<void> {
-  if (template === 'connected') return initializeConnected();
+  if (template === 'connected' || template === 'connected-automation') {
+    return initializeConnected(template === 'connected-automation');
+  }
   return initializeDeclarative();
 }
 
@@ -270,7 +296,7 @@ async function buildProject(writeOutput: boolean) {
   if (writeOutput) {
     await mkdir(resolve(cwd, '.deft'), { recursive: true });
     await writeFile(resolve(cwd, '.deft', 'app.deftapp.json'), `${built.json}\n`, 'utf8');
-    await writeJson(resolve(cwd, 'deft.app.lock.json'), {
+    const baseLock = {
       schema: `deft.app.lock.v${manifest.schema_version}`,
       app_id: manifest.id,
       version: manifest.version,
@@ -278,7 +304,18 @@ async function buildProject(writeOutput: boolean) {
       manifest_digest: built.package.manifest_digest,
       artifacts: built.package.artifacts.map(({ path, digest, byte_length, media_type }) => ({ path, digest, byte_length, media_type })),
       permissions: [],
-    });
+    };
+    const permissionDiff = manifest.schema_version === '2'
+      ? await diffDeftAppRequestedAuthority({ proposed: manifest })
+      : null;
+    const lock = permissionDiff
+      ? DeftAppLockV2Schema.parse({
+          ...baseLock,
+          requested_authority_digest: permissionDiff.proposed_requested_authority_digest,
+          permission_diff: permissionDiff,
+        })
+      : baseLock;
+    await writeJson(resolve(cwd, 'deft.app.lock.json'), lock);
     await writeFile(
       resolve(cwd, DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH),
       `${canonicalDeftAppRequestedAuthorityReportJson(manifest)}\n`,
@@ -346,6 +383,39 @@ async function doctor(): Promise<void> {
     + `App Protocol v${protocol}; package format ${flow.package_format}; `
     + `install mode ${flow.install_mode}; host ${url}`,
   );
+  if (protocol === '2') {
+    console.log('Bounded automation contracts ready; run `deft app simulate-automation --fixture <path>` before staging.');
+  }
+}
+
+async function permissionsDiff(): Promise<void> {
+  const current = JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as unknown;
+  const from = option('--from');
+  const prior = from
+    ? JSON.parse(await readFile(await assertRegularUnslinkedFile(from), 'utf8')) as unknown
+    : null;
+  console.log(JSON.stringify(await diffDeftAppRequestedAuthority({
+    ...(prior === null ? {} : { prior: parseDeftAppManifest(prior) }),
+    proposed: parseDeftAppManifest(current),
+  }), null, 2));
+}
+
+async function simulateAutomation(): Promise<void> {
+  const fixture = option('--fixture');
+  if (!fixture) throw new Error('Usage: deft app simulate-automation --fixture <path>');
+  const manifest = parseDeftAppManifest(
+    JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as unknown,
+  );
+  if (manifest.schema_version !== '2') {
+    throw new Error('Automation simulation requires an App Protocol v2 manifest');
+  }
+  const scenario = JSON.parse(
+    await readFile(await assertRegularUnslinkedFile(fixture), 'utf8'),
+  ) as Record<string, unknown>;
+  console.log(JSON.stringify(simulateDeftAppAutomation({
+    ...scenario,
+    manifest,
+  } as DeftAppAutomationSimulationInput), null, 2));
 }
 
 async function readPairingCode(): Promise<string> {
@@ -384,7 +454,7 @@ async function installLocal(): Promise<void> {
 
 async function main(): Promise<void> {
   const [domain, command] = process.argv.slice(2);
-  if (domain !== 'app') throw new Error('Usage: deft app <init|check|build|doctor|install-local>');
+  if (domain !== 'app') throw new Error('Usage: deft app <init|check|build|permissions|simulate-automation|doctor|install-local>');
   if (command === 'init') return initialize(parseInitTemplate());
   if (command === 'check') {
     const built = await buildProject(false);
@@ -403,9 +473,11 @@ async function main(): Promise<void> {
     console.log(`Built .deft/app.deftapp.json ${built.digest}`);
     return;
   }
+  if (command === 'permissions' && process.argv[4] === 'diff') return permissionsDiff();
+  if (command === 'simulate-automation') return simulateAutomation();
   if (command === 'doctor') return doctor();
   if (command === 'install-local') return installLocal();
-  throw new Error('Usage: deft app <init|check|build|doctor|install-local>');
+  throw new Error('Usage: deft app <init|check|build|permissions|simulate-automation|doctor|install-local>');
 }
 
 main().catch((error) => {

@@ -2,11 +2,11 @@
 
 This guide covers the Phase 6 connected-App journey through its native
 lifecycle: an independent author can create, check, build, verify host
-compatibility, and locally stage one App Protocol v1 connected App using packed
-public artifacts; an authorized workspace operator can then review, bind,
-activate, inspect, upgrade, disable, and freshly re-enable it in Deft.
+compatibility, and locally stage an App Protocol v1 connected App or bounded
+Protocol v2 automation request using packed public artifacts; an authorized
+workspace operator retains review, binding, activation, and execution control.
 
-The current authoring artifact is `@deft/app-kit@0.1.0-alpha.1`. Use a packed
+The current authoring artifact is `@deft/app-kit@0.1.0-alpha.2`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
@@ -35,7 +35,7 @@ Then install it in a clean directory outside the repository:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.1.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.2.tgz
 ```
 
 When a release or proof bundle already supplies the tarball, install that exact
@@ -74,6 +74,27 @@ That command creates:
 Malformed template arguments are rejected. `init` also refuses to replace an
 existing `deft.app.json`.
 
+For the additive bounded-automation scaffold, use a different empty directory:
+
+```sh
+pnpm exec deft app init --template connected-automation
+```
+
+This preserves the connected Campaign contracts and adds one requested-only
+`daily_local_time` declaration over the existing action. The App cannot choose
+the time, timezone, resource records, pins, provider, policy, budget, validity,
+approval, or execution. Run `deft app permissions diff` to inspect the portable
+requested-authority change. Run the non-executable public simulator with an
+explicit fixture before staging:
+
+```sh
+pnpm exec deft app simulate-automation --fixture fixtures/ordinary-ready.json
+```
+
+The simulator uses the same pure timezone, DST-fold/gap, misfire, and provider
+input contracts as the host. It reports pin drift but does not resolve live
+workspace data, grant authority, create a Run, or call a provider.
+
 ### Safe changes to the connected scaffold
 
 Stay inside the published manifest and Module contracts. Dependencies and
@@ -108,7 +129,7 @@ It does not write build output.
 | Path | Meaning |
 |---|---|
 | `.deft/app.deftapp.json` | Integrity-checked package sent to the host |
-| `deft.app.lock.json` | Package, manifest, and artifact digests; `permissions` remains empty |
+| `deft.app.lock.json` | Package, manifest, artifact, and v2 requested-authority diff digests; `permissions` remains empty |
 | `.deft/requested-authority.json` | Deterministic author review of requested authority only |
 
 Rebuilding unchanged input produces byte-identical output.
@@ -158,7 +179,8 @@ contract. A compatible current host retains the legacy fields
 | v1 | `deft.app.package.v1` | `stage_only` |
 
 The additive compatibility object must include `@deft/app-kit` version
-`0.1.0-alpha.1`. The legacy `app_protocol: "0"` scalar remains `"0"` even when
+`0.1.0-alpha.2` (with `0.1.0-alpha.1` retained as a compatible predecessor).
+The legacy `app_protocol: "0"` scalar remains `"0"` even when
 the additive object advertises v1; do not use that scalar alone to infer v1
 support.
 
@@ -302,8 +324,9 @@ App, grant provider access, or make a staged App executable.
   reviewed App-origin execution remains host-owned and feature-gated.
 - No production email: the sandbox provider retains in-memory proof results and
   performs no network egress.
-- No automation: the v1 sandbox action is human-initiated, single-recipient,
-  always reviewed by host policy, and forbidden in automation.
+- No general automation: v1 remains human-initiated. Protocol v2 adds only the
+  approved, host-owned bounded daily schedule plane; it does not add workflows,
+  branching, waits, bulk fan-out, scripts, or App-owned execution.
 - No external runtime promise: App Kit contains no MCP loader or hosted runtime,
   and the standalone provider is not a general runtime, SMTP adapter, sync
   engine, credential store, or public ingress service.

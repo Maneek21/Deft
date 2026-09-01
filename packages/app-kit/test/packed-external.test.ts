@@ -35,7 +35,7 @@ async function buildTwice(cli: string, project: string) {
   return first;
 }
 
-test('packed App Kit builds Contacts and connected Campaigns from a clean external install', async () => {
+test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaigns externally', async () => {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), 'deft-packed-app-kit-'));
   try {
     const artifacts = resolve(temporaryRoot, 'artifacts');
@@ -57,7 +57,7 @@ test('packed App Kit builds Contacts and connected Campaigns from a clean extern
     const installedRoot = await realpath(resolve(consumer, 'node_modules', '@deft', 'app-kit'));
     assert.equal(installedRoot.startsWith(await realpath(consumer)), true);
     const installedPackage = JSON.parse(await readFile(resolve(installedRoot, 'package.json'), 'utf8')) as any;
-    assert.equal(installedPackage.version, '0.1.0-alpha.1');
+    assert.equal(installedPackage.version, '0.1.0-alpha.2');
     assert.equal(installedPackage.bin.deft, './dist/cli.js');
     const installedFiles = await readdir(installedRoot, { recursive: true });
     assert.equal(installedFiles.some((entry) => /^src(?:[\\/]|$)/.test(entry)), false);
@@ -87,6 +87,57 @@ test('packed App Kit builds Contacts and connected Campaigns from a clean extern
     assert.equal((JSON.parse(campaignsProof.lock) as any).schema, 'deft.app.lock.v1');
     assert.deepEqual((JSON.parse(campaignsProof.lock) as any).permissions, []);
     assert.equal((JSON.parse(campaignsProof.report) as any).requested_authority.classification.executable, false);
+
+    const scheduled = resolve(temporaryRoot, 'scheduled-campaigns');
+    await mkdir(scheduled, { recursive: true });
+    run(process.execPath, [cli, 'app', 'init', '--template', 'connected-automation'], scheduled);
+    const scheduledProof = await buildTwice(cli, scheduled);
+    const scheduledLock = JSON.parse(scheduledProof.lock) as any;
+    assert.equal(scheduledLock.schema, 'deft.app.lock.v2');
+    assert.equal(scheduledLock.permission_diff.kind, 'initial');
+    assert.equal(scheduledLock.requested_authority_digest,
+      scheduledLock.permission_diff.proposed_requested_authority_digest);
+    assert.deepEqual(scheduledLock.permissions, []);
+    assert.equal((JSON.parse(scheduledProof.report) as any).requested_authority.classification.executable, false);
+
+    await writeFile(resolve(scheduled, 'simulation.json'), JSON.stringify({
+      request_key: 'daily_campaign_send',
+      occurrence: {
+        logical_local_date: '2026-02-10', local_time: '09:00', timezone: 'UTC',
+        now: '2026-02-10T09:05:00.000Z', eligible_after: '2026-02-09T00:00:00.000Z',
+      },
+      pins: {
+        placement: {
+          approved: { revision: '1', content_digest: `sha256:${'a'.repeat(64)}` },
+          current: { revision: '1', content_digest: `sha256:${'a'.repeat(64)}` },
+        },
+        selected: {
+          approved: { revision: '1', content_digest: `sha256:${'b'.repeat(64)}` },
+          current: { revision: '1', content_digest: `sha256:${'b'.repeat(64)}` },
+        },
+      },
+      provider_input: {
+        to: 'ada@example.test', subject: 'Analytical Engines', body_text: 'Hello Ada',
+        idempotency_key: 'campaign:one/contact:ada',
+      },
+    }), 'utf8');
+    const simulation = run(process.execPath, [
+      cli, 'app', 'simulate-automation', '--fixture', 'simulation.json',
+    ], scheduled);
+    assert.deepEqual(JSON.parse(simulation.stdout), {
+      schema: 'deft.app.automation_simulation.v1',
+      request: {
+        key: 'daily_campaign_send', action_key: 'send_campaign_email',
+        trigger: { kind: 'daily_local_time' },
+      },
+      schedule: {
+        decision: 'pending', resolution: 'resolved', resolved_at_utc: '2026-02-10T09:00:00.000Z',
+      },
+      pinned_inputs: { status: 'ready', changed: [] },
+      provider_input: { status: 'valid', issues: [] },
+      executable: false,
+      provider_access: false,
+    });
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

@@ -1,4 +1,18 @@
 import { z } from 'zod';
+import {
+  classifyAppAutomationOccurrence,
+  resolveAppAutomationOccurrence,
+} from './automation-schedule.js';
+
+export {
+  appAutomationLocalDate,
+  classifyAppAutomationOccurrence,
+  listAppAutomationLogicalDates,
+  nextEligibleAppAutomationOccurrence,
+  resolveAppAutomationOccurrence,
+  type AppAutomationOccurrence,
+  type AppAutomationOccurrenceDecision,
+} from './automation-schedule.js';
 
 export const DEFT_APP_MANIFEST_FILENAME = 'deft.app.json';
 export const DEFT_APP_MANIFEST_SCHEMA_VERSION = '0' as const;
@@ -12,11 +26,13 @@ export const DEFT_APP_PROTOCOL_VERSION_V2 = '2' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V2 = 'deft.app.package.v2' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
-export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.1' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.2' as const;
 export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
 export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA_V2 = 'deft.app.requested_authority.v2' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_DIFF_SCHEMA = 'deft.app.requested_authority_diff.v1' as const;
+export const DEFT_APP_AUTOMATION_SIMULATION_SCHEMA = 'deft.app.automation_simulation.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH = '.deft/requested-authority.json' as const;
 
 const DeftAppDeveloperProtocolV0FlowSchema = z.strictObject({
@@ -62,7 +78,7 @@ export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
   schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
   app_kit: Object.freeze({
     package: DEFT_APP_KIT_PACKAGE_NAME,
-    versions: Object.freeze([DEFT_APP_KIT_VERSION]),
+    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.1']),
   }),
   protocol_flows: Object.freeze({
     '0': Object.freeze({
@@ -1077,6 +1093,202 @@ export type DeftAppRequestedAuthorityReportV2 = z.infer<typeof DeftAppRequestedA
 export type DeftAppRequestedAuthorityReportAny =
   DeftAppRequestedAuthorityReport | DeftAppRequestedAuthorityReportV2;
 
+const DeftAppRequestedAuthorityAtomSchema = z.enum([
+  'dependencies',
+  'resources',
+  'capabilities',
+  'connectors',
+  'actions',
+  'automation_requests',
+]);
+
+export const DeftAppRequestedAuthorityDiffSchema = z.strictObject({
+  schema: z.literal(DEFT_APP_REQUESTED_AUTHORITY_DIFF_SCHEMA),
+  kind: z.enum(['initial', 'unchanged', 'widening_or_incompatible']),
+  carry_forward_eligible: z.boolean(),
+  changed_atoms: z.array(DeftAppRequestedAuthorityAtomSchema),
+  prior_requested_authority_digest: AppDigestSchema.nullable(),
+  proposed_requested_authority_digest: AppDigestSchema,
+});
+
+export type DeftAppRequestedAuthorityDiff = z.infer<typeof DeftAppRequestedAuthorityDiffSchema>;
+
+export const DeftAppLockV2Schema = z.strictObject({
+  schema: z.literal('deft.app.lock.v2'),
+  app_id: AppIdSchema,
+  version: AppSemverSchema,
+  package_digest: AppDigestSchema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.strictObject({
+    path: AppArtifactPathSchema,
+    digest: AppDigestSchema,
+    byte_length: z.number().int().nonnegative().max(APP_LIMITS.artifact_bytes),
+    media_type: z.literal(DEFT_MODULE_ARTIFACT_MEDIA_TYPE),
+  })).min(1).max(APP_LIMITS.artifacts_per_app),
+  permissions: z.array(z.never()).max(0),
+  requested_authority_digest: AppDigestSchema,
+  permission_diff: DeftAppRequestedAuthorityDiffSchema,
+});
+
+export type DeftAppLockV2 = z.infer<typeof DeftAppLockV2Schema>;
+
+const AppAutomationSimulatorPinSchema = z.strictObject({
+  revision: z.string().min(1).max(128),
+  content_digest: AppDigestSchema,
+});
+
+export const DeftAppAutomationSimulationInputSchema = z.strictObject({
+  manifest: DeftAppManifestV2Schema,
+  request_key: AppAuthorityKeyV1Schema,
+  occurrence: z.strictObject({
+    logical_local_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    local_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    timezone: z.string().min(1).max(128),
+    now: z.string().datetime({ offset: true }),
+    eligible_after: z.string().datetime({ offset: true }),
+    eligible_before: z.string().datetime({ offset: true }).optional(),
+  }),
+  pins: z.strictObject({
+    placement: z.strictObject({
+      approved: AppAutomationSimulatorPinSchema,
+      current: AppAutomationSimulatorPinSchema,
+    }),
+    selected: z.strictObject({
+      approved: AppAutomationSimulatorPinSchema,
+      current: AppAutomationSimulatorPinSchema,
+    }),
+  }),
+  provider_input: z.unknown(),
+});
+
+export type DeftAppAutomationSimulationInput = z.input<typeof DeftAppAutomationSimulationInputSchema>;
+
+/** Deterministic public authoring diff. This compares requested declarations
+ * only; it never represents an effective host grant or approval decision. */
+export async function diffDeftAppRequestedAuthority(input: Readonly<{
+  prior?: DeftAppManifestInput | DeftAppManifest | null;
+  proposed: DeftAppManifestInput | DeftAppManifest;
+}>): Promise<DeftAppRequestedAuthorityDiff> {
+  const proposed = projectDeftAppRequestedAuthority(input.proposed);
+  const prior = input.prior === undefined || input.prior === null
+    ? null
+    : projectDeftAppRequestedAuthority(input.prior);
+  const digest = (value: unknown) => digestText(JSON.stringify(canonicalizeJson(value)));
+  const proposedDigest = await digest(proposed);
+  const priorDigest = prior === null ? null : await digest(prior);
+  const atoms = DeftAppRequestedAuthorityAtomSchema.options;
+  const requirement = (value: DeftAppRequestedAuthorityProjectionAny, atom: typeof atoms[number]) => {
+    if (atom === 'automation_requests') {
+      return 'automation_requests' in value.requirements ? value.requirements.automation_requests : [];
+    }
+    return value.requirements[atom];
+  };
+  const changedAtoms = prior === null
+    ? atoms.filter((atom) => requirement(proposed, atom).length > 0)
+    : (await Promise.all(atoms.map(async (atom) => ({
+        atom,
+        changed: await digest(requirement(prior, atom)) !== await digest(requirement(proposed, atom)),
+      })))).filter(({ changed }) => changed).map(({ atom }) => atom);
+  return DeftAppRequestedAuthorityDiffSchema.parse({
+    schema: DEFT_APP_REQUESTED_AUTHORITY_DIFF_SCHEMA,
+    kind: priorDigest === null
+      ? 'initial'
+      : priorDigest === proposedDigest
+        ? 'unchanged'
+        : 'widening_or_incompatible',
+    carry_forward_eligible: priorDigest !== null && priorDigest === proposedDigest,
+    changed_atoms: changedAtoms,
+    prior_requested_authority_digest: priorDigest,
+    proposed_requested_authority_digest: proposedDigest,
+  });
+}
+
+/** Pure non-executable simulator for the bounded v2 request. It calls the
+ * exact schedule resolver/classifier and frozen provider-input validator used
+ * by Deft contracts; it does not resolve workspace data or invoke a provider. */
+export function simulateDeftAppAutomation(value: DeftAppAutomationSimulationInput) {
+  const input = DeftAppAutomationSimulationInputSchema.parse(value);
+  const request = input.manifest.automation_requests.find((item) => item.key === input.request_key);
+  if (!request) throw new Error(`Automation request ${input.request_key} is not declared`);
+  const occurrence = resolveAppAutomationOccurrence({
+    logical_local_date: input.occurrence.logical_local_date,
+    local_time: input.occurrence.local_time,
+    timezone: input.occurrence.timezone,
+  });
+  const decision = classifyAppAutomationOccurrence({
+    occurrence,
+    now: new Date(input.occurrence.now),
+    eligible_after: new Date(input.occurrence.eligible_after),
+    ...(input.occurrence.eligible_before
+      ? { eligible_before: new Date(input.occurrence.eligible_before) }
+      : {}),
+    catch_up_window_minutes: 15,
+  });
+  const changedPins = (['placement', 'selected'] as const).flatMap((key) => {
+    const { approved, current } = input.pins[key];
+    return [
+      ...(approved.revision === current.revision ? [] : [`${key}.revision`]),
+      ...(approved.content_digest === current.content_digest ? [] : [`${key}.content_digest`]),
+    ];
+  });
+  const providerInput = SandboxEmailSendInputSchema.safeParse(input.provider_input);
+  return Object.freeze({
+    schema: DEFT_APP_AUTOMATION_SIMULATION_SCHEMA,
+    request: Object.freeze({
+      key: request.key,
+      action_key: request.action_key,
+      trigger: request.trigger,
+    }),
+    schedule: Object.freeze({
+      decision: decision.kind,
+      ...(decision.kind === 'skipped' ? { reason: decision.reason } : {}),
+      resolution: occurrence.resolution.kind,
+      ...(occurrence.resolution.kind === 'resolved'
+        ? { resolved_at_utc: occurrence.resolution.resolved_at_utc.toISOString() }
+        : {}),
+    }),
+    pinned_inputs: Object.freeze({
+      status: changedPins.length === 0 ? 'ready' as const : 'stale' as const,
+      changed: Object.freeze(changedPins),
+    }),
+    provider_input: Object.freeze({
+      status: providerInput.success ? 'valid' as const : 'invalid' as const,
+      issues: Object.freeze(providerInput.success
+        ? []
+        : providerInput.error.issues.map(({ path, message }) => ({ path, message }))),
+    }),
+    executable: false as const,
+    provider_access: false as const,
+  });
+}
+
+export const APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS = Object.freeze({
+  schema: 'deft.app.automation_simulator.conformance.v1',
+  occurrences: Object.freeze([
+    Object.freeze({
+      label: 'ordinary_pending', logical_local_date: '2026-02-10', local_time: '09:00',
+      timezone: 'UTC', now: '2026-02-10T09:05:00.000Z', expected: 'pending',
+    }),
+    Object.freeze({
+      label: 'dst_fold_earlier', logical_local_date: '2026-11-01', local_time: '01:30',
+      timezone: 'America/New_York', now: '2026-11-01T05:35:00.000Z',
+      expected: 'pending', resolved_at_utc: '2026-11-01T05:30:00.000Z',
+    }),
+    Object.freeze({
+      label: 'dst_gap', logical_local_date: '2026-03-08', local_time: '02:30',
+      timezone: 'America/New_York', now: '2026-03-08T08:00:00.000Z', expected: 'skipped',
+    }),
+    Object.freeze({
+      label: 'misfire', logical_local_date: '2026-02-10', local_time: '09:00',
+      timezone: 'UTC', now: '2026-02-10T09:16:00.000Z', expected: 'skipped',
+    }),
+  ]),
+  pins: Object.freeze({
+    ready: Object.freeze({ expected: 'ready', changed: Object.freeze([]) }),
+    stale: Object.freeze({ expected: 'stale', changed: Object.freeze(['selected.revision']) }),
+  }),
+} as const);
+
 /**
  * Project only App-authored requested authority. Host identities, effective
  * grants, connector/provider selection, tokens, and lineage never enter this
@@ -1195,6 +1407,9 @@ export async function checkDeftAppDeveloperContract(input: {
       valid_input: SandboxEmailSendInputSchema.parse(SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input),
       expected_output: SandboxEmailSendOutputSchema.parse(SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.output),
     },
+    ...(protocol === DEFT_APP_PROTOCOL_VERSION_V2 ? {
+      automation_simulator_conformance: APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS,
+    } : {}),
   };
 }
 

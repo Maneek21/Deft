@@ -1,0 +1,27 @@
+{
+  "request_key": "daily_campaign_send",
+  "occurrence": {
+    "logical_local_date": "2026-02-10",
+    "local_time": "09:00",
+    "timezone": "UTC",
+    "now": "2026-02-10T09:05:00.000Z",
+    "eligible_after": "2026-02-09T00:00:00.000Z",
+    "eligible_before": "2026-03-01T00:00:00.000Z"
+  },
+  "pins": {
+    "placement": {
+      "approved": { "revision": "7", "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      "current": { "revision": "7", "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    },
+    "selected": {
+      "approved": { "revision": "3", "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      "current": { "revision": "3", "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+    }
+  },
+  "provider_input": {
+    "to": "ada@example.test",
+    "subject": "Analytical Engines",
+    "body_text": "Hello Ada",
+    "idempotency_key": "campaign:one/contact:ada"
+  }
+}
