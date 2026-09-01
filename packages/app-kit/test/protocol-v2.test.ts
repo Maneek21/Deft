@@ -254,6 +254,11 @@ describe('App Protocol v2 bounded automation request contract', () => {
     for (const operation of DEFT_APP_PROTOCOL_OPERATIONS) {
       assert.equal(isDeftAppProtocolOperationSupported('2', operation), true, operation);
     }
+    assert.equal(
+      DEFT_APP_PROTOCOL_SUPPORT['2'].atoms['manifest.identity'].review,
+      'app-review-service:review-v2',
+      'Package review remains the connected grant/connector review; definition approval is host-owned',
+    );
     assert.deepEqual(Object.keys(DEFT_APP_PROTOCOL_SUPPORT['2'].atoms), [
       'manifest.identity',
       'manifest.provenance',

@@ -830,7 +830,7 @@ const V2_HANDLER_MATRIX = handlerMatrix({
   authoring: 'app-kit:v2',
   inspect: 'app-service:inspect-v2',
   stage: 'app-service:stage-v2-requested-automation',
-  review: 'app-automation-definition-service:review-v2',
+  review: 'app-review-service:review-v2',
   route: 'app-action-service:route-v2',
   activate: 'app-review-service:activate-v2',
   invoke: 'app-action-service:invoke-v2',
