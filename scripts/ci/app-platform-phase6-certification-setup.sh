@@ -141,7 +141,7 @@ docker run --rm --network "$network" \
       test/cli.test.ts \
       test/developer-contract.test.ts \
       test/protocol-v1.test.ts &&
-    pnpm --filter @deft/api exec tsx --test \
+    pnpm --filter @deft/api exec tsx --test --test-concurrency=1 \
       test/capability-service.test.ts \
       test/capability-immediate-execution-db.test.ts \
       test/app-action-service-db.test.ts \
