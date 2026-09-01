@@ -91,5 +91,5 @@ automation, runtimes, sync, custom UI, and public ingress are not part of this
 protocol.
 
 See the [connected App author guide](../../docs/connected-app-author-guide.md)
-for the packed-artifact workflow, compatibility handoff, sandbox-provider proof,
-and the Phase 6 PR A boundaries.
+for the packed-artifact workflow, native operator lifecycle,
+sandbox-provider proof, and current boundaries.

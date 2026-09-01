@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Loop 6.0 sealed from merged Phase 5 audit `c0da089d`; Phase 6 PR A implemented and locally validated, merge certification pending |
+| Status | Loop 6.0 sealed from merged Phase 5 audit `c0da089d`; Phase 6 PR A merged as #288 at `93856fd2`; PR B lifecycle/operator slice implemented and locally certified, PR CI/merge pending |
 | Architecture source | `docs/superpowers/plans/2026-08-29-full-surface-app-platform.md` |
 | Delivery source | `docs/superpowers/plans/2026-08-30-full-surface-app-platform-delivery-plan.md` |
 | Phase 6 outcome | An independent author can build, stage, install, operate, upgrade, disable, recover, and inspect a Tier 2 connected App using published contracts and tooling only |

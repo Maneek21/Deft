@@ -60,6 +60,7 @@ import type {
   AppRunPreparedInputPayload,
 } from './app-run-prepared-input.js';
 import type { AppRunSafeView } from './app-run-repository.js';
+import type { AppRunReceiptReader, AppRunVerifiedReceiptView } from './app-run-receipts.js';
 import { isMcpToolEnabled } from './mcp-tool-identity.js';
 import { readModuleRecordScalarFields } from './module-service.js';
 import { resourceAuthorizationService } from './resource-provider-adapters.js';
@@ -283,6 +284,24 @@ export interface AppActionRunReadPort {
   }>>;
 }
 
+export type AppActionReceiptBundle = Readonly<{
+  run: Readonly<{
+    id: string;
+    state: AppRunSafeView['state'];
+    operation_name: string;
+    safe_preview: AppRunSafeView['safe_preview'];
+    safe_outcome: AppRunSafeView['safe_outcome'];
+    risk_class: AppRunSafeView['risk_class'];
+    review_requirement: AppRunSafeView['review_requirement'];
+    review_scope: AppRunSafeView['review_scope'];
+    retry_class: AppRunSafeView['retry_class'];
+    retention_class: AppRunSafeView['retention_class'];
+    result_expires_at: string;
+    result_purged_at: string | null;
+  }>;
+  receipts: readonly AppRunVerifiedReceiptView[];
+}>;
+
 export interface AppActionFieldReaderPort {
   read(
     actor: ModuleActor,
@@ -342,6 +361,13 @@ const lazyRunReads: AppActionRunReadPort = Object.freeze({
   ) {
     const { getAppRunRuntime } = await import('./app-run-runtime.js');
     return (await getAppRunRuntime()).service.result(orgId, runId, actor);
+  },
+});
+
+const lazyReceiptReads: AppRunReceiptReader = Object.freeze({
+  async readVerified(orgId: string, runId: string) {
+    const { getAppRunRuntime } = await import('./app-run-runtime.js');
+    return (await getAppRunRuntime()).receiptReader.readVerified(orgId, runId);
   },
 });
 
@@ -866,6 +892,7 @@ export class AppActionService {
     private readonly fieldReader: AppActionFieldReaderPort = defaultFieldReader,
     private readonly runs: AppActionRunPort = lazyRuns,
     private readonly runReads: AppActionRunReadPort = lazyRunReads,
+    private readonly receiptReads: AppRunReceiptReader = lazyReceiptReads,
   ) {}
 
   async list(callerValue: AppActionCaller, input: Readonly<{ resource_ref: unknown }>): Promise<AppActionListResult> {
@@ -1147,6 +1174,30 @@ export class AppActionService {
     const caller = callerContext(callerValue);
     await this.#assertRunReadAuthority(caller);
     return this.runReads.result(caller.actor.org_id, runId, caller.authenticated_subject);
+  }
+
+  async inspectReceipts(callerValue: AppActionCaller, runId: string): Promise<AppActionReceiptBundle> {
+    const caller = callerContext(callerValue);
+    await this.#assertRunReadAuthority(caller);
+    const run = await this.runReads.inspect(caller.actor.org_id, runId, caller.authenticated_subject);
+    const receipts = await this.receiptReads.readVerified(caller.actor.org_id, runId);
+    return Object.freeze({
+      run: Object.freeze({
+        id: run.id,
+        state: run.state,
+        operation_name: run.operation_name,
+        safe_preview: run.safe_preview,
+        safe_outcome: run.safe_outcome,
+        risk_class: run.risk_class,
+        review_requirement: run.review_requirement,
+        review_scope: run.review_scope,
+        retry_class: run.retry_class,
+        retention_class: run.retention_class,
+        result_expires_at: run.result_expires_at.toISOString(),
+        result_purged_at: run.result_purged_at?.toISOString() ?? null,
+      }),
+      receipts: Object.freeze([...receipts]),
+    });
   }
 
   async #assertRunReadAuthority(caller: CallerContext): Promise<void> {

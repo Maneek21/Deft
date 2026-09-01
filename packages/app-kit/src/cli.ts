@@ -7,6 +7,8 @@ import {
   buildDeftAppPackage,
   canonicalDeftAppRequestedAuthorityReportJson,
   checkDeftAppDeveloperContract,
+  DEFT_APP_KIT_PACKAGE_NAME,
+  DEFT_APP_KIT_VERSION,
   DEFT_APP_PACKAGE_FORMAT,
   DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH,
   parseDeftAppManifest,
@@ -339,7 +341,11 @@ async function doctor(): Promise<void> {
   const url = await hostUrl();
   const flow = await compatibleFlow(url, built);
   const protocol = built.package.manifest.compatibility.app_protocol;
-  console.log(`Compatible App Protocol v${protocol} ${flow.install_mode} host: ${url}`);
+  console.log(
+    `Compatible App Kit package ${DEFT_APP_KIT_PACKAGE_NAME} version ${DEFT_APP_KIT_VERSION}; `
+    + `App Protocol v${protocol}; package format ${flow.package_format}; `
+    + `install mode ${flow.install_mode}; host ${url}`,
+  );
 }
 
 async function readPairingCode(): Promise<string> {

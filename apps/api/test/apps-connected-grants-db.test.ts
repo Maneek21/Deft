@@ -36,6 +36,7 @@ import {
 } from '@deft/db/schema';
 import { AppError } from '../src/lib/app-errors.js';
 import { closeDb, db } from '../src/lib/db.js';
+import { ModuleError } from '../src/lib/module-errors.js';
 import {
   activateAppInstallation,
   disableAppInstallation,
@@ -768,10 +769,19 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
   ))[0]?.value, 0);
   const management = await getConnectedAppGrantManagement(actor, staged.id);
   assert.equal(management.installation.active_grant_snapshot_id, active!.active_grant_snapshot_id);
+  assert.equal(management.compatibility.app_kit.package, '@deft/app-kit');
+  assert.equal(management.compatibility.protocol_flows['1'].install_mode, 'stage_only');
+  assert.equal(management.review_target, null);
   assert.equal(management.snapshots.filter((item) => item.snapshot_kind === 'effective').length, 1);
   assert.equal(management.dependencies.length, 1);
+  assert.equal(management.dependencies[0]?.grant_snapshot_id, active!.active_grant_snapshot_id);
   assert.equal(management.action_bindings[0]?.operation_name, 'send_email');
+  assert.equal(management.action_bindings[0]?.grant_snapshot_id, active!.active_grant_snapshot_id);
   assert.deepEqual(management.recent_runs, []);
+  const managementJson = JSON.stringify(management);
+  for (const forbidden of ['server_url', 'access_token', 'refresh_token', 'reviewed_by_actor_id', 'provider_snapshot_id']) {
+    assert.equal(managementJson.includes(forbidden), false, `management projection leaked ${forbidden}`);
+  }
   const healthy = await inspectConnectedAppHealth(
     actor,
     staged.id,
@@ -815,6 +825,13 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
     enableAppInstallation(actor, staged.id, revoked!.lifecycle_epoch),
     (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED',
   );
+  const disabledManagement = await getConnectedAppGrantManagement(actor, staged.id);
+  assert.equal(disabledManagement.review_target?.activation_kind, 'reenable');
+  assert.equal(disabledManagement.review_target?.app_version_id, active!.active_version_id);
+  assert.equal(disabledManagement.review_target?.readiness.dependencies_ready, true);
+  assert.equal(disabledManagement.review_target?.connector_requirements[0]?.current_binding?.configured, true);
+  assert.equal(disabledManagement.installation.lifecycle_epoch, revoked!.lifecycle_epoch);
+  assert.equal(disabledManagement.installation.grant_epoch, revoked!.grant_epoch);
 
   const reactivationRequest = {
     ...restoredRequest,
@@ -908,6 +925,14 @@ test('explicit connected review activates atomically, rejects stale CAS, and re-
     eq(orgMembers.user_id, OTHER_USER_ID),
   ));
   try {
+    await assert.rejects(
+      getConnectedAppGrantManagement(actor, staged.id),
+      (error: unknown) => error instanceof ModuleError && error.code === 'MODULE_ACCESS_DENIED',
+    );
+    await assert.rejects(
+      inspectConnectedAppHealth(actor, staged.id, { refresh_provider_schemas: false }),
+      (error: unknown) => error instanceof ModuleError && error.code === 'MODULE_ACCESS_DENIED',
+    );
     const accessResponse = await routeApp.request(`/api/apps/${dependency.id}/uninstall`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1035,7 +1060,25 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.equal(relationBeforeUpgrade.revision, 1);
   assert.equal(relationBeforeUpgrade.target_resource_id, contact.record!.id);
 
-  const upgradeBuilt = await buildPhase5ConnectedAppPackage();
+  const olderUpgradeBuilt = await buildPhase5ConnectedAppPackage();
+  const olderUpgrade = await stageAppUpgrade(
+    actor,
+    predecessor.id,
+    olderUpgradeBuilt.json,
+    predecessor.lifecycle_epoch,
+  );
+  const [olderUpgradeVersion] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.id, olderUpgrade.version_id),
+  ));
+  const [olderUpgradeRequest] = await db.select().from(appGrantSnapshots).where(and(
+    eq(appGrantSnapshots.org_id, orgId),
+    eq(appGrantSnapshots.id, olderUpgradeVersion!.requested_grant_snapshot_id!),
+  ));
+  assert.ok(olderUpgradeVersion);
+  assert.ok(olderUpgradeRequest);
+
+  const upgradeBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.1' });
   const upgrade = await stageAppUpgrade(
     actor,
     predecessor.id,
@@ -1052,6 +1095,15 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   ));
   assert.ok(upgradeVersion);
   assert.ok(upgradeRequest);
+  const stagedUpgradeManagement = await getConnectedAppGrantManagement(actor, predecessor.id);
+  assert.equal(stagedUpgradeManagement.installation.active_version_id, predecessor.active_version_id);
+  assert.equal(stagedUpgradeManagement.review_target?.activation_kind, 'upgrade');
+  assert.equal(stagedUpgradeManagement.review_target?.app_version_id, upgradeVersion.id);
+  assert.equal(stagedUpgradeManagement.review_target?.package_digest, upgradeVersion.package_digest);
+  assert.equal(stagedUpgradeManagement.review_target?.requested_snapshot_digest, upgradeRequest.snapshot_digest);
+  assert.equal(stagedUpgradeManagement.review_target?.provenance_trust, 'local_unsigned');
+  assert.equal(stagedUpgradeManagement.review_target?.dependency_requirements[0]?.status, 'ready');
+  assert.equal(stagedUpgradeManagement.review_target?.missing_binding_keys.includes('mail_provider'), true);
   const connectionId = randomUUID();
   await db.insert(mcpConnections).values({
     id: connectionId,
@@ -1065,6 +1117,23 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     created_by: userId,
   });
   const reviewProvider = await sandboxReviewCapability(orgId, connectionId);
+  const olderReviewRequest = {
+    app_version_id: olderUpgradeVersion.id,
+    expected_package_digest: olderUpgradeVersion.package_digest,
+    expected_requested_snapshot_digest: olderUpgradeRequest.snapshot_digest,
+    expected_lifecycle_epoch: predecessor.lifecycle_epoch,
+    expected_grant_epoch: predecessor.grant_epoch,
+    connector_selections: [{
+      connector_requirement_key: 'mail_provider',
+      mcp_connection_id: connectionId,
+    }],
+  };
+  const discoveryCallsBeforeOlderTarget = reviewProvider.discoveryCalls();
+  await assert.rejects(
+    prepareConnectedAppReview(actor, predecessor.id, olderReviewRequest, reviewProvider.capability),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_STALE',
+  );
+  assert.equal(reviewProvider.discoveryCalls(), discoveryCallsBeforeOlderTarget);
   const reviewRequest = {
     app_version_id: upgradeVersion.id,
     expected_package_digest: upgradeVersion.package_digest,
@@ -1082,6 +1151,27 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     reviewRequest,
     reviewProvider.capability,
   );
+  const discoveryCallsBeforeDemotion = reviewProvider.discoveryCalls();
+  await db.update(orgMembers).set({ role: 'member' }).where(and(
+    eq(orgMembers.org_id, orgId),
+    eq(orgMembers.user_id, userId),
+  ));
+  try {
+    await assert.rejects(
+      activateConnectedAppInstallation(actor, predecessor.id, {
+        ...reviewRequest,
+        expected_review_digest: review.review_digest,
+        accept_host_policy: true,
+      }, reviewProvider.capability),
+      (error: unknown) => error instanceof ModuleError && error.code === 'MODULE_ACCESS_DENIED',
+    );
+    assert.equal(reviewProvider.discoveryCalls(), discoveryCallsBeforeDemotion);
+  } finally {
+    await db.update(orgMembers).set({ role: 'owner' }).where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.user_id, userId),
+    ));
+  }
   await assert.rejects(
     activateConnectedAppInstallation(actor, predecessor.id, {
       ...reviewRequest,
@@ -1246,7 +1336,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.deepEqual(retentionRefusal.details, { cascaded: false, data_preserved: true });
   assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
 
-  const identicalBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.1' });
+  const identicalBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.2' });
   const identical = await stageAppUpgrade(
     actor,
     predecessor.id,

@@ -179,12 +179,22 @@ test('connected template emits a Module v2 dependency App and requested authorit
   const address = host.address();
   if (!address || typeof address === 'string') throw new Error('Expected a TCP test server');
   try {
+    const hostUrl = `http://127.0.0.1:${address.port}`;
+    const diagnosed = await runAsync(project, '', 'doctor', '--url', hostUrl);
+    assert.equal(diagnosed.status, 0, diagnosed.stderr);
+    assert.equal(
+      diagnosed.stdout.trim(),
+      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.1; App Protocol v1; `
+      + `package format deft.app.package.v1; install mode stage_only; host ${hostUrl}`,
+    );
+    assert.doesNotMatch(diagnosed.stdout, /registry|signature|signed|trusted|verified/i);
+
     const installed = await runAsync(
       project,
       'one-time-code\n',
       'install-local',
       '--url',
-      `http://127.0.0.1:${address.port}`,
+      hostUrl,
     );
     assert.equal(installed.status, 0, installed.stderr);
     assert.equal(installed.stdout.trim(), 'Staged Connected Campaigns (staged) for workspace review.');
