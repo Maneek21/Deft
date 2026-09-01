@@ -95,6 +95,14 @@ jobs:
         working-directory: .cert/phase6-candidate
         run: pnpm build
 
+      - name: Verify packed App Kit external authoring from exact candidate
+        working-directory: .cert/phase6-candidate
+        env:
+          PNPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: |
+          npm_execpath="$(readlink -f "$(command -v pnpm)")" \
+            pnpm --filter @deft/app-kit exec tsx --test test/packed-external.test.ts
+
       - name: Run immutable Phase 6 host certification
         env:
           CERTIFIER_ROOT: ${{ github.workspace }}

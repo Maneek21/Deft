@@ -97,6 +97,10 @@ test('three dependency roots are installed before one candidate typecheck and pr
     workflow.indexOf('run: pnpm typecheck') < workflow.indexOf('run: pnpm build'),
     'candidate typecheck must precede its single production build',
   );
+  assert.match(
+    workflow,
+    /Build exact Phase 6 candidate once[\s\S]*?Verify packed App Kit external authoring from exact candidate[\s\S]*?PNPM_CONFIG_IGNORE_SCRIPTS:\s*'true'[\s\S]*?npm_execpath="\$\(readlink -f "\$\(command -v pnpm\)"\)" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/packed-external\.test\.ts[\s\S]*?Run immutable Phase 6 host certification/,
+  );
 });
 
 test('shared gate receives the Phase 6 roots, hooks, and exact isolated resources', () => {
@@ -130,9 +134,10 @@ test('shared gate receives the Phase 6 roots, hooks, and exact isolated resource
   );
   assert.match(
     setupHook,
-    /PNPM_CONFIG_IGNORE_SCRIPTS=true \\\r?\n\s+npm_execpath="\$\(readlink -f "\$\(command -v pnpm\)"\)" \\\r?\n\s+pnpm --filter @deft\/app-kit exec tsx --test test\/\*\.test\.ts/,
+    /pnpm --filter @deft\/app-kit exec tsx --test \\\r?\n\s+test\/app-kit\.test\.ts \\\r?\n\s+test\/cli\.test\.ts \\\r?\n\s+test\/developer-contract\.test\.ts \\\r?\n\s+test\/protocol-v1\.test\.ts/,
   );
   assert.doesNotMatch(setupHook, /pnpm --filter @deft\/app-kit test/);
+  assert.doesNotMatch(setupHook, /packed-external\.test\.ts/);
   assert.match(offlineHook, /\[\[ "\$after_total" == "\$before_total" \]\]/);
   assert.match(offlineHook, /invocation_failed_without_creating_a_run/);
 });
