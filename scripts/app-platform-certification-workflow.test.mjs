@@ -83,6 +83,9 @@ test('certification uses real pgvector and proves matched backup, restore, and k
   );
   assert.match(orchestrator, /source-snapshot\.json/);
   assert.match(orchestrator, /restored-verification\.json/);
+  assert.match(orchestrator, /host_uid="\$\(id -u\)"/);
+  assert.match(orchestrator, /host_gid="\$\(id -g\)"/);
+  assert.equal(occurrences(orchestrator, "chown \"$HOST_UID:$HOST_GID\""), 3);
 });
 
 test('certification carries the Phase 4 and Phase 5 probes plus browser evidence', () => {

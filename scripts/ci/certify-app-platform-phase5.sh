@@ -32,6 +32,8 @@ keyring_path="${recovery_dir}/app-run-keyrings.json"
 restored_keyring_path="${recovery_dir}/restored-app-run-keyrings.json"
 dump_path="${recovery_dir}/database.dump"
 candidate_archive="${evidence_root}/candidate-image.tar.zst"
+host_uid="$(id -u)"
+host_gid="$(id -g)"
 
 mkdir -p "$safe_dir" "$recovery_dir"
 chmod 700 "$recovery_dir"
@@ -145,8 +147,9 @@ docker run --rm --network "$network" \
   -v "${certifier_root}/scripts/ci/app-platform-phase5-certification-probe.ts:/app/scripts/ci/app-platform-phase5-certification-probe.ts:ro" \
   -v "${recovery_dir}:/recovery" \
   -e DATABASE_URL="$source_url_container" -e DEFT_TEST_DATABASE_URL="$source_url_container" \
+  -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
   --entrypoint sh "$candidate_tag" \
-  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts keyring --output /recovery/app-run-keyrings.json'
+  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts keyring --output /recovery/app-run-keyrings.json && chown "$HOST_UID:$HOST_GID" /recovery/app-run-keyrings.json'
 chmod 600 "$keyring_path"
 keyring_hash="$(sha256sum "$keyring_path" | cut -d ' ' -f 1)"
 printf '%s\n' "$keyring_hash" > "$safe_dir/app-run-keyring.sha256"
@@ -157,8 +160,9 @@ docker run --rm --network "$network" \
   -v "${safe_dir}:/evidence" \
   -e DATABASE_URL="$source_url_container" -e DEFT_TEST_DATABASE_URL="$source_url_container" \
   -e DEFT_APP_RUN_KEYRINGS="$keyring_json" \
+  -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
   --entrypoint sh "$candidate_tag" \
-  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts snapshot --output /evidence/source-snapshot.json'
+  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts snapshot --output /evidence/source-snapshot.json && chown "$HOST_UID:$HOST_GID" /evidence/source-snapshot.json'
 
 docker exec "$source_container" pg_dump -U postgres -d "$database_name" -Fc > "$dump_path"
 chmod 600 "$dump_path"
@@ -218,8 +222,9 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false \
   -e DEFT_APP_RUN_KEYRINGS="$restored_keyring_json" \
+  -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
   --entrypoint sh "$candidate_tag" \
-  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts verify --expected-snapshot /evidence/source-snapshot.json --output /evidence/restored-verification.json'
+  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts verify --expected-snapshot /evidence/source-snapshot.json --output /evidence/restored-verification.json && chown "$HOST_UID:$HOST_GID" /evidence/restored-verification.json'
 
 docker run -d --name "$app_container" --network "$network" -p 3000:3000 -p 3001:3001 \
   -e DATABASE_URL="$restore_url_container" \
