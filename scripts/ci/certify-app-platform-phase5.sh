@@ -185,11 +185,20 @@ docker run --rm --network "$network" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts keyring --output /recovery/app-run-keyrings.json && chown "$HOST_UID:$HOST_GID" /recovery/app-run-keyrings.json'
 chmod 600 "$keyring_path"
+keyring_json="$(tr -d '\n' < "$keyring_path")"
+run_extension_hook "$setup_hook" setup
+docker run --rm --network "$network" \
+  -v "${certifier_root}/scripts/ci/app-platform-phase5-certification-probe.ts:/app/scripts/ci/app-platform-phase5-certification-probe.ts:ro" \
+  -v "${recovery_dir}:/recovery" \
+  -e DATABASE_URL="$source_url_container" -e DEFT_TEST_DATABASE_URL="$source_url_container" \
+  -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
+  --entrypoint sh "$candidate_tag" \
+  -c 'pnpm exec tsx scripts/ci/app-platform-phase5-certification-probe.ts keyring --output /recovery/app-run-keyrings.json && chown "$HOST_UID:$HOST_GID" /recovery/app-run-keyrings.json'
+chmod 600 "$keyring_path"
 keyring_hash="$(sha256sum "$keyring_path" | cut -d ' ' -f 1)"
 printf '%s\n' "$keyring_hash" > "$safe_dir/app-run-keyring.sha256"
 
 keyring_json="$(tr -d '\n' < "$keyring_path")"
-run_extension_hook "$setup_hook" setup
 docker run --rm --network "$network" \
   -v "${certifier_root}/scripts/ci/app-platform-phase5-certification-probe.ts:/app/scripts/ci/app-platform-phase5-certification-probe.ts:ro" \
   -v "${safe_dir}:/evidence" \
