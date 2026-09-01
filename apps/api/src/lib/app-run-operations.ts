@@ -5,6 +5,7 @@ import {
   appRunReceipts,
   appRuns,
   attentionItems,
+  orgMembers,
 } from '@deft/db/schema';
 import type { AppRunActor, AppRunState } from '@deft/shared';
 import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm';
@@ -36,6 +37,26 @@ export interface AppRunOperationsAuthorizer {
 
 export const denyAllAppRunOperationsAuthorizer: AppRunOperationsAuthorizer = Object.freeze({
   async authorize() { return false; },
+});
+
+/** Read-only operational access is decided from the current org membership,
+ * never from a role cached in the request token. Repair remains separately
+ * dependency-injected and is intentionally denied by this runtime authorizer. */
+export const postgresAppRunReadOperationsAuthorizer: AppRunOperationsAuthorizer = Object.freeze({
+  async authorize(input: Parameters<AppRunOperationsAuthorizer['authorize']>[0]) {
+    if (input.action === 'repair' || input.actor.actor_type !== 'human') return false;
+    const [membership] = await db.select({
+      role: orgMembers.role,
+      is_active: orgMembers.is_active,
+    }).from(orgMembers).where(and(
+      eq(orgMembers.org_id, input.org_id),
+      eq(orgMembers.user_id, input.actor.user_id),
+    )).limit(1);
+    return Boolean(
+      membership?.is_active
+      && (membership.role === 'owner' || membership.role === 'admin'),
+    );
+  },
 });
 
 export type AppRunRepairGap = Readonly<{

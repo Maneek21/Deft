@@ -5,7 +5,10 @@ import { PostgresAppRunAuthorizer } from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
 import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
-import { AppRunOperationsService } from './app-run-operations.js';
+import {
+  AppRunOperationsService,
+  postgresAppRunReadOperationsAuthorizer,
+} from './app-run-operations.js';
 import { PinnedMcpAppRunProviderExecutor } from './app-run-provider-executor.js';
 import { PostgresAppRunReceiptReader, PostgresAppRunReceiptWriter } from './app-run-receipts.js';
 import { PostgresAppRunRepository } from './app-run-repository.js';
@@ -81,7 +84,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
   );
   const operations = new AppRunOperationsService(
     repository,
-    undefined,
+    postgresAppRunReadOperationsAuthorizer,
     receipts,
     attention,
     clock,

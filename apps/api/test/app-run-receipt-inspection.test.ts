@@ -6,6 +6,8 @@ import { APP_RUN_CONTRACT_VERSIONS, canonicalCapabilityJson } from '@deft/shared
 
 import {
   AppActionService,
+  type AppActionCaller,
+  type AppActionLiveAuthorityPort,
   type AppActionRunReadPort,
 } from '../src/lib/app-action-service.js';
 import { closeDb } from '../src/lib/db.js';
@@ -16,6 +18,7 @@ import {
   type AppRunReceiptReader,
   type AppRunStoredReceiptRow,
 } from '../src/lib/app-run-receipts.js';
+import type { AppRunSafeView } from '../src/lib/app-run-repository.js';
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { humanModuleActor } from '../src/lib/module-service.js';
 
@@ -163,11 +166,12 @@ test('AppActionService authorizes through Run inspection before reading receipts
   const forbiddenActor = 'forbidden-actor-id';
   const forbiddenProvider = 'forbidden-provider-instance';
   const runReads: AppActionRunReadPort = {
-    async inspect(orgId, runId, actor) {
+    async inspect(orgId, runId, actor, requiredAuthorityRef) {
       order.push('inspect');
       assert.equal(orgId, ORG_ID);
       assert.equal(runId, RUN_ID);
       assert.deepEqual(actor, { actor_type: 'human', user_id: 'receipt-reader-user' });
+      assert.equal(requiredAuthorityRef, null);
       return {
         id: RUN_ID,
         org_id: forbiddenOrg,
@@ -290,4 +294,114 @@ test('AppActionService authorizes through Run inspection before reading receipts
     (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_ACCESS_DENIED',
   );
   assert.equal(receiptReadsAfterDenial, 0);
+});
+
+test('AppActionService binds MCP inspect, result, and receipt reads to the exact live token', async () => {
+  const actorId = 'exact-token-reader';
+  const originalTokenId = 'exact-token-original';
+  const originalAuthority = {
+    authority_kind: 'token_scope' as const,
+    authority_id: originalTokenId,
+    version: `sha256:${'1'.repeat(64)}`,
+  };
+  const liveAuthority: AppActionLiveAuthorityPort = {
+    async captureForPreparation() {
+      throw new Error('not used');
+    },
+    async assertTokenScopes(input) {
+      const tokenId = input.token_authorities[0]?.token_id;
+      if (!tokenId) throw new Error('missing token');
+      return {
+        authority_kind: 'token_scope',
+        authority_id: tokenId,
+        version: tokenId === originalTokenId
+          ? originalAuthority.version
+          : `sha256:${'2'.repeat(64)}`,
+      };
+    },
+  };
+  const run = {
+    id: RUN_ID,
+    state: 'succeeded',
+    operation_name: 'send_email',
+    safe_preview: { title: 'Safe preview' },
+    safe_outcome: { success: true, provider_call_attempted: true, result_status: 'retained' },
+    risk_class: 'external_write',
+    review_requirement: 'always',
+    review_scope: 'per_invocation',
+    retry_class: 'idempotent_with_key',
+    retention_class: 'standard',
+    result_expires_at: new Date('2026-09-03T12:00:00.000Z'),
+    result_purged_at: null,
+  } as AppRunSafeView;
+  const authorizeRead = (
+    actor: Parameters<AppActionRunReadPort['inspect']>[2],
+    authority: Parameters<AppActionRunReadPort['inspect']>[3],
+  ) => {
+    if (
+      actor.actor_type !== 'human'
+      || actor.user_id !== actorId
+      || authority?.authority_kind !== originalAuthority.authority_kind
+      || authority.authority_id !== originalAuthority.authority_id
+      || authority.version !== originalAuthority.version
+    ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+  };
+  const runReads: AppActionRunReadPort = {
+    async inspect(_orgId, _runId, actor, requiredAuthorityRef) {
+      authorizeRead(actor, requiredAuthorityRef);
+      return run;
+    },
+    async result(_orgId, _runId, actor, requiredAuthorityRef) {
+      authorizeRead(actor, requiredAuthorityRef);
+      return { run, value: { status: 'delivered' } };
+    },
+  };
+  let receiptReads = 0;
+  const service = new AppActionService(
+    undefined,
+    liveAuthority,
+    undefined,
+    undefined,
+    undefined,
+    runReads,
+    {
+      async readVerified() {
+        receiptReads += 1;
+        return [];
+      },
+    },
+  );
+  const caller = (userId: string, tokenId: string): AppActionCaller => ({
+    actor: humanModuleActor({
+      orgId: ORG_ID,
+      userId,
+      role: 'member',
+      source: 'mcp',
+      scopes: ['read:app-runs'],
+    }),
+    token_authorities: [{ token_kind: 'mcp', token_id: tokenId }],
+  });
+  const originalCaller = caller(actorId, originalTokenId);
+
+  assert.equal((await service.inspectRun(originalCaller, RUN_ID)).id, RUN_ID);
+  assert.deepEqual((await service.result(originalCaller, RUN_ID)).value, { status: 'delivered' });
+  assert.equal((await service.inspectReceipts(originalCaller, RUN_ID)).run.id, RUN_ID);
+  assert.equal(receiptReads, 1);
+
+  for (const alternate of [
+    caller(actorId, 'exact-token-second'),
+    caller('different-reader', 'exact-token-other-actor'),
+  ]) {
+    for (const read of [
+      () => service.inspectRun(alternate, RUN_ID),
+      () => service.result(alternate, RUN_ID),
+      () => service.inspectReceipts(alternate, RUN_ID),
+    ]) {
+      await assert.rejects(
+        read,
+        (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_ACCESS_DENIED',
+      );
+    }
+  }
+  assert.equal(receiptReads, 1, 'denied receipt reads must stop before receipt storage');
 });

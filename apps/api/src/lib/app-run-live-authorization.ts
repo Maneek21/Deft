@@ -38,7 +38,10 @@ import {
 } from '@deft/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from './db.js';
-import type { AppRunExecutionAuthorizer } from './app-run-authorization.js';
+import type {
+  AppRunExecutionAuthorizer,
+  AppRunReadAuthorityRef,
+} from './app-run-authorization.js';
 import type {
   AppRunSafeView,
   AppRunTransaction,
@@ -219,13 +222,11 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
 
   /** Revalidate an exact MCP/OAuth token and its current scopes for actor-
    * scoped Run reads. This does not create or mutate Run authority. */
-  async assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<void> {
+  async assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<AppRunReadAuthorityRef> {
     if (input.token_authorities.length !== 1) {
       throw new Error('APP_RUN_AUTHORIZATION_STALE');
     }
-    await db.transaction(async (tx) => {
-      await this.#tokenAuthority(tx, input, input.token_authorities[0]!);
-    });
+    return db.transaction((tx) => this.#tokenAuthority(tx, input, input.token_authorities[0]!));
   }
 
   /** Trusted App submission verifier. The encrypted candidate supplies the
@@ -1068,7 +1069,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     tx: AppRunTransaction,
     input: TokenScopeCheckInput,
     token: AppRunTokenAuthority,
-  ): Promise<AuthorityRef> {
+  ): Promise<AppRunReadAuthorityRef> {
     if (token.token_kind === 'mcp') {
       const [row] = await tx.select().from(mcpTokens).where(and(
         eq(mcpTokens.org_id, input.org_id),

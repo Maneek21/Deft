@@ -315,7 +315,7 @@ export class PostgresGovernedCapabilityExecutor {
         }, 'MCP tool outcome is unknown', elapsedMs);
       }
       try {
-        const exact = await runtime.service.result(request.org_id, runId, actor);
+        const exact = await runtime.service.result(request.org_id, runId, actor, null);
         const retained = AppRunRetainedProviderResultSchema.parse(exact.value);
         providerSucceeded = retained.provider_succeeded;
         retainedOutput = retained.output;

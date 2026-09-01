@@ -841,9 +841,9 @@ test('concurrent runners call once, commit the call boundary, and replay retaine
   release();
   await firstExecution;
 
-  const finished = await setup.service.inspect(ORG_ID, created.id, trusted.initiating_actor);
+  const finished = await setup.service.inspect(ORG_ID, created.id, trusted.initiating_actor, null);
   assert.equal(finished.state, 'succeeded');
-  assert.deepEqual((await setup.service.result(ORG_ID, created.id, trusted.initiating_actor)).value, {
+  assert.deepEqual((await setup.service.result(ORG_ID, created.id, trusted.initiating_actor, null)).value, {
     schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
     provider_succeeded: true,
     output: { message_id: 'message-1' },
@@ -863,7 +863,7 @@ test('concurrent runners call once, commit the call boundary, and replay retaine
     throw new Error('secret read should not happen');
   };
   await assert.rejects(
-    denied.service.result(ORG_ID, created.id, trusted.initiating_actor),
+    denied.service.result(ORG_ID, created.id, trusted.initiating_actor, null),
     (error: any) => error?.code === 'APP_RUN_ACCESS_DENIED',
   );
   assert.equal(touchedSecret, false);
@@ -894,7 +894,7 @@ test('provider-reported failures retain an authorized exact response without rec
     error_code: 'APP_RUN_PROVIDER_ERROR',
   });
   assert.deepEqual((await setup.service.result(
-    ORG_ID, created.id, trusted.initiating_actor,
+    ORG_ID, created.id, trusted.initiating_actor, null,
   )).value, {
     schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
     provider_succeeded: false,
@@ -933,7 +933,7 @@ test('a provider call known not to have started fails without an indeterminate o
   await runner.run(ORG_ID, created.id, attemptId, 'not-attempted-duplicate');
   assert.equal(executor.calls.length, 1);
   await assert.rejects(
-    setup.service.result(ORG_ID, created.id, trusted.initiating_actor),
+    setup.service.result(ORG_ID, created.id, trusted.initiating_actor, null),
     (error: any) => error?.code === 'APP_RUN_RESULT_EXPIRED',
   );
 });
@@ -1168,7 +1168,7 @@ test('oversized post-effect output remains known success without exact result or
   await runner.run(ORG_ID, created.id, attemptId, 'oversized-worker-2');
   assert.equal(executor.calls.length, 1);
   await assert.rejects(
-    setup.service.result(ORG_ID, created.id, trusted.initiating_actor),
+    setup.service.result(ORG_ID, created.id, trusted.initiating_actor, null),
     (error: any) => error?.code === 'APP_RUN_RESULT_EXPIRED',
   );
 });

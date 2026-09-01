@@ -55,6 +55,7 @@ import {
   type AppRunAuthorizationCapture,
   type AppRunTokenScopeAuthorization,
 } from './app-run-live-authorization.js';
+import type { AppRunReadAuthorityRef } from './app-run-authorization.js';
 import type {
   AppRunPreparedInputCandidate,
   AppRunPreparedInputPayload,
@@ -236,7 +237,7 @@ export interface AppActionCapabilityPort {
 
 export interface AppActionLiveAuthorityPort {
   captureForPreparation(input: AppRunAuthorizationCapture): Promise<AppRunAuthorizationSnapshot>;
-  assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<void>;
+  assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<AppRunReadAuthorityRef>;
 }
 
 export interface AppActionPreparedInputPort {
@@ -277,8 +278,18 @@ export interface AppActionRunPort {
 }
 
 export interface AppActionRunReadPort {
-  inspect(orgId: string, runId: string, actor: AppRunActor): Promise<AppRunSafeView>;
-  result(orgId: string, runId: string, actor: AppRunActor): Promise<Readonly<{
+  inspect(
+    orgId: string,
+    runId: string,
+    actor: AppRunActor,
+    requiredAuthorityRef: AppRunReadAuthorityRef | null,
+  ): Promise<AppRunSafeView>;
+  result(
+    orgId: string,
+    runId: string,
+    actor: AppRunActor,
+    requiredAuthorityRef: AppRunReadAuthorityRef | null,
+  ): Promise<Readonly<{
     run: AppRunSafeView;
     value: unknown;
   }>>;
@@ -350,17 +361,19 @@ const lazyRunReads: AppActionRunReadPort = Object.freeze({
     orgId: Parameters<AppActionRunReadPort['inspect']>[0],
     runId: Parameters<AppActionRunReadPort['inspect']>[1],
     actor: Parameters<AppActionRunReadPort['inspect']>[2],
+    requiredAuthorityRef: Parameters<AppActionRunReadPort['inspect']>[3],
   ) {
     const { getAppRunRuntime } = await import('./app-run-runtime.js');
-    return (await getAppRunRuntime()).service.inspect(orgId, runId, actor);
+    return (await getAppRunRuntime()).service.inspect(orgId, runId, actor, requiredAuthorityRef);
   },
   async result(
     orgId: Parameters<AppActionRunReadPort['result']>[0],
     runId: Parameters<AppActionRunReadPort['result']>[1],
     actor: Parameters<AppActionRunReadPort['result']>[2],
+    requiredAuthorityRef: Parameters<AppActionRunReadPort['result']>[3],
   ) {
     const { getAppRunRuntime } = await import('./app-run-runtime.js');
-    return (await getAppRunRuntime()).service.result(orgId, runId, actor);
+    return (await getAppRunRuntime()).service.result(orgId, runId, actor, requiredAuthorityRef);
   },
 });
 
@@ -1163,8 +1176,13 @@ export class AppActionService {
 
   async inspectRun(callerValue: AppActionCaller, runId: string): Promise<AppRunSafeView> {
     const caller = callerContext(callerValue);
-    await this.#assertRunReadAuthority(caller);
-    return this.runReads.inspect(caller.actor.org_id, runId, caller.authenticated_subject);
+    const requiredAuthorityRef = await this.#assertRunReadAuthority(caller);
+    return this.runReads.inspect(
+      caller.actor.org_id,
+      runId,
+      caller.authenticated_subject,
+      requiredAuthorityRef,
+    );
   }
 
   async result(callerValue: AppActionCaller, runId: string): Promise<Readonly<{
@@ -1172,14 +1190,24 @@ export class AppActionService {
     value: unknown;
   }>> {
     const caller = callerContext(callerValue);
-    await this.#assertRunReadAuthority(caller);
-    return this.runReads.result(caller.actor.org_id, runId, caller.authenticated_subject);
+    const requiredAuthorityRef = await this.#assertRunReadAuthority(caller);
+    return this.runReads.result(
+      caller.actor.org_id,
+      runId,
+      caller.authenticated_subject,
+      requiredAuthorityRef,
+    );
   }
 
   async inspectReceipts(callerValue: AppActionCaller, runId: string): Promise<AppActionReceiptBundle> {
     const caller = callerContext(callerValue);
-    await this.#assertRunReadAuthority(caller);
-    const run = await this.runReads.inspect(caller.actor.org_id, runId, caller.authenticated_subject);
+    const requiredAuthorityRef = await this.#assertRunReadAuthority(caller);
+    const run = await this.runReads.inspect(
+      caller.actor.org_id,
+      runId,
+      caller.authenticated_subject,
+      requiredAuthorityRef,
+    );
     const receipts = await this.receiptReads.readVerified(caller.actor.org_id, runId);
     return Object.freeze({
       run: Object.freeze({
@@ -1200,10 +1228,10 @@ export class AppActionService {
     });
   }
 
-  async #assertRunReadAuthority(caller: CallerContext): Promise<void> {
-    if (!caller.surface.endsWith(':mcp')) return;
+  async #assertRunReadAuthority(caller: CallerContext): Promise<AppRunReadAuthorityRef | null> {
+    if (!caller.surface.endsWith(':mcp')) return null;
     try {
-      await this.liveAuthority.assertTokenScopes({
+      return await this.liveAuthority.assertTokenScopes({
         org_id: caller.actor.org_id,
         authenticated_subject: caller.authenticated_subject,
         required_token_scopes: APP_MCP_RUN_READ_SCOPES,

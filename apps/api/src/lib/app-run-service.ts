@@ -29,6 +29,7 @@ import {
   denyAllAppRunAuthorizer,
   type AppRunAccessAction,
   type AppRunAuthorizer,
+  type AppRunReadAuthorityRef,
 } from './app-run-authorization.js';
 import { AppRunError, asAppRunError } from './app-run-errors.js';
 import {
@@ -494,9 +495,14 @@ export class AppRunService {
     return submitted;
   }
 
-  async inspect(orgId: string, runId: string, actor: AppRunActor): Promise<AppRunSafeView> {
+  async inspect(
+    orgId: string,
+    runId: string,
+    actor: AppRunActor,
+    requiredAuthorityRef: AppRunReadAuthorityRef | null,
+  ): Promise<AppRunSafeView> {
     const run = await this.requiredRun(orgId, runId);
-    await this.assertAuthorized('inspect', orgId, actor, run);
+    await this.assertAuthorized('inspect', orgId, actor, run, requiredAuthorityRef);
     return run;
   }
 
@@ -582,12 +588,17 @@ export class AppRunService {
     return reconciled;
   }
 
-  async result(orgId: string, runId: string, actor: AppRunActor): Promise<Readonly<{
+  async result(
+    orgId: string,
+    runId: string,
+    actor: AppRunActor,
+    requiredAuthorityRef: AppRunReadAuthorityRef | null,
+  ): Promise<Readonly<{
     run: AppRunSafeView;
     value: unknown;
   }>> {
     const run = await this.requiredRun(orgId, runId);
-    await this.assertAuthorized('result', orgId, actor, run);
+    await this.assertAuthorized('result', orgId, actor, run, requiredAuthorityRef);
     if (
       run.origin_kind === 'app'
       && (!this.appLiveAuthorization || !await this.appLiveAuthorization.authorizeDelivery({
@@ -629,8 +640,15 @@ export class AppRunService {
     orgId: string,
     actor: AppRunActor,
     run: AppRunSafeView,
+    requiredAuthorityRef: AppRunReadAuthorityRef | null = null,
   ): Promise<void> {
-    if (!await this.authorizer.authorize({ action, org_id: orgId, actor, run })) {
+    if (!await this.authorizer.authorize({
+      action,
+      org_id: orgId,
+      actor,
+      run,
+      required_authority_ref: requiredAuthorityRef,
+    })) {
       throw new AppRunError('APP_RUN_ACCESS_DENIED');
     }
   }

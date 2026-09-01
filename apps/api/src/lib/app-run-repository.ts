@@ -463,11 +463,17 @@ export class PostgresAppRunRepository {
     return updated;
   }
 
-  async activeKeyReferences(now: Date): Promise<readonly { purpose: 'fingerprint'; key_id: string }[]> {
+  async activeKeyReferences(
+    now: Date,
+    orgId?: string,
+  ): Promise<readonly { purpose: 'fingerprint'; key_id: string }[]> {
     const rows = await db.select({
       idempotency: appRuns.idempotency_key_version,
       input: appRuns.input_fingerprint_key_version,
-    }).from(appRuns).where(gt(appRuns.idempotency_expires_at, now));
+    }).from(appRuns).where(and(
+      gt(appRuns.idempotency_expires_at, now),
+      ...(orgId ? [eq(appRuns.org_id, orgId)] : []),
+    ));
     const ids = new Set(rows.flatMap((row) => [row.idempotency, row.input]));
     return [...ids].map((key_id) => ({ purpose: 'fingerprint' as const, key_id }));
   }
