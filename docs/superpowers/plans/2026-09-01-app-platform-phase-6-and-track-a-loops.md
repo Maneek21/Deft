@@ -301,6 +301,39 @@ API typecheck pass locally. Actual `.26` PostgreSQL execution remains a CI/relea
 host requirement because the local environment has no disposable pgvector-
 capable PostgreSQL and Docker is unavailable.
 
+**PR B implementation status (2026-09-01):** Loop A.3 is implemented as a
+focused candidate on top of merged PR A. One default-off singleton scan reuses
+the existing PostgreSQL queue; the domain fire ledger remains authoritative.
+Canonical wall-clock/DST/misfire resolution, bounded cross-tenant paging,
+attempt-scoped delivery recovery, exact claim/lease/epoch/token fencing,
+pre-claim and pre-Run live authorization, budgets, crash recovery, and
+dead-letter settlement are covered by focused tests. The real PostgreSQL
+integration extension remains part of PR B's consolidated remote gate; the
+available local database is an older schema and is not certification evidence.
+
+Loop A.4 is implemented as an integration candidate. App Kit alpha.2 publishes
+the bounded schedule contract, pure simulator, doctor/conformance support, and
+an independently packed Campaign v4 proof while retaining alpha.1
+compatibility. The generic host surface derives immutable resource pins on the
+server, offers explicit review/create and pause/resume paths, and reports the
+schedule, next/last fire, Run, budgets, dead letters, retry eligibility, and
+kill-switch state without Campaign-specific core branches. Desktop/mobile
+browser evidence remains intentionally consolidated into Loop A.5's one final
+release run.
+
+Loop A.5 is locally frozen as a release candidate. Existing adversarial suites
+cover schedule/DST/misfire, stale authority, timeout/ambiguity, restart,
+dead-letter, and cleanup behavior; the shared database lifecycle proof now also
+asserts concurrent fire/claim CAS, scheduled AppAction-to-AppRun ancestry and
+replay, budgets, pause/App-disable races, and tenant isolation. The existing
+Phase 6 browser harness has one optional strict Track A fixture mode for exact
+pin review, create, pause/resume, management health, secret absence, and
+desktop/mobile evidence. Focused App Kit, API, web, architecture, typecheck,
+and static certification checks pass locally. Real PostgreSQL execution and the
+single immutable candidate image/upgrade/restore/predecessor/offline/browser/
+cleanup pass remain the release-host gate; no weaker local substitute is
+claimed.
+
 ### Loop A.0 — Freeze the first automated proof
 
 **Purpose:** add one useful unattended plane without inventing a workflow

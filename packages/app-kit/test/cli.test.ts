@@ -53,7 +53,7 @@ test('external authoring loop initializes and builds deterministically without c
   }
   const invalidTemplate = run(await mkdtemp(resolve(tmpdir(), 'deft-app-kit-invalid-')), 'init', '--template', 'runtime');
   assert.notEqual(invalidTemplate.status, 0);
-  assert.equal(invalidTemplate.stderr.trim(), 'Usage: deft app init [--template declarative|connected]');
+  assert.equal(invalidTemplate.stderr.trim(), 'Usage: deft app init [--template declarative|connected|connected-automation]');
 
   const checked = run(project, 'check');
   assert.equal(checked.status, 0, checked.stderr);
@@ -149,7 +149,7 @@ test('connected template emits a Module v2 dependency App and requested authorit
         single_use_install: true,
         compatibility: {
           schema: 'deft.app_developer.compatibility.v1',
-          app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.1'] },
+          app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.2', '0.1.0-alpha.1'] },
           protocol_flows: {
             '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
             '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
@@ -184,7 +184,7 @@ test('connected template emits a Module v2 dependency App and requested authorit
     assert.equal(diagnosed.status, 0, diagnosed.stderr);
     assert.equal(
       diagnosed.stdout.trim(),
-      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.1; App Protocol v1; `
+      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.2; App Protocol v1; `
       + `package format deft.app.package.v1; install mode stage_only; host ${hostUrl}`,
     );
     assert.doesNotMatch(diagnosed.stdout, /registry|signature|signed|trusted|verified/i);
@@ -413,7 +413,7 @@ test('Protocol v2 check, build, requested-authority, and doctor paths stay stage
       single_use_install: true,
       compatibility: {
         schema: 'deft.app_developer.compatibility.v1',
-        app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.1'] },
+        app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.2', '0.1.0-alpha.1'] },
         protocol_flows: {
           '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
           '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
@@ -431,10 +431,69 @@ test('Protocol v2 check, build, requested-authority, and doctor paths stay stage
     assert.equal(diagnosed.status, 0, diagnosed.stderr);
     assert.equal(
       diagnosed.stdout.trim(),
-      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.1; App Protocol v2; `
-      + `package format deft.app.package.v2; install mode stage_only; host ${hostUrl}`,
+      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.2; App Protocol v2; `
+      + `package format deft.app.package.v2; install mode stage_only; host ${hostUrl}\n`
+      + 'Bounded automation contracts ready; run `deft app simulate-automation --fixture <path>` before staging.',
     );
   } finally {
     await new Promise<void>((resolveClose, reject) => host.close((error) => error ? reject(error) : resolveClose()));
   }
+});
+
+test('connected-automation template emits deterministic v2 lock, diff, and simulation', async () => {
+  const project = await mkdtemp(resolve(tmpdir(), 'deft-connected-automation-template-'));
+  const initialized = run(project, 'init', '--template', 'connected-automation');
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const manifest = JSON.parse(await readFile(resolve(project, 'deft.app.json'), 'utf8')) as any;
+  assert.equal(manifest.schema_version, '2');
+  assert.equal(manifest.compatibility.app_protocol, '2');
+  assert.deepEqual(manifest.automation_requests, [{
+    key: 'daily_campaign_send',
+    label: 'Daily campaign send',
+    trigger: { kind: 'daily_local_time' },
+    action_key: 'send_campaign_email',
+  }]);
+
+  const built = run(project, 'build');
+  assert.equal(built.status, 0, built.stderr);
+  const lock = JSON.parse(await readFile(resolve(project, 'deft.app.lock.json'), 'utf8')) as any;
+  assert.equal(lock.schema, 'deft.app.lock.v2');
+  assert.equal(lock.requested_authority_digest, lock.permission_diff.proposed_requested_authority_digest);
+  assert.equal(lock.permission_diff.kind, 'initial');
+  assert.deepEqual(lock.permissions, []);
+
+  const diff = run(project, 'permissions', 'diff');
+  assert.equal(diff.status, 0, diff.stderr);
+  assert.deepEqual(JSON.parse(diff.stdout), lock.permission_diff);
+
+  const fixturePath = resolve(project, 'simulation.json');
+  await writeFile(fixturePath, JSON.stringify({
+    request_key: 'daily_campaign_send',
+    occurrence: {
+      logical_local_date: '2026-02-10', local_time: '09:00', timezone: 'UTC',
+      now: '2026-02-10T09:05:00.000Z', eligible_after: '2026-02-09T00:00:00.000Z',
+    },
+    pins: {
+      placement: {
+        approved: { revision: '1', content_digest: `sha256:${'a'.repeat(64)}` },
+        current: { revision: '1', content_digest: `sha256:${'a'.repeat(64)}` },
+      },
+      selected: {
+        approved: { revision: '1', content_digest: `sha256:${'b'.repeat(64)}` },
+        current: { revision: '1', content_digest: `sha256:${'b'.repeat(64)}` },
+      },
+    },
+    provider_input: {
+      to: 'ada@example.test', subject: 'Analytical Engines', body_text: 'Hello Ada',
+      idempotency_key: 'campaign:one/contact:ada',
+    },
+  }), 'utf8');
+  const simulated = run(project, 'simulate-automation', '--fixture', 'simulation.json');
+  assert.equal(simulated.status, 0, simulated.stderr);
+  const result = JSON.parse(simulated.stdout) as any;
+  assert.equal(result.schedule.decision, 'pending');
+  assert.equal(result.pinned_inputs.status, 'ready');
+  assert.equal(result.provider_input.status, 'valid');
+  assert.equal(result.executable, false);
+  assert.equal(result.provider_access, false);
 });

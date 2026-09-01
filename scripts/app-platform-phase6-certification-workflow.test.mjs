@@ -22,6 +22,10 @@ const browserSmoke = readFileSync(
   new URL('./ci/app-platform-phase6-browser-smoke.mjs', import.meta.url),
   'utf8',
 );
+const trackABrowserFixture = JSON.parse(readFileSync(
+  new URL('./ci/app-platform-track-a-browser-fixture.example.json', import.meta.url),
+  'utf8',
+));
 const pnpmExecWrapper = readFileSync(
   new URL('./ci/pnpm-exec-wrapper.mjs', import.meta.url),
   'utf8',
@@ -175,6 +179,43 @@ test('browser proof correlates the exact invoked Run before approving it through
     browserSmoke,
     /getByText\('Connected campaign', \{ exact: true \}\)\.first\(\)/,
   );
+});
+
+test('Track A automation proof extends the existing browser harness with exact review and management checks', () => {
+  assert.equal(occurrences(browserSmoke, 'chromium.launch('), 1);
+  assert.match(browserSmoke, /DEFT_APP_PLATFORM_AUTOMATION_BROWSER_FIXTURE/);
+  assert.match(browserSmoke, /deft\.app_platform\.track_a\.browser_fixture\.v1/);
+  assert.match(browserSmoke, /async function exerciseTrackAAutomation/);
+  assert.match(browserSmoke, /assertAutomationPin\(review\.placement, 'AUTOMATION_PLACEMENT_PIN'\)/);
+  assert.match(browserSmoke, /assertAutomationPin\(review\.selected, 'AUTOMATION_SELECTED_PIN'\)/);
+  assert.match(browserSmoke, /AUTOMATION_PINS_NOT_DISTINCT/);
+  assert.match(browserSmoke, /mask: \[dialog\.locator\('code'\)\]/);
+  assert.match(browserSmoke, /exact_reviewed_pins_visible_before_create = true/);
+  assert.match(browserSmoke, /\/automations\\\/review\$\/\.test/);
+  assert.match(browserSmoke, /\/automations\$\/\.test/);
+  assert.match(browserSmoke, /\/pause\$\/\.test/);
+  assert.match(browserSmoke, /\/resume\$\/\.test/);
+  for (const label of [
+    'Runner on', 'State', 'Next fire', 'Last fire / Run', 'Budget', 'Dead letters', 'Catch-up',
+  ]) assert.ok(browserSmoke.includes(label));
+  assert.match(browserSmoke, /track-a-desktop-reviewed-pins\.png/);
+  assert.match(browserSmoke, /track-a-desktop-management\.png/);
+  assert.match(browserSmoke, /track-a-mobile-management\.png/);
+  assert.match(browserSmoke, /failureTracking\.setPhase\('mobile'\)/);
+  assert.match(browserSmoke, /APP_PLATFORM_TRACK_A_BROWSER_SMOKE_PASSED/);
+});
+
+test('Track A release setup receives one bounded public browser fixture', () => {
+  assert.deepEqual(Object.keys(trackABrowserFixture).sort(), [
+    'action_label', 'app_id', 'app_version', 'collection_key', 'module_slug',
+    'record_label', 'request_label', 'schedule_lead_minutes', 'schema', 'timezone',
+  ]);
+  assert.equal(trackABrowserFixture.schema, 'deft.app_platform.track_a.browser_fixture.v1');
+  assert.equal(trackABrowserFixture.app_id, 'org.deft.reference.resource-campaigns-app');
+  assert.equal(trackABrowserFixture.app_version, '4.0.0');
+  assert.equal(trackABrowserFixture.timezone, 'UTC');
+  assert.ok(trackABrowserFixture.schedule_lead_minutes >= 30);
+  assert.ok(trackABrowserFixture.schedule_lead_minutes <= 720);
 });
 
 test('only bounded safe evidence and the exact candidate image are retained', () => {

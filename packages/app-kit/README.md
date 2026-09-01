@@ -1,9 +1,10 @@
 # `@deft/app-kit`
 
 Portable, deterministic authoring and packaging contracts for declarative Deft
-Apps. The package includes the `deft` CLI, strict App Protocol v0 and v1
+Apps. The package includes the `deft` CLI, strict App Protocol v0, v1, and v2
 validators, requested-authority projection helpers, developer-host
-compatibility helpers, and the frozen sandbox-email conformance vectors.
+compatibility helpers, frozen sandbox-email conformance vectors, and a
+non-executable bounded-automation simulator.
 
 Parsing or building an App proves package structure and artifact integrity only.
 Installation, authorization, effective grants, tenant isolation, dependency and
@@ -25,7 +26,7 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.1.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.2.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
@@ -39,14 +40,20 @@ pnpm exec deft app init --template declarative
 # Or, in a different empty directory, Protocol v1 connected scaffolding.
 pnpm exec deft app init --template connected
 
+# Or add one requested-only bounded daily action declaration.
+pnpm exec deft app init --template connected-automation
+
 pnpm exec deft app check
 pnpm exec deft app build
+pnpm exec deft app permissions diff
+pnpm exec deft app simulate-automation --fixture fixtures/ordinary-ready.json
 pnpm exec deft app doctor --url http://localhost:3001
 pnpm exec deft app install-local --url http://localhost:3001
 ```
 
-`init` accepts only `declarative` or `connected`. `check` validates and builds
-in memory without writing generated artifacts. `build` writes the deterministic
+`init` accepts only `declarative`, `connected`, or `connected-automation`.
+`check` validates and builds in memory without writing generated artifacts.
+`build` writes the deterministic
 package, lockfile, and requested-authority report:
 
 - `.deft/app.deftapp.json`
@@ -66,6 +73,7 @@ derives its own validated view from the package.
 |---|---:|---|---|
 | `declarative` | v0 | Stage and activate | None; v0 cannot request capabilities or connectors |
 | `connected` | v1 | Stage only | None until separate host review, binding, grant, and activation |
+| `connected-automation` | v2 | Stage only | None until separate host definition review, exact pins, approval, and activation |
 
 Both `doctor` and `install-local` build the local source and compare its protocol
 and package format with the host's advertised compatibility contract. The host
@@ -89,6 +97,15 @@ one selected declared relation target, or explicit typed user input. Templates,
 JSONPath, arbitrary transforms, scripts, URLs, environment values, secrets,
 automation, runtimes, sync, custom UI, and public ingress are not part of this
 protocol.
+
+Protocol v2 adds only a requested daily trigger over an existing action with no
+user input. Apps cannot choose time, timezone, resources, provider, policy,
+budget, or validity. `diffDeftAppRequestedAuthority` compares portable requested
+declarations only. `simulateDeftAppAutomation` and
+`nextEligibleAppAutomationOccurrence` reuse the exact pure timezone, DST, and
+misfire rules used by the host, validate frozen provider inputs, and report pin
+drift; neither helper grants authority, resolves live workspace data, or runs a
+provider.
 
 See the [connected App author guide](../../docs/connected-app-author-guide.md)
 for the packed-artifact workflow, native operator lifecycle,

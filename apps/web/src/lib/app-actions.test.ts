@@ -28,6 +28,7 @@ const action = {
   app_version_id: 'version-1',
   action_key: 'send_campaign_email',
   label: 'Send campaign email',
+  automation_requests: [{ key: 'daily_campaign_send', label: 'Daily campaign send' }],
 };
 const preview = {
   schema_version: 'deft.app_run.v1',
@@ -48,6 +49,7 @@ test('action discovery and resolution preserve only server-authorized relation o
     ],
   } });
   assert.equal(listed.actions[0].bindingId, 'binding-1');
+  assert.deepEqual(listed.actions[0].automationRequests, [{ key: 'daily_campaign_send', label: 'Daily campaign send' }]);
   assert.equal(resolved.inputs[1].kind, 'selected_relation_field');
   if (resolved.inputs[1].kind === 'selected_relation_field') {
     assert.equal(resolved.inputs[1].options[0].ref.resourceId, 'contact-1');

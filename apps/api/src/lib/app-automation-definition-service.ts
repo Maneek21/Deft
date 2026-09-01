@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   APP_AUTOMATION_POLICY_V1,
@@ -8,6 +8,7 @@ import {
 } from '@deft/app-kit';
 import {
   appActionBindings,
+  appAutomationFires,
   appGrantSnapshots,
   appInstallations,
   appVersions,
@@ -26,12 +27,18 @@ import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { digestAppGrantValue } from './app-grant-service.js';
+import {
+  classifyAppAutomationOccurrence,
+  resolveAppAutomationOccurrence,
+} from './app-automation-schedule.js';
 import { connectedAppActionBindingMatches } from './app-connected-contract.js';
 import {
   getAppAutomationDefinitionWithExecutor,
+  getAppAutomationFireByIdentityWithExecutor,
   insertAppAutomationDefinitionWithExecutor,
-  insertAppAutomationFireWithExecutor,
+  insertAppAutomationFireIdempotentlyWithExecutor,
   listAppAutomationDefinitionsWithExecutor,
+  terminalizeUnclaimedAppAutomationFireMisfireWithExecutor,
   transitionAppAutomationDefinitionWithExecutor,
   type AppAutomationDefinitionRow,
   type AppAutomationFireRow,
@@ -756,10 +763,17 @@ export async function persistAppAutomationFire(
     resolution:
       | Readonly<{ kind: 'resolved'; resolved_at_utc: Date }>
       | Readonly<{ kind: 'dst_gap' }>;
+    terminal_reason?: 'dst_gap' | 'misfire_skipped';
   }>,
   options: Readonly<{ now?: () => Date }> = {},
 ): Promise<AppAutomationFireRow> {
   const logicalLocalDate = LogicalLocalDateSchema.parse(input.logical_local_date);
+  if ((input.resolution.kind === 'dst_gap') !== (input.terminal_reason === 'dst_gap')) {
+    invalid('DST gap fire resolution and terminal reason must match');
+  }
+  if (input.terminal_reason === 'misfire_skipped' && input.resolution.kind !== 'resolved') {
+    invalid('Misfire skips require a resolved UTC occurrence');
+  }
   return db.transaction(async (tx) => {
     const definition = await getAppAutomationDefinitionWithExecutor(
       tx,
@@ -771,6 +785,38 @@ export async function persistAppAutomationFire(
     if (definition.state !== 'active' || definition.definition_epoch !== input.expected_epoch) {
       stale('App automation definition is not eligible for this fire');
     }
+    const now = (options.now ?? (() => new Date()))();
+    if (now < definition.valid_from || now >= definition.valid_until) {
+      stale('App automation definition is outside its approved validity window');
+    }
+    const canonicalOccurrence = resolveAppAutomationOccurrence({
+      logical_local_date: logicalLocalDate,
+      local_time: definition.local_time,
+      timezone: definition.timezone,
+    });
+    if (
+      canonicalOccurrence.resolution.kind !== input.resolution.kind
+      || (canonicalOccurrence.resolution.kind === 'resolved'
+        && input.resolution.kind === 'resolved'
+        && canonicalOccurrence.resolution.resolved_at_utc.getTime()
+          !== input.resolution.resolved_at_utc.getTime())
+    ) invalid('App automation fire resolution is not canonical');
+    const eligibleAfter = definition.state_changed_at > definition.valid_from
+      ? definition.state_changed_at
+      : definition.valid_from;
+    const decision = classifyAppAutomationOccurrence({
+      occurrence: canonicalOccurrence,
+      now,
+      eligible_after: eligibleAfter,
+      eligible_before: definition.valid_until,
+      catch_up_window_minutes: 15,
+    });
+    if (
+      (decision.kind === 'pending' && input.terminal_reason !== undefined)
+      || (decision.kind === 'skipped' && input.terminal_reason !== decision.reason)
+      || decision.kind === 'future'
+      || decision.kind === 'not_eligible'
+    ) stale('App automation occurrence is not eligible for the requested fire state');
     const fireIdentity = digestAppAutomationFireIdentity({
       organization_id: input.organization_id,
       definition_id: definition.id,
@@ -779,8 +825,40 @@ export async function persistAppAutomationFire(
       local_time: definition.local_time,
       timezone: definition.timezone,
     });
-    const now = (options.now ?? (() => new Date()))();
-    return insertAppAutomationFireWithExecutor(tx, {
+    const existing = await getAppAutomationFireByIdentityWithExecutor(tx, {
+      organization_id: input.organization_id,
+      fire_identity: fireIdentity,
+    });
+    if (existing) {
+      if (decision.kind === 'skipped'
+        && decision.reason === 'misfire_skipped'
+        && existing.state === 'pending'
+        && existing.attempt_count === 0) {
+        return await terminalizeUnclaimedAppAutomationFireMisfireWithExecutor(tx, {
+          organization_id: input.organization_id,
+          definition_id: definition.id,
+          fire_id: existing.id,
+          expected_epoch: definition.definition_epoch,
+          terminal_at: now,
+        }) ?? existing;
+      }
+      return existing;
+    }
+    if (!input.terminal_reason) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`deft.app_automation.pending_budget:${input.organization_id}`}, 0
+      ))`);
+      const [budget] = await tx.select({
+        pending_count: sql<number>`count(*)::int`,
+      }).from(appAutomationFires).where(and(
+        eq(appAutomationFires.org_id, input.organization_id),
+        inArray(appAutomationFires.state, ['pending', 'claimed']),
+      ));
+      if ((budget?.pending_count ?? 0) >= Math.min(definition.max_pending_org_fires, 25)) {
+        stale('App automation pending-fire budget is exhausted');
+      }
+    }
+    return insertAppAutomationFireIdempotentlyWithExecutor(tx, {
       id: randomUUID(),
       org_id: input.organization_id,
       definition_id: definition.id,
@@ -790,15 +868,15 @@ export async function persistAppAutomationFire(
       timezone: definition.timezone,
       resolved_at_utc: input.resolution.kind === 'resolved' ? input.resolution.resolved_at_utc : null,
       fire_identity: fireIdentity,
-      state: input.resolution.kind === 'dst_gap' ? 'skipped' : 'pending',
+      state: input.terminal_reason ? 'skipped' : 'pending',
       attempt_count: 0,
       claim_owner: null,
       claim_token: null,
       claimed_at: null,
       lease_expires_at: null,
       app_run_id: null,
-      terminal_reason: input.resolution.kind === 'dst_gap' ? 'dst_gap' : null,
-      terminal_at: input.resolution.kind === 'dst_gap' ? now : null,
+      terminal_reason: input.terminal_reason ?? null,
+      terminal_at: input.terminal_reason ? now : null,
       created_at: now,
       updated_at: now,
     });

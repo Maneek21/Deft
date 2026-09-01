@@ -397,7 +397,7 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `DEFT_APP_RUNS_ENABLED` | No | Exact `true` enables the App Run runtime and draining; invalid or missing keyrings then fail startup | `false` |
 | `DEFT_APP_RUN_KEYRINGS` | Only when App Runs enabled | Single-line versioned JSON document containing separate 32-byte base64 Run-encryption, receipt-signing, and fingerprint keyrings | none |
 | `DEFT_APP_RUN_APP_ORIGIN_ENABLED` | No | Exact `true` admits reviewed connected-App actions to App Runs; requires both `DEFT_APPS_ENABLED=true` and the Run engine | `false` |
-| `DEFT_APP_AUTOMATIONS_ENABLED` | No | Exact `true` enables the governed App-automation plane; requires Apps, App Runs, and App-origin Runs. Track A PR A ships no scheduler, so leave false outside focused tests | `false` |
+| `DEFT_APP_AUTOMATIONS_ENABLED` | No | Exact `true` enables the bounded governed App-automation scanner and workers; requires Apps, App Runs, and App-origin Runs. Keep disabled until the installation has reviewed its connector, grant, budget, and backup/restore readiness | `false` |
 | `DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED` | No | Exact `true` routes supported legacy MCP capability calls into App Runs; requires the Run engine to be enabled | `false` |
 | `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
 import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
 import { SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT } from '@deft/app-kit';
@@ -21,7 +21,6 @@ import {
   appRunAttempts,
   appRunEvents,
   appRunReceipts,
-  appRunSecretPayloads,
   appRuns,
   appVersions,
   mcpConnections,
@@ -37,7 +36,6 @@ import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from '.
 import { PostgresAppRunAuthorizer } from '../src/lib/app-run-authorization.js';
 import { AppError } from '../src/lib/app-errors.js';
 import { AppRunError } from '../src/lib/app-run-errors.js';
-import { parseEnvironmentAppRunKeyrings } from '../src/lib/app-run-keyrings.js';
 import { PostgresAppRunLiveAuthorization } from '../src/lib/app-run-live-authorization.js';
 import { AppRunPreparedInputService } from '../src/lib/app-run-prepared-input.js';
 import {
@@ -81,6 +79,7 @@ import {
   buildPhase5ConnectedAppPackage,
   buildPhase5DependencyAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
+import { databaseCompleteAppRunTestKeyrings } from './fixtures/app-run-test-keyrings.js';
 
 const databaseUrl = process.env.DEFT_TEST_DATABASE_URL;
 const canRun = Boolean(databaseUrl && /phase5.*(?:test|loop4)|(?:test|loop4).*phase5/i.test(
@@ -88,14 +87,6 @@ const canRun = Boolean(databaseUrl && /phase5.*(?:test|loop4)|(?:test|loop4).*ph
 ));
 
 after(async () => closeDb());
-
-function key(purpose: string, keyId: string): string {
-  return createHash('sha256').update(`loop5-lifecycle:${purpose}:${keyId}`).digest('base64');
-}
-
-function keyMap(purpose: string, keyIds: ReadonlySet<string>): Record<string, string> {
-  return Object.fromEntries([...keyIds].map((keyId) => [keyId, key(purpose, keyId)]));
-}
 
 function moduleRef(
   installationId: string,
@@ -392,26 +383,7 @@ test('App actions create governed Runs once across every caller surface and fail
     },
   ]);
 
-  const [fingerprintRows, encryptionRows, signingRows] = await Promise.all([
-    db.select({
-      idempotency: appRuns.idempotency_key_version,
-      input: appRuns.input_fingerprint_key_version,
-    }).from(appRuns),
-    db.selectDistinct({ keyId: appRunSecretPayloads.key_version }).from(appRunSecretPayloads),
-    db.selectDistinct({ keyId: appRunReceipts.signing_key_version }).from(appRunReceipts),
-  ]);
-  const fingerprintKeyIds = new Set([
-    'fp-v1',
-    ...fingerprintRows.flatMap((row) => [row.idempotency, row.input]),
-  ]);
-  const encryptionKeyIds = new Set(['enc-v1', ...encryptionRows.map((row) => row.keyId)]);
-  const signingKeyIds = new Set(['sig-v1', ...signingRows.map((row) => row.keyId)]);
-  const keys = parseEnvironmentAppRunKeyrings(JSON.stringify({
-    schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
-    run_encryption: { current: 'enc-v1', keys: keyMap('run_encryption', encryptionKeyIds) },
-    receipt_signing: { current: 'sig-v1', keys: keyMap('receipt_signing', signingKeyIds) },
-    fingerprint: { current: 'fp-v1', keys: keyMap('fingerprint', fingerprintKeyIds) },
-  }));
+  const keys = await databaseCompleteAppRunTestKeyrings('loop5-lifecycle');
   try {
     const secrets = new AppRunSecretService(keys);
     const preparedInputs = new AppRunPreparedInputService(secrets);

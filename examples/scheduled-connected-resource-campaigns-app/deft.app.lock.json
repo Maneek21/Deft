@@ -1,0 +1,32 @@
+{
+  "schema": "deft.app.lock.v2",
+  "app_id": "org.deft.reference.resource-campaigns-app",
+  "version": "4.0.0",
+  "package_digest": "sha256:189c220018e5118b9277dce15505197726608140a58189f40ccfdcfcceb2c7e8",
+  "manifest_digest": "sha256:c58291ef6f6a300395931591ea4e6fddaeb85940113e891b9d41362e8fe7fc1e",
+  "artifacts": [
+    {
+      "path": "modules/resource-campaigns/deft.module.json",
+      "digest": "sha256:5dc2a978506eb2917a3a99021831d62d94112a60615292e4b32e03e480cff208",
+      "byte_length": 1721,
+      "media_type": "application/vnd.deft.module+json"
+    }
+  ],
+  "permissions": [],
+  "requested_authority_digest": "sha256:adf38f727043b179322ae3cdedfbd61e988a717b9fad2a0caae282c983ca89a3",
+  "permission_diff": {
+    "schema": "deft.app.requested_authority_diff.v1",
+    "kind": "initial",
+    "carry_forward_eligible": false,
+    "changed_atoms": [
+      "dependencies",
+      "resources",
+      "capabilities",
+      "connectors",
+      "actions",
+      "automation_requests"
+    ],
+    "prior_requested_authority_digest": null,
+    "proposed_requested_authority_digest": "sha256:adf38f727043b179322ae3cdedfbd61e988a717b9fad2a0caae282c983ca89a3"
+  }
+}

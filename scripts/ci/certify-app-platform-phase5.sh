@@ -13,6 +13,7 @@ evidence_root="${EVIDENCE_DIR:?EVIDENCE_DIR is required}"
 browser_script="${APP_PLATFORM_BROWSER_SCRIPT:-${certifier_root}/scripts/ci/app-platform-phase5-browser-smoke.mjs}"
 setup_hook="${APP_PLATFORM_SETUP_HOOK:-}"
 offline_hook="${APP_PLATFORM_OFFLINE_HOOK:-}"
+app_automations_enabled="${DEFT_APP_AUTOMATIONS_ENABLED:-false}"
 
 run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 run_attempt="${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
@@ -46,6 +47,7 @@ host_gid="$(id -g)"
 [[ "$prefix" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]
 [[ "$candidate_tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]]
 [[ "$database_name" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]
+[[ "$app_automations_enabled" == "true" || "$app_automations_enabled" == "false" ]]
 
 mkdir -p "$safe_dir" "$recovery_dir"
 chmod 700 "$recovery_dir"
@@ -80,6 +82,7 @@ run_candidate() {
     -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
     -e JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
     -e ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
+    -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
     --entrypoint sh "$candidate_tag" -c "$2"
 }
 
@@ -98,6 +101,7 @@ run_extension_hook() {
   DATABASE_NAME="$database_name" POSTGRES_PASSWORD="$postgres_password" \
   SAFE_EVIDENCE_DIR="$safe_dir" RECOVERY_DIR="$recovery_dir" \
   APP_DOCKER_ARGS_FILE="$app_docker_args_file" UPGRADE_PACKAGE_PATH="$upgrade_package_path" \
+  DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   DEFT_APP_RUN_KEYRINGS="${restored_keyring_json:-${keyring_json:-}}" \
   DEFT_TEST_EMAIL="${proof_email:-}" \
   bash "$hook"
@@ -157,6 +161,7 @@ docker run --rm --network "$network" \
   -e JWT_SECRET=phase5-cert-jwt-not-for-prod \
   -e JWT_REFRESH_SECRET=phase5-cert-refresh-not-for-prod \
   -e ENCRYPTION_KEY=phase5-cert-envelope-key-32bytes \
+  -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   --entrypoint sh "$candidate_tag" \
   -c 'pnpm --filter @deft/api exec tsx --test test/phase5-proof-package-determinism.test.ts test/phase5-sandbox-email-provider.test.ts test/app-origin-run-lifecycle-db.test.ts'
 
@@ -282,6 +287,7 @@ docker run --rm --network "$network" \
   -e DEFT_APP_RUNS_ENABLED=true \
   -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false \
+  -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   -e DEFT_APP_RUN_KEYRINGS="$restored_keyring_json" \
   -e HOST_UID="$host_uid" -e HOST_GID="$host_gid" \
   --entrypoint sh "$candidate_tag" \
@@ -298,6 +304,7 @@ docker run -d --name "$app_container" --network "$network" -p 3000:3000 -p 3001:
   -e DEFT_APP_RUNS_ENABLED=true \
   -e DEFT_APP_RUN_APP_ORIGIN_ENABLED=true \
   -e DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED=false \
+  -e DEFT_APP_AUTOMATIONS_ENABLED="$app_automations_enabled" \
   -e DEFT_APP_RUN_KEYRINGS="$restored_keyring_json" \
   -e NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000 \
   -e NEXT_PUBLIC_API_URL=http://127.0.0.1:3001 \

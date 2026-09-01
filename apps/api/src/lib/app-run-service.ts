@@ -67,6 +67,8 @@ export type AppRunTrustedContext = Readonly<{
   org_id: string;
   initiating_actor: AppRunActor;
   execution_actor: AppRunActor;
+  /** Host-only secret fence; never persisted or included in authority vectors. */
+  automation_claim_token?: string;
 }>;
 
 export interface AppRunPreparedInputOpener {
@@ -291,7 +293,8 @@ export class AppRunService {
     ) throw new AppRunError('APP_RUN_ACCESS_DENIED');
     const vector = app.authority_vector;
     const isAutomation = vector.schema_version === 'deft.app_action_authority.v2';
-    if (isAutomation && !this.appAutomationsEnabled()) {
+    if ((isAutomation && (!this.appAutomationsEnabled() || !context.automation_claim_token))
+      || (!isAutomation && context.automation_claim_token !== undefined)) {
       throw new AppRunError('APP_RUN_ACCESS_DENIED');
     }
     const authorizationSnapshot = AppRunAuthorizationSnapshotSchema.parse({
@@ -342,7 +345,7 @@ export class AppRunService {
       input: prepared.provider_input,
       authorization_snapshot: authorizationSnapshot,
       safe_preview: app.safe_preview,
-    }, null, vector);
+    }, null, vector, context.automation_claim_token);
   }
 
   async submitChild(
@@ -361,6 +364,7 @@ export class AppRunService {
     rawSubmission: unknown,
     parentRunId: string | null,
     trustedAppVector?: AppRunPreparedAppVerification['authority_vector'],
+    automationClaimToken?: string,
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -492,6 +496,8 @@ export class AppRunService {
           organization_id: submission.org_id,
           definition_id: trustedAppVector.automation.definition.id,
           fire_id: trustedAppVector.automation.fire.id,
+          expected_epoch: trustedAppVector.automation.definition.epoch,
+          expected_claim_token: automationClaimToken!,
           app_run_id: run.id,
           terminal_at: now,
         });

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
 import { AppRunInspector } from '@/components/apps/app-run-inspector';
+import { AppAutomationManagement } from '@/components/apps/app-automation-management';
 import { api } from '@/lib/api';
 import {
   appApiError,
@@ -42,6 +43,7 @@ export function ConnectedAppManagement({
   const installedManifest = isConnectedAppManifest(app.manifest) ? app.manifest : null;
   const target = grants?.review_target ?? null;
   const manifest = target?.manifest ?? installedManifest;
+  const protocol = manifest?.compatibility.app_protocol ?? '1';
   const effective = grants?.snapshots.find((snapshot) => snapshot.id === grants.installation.active_grant_snapshot_id) ?? null;
   useEffect(() => {
     if (!target) return;
@@ -149,7 +151,7 @@ export function ConnectedAppManagement({
             <div className="rounded-lg px-3 py-2.5 text-[11px]" style={{ background: 'var(--surface-container-high)' }}>
               <h3 className="font-semibold">Supported local contract</h3>
               <p className="mt-1" style={{ color: 'var(--on-surface-variant)' }}>
-                {grants.compatibility.app_kit.package} {grants.compatibility.app_kit.versions.join(', ')} · App Protocol v1 · {grants.compatibility.protocol_flows['1'].package_format} · {grants.compatibility.protocol_flows['1'].install_mode.replaceAll('_', ' ')}
+                {grants.compatibility.app_kit.package} {grants.compatibility.app_kit.versions.join(', ')} · App Protocol v{protocol} · {grants.compatibility.protocol_flows[protocol].package_format} · {grants.compatibility.protocol_flows[protocol].install_mode.replaceAll('_', ' ')}
               </p>
               <p className="mt-1" style={{ color: 'var(--outline)' }}>Local packages are unsigned. Source provenance is an unverified author claim, not a registry attestation.</p>
             </div>
@@ -240,6 +242,8 @@ export function ConnectedAppManagement({
               <p className="flex items-center gap-1.5 font-semibold">{health.status === 'healthy' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />} {health.status === 'healthy' ? 'Healthy' : `${health.issues.length} health issue${health.issues.length === 1 ? '' : 's'}`}</p>
               {health.issues.length > 0 && <ul className="mt-1 space-y-1">{health.issues.map((issue) => <li key={`${issue.code}:${issue.subject_id}`}>{issue.message}</li>)}</ul>}
             </div>}
+
+            {installedManifest.compatibility.app_protocol === '2' && app.state === 'active' && <AppAutomationManagement installationId={app.id} />}
 
             <div><h3 className="text-xs font-semibold">Recent Runs</h3>{grants.recent_runs.length === 0 ? <p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>No App Runs yet.</p> : <ul className="mt-2 space-y-1.5">{grants.recent_runs.slice(0, 5).map((run) => <li key={run.id}><button type="button" className="flex min-h-11 w-full items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[11px]" style={{ background: 'var(--surface-container-high)' }} onClick={() => setSelectedRunId(run.id)}><span className="min-w-0"><span className="block truncate font-medium">{run.title}</span><span className="block truncate" style={{ color: 'var(--outline)' }}>{run.outcome_summary ?? run.summary ?? new Date(run.created_at).toLocaleString()}</span></span><RunState state={run.state} /></button></li>)}</ul>}</div>
           </>}

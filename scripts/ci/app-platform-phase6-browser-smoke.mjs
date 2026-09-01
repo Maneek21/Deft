@@ -18,6 +18,10 @@ const evidencePath = resolve(
     || `${evidenceDirectory}/apps-phase6-browser-smoke.json`,
 );
 const upgradePackageInput = process.env.DEFT_APP_PLATFORM_UPGRADE_PACKAGE;
+const automationFixtureInput = process.env.DEFT_APP_PLATFORM_AUTOMATION_BROWSER_FIXTURE;
+const automationFixturePath = resolve(
+  automationFixtureInput || `${evidenceDirectory}/track-a-browser-fixture.json`,
+);
 const phase5Script = resolve(scriptDirectory, 'app-platform-phase5-browser-smoke.mjs');
 const appKitPackageJsonPath = resolve(scriptDirectory, '../../packages/app-kit/package.json');
 const packageByteLimit = 1024 * 1024;
@@ -162,6 +166,47 @@ async function readAppKitContract() {
     if (error instanceof CertificationFailure) throw error;
     throw new CertificationFailure('APP_KIT_PACKAGE_UNREADABLE');
   }
+}
+
+async function readAutomationFixture() {
+  let fixtureStat;
+  try {
+    fixtureStat = await stat(automationFixturePath);
+  } catch {
+    if (!automationFixtureInput) return null;
+    throw new CertificationFailure('AUTOMATION_FIXTURE_UNREADABLE');
+  }
+  requireCondition(fixtureStat.isFile() && fixtureStat.size <= 16 * 1024, 'AUTOMATION_FIXTURE_INVALID');
+  let fixture;
+  try {
+    fixture = JSON.parse(await readFile(automationFixturePath, 'utf8'));
+  } catch {
+    throw new CertificationFailure('AUTOMATION_FIXTURE_INVALID');
+  }
+  const exactKeys = [
+    'action_label', 'app_id', 'app_version', 'collection_key', 'module_slug',
+    'record_label', 'request_label', 'schedule_lead_minutes', 'schema', 'timezone',
+  ];
+  requireCondition(
+    fixture && typeof fixture === 'object' && !Array.isArray(fixture)
+      && Object.keys(fixture).sort().join('\0') === exactKeys.join('\0'),
+    'AUTOMATION_FIXTURE_INVALID',
+  );
+  requireCondition(
+    fixture.schema === 'deft.app_platform.track_a.browser_fixture.v1'
+      && /^[a-z][a-z0-9.-]{2,127}$/.test(fixture.app_id)
+      && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(fixture.app_version)
+      && /^[a-z][a-z0-9-]{0,63}$/.test(fixture.module_slug)
+      && /^[a-z][a-z0-9_]{0,47}$/.test(fixture.collection_key)
+      && [fixture.record_label, fixture.action_label, fixture.request_label, fixture.timezone]
+        .every((item) => typeof item === 'string' && item.length > 0 && item.length <= 128)
+      && Number.isInteger(fixture.schedule_lead_minutes)
+      && fixture.schedule_lead_minutes >= 30
+      && fixture.schedule_lead_minutes <= 720,
+    'AUTOMATION_FIXTURE_INVALID',
+  );
+  requireCondition(fixture.timezone === 'UTC', 'AUTOMATION_FIXTURE_TIMEZONE_UNSUPPORTED');
+  return fixture;
 }
 
 async function runPhase5Baseline() {
@@ -492,6 +537,190 @@ async function invokePackedProviderThroughUi(
   );
 }
 
+function automationFact(row, label) {
+  return row.getByText(label, { exact: true }).locator('xpath=following-sibling::dd[1]');
+}
+
+function assertAutomationPin(pin, codePrefix) {
+  const ref = pin?.resource_ref;
+  requireCondition(
+    ref?.schema_version === 'deft.resource_ref.v1'
+      && ref?.provider?.kind === 'module'
+      && typeof ref.provider.provider_instance_id === 'string'
+      && ref.provider.provider_instance_id.length > 0
+      && typeof ref.resource_type === 'string'
+      && ref.resource_type.length > 0
+      && typeof ref.resource_id === 'string'
+      && ref.resource_id.length > 0
+      && typeof pin.revision === 'string'
+      && pin.revision.length > 0
+      && /^sha256:[a-f0-9]{64}$/.test(pin.content_digest),
+    `${codePrefix}_INVALID`,
+  );
+  return {
+    identity: `${ref.provider.kind}:${ref.provider.provider_instance_id}:${ref.resource_type}:${ref.resource_id}`,
+    revision: `revision ${pin.revision} · ${pin.content_digest}`,
+  };
+}
+
+async function exerciseTrackAAutomation(
+  page,
+  fixture,
+  markers,
+  evidence,
+  setStage,
+  failureTracking,
+) {
+  const scheduledAt = new Date(Date.now() + fixture.schedule_lead_minutes * 60_000);
+  const localTime = `${String(scheduledAt.getUTCHours()).padStart(2, '0')}:${String(scheduledAt.getUTCMinutes()).padStart(2, '0')}`;
+
+  setStage('automation_record');
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${webUrl}/modules/${fixture.module_slug}/${fixture.collection_key}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  const recordLinks = page.getByRole('link', { name: fixture.record_label, exact: true });
+  await recordLinks.first().waitFor({ state: 'visible', timeout: 20_000 });
+  requireCondition(await recordLinks.count() === 1, 'AUTOMATION_RECORD_NOT_UNIQUE');
+  await recordLinks.first().click();
+  await page.getByRole('heading', { name: fixture.record_label, exact: true, level: 1 })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+
+  setStage('automation_review_input');
+  const actions = page.locator('section[aria-label="App actions"]');
+  await actions.waitFor({ state: 'visible', timeout: 20_000 });
+  await actions.getByRole('button', { name: fixture.action_label, exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Schedule daily', exact: true })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Schedule daily', exact: true }).click();
+  await dialog.getByLabel('Local time', { exact: true }).fill(localTime);
+  await dialog.getByLabel('IANA timezone', { exact: true }).fill(fixture.timezone);
+
+  const reviewResponsePromise = page.waitForResponse((response) => {
+    const pathname = new URL(response.url()).pathname;
+    return response.request().method() === 'POST' && /\/api\/apps\/[^/]+\/automations\/review$/.test(pathname);
+  }, { timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Review schedule', exact: true }).click();
+  const reviewResponse = await reviewResponsePromise;
+  requireCondition(reviewResponse.ok(), 'AUTOMATION_REVIEW_FAILED');
+  const reviewBody = await reviewResponse.json().catch(() => null);
+  const review = reviewBody?.review;
+  requireCondition(
+    review?.schedule?.local_time === localTime
+      && review?.schedule?.timezone === fixture.timezone
+      && review?.schedule?.catch_up_window_minutes === 15
+      && review?.budgets?.max_org_runs_per_utc_day === 100
+      && review?.budgets?.max_pending_org_fires === 25
+      && review?.policy_version === '1'
+      && /^sha256:[a-f0-9]{64}$/.test(review?.review_digest ?? ''),
+    'AUTOMATION_REVIEW_CONTRACT_INVALID',
+  );
+  const placement = assertAutomationPin(review.placement, 'AUTOMATION_PLACEMENT_PIN');
+  const selected = assertAutomationPin(review.selected, 'AUTOMATION_SELECTED_PIN');
+  requireCondition(placement.identity !== selected.identity, 'AUTOMATION_PINS_NOT_DISTINCT');
+  await dialog.getByRole('heading', { name: 'Approved automation definition', exact: true })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+  for (const exact of [placement.identity, placement.revision, selected.identity, selected.revision]) {
+    await dialog.getByText(exact, { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
+  }
+  await assertSafeRenderedSurface(page, markers, 'AUTOMATION_REVIEW');
+  const reviewScreenshot = resolve(evidenceDirectory, 'track-a-desktop-reviewed-pins.png');
+  await page.screenshot({
+    path: reviewScreenshot,
+    fullPage: true,
+    mask: [dialog.locator('code')],
+    maskColor: '#7f8792',
+  });
+  evidence.screenshots.desktop_reviewed_pins = relativeEvidencePath(reviewScreenshot);
+  evidence.checks.exact_reviewed_pins_visible_before_create = true;
+
+  setStage('automation_create');
+  const createResponsePromise = page.waitForResponse((response) => {
+    const pathname = new URL(response.url()).pathname;
+    return response.request().method() === 'POST' && /\/api\/apps\/[^/]+\/automations$/.test(pathname);
+  }, { timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Approve and create', exact: true }).click();
+  const createResponse = await createResponsePromise;
+  requireCondition(createResponse.status() === 201, 'AUTOMATION_CREATE_FAILED');
+  await dialog.getByRole('heading', { name: 'Automation created', exact: true })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden', timeout: 20_000 });
+
+  setStage('automation_desktop_management');
+  await openApps(page, desktopViewport);
+  let card = await waitForApp(page, fixture.app_id, 'active', fixture.app_version);
+  let management = card.locator('section[aria-label="Scheduled App automations"]');
+  await management.getByText('Runner on', { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
+  let row = management.locator('li').filter({ hasText: fixture.request_label }).first();
+  await row.waitFor({ state: 'visible', timeout: 20_000 });
+  await row.getByText(`Daily at ${localTime} · ${fixture.timezone}`, { exact: true })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+  requireCondition((await automationFact(row, 'State').innerText()).trim() === 'active', 'AUTOMATION_NOT_ACTIVE');
+  const nextFire = (await automationFact(row, 'Next fire').innerText()).trim();
+  requireCondition(
+    nextFire.length > 0 && nextFire !== 'Not scheduled' && nextFire !== 'Runner disabled',
+    'AUTOMATION_NEXT_FIRE_MISSING',
+  );
+  requireCondition((await automationFact(row, 'Last fire / Run').innerText()).trim().length > 0,
+    'AUTOMATION_LAST_FIRE_RUN_MISSING');
+  requireCondition((await automationFact(row, 'Budget').innerText()).trim() === '100/day · 25 pending',
+    'AUTOMATION_BUDGET_MISSING');
+  requireCondition((await automationFact(row, 'Dead letters').innerText()).trim() === '0',
+    'AUTOMATION_DEAD_LETTER_SUMMARY_MISSING');
+  requireCondition((await automationFact(row, 'Catch-up').innerText()).trim() === '15 minutes',
+    'AUTOMATION_CATCH_UP_MISSING');
+  await assertSafeRenderedSurface(page, markers, 'AUTOMATION_DESKTOP_MANAGEMENT');
+  const desktopManagementScreenshot = resolve(evidenceDirectory, 'track-a-desktop-management.png');
+  await page.screenshot({ path: desktopManagementScreenshot, fullPage: true });
+  evidence.screenshots.desktop_management = relativeEvidencePath(desktopManagementScreenshot);
+  evidence.checks.desktop_management_summary_visible = true;
+  evidence.checks.kill_switch_visible = true;
+
+  setStage('automation_pause');
+  let transitionResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && /\/api\/apps\/[^/]+\/automations\/[^/]+\/pause$/.test(new URL(response.url()).pathname),
+  { timeout: 20_000 });
+  await row.getByRole('button', { name: 'Pause', exact: true }).click();
+  requireCondition((await transitionResponse).ok(), 'AUTOMATION_PAUSE_FAILED');
+  await row.getByText('paused', { exact: true })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+  evidence.checks.pause_visible_and_effective = true;
+
+  setStage('automation_resume');
+  transitionResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && /\/api\/apps\/[^/]+\/automations\/[^/]+\/resume$/.test(new URL(response.url()).pathname),
+  { timeout: 20_000 });
+  await row.getByRole('button', { name: 'Resume', exact: true }).click();
+  requireCondition((await transitionResponse).ok(), 'AUTOMATION_RESUME_FAILED');
+  await row.getByText('active', { exact: true })
+    .waitFor({ state: 'visible', timeout: 20_000 });
+  evidence.checks.resume_visible_and_effective = true;
+
+  setStage('automation_mobile_management');
+  failureTracking.setPhase('mobile');
+  await openApps(page, mobileViewport);
+  card = await waitForApp(page, fixture.app_id, 'active', fixture.app_version);
+  management = card.locator('section[aria-label="Scheduled App automations"]');
+  await management.getByText('Runner on', { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
+  row = management.locator('li').filter({ hasText: fixture.request_label }).first();
+  await row.waitFor({ state: 'visible', timeout: 20_000 });
+  requireCondition((await automationFact(row, 'State').innerText()).trim() === 'active', 'AUTOMATION_MOBILE_STATE_INVALID');
+  for (const label of ['Next fire', 'Last fire / Run', 'Budget', 'Dead letters', 'Catch-up']) {
+    await automationFact(row, label).waitFor({ state: 'visible', timeout: 20_000 });
+  }
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  requireCondition(overflow <= 2, 'AUTOMATION_MOBILE_HORIZONTAL_OVERFLOW');
+  await assertSafeRenderedSurface(page, markers, 'AUTOMATION_MOBILE_MANAGEMENT');
+  const mobileManagementScreenshot = resolve(evidenceDirectory, 'track-a-mobile-management.png');
+  await page.screenshot({ path: mobileManagementScreenshot, fullPage: true });
+  evidence.screenshots.mobile_management = relativeEvidencePath(mobileManagementScreenshot);
+  evidence.checks.mobile_management_summary_visible = true;
+  evidence.checks.no_horizontal_overflow = true;
+  evidence.checks.no_secret_or_signature_markers = true;
+}
+
 function installFailureTracking(page) {
   const counts = {
     desktop: { console: 0, page: 0, api: 0 },
@@ -556,7 +785,7 @@ async function main() {
   await mkdir(dirname(evidencePath), { recursive: true });
   let markers = [];
   let failureTracking = null;
-  const evidence = {
+  let evidence = {
     schema: 'deft.app_platform.phase6.browser_smoke.v1',
     result: 'failed',
     target_origin: null,
@@ -595,15 +824,52 @@ async function main() {
   try {
     markers = secretMarkers();
     evidence.target_origin = safeOrigin(webUrl);
-    const [{ packagePath, manifest }, appKit] = await Promise.all([
-      readUpgradePackage(),
-      readAppKitContract(),
-    ]);
-    evidence.upgrade.expected_version = manifest.version;
-
-    currentStage = 'phase5_browser_baseline';
-    await runPhase5Baseline();
-    evidence.baseline.phase5_browser_smoke = true;
+    const automationFixture = await readAutomationFixture();
+    if (automationFixture) {
+      evidence = {
+        schema: 'deft.app_platform.track_a.browser_smoke.v1',
+        result: 'failed',
+        target_origin: safeOrigin(webUrl),
+        route: '/settings/apps',
+        completed_at: null,
+        fixture: {
+          schema: automationFixture.schema,
+          app_id: automationFixture.app_id,
+          app_version: automationFixture.app_version,
+          timezone: automationFixture.timezone,
+          schedule_lead_minutes: automationFixture.schedule_lead_minutes,
+        },
+        checks: {
+          authenticated_login: false,
+          exact_reviewed_pins_visible_before_create: false,
+          desktop_management_summary_visible: false,
+          kill_switch_visible: false,
+          pause_visible_and_effective: false,
+          resume_visible_and_effective: false,
+          mobile_management_summary_visible: false,
+          no_horizontal_overflow: false,
+          no_console_page_or_api_failures: false,
+          no_secret_or_signature_markers: false,
+        },
+        screenshots: {},
+        observed_failures: {
+          desktop: { console: 0, page: 0, api: 0 },
+          mobile: { console: 0, page: 0, api: 0 },
+        },
+        failed_stage: null,
+      };
+    }
+    const legacy = automationFixture ? null : await (async () => {
+      const [{ packagePath, manifest }, appKit] = await Promise.all([
+        readUpgradePackage(),
+        readAppKitContract(),
+      ]);
+      evidence.upgrade.expected_version = manifest.version;
+      currentStage = 'phase5_browser_baseline';
+      await runPhase5Baseline();
+      evidence.baseline.phase5_browser_smoke = true;
+      return { packagePath, manifest, appKit };
+    })();
 
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: desktopViewport });
@@ -613,6 +879,30 @@ async function main() {
     currentStage = 'authenticated_login';
     await login(page);
     evidence.checks.authenticated_login = true;
+    if (automationFixture) {
+      await exerciseTrackAAutomation(
+        page,
+        automationFixture,
+        markers,
+        evidence,
+        (stage) => { currentStage = stage; },
+        failureTracking,
+      );
+      evidence.observed_failures = failureTracking.counts;
+      for (const phase of ['desktop', 'mobile']) {
+        requireCondition(failureTracking.counts[phase].console === 0, `${phase.toUpperCase()}_CONSOLE_FAILURE`);
+        requireCondition(failureTracking.counts[phase].page === 0, `${phase.toUpperCase()}_PAGE_FAILURE`);
+        requireCondition(failureTracking.counts[phase].api === 0, `${phase.toUpperCase()}_API_FAILURE`);
+      }
+      evidence.checks.no_console_page_or_api_failures = true;
+      evidence.result = 'passed';
+      evidence.completed_at = new Date().toISOString();
+      console.log('APP_PLATFORM_TRACK_A_BROWSER_SMOKE_PASSED');
+      console.log('Evidence written to the configured path.');
+      return;
+    }
+    requireCondition(legacy, 'LEGACY_BROWSER_INPUT_MISSING');
+    const { packagePath, manifest, appKit } = legacy;
     currentStage = 'desktop_apps_contract';
     await openApps(page, desktopViewport);
     let card = await waitForApp(page, manifest.id, 'active');

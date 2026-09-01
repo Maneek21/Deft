@@ -22,6 +22,12 @@ test('durable scheduled-message-send resolves to a real handler', async () => {
   assert.equal(typeof handler, 'function');
 });
 
+test('App automation scan and exact-fire delivery resolve through scheduled jobs', async () => {
+  const workers = await import('../src/workers/index.js');
+  assert.equal(typeof await workers._getScheduledJobHandlerForTest('app-automation-scan'), 'function');
+  assert.equal(typeof await workers._getScheduledJobHandlerForTest('app-automation-fire'), 'function');
+});
+
 test('governed App Run attempts resolve through the agent-job worker registry', async () => {
   const workers = await import('../src/workers/index.js');
   const handler = await workers._getAgentJobHandlerForTest('app-run-attempt');

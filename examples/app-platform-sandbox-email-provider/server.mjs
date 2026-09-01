@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 
 const SERVER_INFO = Object.freeze({
   name: 'deft-app-platform-sandbox-email-provider',
-  version: '0.1.0-alpha.1',
+  version: '0.1.0-alpha.2',
 });
 
 const MAX_REQUEST_BYTES = 1024 * 1024;

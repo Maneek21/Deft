@@ -5,32 +5,39 @@ import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   APP_AUTOMATION_POLICY_V1,
+  APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS,
   DEFT_APP_DEVELOPER_COMPATIBILITY,
   DEFT_APP_PACKAGE_FORMAT_V2,
   DEFT_APP_PROTOCOL_OPERATIONS,
   DEFT_APP_PROTOCOL_SUPPORT,
   DeftAppManifestV1Schema,
   DeftAppManifestV2Schema,
+  DeftAppLockV2Schema,
+  SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS,
   SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
   SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE,
   buildDeftAppPackage,
   canonicalDeftAppRequestedAuthorityReportJson,
   checkDeftAppDeveloperContract,
+  diffDeftAppRequestedAuthority,
   getDeftAppManifestJsonSchema,
   getDeftAppManifestV0JsonSchema,
   getDeftAppManifestV1JsonSchema,
   getDeftAppManifestV2JsonSchema,
   isDeftAppProtocolOperationSupported,
+  nextEligibleAppAutomationOccurrence,
   parseDeftAppManifest,
   parseDeftAppManifestJson,
   prepareModuleArtifact,
   projectDeftAppRequestedAuthority,
+  simulateDeftAppAutomation,
   verifyDeftAppPackageJson,
   type DeftAppManifestV2Input,
 } from '../src/index.js';
 
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
 const connectedExample = 'examples/connected-resource-campaigns-app';
+const scheduledExample = 'examples/scheduled-connected-resource-campaigns-app';
 
 async function packageForExample(path: string) {
   const manifest = parseDeftAppManifestJson(
@@ -105,6 +112,8 @@ describe('App Protocol v2 bounded automation request contract', () => {
       install_mode: 'stage_only',
     });
     assert.equal(checked.requested_authority.schema, 'deft.app.requested_authority.v2');
+    assert.equal(checked.automation_simulator_conformance.schema,
+      APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS.schema);
 
     const schema = getDeftAppManifestV2JsonSchema();
     assert.equal(schema.$schema, 'https://json-schema.org/draft/2020-12/schema');
@@ -312,5 +321,96 @@ describe('App Protocol v2 bounded automation request contract', () => {
       'sha256:973ec7076daf7405a7a4d8b48509ef6f99b1b1cc4b787961104c73f23b7f770d');
     assert.equal(sha256(canonicalDeftAppRequestedAuthorityReportJson(v1.manifest)),
       'sha256:69c28209b77545b45fa7232a788d45fe1b72c16fe9e2ab3d8071e3de226f77bc');
+  });
+
+  test('builds the independent scheduled Campaign upgrade and reports only its requested widening', async () => {
+    const v1 = await packageForExample(connectedExample);
+    const v2 = await packageForExample(scheduledExample);
+    assert.equal(v2.built.digest,
+      'sha256:189c220018e5118b9277dce15505197726608140a58189f40ccfdcfcceb2c7e8');
+    const diff = await diffDeftAppRequestedAuthority({ prior: v1.manifest, proposed: v2.manifest });
+    assert.deepEqual(diff.changed_atoms, ['automation_requests']);
+    assert.equal(diff.kind, 'widening_or_incompatible');
+    assert.equal(diff.carry_forward_eligible, false);
+    assert.equal(diff.prior_requested_authority_digest,
+      'sha256:63e8c7404e9e8c31ad097bf7d62e328c5cf47b447a6cd82f6b65dd2d3585355e');
+    assert.equal(diff.proposed_requested_authority_digest,
+      'sha256:adf38f727043b179322ae3cdedfbd61e988a717b9fad2a0caae282c983ca89a3');
+
+    const lock = DeftAppLockV2Schema.parse(JSON.parse(
+      await readFile(resolve(repositoryRoot, scheduledExample, 'deft.app.lock.json'), 'utf8'),
+    ));
+    assert.equal(lock.package_digest, v2.built.digest);
+    assert.equal(lock.requested_authority_digest, lock.permission_diff.proposed_requested_authority_digest);
+    assert.deepEqual(lock.permissions, []);
+  });
+
+  test('uses exact public schedule and input contracts in the non-executable simulator', async () => {
+    const { manifest } = await packageForExample(scheduledExample);
+    if (manifest.schema_version !== '2') throw new Error('Expected the scheduled v2 proof');
+    const readyPin = {
+      approved: { revision: '1', content_digest: `sha256:${'a'.repeat(64)}` },
+      current: { revision: '1', content_digest: `sha256:${'a'.repeat(64)}` },
+    };
+    for (const vector of APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS.occurrences) {
+      const simulated = simulateDeftAppAutomation({
+        manifest,
+        request_key: 'daily_campaign_send',
+        occurrence: {
+          logical_local_date: vector.logical_local_date,
+          local_time: vector.local_time,
+          timezone: vector.timezone,
+          now: vector.now,
+          eligible_after: '2026-01-01T00:00:00.000Z',
+          eligible_before: '2026-12-01T00:00:00.000Z',
+        },
+        pins: { placement: readyPin, selected: readyPin },
+        provider_input: SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input,
+      });
+      assert.equal(simulated.schedule.decision, vector.expected, vector.label);
+      if ('resolved_at_utc' in vector) {
+        assert.equal(simulated.schedule.resolved_at_utc, vector.resolved_at_utc, vector.label);
+      }
+      assert.equal(simulated.pinned_inputs.status, 'ready');
+      assert.equal(simulated.pinned_inputs.status,
+        APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS.pins.ready.expected);
+      assert.equal(simulated.provider_input.status, 'valid');
+      assert.equal(simulated.executable, false);
+      assert.equal(simulated.provider_access, false);
+    }
+
+    const stale = simulateDeftAppAutomation({
+      manifest,
+      request_key: 'daily_campaign_send',
+      occurrence: {
+        logical_local_date: '2026-02-10', local_time: '09:00', timezone: 'UTC',
+        now: '2026-02-10T09:05:00.000Z', eligible_after: '2026-02-09T00:00:00.000Z',
+      },
+      pins: {
+        placement: readyPin,
+        selected: { ...readyPin, current: { ...readyPin.current, revision: '2' } },
+      },
+      provider_input: { ...SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input, to: 'not-email' },
+    });
+    assert.deepEqual(stale.pinned_inputs, {
+      status: APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS.pins.stale.expected,
+      changed: [...APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS.pins.stale.changed],
+    });
+    assert.equal(stale.provider_input.status, 'invalid');
+  });
+
+  test('finds the next bounded real UTC occurrence without duplicating DST rules', () => {
+    const next = nextEligibleAppAutomationOccurrence({
+      local_time: '02:30',
+      timezone: 'America/New_York',
+      now: new Date('2026-03-08T05:00:00.000Z'),
+      eligible_after: new Date('2026-03-01T00:00:00.000Z'),
+      eligible_before: new Date('2026-04-01T00:00:00.000Z'),
+    });
+    assert.equal(next?.logical_local_date, '2026-03-09', 'The March 8 DST gap is not a real fire');
+    assert.equal(
+      next?.resolution.kind === 'resolved' ? next.resolution.resolved_at_utc.toISOString() : null,
+      '2026-03-09T06:30:00.000Z',
+    );
   });
 });

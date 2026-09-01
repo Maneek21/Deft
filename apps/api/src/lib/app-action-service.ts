@@ -110,6 +110,7 @@ export type AppActionListItem = Readonly<{
   app_version_id: string;
   action_key: string;
   label: string;
+  automation_requests: readonly Readonly<{ key: string; label: string }>[];
 }>;
 
 export type AppActionListResult = Readonly<{
@@ -217,6 +218,11 @@ export type AppActionAutomationInvokeInput = Readonly<{
   claim_token: string;
 }>;
 
+export type AppActionAutomationPreflightInput = Omit<
+  AppActionAutomationInvokeInput,
+  'claim_token'
+>;
+
 type ActionContext = Readonly<{
   installation: InstallationRow;
   version: VersionRow;
@@ -293,6 +299,7 @@ export interface AppActionRunPort {
       org_id: string;
       initiating_actor: AppRunActor;
       execution_actor: AppRunActor;
+      automation_claim_token?: string;
     }>,
     candidate: AppRunPreparedInputCandidate,
   ): Promise<AppRunSafeView>;
@@ -478,6 +485,12 @@ function callerContext(value: AppActionCaller): CallerContext {
 }
 
 function actionItem(context: ActionContext): AppActionListItem {
+  const automationRequests = context.version.protocol_version === '2'
+    && 'automation_requests' in context.manifest
+    ? context.manifest.automation_requests
+      .filter((request) => request.action_key === context.action.key)
+      .map((request) => ({ key: request.key, label: request.label }))
+    : [];
   return Object.freeze({
     binding_id: context.binding.id,
     installation_id: context.installation.id,
@@ -485,6 +498,7 @@ function actionItem(context: ActionContext): AppActionListItem {
     app_version_id: context.version.id,
     action_key: context.action.key,
     label: context.action.label,
+    automation_requests: automationRequests,
   });
 }
 
@@ -1228,9 +1242,99 @@ export class AppActionService {
     }, current.input_candidate);
   }
 
-  /** Host-only execution seam for an exact, already-claimed automation fire.
-   * It deliberately has no route or scanner and still enters the same
-   * prepare -> AppRun path used by interactive App actions. */
+  /** Host-only, effect-free eligibility check immediately before claim. */
+  async preflightApprovedAutomation(input: AppActionAutomationPreflightInput): Promise<void> {
+    if (!this.appAutomationsEnabled()) {
+      throw actionError('App automations are disabled', 'APP_ACCESS_DENIED', 403);
+    }
+    const current = await this.automationVerification.load(input);
+    const checkedAt = new Date();
+    if (
+      !current
+      || current.definition.org_id !== input.organization_id
+      || current.definition.id !== input.definition_id
+      || current.definition.state !== 'active'
+      || current.definition.valid_from > checkedAt
+      || current.definition.valid_until <= checkedAt
+      || current.definition.policy_version !== APP_AUTOMATION_POLICY_V1.version
+      || current.definition.policy_digest !== APP_AUTOMATION_POLICY_DIGEST
+      || current.fire.state !== 'pending'
+      || current.fire.app_run_id !== null
+      || current.fire.definition_id !== current.definition.id
+      || current.fire.definition_epoch !== current.definition.definition_epoch
+      || current.fire.resolved_at_utc === null
+      || current.approver.user_id !== current.definition.approved_by_user_id
+      || current.approver.authorization_version
+        !== current.definition.approver_authorization_version
+    ) throw actionError('App automation fire authority is stale', 'APP_STALE');
+
+    const actor: Extract<ModuleActor, { kind: 'human' }> = {
+      kind: 'human',
+      org_id: input.organization_id,
+      actor_id: current.approver.user_id,
+      role: current.approver.role,
+      source: 'ui',
+      scopes: [],
+    };
+    const placementRef = ModuleResourceRefV1Schema.parse(current.definition.placement_resource_ref);
+    const selectedRef = ModuleResourceRefV1Schema.parse(current.definition.selected_resource_ref);
+    const prepared = await this.prepare({ actor }, {
+      binding_id: current.definition.action_binding_id,
+      resource_ref: placementRef,
+      selections: [{
+        input_key: current.definition.selected_relation_input_key,
+        resource_ref: selectedRef,
+      }],
+      idempotency_key: `app-automation:${current.fire.fire_identity}`,
+    });
+    const vector = prepared.authority_vector;
+    if (
+      vector.installation.id !== current.definition.app_installation_id
+      || vector.installation.lifecycle_epoch !== current.definition.installation_lifecycle_epoch
+      || vector.installation.grant_epoch !== current.definition.installation_grant_epoch
+      || vector.app_version.id !== current.definition.app_version_id
+      || vector.app_version.manifest_digest !== current.definition.app_manifest_digest
+      || vector.app_version.package_digest !== current.definition.app_package_digest
+      || vector.grant.id !== current.definition.grant_snapshot_id
+      || vector.grant.snapshot_digest !== current.definition.grant_snapshot_digest
+      || vector.binding.id !== current.definition.action_binding_id
+      || vector.binding.action_key !== current.definition.action_key
+      || vector.binding.binding_digest !== current.definition.binding_digest
+      || vector.binding.connector_authorization_version
+        !== current.definition.connector_authorization_version
+      || vector.provider.connection_id !== current.definition.mcp_connection_id
+      || vector.provider.snapshot_id !== current.definition.provider_snapshot_id
+      || vector.provider.snapshot_digest !== current.definition.provider_snapshot_digest
+      || vector.provider.operation_name !== current.definition.operation_name
+      || vector.provider.operation_schema_digest !== current.definition.operation_schema_digest
+    ) throw actionError('Pinned automation action changed before claim', 'APP_STALE');
+
+    const placementIdentity = resourceRefIdentity(placementRef);
+    const selectedIdentity = resourceRefIdentity(selectedRef);
+    const placement = vector.resources.find(
+      (resource) => resourceRefIdentity(resource.ref) === placementIdentity,
+    );
+    const selected = vector.resources.find(
+      (resource) => resourceRefIdentity(resource.ref) === selectedIdentity,
+    );
+    const relation = vector.relations.find((candidate) => (
+      resourceRefIdentity(candidate.source_ref) === placementIdentity
+      && candidate.relation_key === current.definition.selected_relation_key
+      && resourceRefIdentity(candidate.selected_ref) === selectedIdentity
+    ));
+    if (
+      vector.resources.length !== 2
+      || !placement
+      || String(placement.revision) !== current.definition.placement_resource_revision
+      || !selected
+      || String(selected.revision) !== current.definition.selected_resource_revision
+      || !relation
+      || relation.revision !== current.definition.selected_relation_revision
+    ) throw actionError('Pinned automation resources changed before claim', 'APP_STALE');
+  }
+
+  /** Host-only execution seam for an exact, already-claimed automation fire;
+   * it enters the same prepare -> AppRun path used by interactive actions. */
   async invokeApprovedAutomation(input: AppActionAutomationInvokeInput): Promise<AppRunSafeView> {
     if (!this.appAutomationsEnabled()) {
       throw actionError('App automations are disabled', 'APP_ACCESS_DENIED', 403);
@@ -1323,10 +1427,40 @@ export class AppActionService {
       || relation.revision !== initial.definition.selected_relation_revision
     ) throw actionError('Pinned automation relation changed before execution', 'APP_STALE');
 
+    const initiatingActor: AppRunActor = { actor_type: 'human', user_id: initial.approver.user_id };
+    const executionActor: AppRunActor = {
+      actor_type: 'automation',
+      automation_id: initial.definition.id,
+      user_id: initial.approver.user_id,
+    };
+    let runAuthorization: AppRunAuthorizationSnapshot;
+    try {
+      runAuthorization = await this.liveAuthority.captureForPreparation({
+        org_id: input.organization_id,
+        authenticated_subject: initiatingActor,
+        execution_actor: executionActor,
+        provider_instance_id: prepared.authority_vector.provider.connection_id,
+        provider_snapshot_id: prepared.authority_vector.provider.snapshot_id,
+        operation_name: prepared.authority_vector.provider.operation_name,
+        policy: {
+          risk_class: APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class,
+          review_requirement: APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement,
+          review_scope: APP_AUTOMATION_POLICY_V1.review_scope,
+          retry_class: APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class,
+        },
+        required_token_scopes: [],
+        token_authorities: [],
+        allow_automation_execution: true,
+      });
+    } catch {
+      throw actionError('Current automation authority does not permit this App action', 'APP_STALE');
+    }
+
     const authorityVector: AppRunPreparedAuthorityVectorV2 = {
       ...prepared.authority_vector,
       schema_version: 'deft.app_action_authority.v2',
       caller_surface: 'automation',
+      run_authorization: runAuthorization,
       dependencies: prepared.authority_vector.dependencies.map((dependency) => ({ ...dependency })),
       resources,
       relations: prepared.authority_vector.relations.map((candidate) => ({ ...candidate })),
@@ -1365,12 +1499,6 @@ export class AppActionService {
         },
       },
     };
-    const initiatingActor: AppRunActor = { actor_type: 'human', user_id: initial.approver.user_id };
-    const executionActor: AppRunActor = {
-      actor_type: 'automation',
-      automation_id: initial.definition.id,
-      user_id: initial.approver.user_id,
-    };
     const candidate = await this.preparedInput.protect({
       org_id: input.organization_id,
       replay_identity: prepared.replay_identity,
@@ -1400,6 +1528,7 @@ export class AppActionService {
       org_id: input.organization_id,
       initiating_actor: initiatingActor,
       execution_actor: executionActor,
+      automation_claim_token: input.claim_token,
     }, candidate);
   }
 

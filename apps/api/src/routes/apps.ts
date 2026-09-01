@@ -25,6 +25,16 @@ import { isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { createAppDeveloperPairing, revokeAppDeveloperPairing } from '../lib/app-developer-pairing.js';
 import { appOperationsService } from '../lib/app-operations-service.js';
+import {
+  AppAutomationCreateRequestSchema,
+  AppAutomationReviewRequestSchema,
+  createManagedAppAutomation,
+  listManagedAppAutomations,
+  pauseManagedAppAutomation,
+  prepareManagedAppAutomationReview,
+  projectManagedAppAutomationDefinition,
+  resumeManagedAppAutomation,
+} from '../lib/app-automation-management-service.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { appHttpFailure } from './app-http-errors.js';
 
@@ -51,6 +61,9 @@ const connectedActivationSchema = connectedReviewSchema.extend({
   allow_identical_carry_forward: z.boolean().optional(),
 });
 const healthSchema = z.strictObject({ refresh_provider_schemas: z.boolean().default(true) });
+const automationTransitionSchema = z.strictObject({
+  expected_definition_epoch: z.number().int().min(1),
+});
 
 function actorFromContext(c: Context) {
   const user = c.get('user') as AuthUser;
@@ -247,6 +260,76 @@ appRoutes.get('/navigation', async (c) => {
 appRoutes.get('/operations', async (c) => {
   try {
     return c.json({ operations: await appOperationsService.read(managerFromContext(c)) });
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.get('/:installationId/automations', async (c) => {
+  try {
+    return c.json({
+      automations: await listManagedAppAutomations(
+        managerFromContext(c),
+        IdSchema.parse(c.req.param('installationId')),
+      ),
+    });
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.post('/:installationId/automations/review', async (c) => {
+  try {
+    return c.json({
+      review: await prepareManagedAppAutomationReview(
+        managerFromContext(c),
+        IdSchema.parse(c.req.param('installationId')),
+        AppAutomationReviewRequestSchema.parse(await c.req.json()),
+      ),
+    });
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.post('/:installationId/automations', async (c) => {
+  try {
+    const created = await createManagedAppAutomation(
+      managerFromContext(c),
+      IdSchema.parse(c.req.param('installationId')),
+      AppAutomationCreateRequestSchema.parse(await c.req.json()),
+    );
+    return c.json({ automation: projectManagedAppAutomationDefinition(created) }, 201);
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.post('/:installationId/automations/:definitionId/pause', async (c) => {
+  try {
+    const body = automationTransitionSchema.parse(await c.req.json());
+    const updated = await pauseManagedAppAutomation(
+      managerFromContext(c),
+      IdSchema.parse(c.req.param('installationId')),
+      IdSchema.parse(c.req.param('definitionId')),
+      body.expected_definition_epoch,
+    );
+    return c.json({ automation: projectManagedAppAutomationDefinition(updated) });
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+appRoutes.post('/:installationId/automations/:definitionId/resume', async (c) => {
+  try {
+    const body = automationTransitionSchema.parse(await c.req.json());
+    const updated = await resumeManagedAppAutomation(
+      managerFromContext(c),
+      IdSchema.parse(c.req.param('installationId')),
+      IdSchema.parse(c.req.param('definitionId')),
+      body.expected_definition_epoch,
+    );
+    return c.json({ automation: projectManagedAppAutomationDefinition(updated) });
   } catch (error) {
     return failure(c, error);
   }

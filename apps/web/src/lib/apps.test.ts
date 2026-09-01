@@ -22,10 +22,11 @@ const moduleRef = {
 };
 const compatibility = {
   schema: 'deft.app_developer.compatibility.v1',
-  app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.1'] },
+  app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.1', '0.1.0-alpha.2'] },
   protocol_flows: {
     '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
     '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
+    '2': { package_format: 'deft.app.package.v2', install_mode: 'stage_only' },
   },
 };
 
@@ -96,7 +97,27 @@ function connectedManifest(version = '1.0.0') {
   };
 }
 
-function installation(protocol: '0' | '1') {
+function installation(protocol: '0' | '1' | '2') {
+  const manifest = protocol === '0' ? {
+    schema_version: '0',
+    id: 'community.deft.campaigns-app',
+    version: '1.0.0',
+    name: 'Campaigns',
+    license: 'AGPL-3.0-only',
+    compatibility: { app_protocol: '0' },
+    modules: [moduleRef],
+    navigation: [],
+  } : protocol === '1' ? connectedManifest() : {
+    ...connectedManifest(),
+    schema_version: '2',
+    compatibility: { app_protocol: '2' },
+    automation_requests: [{
+      key: 'daily_campaign_send',
+      label: 'Daily campaign send',
+      trigger: { kind: 'daily_local_time' },
+      action_key: 'send',
+    }],
+  };
   return {
     id: 'installation-1',
     version_id: 'version-1',
@@ -109,26 +130,22 @@ function installation(protocol: '0' | '1') {
     active_version_id: null,
     package_digest: 'sha256:package',
     manifest_digest: 'sha256:manifest',
-    manifest: protocol === '0' ? {
-      schema_version: '0',
-      id: 'community.deft.campaigns-app',
-      version: '1.0.0',
-      name: 'Campaigns',
-      license: 'AGPL-3.0-only',
-      compatibility: { app_protocol: '0' },
-      modules: [moduleRef],
-      navigation: [],
-    } : connectedManifest(),
+    manifest,
     created_at: now,
     updated_at: now,
   };
 }
 
-test('App installation normalization preserves v0 and the expanded connected v1 manifest', () => {
+test('App installation normalization preserves v0 and expanded connected manifests', () => {
   const v0 = normalizeAppInstallation(installation('0'));
   const v1 = normalizeAppInstallation(installation('1'));
+  const v2 = normalizeAppInstallation(installation('2'));
   assert.equal(isConnectedAppManifest(v0.manifest), false);
   assert.equal(isConnectedAppManifest(v1.manifest), true);
+  assert.equal(isConnectedAppManifest(v2.manifest), true);
+  if (v2.manifest.schema_version === '2') {
+    assert.equal(v2.manifest.automation_requests[0].key, 'daily_campaign_send');
+  }
   if (isConnectedAppManifest(v1.manifest)) {
     assert.deepEqual(v1.manifest.resource_requirements[1].source, {
       kind: 'dependency_module',

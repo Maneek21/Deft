@@ -1,5 +1,6 @@
 // Cron job scheduler — registers repeatable jobs in Postgres job_queue
 import { ensureCronJob, QUEUE_NAMES } from './queues.js';
+import { APP_AUTOMATIONS_ENABLED } from './env.js';
 
 export async function initScheduler(): Promise<void> {
   // Re-enqueue cron jobs on startup (idempotent — skips if already pending)
@@ -27,6 +28,13 @@ export async function initScheduler(): Promise<void> {
   // out to employees subscribed to each trigger_kind (via
   // trigger_subscriptions[] + installed skills' agent_config.triggers).
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'trigger-dispatch', 'cron:trigger-dispatch');
+  if (APP_AUTOMATIONS_ENABLED) {
+    await ensureCronJob(
+      QUEUE_NAMES.SCHEDULED_JOBS,
+      'app-automation-scan',
+      'cron:app-automation-scan',
+    );
+  }
   console.log('[scheduler] Cron jobs registered');
 }
 

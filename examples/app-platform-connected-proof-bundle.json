@@ -2,7 +2,7 @@
   "schema": "deft.app_platform.connected_proof_bundle.v1",
   "app_kit": {
     "package": "@deft/app-kit",
-    "version": "0.1.0-alpha.1",
+    "version": "0.1.0-alpha.2",
     "source_path": "packages/app-kit",
     "pack_command": "pnpm --dir packages/app-kit pack --pack-destination <output-directory> --json"
   },
@@ -19,11 +19,11 @@
   "providers": {
     "sandbox_email": {
       "package": "@deft/app-platform-sandbox-email-provider",
-      "version": "0.1.0-alpha.1",
+      "version": "0.1.0-alpha.2",
       "source_path": "examples/app-platform-sandbox-email-provider",
       "pack_command": "pnpm --dir examples/app-platform-sandbox-email-provider pack --pack-destination <output-directory> --json",
       "artifact": {
-        "filename": "deft-app-platform-sandbox-email-provider-0.1.0-alpha.1.tgz",
+        "filename": "deft-app-platform-sandbox-email-provider-0.1.0-alpha.2.tgz",
         "content": {
           "schema": "deft.app_platform.packed_payload.v1",
           "files": [
@@ -35,15 +35,15 @@
             {
               "path": "package.json",
               "byte_length": 420,
-              "digest": "sha256:22e3e69107b59bd2ca29a9b7c669067ce9771ff4b5daf955ee5f1f20b85a5e14"
+              "digest": "sha256:e79be07825ef52ab8c705dfde74a80999012ddd0cce8687c9053baf3fa012b9d"
             },
             {
               "path": "server.mjs",
               "byte_length": 7167,
-              "digest": "sha256:d012d12a1cbcef05387a76b82ad550f59f6efdaabf4d56f71b10cdfedfb1302f"
+              "digest": "sha256:67e96908b77d3915f25d9d0bc0ebbc36b83d6f7f947d04c1f9fcc6fb92a87108"
             }
           ],
-          "digest": "sha256:afae01e8e248a6adfaa6503c675e4074356083b34b7ec126b2582425df2091a1"
+          "digest": "sha256:70b3c9dc9d74422aaf13168f74c3502218b28eabc3ac77d7bceb5bca0d835e2c"
         }
       },
       "transport": "stdio",
