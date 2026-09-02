@@ -711,20 +711,27 @@ async function exerciseTrackAAutomation(
     .waitFor({ state: 'visible', timeout: 20_000 });
   evidence.checks.resume_visible_and_effective = true;
 
-  setStage('automation_mobile_management');
   failureTracking.setPhase('mobile');
+  setStage('automation_mobile_open_apps');
   await openApps(page, mobileViewport);
+  setStage('automation_mobile_app_card');
   card = await waitForApp(page, fixture.app_id, 'active', fixture.app_version);
   management = card.locator('section[aria-label="Scheduled App automations"]');
+  setStage('automation_mobile_runner_status');
   await management.getByText('Runner on', { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
   row = management.locator('li').filter({ hasText: fixture.request_label }).first();
+  setStage('automation_mobile_definition');
   await row.waitFor({ state: 'visible', timeout: 20_000 });
+  setStage('automation_mobile_state');
   requireCondition((await automationFact(row, 'State').innerText()).trim() === 'active', 'AUTOMATION_MOBILE_STATE_INVALID');
+  setStage('automation_mobile_facts');
   for (const label of ['Next fire', 'Last fire / Run', 'Budget', 'Dead letters', 'Catch-up']) {
     await automationFact(row, label).waitFor({ state: 'visible', timeout: 20_000 });
   }
+  setStage('automation_mobile_overflow');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   requireCondition(overflow <= 2, 'AUTOMATION_MOBILE_HORIZONTAL_OVERFLOW');
+  setStage('automation_mobile_safe_surface');
   await assertSafeRenderedSurface(page, markers, 'AUTOMATION_MOBILE_MANAGEMENT');
   setStage('automation_mobile_screenshot');
   await row.scrollIntoViewIfNeeded();
