@@ -227,6 +227,11 @@ test('the exact browser fixture is mandatory, so the Phase 6 legacy path cannot 
   );
   assert.match(browserSmoke, /APP_PLATFORM_TRACK_A_BROWSER_SMOKE_PASSED/);
   assert.match(browserSmoke, /APP_PLATFORM_PHASE6_BROWSER_SMOKE_PASSED/);
+  assert.match(
+    browserSmoke,
+    /identity\.locator\('\.\.'\)\.getByText\(state, \{ exact: true \}\)/,
+  );
+  assert.doesNotMatch(browserSmoke, /card\.getByText\(state, \{ exact: true \}\)/);
 });
 
 test('the exact candidate database matrix includes grants and the automation lifecycle', () => {

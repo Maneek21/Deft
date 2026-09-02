@@ -287,10 +287,11 @@ function appCard(page, appId) {
 async function waitForApp(page, appId, state, version) {
   const card = appCard(page, appId);
   await card.waitFor({ state: 'visible', timeout: 20_000 });
-  await card.getByText(state, { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
-  if (version) {
-    await card.getByText(`${appId}@${version}`, { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
-  }
+  const identity = version
+    ? card.getByText(`${appId}@${version}`, { exact: true })
+    : card.locator('p').filter({ hasText: `${appId}@` }).first();
+  await identity.waitFor({ state: 'visible', timeout: 20_000 });
+  await identity.locator('..').getByText(state, { exact: true }).waitFor({ state: 'visible', timeout: 20_000 });
   return card;
 }
 
