@@ -24,9 +24,9 @@ export function AppAutomationManagement({ installationId }: { installationId: st
   };
 
   return <section className="space-y-3" aria-label="Scheduled App automations">
-    <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
-      <div><h3 className="text-xs font-semibold">Scheduled automations</h3><p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>Host-governed daily runs with pinned resources, bounded retries, and receipts.</p></div>
-      {management && <span className="rounded-full px-2 py-1 text-[10px] font-semibold uppercase" style={{ color: management.killSwitchEnabled ? 'var(--status-green)' : 'var(--status-amber)', background: 'var(--surface-container-high)' }}>{management.killSwitchEnabled ? 'Runner on' : 'Kill switch off'}</span>}
+    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0"><h3 className="text-xs font-semibold">Scheduled automations</h3><p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>Host-governed daily runs with pinned resources, bounded retries, and receipts.</p></div>
+      {management && <span className="self-start rounded-full px-2 py-1 text-[10px] font-semibold uppercase" style={{ color: management.killSwitchEnabled ? 'var(--status-green)' : 'var(--status-amber)', background: 'var(--surface-container-high)' }}>{management.killSwitchEnabled ? 'Runner on' : 'Kill switch off'}</span>}
     </div>
     {message && <p role="alert" className="rounded-lg px-3 py-2 text-[11px]" style={{ color: 'var(--error)', background: 'var(--danger-subtle)' }}>{message}</p>}
     {state.isLoading ? <div className="flex min-h-14 items-center justify-center"><Loader2 size={15} className="animate-spin" aria-label="Loading App automations" /></div>
