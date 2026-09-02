@@ -22,7 +22,7 @@ const executionSurface = [
   pnpmExecWrapper,
 ].join('\n');
 
-const CANDIDATE_COMMIT = '919f6b41e007d922478ded14d8554c00b24b7401';
+const CANDIDATE_COMMIT = '160e919cce5a8b80248126c2cb955ec55b38a6b4';
 const PHASE6_BASELINE_COMMIT = '16875df2f6c9dc2bc3d850de6758b7dd56767a05';
 const PREDECESSOR_IMAGE =
   'ghcr.io/maneek21/deft@sha256:e565cc64ee22b5b9f6f99973e3762b639c27e026dc8824852145035acdacf788';
