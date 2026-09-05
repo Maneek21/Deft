@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const compose = readFileSync(new URL('../docker-compose.yml', import.meta.url), 'utf8');
 const generatorUrl = new URL('./generate-release-manifest.mjs', import.meta.url);
 const generator = readFileSync(generatorUrl, 'utf8');
 const bundleBuildUrl = new URL('./build-hermes-integration-bundle.mjs', import.meta.url);
@@ -259,6 +260,12 @@ test('CI retains the v2 certificate and exact verified bundle directory', () => 
 
 test('release environment template and every final asset receive checksum-stable names', () => {
   assert.match(workflow, /cp \.env\.example dist\/default\.env\.example/);
+  assert.match(workflow, /cp docs\/self-hosting\.md dist\/self-hosting\.md/);
   assert.match(workflow, /find \. -maxdepth 1 -type f ! -name SHA256SUMS[\s\S]*sha256sum > SHA256SUMS/);
   assert.doesNotMatch(workflow, /dist\/\.env\.example/);
+});
+
+test('download-only release compose has no source-checkout initialization bind', () => {
+  assert.doesNotMatch(compose, /scripts\/docker\/enable-pgvector\.sql/);
+  assert.doesNotMatch(compose, /docker-entrypoint-initdb\.d/);
 });

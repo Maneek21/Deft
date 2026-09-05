@@ -310,6 +310,7 @@ jobs:
         run: |
           mkdir -p dist
           cp docker-compose.yml compose.prod.yml compose.release.yml LICENSE NOTICE THIRD-PARTY-LICENSES.md dist/
+          cp docs/self-hosting.md dist/self-hosting.md
           # GitHub release assets cannot retain a leading dot reliably. Publish
           # the template under a stable explicit name so downloaded checksums
           # match the asset name on every client.
