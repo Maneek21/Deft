@@ -178,7 +178,7 @@ jobs:
           echo "sha=$tag_commit" >> "$GITHUB_OUTPUT"
 
       - name: Download Hermes employee certification
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hermes-employee-release-certification
           path: dist
