@@ -243,7 +243,7 @@ export function ConnectedAppManagement({
               {health.issues.length > 0 && <ul className="mt-1 space-y-1">{health.issues.map((issue) => <li key={`${issue.code}:${issue.subject_id}`}>{issue.message}</li>)}</ul>}
             </div>}
 
-            {installedManifest.compatibility.app_protocol === '2' && app.state === 'active' && <AppAutomationManagement installationId={app.id} />}
+            {installedManifest.compatibility.app_protocol === '2' && app.state === 'active' && <AppAutomationManagement installationId={app.id} onInspectRun={setSelectedRunId} />}
 
             <div><h3 className="text-xs font-semibold">Recent Runs</h3>{grants.recent_runs.length === 0 ? <p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>No App Runs yet.</p> : <ul className="mt-2 space-y-1.5">{grants.recent_runs.slice(0, 5).map((run) => <li key={run.id}><button type="button" className="flex min-h-11 w-full items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[11px]" style={{ background: 'var(--surface-container-high)' }} onClick={() => setSelectedRunId(run.id)}><span className="min-w-0"><span className="block truncate font-medium">{run.title}</span><span className="block truncate" style={{ color: 'var(--outline)' }}>{run.outcome_summary ?? run.summary ?? new Date(run.created_at).toLocaleString()}</span></span><RunState state={run.state} /></button></li>)}</ul>}</div>
           </>}

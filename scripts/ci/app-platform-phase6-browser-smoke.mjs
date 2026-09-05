@@ -730,8 +730,21 @@ async function exerciseTrackAAutomation(
     await automationFact(row, label).waitFor({ state: 'visible', timeout: 20_000 });
   }
   setStage('automation_mobile_overflow');
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  requireCondition(overflow <= 2, 'AUTOMATION_MOBILE_HORIZONTAL_OVERFLOW');
+  const [documentOverflow, appScrollOverflow] = await Promise.all([
+    page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+    card.evaluate((element) => {
+      let ancestor = element.parentElement;
+      while (ancestor) {
+        const overflowY = getComputedStyle(ancestor).overflowY;
+        if (overflowY === 'auto' || overflowY === 'scroll') {
+          return ancestor.scrollWidth - ancestor.clientWidth;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return 0;
+    }),
+  ]);
+  requireCondition(documentOverflow <= 2 && appScrollOverflow <= 2, 'AUTOMATION_MOBILE_HORIZONTAL_OVERFLOW');
   setStage('automation_mobile_safe_surface');
   await assertSafeRenderedSurface(page, markers, 'AUTOMATION_MOBILE_MANAGEMENT');
   setStage('automation_mobile_screenshot');

@@ -41,6 +41,11 @@ type AutomationExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'exec
 
 const MAX_AUTOMATION_SCAN_LIMIT = 500;
 
+export type AppAutomationDefinitionListCursor = Readonly<{
+  created_at: Date;
+  id: string;
+}>;
+
 export type AppAutomationDefinitionScanCursor = Readonly<{
   organization_id: string;
   definition_id: string;
@@ -71,16 +76,26 @@ export async function listAppAutomationDefinitionsWithExecutor(
     organization_id: string;
     app_installation_id?: string;
     limit: number;
+    after?: AppAutomationDefinitionListCursor;
   }>,
 ): Promise<AppAutomationDefinitionRow[]> {
-  const where = input.app_installation_id
+  const scope = input.app_installation_id
     ? and(
       eq(appAutomationDefinitions.org_id, input.organization_id),
       eq(appAutomationDefinitions.app_installation_id, input.app_installation_id),
     )
     : eq(appAutomationDefinitions.org_id, input.organization_id);
+  const cursor = input.after
+    ? or(
+      lt(appAutomationDefinitions.created_at, input.after.created_at),
+      and(
+        eq(appAutomationDefinitions.created_at, input.after.created_at),
+        lt(appAutomationDefinitions.id, input.after.id),
+      ),
+    )
+    : undefined;
   return executor.select().from(appAutomationDefinitions)
-    .where(where)
+    .where(and(scope, cursor))
     .orderBy(desc(appAutomationDefinitions.created_at), desc(appAutomationDefinitions.id))
     .limit(input.limit);
 }

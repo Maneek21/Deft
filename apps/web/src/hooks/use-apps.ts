@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo } from 'react';
 import useSWR, { mutate as mutateSWR } from 'swr';
+import useSWRInfinite from 'swr/infinite';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import {
@@ -79,10 +80,15 @@ export function useAppConnectors(enabled = true) {
 }
 
 export function useAppAutomations(installationId: string, enabled = true) {
-  const key = APPS_ENABLED && enabled && installationId
-    ? `/api/apps/${encodeURIComponent(installationId)}/automations`
-    : null;
-  const swr = useSWR<unknown>(key, fetchJson, {
+  const getKey = (pageIndex: number, previousPage: unknown) => {
+    if (!APPS_ENABLED || !enabled || !installationId) return null;
+    if (pageIndex === 0) return `/api/apps/${encodeURIComponent(installationId)}/automations?limit=50`;
+    const prior = normalizeAppAutomationManagement(previousPage);
+    return prior.nextCursor
+      ? `/api/apps/${encodeURIComponent(installationId)}/automations?limit=50&cursor=${encodeURIComponent(prior.nextCursor)}`
+      : null;
+  };
+  const swr = useSWRInfinite<unknown>(getKey, fetchJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
     refreshInterval: 10_000,
@@ -90,7 +96,15 @@ export function useAppAutomations(installationId: string, enabled = true) {
   const normalized = useMemo(() => {
     if (!swr.data) return { automations: null, error: null };
     try {
-      return { automations: normalizeAppAutomationManagement(swr.data), error: null };
+      const pages = swr.data.map(normalizeAppAutomationManagement);
+      const last = pages[pages.length - 1];
+      return {
+        automations: last ? {
+          ...last,
+          definitions: pages.flatMap((page) => page.definitions),
+        } : null,
+        error: null,
+      };
     } catch (error) {
       return {
         automations: null,
@@ -98,7 +112,19 @@ export function useAppAutomations(installationId: string, enabled = true) {
       };
     }
   }, [swr.data]);
-  return { ...swr, automations: normalized.automations, error: swr.error ?? normalized.error };
+  const last = swr.data?.[swr.data.length - 1];
+  let hasMore = false;
+  if (last) {
+    try { hasMore = Boolean(normalizeAppAutomationManagement(last).nextCursor); } catch { /* normalized error is returned above */ }
+  }
+  return {
+    ...swr,
+    automations: normalized.automations,
+    error: swr.error ?? normalized.error,
+    hasMore,
+    loadMore: () => swr.setSize(swr.size + 1),
+    isLoadingMore: swr.isValidating && Boolean(swr.data) && (swr.data?.length ?? 0) < swr.size,
+  };
 }
 
 export async function refreshApps(): Promise<void> {

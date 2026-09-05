@@ -24,6 +24,75 @@ import { digestAppGrantValue } from './app-grant-service.js';
 
 const KeySchema = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
   .refine((value) => !/^(deft|core|system)(_|$)/.test(value));
+const ManagementCursorSchema = z.string().min(1).max(512);
+const MANAGEMENT_PAGE_LIMIT = 50;
+
+export type AppAutomationManagementCursor = Readonly<{
+  app_installation_id: string;
+  created_at: Date;
+  id: string;
+}>;
+
+export function encodeAppAutomationManagementCursor(definition: AppAutomationManagementCursor): string {
+  return Buffer.from(JSON.stringify({
+    app_installation_id: definition.app_installation_id,
+    created_at: definition.created_at.toISOString(),
+    id: definition.id,
+  })).toString('base64url');
+}
+
+export function decodeAppAutomationManagementCursor(
+  value: string | undefined,
+  appInstallationId: string,
+): AppAutomationManagementCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(ManagementCursorSchema.parse(value), 'base64url').toString('utf8')) as {
+      app_installation_id?: unknown;
+      created_at?: unknown;
+      id?: unknown;
+    };
+    const createdAt = typeof parsed.created_at === 'string' ? new Date(parsed.created_at) : null;
+    if (
+      !createdAt
+      || Number.isNaN(createdAt.getTime())
+      || parsed.app_installation_id !== appInstallationId
+      || typeof parsed.id !== 'string'
+      || !parsed.id.trim()
+    ) {
+      throw new Error('invalid cursor');
+    }
+    return { app_installation_id: appInstallationId, created_at: createdAt, id: parsed.id };
+  } catch {
+    throw new AppError('Invalid App automation cursor', 'APP_ACTION_INVALID', 400);
+  }
+}
+
+export function selectAppAutomationManagementPage<T extends {
+  app_installation_id: string;
+  created_at: Date;
+  id: string;
+}>(definitions: readonly T[], limit: number) {
+  const page = definitions.slice(0, limit);
+  return {
+    page,
+    next_cursor: definitions.length > page.length && page.length > 0
+      ? encodeAppAutomationManagementCursor(page[page.length - 1]!)
+      : null,
+  };
+}
+
+export function projectAppAutomationManagementEligibility(
+  definition: Pick<AppAutomationDefinitionRow, 'state' | 'valid_from' | 'valid_until'>,
+  now: Date,
+  enabled: boolean,
+) {
+  if (!enabled) return { status: 'delivery_disabled' as const, reason: 'Scheduled delivery is disabled by the host kill switch.' };
+  if (definition.state !== 'active') return { status: definition.state, reason: `Definition is ${definition.state}.` };
+  if (now >= definition.valid_until) return { status: 'expired' as const, reason: 'The approved validity window ended; create a freshly reviewed definition.' };
+  if (now < definition.valid_from) return { status: 'waiting' as const, reason: 'Waiting for the approved validity window to begin.' };
+  return { status: 'awaiting_delivery_check' as const, reason: 'Schedule time is eligible; pinned authority and resources are rechecked before delivery.' };
+}
 const AutomationActionInputSchema = AppBindingInvokeInputSchema.omit({
   idempotency_key: true,
   user_inputs: true,
@@ -214,13 +283,17 @@ function projectDefinition(definition: AppAutomationDefinitionRow) {
 export async function listManagedAppAutomations(
   actor: ModuleActor,
   appInstallationId: string,
+  input: Readonly<{ cursor?: string; limit?: number }> = {},
   now = new Date(),
 ) {
+  const limit = Math.max(1, Math.min(MANAGEMENT_PAGE_LIMIT, input.limit ?? MANAGEMENT_PAGE_LIMIT));
   const definitions = await listAppAutomationDefinitions(actor, {
     app_installation_id: appInstallationId,
-    limit: 50,
+    limit: limit + 1,
+    after: decodeAppAutomationManagementCursor(input.cursor, appInstallationId),
   });
-  const definitionIds = definitions.map((definition) => definition.id);
+  const { page, next_cursor: nextCursor } = selectAppAutomationManagementPage(definitions, limit);
+  const definitionIds = page.map((definition) => definition.id);
   const latestFires = new Map<string, typeof appAutomationFires.$inferSelect>();
   const fireCounts = new Map<string, Record<string, number>>();
   const runs = new Map<string, Pick<typeof appRuns.$inferSelect, 'id' | 'state' | 'updated_at' | 'terminal_at'>>();
@@ -268,7 +341,7 @@ export async function listManagedAppAutomations(
       enabled: APP_AUTOMATIONS_ENABLED,
       status: APP_AUTOMATIONS_ENABLED ? 'enabled' as const : 'disabled' as const,
     },
-    definitions: definitions.map((definition) => {
+    definitions: page.map((definition) => {
       const latest = latestFires.get(definition.id) ?? null;
       const run = latest?.app_run_id ? runs.get(latest.app_run_id) ?? null : null;
       const counts = fireCounts.get(definition.id) ?? {};
@@ -284,11 +357,17 @@ export async function listManagedAppAutomations(
           eligible_before: definition.valid_until,
         })
         : null;
+      const eligibility = projectAppAutomationManagementEligibility(
+        definition,
+        now,
+        APP_AUTOMATIONS_ENABLED,
+      );
       return {
         ...projectDefinition(definition),
         next_fire_at_utc: next?.resolution.kind === 'resolved'
           ? next.resolution.resolved_at_utc.toISOString()
           : null,
+        eligibility,
         fire_summary: {
           pending: counts.pending ?? 0,
           claimed: counts.claimed ?? 0,
@@ -319,6 +398,7 @@ export async function listManagedAppAutomations(
         },
       };
     }),
+    next_cursor: nextCursor,
   };
 }
 

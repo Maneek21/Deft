@@ -267,10 +267,17 @@ appRoutes.get('/operations', async (c) => {
 
 appRoutes.get('/:installationId/automations', async (c) => {
   try {
+    const cursor = c.req.query('cursor');
+    const rawLimit = c.req.query('limit');
+    const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
+      return c.json({ error: 'Invalid App automation page limit', code: 'VALIDATION_ERROR' }, 400);
+    }
     return c.json({
       automations: await listManagedAppAutomations(
         managerFromContext(c),
         IdSchema.parse(c.req.param('installationId')),
+        { cursor, limit },
       ),
     });
   } catch (error) {
