@@ -1,9 +1,32 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const SESSION_REFRESH_EXEMPT_PATHS = new Set([
+  '/api/auth/login',
+  '/api/auth/signup',
+]);
 
 // ── Concurrency-guarded token refresh ────────────────────────────────────────
 // A burst of concurrent 401 responses must only trigger ONE refresh call.
 // Subsequent callers await the same in-flight promise and share the result.
 let _refreshPromise: Promise<string | null> | null = null;
+
+function webSessionIdentity(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const segment = token.split('.')[1];
+    if (!segment) return null;
+    const base64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='))) as Record<string, unknown>;
+    if (typeof payload.id !== 'string' || typeof payload.org_id !== 'string' || typeof payload.sid !== 'string') return null;
+    return `${payload.id}:${payload.org_id}:${payload.sid}`;
+  } catch {
+    return null;
+  }
+}
+
+export function isSameWebSession(first: string | null, second: string | null): boolean {
+  const firstIdentity = webSessionIdentity(first);
+  return firstIdentity !== null && firstIdentity === webSessionIdentity(second);
+}
 
 /**
  * Silently refresh the access token using the stored refresh token.
@@ -15,11 +38,18 @@ let _refreshPromise: Promise<string | null> | null = null;
  */
 export async function refreshAccessToken(): Promise<string | null> {
   if (_refreshPromise) return _refreshPromise;
-  _refreshPromise = (async () => {
-    const refresh = typeof window !== 'undefined'
+  const observedRefresh = typeof window !== 'undefined'
       ? localStorage.getItem('deft-refresh-token')
       : null;
+  const rotate = async () => {
+    const refresh = typeof window !== 'undefined' ? localStorage.getItem('deft-refresh-token') : null;
     if (!refresh) return null;
+    // Another tab may have rotated while this caller waited for the lock.
+    if (refresh !== observedRefresh) {
+      const access = localStorage.getItem('deft-access-token');
+      if (access) api.setTokens(access, refresh);
+      return access;
+    }
     try {
       const r = await fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
@@ -28,15 +58,19 @@ export async function refreshAccessToken(): Promise<string | null> {
       });
       if (!r.ok) return null;
       const j = await r.json();
-      if (!j.accessToken) return null;
+      if (typeof j.accessToken !== 'string' || typeof j.refreshToken !== 'string') return null;
+      // Logout or a new login during the request must not resurrect this session.
+      if (localStorage.getItem('deft-refresh-token') !== refresh) return null;
       // Mirror into the singleton instance and localStorage.
       // `api` is initialised before this closure ever runs (module-level const).
-      api.setTokens(j.accessToken, j.refreshToken ?? refresh);
+      api.setTokens(j.accessToken, j.refreshToken);
       return j.accessToken as string;
     } catch {
       return null;
     }
-  })();
+  };
+  const locks = typeof window !== 'undefined' ? window.navigator?.locks : undefined;
+  _refreshPromise = locks ? locks.request('deft-web-session-refresh', rotate) : rotate();
   try {
     return await _refreshPromise;
   } finally {
@@ -73,12 +107,15 @@ class ApiClient {
     return this.accessToken;
   }
 
-  private async fetchWithRetry(url: string, options: RequestInit, retries = 2): Promise<Response> {
+  private async fetchWithRetry(url: string, options: RequestInit): Promise<Response> {
+    const method = (options.method ?? 'GET').toUpperCase();
+    const retries = method === 'GET' || method === 'HEAD' ? 2 : 0;
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         return await fetch(url, options);
       } catch (err) {
-        // Only retry on network errors (TypeError from fetch), not HTTP errors
+        // Only retry safe reads after network errors, never ambiguous writes.
         if (attempt === retries || !(err instanceof TypeError)) throw err;
         await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
       }
@@ -87,6 +124,10 @@ class ApiClient {
   }
 
   async fetch(path: string, options: RequestInit = {}): Promise<Response> {
+    if (typeof window !== 'undefined') {
+      this.accessToken = localStorage.getItem('deft-access-token');
+      this.refreshToken = localStorage.getItem('deft-refresh-token');
+    }
     const headers = new Headers(options.headers);
 
     // Proactive refresh: if we have a refresh token but no access token
@@ -96,6 +137,7 @@ class ApiClient {
       await refreshAccessToken();
     }
 
+    const requestAccessToken = this.accessToken;
     if (this.accessToken) {
       headers.set('Authorization', `Bearer ${this.accessToken}`);
     }
@@ -109,12 +151,21 @@ class ApiClient {
     // Reactive 401 interceptor: access token was present but has since expired.
     // Attempt a silent refresh (concurrency-guarded) and retry the original
     // request exactly once. If the refresh also fails, clear tokens and redirect.
-    if (response.status === 401) {
+    if (response.status === 401 && !SESSION_REFRESH_EXEMPT_PATHS.has(path)) {
+      const currentAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
+      if (currentAccessToken !== requestAccessToken && !isSameWebSession(requestAccessToken, currentAccessToken)) {
+        return response;
+      }
       const fresh = await refreshAccessToken();
       if (fresh) {
+        if (!isSameWebSession(requestAccessToken, fresh)) return response;
         headers.set('Authorization', `Bearer ${fresh}`);
         response = await this.fetchWithRetry(`${API_URL}${path}`, { ...options, headers });
       } else {
+        const latestAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
+        if (latestAccessToken !== requestAccessToken && !isSameWebSession(requestAccessToken, latestAccessToken)) {
+          return response;
+        }
         this.clearTokens();
         // Store current path for post-login redirect
         if (typeof window !== 'undefined') {

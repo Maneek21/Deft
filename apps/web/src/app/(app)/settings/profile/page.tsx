@@ -80,7 +80,7 @@ function joinList(value: string[] | null | undefined): string {
 }
 
 export default function ProfileSettingsPage() {
-  const { user, refreshUser, replaceUser } = useAuth();
+  const { user, refreshUser, replaceUser, logout } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
@@ -237,7 +237,8 @@ export default function ProfileSettingsPage() {
       if (!res.ok) throw new Error(body.error || 'Failed to change password');
       setCurrentPassword('');
       setNewPassword('');
-      setPasswordMessage('Password changed');
+      setPasswordMessage('Password changed. Sign in again with your new password.');
+      await logout({ revokeServer: false, destination: '/login?reason=password-changed' });
     } catch (err) {
       setPasswordError(err instanceof Error ? err.message : 'Failed to change password');
     } finally {

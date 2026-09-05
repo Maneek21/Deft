@@ -130,6 +130,12 @@ async function main() {
     const appAutomationFoundationFile = '0.3.0-preview.26-app-automation-foundation.sql';
     await client.query(readFileSync(resolve(upgradesDir, appAutomationFoundationFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${appAutomationFoundationFile}`);
+    const webSessionFile = '0.3.0-preview.27-web-session-families.sql';
+    await client.query(readFileSync(resolve(upgradesDir, webSessionFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${webSessionFile}`);
+    const passwordGenerationFile = '0.3.0-preview.28-password-generation.sql';
+    await client.query(readFileSync(resolve(upgradesDir, passwordGenerationFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${passwordGenerationFile}`);
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app

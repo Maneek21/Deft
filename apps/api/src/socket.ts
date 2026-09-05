@@ -1,7 +1,6 @@
 import { Server as SocketIOServer } from 'socket.io';
 import type { Server as HTTPServer } from 'node:http';
-import jwt from 'jsonwebtoken';
-import { env } from './lib/env.js';
+import { verifyWebAccess, webSessionEvents } from './lib/web-sessions.js';
 import { db } from './lib/db.js';
 import { users, orgMembers, spaceMembers, spaces } from '@deft/db/schema';
 import { eq, and, ne } from 'drizzle-orm';
@@ -13,6 +12,8 @@ export type SocketUser = {
   id: string;
   email: string;
   org_id: string;
+  sid?: string;
+  exp?: number;
   role?: 'owner' | 'admin' | 'member' | 'guest';
 };
 type HuddleEventName = 'huddle:create' | 'huddle:list' | 'huddle:join' | 'huddle:leave' | 'huddle:signal' | 'huddle:mute';
@@ -275,13 +276,16 @@ export function setupSocket(server: HTTPServer) {
   });
 
   // Auth middleware
+  const disconnectSession = (sid: string) => io?.in(`web-session:${sid}`).disconnectSockets(true);
+  webSessionEvents.on('revoked', disconnectSession);
+  server.once('close', () => webSessionEvents.off('revoked', disconnectSession));
   io.use(async (socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
       return next(new Error('Authentication required'));
     }
     try {
-      const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+      const payload = await verifyWebAccess(token);
       const authorizationGeneration = captureRealtimeAccessGeneration();
       const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
       if (!isRealtimeAccessGenerationCurrent(authorizationGeneration)) {
@@ -296,7 +300,19 @@ export function setupSocket(server: HTTPServer) {
   });
 
   io.on('connection', async (socket) => {
+    socket.use(async (_event, next) => {
+      try {
+        await verifyWebAccess(socket.handshake.auth.token);
+        next();
+      } catch {
+        socket.disconnect(true);
+        next(new Error('Session unavailable; reconnect'));
+      }
+    });
     const user = (socket as any).user as SocketUser;
+    const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, (user.exp ?? 0) * 1000 - Date.now()));
+    expiryTimer.unref();
+    socket.once('disconnect', () => clearTimeout(expiryTimer));
     const connectionGeneration = (socket as any).realtimeAccessGeneration as number;
     if (!socket.connected || !isRealtimeAccessGenerationCurrent(connectionGeneration)) {
       socket.disconnect(true);
@@ -305,12 +321,15 @@ export function setupSocket(server: HTTPServer) {
 
     try {
       const initialRooms = [
+        `web-session:${user.sid}`,
         `org:${user.org_id}`,
         `user:${user.id}`,
         `org-user:${user.org_id}:${user.id}`,
       ];
       if (user.role !== 'guest') initialRooms.push(`org-members:${user.org_id}`);
       await socket.join(initialRooms);
+      // Close the handshake/join revocation race before room data is sent.
+      await verifyWebAccess(socket.handshake.auth.token);
     } catch (error) {
       console.error('Failed to initialize socket rooms:', error);
       socket.disconnect(true);

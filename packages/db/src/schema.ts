@@ -187,6 +187,7 @@ export const users = pgTable('users', {
   status_text: text('status_text'),
   status_expires_at: timestamp('status_expires_at'),
   password_hash: text('password_hash'),
+  password_version: integer('password_version').default(0).notNull(),
   email_verified: boolean('email_verified').default(false).notNull(),
   last_seen_at: timestamp('last_seen_at'),
   notification_keywords: text('notification_keywords').array(),
@@ -4440,6 +4441,17 @@ export const messageClassifications = pgTable('message_classifications', {
 }, (t) => [
   index('mc_org_msg_idx').on(t.org_id, t.message_id),
 ]);
+
+// Browser session families: refresh rotation and access revocation share one row.
+export const webSessions = pgTable('web_sessions', {
+  ...id(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  refresh_token_hash: text('refresh_token_hash').notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [index('web_sessions_user_org_idx').on(t.user_id, t.org_id)]);
 
 // ═══ REVOKED TOKENS ═══
 // Server-side refresh token revocation (Option B — stateless JWTs, hash-based blacklist).

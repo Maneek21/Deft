@@ -1,7 +1,6 @@
 import { createMiddleware } from 'hono/factory';
-import jwt from 'jsonwebtoken';
-import { env } from '../lib/env.js';
-import { OrgMembershipError, requireActiveOrgMembership, type OrgRole } from '../lib/org-membership.js';
+import { verifyWebAccess } from '../lib/web-sessions.js';
+import { OrgMembershipError, type OrgRole } from '../lib/org-membership.js';
 
 export type AuthUser = {
   id: string;
@@ -19,7 +18,7 @@ declare module 'hono' {
 export const authMiddleware = createMiddleware(async (c, next) => {
   // Skip auth for auth routes (they're mounted before this middleware)
   const path = c.req.path;
-  if (path.startsWith('/api/auth') || path.includes('/callback')) {
+  if (path.startsWith('/api/auth/')) {
     return next();
   }
 
@@ -30,9 +29,8 @@ export const authMiddleware = createMiddleware(async (c, next) => {
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as AuthUser;
-    const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
-    c.set('user', { ...payload, role: membership.role });
+    const payload = await verifyWebAccess(token);
+    c.set('user', payload);
     return next();
   } catch (err) {
     if (err instanceof OrgMembershipError) {

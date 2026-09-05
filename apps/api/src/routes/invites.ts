@@ -7,6 +7,7 @@ import { db } from '../lib/db.js';
 import { users, orgs, orgMembers, invites } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
+import { createWebSession, WebCredentialsChangedError } from '../lib/web-sessions.js';
 
 export const inviteRoutes = new Hono();
 
@@ -20,20 +21,6 @@ type InvitePayload = {
   iat?: number;
   exp?: number;
 };
-
-function generateAuthTokens(user: { id: string; email: string; org_id: string }) {
-  const accessToken = jwt.sign(
-    { id: user.id, email: user.email, org_id: user.org_id },
-    env.JWT_SECRET,
-    { expiresIn: '15m' },
-  );
-  const refreshToken = jwt.sign(
-    { id: user.id, email: user.email, org_id: user.org_id },
-    env.JWT_REFRESH_SECRET,
-    { expiresIn: '30d' },
-  );
-  return { accessToken, refreshToken };
-}
 
 // GET /api/invites/preview/:token — public preview of an invite
 // Used by the accept page to render "Sara invited you to Acme".
@@ -127,45 +114,6 @@ inviteRoutes.post('/accept', async (c) => {
     return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
   }
 
-  const [invite] = await db
-    .select({
-      id: invites.id,
-      accepted_at: invites.accepted_at,
-      expires_at: invites.expires_at,
-    })
-    .from(invites)
-    .where(and(eq(invites.token, parsed.data.token), eq(invites.org_id, payload.org_id)))
-    .limit(1);
-
-  if (!invite) {
-    return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
-  }
-  if (invite.accepted_at) {
-    return c.json({ error: 'already accepted', code: 'INVITE_ALREADY_ACCEPTED' }, 400);
-  }
-  if (invite.expires_at && invite.expires_at < new Date()) {
-    return c.json({ error: 'expired', code: 'INVITE_EXPIRED' }, 400);
-  }
-
-  // Verify user + membership still exist (admin may have removed them)
-  const [user] = await db
-    .select()
-    .from(users)
-    .where(eq(users.id, payload.user_id))
-    .limit(1);
-  if (!user) {
-    return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
-  }
-
-  const [membership] = await db
-    .select()
-    .from(orgMembers)
-    .where(and(eq(orgMembers.user_id, payload.user_id), eq(orgMembers.org_id, payload.org_id)))
-    .limit(1);
-  if (!membership || !membership.is_active) {
-    return c.json({ error: 'invalid', code: 'INVITE_REVOKED' }, 400);
-  }
-
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
   const updates: Record<string, unknown> = {
     password_hash: passwordHash,
@@ -173,11 +121,50 @@ inviteRoutes.post('/accept', async (c) => {
   };
   if (parsed.data.name) updates.name = parsed.data.name;
 
-  await db.update(users).set(updates).where(eq(users.id, payload.user_id));
-  await db
-    .update(invites)
-    .set({ accepted_by: payload.user_id, accepted_at: new Date() })
-    .where(eq(invites.id, invite.id));
+  type AcceptanceFailure = 'INVITE_INVALID' | 'INVITE_ALREADY_ACCEPTED' | 'INVITE_EXPIRED' | 'INVITE_REVOKED';
+  const accepted = await db.transaction(async (tx) => {
+    // Lock the invite first so exactly one concurrent acceptance can set the
+    // password and mint a session from this token.
+    const [invite] = await tx
+      .select({ id: invites.id, accepted_at: invites.accepted_at, expires_at: invites.expires_at })
+      .from(invites)
+      .where(and(eq(invites.token, parsed.data.token), eq(invites.org_id, payload.org_id)))
+      .for('update');
+    if (!invite) return { failure: 'INVITE_INVALID' as AcceptanceFailure };
+    if (invite.accepted_at) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
+    if (invite.expires_at && invite.expires_at < new Date()) return { failure: 'INVITE_EXPIRED' as AcceptanceFailure };
+
+    const [user] = await tx.select().from(users).where(eq(users.id, payload.user_id)).for('update');
+    if (!user) return { failure: 'INVITE_INVALID' as AcceptanceFailure };
+    // An invite-created account has no password until its one accepted invite
+    // establishes credentials. Never let a stale pending invite replace
+    // credentials established by another invite or an admin recovery.
+    if (user.password_hash) return { failure: 'INVITE_ALREADY_ACCEPTED' as AcceptanceFailure };
+    const [membership] = await tx
+      .select({ id: orgMembers.id })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.user_id, payload.user_id), eq(orgMembers.org_id, payload.org_id), eq(orgMembers.is_active, true)))
+      .for('share');
+    if (!membership) return { failure: 'INVITE_REVOKED' as AcceptanceFailure };
+
+    await tx.update(users).set({ ...updates, password_version: user.password_version + 1 }).where(eq(users.id, payload.user_id));
+    await tx.update(invites)
+      .set({ accepted_by: payload.user_id, accepted_at: new Date() })
+      .where(and(eq(invites.id, invite.id), eq(invites.org_id, payload.org_id)));
+    return { user };
+  });
+
+  if ('failure' in accepted) {
+    const messages: Record<AcceptanceFailure, string> = {
+      INVITE_INVALID: 'invalid',
+      INVITE_ALREADY_ACCEPTED: 'already accepted',
+      INVITE_EXPIRED: 'expired',
+      INVITE_REVOKED: 'invalid',
+    };
+    const failure = accepted.failure as AcceptanceFailure;
+    return c.json({ error: messages[failure], code: failure }, 400);
+  }
+  const user = accepted.user;
 
   // Ensure Defty is in the org and materialize the 1:1 DM so the new
   // member sees it in their sidebar immediately. Both are idempotent;
@@ -212,7 +199,15 @@ inviteRoutes.post('/accept', async (c) => {
     }
   })();
 
-  const tokens = generateAuthTokens({ id: user.id, email: user.email!, org_id: payload.org_id });
+  let tokens;
+  try {
+    tokens = await createWebSession({ id: user.id, email: user.email!, org_id: payload.org_id }, passwordHash);
+  } catch (error) {
+    if (error instanceof WebCredentialsChangedError) {
+      return c.json({ error: 'Credentials changed; sign in again', code: 'CREDENTIALS_CHANGED' }, 409);
+    }
+    throw error;
+  }
 
   return c.json({
     user: { id: user.id, name: parsed.data.name ?? user.name, email: user.email },
