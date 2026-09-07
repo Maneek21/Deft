@@ -1192,7 +1192,13 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   // Production path: actual discovery/review above pins this stdio provider;
   // the scanner owns the fire ledger, the durable queues own delivery, and
   // the generic App Run handler owns the only provider call.
-  const scannerCase = await createDefinition(10);
+  // The scanner accepts a supplied clock, while queue dequeue eligibility uses
+  // the database wall clock, so scanner-driven fixtures must already be due.
+  const scannerCase = await createDefinition(
+    -1,
+    100,
+    new Date(scheduleBase - 2 * 60_000),
+  );
   const scannerNow = new Date(scannerCase.scheduledAt.getTime() + 60_000);
   await runAppAutomationScan(scannerNow);
   await runAppAutomationScan(scannerNow);
@@ -1266,7 +1272,11 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     eq(appRunReceipts.run_id, scannedFire!.fire.app_run_id!),
   )))[0]?.value, 1, 'generic worker writes the durable receipt');
 
-  const revokedCase = await createDefinition(11);
+  const revokedCase = await createDefinition(
+    -1,
+    100,
+    new Date(scheduleBase - 2 * 60_000),
+  );
   const revokedNow = new Date(revokedCase.scheduledAt.getTime() + 60_000);
   await runAppAutomationScan(revokedNow);
   const revokedFireJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, {
