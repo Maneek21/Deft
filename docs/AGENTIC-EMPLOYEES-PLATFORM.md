@@ -1,6 +1,6 @@
 # Agentic Employees Platform — Master Plan
 
-> Status note, 2026-06-09: This is a historical master plan, not the current self-hosted v1 product contract. Use `docs/self-hosted-v1-contract.md` for buyer-facing promises: native workspace, ICS calendar subscriptions, BYOA/MCP employees, provider-neutral AI, and no native Slack/Gmail/GitHub/Google OAuth promise.
+> **Historical plan, not a current product contract.** Status labels, pricing, hosting, integrations, and architecture below describe an earlier plan and are not availability claims. Use [What you can use today](product-status.md), the [self-hosted v1 contract](self-hosted-v1-contract.md), and [current limitations](current-limitations.md) for current guidance.
 
 ## Vision
 

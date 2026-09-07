@@ -143,10 +143,8 @@ Open `.env` and set these required values:
 openssl rand -hex 32   # paste into POSTGRES_PASSWORD
 openssl rand -hex 32   # paste into JWT_SECRET
 openssl rand -hex 32   # paste into JWT_REFRESH_SECRET
+openssl rand -hex 32   # paste into ENCRYPTION_KEY
 ```
-
-Replace `ENCRYPTION_KEY` before production. It must contain at least 32
-characters.
 
 Leave `OLLAMA_URL` commented unless an Ollama server is actually running.
 Otherwise Deft will correctly show AI features as off until a provider is

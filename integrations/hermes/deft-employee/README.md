@@ -1,5 +1,7 @@
 # Deft employee plugin for Hermes
 
+> **Release-specific compatibility:** use this integration only when the selected Deft release's integration manifest and certificate identify it as compatible. A source checkout by itself is not certification. See [Deft's current product status](https://github.com/Maneek21/Deft/blob/master/docs/product-status.md).
+
 Install under `$HERMES_HOME/plugins/deft-employee` and enable the plugin. It
 uses Hermes hooks and registers four narrow Deft workspace tools for governed
 attachment reads, reviewed workspace-plan imports, and reviewed document

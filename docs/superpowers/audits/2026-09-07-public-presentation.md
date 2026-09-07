@@ -40,9 +40,39 @@ Public issues include [#176](https://github.com/Maneek21/Deft/issues/176) for an
 
 Small remedy: update each with current status and shipped evidence; close only when the stated requirement is actually met.
 
+## Vision and communication alignment follow-up
+
+The earlier consistency review adds a second priority: public promises must match the responsibility and availability boundaries, as well as the release version. Preserve the central positioning: a useful human workspace, a shared work record for agents, and applications that reuse that foundation.
+
+### High: name the boundary of Deft's control
+
+The [architecture page](https://deft.ing/architecture/) describes centralized company memory and daily employee controls. The [current native integration contract](https://github.com/Maneek21/Deft/blob/7355c90a0ab5630b839440e8e25133b63853835c/integrations/hermes/deft-platform/README.md) assigns private memory, reasoning, runtime skills, execution budgets, and independently used external tools to the runtime/operator. Explain the compatible responsibilities: Deft owns shared workplace state, scoped Deft access, approvals and governed-action receipts; the external runtime owns its own execution. Scope spend-control and receipt claims to the paths they actually govern. Correct wording does not require adding orchestration or centralizing runtime memory.
+
+### High: publish one capability and availability map
+
+Use four states: released in a named version; opt-in/experimental; implemented but unreleased; planned. Include required flags and one matching setup link. Explain Apps as packages extending the workspace, Modules as declarative records and native views, and connected/custom experiences as separately bounded capabilities. The [Apps entrance](https://deft.ing/apps/) currently presents Modules; examples should match the supported contract. Internal vendor records and a public vendor portal have different identity and access requirements.
+
+### High: make employee guidance release-specific
+
+Reconcile the [public Agent Channel guide](https://deft.ing/docs/agent-channel/) with the native default documented for historical Hermes-capable releases, identifying the bridge as rollback guidance. For the proposed core preview, explicitly state that Hermes certification and its integration bundle are excluded. This is documentation work, not a request to restart Hermes testing.
+
+### Medium: retire competing sources of truth
+
+`FEATURES.md` still calls supported upgrades deferred; `ROADMAP.md` places existing release infrastructure in the next-preview bucket. Reconcile these with current operations and release docs. Mark `docs/AGENT-VISION.md` as historical where it retains paid employee seats and the older two-agent model, and point to the current contract. Keep useful history while making its authority unambiguous.
+
+### Medium: provide three complete entry journeys
+
+Offer a team-workspace journey, a supported AI-client connection, and a supported internal-App authoring journey. Each should identify the version, prerequisites, exact commands and observable result. Keep a complete source/tarball App Kit path until public package distribution is verified; a historical registry E404 is not a fresh registry check or proof that the kit itself is unusable.
+
+### Reconcile old findings with the accepted candidate
+
+The earlier review's Notes, retry and login failures concerned public master at `7355c90a`. They are already addressed by the accepted demo and reconstructed release candidate; do not reopen them or describe the candidate using those old failures. The public branch still needs the fixes landed. Broader Apps expansion remains a roadmap decision. No new product feature, Hermes runtime run or soak follows from this presentation review.
+
+Combined order: clarify control boundaries and feature availability; make the three entry journeys and canonical docs agree; complete release/security gates and publish useful release notes; then apply minor README layout polish. The private vision documents remain outside the repository and are not copied here.
+
 ## Lower-priority presentation polish
 
-The README puts the first setup command below six large visuals and several overlapping feature explanations. A small top-level “Try it” link and a short recommended-release/status block would make evaluation easier; a visual redesign is unnecessary. Review universal wording such as “Every action leaves a receipt” against the exact governed-action contract, and qualify it if readers could mistake it for a promise about every UI operation. This is a wording review, not evidence of a receipt bug.
+The README puts the first setup command below six large visuals and several overlapping feature explanations. A small top-level "Try it" link and a short recommended-release/status block would make evaluation easier; a visual redesign is unnecessary. Review universal wording such as "Every action leaves a receipt" against the exact governed-action contract, and qualify it if readers could mistake it for a promise about every UI operation. This is a wording review, not evidence of a receipt bug.
 
 A solo maintainer, a small star count, agent instruction files, and AI-assisted development are not defects. Do not add invented scale claims, hide alpha limitations, or bury honest issues to appear mature. The useful credibility signal is a reproducible install and maintained, accurate release guidance.
 

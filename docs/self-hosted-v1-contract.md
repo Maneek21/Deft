@@ -3,6 +3,8 @@
 This is the current promise for self-hosted Deft. Use this as the source of truth
 when updating README, docs, website copy, setup flows, and pilot reports.
 
+For version-specific availability, use [What you can use today](product-status.md). The latest published image is `v0.3.0-preview.14`; the upcoming `v0.3.0-preview.15` candidate is core-scoped and excludes Hermes certification and bundle artifacts.
+
 ## What self-hosted v1 promises
 
 - One Deft workspace per deployment.
@@ -14,6 +16,7 @@ when updating README, docs, website copy, setup flows, and pilot reports.
 - External tools through MCP/BYOA agents, not managed provider OAuth.
 - Provider-neutral AI configuration: Anthropic, OpenAI, OpenRouter, or Ollama.
 - Core product operation without AI keys. Chat, tasks, wiki, calendar, and auth still work.
+- Opt-in declarative Modules and internal Apps when the chosen release documents the matching App Protocol and App Kit.
 
 ## What self-hosted v1 does not promise
 
@@ -23,6 +26,11 @@ when updating README, docs, website copy, setup flows, and pilot reports.
 - Native GitHub OAuth or a managed GitHub connector as a buyer-facing feature.
 - A hosted plugin/agent marketplace.
 - A guarantee that Deft provisions or controls third-party agent runtimes.
+- Arbitrary App custom UI, public portals, general external App runtimes, or synchronization.
+
+## Responsibility boundary
+
+Deft controls shared workspace state, access through supported Deft tools, approval policy, and receipts for governed actions. A customer-operated agent runtime controls its private memory, model and skill configuration, independently used tools, process supervision, and costs outside Deft. Personal MCP tokens act with the permissions of the person who created them.
 
 ## Recommended integration story
 

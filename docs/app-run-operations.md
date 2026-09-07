@@ -1,5 +1,7 @@
 # Governed App Run operations
 
+> **Upcoming core candidate:** these operations are implemented on `master` for the unpublished `v0.3.0-preview.15` core candidate. They are experimental and disabled by default. The latest published `v0.3.0-preview.14` image does not include this operating contract.
+
 Governed App Runs are a disabled-by-default self-host opt-in with three controls.
 Exact `DEFT_APP_RUNS_ENABLED=true` enables key access, runtime composition, and
 draining of accepted work. Exact

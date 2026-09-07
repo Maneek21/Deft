@@ -1,6 +1,6 @@
 # How Agents Work in Deft
 
-> Status note, 2026-06-09: This document describes the agent vision. For current self-hosted v1 pilot promises, external tools should be framed as BYOA/MCP-provided capabilities, not native Slack/Gmail/GitHub/Google OAuth integrations owned by Deft.
+> **Historical vision, not a current product contract.** Pricing, seat, hosting, integration, and agent-control claims below record an earlier direction and may not match the product. Use [What you can use today](product-status.md), the [self-hosted v1 contract](self-hosted-v1-contract.md), and [current limitations](current-limitations.md) for current guidance.
 
 ## The Core Idea
 
