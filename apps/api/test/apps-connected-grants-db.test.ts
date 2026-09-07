@@ -1,3 +1,4 @@
+import './fixtures/app-run-enabled-env.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -70,7 +71,7 @@ import { closeDb, db } from '../src/lib/db.js';
 import { runAppAutomationFire, runAppAutomationScan } from '../src/lib/app-automation-runtime.js';
 import { completeJob, dequeueJob, QUEUE_NAMES } from '../src/lib/queues.js';
 import { handleAppRunAttempt } from '../src/lib/app-run-worker-handler.js';
-import { getAppRunRuntime } from '../src/lib/app-run-runtime.js';
+import { getAppRunRuntime, shutdownAppRunRuntime } from '../src/lib/app-run-runtime.js';
 import { ModuleError } from '../src/lib/module-errors.js';
 import {
   activateAppInstallation,
@@ -101,7 +102,7 @@ import {
   buildPhase5DependencyAppPackage,
   buildTrackAAutomatedConnectedAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
-import { databaseCompleteAppRunTestKeyrings } from './fixtures/app-run-test-keyrings.js';
+import { databaseCompleteAppRunTestKeyringFixture } from './fixtures/app-run-test-keyrings.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
@@ -1076,8 +1077,17 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal(duplicateFire.id, fire.id);
   const claimAt = new Date(primary.scheduledAt.getTime() + 60_000);
   const leaseExpiresAt = new Date(primary.scheduledAt.getTime() + 10 * 60_000);
-  const keys = await databaseCompleteAppRunTestKeyrings('loop5-lifecycle');
-  t.after(() => keys.destroy());
+  await shutdownAppRunRuntime();
+  const keyringFixture = await databaseCompleteAppRunTestKeyringFixture('loop5-lifecycle');
+  const keys = keyringFixture.keys;
+  const initialKeyringEnvironment = process.env.DEFT_APP_RUN_KEYRINGS;
+  process.env.DEFT_APP_RUN_KEYRINGS = keyringFixture.environment;
+  t.after(async () => {
+    await shutdownAppRunRuntime();
+    keys.destroy();
+    if (initialKeyringEnvironment === undefined) delete process.env.DEFT_APP_RUN_KEYRINGS;
+    else process.env.DEFT_APP_RUN_KEYRINGS = initialKeyringEnvironment;
+  });
   const secrets = new AppRunSecretService(keys);
   const preparedInputs = new AppRunPreparedInputService(secrets);
   const repository = new PostgresAppRunRepository();
@@ -1192,13 +1202,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   // Production path: actual discovery/review above pins this stdio provider;
   // the scanner owns the fire ledger, the durable queues own delivery, and
   // the generic App Run handler owns the only provider call.
-  // The scanner accepts a supplied clock, while queue dequeue eligibility uses
-  // the database wall clock, so scanner-driven fixtures must already be due.
-  const scannerCase = await createDefinition(
-    -1,
-    100,
-    new Date(scheduleBase - 2 * 60_000),
-  );
+  const scannerCase = await createDefinition(10);
   const scannerNow = new Date(scannerCase.scheduledAt.getTime() + 60_000);
   await runAppAutomationScan(scannerNow);
   await runAppAutomationScan(scannerNow);
@@ -1272,11 +1276,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     eq(appRunReceipts.run_id, scannedFire!.fire.app_run_id!),
   )))[0]?.value, 1, 'generic worker writes the durable receipt');
 
-  const revokedCase = await createDefinition(
-    -1,
-    100,
-    new Date(scheduleBase - 2 * 60_000),
-  );
+  const revokedCase = await createDefinition(11);
   const revokedNow = new Date(revokedCase.scheduledAt.getTime() + 60_000);
   await runAppAutomationScan(revokedNow);
   const revokedFireJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, {

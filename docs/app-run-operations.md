@@ -23,6 +23,12 @@ and API startup rejects it. App-origin intake additionally requires
 | Off | On | Any | Invalid startup configuration |
 | Off | Any | On | Invalid startup configuration |
 
+Bounded automations have one further opt-in: `DEFT_APP_AUTOMATIONS_ENABLED=true`.
+They require Apps, the Run engine and App-origin intake to be enabled together,
+plus the valid Run keyring described below. API startup rejects an incomplete
+flag combination. Keep legacy MCP cutover off unless you are separately
+validating that path.
+
 This feature has two independent operational assets: the additive PostgreSQL
 Run ledger and `DEFT_APP_RUN_KEYRINGS`. Back them up, restore them, and rotate
 them together. Losing a referenced key is data loss even when the database is

@@ -25,9 +25,12 @@ Development on `master` may include changes absent from the published image.
 | Hosted Deft service | Not currently offered | Self-host using the supported Docker Compose path |
 
 Apps require `DEFT_APPS_ENABLED=true` on the API and
-`NEXT_PUBLIC_FEATURE_APPS=true` in the web build. Bounded automations additionally
-require `DEFT_APP_AUTOMATIONS_ENABLED=true`. These flags do not grant an App
-permission: its package and requested access still need operator review.
+`NEXT_PUBLIC_FEATURE_APPS=true` in the web build. Connected execution needs
+`DEFT_APP_RUNS_ENABLED=true`, `DEFT_APP_RUN_APP_ORIGIN_ENABLED=true` and a valid
+`DEFT_APP_RUN_KEYRINGS` secret. Bounded automations also need
+`DEFT_APP_AUTOMATIONS_ENABLED=true`. Follow the [operator guide](app-run-operations.md)
+when enabling these together. Flags do not grant an App permission: its package
+and requested access still need operator review.
 The example configuration leaves these features off. See the author and operator
 guides before enabling them; do not assume an image was built with an opt-in UI.
 
