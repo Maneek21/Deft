@@ -75,3 +75,19 @@ test('retries a GET after a transient network failure', async (t) => {
   assert.equal(response.status, 200);
   assert.equal(transportCalls, 2, 'safe reads should retain bounded network retries');
 });
+
+test('passes an explicit idempotency key without enabling POST retries', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let key: string | null = null;
+  globalThis.fetch = (async (_input, init) => {
+    calls += 1;
+    key = new Headers(init?.headers).get('Idempotency-Key');
+    return new Response(null, { status: 201 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  await api.post('/api/events', { title: 'Launch review' }, { headers: { 'Idempotency-Key': 'intent-key' } });
+  assert.equal(calls, 1);
+  assert.equal(key, 'intent-key');
+});

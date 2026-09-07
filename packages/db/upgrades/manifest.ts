@@ -162,6 +162,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.28-password-generation.sql',
       description: 'Invalidate outstanding browser password reset links after credential changes',
     },
+    {
+      version: '0.3.0-preview.29',
+      file: '0.3.0-preview.29-native-create-requests.sql',
+      description: 'Persist scoped native create identities for safe explicit retries',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

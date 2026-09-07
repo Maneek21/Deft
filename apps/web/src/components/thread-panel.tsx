@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
@@ -236,6 +237,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const activeMessageIdRef = useRef(messageId);
   activeMessageIdRef.current = messageId;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replyIntentRef = useRef<{ scope: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
 
   const pendingBySpaceKey = spaceId
@@ -396,15 +398,21 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const handleRichSend = async (html: string, _text: string) => {
     const requestMessageId = messageId;
     const pendingFilesToSend = [...pendingFiles];
-    const response = await api.post(`/api/messages/${spaceId}`, {
+    const body = {
       content: html || '(attached files)',
       parent_id: requestMessageId,
       file_ids: pendingFilesToSend.map((file) => file.id),
-    });
+    };
+    const scope = `message:${spaceId}:thread:${requestMessageId}`;
+    if (replyIntentRef.current?.scope !== scope) replyIntentRef.current = { scope, intent: createNativeCreateIntent(scope) };
+    const intent = replyIntentRef.current.intent;
+    const intentKey = await intent.keyFor(body);
+    const response = await api.post(`/api/messages/${spaceId}`, body, { headers: { 'Idempotency-Key': intentKey } });
     if (!response.ok) {
       throw new Error(await apiErrorMessage(response, 'Failed to send reply'));
     }
     const createdReply = await response.json() as Message;
+    intent.acknowledgeSuccess(intentKey);
     if (activeMessageIdRef.current !== requestMessageId) return;
     const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
     setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));

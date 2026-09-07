@@ -221,6 +221,29 @@ async function insertPendingTaskCreate(title: string): Promise<string> {
   });
 }
 
+async function insertPendingLegacyTaskCreate(title: string): Promise<string> {
+  return withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, NULL, 'defty', 'create_task', $3::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        JSON.stringify({
+          title,
+          project_name: 'Actions Routes Test Project',
+          resolved_project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+        }),
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+}
+
 async function insertPendingModuleCreate(sentinel: string, idempotencyKey: string): Promise<string> {
   return withClient(async (c) => {
     const action = await c.query(
@@ -1460,5 +1483,36 @@ test('double approve is idempotent via HTTP', async () => {
       [title],
     );
     assert.equal(t.rows[0].n, 1, 'no double task insert');
+  });
+});
+
+test('legacy Defty create_task approval writes one verified receipt across retries', async () => {
+  const title = `routes-legacy-receipt-${Date.now()}`;
+  const actionId = await insertPendingLegacyTaskCreate(title);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await app().request(
+      `/api/agent/actions/${actionId}/approve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const receiptResponse = await app().request(`/api/agent/actions/${actionId}/receipt`);
+  assert.equal(receiptResponse.status, 200, 'approved legacy action should expose a receipt');
+  const receiptBody = await receiptResponse.json() as { verified?: boolean };
+  assert.equal(receiptBody.verified, true);
+
+  await withClient(async (c) => {
+    const [taskCount, receiptCount] = await Promise.all([
+      c.query(`SELECT COUNT(*)::int AS n FROM tasks WHERE title = $1`, [title]),
+      c.query(`SELECT COUNT(*)::int AS n FROM action_receipts WHERE action_id = $1`, [actionId]),
+    ]);
+    assert.equal(taskCount.rows[0].n, 1, 'repeated approval must not duplicate the task');
+    assert.equal(receiptCount.rows[0].n, 1, 'repeated approval must not duplicate the receipt');
   });
 });

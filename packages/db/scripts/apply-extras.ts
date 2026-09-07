@@ -136,6 +136,9 @@ async function main() {
     const passwordGenerationFile = '0.3.0-preview.28-password-generation.sql';
     await client.query(readFileSync(resolve(upgradesDir, passwordGenerationFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${passwordGenerationFile}`);
+    const nativeCreateFile = '0.3.0-preview.29-native-create-requests.sql';
+    await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app

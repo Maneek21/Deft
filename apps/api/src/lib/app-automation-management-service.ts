@@ -299,13 +299,18 @@ export async function listManagedAppAutomations(
   const runs = new Map<string, Pick<typeof appRuns.$inferSelect, 'id' | 'state' | 'updated_at' | 'terminal_at'>>();
 
   if (definitionIds.length > 0) {
-    for (const definitionId of definitionIds) {
-      const [latest] = await db.select().from(appAutomationFires).where(and(
+    const latestRows = await db.selectDistinctOn([appAutomationFires.definition_id])
+      .from(appAutomationFires)
+      .where(and(
         eq(appAutomationFires.org_id, actor.org_id),
-        eq(appAutomationFires.definition_id, definitionId),
-      )).orderBy(desc(appAutomationFires.created_at), desc(appAutomationFires.id)).limit(1);
-      if (latest) latestFires.set(definitionId, latest);
-    }
+        inArray(appAutomationFires.definition_id, definitionIds),
+      ))
+      .orderBy(
+        appAutomationFires.definition_id,
+        desc(appAutomationFires.created_at),
+        desc(appAutomationFires.id),
+      );
+    for (const latest of latestRows) latestFires.set(latest.definition_id, latest);
     const counts = await db.select({
       definition_id: appAutomationFires.definition_id,
       state: appAutomationFires.state,

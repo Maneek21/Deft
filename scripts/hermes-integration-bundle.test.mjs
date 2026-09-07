@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
+  copyFile,
   readFile,
   readdir,
   rm,
@@ -16,13 +17,40 @@ import { dirname, join, relative } from 'node:path';
 import test, { after, before } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const buildScript = join(repoRoot, 'scripts', 'build-hermes-integration-bundle.mjs');
-const verifyScript = join(repoRoot, 'scripts', 'verify-hermes-integration-bundle.mjs');
+const sourceRepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+let repoRoot;
+let buildScript;
+let verifyScript;
 
 let testRoot;
 let firstDirectory;
 let secondDirectory;
+
+async function createPinnedRepositoryFixture(root) {
+  const manifestPath = join(sourceRepoRoot, 'integrations', 'hermes', 'integration-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const sources = new Set([
+    'integrations/hermes/integration-manifest.json',
+    'apps/api/src/lib/agent-channel.ts',
+    'apps/api/src/routes/agent-employees.ts',
+    'scripts/hermes-agent-channel-bridge.mjs',
+    'scripts/hermes-channel-service.ps1',
+    'scripts/run-hermes-channel-service.ps1',
+    'scripts/build-hermes-integration-bundle.mjs',
+    'scripts/verify-hermes-integration-bundle.mjs',
+    'scripts/lib/hermes-integration-bundle.mjs',
+    manifest.hermes_tested.provenance.runtime_audit,
+    manifest.hermes_tested.provenance.native_adapter_suite,
+    ...manifest.adapters.flatMap((adapter) => adapter.files.map((file) => file.source)),
+    ...manifest.common_plugins.flatMap((plugin) => plugin.files.map((file) => file.source)),
+  ]);
+  for (const relativePath of sources) {
+    const target = join(root, relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(join(sourceRepoRoot, relativePath), target);
+  }
+  await writeFile(join(root, 'package.json'), `${JSON.stringify({ version: manifest.deft_release }, null, 2)}\n`);
+}
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -84,6 +112,10 @@ async function freshBundle(name) {
 
 before(async () => {
   testRoot = await mkdtemp(join(tmpdir(), 'deft-hermes-bundle-'));
+  repoRoot = join(testRoot, 'repository');
+  await createPinnedRepositoryFixture(repoRoot);
+  buildScript = join(repoRoot, 'scripts', 'build-hermes-integration-bundle.mjs');
+  verifyScript = join(repoRoot, 'scripts', 'verify-hermes-integration-bundle.mjs');
   firstDirectory = await freshBundle('first');
   secondDirectory = join(testRoot, 'second');
   build(secondDirectory, 'positional');

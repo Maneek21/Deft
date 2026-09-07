@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
@@ -649,6 +650,7 @@ export function SpaceChat({
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const previousSpaceIdRef = useRef(spaceId);
+  const messageIntentRef = useRef<{ spaceId: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const [createTaskMsg, setCreateTaskMsg] = useState<{ title: string; description: string; messageId: string } | null>(null);
   const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
   const [recapSummary, setRecapSummary] = useState<string | null>(null);
@@ -1128,14 +1130,23 @@ export function SpaceChat({
     const token = localStorage.getItem('deft-access-token');
     if (token) getSocket(token).emit('typing:stop', { space_id: requestSpaceId });
     isTyping.current = false;
-    const response = await api.post(`/api/messages/${requestSpaceId}`, {
+    const body = {
       content: content || '(attached files)',
       file_ids: pendingFilesToSend.map((file) => file.id),
+    };
+    if (messageIntentRef.current?.spaceId !== requestSpaceId) {
+      messageIntentRef.current = { spaceId: requestSpaceId, intent: createNativeCreateIntent(`message:${requestSpaceId}`) };
+    }
+    const intent = messageIntentRef.current.intent;
+    const intentKey = await intent.keyFor(body);
+    const response = await api.post(`/api/messages/${requestSpaceId}`, body, {
+      headers: { 'Idempotency-Key': intentKey },
     });
     if (!response.ok) {
       throw new Error(await apiErrorMessage(response, 'Failed to send message'));
     }
     const createdMessage = await response.json() as Message;
+    intent.acknowledgeSuccess(intentKey);
     if (activeSpaceIdRef.current !== requestSpaceId) return;
     const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
     setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));
@@ -2150,35 +2161,6 @@ export function SpaceChat({
           error={uploadError}
           onDismissError={() => setUploadError(null)}
         />
-
-        {/* Pending files preview */}
-        {pendingFiles.length > 0 && (
-          <div className="px-6 py-2 flex gap-2 flex-wrap flex-shrink-0">
-            {pendingFiles.map((file) => (
-              <div
-                key={file.id}
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px]"
-                style={{ background: 'var(--surface-container)' }}
-              >
-                {isImageType(file.type) ? (
-                  <ImageIcon size={13} strokeWidth={1.5} style={{ color: 'var(--muted)' }} />
-                ) : (
-                  <FileText size={13} strokeWidth={1.5} style={{ color: 'var(--muted)' }} />
-                )}
-                <span className="max-w-[120px] truncate" style={{ color: 'var(--foreground-secondary)' }}>
-                  {file.name}
-                </span>
-                <button
-                  onClick={() => setPendingFiles((prev) => prev.filter((f) => f.id !== file.id))}
-                  className="p-0.5"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X size={12} strokeWidth={1.5} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
 
         {/* Hidden file input */}
         <input ref={fileInputRef} type="file" className="hidden" multiple onChange={handleFileSelect} />

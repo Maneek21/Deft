@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -12,8 +12,8 @@ const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.me
 const compose = readFileSync(new URL('../docker-compose.yml', import.meta.url), 'utf8');
 const generatorUrl = new URL('./generate-release-manifest.mjs', import.meta.url);
 const generator = readFileSync(generatorUrl, 'utf8');
-const bundleBuildUrl = new URL('./build-hermes-integration-bundle.mjs', import.meta.url);
-const bundleVerifyUrl = new URL('./verify-hermes-integration-bundle.mjs', import.meta.url);
+const scopeResolverUrl = new URL('./resolve-release-scope.mjs', import.meta.url);
+const sourceRepoRoot = fileURLToPath(new URL('..', import.meta.url));
 const suiteContract = [
   { id: 'deft.database.fresh_schema', role: 'clean_state_database' },
   { id: 'deft.database.demo_seed', role: 'clean_state_database' },
@@ -31,6 +31,31 @@ function position(label) {
   const index = workflow.indexOf(label);
   assert.notEqual(index, -1, `release workflow is missing: ${label}`);
   return index;
+}
+
+function createPinnedHermesFixture(root) {
+  const manifest = JSON.parse(readFileSync(join(sourceRepoRoot, 'integrations/hermes/integration-manifest.json'), 'utf8'));
+  const sources = new Set([
+    'integrations/hermes/integration-manifest.json',
+    'apps/api/src/lib/agent-channel.ts',
+    'apps/api/src/routes/agent-employees.ts',
+    'scripts/hermes-agent-channel-bridge.mjs',
+    'scripts/hermes-channel-service.ps1',
+    'scripts/run-hermes-channel-service.ps1',
+    'scripts/build-hermes-integration-bundle.mjs',
+    'scripts/verify-hermes-integration-bundle.mjs',
+    'scripts/lib/hermes-integration-bundle.mjs',
+    manifest.hermes_tested.provenance.runtime_audit,
+    manifest.hermes_tested.provenance.native_adapter_suite,
+    ...manifest.adapters.flatMap((adapter) => adapter.files.map((file) => file.source)),
+    ...manifest.common_plugins.flatMap((plugin) => plugin.files.map((file) => file.source)),
+  ]);
+  for (const relativePath of sources) {
+    const target = join(root, relativePath);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(join(sourceRepoRoot, relativePath), target);
+  }
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ version: manifest.deft_release }, null, 2)}\n`);
 }
 
 test('release publication signs and verifies the exact image digest before creating a release', () => {
@@ -73,7 +98,7 @@ test('certification provisions the exact pinned Hermes runtime outside its clean
 
 test('publish verifies and archives the carried certificate and exact bundle without rebuilding', () => {
   const publish = workflow.slice(position('  publish:'));
-  assert.match(workflow, /publish:\s*[\s\S]*?needs: certify/);
+  assert.match(workflow, /publish:\s*[\s\S]*?needs: \[scope, certify\]/);
   assert.match(publish, /tag_commit="\$\(git rev-parse "\$tag\^\{commit\}"\)"/);
   assert.match(publish, /\[\[ "\$\(git rev-parse HEAD\)" == "\$tag_commit" \]\]/);
   assert.match(workflow, /name: hermes-employee-release-certification/);
@@ -101,24 +126,66 @@ test('publish verifies and archives the carried certificate and exact bundle wit
   );
 });
 
+test('release scope is commit-pinned and fails closed before publication', () => {
+  const scope = JSON.parse(readFileSync(new URL('../release/release-scope.json', import.meta.url), 'utf8'));
+  assert.equal(scope.schema, 'deft.release.scope.v1');
+  assert.ok(['core', 'hermes-certified'].includes(scope.scope));
+  assert.match(workflow, /Validate commit-pinned release scope/);
+  assert.match(workflow, /node scripts\/resolve-release-scope\.mjs --github-output/);
+  assert.match(workflow, /needs\.scope\.result == 'success'/);
+  assert.match(workflow, /always\(\) && !cancelled\(\)/);
+  assert.match(workflow, /needs\.scope\.outputs\.release_scope == 'core' \|\| needs\.certify\.result == 'success'/);
+  assert.match(workflow, /certify:[\s\S]*?if: needs\.scope\.outputs\.release_scope == 'hermes-certified'/);
+  for (const step of [
+    'Download Hermes employee certification',
+    'Verify carried Hermes certificate and bundle',
+    'Archive and reverify the carried Hermes integration',
+  ]) {
+    assert.match(workflow, new RegExp(`- name: ${step}\\n\\s+if: needs\\.scope\\.outputs\\.release_scope == 'hermes-certified'`));
+  }
+});
+
+test('release scope resolver rejects missing, unknown, and contradictory decisions', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'deft-release-scope-'));
+  const invoke = (document) => {
+    const scopePath = join(directory, 'scope.json');
+    if (document !== undefined) writeFileSync(scopePath, JSON.stringify(document));
+    return spawnSync(process.execPath, [fileURLToPath(scopeResolverUrl)], {
+      encoding: 'utf8', env: { ...process.env, RELEASE_SCOPE_PATH: scopePath },
+    });
+  };
+  try {
+    assert.notEqual(invoke(undefined).status, 0);
+    assert.notEqual(invoke({ schema: 'deft.release.scope.v1', scope: 'other' }).status, 0);
+    assert.notEqual(invoke({ schema: 'deft.release.scope.v1', scope: 'core', hermes: true }).status, 0);
+    assert.equal(invoke({ schema: 'deft.release.scope.v1', scope: 'hermes-certified' }).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('pre-archive verification rejects bundle bytes changed after initial evidence', () => {
   const directory = mkdtempSync(join(tmpdir(), 'deft-release-bundle-carry-'));
+  const fixtureRoot = join(directory, 'repository');
+  createPinnedHermesFixture(fixtureRoot);
   const bundleDirectory = join(directory, 'bundle');
-  const invoke = (url) => spawnSync(process.execPath, [fileURLToPath(url), '--directory', bundleDirectory, '--json'], {
-    encoding: 'utf8',
+  const fixtureBuildUrl = join(fixtureRoot, 'scripts', 'build-hermes-integration-bundle.mjs');
+  const fixtureVerifyUrl = join(fixtureRoot, 'scripts', 'verify-hermes-integration-bundle.mjs');
+  const invoke = (path) => spawnSync(process.execPath, [path, '--directory', bundleDirectory, '--json'], {
+    encoding: 'utf8', cwd: fixtureRoot,
   });
   try {
     const built = spawnSync(
       process.execPath,
-      [fileURLToPath(bundleBuildUrl), '--directory', bundleDirectory],
-      { encoding: 'utf8' },
+      [fixtureBuildUrl, '--directory', bundleDirectory],
+      { encoding: 'utf8', cwd: fixtureRoot },
     );
     assert.equal(built.status, 0, built.stderr);
-    const initial = invoke(bundleVerifyUrl);
+    const initial = invoke(fixtureVerifyUrl);
     assert.equal(initial.status, 0, initial.stderr);
     const configPath = join(bundleDirectory, 'config.example.yaml');
     writeFileSync(configPath, `${readFileSync(configPath, 'utf8')}# late mutation\n`, 'utf8');
-    const rejected = invoke(bundleVerifyUrl);
+    const rejected = invoke(fixtureVerifyUrl);
     assert.notEqual(rejected.status, 0);
     assert.match(rejected.stderr, /does not match its source/);
   } finally {
@@ -140,10 +207,10 @@ test('v2 evidence is rejected unless tag, release, runtime, adapters, and every 
   assert.match(generator, /certificate\.integration\?\.content_sha256 === contentDigest/);
   assert.match(generator, /pass\.bundle\?\.manifest_sha256 === manifestDigest/);
   assert.match(generator, /pass\.bundle\?\.content_sha256 === contentDigest/);
-  assert.match(generator, /expectedSuites\.map\(\(suite\) => \(\{ \.\.\.suite, result: 'passed' \}\)\)/);
+  assert.match(generator, /expectedSuites\.map\(\(suite\) => \(\{ \.\.\.suite, result: ["']passed["'] \}\)\)/);
 });
 
-test('release manifest preserves v1 fields and adds carried artifact and runtime provenance', () => {
+test('release manifest v2 keeps integrity fields and adds explicit scope', () => {
   for (const field of [
     'schema', 'tag', 'commit', 'image', 'digest', 'signature', 'signature_identity',
     'provenance', 'license', 'source', 'platforms', 'upgrade_support',
@@ -164,6 +231,8 @@ test('release-manifest generator computes the carried archive and certificate ha
     const evidencePath = join(directory, 'bundle-evidence.json');
     const archivePath = join(directory, 'deft-hermes-integration-1.2.3.tar.gz');
     const outputPath = join(directory, 'release-manifest.json');
+    const scopePath = join(directory, 'scope.json');
+    writeFileSync(scopePath, JSON.stringify({ schema: 'deft.release.scope.v1', scope: 'hermes-certified' }));
     const manifestDigest = `sha256:${'a'.repeat(64)}`;
     const contentDigest = `sha256:${'b'.repeat(64)}`;
     const runtime = {
@@ -216,6 +285,7 @@ test('release-manifest generator computes the carried archive and certificate ha
       RELEASE_SOURCE_URL: `https://github.com/example/deft/tree/${'c'.repeat(40)}`,
       HERMES_CERTIFICATE_PATH: certificatePath, HERMES_BUNDLE_EVIDENCE_PATH: evidencePath,
       HERMES_ARCHIVE_PATH: archivePath, RELEASE_MANIFEST_PATH: outputPath,
+      RELEASE_SCOPE_PATH: scopePath,
     };
     const invokeGenerator = (...args) => spawnSync(process.execPath, [fileURLToPath(generatorUrl), ...args], {
       encoding: 'utf8', env: generatorEnv,
@@ -224,11 +294,20 @@ test('release-manifest generator computes the carried archive and certificate ha
     assert.equal(result.status, 0, result.stderr);
     const releaseManifest = JSON.parse(readFileSync(outputPath, 'utf8'));
     const digest = (path) => `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
-    assert.equal(releaseManifest.schema, 'deft.release.v1');
+    assert.equal(releaseManifest.schema, 'deft.release.v2');
+    assert.equal(releaseManifest.release_scope, 'hermes-certified');
     assert.equal(releaseManifest.hermes_integration, 'deft-hermes-integration-1.2.3.tar.gz');
     assert.equal(releaseManifest.hermes_integration_archive_sha256, digest(archivePath));
     assert.equal(releaseManifest.hermes_employee_certification_sha256, digest(certificatePath));
     assert.deepEqual(releaseManifest.hermes_tested_runtime, runtime);
+    const verified = invokeGenerator('--verify-only');
+    assert.equal(verified.status, 0, verified.stderr);
+    assert.deepEqual(JSON.parse(verified.stdout), {
+      ok: true,
+      release_scope: 'hermes-certified',
+      manifest_sha256: manifestDigest,
+      content_sha256: contentDigest,
+    });
 
     const rejectionCases = [
       ['v1 schema', (value) => { value.schema = 'deft.hermes.employee.release_gate.v1'; }],
@@ -252,10 +331,62 @@ test('release-manifest generator computes the carried archive and certificate ha
   }
 });
 
+test('core manifest keeps release integrity fields and contains no Hermes claims', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'deft-core-release-manifest-'));
+  try {
+    const scopePath = join(directory, 'scope.json');
+    const outputPath = join(directory, 'manifest.json');
+    writeFileSync(scopePath, JSON.stringify({ schema: 'deft.release.scope.v1', scope: 'core' }));
+    const result = spawnSync(process.execPath, [fileURLToPath(generatorUrl)], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELEASE_SCOPE_PATH: scopePath,
+        RELEASE_TAG: 'v1.2.3', RELEASE_VERSION: '1.2.3', RELEASE_COMMIT: 'c'.repeat(40),
+        RELEASE_IMAGE: 'ghcr.io/maneek21/deft:1.2.3',
+        RELEASE_IMAGE_DIGEST: `sha256:${'e'.repeat(64)}`,
+        RELEASE_SIGNATURE_IDENTITY: 'https://github.com/example/release.yml@refs/tags/v1.2.3',
+        RELEASE_SOURCE_URL: `https://github.com/example/deft/tree/${'c'.repeat(40)}`,
+        RELEASE_MANIFEST_PATH: outputPath,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const manifest = JSON.parse(readFileSync(outputPath, 'utf8'));
+    assert.equal(manifest.schema, 'deft.release.v2');
+    assert.equal(manifest.release_scope, 'core');
+    assert.equal(manifest.signature, 'sigstore-keyless');
+    assert.equal(manifest.provenance, 'github-build-attestation');
+    assert.equal(Object.keys(manifest).some((field) => field.startsWith('hermes_')), false);
+    const verified = spawnSync(process.execPath, [fileURLToPath(generatorUrl), '--verify-only'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELEASE_SCOPE_PATH: scopePath,
+        RELEASE_TAG: 'v1.2.3', RELEASE_VERSION: '1.2.3', RELEASE_COMMIT: 'c'.repeat(40),
+        HERMES_CERTIFICATE_PATH: join(directory, 'absent-certificate.json'),
+      },
+    });
+    assert.equal(verified.status, 0, verified.stderr);
+    assert.deepEqual(JSON.parse(verified.stdout), { ok: true, release_scope: 'core' });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('CI retains the v2 certificate and exact verified bundle directory', () => {
   assert.match(ciWorkflow, /run: pnpm test:hermes-integration-bundle/);
+  assert.match(ciWorkflow, /Verify deterministic Hermes integration bundle\s+run: pnpm test:hermes-integration-bundle/);
+  assert.match(ciWorkflow, /hermes-release-gate:[\s\S]*?if: needs\.release-scope\.outputs\.release_scope == 'hermes-certified'/);
   assert.match(ciWorkflow, /name: hermes-employee-release-gate/);
   assert.match(ciWorkflow, /path: \|\s+dist\/hermes-employee-release-gate\.json\s+dist\/hermes-integration/);
+});
+
+test('core CI still requires product typecheck, API tests, and build', () => {
+  assert.match(ciWorkflow, /build:[\s\S]*?needs: \[release-scope, typecheck, test, hermes-release-gate\]/);
+  assert.match(ciWorkflow, /needs\.typecheck\.result == 'success'/);
+  assert.match(ciWorkflow, /needs\.test\.result == 'success'/);
+  assert.match(ciWorkflow, /always\(\) && !cancelled\(\)/);
+  assert.match(ciWorkflow, /needs\.release-scope\.outputs\.release_scope == 'core' \|\| needs\.hermes-release-gate\.result == 'success'/);
 });
 
 test('release environment template and every final asset receive checksum-stable names', () => {

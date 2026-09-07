@@ -53,6 +53,40 @@ export function timePartsInUserTimezone(value: string | Date): { hour: number; m
   return { hour, minute };
 }
 
+/** Convert a date/time entered as wall time in the signed-in user's timezone to a UTC instant. */
+export function userWallTimeToIso(dateKey: string, time: string): string {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  if (![year, month, day, hour, minute].every(Number.isFinite)) {
+    throw new Error('Invalid calendar date or time');
+  }
+
+  const desiredUtc = Date.UTC(year, month - 1, day, hour, minute);
+  let instant = new Date(desiredUtc);
+  // Resolve the zone offset at the target instant. A second pass handles DST boundaries.
+  for (let i = 0; i < 2; i++) {
+    const actual = partsFor(instant);
+    const actualUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute);
+    instant = new Date(instant.getTime() + desiredUtc - actualUtc);
+  }
+
+  const actual = partsFor(instant);
+  if (actual.year !== year || actual.month !== month || actual.day !== day || actual.hour !== hour || actual.minute !== minute) {
+    throw new Error('This time does not exist in the selected timezone');
+  }
+  return instant.toISOString();
+}
+
+/** Date and time input values for an instant in the signed-in user's timezone. */
+export function wallTimePartsInUserTimezone(value: string | Date): { date: string; time: string } {
+  const instant = typeof value === 'string' ? parseDate(value) : value;
+  const { year, month, day, hour, minute } = partsFor(instant);
+  return {
+    date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+  };
+}
+
 /** Long label for a date-only calendar key, without timezone rollover. */
 export function formatCalendarDateLong(dateKey: string): string {
   const date = new Date(`${dateKey}T12:00:00Z`);

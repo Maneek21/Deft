@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { X, ChevronDown } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
@@ -68,6 +69,11 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
   }, [resolvedConfig]);
 
   const titleRef = useRef<HTMLInputElement>(null);
+  const createIntentRef = useRef(createNativeCreateIntent(`task:${projectId}:quick-create`));
+  const handleClose = useCallback(() => {
+    createIntentRef.current.cancel();
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     titleRef.current?.focus();
@@ -75,11 +81,11 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
 
   useEffect(() => {
     function handleEscape(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') handleClose();
     }
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
+  }, [handleClose]);
 
   useEffect(() => {
     async function load() {
@@ -116,13 +122,17 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
           delete body[key];
         }
       }
-      const res = await api.post(`/api/projects/${projectId}/tasks`, body);
+      const intentKey = await createIntentRef.current.keyFor(body);
+      const res = await api.post(`/api/projects/${projectId}/tasks`, body, {
+        headers: { 'Idempotency-Key': intentKey },
+      });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'Failed to create task' }));
         throw new Error(data.error || 'Failed to create task');
       }
 
+      createIntentRef.current.acknowledgeSuccess(intentKey);
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -135,7 +145,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-center pt-[20vh]"
-        onClick={onClose}
+        onClick={handleClose}
       >
         {/* Click-away for dropdowns */}
         {openDropdown && <div className="fixed inset-0 z-[51]" onClick={(e) => { e.stopPropagation(); setOpenDropdown(null); }} />}
@@ -162,7 +172,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
               New task
             </h3>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-1 rounded-md"
               style={{ color: 'var(--muted)', transition: 'color 150ms' }}
               onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--foreground)')}
@@ -460,7 +470,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="px-3 py-1.5 rounded-md text-[12px] font-medium"
                   style={{
                     color: 'var(--foreground-secondary)',

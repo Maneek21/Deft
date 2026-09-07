@@ -41,6 +41,7 @@ import { AppBottomSheet } from '@/components/overlay-primitives';
 import { stripHtml } from '@/lib/strip-html';
 import { NoteSaveCoordinator, type NoteSaveStatus } from './note-save-coordinator';
 import { noteImageAttributes, ProtectedNoteImage } from './protected-note-image';
+import { noteLoadFailureState, type NoteLoadState } from './note-load-state';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
@@ -204,6 +205,8 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const { user } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadState, setLoadState] = useState<'loading' | 'loaded' | NoteLoadState>('loading');
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [saveStatus, setSaveStatus] = useState<NoteSaveStatus>('idle');
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
@@ -238,6 +241,8 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const pendingContentSave = useRef<{ revision: number; payload: Record<string, unknown> } | null>(null);
   const pendingTitleSave = useRef<{ revision: number; payload: Record<string, unknown> } | null>(null);
+  const noteLoadRequestRef = useRef(0);
+  const initialContentTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const saveCoordinator = useMemo(() => new NoteSaveCoordinator(
     async payload => {
@@ -253,7 +258,8 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     },
   ), [noteId]);
 
-  const isNoteOwner = !note || note.user_id === user?.id;
+  // Keep the editor locked until an authorized note payload arrives.
+  const isNoteOwner = Boolean(note && note.user_id === user?.id);
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -428,25 +434,41 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   };
 
   useEffect(() => {
+    const requestId = ++noteLoadRequestRef.current;
     setLoading(true);
+    setLoadState('loading');
+    setNote(null);
     initialContentSet.current = false;
+    if (initialContentTimerRef.current) clearTimeout(initialContentTimerRef.current);
     api.get(`/api/daily-notes/${noteId}`).then(async res => {
-      if (res.ok) {
-        const data = await res.json();
-        setNote(data);
-        setTitle(data.title);
-        setIcon(data.icon);
-        setVisibility(data.visibility === 'org' ? 'org' : 'private');
-        if (editor) {
-          editor.commands.setContent(data.content || '');
-          // Set editable based on ownership
-          editor.setEditable(data.user_id === user?.id);
-          setTimeout(() => { initialContentSet.current = true; }, 50);
-        }
+      if (requestId !== noteLoadRequestRef.current) return;
+      if (!res.ok) {
+        // Keep denied and missing direct links indistinguishable to avoid leaking private-note state.
+        setLoadState(noteLoadFailureState(res.status));
+        setLoading(false);
+        return;
       }
+      const data = await res.json();
+      if (requestId !== noteLoadRequestRef.current) return;
+      setNote(data);
+      setTitle(data.title);
+      setIcon(data.icon);
+      setVisibility(data.visibility === 'org' ? 'org' : 'private');
+      if (editor) {
+        editor.commands.setContent(data.content || '');
+        editor.setEditable(data.user_id === user?.id);
+        initialContentTimerRef.current = setTimeout(() => {
+          if (requestId === noteLoadRequestRef.current) initialContentSet.current = true;
+        }, 50);
+      }
+      setLoadState('loaded');
+      setLoading(false);
+    }).catch(() => {
+      if (requestId !== noteLoadRequestRef.current) return;
+      setLoadState('error');
       setLoading(false);
     });
-  }, [noteId, editor]);
+  }, [noteId, editor, user?.id, loadAttempt]);
 
   // Task 5.1 — load note -> tasks references sidebar
   const fetchReferences = useCallback(async () => {
@@ -545,18 +567,37 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   // coordinator; browser/tab teardown remains best-effort by design.
   useEffect(() => {
     return () => {
+      ++noteLoadRequestRef.current;
+      if (initialContentTimerRef.current) clearTimeout(initialContentTimerRef.current);
       if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
       void flushPendingSaves();
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     };
   }, [flushPendingSaves]);
 
-  const isOwner = !note || note.user_id === user?.id;
+  const isOwner = Boolean(note && note.user_id === user?.id);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 size={24} className="animate-spin" style={{ color: 'var(--muted)' }} />
+      </div>
+    );
+  }
+
+  if (loadState === 'unavailable' || loadState === 'error') {
+    const unavailable = loadState === 'unavailable';
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center px-6">
+        <div className="w-full max-w-md rounded-2xl p-6 text-center" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+          {unavailable && <Lock size={22} className="mx-auto mb-3" style={{ color: 'var(--muted)' }} />}
+          <h2 className="text-[16px] font-semibold" style={{ color: 'var(--foreground)' }}>{unavailable ? 'Note unavailable' : 'Couldn’t load this note'}</h2>
+          <p className="mt-2 text-[13px]" style={{ color: 'var(--muted)' }}>{unavailable ? 'You don’t have access to this note, or it no longer exists.' : 'Try again, or return to your notes.'}</p>
+          <div className="mt-4 flex justify-center gap-2">
+            <button type="button" onClick={onBack} className="deft-pill min-h-[36px]" style={{ color: 'var(--foreground)', background: 'var(--surface-container-low)' }}>Back to notes</button>
+            <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="deft-pill deft-pill-active min-h-[36px]" style={{ background: 'var(--accent)', color: 'white' }}>Retry</button>
+          </div>
+        </div>
       </div>
     );
   }

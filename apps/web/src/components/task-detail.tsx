@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { htmlToText, stripHtml } from '@/lib/strip-html';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { createBaseExtensions } from '@/lib/editor/shared-config';
@@ -759,6 +760,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const titleRef = useRef<HTMLInputElement>(null);
   const dueDateInputRef = useRef<HTMLInputElement>(null);
   const startDateInputRef = useRef<HTMLInputElement>(null);
+  const subtaskCreateIntentRef = useRef<{ projectId: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const depSearchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -910,18 +912,28 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const handleAddSubtask = async () => {
     if (!newSubtaskTitle.trim() || creatingSubtask || !task) return;
     setCreatingSubtask(true);
-    const res = await api.post(`/api/projects/${task.project_id}/tasks`, {
-      title: newSubtaskTitle.trim(),
-      parent_task_id: taskId,
-      priority: task.priority,
-      status: 'todo',
-    });
-    if (res.ok) {
-      setNewSubtaskTitle('');
-      setAddingSubtask(false);
-      loadTask(); // Reload to get updated subtasks
+    try {
+      const body = {
+        title: newSubtaskTitle.trim(),
+        parent_task_id: taskId,
+        priority: task.priority,
+        status: 'todo',
+      };
+      if (subtaskCreateIntentRef.current?.projectId !== task.project_id) {
+        subtaskCreateIntentRef.current = { projectId: task.project_id, intent: createNativeCreateIntent(`task:${task.project_id}:subtask:${taskId}`) };
+      }
+      const intent = subtaskCreateIntentRef.current.intent;
+      const intentKey = await intent.keyFor(body);
+      const res = await api.post(`/api/projects/${task.project_id}/tasks`, body, { headers: { 'Idempotency-Key': intentKey } });
+      if (res.ok) {
+        intent.acknowledgeSuccess(intentKey);
+        setNewSubtaskTitle('');
+        setAddingSubtask(false);
+        loadTask(); // Reload to get updated subtasks
+      }
+    } finally {
+      setCreatingSubtask(false);
     }
-    setCreatingSubtask(false);
   };
 
   const handleToggleSubtaskStatus = async (subtask: Subtask) => {
@@ -1550,7 +1562,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               Due date
             </span>
             <div className="flex items-center gap-1 relative">
-              <span
+              <button
+                type="button"
+                aria-label={task.due_date ? `Due date: ${new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : 'Set due date'}
                 className="text-[13px] px-2 py-1 cursor-pointer rounded-md"
                 style={{
                   color: task.due_date ? 'var(--foreground)' : 'var(--muted)',
@@ -1564,7 +1578,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 {task.due_date
                   ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
                   : 'Set due date'}
-              </span>
+              </button>
               <input
                 ref={dueDateInputRef}
                 type="date"
@@ -1573,6 +1587,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 className="w-0 h-0 opacity-0 absolute"
                 tabIndex={-1}
               />
+              {task.due_date && (
+                <button
+                  type="button"
+                  aria-label="Clear due date"
+                  className="px-1 py-1 rounded-md text-[13px]"
+                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}
+                  onClick={() => handleFieldUpdate('due_date', null)}
+                >
+                  ×
+                </button>
+              )}
             </div>
 
             {/* Secondary fields — hidden on mobile until expanded */}
@@ -2237,12 +2262,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       if (e.key === 'Enter') handleAddSubtask();
                       if (e.key === 'Escape') {
                         e.stopPropagation();
+                        subtaskCreateIntentRef.current?.intent.cancel();
                         setAddingSubtask(false);
                         setNewSubtaskTitle('');
                       }
                     }}
                     onBlur={() => {
                       if (!newSubtaskTitle.trim()) {
+                        subtaskCreateIntentRef.current?.intent.cancel();
                         setAddingSubtask(false);
                         setNewSubtaskTitle('');
                       }

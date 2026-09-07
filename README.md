@@ -102,13 +102,14 @@ cd Deft
 cp .env.example .env
 ```
 
-Set the three required secrets in `.env`:
+Set the four required secrets in `.env`:
 
 | Variable | Generate with |
 |---|---|
 | `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `JWT_REFRESH_SECRET` | `openssl rand -hex 32` |
+| `ENCRYPTION_KEY` | `openssl rand -hex 32` |
 
 Then build, start, initialize, and verify the stack:
 

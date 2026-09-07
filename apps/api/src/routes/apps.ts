@@ -397,7 +397,7 @@ appRoutes.post('/:installationId/enable', async (c) => {
 
 appRoutes.post('/:installationId/uninstall', async (c) => {
   try {
-    const body = disableSchema.parse(await c.req.json());
+    const body = disableSchema.parse(await c.req.json().catch(() => undefined));
     await refuseAppUninstall(
       managerFromContext(c),
       IdSchema.parse(c.req.param('installationId')),

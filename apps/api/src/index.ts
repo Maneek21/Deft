@@ -99,6 +99,7 @@ app.use('*', cors({
   ],
   credentials: true,
   allowHeaders: [
+    'Idempotency-Key',
     'Content-Type',
     'Authorization',
     'x-deft-audit-token',

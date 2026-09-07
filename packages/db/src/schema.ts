@@ -202,6 +202,17 @@ export const users = pgTable('users', {
   ...timestamps(),
 });
 
+// Durable native-create identities; retain tombstones when a resource is deleted.
+export const nativeCreateRequests = pgTable('native_create_requests', {
+  id: text('id').primaryKey(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  operation: text('operation').notNull(),
+  request_hash: text('request_hash').notNull(),
+  resource_id: text('resource_id').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [index('native_create_requests_org_idx').on(t.org_id)]);
+
 // ═══ ORG MEMBERS ═══
 export const orgMembers = pgTable('org_members', {
   ...id(),

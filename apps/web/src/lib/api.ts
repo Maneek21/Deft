@@ -183,10 +183,11 @@ class ApiClient {
     return this.fetch(path);
   }
 
-  async post(path: string, body?: unknown) {
+  async post(path: string, body?: unknown, options?: { headers?: HeadersInit }) {
     return this.fetch(path, {
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
+      headers: options?.headers,
     });
   }
 

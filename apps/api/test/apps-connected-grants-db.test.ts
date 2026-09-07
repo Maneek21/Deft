@@ -1028,11 +1028,19 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       capacityCursor = page.next_cursor ?? undefined;
     } while (capacityCursor);
     assert.equal(managedCount, 201);
+    const managementP95 = [...querySamples].sort((a, b) => a - b)[
+      Math.max(Math.ceil(querySamples.length * 0.95) - 1, 0)
+    ]!;
+    console.log('PREVIEW_MANAGEMENT_QUERY_RESULT', JSON.stringify({
+      definitions: managedCount,
+      pages: querySamples.length,
+      p95_ms: managementP95,
+    }));
     const scanStarted = performance.now();
     const scanAt = new Date(scheduleBase + 2 * 60_000);
     await runAppAutomationScan(scanAt);
     const scanMs = performance.now() - scanStarted;
-    const p95 = [...querySamples].sort((a, b) => a - b)[Math.max(Math.ceil(querySamples.length * 0.95) - 1, 0)]!;
+    const p95 = managementP95;
     assert.equal((await db.select({ value: count() }).from(appAutomationDefinitions).where(
       eq(appAutomationDefinitions.state, 'active'),
     ))[0]?.value, 202);
@@ -1188,17 +1196,12 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   const scannerNow = new Date(scannerCase.scheduledAt.getTime() + 60_000);
   await runAppAutomationScan(scannerNow);
   await runAppAutomationScan(scannerNow);
-  let fireJob: Awaited<ReturnType<typeof dequeueJob>> = null;
-  for (let index = 0; index < 100; index += 1) {
-    const candidate = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, { lockedBy: 'track-a-due-flow' });
-    if (!candidate) break;
-    if (candidate.name === 'app-automation-fire'
-      && candidate.data.definition_id === scannerCase.definition.id) {
-      fireJob = candidate;
-      break;
-    }
-    await completeJob(candidate.id, candidate.lockToken);
-  }
+  const fireJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, {
+    lockedBy: 'track-a-due-flow',
+    orgId,
+    jobName: 'app-automation-fire',
+    dataMatch: { key: 'definition_id', value: scannerCase.definition.id },
+  });
   assert.ok(fireJob);
   assert.equal(fireJob.name, 'app-automation-fire');
   assert.equal(fireJob.data.definition_id, scannerCase.definition.id);
@@ -1223,29 +1226,22 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   });
   assert.equal(scannedFire?.fire.state, 'run_created');
   assert.ok(scannedFire?.fire.app_run_id);
-  let attemptJob: Awaited<ReturnType<typeof dequeueJob>> = null;
-  for (let index = 0; index < 100; index += 1) {
-    const candidate = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, { lockedBy: 'track-a-due-attempt' });
-    if (!candidate) break;
-    if (candidate.name === 'app-run-attempt' && candidate.data.runId === scannedFire?.fire.app_run_id) {
-      attemptJob = candidate;
-      break;
-    }
-    await completeJob(candidate.id, candidate.lockToken);
-  }
+  let attemptJob = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, {
+    lockedBy: 'track-a-due-attempt',
+    orgId,
+    jobName: 'app-run-attempt',
+    dataMatch: { key: 'runId', value: scannedFire!.fire.app_run_id! },
+  });
   if (!attemptJob) {
     const runtime = await getAppRunRuntime();
     const preparedAttempt = await runtime.attemptRunner.prepareAttempt(orgId, scannedFire!.fire.app_run_id!);
     assert.ok(preparedAttempt, 'production runtime can schedule the released automation Run');
-    for (let index = 0; index < 100; index += 1) {
-      const candidate = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, { lockedBy: 'track-a-due-attempt-rearm' });
-      if (!candidate) break;
-      if (candidate.name === 'app-run-attempt' && candidate.data.runId === scannedFire?.fire.app_run_id) {
-        attemptJob = candidate;
-        break;
-      }
-      await completeJob(candidate.id, candidate.lockToken);
-    }
+    attemptJob = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, {
+      lockedBy: 'track-a-due-attempt-rearm',
+      orgId,
+      jobName: 'app-run-attempt',
+      dataMatch: { key: 'runId', value: scannedFire!.fire.app_run_id! },
+    });
   }
   assert.ok(attemptJob);
   assert.equal(attemptJob.name, 'app-run-attempt');
@@ -1273,17 +1269,12 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   const revokedCase = await createDefinition(11);
   const revokedNow = new Date(revokedCase.scheduledAt.getTime() + 60_000);
   await runAppAutomationScan(revokedNow);
-  let revokedFireJob: Awaited<ReturnType<typeof dequeueJob>> = null;
-  for (let index = 0; index < 100; index += 1) {
-    const candidate = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, { lockedBy: 'track-a-revoked-fire' });
-    if (!candidate) break;
-    if (candidate.name === 'app-automation-fire'
-      && candidate.data.definition_id === revokedCase.definition.id) {
-      revokedFireJob = candidate;
-      break;
-    }
-    await completeJob(candidate.id, candidate.lockToken);
-  }
+  const revokedFireJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, {
+    lockedBy: 'track-a-revoked-fire',
+    orgId,
+    jobName: 'app-automation-fire',
+    dataMatch: { key: 'definition_id', value: revokedCase.definition.id },
+  });
   assert.ok(revokedFireJob);
   await runAppAutomationFire({
     id: revokedFireJob.id,
@@ -1298,16 +1289,12 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     fire_id: String(revokedFireJob.data.fire_id),
   });
   assert.ok(revokedFire?.fire.app_run_id);
-  let revokedAttemptJob: Awaited<ReturnType<typeof dequeueJob>> = null;
-  for (let index = 0; index < 100; index += 1) {
-    const candidate = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, { lockedBy: 'track-a-revoked-attempt' });
-    if (!candidate) break;
-    if (candidate.name === 'app-run-attempt' && candidate.data.runId === revokedFire?.fire.app_run_id) {
-      revokedAttemptJob = candidate;
-      break;
-    }
-    await completeJob(candidate.id, candidate.lockToken);
-  }
+  const revokedAttemptJob = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, {
+    lockedBy: 'track-a-revoked-attempt',
+    orgId,
+    jobName: 'app-run-attempt',
+    dataMatch: { key: 'runId', value: revokedFire!.fire.app_run_id! },
+  });
   assert.ok(revokedAttemptJob);
   await revokeAppAutomationDefinition(actor, {
     definition_id: revokedCase.definition.id,
@@ -2307,6 +2294,39 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.ok(retentionRefusal instanceof AppError);
   assert.equal(retentionRefusal.code, 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION');
   assert.deepEqual(retentionRefusal.details, { cascaded: false, data_preserved: true });
+  assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
+
+  const upgradeRouteApp = new Hono();
+  upgradeRouteApp.use('*', async (context, next) => {
+    context.set('user', {
+      id: userId,
+      org_id: orgId,
+      email: 'connected-upgrade@example.test',
+      name: 'Connected upgrade owner',
+      role: 'owner',
+    });
+    await next();
+  });
+  upgradeRouteApp.route('/api/apps', appRoutes);
+
+  const emptyUninstallResponse = await upgradeRouteApp.request(`/api/apps/${predecessor.id}/uninstall`, {
+    method: 'POST',
+  });
+  assert.equal(emptyUninstallResponse.status, 400);
+  assert.equal((await emptyUninstallResponse.json()).code, 'VALIDATION_ERROR');
+  assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
+
+  const retentionResponse = await upgradeRouteApp.request(`/api/apps/${predecessor.id}/uninstall`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expected_lifecycle_epoch: afterUpgrade!.lifecycle_epoch }),
+  });
+  assert.equal(retentionResponse.status, 409);
+  assert.deepEqual(await retentionResponse.json(), {
+    error: 'App uninstall requires an explicit export and retention decision',
+    code: 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION',
+    details: { cascaded: false, data_preserved: true },
+  });
   assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
 
   const identicalBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.2' });

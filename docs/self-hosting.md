@@ -63,7 +63,10 @@ docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml 
 
 Release assets include `SHA256SUMS`, an SPDX SBOM, and a manifest containing
 the exact commit, image digest, keyless-signing identity, provenance type, and
-upgrade baseline. Hermes-capable releases also include
+upgrade baseline. New `deft.release.v2` manifests explicitly identify
+`release_scope` as `core` or `hermes-certified`. Core releases contain no Hermes
+bundle or certification claims. Historical `deft.release.v1` manifests retain
+their original release-specific Hermes evidence. Hermes-certified releases include
 `hermes-employee-release-gate.json` and
 `deft-hermes-integration-<version>.tar.gz`. The release manifest binds their
 SHA-256 digests, the bundle manifest and content digests, compatibility range,
@@ -83,12 +86,13 @@ cosign verify "$IMAGE@$DIGEST" \
 gh attestation verify "oci://$IMAGE@$DIGEST" --repo Maneek21/Deft
 ```
 
-Compare `DIGEST` with `release-manifest.json`, verify every downloaded asset
-against `SHA256SUMS`, and confirm the manifest's Hermes archive and certificate
-digests before extracting the integration. A release workflow fails before
-creating the GitHub release unless the manifest-pinned runtime passes two
-consecutive clean-state gates and the carried archive exactly matches the
-certified bundle. Then set `DEFT_IMAGE` to the immutable
+Compare `DIGEST` with `release-manifest.json` and verify every downloaded asset
+against `SHA256SUMS`. For a Hermes-certified release, also confirm the manifest's
+Hermes archive and certificate digests before extracting the integration. That
+scope requires two consecutive clean-state gates against the manifest-pinned
+runtime and an archive that exactly matches the certified bundle. Core releases
+omit those integration artifacts; they still require image signing, provenance,
+SBOM and corresponding source. Then set `DEFT_IMAGE` to the immutable
 `ghcr.io/maneek21/deft@<digest>` reference. Use `init` only for a fresh database.
 Versioned release upgrades begin at `v0.2.0-preview.1` and use the dedicated
 `upgrade` service described below.

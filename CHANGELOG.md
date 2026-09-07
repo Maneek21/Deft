@@ -10,6 +10,52 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Added
+
+- Connected Apps can request governed grants, participate in workspace resources,
+  and run bounded scheduled automations. App Kit supports the corresponding
+  declarative packages, review flow, and automation management surfaces. These
+  capabilities remain behind the documented Apps feature gates.
+
+### Fixed
+
+- Explicit retries of native task, project, event, and message creation retain a
+  scoped operation identity, preventing a lost response from creating a duplicate.
+- Notes retain pending edits through interrupted saves and refresh expired image
+  access. Unavailable private notes show a recoverable error instead of an empty
+  editor.
+- Native calendar creation and editing use the profile timezone consistently;
+  editing targets the existing event. Task date controls support keyboard use.
+- Chat attachments appear once in the composer, and search previews show readable
+  text rather than stored HTML.
+- Socket readiness avoids repeated room-join database work, queue startup waits
+  for initialization, and automation listings avoid one query per definition.
+- Approved native task creation records its result, and malformed App uninstall
+  requests return a structured client error.
+- Backups and upgrades preserve recovery assets; container process supervision
+  propagates startup failures and shutdown correctly.
+
+### Security
+
+- Browser sessions rotate durable refresh credentials and invalidate outstanding
+  credentials on password changes. Public OAuth endpoints have bounded requests.
+- Tiptap dependencies are updated to 3.30.4, including the fix for
+  [GHSA-cp6q-959q-f8rh](https://github.com/advisories/GHSA-cp6q-959q-f8rh).
+
+### Release and upgrade notes
+
+- The next preview is prepared as a **core** release. Hermes is not certified or
+  distributed as a supported integration bundle for this candidate. Existing
+  integration source and historical certification records are not new proof.
+- The schema advances to `0.3.0-preview.29`, including durable browser-session
+  state and scoped native-create identities. Back up first and use the documented
+  versioned upgrade path; do not run fresh-install initialization on existing data.
+- Keep the previous image, database backup, uploads, and encryption secrets
+  together for recovery. Image rollback alone is not a database rollback.
+- Images remain Linux amd64 previews. Long-duration soak and Hermes testing are
+  outside this candidate's acceptance scope. Final release-commit CI and artifact
+  verification are still required before publication.
+
 ## [0.3.0-preview.14] — 2026-08-31
 
 ### Fixed
