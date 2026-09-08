@@ -1,6 +1,6 @@
 # Current limitations
 
-Last reviewed September 7, 2026. The latest published preview is `v0.3.0-preview.14`; `master` also contains work for an unpublished `v0.3.0-preview.15` core candidate.
+Last reviewed September 8, 2026. The latest published preview is `v0.3.0-preview.15`, a core release.
 
 Deft is an alpha. It is suitable for technical evaluation, internal use, and controlled pilots where an operator can tolerate breaking changes and investigate failures.
 
@@ -43,7 +43,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 ## Apps and Modules
 
 - Apps are disabled by default. The API requires `DEFT_APPS_ENABLED=true`, and the web build requires `NEXT_PUBLIC_FEATURE_APPS=true`.
-- Connected App execution and bounded automations add further flags and operator review. They are implemented on `master` for the upcoming core candidate, not available in the current preview.14 image.
+- Connected App execution and bounded automations add further flags and operator review. They are included in preview.15, experimental, and disabled by default.
 - App Protocol v0 provides declarative internal records and native views. Current protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
 - A package's requested permissions are review input. The host owns installation, grants, connector binding, activation, and execution authority.
 
