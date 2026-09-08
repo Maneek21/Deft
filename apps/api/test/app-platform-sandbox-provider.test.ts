@@ -99,6 +99,7 @@ test('packed standalone sandbox provider conforms through the official stdio tra
     );
     assert.deepEqual(await packedPayloadProof(installedProviderRoot), providerPin.artifact.content);
     const serverPath = resolve(installedProviderRoot, 'server.mjs');
+    const outboxPath = resolve(temporaryRoot, 'sandbox-outbox.jsonl');
     assert.match(await readFile(serverPath, 'utf8'), /server\/discover/);
     process.env.DEFT_SELF_HOSTED = 'true';
     process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = 'true';
@@ -109,7 +110,7 @@ test('packed standalone sandbox provider conforms through the official stdio tra
       orgId: '00000000-0000-4000-8000-000000000006',
       transport: 'stdio' as const,
       command: process.execPath,
-      args: [serverPath],
+      args: [serverPath, '--outbox-file', outboxPath],
     };
 
     const discovery = await manager.testToolDiscovery(config);
@@ -136,6 +137,34 @@ test('packed standalone sandbox provider conforms through the official stdio tra
     );
     assert.equal(replay.success, true, replay.error);
     assert.deepEqual(replay.structuredContent, first.structuredContent);
+    const outbox = (await readFile(outboxPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(outbox.length, 1, 'one durable provider effect is recorded before the accepted response');
+    assert.deepEqual(outbox[0], {
+      schema_version: 'deft.app_platform.sandbox_email.outbox.v1',
+      idempotency_key: SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input.idempotency_key,
+      digest: createHash('sha256').update([
+        SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input.to,
+        SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input.subject,
+        SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input.body_text,
+        SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input.idempotency_key,
+      ].join('\u0000')).digest('hex'),
+      message_id: SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.output.message_id,
+    });
+
+    await manager.shutdown();
+    const restartedManager = new MCPClientManager();
+    try {
+      const restarted = await restartedManager.executeTool(
+        config,
+        'send_email',
+        { ...SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input },
+      );
+      assert.equal(restarted.success, true, restarted.error);
+      assert.deepEqual(restarted.structuredContent, first.structuredContent);
+      assert.equal((await readFile(outboxPath, 'utf8')).trim().split('\n').length, 1);
+    } finally {
+      await restartedManager.shutdown();
+    }
 
     const conflict = await manager.executeTool(config, 'send_email', {
       ...SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS.valid.input,

@@ -25,11 +25,13 @@ import {
   userGroupMembers,
   userGroups,
   wikiPages,
+  webSessions,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
+import { emitWebSessionRevocations } from '../lib/web-sessions.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -109,12 +111,28 @@ async function getCurrentMembership(orgId: string, userId: string) {
 
 async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deactivateMembership = true) {
   const revokedAt = new Date();
-
-  if (deactivateMembership) {
-    await db.update(orgMembers)
-      .set({ is_active: false, updated_at: revokedAt })
-      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId)));
-  }
+  const revokedSessionIds = await db.transaction(async (tx) => {
+    const [user] = await tx.select({ password_version: users.password_version })
+      .from(users).where(eq(users.id, memberId)).for('update');
+    const [membership] = await tx.select({ id: orgMembers.id })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, memberId)))
+      .for('update');
+    if (!user || !membership) return [];
+    if (deactivateMembership) {
+      await tx.update(users).set({ password_version: user.password_version + 1 }).where(eq(users.id, memberId));
+      await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
+    }
+    const sessions = await tx.select({ id: webSessions.id })
+      .from(webSessions)
+      .where(and(eq(webSessions.org_id, orgId), eq(webSessions.user_id, memberId), sql`${webSessions.revoked_at} IS NULL`))
+      .for('update');
+    if (sessions.length) {
+      await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
+    }
+    return sessions.map(session => session.id);
+  });
+  emitWebSessionRevocations(revokedSessionIds);
 
   await db.execute(sql`
     DELETE FROM ${spaceMembers}
@@ -1192,69 +1210,47 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
       return adminForbidden(c, err);
     }
 
-    const [invite] = await db.select()
-      .from(invites)
-      .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
-      .limit(1);
+    const result = await db.transaction(async (tx) => {
+      const [invite] = await tx.select().from(invites)
+        .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
+        .for('update');
+      if (!invite) return { failure: 'NOT_FOUND' as const };
+      if (invite.accepted_at) return { failure: 'INVITE_ACCEPTED' as const };
 
-    if (!invite) {
-      return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
-    }
-    if (invite.accepted_at) {
-      return c.json({ error: 'Accepted invites cannot be reissued', code: 'INVITE_ACCEPTED' }, 409);
-    }
+      const claims = decodeInviteClaims(invite.token);
+      let userId = claims?.user_id ?? null;
+      let role = claims?.role as 'admin' | 'member' | 'guest' | undefined;
+      const email = invite.email ?? claims?.email;
+      if ((!userId || !role) && email) {
+        const [target] = await tx.select({ id: users.id, role: orgMembers.role })
+          .from(users).innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
+          .where(and(eq(users.email, email), eq(orgMembers.org_id, currentUser.org_id)))
+          .limit(1);
+        userId = userId ?? target?.id ?? null;
+        role = role ?? (target?.role as 'admin' | 'member' | 'guest' | undefined);
+      }
+      if (!userId || !email) return { failure: 'INVITE_INVALID' as const };
 
-    const claims = decodeInviteClaims(invite.token);
-    let userId = claims?.user_id ?? null;
-    let role = claims?.role as 'admin' | 'member' | 'guest' | undefined;
-    const email = invite.email ?? claims?.email;
-
-    if ((!userId || !role) && email) {
-      const [target] = await db.select({
-        id: users.id,
-        role: orgMembers.role,
-      })
-        .from(users)
-        .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
-        .where(and(eq(users.email, email), eq(orgMembers.org_id, currentUser.org_id)))
-        .limit(1);
-      userId = userId ?? target?.id ?? null;
-      role = role ?? (target?.role as 'admin' | 'member' | 'guest' | undefined);
-    }
-
-    if (!userId || !email) {
+      const inviteToken = jwt.sign({
+        purpose: 'invite-accept', user_id: userId, org_id: currentUser.org_id, email,
+        inviter_id: currentUser.id, role: role ?? 'member', nonce: crypto.randomUUID(),
+      }, env.JWT_SECRET, { expiresIn: INVITE_TTL });
+      const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
+      const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;
+      await tx.update(invites).set({ token: inviteToken, invited_by: currentUser.id, expires_at: expiresAtDate ?? undefined, updated_at: new Date() })
+        .where(eq(invites.id, inviteId));
+      return { inviteToken, expiresAtDate };
+    });
+    if ('failure' in result) {
+      if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
+      if (result.failure === 'INVITE_ACCEPTED') return c.json({ error: 'Accepted invites cannot be reissued', code: 'INVITE_ACCEPTED' }, 409);
       return c.json({ error: 'Invite payload is incomplete', code: 'INVITE_INVALID' }, 409);
     }
 
-    const inviteToken = jwt.sign(
-      {
-        purpose: 'invite-accept',
-        user_id: userId,
-        org_id: currentUser.org_id,
-        email,
-        inviter_id: currentUser.id,
-        role: role ?? 'member',
-        nonce: crypto.randomUUID(),
-      },
-      env.JWT_SECRET,
-      { expiresIn: INVITE_TTL },
-    );
-
-    const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
-    const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;
-    await db.update(invites)
-      .set({
-        token: inviteToken,
-        invited_by: currentUser.id,
-        expires_at: expiresAtDate ?? undefined,
-        updated_at: new Date(),
-      })
-      .where(eq(invites.id, inviteId));
-
     return c.json({
       success: true,
-      invite_url: buildInviteUrl(inviteToken),
-      expires_at: expiresAtDate?.toISOString() ?? null,
+      invite_url: buildInviteUrl(result.inviteToken),
+      expires_at: result.expiresAtDate?.toISOString() ?? null,
     });
   } catch (err) {
     console.error('Failed to reissue invite:', err);
@@ -1274,47 +1270,56 @@ memberRoutes.delete('/invites/:id', async (c) => {
       return adminForbidden(c, err);
     }
 
-    const [invite] = await db.select()
-      .from(invites)
-      .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
-      .limit(1);
+    const revokedAt = new Date();
+    const result = await db.transaction(async (tx) => {
+      const [invite] = await tx.select().from(invites)
+        .where(and(eq(invites.org_id, currentUser.org_id), eq(invites.id, inviteId)))
+        .for('update');
+      if (!invite) return { failure: 'NOT_FOUND' as const };
+      if (invite.accepted_at) return { failure: 'INVITE_ACCEPTED' as const };
 
-    if (!invite) {
-      return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
-    }
-    if (invite.accepted_at) {
+      const claims = decodeInviteClaims(invite.token);
+      let userId = claims?.user_id ?? null;
+      const email = invite.email ?? claims?.email;
+      if (!userId && email) {
+        const [found] = await tx.select({ id: users.id }).from(users)
+          .where(eq(users.email, email)).limit(1);
+        userId = found?.id ?? null;
+      }
+
+      const revokedSessionIds: string[] = [];
+      let deactivatedUserId: string | null = null;
+      if (userId) {
+        // Invite row is already locked; keep remaining order user -> membership -> sessions.
+        const [user] = await tx.select({ password_hash: users.password_hash, password_version: users.password_version })
+          .from(users).where(eq(users.id, userId)).for('update');
+        const [membership] = await tx.select({ id: orgMembers.id, role: orgMembers.role, is_active: orgMembers.is_active })
+          .from(orgMembers)
+          .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, userId)))
+          .for('update');
+        if (user && membership?.is_active && !user.password_hash && membership.role !== 'owner') {
+          await tx.update(users).set({ password_version: user.password_version + 1 }).where(eq(users.id, userId));
+          await tx.update(orgMembers).set({ is_active: false, updated_at: revokedAt }).where(eq(orgMembers.id, membership.id));
+          const sessions = await tx.select({ id: webSessions.id }).from(webSessions)
+            .where(and(eq(webSessions.org_id, currentUser.org_id), eq(webSessions.user_id, userId), sql`${webSessions.revoked_at} IS NULL`))
+            .for('update');
+          if (sessions.length) {
+            await tx.update(webSessions).set({ revoked_at: revokedAt }).where(inArray(webSessions.id, sessions.map(session => session.id)));
+            revokedSessionIds.push(...sessions.map(session => session.id));
+          }
+          deactivatedUserId = userId;
+        }
+      }
+      await tx.delete(invites).where(eq(invites.id, inviteId));
+      return { revokedSessionIds, deactivatedUserId };
+    });
+    if ('failure' in result) {
+      if (result.failure === 'NOT_FOUND') return c.json({ error: 'Invite not found', code: 'NOT_FOUND' }, 404);
       return c.json({ error: 'Accepted invites cannot be revoked here', code: 'INVITE_ACCEPTED' }, 409);
     }
-
-    const claims = decodeInviteClaims(invite.token);
-    let userId = claims?.user_id ?? null;
-    const email = invite.email ?? claims?.email;
-
-    if (!userId && email) {
-      const [target] = await db.select({ id: users.id })
-        .from(users)
-        .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
-        .where(and(eq(users.email, email), eq(orgMembers.org_id, currentUser.org_id)))
-        .limit(1);
-      userId = target?.id ?? null;
-    }
-
-    await db.delete(invites).where(eq(invites.id, inviteId));
-
-    if (userId) {
-      const [target] = await db.select({
-        password_hash: users.password_hash,
-        role: orgMembers.role,
-        is_active: orgMembers.is_active,
-      })
-        .from(users)
-        .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
-        .where(and(eq(users.id, userId), eq(orgMembers.org_id, currentUser.org_id)))
-        .limit(1);
-
-      if (target?.is_active && !target.password_hash && target.role !== 'owner') {
-        await revokeMemberWorkspaceAccess(currentUser.org_id, userId, true);
-      }
+    emitWebSessionRevocations(result.revokedSessionIds);
+    if (result.deactivatedUserId) {
+      await revokeMemberWorkspaceAccess(currentUser.org_id, result.deactivatedUserId, false);
     }
 
     return c.json({ success: true });
@@ -1336,7 +1341,7 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
     }
 
     const [target] = await db
-      .select({ id: users.id, email: users.email })
+      .select({ id: users.id, email: users.email, password_version: users.password_version })
       .from(users)
       .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
       .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(users.id, memberId), eq(orgMembers.is_active, true)))
@@ -1347,7 +1352,7 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
     }
 
     const resetToken = jwt.sign(
-      { id: target.id, email: target.email, purpose: 'password-reset' },
+      { id: target.id, email: target.email, org_id: currentUser.org_id, purpose: 'password-reset', password_version: target.password_version },
       env.JWT_SECRET,
       { expiresIn: RECOVERY_TTL },
     );

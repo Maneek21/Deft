@@ -25,7 +25,7 @@ function keyMap(
  * the shared disposable database. This satisfies the global retirement guard
  * without making focused tests depend on file order or another test's org.
  */
-export async function databaseCompleteAppRunTestKeyrings(seed: string) {
+export async function databaseCompleteAppRunTestKeyringFixture(seed: string) {
   const [fingerprintRows, encryptionRows, signingRows] = await Promise.all([
     db.select({
       idempotency: appRuns.idempotency_key_version,
@@ -40,7 +40,7 @@ export async function databaseCompleteAppRunTestKeyrings(seed: string) {
   ]);
   const encryptionKeyIds = new Set(['enc-v1', ...encryptionRows.map((row) => row.keyId)]);
   const signingKeyIds = new Set(['sig-v1', ...signingRows.map((row) => row.keyId)]);
-  return parseEnvironmentAppRunKeyrings(JSON.stringify({
+  const environment = JSON.stringify({
     schema_version: APP_RUN_CONTRACT_VERSIONS.keyring,
     run_encryption: {
       current: 'enc-v1',
@@ -54,5 +54,10 @@ export async function databaseCompleteAppRunTestKeyrings(seed: string) {
       current: 'fp-v1',
       keys: keyMap(seed, 'fingerprint', fingerprintKeyIds),
     },
-  }));
+  });
+  return { environment, keys: parseEnvironmentAppRunKeyrings(environment) };
+}
+
+export async function databaseCompleteAppRunTestKeyrings(seed: string) {
+  return (await databaseCompleteAppRunTestKeyringFixture(seed)).keys;
 }

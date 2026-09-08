@@ -33,6 +33,7 @@ services:
         condition: service_healthy
     volumes:
       - uploads:/app/uploads
+      - uploads:/app/apps/api/uploads
     restart: unless-stopped
 
   init:
@@ -142,11 +143,6 @@ services:
       - '${DEFT_BIND_HOST:-127.0.0.1}:${DEFT_POSTGRES_PORT:-5432}:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # On first boot, enable the vector extension in the `deft` database.
-      # Scripts in /docker-entrypoint-initdb.d run once, only when the
-      # data directory is empty — so upgrades of existing deployments
-      # won't re-run this.
-      - ./scripts/docker/enable-pgvector.sql:/docker-entrypoint-initdb.d/01-enable-pgvector.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres']
       interval: 5s

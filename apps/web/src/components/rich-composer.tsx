@@ -874,7 +874,7 @@ export function RichComposer({
               >
                 {isImageType(file.type) ? <ImageIcon size={12} style={{ color: 'var(--muted)' }} /> : <FileText size={12} style={{ color: 'var(--muted)' }} />}
                 <span className="max-w-[100px] truncate" style={{ color: 'var(--foreground-secondary)' }}>{file.name}</span>
-                <button onClick={() => onRemovePendingFile(file.id)} className="p-0.5" style={{ color: 'var(--muted)' }}>
+                <button type="button" aria-label={`Remove ${file.name}`} onClick={() => onRemovePendingFile(file.id)} className="p-0.5" style={{ color: 'var(--muted)' }}>
                   <X size={10} strokeWidth={1.5} />
                 </button>
               </div>

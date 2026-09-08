@@ -11,14 +11,12 @@ This roadmap communicates direction, not delivery dates. Deft is an alpha and pr
 - Replace stale repository claims with current product proof
 - Keep permission, org isolation, and private-space tests mandatory
 
-## Next preview: make upgrades and releases repeatable
+## Upcoming core preview
 
-- Support versioned database upgrades from the previous preview
-- Publish signed or checksummed release artifacts and a GHCR image
-- Add release notes that distinguish fresh installs from upgrades
-- Add browser smoke, dependency review, CodeQL, container scanning, and SBOM generation to release gates
-- Certify backup, upgrade, rollback, and restore on the supported Docker Compose path
-- Expand import/export and operator recovery guidance
+- Publish the prepared `v0.3.0-preview.15` core candidate after its release gates pass
+- Ship connected Apps and bounded scheduled actions as experimental, opt-in capabilities
+- Keep the release explicitly core-scoped; Hermes certification and its bundle are excluded
+- Publish operational release notes, checksums, provenance, SBOM, and the exact tested revision
 
 ## Before stable v1
 
@@ -36,6 +34,7 @@ This roadmap communicates direction, not delivery dates. Deft is an alpha and pr
 - Additional calendar and external-tool pathways through customer-owned MCP runtimes
 - Richer team analytics and administrative audit controls
 - Ecosystem work around reusable agent skills and templates
+- Arbitrary App custom UI, public portals, general external runtimes, and synchronization after their identity and authorization contracts are defined
 
 ## Explicit non-commitments
 

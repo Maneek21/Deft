@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
@@ -18,7 +18,6 @@ import { Table } from '@tiptap/extension-table';
 import { TableRow } from '@tiptap/extension-table-row';
 import { TableCell } from '@tiptap/extension-table-cell';
 import { TableHeader } from '@tiptap/extension-table-header';
-import { Image as TiptapImage } from '@tiptap/extension-image';
 import { TaskList } from '@tiptap/extension-task-list';
 import { TaskItem } from '@tiptap/extension-task-item';
 import { Highlight } from '@tiptap/extension-highlight';
@@ -40,6 +39,9 @@ import { useSetPageContext } from '@/components/app-header-context';
 import { OverflowMenu } from '@/components/overflow-menu';
 import { AppBottomSheet } from '@/components/overlay-primitives';
 import { stripHtml } from '@/lib/strip-html';
+import { NoteSaveCoordinator, type NoteSaveStatus } from './note-save-coordinator';
+import { noteImageAttributes, ProtectedNoteImage } from './protected-note-image';
+import { noteLoadFailureState, type NoteLoadState } from './note-load-state';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
@@ -203,7 +205,9 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const { user } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [loadState, setLoadState] = useState<'loading' | 'loaded' | NoteLoadState>('loading');
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [saveStatus, setSaveStatus] = useState<NoteSaveStatus>('idle');
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<'private' | 'org'>('private');
@@ -235,8 +239,27 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const initialContentSet = useRef(false);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pendingContentSave = useRef<{ revision: number; payload: Record<string, unknown> } | null>(null);
+  const pendingTitleSave = useRef<{ revision: number; payload: Record<string, unknown> } | null>(null);
+  const noteLoadRequestRef = useRef(0);
+  const initialContentTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const isNoteOwner = !note || note.user_id === user?.id;
+  const saveCoordinator = useMemo(() => new NoteSaveCoordinator(
+    async payload => {
+      const response = await api.patch(`/api/daily-notes/${noteId}`, payload);
+      return response.ok;
+    },
+    status => {
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      setSaveStatus(status);
+      if (status === 'saved') {
+        savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000);
+      }
+    },
+  ), [noteId]);
+
+  // Keep the editor locked until an authorized note payload arrives.
+  const isNoteOwner = Boolean(note && note.user_id === user?.id);
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -253,7 +276,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       TableRow,
       TableCell,
       TableHeader,
-      TiptapImage.configure({ inline: false, allowBase64: false }),
+      ProtectedNoteImage.configure({ inline: false, allowBase64: false }),
       TaskList,
       TaskItem.configure({ nested: true }),
       Highlight.configure({ multicolor: false }),
@@ -277,10 +300,10 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
             api.upload('/api/upload', file).then(async (res) => {
               if (res.ok) {
                 const data = await res.json();
-                const imgNode = view.state.schema.nodes.image;
+                const imgNode = view.state.schema.nodes.protectedNoteImage;
                 if (imgNode) {
                   view.dispatch(view.state.tr.replaceSelectionWith(
-                    imgNode.create({ src: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/files/${data.id}` })
+                    imgNode.create(noteImageAttributes({ id: data.id, name: file.name }))
                   ));
                 }
               }
@@ -293,13 +316,14 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     },
     onUpdate: ({ editor: ed }) => {
       if (!initialContentSet.current) return;
-      setSaveStatus('saving');
+      const revision = saveCoordinator.markDirty('content');
+      pendingContentSave.current = { revision, payload: { content: ed.getHTML() } };
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(async () => {
-        await api.patch(`/api/daily-notes/${noteId}`, { content: ed.getHTML() });
-        setSaveStatus('saved');
-        if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-        savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000);
+      saveTimerRef.current = setTimeout(() => {
+        const pending = pendingContentSave.current;
+        if (!pending || pending.revision !== revision) return;
+        pendingContentSave.current = null;
+        void saveCoordinator.save('content', pending.revision, pending.payload);
       }, 600);
     },
   });
@@ -315,7 +339,10 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         const res = await api.upload('/api/upload', file);
         if (res.ok) {
           const data = await res.json();
-          editor.chain().focus().setImage({ src: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/files/${data.id}` }).run();
+          editor.chain().focus().insertContent({
+            type: 'protectedNoteImage',
+            attrs: noteImageAttributes({ id: data.id, name: file.name }),
+          }).run();
         }
       } catch {}
     };
@@ -335,27 +362,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     URL.revokeObjectURL(url);
   }, [editor, note, title]);
 
-  const clearSavedTimers = useCallback(() => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-  }, []);
-
-  const markSaved = useCallback(() => {
-    clearSavedTimers();
-    setSaveStatus('saved');
-    savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000);
-  }, [clearSavedTimers]);
-
   const persistNoteUpdate = useCallback(async (payload: Record<string, unknown>) => {
-    setSaveStatus('saving');
-    try {
-      const res = await api.patch(`/api/daily-notes/${noteId}`, payload);
-      if (res.ok) markSaved();
-      else setSaveStatus('idle');
-    } catch {
-      setSaveStatus('idle');
-    }
-  }, [markSaved, noteId]);
+    const field = Object.keys(payload)[0] || 'metadata';
+    const revision = saveCoordinator.markDirty(field);
+    await saveCoordinator.save(field, revision, payload);
+  }, [saveCoordinator]);
 
   const handlePromoteToWiki = async () => {
     if (!editor || !note || !title.trim()) return;
@@ -423,25 +434,41 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   };
 
   useEffect(() => {
+    const requestId = ++noteLoadRequestRef.current;
     setLoading(true);
+    setLoadState('loading');
+    setNote(null);
     initialContentSet.current = false;
+    if (initialContentTimerRef.current) clearTimeout(initialContentTimerRef.current);
     api.get(`/api/daily-notes/${noteId}`).then(async res => {
-      if (res.ok) {
-        const data = await res.json();
-        setNote(data);
-        setTitle(data.title);
-        setIcon(data.icon);
-        setVisibility(data.visibility === 'org' ? 'org' : 'private');
-        if (editor) {
-          editor.commands.setContent(data.content || '');
-          // Set editable based on ownership
-          editor.setEditable(data.user_id === user?.id);
-          setTimeout(() => { initialContentSet.current = true; }, 50);
-        }
+      if (requestId !== noteLoadRequestRef.current) return;
+      if (!res.ok) {
+        // Keep denied and missing direct links indistinguishable to avoid leaking private-note state.
+        setLoadState(noteLoadFailureState(res.status));
+        setLoading(false);
+        return;
       }
+      const data = await res.json();
+      if (requestId !== noteLoadRequestRef.current) return;
+      setNote(data);
+      setTitle(data.title);
+      setIcon(data.icon);
+      setVisibility(data.visibility === 'org' ? 'org' : 'private');
+      if (editor) {
+        editor.commands.setContent(data.content || '');
+        editor.setEditable(data.user_id === user?.id);
+        initialContentTimerRef.current = setTimeout(() => {
+          if (requestId === noteLoadRequestRef.current) initialContentSet.current = true;
+        }, 50);
+      }
+      setLoadState('loaded');
+      setLoading(false);
+    }).catch(() => {
+      if (requestId !== noteLoadRequestRef.current) return;
+      setLoadState('error');
       setLoading(false);
     });
-  }, [noteId, editor]);
+  }, [noteId, editor, user?.id, loadAttempt]);
 
   // Task 5.1 — load note -> tasks references sidebar
   const fetchReferences = useCallback(async () => {
@@ -467,18 +494,35 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
-    setSaveStatus('saving');
+    const revision = saveCoordinator.markDirty('title');
+    pendingTitleSave.current = { revision, payload: { title: value } };
     if (titleDebounce.current) clearTimeout(titleDebounce.current);
-    titleDebounce.current = setTimeout(async () => {
-      try {
-        const res = await api.patch(`/api/daily-notes/${noteId}`, { title: value });
-        if (res.ok) markSaved();
-        else setSaveStatus('idle');
-      } catch {
-        setSaveStatus('idle');
-      }
+    titleDebounce.current = setTimeout(() => {
+      const pending = pendingTitleSave.current;
+      if (!pending || pending.revision !== revision) return;
+      pendingTitleSave.current = null;
+      void saveCoordinator.save('title', pending.revision, pending.payload);
     }, 500);
   };
+
+  const flushPendingSaves = useCallback(async () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (titleDebounce.current) clearTimeout(titleDebounce.current);
+    const content = pendingContentSave.current;
+    const pendingTitle = pendingTitleSave.current;
+    pendingContentSave.current = null;
+    pendingTitleSave.current = null;
+    const saves: Promise<void>[] = [];
+    if (content) saves.push(saveCoordinator.save('content', content.revision, content.payload));
+    if (pendingTitle) saves.push(saveCoordinator.save('title', pendingTitle.revision, pendingTitle.payload));
+    await Promise.all(saves);
+  }, [saveCoordinator]);
+
+  const handleEditorBack = useCallback(async () => {
+    await flushPendingSaves();
+    await saveCoordinator.awaitIdle();
+    if (saveCoordinator.status === 'saved' || saveCoordinator.status === 'idle') onBack();
+  }, [flushPendingSaves, onBack, saveCoordinator]);
 
   const handleIconChange = async (emoji: string) => {
     setIcon(emoji);
@@ -519,17 +563,41 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     setPendingDelete(false);
   };
 
-  // Clean up delete timer on unmount
+  // Clean up editor timers on unmount. The explicit Back action awaits the
+  // coordinator; browser/tab teardown remains best-effort by design.
   useEffect(() => {
-    return () => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); };
-  }, []);
+    return () => {
+      ++noteLoadRequestRef.current;
+      if (initialContentTimerRef.current) clearTimeout(initialContentTimerRef.current);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      void flushPendingSaves();
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    };
+  }, [flushPendingSaves]);
 
-  const isOwner = !note || note.user_id === user?.id;
+  const isOwner = Boolean(note && note.user_id === user?.id);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 size={24} className="animate-spin" style={{ color: 'var(--muted)' }} />
+      </div>
+    );
+  }
+
+  if (loadState === 'unavailable' || loadState === 'error') {
+    const unavailable = loadState === 'unavailable';
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center px-6">
+        <div className="w-full max-w-md rounded-2xl p-6 text-center" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+          {unavailable && <Lock size={22} className="mx-auto mb-3" style={{ color: 'var(--muted)' }} />}
+          <h2 className="text-[16px] font-semibold" style={{ color: 'var(--foreground)' }}>{unavailable ? 'Note unavailable' : 'Couldn’t load this note'}</h2>
+          <p className="mt-2 text-[13px]" style={{ color: 'var(--muted)' }}>{unavailable ? 'You don’t have access to this note, or it no longer exists.' : 'Try again, or return to your notes.'}</p>
+          <div className="mt-4 flex justify-center gap-2">
+            <button type="button" onClick={onBack} className="deft-pill min-h-[36px]" style={{ color: 'var(--foreground)', background: 'var(--surface-container-low)' }}>Back to notes</button>
+            <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="deft-pill deft-pill-active min-h-[36px]" style={{ background: 'var(--accent)', color: 'white' }}>Retry</button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -559,7 +627,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       >
         {/* Top bar */}
         <div className="flex items-center justify-between mb-4">
-          <button onClick={focusMode ? () => setFocusMode(false) : onBack}
+          <button onClick={focusMode ? () => setFocusMode(false) : () => { void handleEditorBack(); }}
             aria-label="Back to all notes"
             className="flex items-center gap-1.5 text-[13px] font-medium min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 px-2 py-1 rounded-lg"
             style={{ color: 'var(--muted)' }}>
@@ -574,6 +642,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
             {saveStatus === 'saved' && (
               <span className="text-[11px] flex items-center gap-1" style={{ color: 'var(--status-green)' }}>
                 <Check size={11} /> Saved
+              </span>
+            )}
+            {saveStatus === 'error' && (
+              <span role="alert" className="text-[11px]" style={{ color: 'var(--error)' }}>
+                Not saved — edit to retry
               </span>
             )}
             {/* Visibility selector — owner only */}
@@ -1121,7 +1194,7 @@ export default function NotesPage() {
 
   // If a note is open, show the editor
   if (activeId) {
-    return <NoteEditor noteId={activeId} onBack={handleBack} onDeleted={handleDeleted} />;
+    return <NoteEditor key={activeId} noteId={activeId} onBack={handleBack} onDeleted={handleDeleted} />;
   }
 
   const filtered = search

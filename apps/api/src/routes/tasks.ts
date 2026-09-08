@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
@@ -1772,6 +1773,7 @@ async function createTaskForProject(
   projectId: string,
   orgId: string,
   userId: string,
+  requestKey?: string,
 ): Promise<{ task: Record<string, any>; project: { prefix: string; name: string } }> {
   // Verify project belongs to org
   const [project] = await db.select()
@@ -1793,33 +1795,42 @@ async function createTaskForProject(
     throw Object.assign(new Error('Invalid assignee'), { code: 'INVALID_ASSIGNEE' });
   }
 
-  const taskNumber = await reserveNextTaskNumber({ projectId, orgId });
+  const { value: task, replayed } = await nativeCreate({
+    orgId, userId, operation: `task:${projectId}`, key: requestKey, payload: data,
+    replay: async (tx, id) => (await tx.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.org_id, orgId), eq(tasks.project_id, projectId), eq(tasks.created_by, userId), eq(tasks.is_deleted, false))).limit(1))[0],
+    create: async (tx) => {
+    const taskNumber = await reserveNextTaskNumber({ projectId, orgId, executor: tx });
 
-  const [task] = await db.insert(tasks).values({
-    org_id: orgId,
-    project_id: projectId,
-    number: taskNumber,
-    title: data.title,
-    description: data.description || undefined,
-    status: (data.status || 'backlog') as any,
-    priority: (data.priority || 'p2') as any,
-    assignee_id: assigneeId ?? undefined,
-    created_by: userId,
-    due_date: data.due_date ? new Date(data.due_date) : undefined,
-    sort_order: data.sort_order ?? 0,
-    source_message_id: data.source_message_id || undefined,
-    parent_task_id: data.parent_task_id || undefined,
-    // Task 4.11 — skill-defined custom fields.
-    metadata: data.metadata ?? undefined,
-  }).returning();
+    const [task] = await tx.insert(tasks).values({
+      org_id: orgId,
+      project_id: projectId,
+      number: taskNumber,
+      title: data.title,
+      description: data.description || undefined,
+      status: (data.status || 'backlog') as any,
+      priority: (data.priority || 'p2') as any,
+      assignee_id: assigneeId ?? undefined,
+      created_by: userId,
+      due_date: data.due_date ? new Date(data.due_date) : undefined,
+      sort_order: data.sort_order ?? 0,
+      source_message_id: data.source_message_id || undefined,
+      parent_task_id: data.parent_task_id || undefined,
+      // Task 4.11 — skill-defined custom fields.
+      metadata: data.metadata ?? undefined,
+    }).returning();
 
-  // Create activity log entry
-  await db.insert(taskActivity).values({
-    org_id: orgId,
-    task_id: task!.id,
-    user_id: userId,
-    action: 'created',
-  });
+    // Create activity log entry
+    await tx.insert(taskActivity).values({
+      org_id: orgId,
+      task_id: task!.id,
+      user_id: userId,
+      action: 'created',
+    });
+
+      return task!;
+  } });
+  if (replayed) return { task, project };
+  const taskNumber = task.number;
 
   // Broadcast task:created via socket to org
   const io = getIO();
@@ -1904,7 +1915,7 @@ taskRoutes.post('/', async (c) => {
     const { project_id: projectId, ...taskData } = parsed.data;
 
     try {
-      const { task, project } = await createTaskForProject(taskData, projectId, user.org_id, user.id);
+      const { task, project } = await createTaskForProject(taskData, projectId, user.org_id, user.id, nativeCreateKey(c.req.header('Idempotency-Key')));
       return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
     } catch (err: any) {
       if (err?.code === 'NOT_FOUND') {
@@ -1916,6 +1927,7 @@ taskRoutes.post('/', async (c) => {
       throw err;
     }
   } catch (err) {
+    if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
     console.error('Failed to create task:', err);
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -1935,7 +1947,7 @@ taskRoutes.post('/project/:projectId', async (c) => {
     }
 
     try {
-      const { task, project } = await createTaskForProject(parsed.data, projectId, user.org_id, user.id);
+      const { task, project } = await createTaskForProject(parsed.data, projectId, user.org_id, user.id, nativeCreateKey(c.req.header('Idempotency-Key')));
       return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
     } catch (err: any) {
       if (err?.code === 'NOT_FOUND') {
@@ -1944,6 +1956,7 @@ taskRoutes.post('/project/:projectId', async (c) => {
       throw err;
     }
   } catch (err) {
+    if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
     console.error('Failed to create task:', err);
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
   }

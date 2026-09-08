@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { getSocket } from '@/lib/socket';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -201,6 +202,9 @@ export default function TasksPage() {
   });
   const pastedTaskTitles = useMemo(() => pasteTaskText.split(/\r?\n/).map((title) => title.trim()).filter(Boolean).slice(0, 50), [pasteTaskText]);
   const viewMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const inlineCreateIntentRef = useRef<{ projectId: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
+  const pastedCreateIntentRefs = useRef(new Map<string, { intent: ReturnType<typeof createNativeCreateIntent>; key?: string }>());
+  const pastedCreateBatchRef = useRef<{ projectId: string; identity: string; completed: Set<string> } | null>(null);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -545,19 +549,50 @@ export default function TasksPage() {
   const createPastedTasks = async () => {
     if (!selectedProject || pastedTaskTitles.length === 0 || pasteCreating) return;
     setPasteCreating(true);
-    const results = await Promise.all(pastedTaskTitles.map((title) =>
-      api.post(`/api/projects/${selectedProject.id}/tasks`, { title }),
-    ));
-    const created = results.filter((result) => result.ok).length;
-    setPasteCreating(false);
-    if (created === pastedTaskTitles.length) {
-      setPasteCreateOpen(false);
-      setPasteTaskText('');
+    const identity = pastedTaskTitles.join('\n');
+    if (pastedCreateBatchRef.current?.projectId !== selectedProject.id || pastedCreateBatchRef.current.identity !== identity) {
+      pastedCreateIntentRefs.current.forEach((entry) => entry.intent.cancel());
+      pastedCreateIntentRefs.current.clear();
+      pastedCreateBatchRef.current = { projectId: selectedProject.id, identity, completed: new Set() };
     }
-    await loadTasks();
-    setToast(created === pastedTaskTitles.length
-      ? `${created} tasks created`
-      : `${created} of ${pastedTaskTitles.length} tasks created`);
+    const batch = pastedCreateBatchRef.current;
+    try {
+      await Promise.allSettled(pastedTaskTitles.map(async (title, index) => {
+        const scope = `${selectedProject.id}:${index}`;
+        if (batch.completed.has(scope)) return;
+        const entry = pastedCreateIntentRefs.current.get(scope) ?? { intent: createNativeCreateIntent(`task:${selectedProject.id}:paste:${index}`) };
+        pastedCreateIntentRefs.current.set(scope, entry);
+        const body = { title };
+        const intentKey = entry.key ?? await entry.intent.keyFor(body);
+        entry.key = intentKey;
+        const response = await api.post(`/api/projects/${selectedProject.id}/tasks`, body, { headers: { 'Idempotency-Key': intentKey } });
+        if (response.ok) batch.completed.add(scope);
+      }));
+      const created = batch.completed.size;
+      if (created === pastedTaskTitles.length) {
+        pastedCreateIntentRefs.current.forEach((entry) => {
+          if (entry.key) entry.intent.acknowledgeSuccess(entry.key);
+        });
+        // A complete batch is acknowledged by the server; release every key
+        // only now so a partial retry cannot recreate a successful row.
+        pastedCreateIntentRefs.current.clear();
+        pastedCreateBatchRef.current = null;
+        setPasteCreateOpen(false);
+        setPasteTaskText('');
+      }
+      await loadTasks();
+      setToast(created === pastedTaskTitles.length
+        ? `${created} tasks created`
+        : `${created} of ${pastedTaskTitles.length} tasks created; retry to finish`);
+    } finally {
+      setPasteCreating(false);
+    }
+  };
+
+  const clearPastedTaskBatch = () => {
+    pastedCreateIntentRefs.current.forEach((entry) => entry.intent.cancel());
+    pastedCreateIntentRefs.current.clear();
+    pastedCreateBatchRef.current = null;
   };
 
   // External callers (command palette, etc.) can request the quick-create
@@ -891,8 +926,15 @@ export default function TasksPage() {
 
   const handleInlineCreate = async (title: string, defaults: Record<string, unknown>) => {
     if (!selectedProject) return false;
-    const res = await api.post(`/api/projects/${selectedProject.id}/tasks`, { title, ...defaults });
+    if (inlineCreateIntentRef.current?.projectId !== selectedProject.id) {
+      inlineCreateIntentRef.current = { projectId: selectedProject.id, intent: createNativeCreateIntent(`task:${selectedProject.id}:inline`) };
+    }
+    const body = { title, ...defaults };
+    const intent = inlineCreateIntentRef.current.intent;
+    const intentKey = await intent.keyFor(body);
+    const res = await api.post(`/api/projects/${selectedProject.id}/tasks`, body, { headers: { 'Idempotency-Key': intentKey } });
     if (!res.ok) return false;
+    intent.acknowledgeSuccess(intentKey);
     await loadTasks();
     return true;
   };
@@ -1815,7 +1857,7 @@ export default function TasksPage() {
       {pasteCreateOpen && selectedProject && (
         <AppDialog
           open
-          onClose={() => !pasteCreating && setPasteCreateOpen(false)}
+          onClose={() => { if (!pasteCreating) { clearPastedTaskBatch(); setPasteCreateOpen(false); } }}
           title="Paste task titles"
           description="One title per line. Review the list before creating up to 50 tasks."
           width={520}
@@ -1827,7 +1869,7 @@ export default function TasksPage() {
               <div className="flex gap-2">
                 <button
                   disabled={pasteCreating}
-                  onClick={() => setPasteCreateOpen(false)}
+                  onClick={() => { clearPastedTaskBatch(); setPasteCreateOpen(false); }}
                   className="rounded-lg px-4 py-2 text-[13px]"
                   style={{ color: 'var(--foreground)', border: '1px solid var(--border)' }}
                 >Cancel</button>
@@ -1844,7 +1886,7 @@ export default function TasksPage() {
           <textarea
             autoFocus
             value={pasteTaskText}
-            onChange={(event) => setPasteTaskText(event.target.value)}
+            onChange={(event) => { clearPastedTaskBatch(); setPasteTaskText(event.target.value); }}
             placeholder={'Confirm sample count\nDraft buyer update\nSchedule launch review'}
             className="h-40 w-full resize-y rounded-lg p-3 text-[13px] outline-none"
             style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}

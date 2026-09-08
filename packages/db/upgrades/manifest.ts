@@ -152,6 +152,21 @@ export const upgradeManifest = {
       file: '0.3.0-preview.26-app-automation-foundation.sql',
       description: 'Add dormant approved App automation definitions, fire identities, and exact Run lineage',
     },
+    {
+      version: '0.3.0-preview.27',
+      file: '0.3.0-preview.27-web-session-families.sql',
+      description: 'Add durable browser session families for rotation and immediate revocation; legacy browser sessions require sign-in',
+    },
+    {
+      version: '0.3.0-preview.28',
+      file: '0.3.0-preview.28-password-generation.sql',
+      description: 'Invalidate outstanding browser password reset links after credential changes',
+    },
+    {
+      version: '0.3.0-preview.29',
+      file: '0.3.0-preview.29-native-create-requests.sql',
+      description: 'Persist scoped native create identities for safe explicit retries',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

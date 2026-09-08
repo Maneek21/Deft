@@ -1,11 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { AlertTriangle, Clock3, Loader2, Pause, Play, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Clock3, FileSearch, Loader2, Pause, Play, ShieldAlert } from 'lucide-react';
 import { useAppAutomations } from '@/hooks/use-apps';
 import { transitionAppAutomation, type AppAutomationDefinition } from '@/lib/app-automations';
 
-export function AppAutomationManagement({ installationId }: { installationId: string }) {
+export function AppAutomationManagement({ installationId, onInspectRun }: { installationId: string; onInspectRun: (runId: string) => void }) {
   const state = useAppAutomations(installationId);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -32,15 +32,18 @@ export function AppAutomationManagement({ installationId }: { installationId: st
     {state.isLoading ? <div className="flex min-h-14 items-center justify-center"><Loader2 size={15} className="animate-spin" aria-label="Loading App automations" /></div>
       : state.error || !management ? <p role="alert" className="text-[11px]" style={{ color: 'var(--error)' }}>{state.error instanceof Error ? state.error.message : 'Automations did not load.'}</p>
         : management.definitions.length === 0 ? <div className="rounded-lg px-3 py-3 text-[11px]" style={{ background: 'var(--surface-container-high)', color: 'var(--outline)' }}><Clock3 size={14} className="mb-1.5" />No approved schedules yet. Open an automation-capable App action on a record to create one.</div>
-          : <ul className="space-y-2">{management.definitions.map((definition) => <AutomationRow key={definition.id} definition={definition} runnerEnabled={management.killSwitchEnabled} busy={busy === definition.id} onTransition={transition} />)}</ul>}
+          : <><ul className="space-y-2">{management.definitions.map((definition) => <AutomationRow key={definition.id} definition={definition} runnerEnabled={management.killSwitchEnabled} busy={busy === definition.id} onTransition={transition} onInspectRun={onInspectRun} />)}</ul>
+            {state.hasMore && <button type="button" className="deft-pill min-h-11" disabled={state.isLoadingMore} onClick={() => void state.loadMore()}>{state.isLoadingMore && <Loader2 size={13} className="animate-spin" />} Load older schedules</button>}
+          </>}
   </section>;
 }
 
-function AutomationRow({ definition, runnerEnabled, busy, onTransition }: {
+function AutomationRow({ definition, runnerEnabled, busy, onTransition, onInspectRun }: {
   definition: AppAutomationDefinition;
   runnerEnabled: boolean;
   busy: boolean;
   onTransition: (definition: AppAutomationDefinition, action: 'pause' | 'resume') => Promise<void>;
+  onInspectRun: (runId: string) => void;
 }) {
   const active = definition.state === 'active';
   const mutable = active || definition.state === 'paused';
@@ -51,15 +54,18 @@ function AutomationRow({ definition, runnerEnabled, busy, onTransition }: {
       {mutable && <button type="button" className="deft-pill min-h-11 flex-shrink-0" disabled={busy} onClick={() => void onTransition(definition, active ? 'pause' : 'resume')}>{busy ? <Loader2 size={13} className="animate-spin" /> : active ? <Pause size={13} /> : <Play size={13} />} {active ? 'Pause' : 'Resume'}</button>}
     </div>
     <dl className="mt-3 grid gap-2 sm:grid-cols-3">
-      <Fact label="State" value={definition.state.replaceAll('_', ' ')} />
+      <Fact label="Eligibility" value={definition.eligibility.status.replaceAll('_', ' ')} />
       <Fact label="Next fire" value={!runnerEnabled ? 'Runner disabled' : definition.nextFireAtUtc ? formatDate(definition.nextFireAtUtc) : 'Not scheduled'} />
       <Fact label="Last fire / Run" value={definition.latestRun ? `${definition.latestRun.state.replaceAll('_', ' ')} · ${formatDate(definition.latestRun.updatedAt)}` : last ? `${last.state.replaceAll('_', ' ')} · ${last.logicalLocalDate}` : 'No fire yet'} />
       <Fact label="Budget" value={`${definition.budgets.maxOrgRunsPerUtcDay}/day · ${definition.budgets.maxPendingOrgFires} pending`} />
       <Fact label="Dead letters" value={String(definition.fireSummary.deadLetter)} />
       <Fact label="Catch-up" value={`${definition.schedule.catchUpWindowMinutes} minutes`} />
     </dl>
+    <p className="mt-3" style={{ color: definition.eligibility.status === 'awaiting_delivery_check' ? 'var(--outline)' : 'var(--status-amber)' }}>{definition.eligibility.reason}</p>
     {!runnerEnabled && <p className="mt-3 flex items-start gap-1.5" style={{ color: 'var(--status-amber)' }}><ShieldAlert size={13} className="mt-0.5 flex-shrink-0" />Resources remain available while scheduled delivery is disabled.</p>}
     {last?.state === 'dead_letter' && <p className="mt-3 flex items-start gap-1.5" style={{ color: 'var(--status-amber)' }}><AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />{definition.retry.reason}</p>}
+    {last?.terminalReason && last.terminalReason !== 'run_created' && <p className="mt-2 flex items-start gap-1.5" style={{ color: 'var(--status-amber)' }}><AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />Last fire: {last.terminalReason.replaceAll('_', ' ')}.</p>}
+    {definition.latestRun && <button type="button" className="mt-3 flex min-h-11 items-center gap-1.5 text-left underline" onClick={() => onInspectRun(definition.latestRun!.id)}><FileSearch size={13} /> Inspect Run and verified receipts</button>}
   </li>;
 }
 

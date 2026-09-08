@@ -8,6 +8,8 @@
 
 [Website](https://deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
+**Try Deft:** [install a workspace, connect your AI client, or build an internal App](docs/getting-started.md). The latest downloadable image is `v0.3.0-preview.14`; the `v0.3.0-preview.15` core candidate described on `master` has not been published. See the [current availability map](docs/product-status.md) before evaluating an unreleased feature.
+
 ![Where humans and agents work together.](docs/assets/repository/hero.png)
 
 Deft is a self-hostable, open-source workspace where people and AI agents share the same chat, tasks, knowledge, calendar context, approvals, and receipts.
@@ -18,9 +20,9 @@ Instead of pasting fragments from Slack, Notion, and a task tracker into an AI c
 
 1. **Work happens in context.** People discuss an issue in chat, update a task, write a note, or record a decision.
 2. **An agent reads the same workspace.** Defty, an agent employee, or a personal MCP client can retrieve the relevant messages, tasks, wiki pages, people, and calendar context.
-3. **Writes stay governed.** Risky changes are drafted first and shown as approval cards in the conversation and approval inbox.
+3. **Governed actions can require review.** Employee actions follow their approval policy, with proposed changes shown in conversation cards and the approval inbox. Personal MCP writes use the authorizing person's permissions and scopes.
 4. **The result lands in Deft.** Tasks, messages, notes, wiki pages, and status changes become part of the shared record.
-5. **Every action leaves a receipt.** The workspace records who or what acted, what changed, and where the result lives.
+5. **Governed agent actions leave receipts.** Deft records the actor, outcome, and result for actions that pass through its governed execution paths.
 
 ![A live Deft workspace](docs/assets/repository/dashboard.png)
 
@@ -46,9 +48,9 @@ Instead of pasting fragments from Slack, Notion, and a task tracker into an AI c
 
 Deft still works as a normal workspace without an AI provider key. Chat, tasks, notes, knowledge, calendar, people, and teams remain available; AI features stay disabled until a provider is configured.
 
-### An extensible workspace through Modules
+### An extensible workspace through Modules and Apps
 
-Deft's workspace can also grow with the needs of a company. Modules let developers add domain-specific collections and applications while inheriting the workspace primitives that already exist, including identity, permissions, search, context and agent access.
+Modules add domain records, relationships, and native views. Apps package supported workspace extensions for operator review and installation. Declarative internal Apps are an opt-in alpha capability; connected Apps and bounded scheduled actions are implemented in the upcoming core candidate and remain disabled by default. Arbitrary custom UI and public portals are planned rather than part of the current contract.
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
@@ -102,13 +104,14 @@ cd Deft
 cp .env.example .env
 ```
 
-Set the three required secrets in `.env`:
+Set the four required secrets in `.env`:
 
 | Variable | Generate with |
 |---|---|
 | `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `JWT_REFRESH_SECRET` | `openssl rand -hex 32` |
+| `ENCRYPTION_KEY` | `openssl rand -hex 32` |
 
 Then build, start, initialize, and verify the stack:
 

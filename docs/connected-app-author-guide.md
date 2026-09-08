@@ -1,16 +1,17 @@
 # Connected App author guide
 
-This guide covers the Phase 6 connected-App journey through its native
-lifecycle: an independent author can create, check, build, verify host
-compatibility, and locally stage an App Protocol v1 connected App or bounded
-Protocol v2 automation request using packed public artifacts; an authorized
-workspace operator retains review, binding, activation, and execution control.
+> **Upcoming core candidate:** this connected-App and bounded-automation flow is implemented on `master` for the unpublished `v0.3.0-preview.15` core candidate. It is experimental and disabled by default. It is not available in the latest published `v0.3.0-preview.14` image.
+
+This guide shows how to build a connected App, check that it matches the host,
+and submit it for workspace review. It supports App Protocol v1 connected Apps
+and the bounded scheduling requests in Protocol v2. The workspace operator
+reviews access, chooses provider bindings and activates the App.
 
 The current authoring artifact is `@deft/app-kit@0.1.0-alpha.2`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
-## 1. Use the pinned proof artifacts
+## 1. Build against the example provider
 
 The
 [machine-readable connected proof bundle](../examples/app-platform-connected-proof-bundle.json)

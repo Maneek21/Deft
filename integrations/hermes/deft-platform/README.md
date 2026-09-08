@@ -1,5 +1,7 @@
 # Independent Hermes employee profile for Deft
 
+> **Release-specific compatibility:** use this integration only when the selected Deft release's integration manifest and certificate identify it as compatible. A source checkout by itself is not certification. See [Deft's current product status](https://github.com/Maneek21/Deft/blob/master/docs/product-status.md).
+
 This plugin makes Deft a native Hermes messaging platform. Hermes runs wherever
 the operator installs it, owns its model loop and external tools, and connects
 to Deft through two narrow interfaces:

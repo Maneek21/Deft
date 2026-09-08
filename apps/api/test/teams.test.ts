@@ -2,11 +2,10 @@ import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import jwt from 'jsonwebtoken';
 import { Hono } from 'hono';
 import { authMiddleware } from '../src/middleware/auth.js';
 import { teamRoutes } from '../src/routes/teams.js';
-import { env } from '../src/lib/env.js';
+import { createWebSession } from '../src/lib/web-sessions.js';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
@@ -45,8 +44,10 @@ const OTHER_PROJECT_ID = crypto.randomUUID();
 const OVERDUE_TASK_ID = crypto.randomUUID();
 const REVIEW_TASK_ID = crypto.randomUUID();
 
-function token(userId: string, orgId = ORG_ID, email = `${userId}@test.local`) {
-  return jwt.sign({ id: userId, email, org_id: orgId }, env.JWT_SECRET, { expiresIn: '15m' });
+const sessions = new Map<string, Awaited<ReturnType<typeof createWebSession>>>();
+const sessionKey = (userId: string, orgId: string) => `${orgId}:${userId}`;
+function token(userId: string, orgId = ORG_ID) {
+  return sessions.get(sessionKey(userId, orgId))!.accessToken;
 }
 
 async function authed(path: string, userId: string, init: RequestInit = {}, orgId = ORG_ID) {
@@ -171,10 +172,25 @@ before(async () => {
       [crypto.randomUUID(), ORG_ID, TEAM_ID, LEAD_ID, crypto.randomUUID(), MEMBER_ID, crypto.randomUUID(), PRIVATE_TEAM_ID],
     );
   });
+  const identities = [
+    [ADMIN_ID, ORG_ID, `teams-admin-${RUN_ID}@test.local`],
+    [LEAD_ID, ORG_ID, `teams-lead-${RUN_ID}@test.local`],
+    [MEMBER_ID, ORG_ID, `teams-member-${RUN_ID}@test.local`],
+    [TARGET_ID, ORG_ID, `teams-target-${RUN_ID}@test.local`],
+    [AGENT_USER_ID, ORG_ID, `teams-agent-${RUN_ID}@test.local`],
+    [OTHER_USER_ID, OTHER_ORG_ID, `teams-other-user-${RUN_ID}@test.local`],
+  ] as const;
+  for (const [id, orgId, email] of identities) {
+    sessions.set(sessionKey(id, orgId), await createWebSession({ id, org_id: orgId, email }));
+  }
+  await withClient(c => c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [ORG_ID, INACTIVE_ID]).then(() => undefined));
+  sessions.set(sessionKey(INACTIVE_ID, ORG_ID), await createWebSession({ id: INACTIVE_ID, org_id: ORG_ID, email: `teams-inactive-${RUN_ID}@test.local` }));
+  await withClient(c => c.query(`UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`, [ORG_ID, INACTIVE_ID]).then(() => undefined));
 });
 
 after(async () => {
   await withClient(async (c) => {
+    await c.query(`DELETE FROM web_sessions WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM team_dashboard_snapshots WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM team_resources WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM team_members WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);

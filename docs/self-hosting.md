@@ -42,8 +42,9 @@ Tagged preview releases also publish an amd64 image to
 the same image works on localhost or a custom domain.
 
 For a named release, download `docker-compose.yml`, `compose.prod.yml`,
-`compose.release.yml`, and `default.env.example` from the GitHub release into
-one directory. Copy `default.env.example` to `.env`, then set:
+`compose.release.yml`, `default.env.example`, `self-hosting.md`,
+`release-manifest.json`, and `SHA256SUMS` from the GitHub release into one
+directory. Copy `default.env.example` to `.env`, then set:
 
 ```bash
 DEFT_IMAGE=ghcr.io/maneek21/deft:<release-version>
@@ -62,7 +63,10 @@ docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml 
 
 Release assets include `SHA256SUMS`, an SPDX SBOM, and a manifest containing
 the exact commit, image digest, keyless-signing identity, provenance type, and
-upgrade baseline. Hermes-capable releases also include
+upgrade baseline. New `deft.release.v2` manifests explicitly identify
+`release_scope` as `core` or `hermes-certified`. Core releases contain no Hermes
+bundle or certification claims. Historical `deft.release.v1` manifests retain
+their original release-specific Hermes evidence. Hermes-certified releases include
 `hermes-employee-release-gate.json` and
 `deft-hermes-integration-<version>.tar.gz`. The release manifest binds their
 SHA-256 digests, the bundle manifest and content digests, compatibility range,
@@ -82,12 +86,13 @@ cosign verify "$IMAGE@$DIGEST" \
 gh attestation verify "oci://$IMAGE@$DIGEST" --repo Maneek21/Deft
 ```
 
-Compare `DIGEST` with `release-manifest.json`, verify every downloaded asset
-against `SHA256SUMS`, and confirm the manifest's Hermes archive and certificate
-digests before extracting the integration. A release workflow fails before
-creating the GitHub release unless the manifest-pinned runtime passes two
-consecutive clean-state gates and the carried archive exactly matches the
-certified bundle. Then set `DEFT_IMAGE` to the immutable
+Compare `DIGEST` with `release-manifest.json` and verify every downloaded asset
+against `SHA256SUMS`. For a Hermes-certified release, also confirm the manifest's
+Hermes archive and certificate digests before extracting the integration. That
+scope requires two consecutive clean-state gates against the manifest-pinned
+runtime and an archive that exactly matches the certified bundle. Core releases
+omit those integration artifacts; they still require image signing, provenance,
+SBOM and corresponding source. Then set `DEFT_IMAGE` to the immutable
 `ghcr.io/maneek21/deft@<digest>` reference. Use `init` only for a fresh database.
 Versioned release upgrades begin at `v0.2.0-preview.1` and use the dedicated
 `upgrade` service described below.
@@ -138,10 +143,8 @@ Open `.env` and set these required values:
 openssl rand -hex 32   # paste into POSTGRES_PASSWORD
 openssl rand -hex 32   # paste into JWT_SECRET
 openssl rand -hex 32   # paste into JWT_REFRESH_SECRET
+openssl rand -hex 32   # paste into ENCRYPTION_KEY
 ```
-
-Replace `ENCRYPTION_KEY` before production. It must contain at least 32
-characters.
 
 Leave `OLLAMA_URL` commented unless an Ollama server is actually running.
 Otherwise Deft will correctly show AI features as off until a provider is
@@ -478,35 +481,111 @@ After confirming no other workload uses them, an operator may identify the
 exact Compose project resources with `docker ps -a` and `docker volume ls`, then
 remove those exact resources manually. Back up anything uncertain first.
 
-Postgres backup:
+For a source checkout, the complete recovery-set helper is:
 
 ```bash
 pnpm selfhost:backup
 ```
 
-The backup command writes a gzip-compressed SQL dump to `./backups`. For the
-production overlay:
+The backup command briefly stops the app and writes a timestamped recovery
+directory under `./backups`. It contains the database, persistent uploads,
+any legacy uploads found in the running container writable layer, `.env`
+(including keyrings), Compose configuration, and the running image identity.
+For the production overlay:
 
 ```bash
 pnpm selfhost:backup --prod
 ```
 
-Raw Docker equivalent:
+For a recoverable release deployment, capture one stopped recovery point. This
+keeps the database and local uploads at the same point in time and preserves the
+configuration, App Run keyrings, and immutable image selection needed to decrypt
+and verify retained data. Run these commands from the downloaded release-asset
+directory. Choose and keep a stable Compose project name for the deployment:
 
 ```bash
-docker compose exec postgres pg_dump -U postgres deft > deft-backup-$(date +%Y%m%d).sql
+export COMPOSE_PROJECT_NAME=deft
+export RECOVERY="recovery-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$RECOVERY"
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml stop deft
+container_id="$(docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml ps -aq deft)"
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml \
+  exec -T postgres pg_dump -U postgres --clean --if-exists --no-owner --no-privileges deft \
+  | gzip -9 > "$RECOVERY/database.sql.gz"
+docker run --rm \
+  -v "${COMPOSE_PROJECT_NAME}_uploads:/source:ro" \
+  -v "$PWD/$RECOVERY:/backup" alpine:3.22 \
+  tar -C /source -czf /backup/uploads.tar.gz .
+mkdir -p "$RECOVERY/legacy-container-uploads"
+if [ -n "$container_id" ]; then
+  docker cp "$container_id:/app/apps/api/uploads/." "$RECOVERY/legacy-container-uploads/"
+  docker inspect "$container_id" --format '{{.Image}}' > "$RECOVERY/running-image-id.txt"
+  docker image inspect "$(cat "$RECOVERY/running-image-id.txt")" --format '{{json .RepoDigests}}' \
+    > "$RECOVERY/running-image-repo-digests.json"
+fi
+cp .env docker-compose.yml compose.prod.yml compose.release.yml release-manifest.json "$RECOVERY/"
+cp SHA256SUMS "$RECOVERY/release-SHA256SUMS"
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml config --images \
+  > "$RECOVERY/configured-images.txt"
+while IFS= read -r image; do
+  docker image inspect "$image" --format '{{json .RepoDigests}}'
+done < "$RECOVERY/configured-images.txt" > "$RECOVERY/image-repo-digests.jsonl"
+(cd "$RECOVERY" && find . -type f ! -name SHA256SUMS -print0 \
+  | sort -z | xargs -0 sha256sum > SHA256SUMS)
+chmod 600 "$RECOVERY/.env" "$RECOVERY/database.sql.gz" "$RECOVERY/uploads.tar.gz"
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml start deft
 ```
 
-Restore from an uncompressed SQL dump:
+Store that directory together as a protected recovery artifact. `.env` contains
+authentication secrets, provider credentials, and `DEFT_APP_RUN_KEYRINGS` when
+configured. Losing a retained App Run key makes its encrypted payload or receipt
+unrecoverable. If uploads use R2 or another external canonical store, back up and
+restore that store with its provider tools instead of the local `uploads` volume;
+the command above covers local uploads only. Keep the release manifest and
+`SHA256SUMS` beside the recovery artifact when available.
+
+Restore into a new empty directory and a new, empty Compose project first. Do not
+run `init` and do not restore over an initialized application database:
 
 ```bash
-docker compose exec -T postgres psql -U postgres deft < deft-backup-20260101.sql
+mkdir deft-restore && cd deft-restore
+cp /secure/recovery/.env /secure/recovery/docker-compose.yml \
+  /secure/recovery/compose.prod.yml /secure/recovery/compose.release.yml .
+export COMPOSE_PROJECT_NAME=deft-restore
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
+gunzip -c /secure/recovery/database.sql.gz \
+  | docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml \
+      exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres deft
+docker run --rm \
+  -v "${COMPOSE_PROJECT_NAME}_uploads:/target" \
+  -v /secure/recovery:/backup:ro alpine:3.22 \
+  tar -C /target -xzf /backup/uploads.tar.gz
+docker run --rm \
+  -v "${COMPOSE_PROJECT_NAME}_uploads:/target" \
+  -v /secure/recovery/legacy-container-uploads:/legacy:ro alpine:3.22 \
+  cp -a /legacy/. /target/
+# Set DEFT_IMAGE in .env to the exact prior repo digest recorded in
+# running-image-repo-digests.json before pulling or starting the restored app.
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm smoke
 ```
 
-Restore from a `.sql.gz` backup:
+Before switching traffic, compare the restored image list and recovery checksums,
+sign in, open representative uploaded files, and exercise any configured provider
+key. If App Runs are enabled, follow `docs/app-run-operations.md` from the matching
+source archive to verify key inventory and receipts and to inspect pending or
+unknown outcomes. Keep the original deployment stopped until these checks pass.
+The recovery point loses writes accepted after the app was stopped; measure the
+dump/archive/restore time during a rehearsal to set the installation's RPO/RTO.
+
+To return to the original deployment after a rehearsal:
 
 ```bash
-gunzip -c backups/deft-backup-20260101T120000Z.sql.gz | docker compose exec -T postgres psql -U postgres deft
+cd /path/to/original-release-directory
+export COMPOSE_PROJECT_NAME=deft
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml start deft
 ```
 
 ## Upgrading
@@ -523,16 +602,24 @@ git pull --ff-only
 pnpm selfhost:upgrade --prod
 ```
 
-For a named GHCR release, set the target image and use the release overlay:
+For a named GHCR release, first create the recovery artifact above using the
+current `.env` and previous image digest, but leave `deft` stopped instead of
+running the final `start deft` command. Then pin `DEFT_IMAGE` in the working
+`.env` to the target digest and run using only the downloaded Compose assets:
 
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:<target-version>
-pnpm selfhost:upgrade --prod --release
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull deft upgrade doctor smoke
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm upgrade
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d --force-recreate deft
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm smoke
 ```
 
-The wrapper builds or pulls the target image before downtime, stops app writes,
-writes a compressed Postgres backup, runs the `upgrade` service, recreates the
-app, and requires doctor plus MCP smoke to pass. Site-specific overlays can be
+The source-checkout wrapper stops app writes, records the complete recovery set
+and previous image identity before a mutable target tag can be pulled, overlays
+any captured legacy container uploads into the corrected persistent volume,
+then builds or pulls the target, runs the `upgrade` service, recreates the app,
+and requires doctor plus MCP smoke to pass. Site-specific overlays can be
 appended with `--compose-file <file>`.
 
 Schema upgrades are forward-only. The migration ledger is checksummed and a
@@ -542,7 +629,7 @@ pre-upgrade Postgres backup and uploads backup, and running the exact previous
 image digest. Rehearse that restore on a disposable host before upgrading data
 that cannot be recreated.
 
-Preview the exact sequence without changing data:
+For a source checkout, preview the exact sequence without changing data:
 
 ```bash
 pnpm selfhost:upgrade --prod --release --dry-run

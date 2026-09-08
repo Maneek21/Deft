@@ -1546,7 +1546,8 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       decision: 'approved',
     });
     if (
-      action.source === 'defty_capture'
+      action.action === 'create_task'
+      || action.source === 'defty_capture'
       || isModuleTaskLinkWriteAction(action.action)
       || isModuleWriteActionName(action.action)
       || isModuleRecordBulkCreateAction(action.action)

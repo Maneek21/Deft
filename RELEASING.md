@@ -44,28 +44,30 @@ Releases must come off a green `master`.
 ### 2. Open a release-prep PR
 
 ```bash
-git switch -c chore/release-vX.Y.Z-channel
+git switch -c codex/release-vX.Y.Z-channel
 ```
 
-Edit `package.json` (root) — bump the `version` field. Workspace
-`package.json`s under `apps/` and `packages/` intentionally do **not**
-carry independent versions; they all inherit the monorepo version.
+Edit `package.json` (root) to set the product version. Do not bulk-rewrite
+workspace package versions: packages such as `@deft/app-kit` have their own
+versioned contracts. Authoring instructions must use a package version from
+the same release as the host.
 
-Edit `CHANGELOG.md`:
-- Write an accurate **delta from the previous tag**. Do not dump the
-  entire `[Unreleased]` section if it still contains work that already
-  shipped on an earlier tag.
-- Leave a fresh empty `[Unreleased]` section at the top.
-- Update the comparison links at the bottom of the file:
-  ```
-  [Unreleased]: https://github.com/Maneek21/Deft/compare/vX.Y.Z-channel...HEAD
-  [X.Y.Z-channel]: https://github.com/Maneek21/Deft/releases/tag/vX.Y.Z-channel
-  ```
+Set `release/release-scope.json` in the same prep commit. Use `core` for a
+standard Deft release with no Hermes compatibility claim. Use
+`hermes-certified` only when the tag must carry the certified Hermes integration;
+that scope requires the exact pinned-runtime, two-pass certificate and bundle.
+The workflow rejects missing or unknown scope decisions and never falls back from
+`hermes-certified` to `core` when certification evidence is absent.
 
-If README or compose files still contain a placeholder image tag, replace
-it with the GHCR tag (no leading `v`) in the same PR. Merge the prep PR
-and push the annotated tag in the same release session so README never
-points at a missing image.
+Edit `CHANGELOG.md` with the actual delta from the previous tag. Keep the
+candidate notes under `[Unreleased]` and explicitly mark publication as pending.
+Do not carry over changes that already shipped in the previous release.
+
+Keep public install commands pointed at the latest published image. After the
+release workflow succeeds and its assets are verified, make a small documentation
+PR to move the candidate notes into a dated version section, restore an empty
+`[Unreleased]` section, and update comparison links and installation examples.
+This keeps the documentation usable while release checks are running.
 
 Commit, push, open a PR titled `chore(release): vX.Y.Z-channel`, wait for
 required CI (including Dependency Review), squash-merge.
@@ -89,16 +91,17 @@ Use **annotated** tags (`-a`), never lightweight tags.
 Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml).
 That workflow:
 
-- provisions the exact manifest-pinned Hermes runtime and requires two
-  consecutive clean-state employee gate passes from the release tag
+- reads and validates the release scope from the tagged commit
+- for `hermes-certified`, provisions the exact manifest-pinned Hermes runtime and
+  requires two consecutive clean-state employee gate passes from the release tag
 - builds and pushes the `linux/amd64` GHCR image
 - publishes GitHub build provenance and keylessly signs the exact image digest
 - verifies the Cosign workflow identity and provenance before continuing
-- attaches the SPDX SBOM, corresponding source, certified Hermes integration
-  archive, and `hermes-employee-release-gate.json`
-- writes `release-manifest.json` (`license: AGPL-3.0-only`) with the digest,
-  signing identity, provenance type, Hermes compatibility/tested runtime, and
-  certificate/archive/bundle digests
+- attaches the SPDX SBOM and corresponding source; `hermes-certified` releases
+  also attach the certified Hermes integration archive and certificate
+- writes the `deft.release.v2` `release-manifest.json` (`license: AGPL-3.0-only`) with the digest,
+  signing identity, provenance type, and explicit release scope; certified
+  manifests also record Hermes compatibility, tested runtime, and evidence digests
 - creates the GitHub Release (`--generate-notes`, prerelease when the
   version contains `-`)
 
@@ -114,15 +117,17 @@ tag-signed digest without rebuilding it. Do not select reuse when the original
 image/signature steps did not complete. If the published image itself is
 unusable, fix forward and cut the next preview tag.
 
-Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
+Confirm every GitHub Release includes `LICENSE`, `NOTICE`,
 `THIRD-PARTY-LICENSES.md`, `default.env.example`, the source archive, SBOM,
-checksums, compose files, `hermes-employee-release-gate.json`, and the
-versioned Hermes integration archive. Confirm the image label
+checksums, compose files, and `self-hosting.md`. For `hermes-certified`, also
+confirm `hermes-employee-release-gate.json` and the versioned Hermes integration
+archive are present. For `core`, confirm those Hermes artifacts and all `hermes_*`
+manifest claims are absent. Confirm the image label
 `org.opencontainers.image.licenses=AGPL-3.0-only` (the production
 `Dockerfile` sets this; `release.yml` passes `VCS_REF` and `SOURCE_URL`).
-Verify the Hermes certificate reports the exact tag commit and two clean-state
-passes, then compare its certificate and bundle digests with
-`release-manifest.json` and `SHA256SUMS`.
+For a certified release, verify the Hermes certificate reports the exact tag
+commit and two clean-state passes, then compare its certificate and bundle digests
+with `release-manifest.json` and `SHA256SUMS`.
 Run the digest-first Cosign and `gh attestation verify` commands in
 [`docs/self-hosting.md`](docs/self-hosting.md) against the published manifest.
 If signing, signature verification, provenance publication, or provenance
