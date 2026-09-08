@@ -1,6 +1,6 @@
 # Deft capability reference
 
-> Availability last reconciled on September 7, 2026. The latest published image is `v0.3.0-preview.14`; features present on `master` may belong to the unpublished `v0.3.0-preview.15` core candidate. See the [availability map](docs/product-status.md).
+> Availability last reconciled on September 8, 2026. The latest published image is `v0.3.0-preview.15`, a core release. Features present on `master` may be absent from that image. See the [availability map](docs/product-status.md).
 >
 > Deft is an alpha. This file describes the current product surface, not a compatibility guarantee. See [current limitations](docs/current-limitations.md) and the [roadmap](ROADMAP.md) before planning a production deployment.
 
@@ -113,7 +113,7 @@ Agent employees are separate workspace identities backed by a customer-controlle
 - Operate under trust level, scope, health, action-cap, audit, and approval rules
 - Expose supervision state, recent contact, failures, and bridge health to admins
 
-Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is excluded from the upcoming core preview and is not a new compatibility claim.
+Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is excluded from the preview.15 core release and is not a new compatibility claim.
 
 ## Personal AI app connections
 
@@ -180,7 +180,7 @@ Fresh installs use `pnpm db:push-full`. Supported release-to-release upgrades us
 
 - Modules define domain records, relationships, and Deft-rendered native views.
 - Declarative internal Apps package Modules for review and installation and are an opt-in alpha capability.
-- Connected Apps and bounded daily actions are implemented on `master` for the upcoming core candidate. They are experimental, disabled by default, and require the flags and review flow in the [operator guide](docs/app-run-operations.md).
+- Connected Apps and bounded daily actions are included in preview.15. They are experimental, disabled by default, and require the flags and review flow in the [operator guide](docs/app-run-operations.md).
 - The current App protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
 
 ## Security posture

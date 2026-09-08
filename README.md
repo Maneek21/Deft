@@ -8,7 +8,7 @@
 
 [Website](https://deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
-**Try Deft:** [install a workspace, connect your AI client, or build an internal App](docs/getting-started.md). The latest downloadable image is `v0.3.0-preview.14`; the `v0.3.0-preview.15` core candidate described on `master` has not been published. See the [current availability map](docs/product-status.md) before evaluating an unreleased feature.
+**Try Deft:** [install a workspace, connect your AI client, or build an internal App](docs/getting-started.md). The latest downloadable image is `v0.3.0-preview.15`. See the [current availability map](docs/product-status.md) before enabling an experimental feature.
 
 ![Where humans and agents work together.](docs/assets/repository/hero.png)
 
@@ -50,7 +50,7 @@ Deft still works as a normal workspace without an AI provider key. Chat, tasks, 
 
 ### An extensible workspace through Modules and Apps
 
-Modules add domain records, relationships, and native views. Apps package supported workspace extensions for operator review and installation. Declarative internal Apps are an opt-in alpha capability; connected Apps and bounded scheduled actions are implemented in the upcoming core candidate and remain disabled by default. Arbitrary custom UI and public portals are planned rather than part of the current contract.
+Modules add domain records, relationships, and native views. Apps package supported workspace extensions for operator review and installation. Declarative internal Apps, connected Apps, and bounded scheduled actions are opt-in alpha capabilities and remain disabled by default. Arbitrary custom UI and public portals are planned rather than part of the current contract.
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
@@ -139,7 +139,7 @@ BSL 1.1 license included in those revisions; relicensing this source tree does
 not retroactively change old tags or images.
 
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.14
+export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
