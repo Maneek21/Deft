@@ -191,3 +191,13 @@ production deployment, real credential grants or external messages are implied.
   Profile/Calendar/AI. Module ownership and canonical employee work require their
   explicit contract/control audits before implementation.
 - Open: dependency audit, real integration evidence, independent usability review.
+- Visual polish follow-up: page-local CSS strengthens field/row boundaries and
+  surface contrast, aligns setup with the page heading, tightens section spacing,
+  distinguishes heading levels, deepens primary button colour, and adds consistent
+  hover/focus treatment with reduced-motion support. No API or permission changes.
+  Inspected desktop dark/light, mobile permissions/connect/expanded details, and
+  keyboard focus; custom permissions had no section overflow at 390 CSS px.
+  Fresh web typecheck, focused page lint and diff checks passed. Evidence lives in
+  `tmp/preview-evidence/polish-*.png`. This is fixture-based visual verification.
+- The Settings implementation schedule was deleted at the user's request. Continue
+  only on direct user instruction; do not recreate it from this checkpoint.

@@ -6,6 +6,7 @@ import { Bot, Check, ChevronDown, Code2, Copy, Globe2, KeyRound, Plug, Wrench } 
 import { api } from '@/lib/api';
 import { useSetPageContext } from '@/components/app-header-context';
 import { SettingsSteps } from '@/components/settings-steps';
+import styles from './page.module.css';
 
 type McpToken = {
   id: string;
@@ -736,7 +737,11 @@ export default function McpAccessPage() {
   const muted = { color: 'var(--text-secondary)' };
   const buttonClass =
     'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-40';
-  const primaryStyle = { background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' };
+  const primaryStyle = {
+    background: 'var(--connection-action)',
+    borderColor: 'var(--connection-action)',
+    color: 'white',
+  };
 
   function openSetup() {
     focusStep.current = true;
@@ -761,9 +766,9 @@ export default function McpAccessPage() {
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-col overflow-x-hidden overflow-y-auto">
-      <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-4 pb-12 md:px-6">
-        <header className="pt-7">
+    <div className={`${styles.page} flex h-full min-w-0 flex-col overflow-x-hidden overflow-y-auto`}>
+      <div className="mx-auto w-full min-w-0 max-w-4xl space-y-6 px-4 pb-12 md:px-6">
+        <header className="border-b pb-6 pt-7" style={border}>
           <h1 className="text-2xl font-semibold tracking-tight">Personal AI connections</h1>
           <p className="mt-2 text-sm leading-6" style={muted}>
             Connect your AI apps to Deft. You control their access.
@@ -865,7 +870,7 @@ export default function McpAccessPage() {
                   )}
                 </div>
               ) : (
-                <div className="divide-y rounded-xl border" style={border}>
+                <div className={`${styles.connectionList} divide-y rounded-xl border`} style={border}>
                   {filteredConnections.map((connection) => (
                     <details key={connection.key} className="group px-4 py-1" style={border}>
                       <summary className="flex cursor-pointer list-none items-center gap-3 py-4 focus-visible:outline-2">
@@ -877,7 +882,7 @@ export default function McpAccessPage() {
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block break-words text-sm font-semibold">{connection.displayName}</span>
-                          <span className="mt-1 block text-xs" style={muted}>
+                          <span className="mt-1 block text-xs leading-5" style={muted}>
                             {connection.label} ·{' '}
                             {connection.last_used_at
                               ? `Last used ${formatDate(connection.last_used_at)}`
@@ -1029,7 +1034,7 @@ export default function McpAccessPage() {
             </section>
           </>
         ) : (
-          <section aria-labelledby="setup-heading" className="mx-auto max-w-2xl">
+          <section aria-labelledby="setup-heading" className={styles.setup}>
             <button
               type="button"
               onClick={closeSetup}
@@ -1046,7 +1051,7 @@ export default function McpAccessPage() {
               id="setup-heading"
               ref={stepHeading}
               tabIndex={-1}
-              className="scroll-mt-32 text-2xl font-semibold tracking-tight focus-visible:outline-2 focus-visible:outline-offset-4"
+              className="scroll-mt-32 text-xl font-semibold tracking-tight focus-visible:outline-2 focus-visible:outline-offset-4"
             >
               {setupStep === 0
                 ? 'Which app would you like to connect?'
@@ -1090,7 +1095,7 @@ export default function McpAccessPage() {
                     disabled={busy || !!newToken}
                     aria-pressed={selectedClient === client.id}
                     onClick={() => chooseClient(client.id)}
-                    className="flex w-full items-center gap-3 rounded-lg border p-4 text-left focus-visible:outline-2 disabled:opacity-60"
+                    className={`${styles.clientChoice} flex w-full items-center gap-3 rounded-lg border p-4 text-left focus-visible:outline-2 disabled:opacity-60`}
                     style={{
                       borderColor: selectedClient === client.id ? 'var(--accent)' : 'var(--border-default)',
                       background: selectedClient === client.id ? 'var(--accent-muted)' : 'transparent',
@@ -1442,7 +1447,7 @@ export default function McpAccessPage() {
               </div>
             )}
 
-            <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t pt-5" style={border}>
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t pt-5" style={border}>
               <button
                 type="button"
                 disabled={busy}
