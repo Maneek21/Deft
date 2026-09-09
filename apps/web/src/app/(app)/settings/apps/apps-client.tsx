@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, type ChangeEvent } from 'react';
+import Link from 'next/link';
 import { AppWindow, Check, Copy, FileUp, KeyRound, Loader2, Power, ShieldCheck, X } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
@@ -11,7 +12,7 @@ import { useAuth } from '@/lib/auth-context';
 import { APP_PACKAGE_MAX_BYTES, appApiError, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
 
-export function AppsClient() {
+export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   const { user } = useAuth();
   const { apps, isLoading, error, mutate } = useApps();
   useAppRealtime();
@@ -26,6 +27,9 @@ export function AppsClient() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
   const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
+  const [query, setQuery] = useState('');
+  const selectedApp = apps.find((app) => app.id === selectedId);
+  const visibleApps = apps.filter((app) => `${app.name} ${app.app_id}`.toLowerCase().includes(query.trim().toLowerCase()));
   const canManage = user?.role === 'owner' || user?.role === 'admin';
 
   const choosePackage = (upgradeTarget: AppInstallation | null = null) => {
@@ -110,10 +114,13 @@ export function AppsClient() {
   };
 
   return <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-    <PageHeader title="Apps" description="Expand this workspace with local, declarative App packages." compact secondary={canManage ? <div className="flex gap-2 px-1">
+    <PageHeader title="Apps" description="Manage installed Apps, their access, and activity." compact secondary={canManage ? <details className="px-1">
+      <summary className="cursor-pointer py-2 text-sm font-medium">Add or build an App</summary>
+      <div className="flex flex-wrap gap-2 py-2">
       <button type="button" onClick={() => void createPairing()} disabled={busy !== null} className="deft-pill min-h-11"><KeyRound size={14} /> Pair Codex</button>
       <button type="button" onClick={() => choosePackage()} disabled={busy !== null} className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }}><FileUp size={14} /> Inspect package</button>
-    </div> : undefined} />
+      </div>
+    </details> : undefined} />
     <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void inspect(event)} className="sr-only" aria-label="Choose a Deft App package" />
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6">
       <div className="mx-auto max-w-5xl space-y-4">
@@ -125,8 +132,24 @@ export function AppsClient() {
         {pending && <InspectionCard pending={pending.inspection} upgradeTarget={pending.upgradeTarget} busy={busy === 'stage'} onCancel={() => setPending(null)} onStage={() => void stage()} />}
         {isLoading ? <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin" aria-label="Loading Apps" /></div>
           : error ? <EmptyState icon={<AppWindow size={20} />} title="Apps did not load" description={error instanceof Error ? error.message : 'Try again.'} action={{ label: 'Try again', onClick: () => void mutate() }} />
-          : apps.length === 0 ? <EmptyState icon={<AppWindow size={20} />} title="No Apps installed" description="Build a declarative App with the public kit, then inspect its package here." action={canManage ? { label: 'Inspect a package', onClick: () => choosePackage() } : undefined} />
-          : <div className="grid gap-3 md:grid-cols-2">{apps.map((app) => <AppCard key={app.id} app={app} canManage={canManage} busy={busy === app.id} onActivate={() => void activate(app)} onDisable={() => void disable(app)} onChooseUpgrade={() => choosePackage(app)} />)}</div>}
+          : selectedId && !selectedApp ? <div className="space-y-3"><p>This App is unavailable in this workspace.</p><Link href="/settings/apps" className="deft-pill">All Apps</Link></div>
+          : apps.length === 0 ? <EmptyState icon={<AppWindow size={20} />} title="No Apps installed" description="Inspect a Deft App package to review what it adds to your workspace." action={canManage ? { label: 'Inspect a package', onClick: () => choosePackage() } : undefined} />
+          : selectedApp ? <>
+            <Link href="/settings/apps" className="deft-pill min-h-11">← All Apps</Link>
+            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} />
+          </> : <section aria-label="Installed Apps" className="space-y-3">
+            <label className="block text-xs font-medium">
+              Find an App
+              <input value={query} onChange={(event) => setQuery(event.target.value)} type="search" placeholder="Search installed Apps" className="mt-2 w-full rounded-lg border px-3 py-2 text-sm" style={{ background: 'var(--surface-container-low)', borderColor: 'var(--border)' }} />
+            </label>
+            {visibleApps.length === 0 && <p className="py-5 text-sm">No installed Apps match your search.</p>}
+            {visibleApps.map((app) => <Link key={app.id} href={`/settings/apps/${encodeURIComponent(app.id)}`} className="flex w-full items-center gap-3 rounded-xl border p-4 text-left" style={{ background: 'var(--surface-container-low)', borderColor: 'var(--ghost-border)' }}>
+              <AppWindow size={20} className="shrink-0" style={{ color: 'var(--primary)' }} />
+              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{app.name}</span><span className="mt-1 block text-xs" style={{ color: 'var(--on-surface-variant)' }}>v{app.version} · {app.manifest.modules.length} Module{app.manifest.modules.length === 1 ? '' : 's'}</span></span>
+              <span className="rounded-full px-2 py-1 text-xs capitalize" style={{ background: 'var(--surface-container-high)' }}>{app.state}</span>
+              <span aria-hidden="true">→</span>
+            </Link>)}
+          </section>}
       </div>
     </div>
   </div>;
