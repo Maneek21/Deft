@@ -170,7 +170,7 @@ async function main() {
     await page.getByRole('button', { name: 'Confirm revoke', exact: true }).click();
     await page.getByRole('heading', { name: 'No matching connections', exact: true }).waitFor();
     await page.getByRole('button', { name: /^Connection history/ }).click();
-    await page.getByText(personalConnectionName, { exact: false }).last().waitFor();
+    await page.locator('summary').filter({ hasText: personalConnectionName }).waitFor();
     record('Create, acknowledge, inspect and revoke a personal connection without exposing its token');
 
     await page.setViewportSize({ width: 1440, height: 900 });
