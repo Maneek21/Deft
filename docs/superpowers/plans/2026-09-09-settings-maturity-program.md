@@ -221,3 +221,21 @@ production deployment, real credential grants or external messages are implied.
   rechecks, typecheck, focused lint and navigation tests passed. See
   `docs/superpowers/audits/2026-09-09-settings-review-passes.md` for exact coverage
   and gaps, including the four employee detail routes without fixture records.
+
+## Merge and demo closeout — 2026-09-09
+
+The user approved merging the Settings stack and updating demo.deft.ing. PR #323
+is the consolidated candidate incorporating #324 and #325. Keep the schedule
+deleted. Remaining Track B/C/D and Gate G work is outside this UI closeout.
+
+The final dependency audit reproduced eight advisories. Updated Next.js and its
+ESLint config to 16.3.3, the Tiptap family to a patched compatible release, and
+Hono, Sharp and js-yaml overrides. The regenerated lockfile passes the full
+low-threshold pnpm audit with no known vulnerabilities. Full candidate CI remains
+the merge gate; no bypass of image scanning or database-backed browser smoke.
+
+Demo currently runs preview.14 (6d39e0e). Deploy the merged revision through a
+separate source checkout, preserve site configuration and existing feature flags,
+record the old image, take a stopped database/uploads/configuration backup, and
+rehearse the versioned upgrade against a restored database before live cutover.
+Verify doctor, connector smoke, build identity and rendered Settings after deploy.
