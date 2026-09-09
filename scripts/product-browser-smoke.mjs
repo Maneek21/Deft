@@ -120,6 +120,7 @@ async function main() {
     await page.getByText('Add connection', { exact: true }).click();
     await page.getByRole('heading', { name: 'What do you want to connect?', exact: true }).waitFor();
     await page.getByRole('button', { name: /^Claude Code Token setup/ }).click();
+    await page.getByRole('button', { name: 'Review access', exact: true }).click();
     await page.getByRole('button', { name: /^Choose individually/ }).click();
     for (const width of [1440, 1024, 768, 390]) {
       await page.setViewportSize({ width, height: 900 });
@@ -131,6 +132,19 @@ async function main() {
         );
       });
       if (setupOverflow > 2) throw new Error(`Claude Code setup overflows its cards by ${setupOverflow}px at ${width}px`);
+      await page.getByRole('button', { name: 'Continue to connect', exact: true }).click();
+      await page.getByRole('textbox', { name: 'Connection name', exact: true }).fill('Smoke test draft');
+      const commandOverflow = await page.getByRole('textbox', { name: 'Connection name', exact: true }).evaluate((input) => {
+        const section = input.closest('section');
+        return section.scrollWidth - section.clientWidth;
+      });
+      if (commandOverflow > 2) throw new Error(`Claude Code command expands its card at ${width}px`);
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await page.getByRole('button', { name: 'Continue to connect', exact: true }).click();
+      if (await page.getByRole('textbox', { name: 'Connection name', exact: true }).inputValue() !== 'Smoke test draft') {
+        throw new Error('Connection name was lost between setup steps');
+      }
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
     }
     record('Claude Code custom permissions stay inside setup cards at desktop, tablet and mobile widths');
 

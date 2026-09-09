@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Activity,
@@ -26,6 +26,7 @@ import {
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { useSetPageContext } from '@/components/app-header-context';
+import { SettingsSteps } from '@/components/settings-steps';
 
 type McpToken = {
   id: string;
@@ -411,6 +412,24 @@ export default function McpAccessPage() {
   const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [setupStep, setSetupStep] = useState(0);
+  const [tokenSaved, setTokenSaved] = useState(false);
+  const [issuedTokenId, setIssuedTokenId] = useState<string | null>(null);
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const focusStep = useRef(false);
+  const setupSteps = ['Choose app', 'Review access', 'Connect', 'Verify'] as const;
+
+  function moveStep(next: number) {
+    focusStep.current = true;
+    setSetupStep(next);
+  }
+
+  useLayoutEffect(() => {
+    if (focusStep.current) {
+      stepHeading.current?.focus();
+      focusStep.current = false;
+    }
+  }, [setupStep]);
 
   const selectedClientOption = clientById(selectedClient);
   const selectedScopes = useMemo(() => {
@@ -466,6 +485,7 @@ export default function McpAccessPage() {
   useEffect(() => { void load(); }, [load]);
 
   function chooseClient(id: ClientId) {
+    if (busy || newToken || id === selectedClient) return;
     const client = clientById(id);
     setSelectedClient(id);
     setAccessPreset(client.defaultPreset);
@@ -483,9 +503,13 @@ export default function McpAccessPage() {
   }
 
   async function copy(label: string, value: string) {
-    await navigator.clipboard.writeText(value);
-    setCopied(label);
-    setTimeout(() => setCopied(null), 1500);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      setError('Could not copy to the clipboard. Select and copy the text manually.');
+    }
   }
 
   async function createToken() {
@@ -502,6 +526,8 @@ export default function McpAccessPage() {
       }
       const body = await res.json();
       setNewToken(body.token);
+      setIssuedTokenId(body.token_id ?? null);
+      setTokenSaved(false);
       setEndpoint(body.mcp_endpoint_url ?? endpoint);
       await load();
     } catch (err) {
@@ -572,6 +598,7 @@ export default function McpAccessPage() {
   }, [endpointForConfig, selectedClient, tokenForConfig]);
 
   const tokenSetupClient = selectedClientOption.setupKind === 'token' || selectedClientOption.setupKind === 'advanced';
+  const issuedConnection = tokens.find((token) => token.id === issuedTokenId);
   const historyCount = (history?.revoked_tokens.length ?? 0) + (history?.revoked_grants.length ?? 0);
   const remoteRows: Array<[string, string | undefined]> = [
     ['Connector URL', remote?.mcp_endpoint_url],
@@ -729,8 +756,15 @@ export default function McpAccessPage() {
         </section>
         <details className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
           <summary className="cursor-pointer py-2 text-sm font-semibold">Add connection</summary>
-          <p className="mb-4 text-xs" style={{ color: 'var(--text-secondary)' }}>Choose your AI client, review its access, then connect it as yourself. Shared workers belong in Agent employees.</p>
+          <div className="mx-auto max-w-3xl py-4">
+          <SettingsSteps steps={selectedClientOption.setupKind === 'agent' ? setupSteps.slice(0, 3) : setupSteps} current={setupStep} />
+          <h2 ref={stepHeading} tabIndex={-1} className="mb-2 scroll-mt-32 text-lg font-semibold focus-visible:outline-2 focus-visible:outline-offset-4">{setupSteps[setupStep]}</h2>
+          <p className="mb-5 text-sm" style={{ color: 'var(--text-secondary)' }}>{setupStep === 0 ? 'Choose the app you want to use with Deft.' : `${selectedClientOption.name} · ${setupStep === 1 ? 'Understand what this connection can access.' : setupStep === 2 ? 'Follow the instructions for your app.' : 'Check that your app can reach Deft.'}`}</p>
+          {newToken && setupStep < 2 && <p role="status" className="mb-4 text-sm">This token’s app and access are fixed. Return to Connect to copy it, or finish setup before starting another connection.</p>}
+          {error && <p role="alert" className="mb-4 rounded-md border p-3 text-sm" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>{error}</p>}
+          {copied && <p role="status" className="mb-4 text-sm" style={{ color: 'var(--accent)' }}>Copied {copied}</p>}
           <div className="space-y-4">
+        <div hidden={setupStep !== 0}>
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
           <div className="flex flex-col gap-4">
             <div className="flex items-start gap-3">
@@ -745,7 +779,7 @@ export default function McpAccessPage() {
               </div>
             </div>
 
-            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+            <div className="grid sm:grid-cols-2 gap-3">
               {CLIENT_OPTIONS.map((client) => {
                 const active = client.id === selectedClient;
                 return (
@@ -753,6 +787,7 @@ export default function McpAccessPage() {
                     key={client.id}
                     type="button"
                     onClick={() => chooseClient(client.id)}
+                    disabled={busy || !!newToken}
                     aria-pressed={active}
                     className="min-w-0 rounded-md p-3 text-left transition-colors"
                     style={{
@@ -769,16 +804,18 @@ export default function McpAccessPage() {
                       </div>
                       <span className="text-[10px] rounded px-1.5 py-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>{client.fit}</span>
                     </div>
-                    <p className="text-[11px] mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{client.detail}</p>
+                    {active && <p className="text-[12px] mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{client.detail}</p>}
                   </button>
                 );
               })}
             </div>
           </div>
         </section>
+        </div>
 
-        <div className="grid lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 items-start">
-          <div className="min-w-0 space-y-4">
+        <div className="min-w-0">
+          <div className="min-w-0 space-y-4" hidden={setupStep === 0 || setupStep === 3}>
+            <fieldset disabled={busy || !!newToken} hidden={setupStep !== 1} className="min-w-0">
             {tokenSetupClient && (
               <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                 <div className="flex items-start gap-3">
@@ -839,8 +876,10 @@ export default function McpAccessPage() {
                 </div>
               </section>
             )}
+            {!tokenSetupClient && <section className="rounded-lg border p-4" style={{ borderColor: 'var(--border-default)' }}><h3 className="font-semibold">{selectedClientOption.setupKind === 'agent' ? 'A shared workspace employee' : 'Review permissions during authorization'}</h3><p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{selectedClientOption.setupKind === 'agent' ? 'Agent employees have their own workspace access and operating policies. Continue to employee setup to configure them.' : 'Your app will open Deft’s authorization screen. Review the requested permissions there before allowing access. You can revoke the resulting grant from your active connections.'}</p></section>}
+            </fieldset>
 
-            {tokenSetupClient && (
+            {tokenSetupClient && setupStep === 2 && (
               <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
@@ -856,12 +895,13 @@ export default function McpAccessPage() {
                         value={tokenName}
                         onChange={(e) => setTokenName(e.target.value)}
                         aria-label="Connection name"
+                        disabled={busy || !!newToken}
                         className="min-w-0 h-10 rounded-md px-3 text-[13px] outline-none"
                         style={{ background: 'var(--surface-container)', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }}
                       />
                       <button
                         type="button"
-                        disabled={busy || selectedScopes.length === 0}
+                        disabled={busy || !!newToken || selectedScopes.length === 0}
                         onClick={createToken}
                         className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50"
                         style={{ background: 'var(--accent)' }}
@@ -883,6 +923,7 @@ export default function McpAccessPage() {
                           </button>
                         </div>
                         <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>{newToken}</pre>
+                        <label className="mt-3 flex items-start gap-2 text-xs"><input type="checkbox" checked={tokenSaved} onChange={(event) => setTokenSaved(event.target.checked)} />I have saved this token securely. I understand it will not be shown after leaving this page.</label>
                       </div>
                     )}
 
@@ -903,7 +944,7 @@ export default function McpAccessPage() {
               </section>
             )}
 
-            {selectedClientOption.setupKind === 'oauth' && (
+            {selectedClientOption.setupKind === 'oauth' && setupStep === 2 && (
               <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
@@ -998,7 +1039,7 @@ export default function McpAccessPage() {
               </section>
             )}
 
-            {selectedClientOption.setupKind === 'agent' && (
+            {selectedClientOption.setupKind === 'agent' && setupStep === 2 && (
               <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
@@ -1009,16 +1050,21 @@ export default function McpAccessPage() {
                     <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
                       Personal AI app connections act as you. If Hermes, OpenClaw, Codex, or another runtime should be available to the whole company as an employee, onboard it as an Agent Employee instead.
                     </p>
-                    <Link href="/settings/agent-employees" className="mt-4 inline-flex items-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-white" style={{ background: 'var(--accent)' }}>
-                      Open Agent Employees
-                    </Link>
                   </div>
                 </div>
               </section>
             )}
           </div>
 
-          <aside className="min-w-0 space-y-4">
+          <aside className="min-w-0 space-y-4" hidden={setupStep !== 3}>
+            {tokenSetupClient && (
+              <section role="status" className="rounded-lg border p-4" style={{ borderColor: 'var(--border-default)' }}>
+                <h3 className="font-semibold">{issuedConnection?.last_used_at ? 'Deft received a request' : 'Waiting for your first request'}</h3>
+                <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{issuedConnection?.last_used_at ? `Last used ${new Date(issuedConnection.last_used_at).toLocaleString()}. Check the activity below to confirm the expected action.` : 'Your token is ready. Run a prompt in your app, then refresh to check whether this specific token has been used.'}</p>
+                <RecentActionList actions={issuedConnection?.recent_actions} />
+              </section>
+            )}
+            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border-default)' }}><h3 className="font-semibold">Verify from {selectedClientOption.name}</h3><p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>Run a prompt in your app, then refresh your active connections above and check its last-used time and recent activity. Completing these instructions does not confirm that the app is connected.</p><button type="button" disabled={loading} onClick={() => void load()} className="mt-3 rounded-md border px-3 py-2 text-sm disabled:opacity-50" style={{ borderColor: 'var(--border-default)' }}>{loading ? 'Refreshing…' : 'Refresh connection activity'}</button></div>
             <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
@@ -1027,7 +1073,7 @@ export default function McpAccessPage() {
                 <div className="flex-1 min-w-0">
                   <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Test it from the app</h2>
                   <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                    After connecting, run one prompt and check that recent activity updates below.
+                    After connecting, run one prompt and refresh the connection activity.
                   </p>
                   <div className="mt-3 space-y-2">
                     {testPrompts.map((prompt) => (
@@ -1041,8 +1087,8 @@ export default function McpAccessPage() {
               </div>
             </section>
 
-            <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-              <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Context packets available</h2>
+            <details className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+              <summary className="cursor-pointer text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Memory your app can request</summary>
               <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>Connected clients can retrieve the right memory packet for the work they are doing.</p>
               <div className="space-y-2 mt-3">
                 {CONTEXT_PACKET_CARDS.map((card) => (
@@ -1054,12 +1100,39 @@ export default function McpAccessPage() {
                   </div>
                 ))}
               </div>
-            </section>
+            </details>
           </aside>
         </div>
 
 
 
+          </div>
+          <div className="mt-6 flex items-center justify-between gap-3 border-t pt-4" style={{ borderColor: 'var(--border-default)' }}>
+            <button type="button" disabled={setupStep === 0 || busy} onClick={() => moveStep(setupStep - 1)} className="rounded-md border px-4 py-2 text-sm disabled:opacity-40" style={{ borderColor: 'var(--border-default)' }}>Back</button>
+            {setupStep === 2 && selectedClientOption.setupKind === 'agent' ? (
+              <Link href="/settings/agent-employees" className="rounded-md px-4 py-2 text-sm font-medium text-white" style={{ background: 'var(--accent)' }}>Open Agent Employees</Link>
+            ) : setupStep < 3 ? (
+              <button
+                type="button"
+                disabled={busy || (setupStep === 1 && tokenSetupClient && selectedScopes.length === 0) || (setupStep === 2 && tokenSetupClient && (!newToken || !tokenSaved))}
+                onClick={() => moveStep(setupStep + 1)}
+                className="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                style={{ background: 'var(--accent)' }}
+              >
+                {setupStep === 0 ? 'Review access' : setupStep === 1 ? 'Continue to connect' : 'Continue to verification'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={busy || (!!newToken && !tokenSaved)}
+                onClick={() => { setNewToken(null); setIssuedTokenId(null); setTokenSaved(false); moveStep(0); }}
+                className="rounded-md border px-4 py-2 text-sm"
+                style={{ borderColor: 'var(--border-default)' }}
+              >
+                Set up another connection
+              </button>
+            )}
+          </div>
           </div>
         </details>
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>

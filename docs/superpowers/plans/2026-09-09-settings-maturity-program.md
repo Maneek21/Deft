@@ -6,7 +6,8 @@ a claim that Settings is complete. Resume from the first unfinished milestone.
 
 ## Workspace and existing evidence
 
-Work in `C:/tmp/deft-settings-structure`, branch `codex/settings-structure`.
+Work in `C:/tmp/deft-settings-structure`; current implementation branch is
+`codex/settings-connection-flow`, based on `codex/settings-structure` at 5f6f0d86.
 PR #323 contains the first structural pass and connection overflow repair.
 Preserve the original worktree and unrelated changes. Keep milestones separately
 reviewable; use explicitly based follow-up branches/PRs for subsequent features,
@@ -139,6 +140,29 @@ production deployment, real credential grants or external messages are implied.
 - Completed: existing route inventory and shared interaction specification above.
 - Existing repair: PR #323, commit 6e0ec97b, 54 rendered connection states verified;
   web lint/typecheck/navigation tests passed. Updated production smoke pending.
-- Next: inspect full connection-page handlers and extract a client/access/connect/
-  verify state model, then implement the reference flow on a follow-up branch.
+- Implemented: guided connection setup on `codex/settings-connection-flow`:
+  compact client selection; access review; client-specific connection instructions;
+  explicit verification. Shared employee setup exits to its existing destination.
+  Added reusable SettingsSteps progress with current-step semantics and step focus.
+  Existing token scope payloads and OAuth permissions are unchanged. New tokens
+  lock the client, name and scopes, prevent duplicate generation, and require an
+  explicit saved-token acknowledgement before advancing. Back/Next retains drafts
+  and the one-time token. Clipboard failures produce local feedback.
+- Verification uses the issued token_id against the existing inventory response;
+  it does not infer connection success from completing instructions or another
+  token's activity. Contextual memory guidance is expandable.
+- Fresh evidence: all seven client branches traversed at 390 and 1440 CSS px,
+  without visible section overflow; name and custom permissions retained across
+  steps; rejected issuance kept the Connect step; inert synthetic issuance tested
+  acknowledgement gating, duplicate prevention, locked client/access controls and
+  pending verification despite another fixture token having recent use. The fixture
+  was returned to read-only mode afterward. Typecheck, full web lint, navigation
+  tests and smoke-script syntax passed. Production smoke now traverses the steps,
+  checks command containment and name retention; CI execution remains pending.
+- Screenshots: `tmp/preview-evidence/guided-access-desktop.png` and
+  `guided-connect-mobile.png`. These are fixture-based visual evidence only.
+- Next: finish connection management detail and local activity/error feedback,
+  strengthen keyboard/zoom and real issuance verification, then apply the shared
+  patterns to Profile/Calendar/AI. Module ownership and canonical employee work
+  require their explicit contract/control audits before implementation.
 - Open: dependency audit, real integration evidence, independent usability review.
