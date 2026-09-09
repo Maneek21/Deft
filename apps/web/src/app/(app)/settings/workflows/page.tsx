@@ -140,7 +140,7 @@ export default function TaskRulesPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-[820px] mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-6">
+        <div className="mb-6 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
           <div>
             <h1 className="section-title" style={{ fontFamily: 'var(--font-heading)' }}>
               Task rules
@@ -151,7 +151,7 @@ export default function TaskRulesPage() {
           </div>
           {!creating && (
             <button onClick={() => setCreating(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
+              className="flex min-h-10 shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
               style={{ background: 'var(--accent)' }}>
               <Plus size={14} /> New task rule
             </button>

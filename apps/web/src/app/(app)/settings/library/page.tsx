@@ -602,7 +602,6 @@ export default function LibraryPage() {
       <PageHeader
         title="Task templates"
         description="Turn repeatable work into ready-made task sets that can be applied to any project."
-        compact
       />
 
       {/* Skills tab */}

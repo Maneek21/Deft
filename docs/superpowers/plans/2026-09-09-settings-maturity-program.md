@@ -215,3 +215,9 @@ production deployment, real credential grants or external messages are implied.
   shared visual baseline, not a completed individual redesign of every route.
   Fixture evidence: `tmp/preview-evidence/settings-*.png`. Persistence and full
   mobile/role coverage of the administration pages remain unverified.
+- Three review passes completed over 18 top-level routes (desktop, mobile, forms).
+  Fixed missing mobile Task templates title, squeezed task-rule/service-key actions,
+  and tag-form overflow with accessible colour/cancel controls. Fresh 320/390px
+  rechecks, typecheck, focused lint and navigation tests passed. See
+  `docs/superpowers/audits/2026-09-09-settings-review-passes.md` for exact coverage
+  and gaps, including the four employee detail routes without fixture records.

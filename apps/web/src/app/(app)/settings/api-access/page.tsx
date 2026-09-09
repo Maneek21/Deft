@@ -139,7 +139,7 @@ export default function ApiAccessPage() {
   return (
     <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[820px]">
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
         <div>
           <h2
             className="text-[18px] font-semibold"
@@ -153,7 +153,7 @@ export default function ApiAccessPage() {
         </div>
         <button
           onClick={() => setShowCreate(!showCreate)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+          className="flex min-h-10 shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-lg text-[12px] font-medium"
           style={{
             background: 'var(--accent)',
             color: 'white',
