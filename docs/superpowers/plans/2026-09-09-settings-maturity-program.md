@@ -234,7 +234,8 @@ Hono, Sharp and js-yaml overrides. The regenerated lockfile passes the full
 low-threshold pnpm audit with no known vulnerabilities. Full candidate CI remains
 the merge gate; no bypass of image scanning or database-backed browser smoke.
 
-Demo currently runs preview.14 (6d39e0e). Deploy the merged revision through a
+The public demo routes to the RC1 UI candidate in b3appsprivate20260906; the older
+preview.14 container remains separate. Deploy the merged revision through a
 separate source checkout, preserve site configuration and existing feature flags,
 record the old image, take a stopped database/uploads/configuration backup, and
 rehearse the versioned upgrade against a restored database before live cutover.
