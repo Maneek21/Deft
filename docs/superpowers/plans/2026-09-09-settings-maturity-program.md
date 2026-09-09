@@ -161,8 +161,33 @@ production deployment, real credential grants or external messages are implied.
   checks command containment and name retention; CI execution remains pending.
 - Screenshots: `tmp/preview-evidence/guided-access-desktop.png` and
   `guided-connect-mobile.png`. These are fixture-based visual evidence only.
-- Next: finish connection management detail and local activity/error feedback,
-  strengthen keyboard/zoom and real issuance verification, then apply the shared
-  patterns to Profile/Calendar/AI. Module ownership and canonical employee work
-  require their explicit contract/control audits before implementation.
+- Whole-page follow-through (PR #324, stacked on #323): replaced the management
+  dashboard with a searchable unified token/authorization list, expandable access
+  and activity, inline revoke confirmation, and restrained history/developer
+  disclosures. Setup is a separate view with compact client rows, a plain-language
+  access selector, focused credential instructions and connection-specific checks.
+  Cancelling preserves drafts; finishing clears the acknowledged credential.
+  Partial request failures retain the last inventory with an explicit warning;
+  history and metadata failures have distinct retry states. Verification prompts
+  follow the selected connection's actual permissions. Copy feedback is local.
+- Fresh whole-page evidence: seven client paths at 390 and 1440 CSS px without
+  section overflow; management and expanded revoke confirmation also checked at
+  320 px. Inspected dark desktop/mobile and light desktop/reflow layouts. Tested
+  search/clear, empty state, partial load failures/recovery, token and grant revoke,
+  failed revoke/retry, custom-scope validation, draft retention, inert issuance,
+  acknowledgement/duplicate guards, pending and fixture-observed activity,
+  grant-specific prompt permissions, and focus on steps/confirm/cancel/finish.
+  Web typecheck, full web lint, three navigation tests, smoke syntax and diff check
+  passed. Production smoke now includes issuance/acknowledgement/revoke against
+  its disposable seeded backend; that updated smoke has not been run locally.
+- Current screenshots: `tmp/preview-evidence/connections-whole-desktop.png`,
+  `connections-whole-mobile.png`, `connections-whole-light.png`, and
+  `connections-access-desktop.png` / `connections-access-mobile.png`.
+  All are synthetic fixture evidence, not proof of OAuth or persistence. Browser
+  zoom and screen-reader acceptance remain unverified; narrow reflow is not a zoom
+  test. The preview fixture returns to read-only mode after the interaction pass.
+- Next: obtain database-backed integration and independent usability evidence for
+  this page, strengthen zoom/screen-reader acceptance, then apply the patterns to
+  Profile/Calendar/AI. Module ownership and canonical employee work require their
+  explicit contract/control audits before implementation.
 - Open: dependency audit, real integration evidence, independent usability review.

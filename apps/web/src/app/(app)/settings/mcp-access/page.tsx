@@ -2,29 +2,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import {
-  Activity,
-  Bot,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Copy,
-  FileText,
-  Globe2,
-  History,
-  KeyRound,
-  Loader2,
-  Plug,
-  Settings2,
-  ShieldCheck,
-  Sparkles,
-  Terminal,
-  Trash2,
-  Wrench,
-} from 'lucide-react';
+import { Bot, Check, ChevronDown, Code2, Copy, Globe2, KeyRound, Plug, Wrench } from 'lucide-react';
 import { api } from '@/lib/api';
-import { PageHeader } from '@/components/page-header';
 import { useSetPageContext } from '@/components/app-header-context';
 import { SettingsSteps } from '@/components/settings-steps';
 
@@ -39,29 +18,18 @@ type McpToken = {
 };
 
 const READ_SCOPES = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'];
-const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki', 'write:calendar', 'write:modules', 'write:workspace'];
+const WRITE_SCOPES = [
+  'write:tasks',
+  'write:messages',
+  'write:wiki',
+  'write:calendar',
+  'write:modules',
+  'write:workspace',
+];
 const COLLABORATE_SCOPES = [...READ_SCOPES, 'write:tasks', 'write:messages', 'write:wiki', 'write:modules'];
 const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES];
 const APP_SCOPES = ['read:apps', 'invoke:apps', 'read:app-runs'];
 const AVAILABLE_SCOPES = [...ALL_SCOPES, ...APP_SCOPES];
-
-const SCOPE_LABELS: Record<string, string> = {
-  'read:workspace': 'Workspace map, teammates, projects, receipts, and activity context',
-  'read:wiki': 'Company, channel, and personal memory packets',
-  'read:tasks': 'Task lists, task detail, comments, and progress',
-  'read:messages': 'Visible spaces, threads, unread work, and chat search',
-  'read:calendar': 'Native and ICS calendar context',
-  'read:modules': 'Installed module schemas and records, such as the Contacts Directory',
-  'read:apps': 'Installed App identities, reviewed grants, bindings, and health',
-  'invoke:apps': 'Discover, prepare, and invoke reviewed App actions as you',
-  'read:app-runs': 'Inspect authorized App Run status, safe previews, and retained results',
-  'write:tasks': 'Create, update, transition, and comment on tasks',
-  'write:messages': 'Post messages into spaces and DMs you can access',
-  'write:wiki': 'Save or update wiki knowledge as you',
-  'write:calendar': 'Create, update, and cancel your native Deft calendar events',
-  'write:modules': 'Create, update, and archive records in enabled modules',
-  'write:workspace': 'Manage your notes, inbox, approvals, projects, and agent operations',
-};
 
 type ClientId = 'codex' | 'claude-code' | 'claude-desktop' | 'remote-web' | 'headless' | 'custom' | 'agent-employee';
 type AccessPreset = 'read' | 'work' | 'operate' | 'custom';
@@ -81,7 +49,8 @@ const CLIENT_OPTIONS: ClientOption[] = [
     id: 'codex',
     name: 'Codex',
     fit: 'Recommended token setup',
-    detail: 'Best for owner-operator workflows: triage messages, read tasks, write wiki, post updates, and leave receipts.',
+    detail:
+      'Best for owner-operator workflows: triage messages, read tasks, write wiki, post updates, and leave receipts.',
     setupKind: 'token',
     defaultPreset: 'work',
     tokenName: 'Codex',
@@ -99,7 +68,8 @@ const CLIENT_OPTIONS: ClientOption[] = [
     id: 'claude-desktop',
     name: 'Claude / Claude Desktop',
     fit: 'Remote OAuth connector',
-    detail: 'Add Deft from Claude settings, not inside a chat. Claude connects from Anthropic cloud and authenticates through OAuth.',
+    detail:
+      'Add Deft from Claude settings, not inside a chat. Claude connects from Anthropic cloud and authenticates through OAuth.',
     setupKind: 'oauth',
     defaultPreset: 'read',
     tokenName: 'Claude connector',
@@ -108,7 +78,8 @@ const CLIENT_OPTIONS: ClientOption[] = [
     id: 'remote-web',
     name: 'ChatGPT / hosted AI apps',
     fit: 'Plan-dependent access',
-    detail: 'ChatGPT Pro currently supports read/fetch. Full read/write MCP requires an eligible Business or Enterprise/Edu workspace using Developer Mode.',
+    detail:
+      'ChatGPT Pro currently supports read/fetch. Full read/write MCP requires an eligible Business or Enterprise/Edu workspace using Developer Mode.',
     setupKind: 'oauth',
     defaultPreset: 'read',
     tokenName: 'Remote AI app',
@@ -117,7 +88,8 @@ const CLIENT_OPTIONS: ClientOption[] = [
     id: 'headless',
     name: 'Headless / automation',
     fit: 'Full workspace operation',
-    detail: 'For scripts and AI clients that operate notes, inbox, approvals, projects, calendar, and agent state without opening Deft.',
+    detail:
+      'For scripts and AI clients that operate notes, inbox, approvals, projects, calendar, and agent state without opening Deft.',
     setupKind: 'token',
     defaultPreset: 'operate',
     tokenName: 'Headless operator',
@@ -189,16 +161,6 @@ const READ_TEST_PROMPTS = [
   'List my open tasks, find blockers, and suggest the next action.',
   'Search wiki for launch blockers, then summarize what changed recently.',
   'Show me which Deft capabilities and tools this connection can use.',
-];
-
-const COLLABORATE_TEST_PROMPTS = [
-  'Create a follow-up task from this discussion, post an update, and show me the receipt.',
-  'Update the relevant wiki page with this decision without creating a duplicate.',
-];
-
-const OPERATE_TEST_PROMPTS = [
-  'Review my inbox, approvals, tasks, and calendar, then give me one prioritized operating brief.',
-  'Create a calendar event for the agreed review, add a note with the agenda, and show me the receipts.',
 ];
 
 type RemoteReadiness = {
@@ -290,7 +252,7 @@ function actionResult(action: OAuthAuditAction): Record<string, unknown> | null 
   if (typeof text !== 'string') return null;
   try {
     const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
   }
@@ -331,18 +293,23 @@ function actionHref(action: OAuthAuditAction) {
   const toolName = typeof action.metadata?.tool_name === 'string' ? action.metadata.tool_name : null;
   const result = actionResult(action);
   if (!result) return null;
-  if ((toolName === 'task_create' || toolName === 'task_transition' || toolName === 'task_update' || toolName === 'comment_on_task') && typeof result.id === 'string') {
+  if (
+    (toolName === 'task_create' ||
+      toolName === 'task_transition' ||
+      toolName === 'task_update' ||
+      toolName === 'comment_on_task') &&
+    typeof result.id === 'string'
+  ) {
     return `/tasks?task=${encodeURIComponent(result.id)}`;
   }
-  if ((toolName === 'message_post' || toolName === 'send_message') && typeof result.id === 'string' && typeof result.space_id === 'string') {
+  if (
+    (toolName === 'message_post' || toolName === 'send_message') &&
+    typeof result.id === 'string' &&
+    typeof result.space_id === 'string'
+  ) {
     return `/chat?space=${encodeURIComponent(result.space_id)}&message=${encodeURIComponent(result.id)}`;
   }
   return null;
-}
-
-function isStale(value: string | null | undefined) {
-  if (!value) return true;
-  return Date.now() - new Date(value).getTime() > 1000 * 60 * 60 * 24 * 14;
 }
 
 function clientById(id: ClientId) {
@@ -358,7 +325,11 @@ function clientIcon(id: ClientId) {
 
 function RecentActionList({ actions }: { actions?: OAuthAuditAction[] }) {
   if (!actions?.length) {
-    return <div className="mt-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>No recent actions recorded.</div>;
+    return (
+      <div className="mt-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+        No recent actions recorded.
+      </div>
+    );
   }
   return (
     <div className="mt-2 space-y-1.5">
@@ -366,18 +337,24 @@ function RecentActionList({ actions }: { actions?: OAuthAuditAction[] }) {
         const href = actionHref(action);
         const content = (
           <>
-            <span className="min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+            <span className="min-w-0 break-words" style={{ color: 'var(--text-secondary)' }}>
               {actionTitle(action)} <span style={{ color: 'var(--text-tertiary)' }}>({actionDetail(action)})</span>
             </span>
-            <span className="shrink-0" style={{ color: 'var(--text-tertiary)' }}>{formatDate(action.created_at)}</span>
+            <span className="shrink-0" style={{ color: 'var(--text-tertiary)' }}>
+              {formatDate(action.created_at)}
+            </span>
           </>
         );
         return href ? (
-          <Link key={action.id} href={href} className="grid grid-cols-[1fr_auto] gap-3 text-[11px] hover:underline">
+          <Link
+            key={action.id}
+            href={href}
+            className="grid gap-1 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-3 hover:underline"
+          >
             {content}
           </Link>
         ) : (
-          <div key={action.id} className="grid grid-cols-[1fr_auto] gap-3 text-[11px]">
+          <div key={action.id} className="grid gap-1 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-3">
             {content}
           </div>
         );
@@ -386,11 +363,75 @@ function RecentActionList({ actions }: { actions?: OAuthAuditAction[] }) {
   );
 }
 
-function ScopePill({ scope }: { scope: string }) {
+function permissionLabel(scope: string) {
+  const labels: Record<string, string> = {
+    'read:workspace': 'View workspace context, people and projects',
+    'read:wiki': 'Read accessible knowledge and memory',
+    'read:tasks': 'Read tasks, comments and progress',
+    'read:messages': 'Read accessible conversations and unread messages',
+    'read:calendar': 'Read your calendar context',
+    'read:modules': 'Read accessible module records',
+    'write:tasks': 'Create and update tasks and comments',
+    'write:messages': 'Post messages in conversations you can access',
+    'write:wiki': 'Create and update accessible knowledge',
+    'write:calendar': 'Create, update and cancel your Deft events',
+    'write:modules': 'Create, update and archive module records',
+    'write:workspace': 'Manage your notes, inbox, approvals, projects and agent operations',
+    'read:apps': 'View installed apps, permissions and health',
+    'invoke:apps': 'Prepare and invoke reviewed app actions',
+    'read:app-runs': 'Read authorized app run status and results',
+  };
+  return labels[scope] ?? scope;
+}
+
+function accessSummary(scopes: string[]) {
+  if (!scopes.length) return 'No permissions granted.';
+  if (scopes.every((scope) => scope.startsWith('read:'))) return 'Read-only access within its granted permissions.';
+  if (scopes.some((scope) => scope.startsWith('write:') || scope.startsWith('invoke:')))
+    return 'Can read or make changes within its granted permissions.';
+  return 'Access is defined by the permissions below.';
+}
+
+function PermissionDetails({ scopes }: { scopes: string[] }) {
   return (
-    <span className="text-[11px] rounded-md px-2 py-1" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-      {scope}
-    </span>
+    <details className="mt-3 text-sm">
+      <summary className="cursor-pointer font-medium">View {scopes.length} permissions</summary>
+      <ul className="mt-3 space-y-3">
+        {scopes.map((scope) => (
+          <li key={scope}>
+            <span className="block">{permissionLabel(scope)}</span>
+            <code className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+              {scope}
+            </code>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function CopyControl({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  copied: string | null;
+  onCopy: (label: string, value: string) => Promise<void>;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`Copy ${label}`}
+      onClick={() => void onCopy(label, value)}
+      className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg border px-3 text-xs focus-visible:outline-2"
+      style={{ borderColor: 'var(--border-default)' }}
+    >
+      {copied === label ? <Check size={14} /> : <Copy size={14} />}
+      <span role="status">{copied === label ? 'Copied' : 'Copy'}</span>
+    </button>
   );
 }
 
@@ -415,7 +456,18 @@ export default function McpAccessPage() {
   const [setupStep, setSetupStep] = useState(0);
   const [tokenSaved, setTokenSaved] = useState(false);
   const [issuedTokenId, setIssuedTokenId] = useState<string | null>(null);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [setupStarted, setSetupStarted] = useState(false);
+  const [connectionQuery, setConnectionQuery] = useState('');
+  const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+  const [selectedGrantId, setSelectedGrantId] = useState('');
+  const [loadFailures, setLoadFailures] = useState<string[]>([]);
+  const loadRequest = useRef(0);
   const stepHeading = useRef<HTMLHeadingElement>(null);
+  const connectionsAction = useRef<HTMLButtonElement>(null);
+  const revokeAction = useRef<HTMLButtonElement>(null);
+  const revokeTriggers = useRef<Record<string, HTMLButtonElement | null>>({});
+  const previousRevoke = useRef<string | null>(null);
   const focusStep = useRef(false);
   const setupSteps = ['Choose app', 'Review access', 'Connect', 'Verify'] as const;
 
@@ -426,10 +478,17 @@ export default function McpAccessPage() {
 
   useLayoutEffect(() => {
     if (focusStep.current) {
-      stepHeading.current?.focus();
+      (setupOpen ? stepHeading.current : connectionsAction.current)?.focus();
       focusStep.current = false;
     }
-  }, [setupStep]);
+  }, [setupStep, setupOpen]);
+
+  useLayoutEffect(() => {
+    if (confirmRevoke) revokeAction.current?.focus();
+    else if (previousRevoke.current)
+      (revokeTriggers.current[previousRevoke.current] ?? connectionsAction.current)?.focus();
+    previousRevoke.current = confirmRevoke;
+  }, [confirmRevoke]);
 
   const selectedClientOption = clientById(selectedClient);
   const selectedScopes = useMemo(() => {
@@ -438,51 +497,43 @@ export default function McpAccessPage() {
     if (accessPreset === 'operate') return ALL_SCOPES;
     return customScopes;
   }, [accessPreset, customScopes]);
-  const testPrompts = useMemo(() => {
-    const prompts = [...READ_TEST_PROMPTS];
-    if (selectedScopes.some((scope) => ['write:tasks', 'write:messages', 'write:wiki', 'write:modules'].includes(scope))) {
-      prompts.push(...COLLABORATE_TEST_PROMPTS);
-    }
-    if (selectedScopes.includes('write:workspace') || selectedScopes.includes('write:calendar')) {
-      prompts.push(...OPERATE_TEST_PROMPTS);
-    }
-    return prompts;
-  }, [selectedScopes]);
 
   const load = useCallback(async () => {
+    const request = ++loadRequest.current;
     setLoading(true);
-    setError(null);
-    try {
-      const res = await api.get('/api/mcp-access/tokens');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
-      setTokens(body.tokens ?? []);
-      setEndpoint(body.mcp_endpoint_url ?? '');
-      const [readinessRes, grantsRes, historyRes] = await Promise.all([
-        api.get('/api/oauth/readiness'),
-        api.get('/api/oauth/grants'),
-        api.get('/api/mcp-access/history'),
-      ]);
-      setRemote(readinessRes.ok ? await readinessRes.json() : null);
-      if (grantsRes.ok) {
-        const grantsBody = await grantsRes.json();
-        setGrants(grantsBody.grants ?? []);
-      }
-      if (historyRes.ok) {
-        const historyBody = await historyRes.json();
-        setHistory({
-          revoked_tokens: historyBody.revoked_tokens ?? [],
-          revoked_grants: historyBody.revoked_grants ?? [],
-        });
-      }
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
+    const resources = [
+      ['Personal tokens', '/api/mcp-access/tokens'],
+      ['Connector settings', '/api/oauth/readiness'],
+      ['App authorizations', '/api/oauth/grants'],
+      ['Connection history', '/api/mcp-access/history'],
+    ] as const;
+    const results = await Promise.allSettled(
+      resources.map(async ([, path]) => {
+        const response = await api.get(path);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      }),
+    );
+    if (request !== loadRequest.current) return;
+    const [tokenResult, readinessResult, grantResult, historyResult] = results;
+    if (tokenResult.status === 'fulfilled') {
+      setTokens(tokenResult.value.tokens ?? []);
+      setEndpoint(tokenResult.value.mcp_endpoint_url ?? '');
     }
+    setRemote(readinessResult.status === 'fulfilled' ? readinessResult.value : null);
+    if (grantResult.status === 'fulfilled') setGrants(grantResult.value.grants ?? []);
+    if (historyResult.status === 'fulfilled')
+      setHistory({
+        revoked_tokens: historyResult.value.revoked_tokens ?? [],
+        revoked_grants: historyResult.value.revoked_grants ?? [],
+      });
+    setLoadFailures(results.flatMap((result, index) => (result.status === 'rejected' ? [resources[index][0]] : [])));
+    setLoading(false);
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   function chooseClient(id: ClientId) {
     if (busy || newToken || id === selectedClient) return;
@@ -495,14 +546,13 @@ export default function McpAccessPage() {
   }
 
   function toggleCustomScope(scope: string) {
-    setCustomScopes((current) => (
-      current.includes(scope)
-        ? current.filter((item) => item !== scope)
-        : [...current, scope]
-    ));
+    setCustomScopes((current) =>
+      current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope],
+    );
   }
 
   async function copy(label: string, value: string) {
+    setError(null);
     try {
       await navigator.clipboard.writeText(value);
       setCopied(label);
@@ -513,6 +563,7 @@ export default function McpAccessPage() {
   }
 
   async function createToken() {
+    if (busy || newToken || !selectedScopes.length) return;
     setBusy(true);
     setError(null);
     try {
@@ -530,6 +581,7 @@ export default function McpAccessPage() {
       setTokenSaved(false);
       setEndpoint(body.mcp_endpoint_url ?? endpoint);
       await load();
+      setConfirmRevoke(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -544,8 +596,9 @@ export default function McpAccessPage() {
       const res = await api.delete(`/api/mcp-access/tokens/${id}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await load();
-    } catch (err) {
-      setError((err as Error).message);
+      setConfirmRevoke(null);
+    } catch {
+      setError('Could not confirm revocation. Refresh the connection list to check its status, then try again.');
     } finally {
       setBusy(false);
     }
@@ -558,8 +611,9 @@ export default function McpAccessPage() {
       const res = await api.delete(`/api/oauth/grants/${id}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await load();
-    } catch (err) {
-      setError((err as Error).message);
+      setConfirmRevoke(null);
+    } catch {
+      setError('Could not confirm revocation. Refresh the connection list to check its status, then try again.');
     } finally {
       setBusy(false);
     }
@@ -583,17 +637,15 @@ export default function McpAccessPage() {
     if (selectedClient === 'claude-code') {
       return {
         title: 'Claude Code CLI',
-        detail: 'Run this in a terminal. Then use /mcp in Claude Code to verify the connection. Do not paste the token into a Claude chat.',
+        detail:
+          'Run this in a terminal. Then use /mcp in Claude Code to verify the connection. Do not paste the token into a Claude chat.',
         value: `claude mcp add --transport http --scope user deft "${endpointForConfig}" --header "Authorization: Bearer ${tokenForConfig}"`,
       };
     }
     return {
       title: 'Raw endpoint and bearer header',
       detail: 'Use this when your client asks for the MCP URL and authorization header separately.',
-      value: [
-        `MCP URL: ${endpointForConfig}`,
-        `Authorization: Bearer ${tokenForConfig}`,
-      ].join('\n'),
+      value: [`MCP URL: ${endpointForConfig}`, `Authorization: Bearer ${tokenForConfig}`].join('\n'),
     };
   }, [endpointForConfig, selectedClient, tokenForConfig]);
 
@@ -609,7 +661,6 @@ export default function McpAccessPage() {
     ['Registration endpoint', remote?.registration_endpoint],
   ];
   const isClaudeConnector = selectedClient === 'claude-desktop';
-  const isChatGptConnector = selectedClient === 'remote-web';
   const remoteSteps = isClaudeConnector
     ? [
         'In Claude, open Settings or Customize -> Connectors. Do not paste MCP JSON or tokens into a chat.',
@@ -621,7 +672,7 @@ export default function McpAccessPage() {
         'In ChatGPT web, enable developer mode for an eligible account, then open Settings -> Apps -> Create.',
         'Use the Connector URL below and choose OAuth authentication. Deft publishes the discovery metadata automatically.',
         'Click Scan Tools and complete the Deft authorization screen. Deft starts scope-less connections read-only; add write permissions only when your ChatGPT plan supports full MCP.',
-        'Create the draft app, enable it in a new chat, and confirm a read. On Business or Enterprise/Edu, test a write action and approve ChatGPT\'s confirmation prompt.',
+        "Create the draft app, enable it in a new chat, and confirm a read. On Business or Enterprise/Edu, test a write action and approve ChatGPT's confirmation prompt.",
       ];
   const claudeConnectorFields = [
     {
@@ -634,7 +685,7 @@ export default function McpAccessPage() {
       label: 'Remote MCP server URL',
       value: remote?.mcp_endpoint_url ?? (loading ? 'Loading connector URL...' : 'Connector URL unavailable'),
       copyValue: remote?.mcp_endpoint_url,
-      help: 'Paste this into Claude\'s required URL field.',
+      help: "Paste this into Claude's required URL field.",
     },
     {
       label: 'OAuth Client ID (optional)',
@@ -648,632 +699,853 @@ export default function McpAccessPage() {
     },
   ];
 
+  const connections = [
+    ...tokens.map((token) => ({
+      ...token,
+      key: `token:${token.id}`,
+      kind: 'token' as const,
+      label: 'Personal token',
+      displayName: token.name,
+    })),
+    ...grants.map((grant) => ({
+      ...grant,
+      key: `grant:${grant.id}`,
+      kind: 'grant' as const,
+      label: 'App authorization',
+      displayName: grant.app_name,
+    })),
+  ];
+  const filteredConnections = connections.filter((connection) =>
+    `${connection.displayName} ${connection.label}`.toLowerCase().includes(connectionQuery.trim().toLowerCase()),
+  );
+  const inventoryFailures = loadFailures.filter((name) => name === 'Personal tokens' || name === 'App authorizations');
+  const selectedPreset = PRESETS.find((preset) => preset.id === accessPreset)!;
+  const verificationConnection = tokenSetupClient
+    ? issuedConnection
+    : grants.find((grant) => grant.id === selectedGrantId);
+  const verificationUnavailable = loadFailures.includes(tokenSetupClient ? 'Personal tokens' : 'App authorizations');
+  const promptScopes = verificationConnection?.scopes ?? selectedScopes;
+  const prompt = promptScopes.includes('read:messages')
+    ? READ_TEST_PROMPTS[0]
+    : promptScopes.includes('read:tasks')
+      ? READ_TEST_PROMPTS[1]
+      : promptScopes.includes('read:wiki')
+        ? READ_TEST_PROMPTS[2]
+        : READ_TEST_PROMPTS[3];
+  const border = { borderColor: 'var(--border-default)' };
+  const muted = { color: 'var(--text-secondary)' };
+  const buttonClass =
+    'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-40';
+  const primaryStyle = { background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' };
+
+  function openSetup() {
+    focusStep.current = true;
+    setSetupStarted(true);
+    setSetupOpen(true);
+    setError(null);
+  }
+
+  function closeSetup() {
+    focusStep.current = true;
+    setSetupOpen(false);
+  }
+
+  function finishSetup() {
+    closeSetup();
+    setSetupStarted(false);
+    setSetupStep(0);
+    setNewToken(null);
+    setIssuedTokenId(null);
+    setTokenSaved(false);
+    setSelectedGrantId('');
+  }
+
   return (
     <div className="flex h-full min-w-0 flex-col overflow-x-hidden overflow-y-auto">
-      <PageHeader
-        title="Personal AI connections"
-        description="Connect Codex, Claude, ChatGPT, or any MCP client to your Deft workspace."
-        compact
-      />
-
-      <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4 px-4 pb-8 md:px-6">
-        {error && (
-          <div className="rounded-lg px-3 py-2 text-[13px]" style={{ color: 'var(--danger)', border: '1px solid var(--danger)', background: 'color-mix(in srgb, var(--danger) 8%, transparent)' }}>
-            {error}
+      <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 px-4 pb-12 md:px-6">
+        <header className="pt-7">
+          <h1 className="text-2xl font-semibold tracking-tight">Personal AI connections</h1>
+          <p className="mt-2 text-sm leading-6" style={muted}>
+            Connect your AI apps to Deft. You control their access.
+          </p>
+        </header>
+        {error && !setupOpen && !confirmRevoke && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 rounded-lg border p-4 text-sm"
+            style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+          >
+            <p>{error}</p>
+            <button type="button" onClick={() => setError(null)} className="shrink-0 underline">
+              Dismiss
+            </button>
           </div>
         )}
-        {copied && (
-          <div className="rounded-lg px-3 py-2 text-[13px] flex items-center gap-2" style={{ color: 'var(--accent)', background: 'var(--surface-container-low)' }}>
-            <Check size={14} /> Copied {copied}
-          </div>
-        )}
 
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <div className="flex items-center gap-2 mb-3">
-            <Activity size={15} style={{ color: 'var(--accent)' }} />
-            <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Manage active connections</h2>
-          </div>
-          {loading ? (
-            <div className="py-6 flex items-center justify-center"><Loader2 size={18} className="animate-spin" /></div>
-          ) : (
-            <div className="grid lg:grid-cols-2 gap-3">
-              <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>Personal tokens</div>
-                {tokens.length === 0 ? (
-                  <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>No personal MCP tokens yet.</p>
-                ) : (
-                  <div className="space-y-2 mt-3">
-                    {tokens.map((token) => (
-                      <div key={token.id} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
-                            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                              {token.token_prefix}... / last used {formatDate(token.last_used_at)}
-                            </div>
-                          </div>
-                          <button type="button" disabled={busy} onClick={() => revoke(token.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${token.name}`}>
-                            <Trash2 size={13} /> Revoke
-                          </button>
-                        </div>
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {isStale(token.last_used_at) && (
-                            <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
-                              {token.last_used_at ? 'stale' : 'unused'}
-                            </span>
-                          )}
-                          {token.scopes.map((scope) => (
-                            <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
-                          ))}
-                        </div>
-                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-default)' }}>
-                          <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Recent token activity</div>
-                          <RecentActionList actions={token.recent_actions} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+        {!setupOpen ? (
+          <>
+            <section aria-labelledby="connections-heading">
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 id="connections-heading" className="text-lg font-semibold">
+                    Your connections
+                  </h2>
+                  <p className="mt-1 text-sm" style={muted}>
+                    These apps act as you and can only access work you can see.
+                  </p>
+                </div>
+                <button
+                  ref={connectionsAction}
+                  type="button"
+                  onClick={openSetup}
+                  className={buttonClass}
+                  style={primaryStyle}
+                >
+                  <Plug size={16} />
+                  {setupStarted ? 'Resume setup' : 'Add connection'}
+                </button>
               </div>
-
-              <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>OAuth app grants</div>
-                {grants.length === 0 ? (
-                  <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>No ChatGPT or Claude-style OAuth connections yet.</p>
-                ) : (
-                  <div className="space-y-2 mt-3">
-                    {grants.map((grant) => (
-                      <div key={grant.id} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
-                            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                              {grant.connector_profile} / last used {formatDate(grant.last_used_at)}
-                            </div>
-                          </div>
-                          <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${grant.app_name}`}>
-                            <Trash2 size={13} /> Revoke
-                          </button>
-                        </div>
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {isStale(grant.last_used_at) && (
-                            <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
-                              {grant.last_used_at ? 'stale' : 'unused'}
-                            </span>
-                          )}
-                          {grant.scopes.map((scope) => (
-                            <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
-                          ))}
-                        </div>
-                        <RecentActionList actions={grant.recent_actions} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-        <details className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <summary className="cursor-pointer py-2 text-sm font-semibold">Add connection</summary>
-          <div className="mx-auto max-w-3xl py-4">
-          <SettingsSteps steps={selectedClientOption.setupKind === 'agent' ? setupSteps.slice(0, 3) : setupSteps} current={setupStep} />
-          <h2 ref={stepHeading} tabIndex={-1} className="mb-2 scroll-mt-32 text-lg font-semibold focus-visible:outline-2 focus-visible:outline-offset-4">{setupSteps[setupStep]}</h2>
-          <p className="mb-5 text-sm" style={{ color: 'var(--text-secondary)' }}>{setupStep === 0 ? 'Choose the app you want to use with Deft.' : `${selectedClientOption.name} · ${setupStep === 1 ? 'Understand what this connection can access.' : setupStep === 2 ? 'Follow the instructions for your app.' : 'Check that your app can reach Deft.'}`}</p>
-          {newToken && setupStep < 2 && <p role="status" className="mb-4 text-sm">This token’s app and access are fixed. Return to Connect to copy it, or finish setup before starting another connection.</p>}
-          {error && <p role="alert" className="mb-4 rounded-md border p-3 text-sm" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>{error}</p>}
-          {copied && <p role="status" className="mb-4 text-sm" style={{ color: 'var(--accent)' }}>Copied {copied}</p>}
-          <div className="space-y-4">
-        <div hidden={setupStep !== 0}>
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <div className="flex flex-col gap-4">
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                <Sparkles size={16} />
-              </div>
-              <div>
-                <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>What do you want to connect?</h2>
-                <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                  Pick the app first. Deft will show the right connection path instead of making you sort through every MCP detail.
+              {newToken && !tokenSaved && (
+                <p role="status" className="mb-4 rounded-lg border p-3 text-sm" style={border}>
+                  Your new token is still in setup. Resume to save it before refreshing or leaving this page.
                 </p>
+              )}
+              <div className="mb-4 flex gap-3">
+                <label className="min-w-0 flex-1">
+                  <span className="sr-only">Search connections</span>
+                  <input
+                    type="search"
+                    value={connectionQuery}
+                    onChange={(event) => setConnectionQuery(event.target.value)}
+                    placeholder="Search connections"
+                    className="h-10 w-full rounded-lg border bg-transparent px-3 text-sm focus-visible:outline-2"
+                    style={border}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void load()}
+                  className={buttonClass}
+                  style={border}
+                >
+                  {loading ? 'Refreshing…' : 'Refresh'}
+                </button>
               </div>
-            </div>
+              {inventoryFailures.length > 0 && (
+                <p role="alert" className="mb-4 text-sm" style={{ color: 'var(--danger)' }}>
+                  Could not refresh {inventoryFailures.join(' and ').toLowerCase()}. The list may be incomplete or out
+                  of date. Retry with Refresh.
+                </p>
+              )}
+              {loading && connections.length === 0 ? (
+                <p role="status" className="py-8 text-sm" style={muted}>
+                  Loading your connections…
+                </p>
+              ) : filteredConnections.length === 0 ? (
+                <div className="rounded-xl border border-dashed px-5 py-10 text-center" style={border}>
+                  <h3 className="font-semibold">
+                    {connectionQuery.trim()
+                      ? 'No matching connections'
+                      : inventoryFailures.length
+                        ? 'Connections unavailable'
+                        : 'Connect your first AI app'}
+                  </h3>
+                  <p className="mt-2 text-sm" style={muted}>
+                    {connectionQuery.trim()
+                      ? 'Try a different name or clear your search.'
+                      : inventoryFailures.length
+                        ? 'Refresh to try loading your connections again.'
+                        : 'Bring your workspace into Codex, Claude or another supported client.'}
+                  </p>
+                  {connectionQuery.trim() && (
+                    <button type="button" onClick={() => setConnectionQuery('')} className="mt-3 text-sm underline">
+                      Clear search
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="divide-y rounded-xl border" style={border}>
+                  {filteredConnections.map((connection) => (
+                    <details key={connection.key} className="group px-4 py-1" style={border}>
+                      <summary className="flex cursor-pointer list-none items-center gap-3 py-4 focus-visible:outline-2">
+                        <span
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
+                          style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}
+                        >
+                          {connection.kind === 'token' ? <KeyRound size={18} /> : <Globe2 size={18} />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block break-words text-sm font-semibold">{connection.displayName}</span>
+                          <span className="mt-1 block text-xs" style={muted}>
+                            {connection.label} ·{' '}
+                            {connection.last_used_at
+                              ? `Last used ${formatDate(connection.last_used_at)}`
+                              : 'Not used yet'}
+                          </span>
+                        </span>
+                        <ChevronDown size={16} className="shrink-0 transition-transform group-open:rotate-180" />
+                      </summary>
+                      <div className="space-y-5 border-t pb-5 pt-4" style={border}>
+                        <div>
+                          <h3 className="text-sm font-semibold">Access</h3>
+                          <p className="mt-1 text-sm" style={muted}>
+                            {accessSummary(connection.scopes)}
+                          </p>
+                          <PermissionDetails scopes={connection.scopes} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-semibold">Recent activity</h3>
+                          <RecentActionList actions={connection.recent_actions} />
+                        </div>
+                        <p className="text-xs" style={muted}>
+                          Added {formatDate(connection.created_at)}
+                          {connection.kind === 'token'
+                            ? ` · Token ${connection.token_prefix}…`
+                            : ` · ${connection.connector_profile}`}
+                        </p>
+                        {confirmRevoke === connection.key ? (
+                          <div className="rounded-lg border p-3" style={border}>
+                            {error && (
+                              <p role="alert" className="mb-3 text-sm" style={{ color: 'var(--danger)' }}>
+                                {error}
+                              </p>
+                            )}
+                            <p className="text-sm">
+                              Revoke access for <strong>{connection.displayName}</strong>? It will stop accessing Deft.
+                              To use it again, you will need to reconnect.
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  void (connection.kind === 'token'
+                                    ? revoke(connection.id)
+                                    : revokeGrant(connection.id))
+                                }
+                                className={buttonClass}
+                                style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}
+                                ref={revokeAction}
+                              >
+                                {busy ? 'Revoking…' : 'Confirm revoke'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setConfirmRevoke(null)}
+                                className={buttonClass}
+                                style={border}
+                              >
+                                Keep connection
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            ref={(node) => {
+                              revokeTriggers.current[connection.key] = node;
+                            }}
+                            onClick={() => {
+                              setConfirmRevoke(connection.key);
+                              setError(null);
+                            }}
+                            className="text-sm font-medium"
+                            style={{ color: 'var(--danger)' }}
+                          >
+                            Revoke access
+                          </button>
+                        )}
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </section>
 
-            <div className="grid sm:grid-cols-2 gap-3">
-              {CLIENT_OPTIONS.map((client) => {
-                const active = client.id === selectedClient;
-                return (
+            <section className="border-t pt-5" style={border}>
+              <button
+                type="button"
+                aria-expanded={historyOpen}
+                onClick={() => setHistoryOpen(!historyOpen)}
+                className="flex w-full items-center justify-between gap-3 py-2 text-left"
+              >
+                <span>
+                  <span className="block text-sm font-semibold">Connection history</span>
+                  <span className="mt-1 block text-xs" style={muted}>
+                    Revoked connections and their last recorded activity.
+                  </span>
+                </span>
+                <ChevronDown size={16} className={historyOpen ? 'rotate-180' : ''} />
+              </button>
+              {historyOpen && (
+                <div className="mt-4 space-y-3">
+                  {loadFailures.includes('Connection history') ? (
+                    <p role="alert" className="text-sm">
+                      History could not be refreshed. Use Refresh to retry.
+                    </p>
+                  ) : loading && !history ? (
+                    <p role="status" className="text-sm">
+                      Loading history…
+                    </p>
+                  ) : historyCount === 0 ? (
+                    <p className="text-sm" style={muted}>
+                      No revoked connections.
+                    </p>
+                  ) : (
+                    [
+                      ...(history?.revoked_tokens.map((token) => ({
+                        ...token,
+                        key: `token:${token.id}`,
+                        displayName: token.name,
+                        label: `Personal token ${token.token_prefix}…`,
+                      })) ?? []),
+                      ...(history?.revoked_grants.map((grant) => ({
+                        ...grant,
+                        key: `grant:${grant.id}`,
+                        displayName: grant.app_name,
+                        label: grant.connector_profile,
+                      })) ?? []),
+                    ].map((connection) => (
+                      <details key={connection.key} className="rounded-lg border p-4" style={border}>
+                        <summary className="cursor-pointer text-sm font-medium">
+                          {connection.displayName}
+                          <span className="mt-1 block text-xs font-normal" style={muted}>
+                            Revoked {formatDate(connection.revoked_at)}
+                          </span>
+                        </summary>
+                        <p className="mt-3 text-xs" style={muted}>
+                          {connection.label} · Last used {formatDate(connection.last_used_at)}
+                        </p>
+                        <PermissionDetails scopes={connection.scopes} />
+                        <RecentActionList actions={connection.recent_actions} />
+                      </details>
+                    ))
+                  )}
+                </div>
+              )}
+            </section>
+          </>
+        ) : (
+          <section aria-labelledby="setup-heading" className="mx-auto max-w-2xl">
+            <button
+              type="button"
+              onClick={closeSetup}
+              className="mb-6 text-sm font-medium"
+              style={{ color: 'var(--accent)' }}
+            >
+              ← Your connections
+            </button>
+            <SettingsSteps
+              steps={selectedClientOption.setupKind === 'agent' ? setupSteps.slice(0, 3) : setupSteps}
+              current={setupStep}
+            />
+            <h2
+              id="setup-heading"
+              ref={stepHeading}
+              tabIndex={-1}
+              className="scroll-mt-32 text-2xl font-semibold tracking-tight focus-visible:outline-2 focus-visible:outline-offset-4"
+            >
+              {setupStep === 0
+                ? 'Which app would you like to connect?'
+                : setupStep === 1
+                  ? `Review access for ${selectedClientOption.name}`
+                  : setupStep === 2
+                    ? `Connect ${selectedClientOption.name}`
+                    : 'Check your connection'}
+            </h2>
+            <p className="mb-7 mt-2 text-sm leading-6" style={muted}>
+              {setupStep === 0
+                ? 'Choose an app to see its setup instructions.'
+                : setupStep === 1
+                  ? 'Choose the access this app needs. Every action is recorded under your name.'
+                  : setupStep === 2
+                    ? 'Complete the setup in your app, then come back to check its activity.'
+                    : 'Run a request from your app and check whether Deft receives it.'}
+            </p>
+            {error && (
+              <p
+                role="alert"
+                className="mb-5 rounded-lg border p-3 text-sm"
+                style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+              >
+                {error}
+              </p>
+            )}
+            {newToken && setupStep < 2 && (
+              <p role="status" className="mb-5 rounded-lg border p-3 text-sm" style={border}>
+                A token has already been issued with these permissions. Return to Connect to save it. Start another
+                connection after finishing this setup to choose different access.
+              </p>
+            )}
+
+            {setupStep === 0 && (
+              <div className="space-y-2">
+                {CLIENT_OPTIONS.map((client) => (
                   <button
                     key={client.id}
                     type="button"
-                    onClick={() => chooseClient(client.id)}
                     disabled={busy || !!newToken}
-                    aria-pressed={active}
-                    className="min-w-0 rounded-md p-3 text-left transition-colors"
+                    aria-pressed={selectedClient === client.id}
+                    onClick={() => chooseClient(client.id)}
+                    className="flex w-full items-center gap-3 rounded-lg border p-4 text-left focus-visible:outline-2 disabled:opacity-60"
                     style={{
-                      background: active ? 'color-mix(in srgb, var(--accent) 12%, var(--surface-container))' : 'var(--surface-container)',
-                      border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
+                      borderColor: selectedClient === client.id ? 'var(--accent)' : 'var(--border-default)',
+                      background: selectedClient === client.id ? 'var(--accent-muted)' : 'transparent',
                     }}
                   >
-                    <div className="flex flex-col items-start gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="w-7 h-7 rounded-md flex items-center justify-center shrink-0" style={{ background: active ? 'var(--accent-muted)' : 'var(--surface-container-low)', color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                          {clientIcon(client.id)}
-                        </span>
-                        <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{client.name}</span>
-                      </div>
-                      <span className="text-[10px] rounded px-1.5 py-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>{client.fit}</span>
-                    </div>
-                    {active && <p className="text-[12px] mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{client.detail}</p>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-        </div>
-
-        <div className="min-w-0">
-          <div className="min-w-0 space-y-4" hidden={setupStep === 0 || setupStep === 3}>
-            <fieldset disabled={busy || !!newToken} hidden={setupStep !== 1} className="min-w-0">
-            {tokenSetupClient && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                    <ShieldCheck size={16} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Choose what {selectedClientOption.name} can do</h2>
-                    <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Personal MCP tokens act as you. The app can only see what you can see, and every write is recorded under your name.
-                    </p>
-
-                    <div className="grid sm:grid-cols-2 gap-3 mt-4">
-                      {PRESETS.map((preset) => {
-                        const active = preset.id === accessPreset;
-                        return (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => setAccessPreset(preset.id)}
-                            aria-pressed={active}
-                            className="rounded-md p-3 text-left"
-                            style={{
-                              background: active ? 'color-mix(in srgb, var(--accent) 12%, var(--surface-container))' : 'var(--surface-container)',
-                              border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
-                            }}
-                          >
-                            <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{preset.title}</div>
-                            <p className="text-[11px] mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{preset.detail}</p>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {accessPreset === 'custom' && (
-                      <div className="grid sm:grid-cols-2 gap-2 mt-3">
-                        {AVAILABLE_SCOPES.map((scope) => (
-                          <label key={scope} className="flex items-start gap-2 rounded-md p-2.5 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-                            <input
-                              type="checkbox"
-                              checked={customScopes.includes(scope)}
-                              onChange={() => toggleCustomScope(scope)}
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{scope}</span>
-                              <span> - {SCOPE_LABELS[scope]}</span>
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="flex flex-wrap gap-1.5 mt-3">
-                      {selectedScopes.map((scope) => <ScopePill key={scope} scope={scope} />)}
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-            {!tokenSetupClient && <section className="rounded-lg border p-4" style={{ borderColor: 'var(--border-default)' }}><h3 className="font-semibold">{selectedClientOption.setupKind === 'agent' ? 'A shared workspace employee' : 'Review permissions during authorization'}</h3><p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{selectedClientOption.setupKind === 'agent' ? 'Agent employees have their own workspace access and operating policies. Continue to employee setup to configure them.' : 'Your app will open Deft’s authorization screen. Review the requested permissions there before allowing access. You can revoke the resulting grant from your active connections.'}</p></section>}
-            </fieldset>
-
-            {tokenSetupClient && setupStep === 2 && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                    <KeyRound size={16} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Create the connection</h2>
-                    <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Generate a token, copy the config for {selectedClientOption.name}, then test it from the AI app.
-                    </p>
-                    <div className="grid xl:grid-cols-[minmax(0,1fr)_auto] gap-3 mt-4">
-                      <input
-                        value={tokenName}
-                        onChange={(e) => setTokenName(e.target.value)}
-                        aria-label="Connection name"
-                        disabled={busy || !!newToken}
-                        className="min-w-0 h-10 rounded-md px-3 text-[13px] outline-none"
-                        style={{ background: 'var(--surface-container)', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }}
-                      />
-                      <button
-                        type="button"
-                        disabled={busy || !!newToken || selectedScopes.length === 0}
-                        onClick={createToken}
-                        className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        {busy ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
-                        Generate token
-                      </button>
-                    </div>
-
-                    {newToken && (
-                      <div className="mt-4 rounded-md p-3" style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-container))', border: '1px solid var(--accent)' }}>
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>New token</div>
-                            <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>Copy it now. Deft will not show it again.</p>
-                          </div>
-                          <button type="button" onClick={() => copy('token', newToken)} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px]" style={{ border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
-                            <Copy size={13} /> Copy
-                          </button>
-                        </div>
-                        <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>{newToken}</pre>
-                        <label className="mt-3 flex items-start gap-2 text-xs"><input type="checkbox" checked={tokenSaved} onChange={(event) => setTokenSaved(event.target.checked)} />I have saved this token securely. I understand it will not be shown after leaving this page.</label>
-                      </div>
-                    )}
-
-                    <div className="mt-4 rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{selectedSnippet.title}</div>
-                          <p className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>{selectedSnippet.detail}</p>
-                        </div>
-                        <button type="button" onClick={() => copy(selectedSnippet.title.toLowerCase(), selectedSnippet.value)} className="p-1.5 rounded-md shrink-0" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }} aria-label={`Copy ${selectedSnippet.title}`}>
-                          <Copy size={13} />
-                        </button>
-                      </div>
-                      <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px] max-h-56" style={{ background: 'var(--surface-container-high, var(--surface-container-low))', color: 'var(--text-primary)' }}>{selectedSnippet.value}</pre>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {selectedClientOption.setupKind === 'oauth' && setupStep === 2 && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                    <Globe2 size={16} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                          {isClaudeConnector ? 'Claude connector setup' : 'ChatGPT custom app setup'}
-                        </h2>
-                        <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                          {isClaudeConnector
-                            ? 'Claude connectors are added from Claude settings at the account level. The URL/token cannot be pasted into an active chat and expected to work.'
-                            : 'ChatGPT connects from OpenAI cloud, so Deft must be publicly reachable over HTTPS. The app uses Deft OAuth; do not paste a personal token into ChatGPT.'}
-                        </p>
-                      </div>
-                      <span className="text-[11px] rounded-md px-2 py-1 shrink-0" style={{ background: remote?.https_ready ? 'var(--accent-muted)' : 'var(--surface-container)', color: remote?.https_ready ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
-                        {remote ? (remote.https_ready ? 'HTTPS ready' : 'Needs public HTTPS') : (loading ? 'Checking readiness...' : 'Status unavailable')}
+                    <span style={{ color: 'var(--accent)' }}>{clientIcon(client.id)}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold">{client.name}</span>
+                      <span className="mt-1 block text-xs leading-5" style={muted}>
+                        {client.setupKind === 'oauth'
+                          ? 'Connect through your app’s settings using Deft authorization.'
+                          : client.setupKind === 'agent'
+                            ? 'A shared worker with its own workspace access.'
+                            : client.setupKind === 'advanced'
+                              ? 'Use a server URL and a personal token.'
+                              : 'Use a personal token and a configuration for this app.'}
                       </span>
-                    </div>
-                    {!loading && !remote && (
-                      <div role="alert" className="mt-3 rounded-md p-3 text-[12px]" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-                        <p>Could not load connector settings. Retry before connecting your AI app.</p>
-                        <button type="button" onClick={() => void load()} className="mt-2 font-medium" style={{ color: 'var(--accent)' }}>Retry connector settings</button>
-                      </div>
+                    </span>
+                    {selectedClient === client.id && (
+                      <Check size={16} className="shrink-0" style={{ color: 'var(--accent)' }} />
                     )}
-                    <div className="mt-4 rounded-md p-3" style={{ background: 'color-mix(in srgb, var(--accent) 7%, var(--surface-container))', border: '1px solid var(--border-default)' }}>
-                      <div className="flex items-start gap-2">
-                        <ShieldCheck size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
-                        <div>
-                          <div className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                            {isClaudeConnector ? 'Use Claude settings, not chat' : 'Use the app connector settings'}
-                          </div>
-                          <ol className="mt-2 space-y-1.5 text-[11px] leading-relaxed list-decimal pl-4" style={{ color: 'var(--text-secondary)' }}>
-                            {remoteSteps.map((step) => <li key={step}>{step}</li>)}
-                          </ol>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-3 rounded-md p-3 text-[11px] leading-relaxed" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-                      <strong style={{ color: 'var(--text-primary)' }}>Security note:</strong> never paste a live bearer token into Claude, ChatGPT, or any AI chat. If you already did, revoke that personal token below and generate a fresh one. Remote Claude connectors should authenticate through Deft OAuth.
-                    </div>
-                    {isChatGptConnector && (
-                      <div className="mt-3 rounded-md p-3 text-[11px] leading-relaxed" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-                        <strong style={{ color: 'var(--text-primary)' }}>ChatGPT availability:</strong> full read/write custom MCP apps currently require Business or Enterprise/Edu on ChatGPT web. Pro developer mode is limited to read/fetch access. Workspace admin or developer-mode controls may also apply.
-                      </div>
-                    )}
-                    {isClaudeConnector && (
-                      <div className="mt-4 rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                        <div className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>Fill Claude's four fields like this</div>
-                        <div className="mt-3 grid gap-2">
-                          {claudeConnectorFields.map((field) => (
-                            <div key={field.label} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{field.label}</div>
-                                  <div className="mt-1 text-[12px] font-medium break-all" style={{ color: field.value === 'Leave blank' ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>{field.value}</div>
-                                </div>
-                                {field.copyValue && (
-                                  <button type="button" onClick={() => copy(field.label.toLowerCase(), field.copyValue ?? '')} className="p-1.5 rounded-md shrink-0" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }} aria-label={`Copy ${field.label}`}>
-                                    <Copy size={13} />
-                                  </button>
-                                )}
-                              </div>
-                              <p className="text-[11px] mt-1.5 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{field.help}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <div className="grid md:grid-cols-2 gap-3 mt-4">
-                      {remoteRows.slice(0, 3).map(([label, value]) => (
-                        <div key={label} className="rounded-md p-3 min-w-0" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                          <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{label}</div>
-                          <div className="mt-1 flex items-center gap-2 min-w-0">
-                            <code className="text-[11px] truncate flex-1" style={{ color: 'var(--text-primary)' }}>{value ?? 'Not loaded'}</code>
-                            {value && (
-                              <button type="button" onClick={() => copy(label.toLowerCase(), value)} className="p-1 rounded-md" style={{ color: 'var(--text-secondary)' }} aria-label={`Copy ${label}`}>
-                                <Copy size={13} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {setupStep === 1 &&
+              (tokenSetupClient ? (
+                <fieldset disabled={busy || !!newToken} className="min-w-0 space-y-5">
+                  <label className="block text-sm font-medium">
+                    Access level
+                    <select
+                      value={accessPreset}
+                      onChange={(event) => setAccessPreset(event.target.value as AccessPreset)}
+                      className="mt-2 h-11 w-full rounded-lg border px-3 text-sm"
+                      style={{ ...border, background: 'var(--surface-container)', color: 'var(--text-primary)' }}
+                    >
+                      {PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.title}
+                          {preset.id === selectedClientOption.defaultPreset ? ' (recommended)' : ''}
+                        </option>
                       ))}
+                    </select>
+                  </label>
+                  <div className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)' }}>
+                    <h3 className="text-sm font-semibold">{selectedPreset.title}</h3>
+                    <p className="mt-2 text-sm leading-6" style={muted}>
+                      {selectedPreset.detail}
+                    </p>
+                    <p className="mt-2 text-sm leading-6" style={muted}>
+                      This does not give the app access to other people’s private work or bypass workspace permissions.
+                    </p>
+                  </div>
+                  {accessPreset === 'custom' ? (
+                    <div className="divide-y" style={border}>
+                      {AVAILABLE_SCOPES.map((scope) => (
+                        <label key={scope} className="flex cursor-pointer items-start gap-3 py-3 text-sm leading-5">
+                          <input
+                            type="checkbox"
+                            checked={customScopes.includes(scope)}
+                            onChange={() => toggleCustomScope(scope)}
+                            className="mt-1 shrink-0"
+                          />
+                          <span>{permissionLabel(scope)}</span>
+                        </label>
+                      ))}
+                      {selectedScopes.length === 0 && (
+                        <p role="status" className="pt-3 text-sm" style={{ color: 'var(--danger)' }}>
+                          Select at least one permission to continue.
+                        </p>
+                      )}
                     </div>
-                    <button type="button" onClick={() => setAdvancedOpen(true)} className="mt-3 inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--accent)' }}>
-                      <Settings2 size={13} /> Show all OAuth endpoints
+                  ) : (
+                    <PermissionDetails scopes={selectedScopes} />
+                  )}
+                </fieldset>
+              ) : (
+                <div className="space-y-4 text-sm leading-6" style={muted}>
+                  <p>
+                    {selectedClientOption.setupKind === 'agent'
+                      ? 'Shared employees have their own workspace access, policies and activity. Configure those in Agent employees.'
+                      : 'Your app will open Deft’s authorization screen. Review the requested permissions there before allowing access.'}
+                  </p>
+                  <p>
+                    {selectedClientOption.setupKind === 'agent'
+                      ? 'Your personal token will not be used to represent a shared employee.'
+                      : 'You can inspect and revoke the resulting connection from Your connections.'}
+                  </p>
+                </div>
+              ))}
+
+            {setupStep === 2 && tokenSetupClient && (
+              <div className="space-y-6">
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void createToken();
+                  }}
+                  className="space-y-3"
+                >
+                  <label className="block text-sm font-medium">
+                    Connection name
+                    <input
+                      value={tokenName}
+                      disabled={busy || !!newToken}
+                      onChange={(event) => setTokenName(event.target.value)}
+                      className="mt-2 h-11 w-full rounded-lg border bg-transparent px-3 text-sm"
+                      style={border}
+                    />
+                  </label>
+                  <p className="text-xs" style={muted}>
+                    {accessSummary(selectedScopes)} Go back to review the permissions.
+                  </p>
+                  {!newToken && (
+                    <button
+                      type="submit"
+                      disabled={busy || !selectedScopes.length}
+                      className={buttonClass}
+                      style={primaryStyle}
+                    >
+                      {busy ? 'Generating…' : 'Generate token'}
+                    </button>
+                  )}
+                </form>
+                {newToken && (
+                  <div className="space-y-3 rounded-xl border p-4" style={border}>
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-semibold">Save your token</h3>
+                      <CopyControl label="token" value={newToken} copied={copied} onCopy={copy} />
+                    </div>
+                    <p className="text-sm leading-6" style={muted}>
+                      It is shown only during this setup. Store it securely and never paste it into an AI chat.
+                    </p>
+                    <pre
+                      tabIndex={0}
+                      aria-label="New token"
+                      className="max-w-full overflow-x-auto rounded-lg p-3 text-xs"
+                      style={{ background: 'var(--surface-container-low)' }}
+                    >
+                      {newToken}
+                    </pre>
+                    <label className="flex items-start gap-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={tokenSaved}
+                        onChange={(event) => setTokenSaved(event.target.checked)}
+                        className="mt-1 shrink-0"
+                      />
+                      <span>I have saved this token securely.</span>
+                    </label>
+                  </div>
+                )}
+                <div className="min-w-0 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold">{selectedSnippet.title}</h3>
+                    <CopyControl
+                      label={selectedSnippet.title}
+                      value={selectedSnippet.value}
+                      copied={copied}
+                      onCopy={copy}
+                    />
+                  </div>
+                  <p className="text-sm leading-6" style={muted}>
+                    {selectedSnippet.detail}
+                  </p>
+                  {!newToken && (
+                    <p className="text-xs" style={muted}>
+                      Preview only. Generate a token to fill in the authorization value.
+                    </p>
+                  )}
+                  <pre
+                    tabIndex={0}
+                    aria-label={selectedSnippet.title}
+                    className="max-h-64 max-w-full overflow-auto rounded-xl border p-4 text-xs leading-6"
+                    style={{ ...border, background: 'var(--surface-container-low)' }}
+                  >
+                    {selectedSnippet.value}
+                  </pre>
+                </div>
+                {!tokenSaved && (
+                  <p className="text-sm" style={muted}>
+                    {newToken
+                      ? 'Confirm that you saved the token before continuing.'
+                      : 'Generate a token and save it to continue.'}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {setupStep === 2 && selectedClientOption.setupKind === 'oauth' && (
+              <div className="space-y-6">
+                {!remote ? (
+                  <div role="alert" className="rounded-lg border p-4 text-sm" style={border}>
+                    <p>
+                      {loading
+                        ? 'Loading connector settings…'
+                        : 'Connector settings are unavailable. Retry before connecting your app.'}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => void load()}
+                      className={`${buttonClass} mt-3`}
+                      style={border}
+                    >
+                      Retry connector settings
                     </button>
                   </div>
-                </div>
-              </section>
-            )}
-
-            {selectedClientOption.setupKind === 'agent' && setupStep === 2 && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                    <Bot size={16} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Use Agent Employees for shared workers</h2>
-                    <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Personal AI app connections act as you. If Hermes, OpenClaw, Codex, or another runtime should be available to the whole company as an employee, onboard it as an Agent Employee instead.
+                ) : (
+                  !remote.https_ready && (
+                    <p role="status" className="rounded-lg border p-4 text-sm" style={border}>
+                      Your Deft server needs a public HTTPS address before a hosted app can connect. Ask your workspace
+                      administrator to configure it.
                     </p>
-                  </div>
-                </div>
-              </section>
-            )}
-          </div>
-
-          <aside className="min-w-0 space-y-4" hidden={setupStep !== 3}>
-            {tokenSetupClient && (
-              <section role="status" className="rounded-lg border p-4" style={{ borderColor: 'var(--border-default)' }}>
-                <h3 className="font-semibold">{issuedConnection?.last_used_at ? 'Deft received a request' : 'Waiting for your first request'}</h3>
-                <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{issuedConnection?.last_used_at ? `Last used ${new Date(issuedConnection.last_used_at).toLocaleString()}. Check the activity below to confirm the expected action.` : 'Your token is ready. Run a prompt in your app, then refresh to check whether this specific token has been used.'}</p>
-                <RecentActionList actions={issuedConnection?.recent_actions} />
-              </section>
-            )}
-            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border-default)' }}><h3 className="font-semibold">Verify from {selectedClientOption.name}</h3><p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>Run a prompt in your app, then refresh your active connections above and check its last-used time and recent activity. Completing these instructions does not confirm that the app is connected.</p><button type="button" disabled={loading} onClick={() => void load()} className="mt-3 rounded-md border px-3 py-2 text-sm disabled:opacity-50" style={{ borderColor: 'var(--border-default)' }}>{loading ? 'Refreshing…' : 'Refresh connection activity'}</button></div>
-            <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                  <Terminal size={16} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Test it from the app</h2>
-                  <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                    After connecting, run one prompt and refresh the connection activity.
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {testPrompts.map((prompt) => (
-                      <div key={prompt} className="flex items-start gap-2 rounded-md p-2" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                        <FileText size={13} className="mt-0.5 shrink-0" style={{ color: 'var(--text-tertiary)' }} />
-                        <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{prompt}</span>
+                  )
+                )}
+                <ol className="list-decimal space-y-3 pl-5 text-sm leading-6" style={muted}>
+                  {remoteSteps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+                {isClaudeConnector ? (
+                  <div className="divide-y rounded-xl border px-4" style={border}>
+                    {claudeConnectorFields.map((field) => (
+                      <div key={field.label} className="py-4" style={border}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-medium">{field.label}</h3>
+                            <p className="mt-1 break-all text-sm" style={muted}>
+                              {field.value}
+                            </p>
+                          </div>
+                          {field.copyValue && (
+                            <CopyControl label={field.label} value={field.copyValue} copied={copied} onCopy={copy} />
+                          )}
+                        </div>
+                        <p className="mt-2 text-xs leading-5" style={muted}>
+                          {field.help}
+                        </p>
                       </div>
                     ))}
                   </div>
-                </div>
-              </div>
-            </section>
-
-            <details className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-              <summary className="cursor-pointer text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Memory your app can request</summary>
-              <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>Connected clients can retrieve the right memory packet for the work they are doing.</p>
-              <div className="space-y-2 mt-3">
-                {CONTEXT_PACKET_CARDS.map((card) => (
-                  <div key={card.title} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                    <div className="flex items-center gap-2 text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                      <FileText size={13} /> {card.title}
+                ) : (
+                  <div className="min-w-0 rounded-xl border p-4" style={border}>
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-medium">Connector URL</h3>
+                      {remote?.mcp_endpoint_url && (
+                        <CopyControl
+                          label="Connector URL"
+                          value={remote.mcp_endpoint_url}
+                          copied={copied}
+                          onCopy={copy}
+                        />
+                      )}
                     </div>
-                    <p className="text-[11px] mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{card.detail}</p>
+                    <p className="mt-3 break-all text-sm" style={muted}>
+                      {remote?.mcp_endpoint_url ?? 'Unavailable'}
+                    </p>
                   </div>
-                ))}
-              </div>
-            </details>
-          </aside>
-        </div>
-
-
-
-          </div>
-          <div className="mt-6 flex items-center justify-between gap-3 border-t pt-4" style={{ borderColor: 'var(--border-default)' }}>
-            <button type="button" disabled={setupStep === 0 || busy} onClick={() => moveStep(setupStep - 1)} className="rounded-md border px-4 py-2 text-sm disabled:opacity-40" style={{ borderColor: 'var(--border-default)' }}>Back</button>
-            {setupStep === 2 && selectedClientOption.setupKind === 'agent' ? (
-              <Link href="/settings/agent-employees" className="rounded-md px-4 py-2 text-sm font-medium text-white" style={{ background: 'var(--accent)' }}>Open Agent Employees</Link>
-            ) : setupStep < 3 ? (
-              <button
-                type="button"
-                disabled={busy || (setupStep === 1 && tokenSetupClient && selectedScopes.length === 0) || (setupStep === 2 && tokenSetupClient && (!newToken || !tokenSaved))}
-                onClick={() => moveStep(setupStep + 1)}
-                className="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-                style={{ background: 'var(--accent)' }}
-              >
-                {setupStep === 0 ? 'Review access' : setupStep === 1 ? 'Continue to connect' : 'Continue to verification'}
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={busy || (!!newToken && !tokenSaved)}
-                onClick={() => { setNewToken(null); setIssuedTokenId(null); setTokenSaved(false); moveStep(0); }}
-                className="rounded-md border px-4 py-2 text-sm"
-                style={{ borderColor: 'var(--border-default)' }}
-              >
-                Set up another connection
-              </button>
-            )}
-          </div>
-          </div>
-        </details>
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((value) => !value)}
-            className="w-full flex items-center justify-between gap-3 text-left"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                <Settings2 size={16} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Advanced MCP and OAuth details</h2>
-                <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                  Raw endpoint, bearer header shape, and remote connector metadata for custom clients.
+                )}
+                <p className="text-sm leading-6" style={muted}>
+                  Sign in through Deft’s authorization screen. Do not paste a personal token into a hosted AI chat.
                 </p>
               </div>
-            </div>
-            {advancedOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          </button>
+            )}
 
-          {advancedOpen && (
-            <div className="grid md:grid-cols-2 gap-3 mt-4">
-              {remoteRows.map(([label, value]) => (
-                <div key={label} className="rounded-md p-3 min-w-0" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                  <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{label}</div>
-                  <div className="mt-1 flex items-center gap-2 min-w-0">
-                    <code className="text-[11px] truncate flex-1" style={{ color: 'var(--text-primary)' }}>{value ?? 'Not loaded'}</code>
-                    {value && (
-                      <button type="button" onClick={() => copy(label.toLowerCase(), value)} className="p-1 rounded-md" style={{ color: 'var(--text-secondary)' }} aria-label={`Copy ${label}`}>
-                        <Copy size={13} />
-                      </button>
-                    )}
+            {setupStep === 2 && selectedClientOption.setupKind === 'agent' && (
+              <p className="text-sm leading-6" style={muted}>
+                Continue in Agent employees to create or manage the shared worker, choose its access and configure its
+                runtime.
+              </p>
+            )}
+
+            {setupStep === 3 && (
+              <div className="space-y-6">
+                {!tokenSetupClient && (
+                  <label className="block text-sm font-medium">
+                    Connection to check
+                    <select
+                      value={selectedGrantId}
+                      onChange={(event) => setSelectedGrantId(event.target.value)}
+                      className="mt-2 h-11 w-full rounded-lg border px-3 text-sm"
+                      style={{ ...border, background: 'var(--surface-container)' }}
+                    >
+                      <option value="">Choose an authorized app</option>
+                      {grants.map((grant) => (
+                        <option key={grant.id} value={grant.id}>
+                          {grant.app_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <div role="status" className="rounded-xl border p-5" style={border}>
+                  <h3 className="font-semibold">
+                    {loading
+                      ? 'Checking activity…'
+                      : verificationUnavailable
+                        ? 'Activity is unavailable'
+                        : verificationConnection?.last_used_at
+                          ? 'Deft received a request'
+                          : !tokenSetupClient && !selectedGrantId
+                            ? 'Choose your connection to verify'
+                            : 'Waiting for the first request'}
+                  </h3>
+                  <p className="mt-2 text-sm leading-6" style={muted}>
+                    {verificationUnavailable
+                      ? 'We could not refresh the activity. Retry to check the latest status.'
+                      : verificationConnection?.last_used_at
+                        ? `Last used ${formatDate(verificationConnection.last_used_at)}. Review the recorded action to confirm it is the one you expected.`
+                        : 'Completing setup does not confirm connectivity. Run the prompt below in your app, then check again.'}
+                  </p>
+                  {verificationConnection && <RecentActionList actions={verificationConnection.recent_actions} />}
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void load()}
+                    className={`${buttonClass} mt-4`}
+                    style={border}
+                  >
+                    Check again
+                  </button>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold">Try this in your app</h3>
+                    <CopyControl label="test prompt" value={prompt} copied={copied} onCopy={copy} />
                   </div>
+                  <p
+                    className="mt-3 rounded-lg p-4 text-sm leading-6"
+                    style={{ background: 'var(--surface-container-low)' }}
+                  >
+                    {prompt}
+                  </p>
+                </div>
+                <details className="text-sm">
+                  <summary className="cursor-pointer font-medium">Still not connecting?</summary>
+                  <ul className="mt-3 list-disc space-y-2 pl-5 leading-6" style={muted}>
+                    <li>Check the server URL and your app’s connection status.</li>
+                    <li>
+                      {tokenSetupClient
+                        ? 'Return to Connect and make sure the complete bearer token was copied into the configuration.'
+                        : 'Finish authorization in your app, then refresh and select the new connection above.'}
+                    </li>
+                    <li>Check the permissions if the connection works but a specific action is denied.</li>
+                  </ul>
+                </details>
+              </div>
+            )}
+
+            <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t pt-5" style={border}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => (setupStep === 0 ? closeSetup() : moveStep(setupStep - 1))}
+                className={buttonClass}
+                style={border}
+              >
+                {setupStep === 0 ? 'Cancel' : 'Back'}
+              </button>
+              {setupStep === 2 && selectedClientOption.setupKind === 'agent' ? (
+                <Link href="/settings/agent-employees" className={buttonClass} style={primaryStyle}>
+                  Open Agent Employees
+                </Link>
+              ) : setupStep < 3 ? (
+                <button
+                  type="button"
+                  disabled={
+                    busy ||
+                    (setupStep === 1 && tokenSetupClient && !selectedScopes.length) ||
+                    (setupStep === 2 && tokenSetupClient && (!newToken || !tokenSaved)) ||
+                    (setupStep === 2 && selectedClientOption.setupKind === 'oauth' && (!remote || !remote.https_ready))
+                  }
+                  onClick={() => moveStep(setupStep + 1)}
+                  className={buttonClass}
+                  style={primaryStyle}
+                >
+                  {setupStep === 0 ? 'Review access' : setupStep === 1 ? 'Continue to connect' : 'Check connection'}
+                </button>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewToken(null);
+                      setIssuedTokenId(null);
+                      setTokenSaved(false);
+                      setSelectedGrantId('');
+                      moveStep(0);
+                    }}
+                    className={buttonClass}
+                    style={border}
+                  >
+                    Connect another app
+                  </button>
+                  <button type="button" onClick={finishSetup} className={buttonClass} style={primaryStyle}>
+                    Your connections
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        <section className="border-t pt-5" style={border}>
+          <button
+            type="button"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+            className="flex w-full items-center justify-between gap-3 py-2 text-left"
+          >
+            <span>
+              <span className="block text-sm font-semibold">Developer details</span>
+              <span className="mt-1 block text-xs" style={muted}>
+                Server endpoints, supported permissions and memory context.
+              </span>
+            </span>
+            <ChevronDown size={16} className={advancedOpen ? 'rotate-180' : ''} />
+          </button>
+          {advancedOpen && (
+            <div className="mt-4 space-y-5">
+              {loadFailures.includes('Connector settings') && (
+                <div role="alert" className="text-sm">
+                  <p>Connector metadata is unavailable.</p>
+                  <button type="button" disabled={loading} onClick={() => void load()} className="mt-2 underline">
+                    Retry loading metadata
+                  </button>
+                </div>
+              )}
+              {[['MCP endpoint', endpoint || undefined], ...remoteRows].map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="text-xs font-medium">{label}</h3>
+                    <code className="mt-1 block break-all text-xs" style={muted}>
+                      {value ?? 'Unavailable'}
+                    </code>
+                  </div>
+                  {value && <CopyControl label={label!} value={value} copied={copied} onCopy={copy} />}
                 </div>
               ))}
-              <div className="rounded-md p-3 min-w-0 md:col-span-2" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Supported remote scopes</div>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {(remote?.scopes ?? AVAILABLE_SCOPES).map((scope) => <ScopePill key={scope} scope={scope} />)}
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <button
-            type="button"
-            onClick={() => setHistoryOpen((value) => !value)}
-            className="w-full flex items-center justify-between gap-3 text-left"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                <History size={16} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Connection history</h2>
-                <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                  Revoked personal tokens and AI app grants, with their last recorded actions.
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[11px] rounded-md px-2 py-1" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-                {historyCount} archived
-              </span>
-              {historyOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-            </div>
-          </button>
-
-          {historyOpen && (
-            <div className="mt-4 space-y-4">
-              {!history || historyCount === 0 ? (
-                <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>No revoked connections yet.</p>
-              ) : (
-                <>
-                  {history.revoked_tokens.length > 0 && (
-                    <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-tertiary)' }}>
-                        Personal tokens
-                      </div>
-                      <div className="space-y-2">
-                        {history.revoked_tokens.map((token) => (
-                          <div key={token.id} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
-                                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                                  {token.token_prefix}... / revoked {formatDate(token.revoked_at)} / last used {formatDate(token.last_used_at)}
-                                </div>
-                              </div>
-                              <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }}>
-                                revoked
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-1 mt-2">
-                              {token.scopes.map((scope) => (
-                                <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
-                              ))}
-                            </div>
-                            <RecentActionList actions={token.recent_actions} />
-                          </div>
-                        ))}
-                      </div>
+              <PermissionDetails scopes={remote?.scopes ?? AVAILABLE_SCOPES} />
+              <details className="text-sm">
+                <summary className="cursor-pointer font-medium">Memory context</summary>
+                <dl className="mt-3 space-y-3">
+                  {CONTEXT_PACKET_CARDS.map((card) => (
+                    <div key={card.title}>
+                      <dt className="font-medium">{card.title}</dt>
+                      <dd className="mt-1 leading-6" style={muted}>
+                        {card.detail}
+                      </dd>
                     </div>
-                  )}
-
-                  {history.revoked_grants.length > 0 && (
-                    <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-tertiary)' }}>
-                        AI app connections
-                      </div>
-                      <div className="space-y-2">
-                        {history.revoked_grants.map((grant) => (
-                          <div key={grant.id} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
-                                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                                  {grant.connector_profile} / revoked {formatDate(grant.revoked_at)} / last used {formatDate(grant.last_used_at)}
-                                </div>
-                              </div>
-                              <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }}>
-                                revoked
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-1 mt-2">
-                              {grant.scopes.map((scope) => (
-                                <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
-                              ))}
-                            </div>
-                            <RecentActionList actions={grant.recent_actions} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
+                  ))}
+                </dl>
+              </details>
             </div>
           )}
         </section>
