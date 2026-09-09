@@ -251,13 +251,12 @@ export default function ProfileSettingsPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl px-4 py-6 md:px-6 md:py-8">
-        <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div className="mb-6 flex flex-col gap-2 border-b pb-6 md:flex-row md:items-end md:justify-between" style={{ borderColor: 'var(--border)' }}>
           <div>
-            <p className="eyebrow mb-2" style={{ fontFamily: 'var(--font-heading)' }}>Account</p>
-            <h1 className="text-[28px] font-semibold leading-tight" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
-              My profile
+            <h1 className="text-2xl font-semibold tracking-tight" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
+              Profile
             </h1>
-            <p className="mt-2 max-w-2xl text-[14px] leading-6" style={{ color: 'var(--muted)' }}>
+            <p className="mt-2 max-w-2xl text-[14px] leading-6" style={{ color: 'var(--foreground-secondary)' }}>
               Shape how teammates understand your role, availability, and collaboration preferences.
             </p>
           </div>
@@ -270,7 +269,7 @@ export default function ProfileSettingsPage() {
           onChange={setSection}
         />
         <div hidden={section === 'security'}>
-        <form onSubmit={handleSave} className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <form onSubmit={handleSave} className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_240px]">
           <section className="min-w-0 space-y-5">
             <div hidden={section !== 'identity'} className="min-w-0 rounded-xl p-5" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
               <h2 className="mb-4 text-[15px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
@@ -455,10 +454,10 @@ export default function ProfileSettingsPage() {
             </div>
           </aside>
 
-          <div className="lg:col-span-2">
+          <div className="border-t pt-5 xl:col-span-2" style={{ borderColor: 'var(--border)' }}>
             {error && <div className="mb-3 text-[13px]" style={{ color: 'var(--status-red)' }}>{error}</div>}
             {saveMessage && <div className="mb-3 text-[13px]" style={{ color: 'var(--status-green)' }}>{saveMessage}</div>}
-            <button type="submit" disabled={saving || !name.trim()} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>
+            <button type="submit" disabled={saving || !name.trim()} className="inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: 'var(--settings-action)', color: 'white' }}>
               {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
               Save profile & preferences
             </button>

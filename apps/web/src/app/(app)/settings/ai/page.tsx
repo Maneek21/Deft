@@ -88,7 +88,7 @@ export default function AISettingsPage() {
             AI configuration
           </h2>
           <div
-            className="p-4 rounded-lg text-[13px] leading-relaxed"
+            className="p-4 rounded-lg text-sm leading-relaxed"
             style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
           >
             Only owners and admins can configure AI providers for this workspace.
@@ -109,28 +109,28 @@ export default function AISettingsPage() {
   if (!cfg) {
     return (
       <div className="h-full overflow-y-auto p-6">
-        <div className="text-[13px]" style={{ color: 'var(--error)' }}>{error || 'Failed to load.'}</div>
+        <div className="text-sm" style={{ color: 'var(--error)' }}>{error || 'Failed to load.'}</div>
       </div>
     );
   }
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-6 max-w-[860px]">
-        <div className="mb-6">
-          <h2
-            className="text-[18px] font-semibold"
+      <div className="mx-auto w-full min-w-0 max-w-4xl px-4 py-7 md:px-6">
+        <div className="mb-6 border-b pb-6" style={{ borderColor: 'var(--border)' }}>
+          <h1
+            className="text-2xl font-semibold tracking-tight"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
             AI configuration for {org?.name ?? 'your workspace'}
-          </h2>
-          <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
+          </h1>
+          <p className="text-sm mt-2 leading-6" style={{ color: 'var(--foreground-secondary)' }}>
             Bring your own provider. Deft can use managed keys or local Ollama, and the core workspace keeps
             working when no AI provider is configured. Keys are encrypted at rest and only used for this workspace.
           </p>
           {!cfg.has_provider && (
             <div
-              className="mt-3 p-3 rounded-lg text-[12px] leading-relaxed"
+              className="mt-3 p-3 rounded-lg text-sm leading-relaxed"
               style={{ background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.25)', color: 'var(--foreground-secondary)' }}
             >
               AI is currently off. Chat, tasks, wiki, calendar, and approvals still work; Defty and AI-assisted
@@ -147,7 +147,7 @@ export default function AISettingsPage() {
         />
         <section hidden={section !== 'providers'} className="mb-8">
           <h3
-            className="text-[11px] font-semibold uppercase tracking-wide mb-3"
+            className="text-sm font-semibold mb-3"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
           >
             Provider keys
@@ -169,12 +169,12 @@ export default function AISettingsPage() {
 
         <section hidden={section !== 'models'} className="mb-8">
           <h3
-            className="text-[11px] font-semibold uppercase tracking-wide mb-1"
+            className="text-sm font-semibold mb-1"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
           >
             Model routing
           </h3>
-          <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
             Override which provider and model handle each kind of work. Leave a row at default to use Deft's tuned defaults.
           </p>
           <div className="space-y-2">
@@ -186,12 +186,12 @@ export default function AISettingsPage() {
 
         <section hidden={section !== 'search'} className="mb-8">
           <h3
-            className="text-[11px] font-semibold uppercase tracking-wide mb-1"
+            className="text-sm font-semibold mb-1"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
           >
             Embeddings
           </h3>
-          <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
             Powers semantic search across the wiki, tasks, and decisions. Falls back to keyword search when off.
           </p>
           <EmbedSection cfg={cfg} onSaved={refresh} />
@@ -199,12 +199,12 @@ export default function AISettingsPage() {
 
         <section hidden={section !== 'voice'}>
           <h3
-            className="text-[11px] font-semibold uppercase tracking-wide mb-1"
+            className="text-sm font-semibold mb-1"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
           >
             Voice transcription
           </h3>
-          <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
             Transcribes voice clips posted in chat. The default 'local' provider calls a self-hosted Whisper container — no audio leaves your infrastructure.
           </p>
           <TranscriptionSection cfg={cfg} onSaved={refresh} />
@@ -296,7 +296,7 @@ function ProviderCard({
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>{label}</p>
+            <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>{label}</p>
             {configured ? (
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded"
@@ -320,7 +320,7 @@ function ProviderCard({
               </span>
             )}
           </div>
-          <p className="text-[12px] mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
             {hint}
           </p>
           {configured && display && (
@@ -332,7 +332,7 @@ function ProviderCard({
         {!editing && (
           <button
             onClick={() => { setEditing(true); setErr(''); setValue(''); }}
-            className="text-[12px] font-medium px-3 py-1.5 rounded-md flex-shrink-0"
+            className="text-sm font-medium px-3 py-1.5 rounded-md flex-shrink-0"
             style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
           >
             {configured ? 'Replace' : 'Add'}
@@ -344,7 +344,7 @@ function ProviderCard({
         <div className="mt-3">
           {err && (
             <div
-              className="mb-2 px-3 py-2 text-[12px] rounded"
+              className="mb-2 px-3 py-2 text-sm rounded"
               style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}
             >
               {err}
@@ -358,7 +358,7 @@ function ProviderCard({
                 onChange={(e) => setValue(e.target.value)}
                 placeholder={placeholder}
                 autoFocus
-                className="w-full h-9 px-3 pr-9 text-[13px] rounded-md outline-none font-mono"
+                className="w-full h-9 px-3 pr-9 text-sm rounded-md outline-none font-mono"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
               />
               {!isOllama && (
@@ -376,15 +376,15 @@ function ProviderCard({
             <button
               onClick={save}
               disabled={saving || !value.trim()}
-              className="h-9 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
-              style={{ background: 'var(--accent)', color: 'white' }}
+              className="h-9 px-3 flex items-center gap-1.5 text-sm font-medium rounded-md disabled:opacity-50"
+              style={{ background: 'var(--settings-action)', color: 'white' }}
             >
               <Save size={12} />
               {saving ? '...' : 'Save'}
             </button>
             <button
               onClick={() => { setEditing(false); setValue(''); setErr(''); }}
-              className="h-9 px-3 text-[12px] font-medium rounded-md"
+              className="h-9 px-3 text-sm font-medium rounded-md"
               style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
             >
               Cancel
@@ -394,7 +394,7 @@ function ProviderCard({
                 onClick={clear}
                 disabled={saving}
                 title="Clear stored value"
-                className="h-9 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
+                className="h-9 px-3 flex items-center gap-1.5 text-sm font-medium rounded-md disabled:opacity-50"
                 style={{ background: 'var(--surface)', color: 'var(--error)', border: '1px solid var(--border)' }}
               >
                 <Trash2 size={12} />
@@ -480,8 +480,8 @@ function ModelRouteCard({
           <Sparkles size={14} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>{label}</p>
-          <p className="text-[12px] mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>{label}</p>
+          <p className="text-sm mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
             {description}
           </p>
           <p className="text-[11px] mt-1 font-mono" style={{ color: current ? 'var(--foreground-secondary)' : 'var(--muted)' }}>
@@ -492,7 +492,7 @@ function ModelRouteCard({
           <div className="flex gap-2 flex-shrink-0">
             <button
               onClick={() => { setEditing(true); setProvider(current?.provider ?? 'anthropic'); setModel(current?.model ?? ''); setErr(''); }}
-              className="text-[12px] font-medium px-3 py-1.5 rounded-md"
+              className="text-sm font-medium px-3 py-1.5 rounded-md"
               style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
             >
               {current ? 'Edit' : 'Set'}
@@ -502,7 +502,7 @@ function ModelRouteCard({
                 onClick={reset}
                 disabled={saving}
                 title="Reset to default"
-                className="text-[12px] font-medium px-2 py-1.5 rounded-md disabled:opacity-50"
+                className="text-sm font-medium px-2 py-1.5 rounded-md disabled:opacity-50"
                 style={{ background: 'var(--surface)', color: 'var(--muted)', border: '1px solid var(--border)' }}
               >
                 <RotateCcw size={12} />
@@ -516,7 +516,7 @@ function ModelRouteCard({
         <div className="mt-3">
           {err && (
             <div
-              className="mb-2 px-3 py-2 text-[12px] rounded"
+              className="mb-2 px-3 py-2 text-sm rounded"
               style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}
             >
               {err}
@@ -526,7 +526,7 @@ function ModelRouteCard({
             <select
               value={provider}
               onChange={(e) => setProvider(e.target.value as Provider)}
-              className="h-9 px-2 text-[12px] rounded-md outline-none"
+              className="h-9 px-2 text-sm rounded-md outline-none"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
             >
               <option value="anthropic">anthropic</option>
@@ -539,20 +539,20 @@ function ModelRouteCard({
               value={model}
               onChange={(e) => setModel(e.target.value)}
               placeholder="e.g. claude-sonnet-4-20250514"
-              className="flex-1 min-w-[200px] h-9 px-3 text-[12px] rounded-md outline-none font-mono"
+              className="flex-1 min-w-[200px] h-9 px-3 text-sm rounded-md outline-none font-mono"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
             />
             <button
               onClick={save}
               disabled={saving}
-              className="h-9 px-3 text-[12px] font-medium rounded-md disabled:opacity-50"
-              style={{ background: 'var(--accent)', color: 'white' }}
+              className="h-9 px-3 text-sm font-medium rounded-md disabled:opacity-50"
+              style={{ background: 'var(--settings-action)', color: 'white' }}
             >
               {saving ? '...' : 'Save'}
             </button>
             <button
               onClick={() => { setEditing(false); setErr(''); }}
-              className="h-9 px-3 text-[12px] font-medium rounded-md"
+              className="h-9 px-3 text-sm font-medium rounded-md"
               style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
             >
               Cancel
@@ -615,7 +615,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>Vector embeddings</p>
+            <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>Vector embeddings</p>
             {off ? (
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded"
@@ -641,7 +641,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
               </span>
             )}
           </div>
-          <p className="text-[12px] mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
             Vectors are pinned to 1536 dimensions. Self-hosters can run an OpenAI-compatible server (LM Studio, vllm, llama.cpp) that emits matching dims.
           </p>
         </div>
@@ -649,13 +649,13 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
 
       <div className="mt-4 space-y-3">
         {err && (
-          <div className="px-3 py-2 text-[12px] rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
+          <div className="px-3 py-2 text-sm rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
             {err}
           </div>
         )}
 
         <div>
-          <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+          <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
             Provider
           </label>
           <div
@@ -669,7 +669,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
                   key={opt}
                   type="button"
                   onClick={() => setProvider(opt)}
-                  className="px-3 h-7 text-[12px] font-medium rounded transition-colors"
+                  className="px-3 h-7 text-sm font-medium rounded transition-colors"
                   style={{
                     background: active ? 'var(--card-bg)' : 'transparent',
                     color: active ? 'var(--foreground)' : 'var(--muted)',
@@ -684,7 +684,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
         </div>
 
         <div>
-          <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+          <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
             Model
           </label>
           <input
@@ -693,13 +693,13 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
             onChange={(e) => setModel(e.target.value)}
             placeholder={DEFAULT_EMBED_MODEL}
             disabled={off}
-            className="w-full h-9 px-3 text-[13px] rounded-md outline-none font-mono disabled:opacity-50"
+            className="w-full h-9 px-3 text-sm rounded-md outline-none font-mono disabled:opacity-50"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
           />
         </div>
 
         <div>
-          <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+          <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
             Base URL
           </label>
           <input
@@ -708,7 +708,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder={DEFAULT_EMBED_BASE_URL}
             disabled={off}
-            className="w-full h-9 px-3 text-[13px] rounded-md outline-none font-mono disabled:opacity-50"
+            className="w-full h-9 px-3 text-sm rounded-md outline-none font-mono disabled:opacity-50"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
           />
           <p className="text-[11px] mt-1 leading-snug" style={{ color: 'var(--muted)' }}>
@@ -726,8 +726,8 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
           <button
             onClick={save}
             disabled={saving || !dirty}
-            className="h-9 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
-            style={{ background: 'var(--accent)', color: 'white' }}
+            className="h-9 px-3 flex items-center gap-1.5 text-sm font-medium rounded-md disabled:opacity-50"
+            style={{ background: 'var(--settings-action)', color: 'white' }}
           >
             <Save size={12} />
             {saving ? '...' : 'Save'}
@@ -805,7 +805,7 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>Transcription provider</p>
+            <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>Transcription provider</p>
             <span
               className="text-[10px] px-1.5 py-0.5 rounded font-mono"
               style={{ background: 'var(--surface)', color: 'var(--foreground-secondary)' }}
@@ -813,7 +813,7 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
               currently: {cfg.transcription.effective}
             </span>
           </div>
-          <p className="text-[12px] mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
+          <p className="text-sm mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
             Pick the engine used for voice clips in chat. The org override wins; clear it to fall back to the env default.
           </p>
         </div>
@@ -821,7 +821,7 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
 
       <div className="mt-4 space-y-2">
         {err && (
-          <div className="px-3 py-2 text-[12px] rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
+          <div className="px-3 py-2 text-sm rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
             {err}
           </div>
         )}
@@ -848,7 +848,7 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
                   style={{ accentColor: 'var(--accent)' }}
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>{opt.label}</p>
+                  <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>{opt.label}</p>
                   <p className="text-[11px] mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>{opt.helper}</p>
                 </div>
               </label>
@@ -861,7 +861,7 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
             type="button"
             onClick={reset}
             disabled={saving}
-            className="text-[12px] inline-flex items-center gap-1 disabled:opacity-50"
+            className="text-sm inline-flex items-center gap-1 disabled:opacity-50"
             style={{ color: 'var(--muted)' }}
           >
             <RotateCcw size={11} />
@@ -870,8 +870,8 @@ function TranscriptionSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => 
           <button
             onClick={save}
             disabled={saving || !dirty}
-            className="h-9 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
-            style={{ background: 'var(--accent)', color: 'white' }}
+            className="h-9 px-3 flex items-center gap-1.5 text-sm font-medium rounded-md disabled:opacity-50"
+            style={{ background: 'var(--settings-action)', color: 'white' }}
           >
             <Save size={12} />
             {saving ? '...' : 'Save'}

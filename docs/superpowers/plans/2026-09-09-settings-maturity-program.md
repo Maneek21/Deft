@@ -201,3 +201,17 @@ production deployment, real credential grants or external messages are implied.
   `tmp/preview-evidence/polish-*.png`. This is fixture-based visual verification.
 - The Settings implementation schedule was deleted at the user's request. Continue
   only on direct user instruction; do not recreate it from this checkpoint.
+- Other Settings visual pass (`codex/settings-visual-polish`, stacked on #324):
+  shared Settings-only border tokens, field sizing, keyboard focus, hover and
+  reduced-motion styles; stronger section navigation on Profile/Calendar/AI.
+  Profile has a consistent title, wider form and narrower preview, and clearer
+  save action. Calendar/AI use aligned content widths, larger body text and
+  consistent headings. No API, authorization or persistence changes.
+  Verified Profile draft retention across all three sections; Calendar section
+  switching and mobile add form; all four AI sections at 390px. Inspected desktop
+  Profile/Calendar/AI and mobile Profile/Calendar/AI/Apps. Desktop route inventory
+  covered People, Teams, Apps, Modules, groups, tool connections, governance,
+  templates, rules, tags and recovery without page-level overflow. This is a
+  shared visual baseline, not a completed individual redesign of every route.
+  Fixture evidence: `tmp/preview-evidence/settings-*.png`. Persistence and full
+  mobile/role coverage of the administration pages remain unverified.

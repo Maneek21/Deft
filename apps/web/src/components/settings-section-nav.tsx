@@ -13,17 +13,17 @@ export function SettingsSectionNav<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <nav aria-label={label} className="mb-6 flex flex-wrap gap-2 border-b pb-3" style={{ borderColor: 'var(--border)' }}>
+    <nav aria-label={label} className="mb-6 flex flex-wrap gap-1 rounded-xl border p-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-container-low)' }}>
       {sections.map((section) => (
         <button
           key={section.id}
           type="button"
           aria-pressed={value === section.id}
           onClick={() => onChange(section.id)}
-          className="rounded-lg px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2"
+          className="min-h-10 rounded-lg px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2"
           style={{
             background: value === section.id ? 'var(--accent-subtle)' : 'transparent',
-            color: value === section.id ? 'var(--accent)' : 'var(--foreground-secondary)',
+            color: value === section.id ? 'var(--primary)' : 'var(--foreground-secondary)',
           }}
         >
           {section.label}
