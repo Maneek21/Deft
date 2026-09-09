@@ -107,7 +107,7 @@ async function main() {
       ['/settings', 'Settings'],
       ['/settings/profile', 'Profile'],
       ['/settings/apps', 'Apps'],
-      ['/settings/mcp-access', 'What do you want to connect?'],
+      ['/settings/mcp-access', 'Manage active connections'],
     ]) {
       await settle(page, path);
       await page.getByRole('heading', { name: heading }).first().waitFor({ timeout: 10_000 });
@@ -116,6 +116,23 @@ async function main() {
       }
     }
     record('Navigate core settings surfaces');
+
+    await page.getByText('Add connection', { exact: true }).click();
+    await page.getByRole('heading', { name: 'What do you want to connect?', exact: true }).waitFor();
+    await page.getByRole('button', { name: /^Claude Code Token setup/ }).click();
+    await page.getByRole('button', { name: /^Choose individually/ }).click();
+    for (const width of [1440, 1024, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const setupOverflow = await page.locator('main aside').evaluate((aside) => {
+        const grid = aside.parentElement;
+        return Math.max(
+          grid.scrollWidth - grid.clientWidth,
+          ...Array.from(grid.querySelectorAll('section')).map((section) => section.scrollWidth - section.clientWidth),
+        );
+      });
+      if (setupOverflow > 2) throw new Error(`Claude Code setup overflows its cards by ${setupOverflow}px at ${width}px`);
+    }
+    record('Claude Code custom permissions stay inside setup cards at desktop, tablet and mobile widths');
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await settle(page, '/settings/modules');

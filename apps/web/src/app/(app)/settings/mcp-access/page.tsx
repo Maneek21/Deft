@@ -444,7 +444,7 @@ export default function McpAccessPage() {
         api.get('/api/oauth/grants'),
         api.get('/api/mcp-access/history'),
       ]);
-      if (readinessRes.ok) setRemote(await readinessRes.json());
+      setRemote(readinessRes.ok ? await readinessRes.json() : null);
       if (grantsRes.ok) {
         const grantsBody = await grantsRes.json();
         setGrants(grantsBody.grants ?? []);
@@ -605,7 +605,7 @@ export default function McpAccessPage() {
     },
     {
       label: 'Remote MCP server URL',
-      value: remote?.mcp_endpoint_url ?? 'Loading connector URL...',
+      value: remote?.mcp_endpoint_url ?? (loading ? 'Loading connector URL...' : 'Connector URL unavailable'),
       copyValue: remote?.mcp_endpoint_url,
       help: 'Paste this into Claude\'s required URL field.',
     },
@@ -753,18 +753,19 @@ export default function McpAccessPage() {
                     key={client.id}
                     type="button"
                     onClick={() => chooseClient(client.id)}
-                    className="rounded-md p-3 text-left transition-colors"
+                    aria-pressed={active}
+                    className="min-w-0 rounded-md p-3 text-left transition-colors"
                     style={{
                       background: active ? 'color-mix(in srgb, var(--accent) 12%, var(--surface-container))' : 'var(--surface-container)',
                       border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
                     }}
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col items-start gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="w-7 h-7 rounded-md flex items-center justify-center shrink-0" style={{ background: active ? 'var(--accent-muted)' : 'var(--surface-container-low)', color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>
                           {clientIcon(client.id)}
                         </span>
-                        <span className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{client.name}</span>
+                        <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{client.name}</span>
                       </div>
                       <span className="text-[10px] rounded px-1.5 py-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>{client.fit}</span>
                     </div>
@@ -776,8 +777,8 @@ export default function McpAccessPage() {
           </div>
         </section>
 
-        <div className="grid lg:grid-cols-[1.05fr_.95fr] gap-4 items-start">
-          <div className="space-y-4">
+        <div className="grid lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 items-start">
+          <div className="min-w-0 space-y-4">
             {tokenSetupClient && (
               <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                 <div className="flex items-start gap-3">
@@ -798,6 +799,7 @@ export default function McpAccessPage() {
                             key={preset.id}
                             type="button"
                             onClick={() => setAccessPreset(preset.id)}
+                            aria-pressed={active}
                             className="rounded-md p-3 text-left"
                             style={{
                               background: active ? 'color-mix(in srgb, var(--accent) 12%, var(--surface-container))' : 'var(--surface-container)',
@@ -849,11 +851,12 @@ export default function McpAccessPage() {
                     <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
                       Generate a token, copy the config for {selectedClientOption.name}, then test it from the AI app.
                     </p>
-                    <div className="grid md:grid-cols-[1fr_auto] gap-3 mt-4">
+                    <div className="grid xl:grid-cols-[minmax(0,1fr)_auto] gap-3 mt-4">
                       <input
                         value={tokenName}
                         onChange={(e) => setTokenName(e.target.value)}
-                        className="h-10 rounded-md px-3 text-[13px] outline-none"
+                        aria-label="Connection name"
+                        className="min-w-0 h-10 rounded-md px-3 text-[13px] outline-none"
                         style={{ background: 'var(--surface-container)', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }}
                       />
                       <button
@@ -907,7 +910,7 @@ export default function McpAccessPage() {
                     <Globe2 size={16} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                           {isClaudeConnector ? 'Claude connector setup' : 'ChatGPT custom app setup'}
@@ -919,9 +922,15 @@ export default function McpAccessPage() {
                         </p>
                       </div>
                       <span className="text-[11px] rounded-md px-2 py-1 shrink-0" style={{ background: remote?.https_ready ? 'var(--accent-muted)' : 'var(--surface-container)', color: remote?.https_ready ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
-                        {remote?.https_ready ? 'HTTPS ready' : 'Needs public HTTPS'}
+                        {remote ? (remote.https_ready ? 'HTTPS ready' : 'Needs public HTTPS') : (loading ? 'Checking readiness...' : 'Status unavailable')}
                       </span>
                     </div>
+                    {!loading && !remote && (
+                      <div role="alert" className="mt-3 rounded-md p-3 text-[12px]" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
+                        <p>Could not load connector settings. Retry before connecting your AI app.</p>
+                        <button type="button" onClick={() => void load()} className="mt-2 font-medium" style={{ color: 'var(--accent)' }}>Retry connector settings</button>
+                      </div>
+                    )}
                     <div className="mt-4 rounded-md p-3" style={{ background: 'color-mix(in srgb, var(--accent) 7%, var(--surface-container))', border: '1px solid var(--border-default)' }}>
                       <div className="flex items-start gap-2">
                         <ShieldCheck size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
@@ -1009,7 +1018,7 @@ export default function McpAccessPage() {
             )}
           </div>
 
-          <aside className="space-y-4">
+          <aside className="min-w-0 space-y-4">
             <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>

@@ -35,6 +35,42 @@ exercised. Password changes, token issuance, App activation and real connector
 calls were not executed. The fixture intentionally omitted realtime and dashboard
 data; this is UI evidence, not a database-backed integration run or release gate.
 
+## Connection layout regression follow-up (2026-09-09)
+
+Reproduced the reported Claude Code/custom-permissions overflow in the local
+renderer: a 942px setup grid had 1170px of content. The CLI command's intrinsic
+width expanded the main track and pushed the help aside outside the parent card.
+Zero-minimum grid tracks and shrinkable children now contain the command's own
+horizontal scroller. The main form receives two thirds of the available width.
+Client names wrap instead of truncating; selection buttons expose pressed state,
+and the token-name input has an accessible name and a shrinkable grid track.
+
+A failed OAuth-readiness response also left the connector URL saying Loading
+indefinitely. Unavailable readiness now has explicit status and a retry action.
+The existing production browser smoke assumed setup was initially expanded;
+it now checks the connection inventory, opens Add connection, and checks Claude
+Code custom permissions for card overflow at 1440, 1024, 768 and 390px.
+
+Fresh local evidence: 54 rendered client/preset/width combinations, including all
+seven clients and all four presets for each token client at 1440 and 390 CSS px;
+all clients plus Claude Code custom scopes also checked at 1025 and 768 CSS px.
+No setup-grid or section overflow remained. Long command blocks scroll internally.
+Unchecked all scopes (Generate token disabled), reselected read:tasks (enabled),
+and retained the name and selection through closing/reopening Add connection.
+Checked config-copy feedback, rejected token-request recovery, OAuth retry,
+advanced endpoint expansion, and empty connection history. Desktop/mobile
+screenshots and the 54 measurements are local artifacts under
+`tmp/preview-evidence/`. Web typecheck, full web lint, three navigation tests,
+smoke-script syntax and diff whitespace checks passed.
+
+Limits: localhost is a synthetic UI fixture. It does not issue real credentials,
+persist mutations, or complete external OAuth. The prior production CI run passed
+login, chat/task writes and Inbox approval, then failed on the obsolete setup
+heading expectation corrected above. The updated production smoke requires a new
+CI run. Dependency Audit separately reported eight vulnerabilities (two critical,
+three high, three moderate); dependency remediation and release clearance remain
+open. This follow-up does not certify all product behavior or Gate G.
+
 ## Next loops
 
 1. **Module ownership.** The API rejects enable/disable and manifest changes to
