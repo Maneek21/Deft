@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
-import { TabStrip } from '@/components/tab-strip';
+import { useSetPageContext } from '@/components/app-header-context';
 
 type McpToken = {
   id: string;
@@ -394,6 +394,7 @@ function ScopePill({ scope }: { scope: string }) {
 }
 
 export default function McpAccessPage() {
+  useSetPageContext(<span className="text-sm font-semibold">Personal AI connections</span>, []);
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [remote, setRemote] = useState<RemoteReadiness | null>(null);
   const [grants, setGrants] = useState<OAuthGrant[]>([]);
@@ -623,18 +624,8 @@ export default function McpAccessPage() {
   return (
     <div className="flex h-full min-w-0 flex-col overflow-x-hidden overflow-y-auto">
       <PageHeader
-        title="AI App Connections"
+        title="Personal AI connections"
         description="Connect Codex, Claude, ChatGPT, or any MCP client to your Deft workspace."
-        secondary={
-          <TabStrip>
-            <Link href="/settings/mcp-access" className="px-3 py-2 text-[13px] font-medium" style={{ color: 'var(--accent)', borderBottom: '2px solid var(--accent)' }}>
-              My AI Apps
-            </Link>
-            <Link href="/settings/agent-employees" className="px-3 py-2 text-[13px] font-medium" style={{ color: 'var(--text-tertiary)', borderBottom: '2px solid transparent' }}>
-              Agent Employees
-            </Link>
-          </TabStrip>
-        }
         compact
       />
 
@@ -650,6 +641,96 @@ export default function McpAccessPage() {
           </div>
         )}
 
+        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <div className="flex items-center gap-2 mb-3">
+            <Activity size={15} style={{ color: 'var(--accent)' }} />
+            <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Manage active connections</h2>
+          </div>
+          {loading ? (
+            <div className="py-6 flex items-center justify-center"><Loader2 size={18} className="animate-spin" /></div>
+          ) : (
+            <div className="grid lg:grid-cols-2 gap-3">
+              <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>Personal tokens</div>
+                {tokens.length === 0 ? (
+                  <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>No personal MCP tokens yet.</p>
+                ) : (
+                  <div className="space-y-2 mt-3">
+                    {tokens.map((token) => (
+                      <div key={token.id} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
+                            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                              {token.token_prefix}... / last used {formatDate(token.last_used_at)}
+                            </div>
+                          </div>
+                          <button type="button" disabled={busy} onClick={() => revoke(token.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${token.name}`}>
+                            <Trash2 size={13} /> Revoke
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {isStale(token.last_used_at) && (
+                            <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
+                              {token.last_used_at ? 'stale' : 'unused'}
+                            </span>
+                          )}
+                          {token.scopes.map((scope) => (
+                            <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
+                          ))}
+                        </div>
+                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-default)' }}>
+                          <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Recent token activity</div>
+                          <RecentActionList actions={token.recent_actions} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>OAuth app grants</div>
+                {grants.length === 0 ? (
+                  <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>No ChatGPT or Claude-style OAuth connections yet.</p>
+                ) : (
+                  <div className="space-y-2 mt-3">
+                    {grants.map((grant) => (
+                      <div key={grant.id} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
+                            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                              {grant.connector_profile} / last used {formatDate(grant.last_used_at)}
+                            </div>
+                          </div>
+                          <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${grant.app_name}`}>
+                            <Trash2 size={13} /> Revoke
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {isStale(grant.last_used_at) && (
+                            <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
+                              {grant.last_used_at ? 'stale' : 'unused'}
+                            </span>
+                          )}
+                          {grant.scopes.map((scope) => (
+                            <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
+                          ))}
+                        </div>
+                        <RecentActionList actions={grant.recent_actions} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+        <details className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <summary className="cursor-pointer py-2 text-sm font-semibold">Add connection</summary>
+          <p className="mb-4 text-xs" style={{ color: 'var(--text-secondary)' }}>Choose your AI client, review its access, then connect it as yourself. Shared workers belong in Agent employees.</p>
+          <div className="space-y-4">
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
           <div className="flex flex-col gap-4">
             <div className="flex items-start gap-3">
@@ -968,93 +1049,10 @@ export default function McpAccessPage() {
           </aside>
         </div>
 
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <div className="flex items-center gap-2 mb-3">
-            <Activity size={15} style={{ color: 'var(--accent)' }} />
-            <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Manage active connections</h2>
+
+
           </div>
-          {loading ? (
-            <div className="py-6 flex items-center justify-center"><Loader2 size={18} className="animate-spin" /></div>
-          ) : (
-            <div className="grid lg:grid-cols-2 gap-3">
-              <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>Personal tokens</div>
-                {tokens.length === 0 ? (
-                  <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>No personal MCP tokens yet.</p>
-                ) : (
-                  <div className="space-y-2 mt-3">
-                    {tokens.map((token) => (
-                      <div key={token.id} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
-                            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                              {token.token_prefix}... / last used {formatDate(token.last_used_at)}
-                            </div>
-                          </div>
-                          <button type="button" disabled={busy} onClick={() => revoke(token.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${token.name}`}>
-                            <Trash2 size={13} /> Revoke
-                          </button>
-                        </div>
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {isStale(token.last_used_at) && (
-                            <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
-                              {token.last_used_at ? 'stale' : 'unused'}
-                            </span>
-                          )}
-                          {token.scopes.map((scope) => (
-                            <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
-                          ))}
-                        </div>
-                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-default)' }}>
-                          <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Recent token activity</div>
-                          <RecentActionList actions={token.recent_actions} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>OAuth app grants</div>
-                {grants.length === 0 ? (
-                  <p className="text-[12px] mt-2" style={{ color: 'var(--text-secondary)' }}>No ChatGPT or Claude-style OAuth connections yet.</p>
-                ) : (
-                  <div className="space-y-2 mt-3">
-                    {grants.map((grant) => (
-                      <div key={grant.id} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
-                            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                              {grant.connector_profile} / last used {formatDate(grant.last_used_at)}
-                            </div>
-                          </div>
-                          <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${grant.app_name}`}>
-                            <Trash2 size={13} /> Revoke
-                          </button>
-                        </div>
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {isStale(grant.last_used_at) && (
-                            <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
-                              {grant.last_used_at ? 'stale' : 'unused'}
-                            </span>
-                          )}
-                          {grant.scopes.map((scope) => (
-                            <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
-                          ))}
-                        </div>
-                        <RecentActionList actions={grant.recent_actions} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-
+        </details>
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
           <button
             type="button"

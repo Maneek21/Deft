@@ -145,7 +145,7 @@ export default function ApiAccessPage() {
             className="text-[18px] font-semibold"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
-            API Access
+            Service API access
           </h2>
           <p className="text-[12px] mt-1 max-w-[560px]" style={{ color: 'var(--muted)' }}>
             Create service keys for API and MCP runtimes. Personal AI apps are usually easier from MCP Access.
@@ -168,10 +168,10 @@ export default function ApiAccessPage() {
       <div className="grid gap-3 md:grid-cols-3 mb-5">
         <AccessNote
           icon={Bot}
-          title="Personal AI apps"
-          body="Use MCP Access for Claude, Codex, ChatGPT, and human-owned tokens."
+          title="Personal AI connections"
+          body="Connect Claude, Codex, or ChatGPT with tokens and grants that act as you."
           href="/settings/mcp-access"
-          cta="Open MCP Access"
+          cta="Manage personal connections"
         />
         <AccessNote
           icon={Server}

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { SettingsSectionNav } from '@/components/settings-section-nav';
 import { Database, Eye, EyeOff, KeyRound, Loader2, Mic, RotateCcw, Save, Server, Sparkles, Trash2 } from 'lucide-react';
 
 type Provider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
@@ -53,6 +54,7 @@ export default function AISettingsPage() {
   const [cfg, setCfg] = useState<AIConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
+  const [section, setSection] = useState<'providers' | 'models' | 'search' | 'voice'>('providers');
 
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
 
@@ -83,7 +85,7 @@ export default function AISettingsPage() {
             className="text-[18px] font-semibold mb-3"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
-            AI providers
+            AI configuration
           </h2>
           <div
             className="p-4 rounded-lg text-[13px] leading-relaxed"
@@ -120,7 +122,7 @@ export default function AISettingsPage() {
             className="text-[18px] font-semibold"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
-            AI providers for {org?.name ?? 'your workspace'}
+            AI configuration for {org?.name ?? 'your workspace'}
           </h2>
           <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
             Bring your own provider. Deft can use managed keys or local Ollama, and the core workspace keeps
@@ -137,25 +139,13 @@ export default function AISettingsPage() {
           )}
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3 mb-8">
-          <AIContractNote
-            icon={Sparkles}
-            title="Optional by design"
-            body="Chat, tasks, calendar, notes, and wiki stay usable without provider keys."
-          />
-          <AIContractNote
-            icon={Server}
-            title="Self-hostable path"
-            body="Use Ollama or OpenAI-compatible local endpoints where possible."
-          />
-          <AIContractNote
-            icon={Database}
-            title="Workspace-scoped"
-            body="Keys and routing choices belong to this org, not every Deft install."
-          />
-        </div>
-
-        <section className="mb-8">
+        <SettingsSectionNav
+          label="AI configuration sections"
+          sections={[{ id: 'providers', label: 'Providers' }, { id: 'models', label: 'Model routing' }, { id: 'search', label: 'Search' }, { id: 'voice', label: 'Voice' }]}
+          value={section}
+          onChange={setSection}
+        />
+        <section hidden={section !== 'providers'} className="mb-8">
           <h3
             className="text-[11px] font-semibold uppercase tracking-wide mb-3"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
@@ -177,7 +167,7 @@ export default function AISettingsPage() {
           </div>
         </section>
 
-        <section className="mb-8">
+        <section hidden={section !== 'models'} className="mb-8">
           <h3
             className="text-[11px] font-semibold uppercase tracking-wide mb-1"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
@@ -194,7 +184,7 @@ export default function AISettingsPage() {
           </div>
         </section>
 
-        <section className="mb-8">
+        <section hidden={section !== 'search'} className="mb-8">
           <h3
             className="text-[11px] font-semibold uppercase tracking-wide mb-1"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
@@ -207,7 +197,7 @@ export default function AISettingsPage() {
           <EmbedSection cfg={cfg} onSaved={refresh} />
         </section>
 
-        <section>
+        <section hidden={section !== 'voice'}>
           <h3
             className="text-[11px] font-semibold uppercase tracking-wide mb-1"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
@@ -414,27 +404,6 @@ function ProviderCard({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function AIContractNote({
-  icon: Icon,
-  title,
-  body,
-}: {
-  icon: typeof Sparkles;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div
-      className="rounded-xl p-4"
-      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' }}
-    >
-      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
-      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--foreground)' }}>{title}</p>
-      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--muted)' }}>{body}</p>
     </div>
   );
 }

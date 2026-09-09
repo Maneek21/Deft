@@ -1,3 +1,5 @@
+import { APPS_ENABLED } from './feature-flags';
+
 export type SettingsRole = 'owner' | 'admin' | 'member' | 'guest';
 
 export type SettingsNavItem = {
@@ -18,47 +20,53 @@ const ADMIN_ROLES: SettingsRole[] = ['owner', 'admin'];
 
 export const settingsNavGroups: SettingsNavGroup[] = [
   {
-    label: 'Account',
-    description: 'Your workspace preferences and identity.',
+    label: 'Your account',
+    description: 'Your identity, preferences and personal connections.',
     items: [
-      { name: 'General', href: '/settings', description: 'Theme and settings overview.' },
+      { name: 'Overview', href: '/settings', description: 'Find settings and change your appearance.' },
       { name: 'Profile', href: '/settings/profile', description: 'Identity, status, notifications, and security.' },
-      { name: 'License & source', href: '/license', description: 'View Deft\'s AGPL license and Corresponding Source.' },
+      { name: 'Personal AI connections', href: '/settings/mcp-access', description: 'Connect Codex, Claude or another AI client acting as you.' },
+      { name: 'Calendar connections', href: '/settings/calendar', description: 'Manage your external calendar subscriptions and personal Deft feed.' },
     ],
   },
   {
     label: 'Workspace',
-    description: 'People, teams, and shared time.',
+    description: 'People and tools shared by your workspace.',
     items: [
       { name: 'People', href: '/settings/members', description: 'Invite people and manage workspace access.', roles: ADMIN_ROLES },
-      { name: 'Teams', href: '/settings/teams', description: 'Organize people around ownership and linked work.', roles: ADMIN_ROLES },
-      ...(APPS_ENABLED ? [{ name: 'Apps', href: '/settings/apps', description: 'Install and govern workspace Apps.', roles: ADMIN_ROLES }] : []),
-      { name: 'Modules', href: '/settings/modules', description: 'Install and govern workspace modules.', roles: ADMIN_ROLES },
-      { name: 'Calendar', href: '/settings/calendar', description: 'Connect calendars with self-hostable ICS feeds.' },
+      { name: 'Teams', href: '/settings/teams', description: 'Manage team membership and linked work.', roles: ADMIN_ROLES },
+      ...(APPS_ENABLED ? [{ name: 'Apps', href: '/settings/apps', description: 'Manage installed Apps and their access.', roles: ADMIN_ROLES }] : []),
+      { name: 'Modules', href: '/settings/modules', description: 'Manage standalone Modules and collection agent access.', roles: ADMIN_ROLES },
+      { name: 'Mention groups', href: '/settings/groups', description: 'Reusable @mention lists for chat; separate from team access.', roles: ADMIN_ROLES },
     ],
   },
   {
-    label: 'AI & Connections',
-    description: 'Shared agents and personal AI apps.',
+    label: 'Agents & AI',
+    description: 'Shared agents, model configuration and workspace policy.',
     items: [
-      { name: 'Agent employees', href: '/settings/agent-employees', description: 'Manage agents that work alongside the team.', roles: ADMIN_ROLES },
-      { name: 'Connections', href: '/settings/mcp-access', description: 'Connect Codex, Claude, ChatGPT, or another MCP client.' },
+      { name: 'Agent employees', href: '/settings/agent-employees', description: 'Manage shared agents, their access and runtime setup.', roles: ADMIN_ROLES },
+      { name: 'AI configuration', href: '/settings/ai', description: 'Configure model providers, search and voice features.', roles: ADMIN_ROLES },
+      { name: 'Tool connections', href: '/settings/integrations', description: 'External MCP tool servers used by workspace agents and Apps.', roles: ADMIN_ROLES },
+      { name: 'Policies & audit', href: '/settings/agent', description: 'Workspace trust defaults and action receipts.', roles: ADMIN_ROLES },
     ],
   },
   {
-    label: 'Advanced',
-    description: 'Specialist workspace, automation, AI, and developer controls.',
+    label: 'Work management',
+    description: 'Reusable work, task rules and recovery.',
+    items: [
+      { name: 'Task templates', href: '/settings/library', description: 'Reusable task sets for projects.', roles: ADMIN_ROLES },
+      { name: 'Task rules', href: '/settings/workflows', description: 'Rules triggered by task status changes. App schedules live in Apps.', roles: ADMIN_ROLES },
+      { name: 'Tags', href: '/settings/tags', description: 'Workspace labels and usage counts.', roles: ADMIN_ROLES },
+      { name: 'Project recovery', href: '/settings/projects', description: 'Restore recently deleted projects.', roles: ADMIN_ROLES },
+    ],
+  },
+  {
+    label: 'Developer & operator',
+    description: 'Service credentials and self-hosted source information.',
     advanced: true,
     items: [
-      { name: 'Mention groups', href: '/settings/groups', description: 'Reusable @mention lists for chat.', roles: ADMIN_ROLES },
-      { name: 'Tags', href: '/settings/tags', description: 'Review workspace labels and usage counts.', roles: ADMIN_ROLES },
-      { name: 'Task templates', href: '/settings/library', description: 'Reusable task templates and work packs.', roles: ADMIN_ROLES },
-      { name: 'Automations', href: '/settings/workflows', description: 'Task status-change rules.', roles: ADMIN_ROLES },
-      { name: 'Project recovery', href: '/settings/projects', description: 'Restore recently deleted projects.', roles: ADMIN_ROLES },
-      { name: 'Agent tool servers', href: '/settings/integrations', description: 'External MCP tools available to agents.', roles: ADMIN_ROLES },
-      { name: 'AI providers', href: '/settings/ai', description: 'Model providers and local endpoints.', roles: ADMIN_ROLES },
-      { name: 'Agent governance', href: '/settings/agent', description: 'Workspace trust defaults, activity, and audit.', roles: ADMIN_ROLES },
-      { name: 'API access', href: '/settings/api-access', description: 'Service keys for scripts and runtimes.', roles: ADMIN_ROLES },
+      { name: 'Service API access', href: '/settings/api-access', description: 'API keys for scripts and service runtimes.', roles: ADMIN_ROLES },
+      { name: 'License & source', href: '/license', description: 'AGPL license and Corresponding Source.' },
     ],
   },
 ];
@@ -78,4 +86,3 @@ export function isSettingsItemActive(pathname: string, href: string) {
   if (href === '/settings') return pathname === href;
   return pathname === href || pathname.startsWith(`${href}/`);
 }
-import { APPS_ENABLED } from './feature-flags';

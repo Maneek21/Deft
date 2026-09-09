@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
+import { SettingsSectionNav } from '@/components/settings-section-nav';
 import {
   Calendar,
   Copy,
@@ -84,6 +85,7 @@ function nextSyncAt(sub: Subscription): string {
 }
 
 export default function CalendarSettingsPage() {
+  const [section, setSection] = useState<'connected' | 'share'>('connected');
   return (
     <div className="h-full overflow-y-auto">
       <div className="p-6 max-w-[720px]">
@@ -92,15 +94,21 @@ export default function CalendarSettingsPage() {
             className="text-[18px] font-semibold"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
-            Calendar sync
+            Calendar connections
           </h2>
           <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
             Connect calendars with ICS links: show Deft work in your calendar, and read external calendar events into Deft without OAuth.
           </p>
         </div>
 
-        <OutboundSection />
-        <InboundSection />
+        <SettingsSectionNav
+          label="Calendar settings sections"
+          sections={[{ id: 'connected', label: 'Connected calendars' }, { id: 'share', label: 'Share Deft calendar' }]}
+          value={section}
+          onChange={setSection}
+        />
+        <div hidden={section !== 'connected'}><InboundSection /></div>
+        <div hidden={section !== 'share'}><OutboundSection /></div>
       </div>
     </div>
   );

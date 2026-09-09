@@ -4,6 +4,7 @@ import { useRef, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Clock, KeyRound, Loader2, Save, X } from 'lucide-react';
+import { SettingsSectionNav } from '@/components/settings-section-nav';
 import { BrowserNotificationSettings } from '@/components/browser-notification-settings';
 
 const COMMON_TIMEZONES = [
@@ -80,6 +81,7 @@ function joinList(value: string[] | null | undefined): string {
 }
 
 export default function ProfileSettingsPage() {
+  const [section, setSection] = useState<'identity' | 'preferences' | 'security'>('identity');
   const { user, refreshUser, replaceUser, logout } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [name, setName] = useState('');
@@ -261,9 +263,16 @@ export default function ProfileSettingsPage() {
           </div>
         </div>
 
+        <SettingsSectionNav
+          label="Profile settings sections"
+          sections={[{ id: 'identity', label: 'Identity' }, { id: 'preferences', label: 'Availability & notifications' }, { id: 'security', label: 'Security' }]}
+          value={section}
+          onChange={setSection}
+        />
+        <div hidden={section === 'security'}>
         <form onSubmit={handleSave} className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section className="min-w-0 space-y-5">
-            <div className="min-w-0 rounded-xl p-5" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
+            <div hidden={section !== 'identity'} className="min-w-0 rounded-xl p-5" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
               <h2 className="mb-4 text-[15px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
                 Work identity
               </h2>
@@ -341,7 +350,7 @@ export default function ProfileSettingsPage() {
               </div>
             </div>
 
-            <div className="rounded-xl p-5" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
+            <div hidden={section !== 'preferences'} className="rounded-xl p-5" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
               <h2 className="mb-4 text-[15px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
                 Availability and preferences
               </h2>
@@ -444,7 +453,19 @@ export default function ProfileSettingsPage() {
                 </div>
               </div>
             </div>
+          </aside>
 
+          <div className="lg:col-span-2">
+            {error && <div className="mb-3 text-[13px]" style={{ color: 'var(--status-red)' }}>{error}</div>}
+            {saveMessage && <div className="mb-3 text-[13px]" style={{ color: 'var(--status-green)' }}>{saveMessage}</div>}
+            <button type="submit" disabled={saving || !name.trim()} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>
+              {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+              Save profile & preferences
+            </button>
+          </div>
+        </form>
+        </div>
+        <section hidden={section !== 'security'} aria-label="Account security">
             <div className="rounded-xl p-5" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
               <h2 className="mb-3 flex items-center gap-2 text-[15px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
                 <KeyRound size={16} />
@@ -461,17 +482,7 @@ export default function ProfileSettingsPage() {
                 </button>
               </div>
             </div>
-          </aside>
-
-          <div className="lg:col-span-2">
-            {error && <div className="mb-3 text-[13px]" style={{ color: 'var(--status-red)' }}>{error}</div>}
-            {saveMessage && <div className="mb-3 text-[13px]" style={{ color: 'var(--status-green)' }}>{saveMessage}</div>}
-            <button type="submit" disabled={saving || !name.trim()} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>
-              {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-              Save profile
-            </button>
-          </div>
-        </form>
+        </section>
       </div>
     </div>
   );
