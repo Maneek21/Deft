@@ -8,21 +8,68 @@
 
 [Website](https://deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
-**Try Deft:** [install a workspace, connect your AI client, or build an internal App](docs/getting-started.md). The latest downloadable image is `v0.3.0-preview.15`. See the [current availability map](docs/product-status.md) before enabling an experimental feature.
+Deft is a self-hostable, open-source workspace where people and AI agents share chat, tasks, knowledge, calendar context, approvals, and action history.
 
-![Where humans and agents work together.](docs/assets/repository/hero.png)
+Capture a team discussion into knowledge, ask Defty to propose a task using that context, review and approve the proposal, and keep the agreed details in the resulting task.
 
-Deft is a self-hostable, open-source workspace where people and AI agents share the same chat, tasks, knowledge, calendar context, approvals, and receipts.
+**Alpha:** for technical evaluation and controlled pilots. The walkthrough uses **seeded demo data**; it is not evidence of a live customer workspace or an active external agent runtime.
 
-Instead of pasting fragments from Slack, Notion, and a task tracker into an AI chat, connect Codex, Claude, ChatGPT, or your own agent to the work record your team already uses.
+[![Watch the full walkthrough — 5:09](https://i.ytimg.com/vi/7z9EH4c9k2o/hqdefault.jpg)](https://youtu.be/7z9EH4c9k2o)
+
+[**Watch the full walkthrough — 5:09.**](https://youtu.be/7z9EH4c9k2o)
+
+## Quick start with Docker
+
+Use the prebuilt [v0.3.0-preview.15 release](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15) for evaluation. It targets **Linux amd64** and needs Docker Desktop or Docker Engine with Compose v2. An AI provider is optional. No source build, Node.js, or pnpm is needed for this path.
+
+Download `docker-compose.yml`, `compose.prod.yml`, `compose.release.yml`, and `default.env.example` from that release into a **new directory**. In Bash (macOS, Linux, or Git Bash on Windows):
+
+```bash
+cp default.env.example .env
+openssl rand -hex 32  # POSTGRES_PASSWORD
+openssl rand -hex 32  # JWT_SECRET
+openssl rand -hex 32  # JWT_REFRESH_SECRET
+openssl rand -hex 32  # ENCRYPTION_KEY
+```
+
+Paste each independently generated secret into its corresponding `.env` variable. All four are required for Docker, including local evaluation. Keep the encryption key with your backups. Leave AI keys empty and `OLLAMA_URL` commented unless you intend to configure a provider.
+
+Add this pinned release image to `.env`:
+
+```dotenv
+DEFT_IMAGE=ghcr.io/maneek21/deft@sha256:665a66083adaaf9db876fa815203c854509c5fdde72b89a0db212fe2e07d398b
+```
+
+Then run, from that directory:
+
+```bash
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml config --quiet
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm smoke
+```
+
+Open [http://localhost:3000](http://localhost:3000) and create the first account, which owns the workspace. Subsequent users join by invitation. This creates an empty workspace with the platform bundle, not the video's demo records. Create a chat message and a task to try the core workspace without AI.
+
+Use `init` only with a fresh database. For custom ports, public URLs, image verification, source builds, backups, and upgrades, follow the [self-hosting guide](docs/self-hosting.md). Versioned upgrades start at `v0.2.0-preview.1`; use the backup-first upgrade flow for existing workspaces. Historical releases through `v0.2.0-preview.4` retain their shipped BSL 1.1 license; the selected release is AGPL-3.0-only.
+
+**Try Deft:** [install a workspace, connect your AI client, or build an internal App](docs/getting-started.md). See the [current availability map](docs/product-status.md) before enabling an experimental feature.
+
+[Architecture](#architecture) · [Current limitations](docs/current-limitations.md) · [Licensing](#license)
 
 ## The core loop
 
-1. **Work happens in context.** People discuss an issue in chat, update a task, write a note, or record a decision.
-2. **An agent reads the same workspace.** Defty, an agent employee, or a personal MCP client can retrieve the relevant messages, tasks, wiki pages, people, and calendar context.
-3. **Governed actions can require review.** Employee actions follow their approval policy, with proposed changes shown in conversation cards and the approval inbox. Personal MCP writes use the authorizing person's permissions and scopes.
-4. **The result lands in Deft.** Tasks, messages, notes, wiki pages, and status changes become part of the shared record.
-5. **Governed agent actions leave receipts.** Deft records the actor, outcome, and result for actions that pass through its governed execution paths.
+1. **Capture the discussion.** Save useful decisions and references in Knowledge with links back to their source conversation.
+2. **Ask Defty for a task.** With an AI provider configured, Defty can use workspace context to propose the title, owner, dates, and description.
+3. **Review and approve.** Under a policy requiring review, inspect the proposed details before approving. Trust settings can permit some actions to execute automatically.
+4. **Keep the agreed details.** The task stores the approved content, and governed agent actions have approval history and receipts to inspect.
+
+Optional video chapters: [Knowledge capture — 1:09](https://youtu.be/7z9EH4c9k2o?t=69) · [Defty task request and approval — 2:06](https://youtu.be/7z9EH4c9k2o?t=126) · [ChatGPT connection and workspace read/write — 3:25](https://youtu.be/7z9EH4c9k2o?t=205).
+
+**Personal MCP connections use a different authority model.** ChatGPT and other personal clients act as the authorizing user within their granted scopes and normal permissions. Their writes do not automatically enter Deft's agent approval queue. Defty and Agent Employees use agent identities and policy-based approval flows. See [MCP access and agents](docs/self-hosting.md#mcp-access-and-agents).
 
 ![A live Deft workspace](docs/assets/repository/dashboard.png)
 
@@ -90,80 +137,16 @@ The Connections page guides each user through the setup required by their client
 | AI is tied to one vendor or sidebar | Teams can use Defty, Codex, Claude, ChatGPT, or their own agent runtime |
 | SaaS data and behavior are controlled by a vendor | The product is self-hostable and open source under AGPL-3.0-only |
 
-## Quick start with Docker
-
-### Requirements
-
-- Docker Desktop or Docker Engine with Compose
-- A machine capable of running PostgreSQL, the API, and the web app
-- Optional: an AI provider key or local model endpoint for agent features
-
-```bash
-git clone https://github.com/Maneek21/Deft.git
-cd Deft
-cp .env.example .env
-```
-
-Set the four required secrets in `.env`:
-
-| Variable | Generate with |
-|---|---|
-| `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
-| `JWT_SECRET` | `openssl rand -hex 32` |
-| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` |
-| `ENCRYPTION_KEY` | `openssl rand -hex 32` |
-
-Then build, start, initialize, and verify the stack:
-
-```bash
-docker compose build deft init doctor smoke
-docker compose up -d
-docker compose run --rm init
-docker compose run --rm doctor
-docker compose run --rm smoke
-```
-
-Open [http://localhost:3000](http://localhost:3000). The first account creates and owns the workspace.
-
-See [docs/self-hosting.md](docs/self-hosting.md) for environment variables, HTTPS, backups, health checks, AI providers, and production operations.
-
-### Run a named preview image
-
-Preview releases also publish an amd64 image to GHCR. Download the release
-assets, copy `default.env.example` to `.env`, set the required secrets and public
-URLs, then run:
-
-Choose a release whose notes identify it as `AGPL-3.0-only`, then set its
-exact immutable tag. Historical releases through `v0.2.0-preview.4` retain the
-BSL 1.1 license included in those revisions; relicensing this source tree does
-not retroactively change old tags or images.
-
-```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
-```
-
-Fresh installs use `init`. The supported versioned upgrade baseline starts at
-`v0.2.0-preview.1`; later releases can be applied with the backup-first
-`pnpm selfhost:upgrade --prod --release` flow documented in the self-hosting
-guide. Historical pre-preview databases are not automatically adopted.
-
-> `pnpm db:push-full` is for fresh installs. `pnpm db:upgrade` is for supported release-to-release upgrades. Do not use raw `pnpm db:migrate` against important data.
-
 ## Local development
 
-Requirements: Node.js 22.13+, pnpm, and PostgreSQL 16 with pgvector.
+Requirements: Node.js 22.13+, the pnpm version pinned in `package.json`, and a running PostgreSQL 16 database with pgvector. Set the four secrets in `.env` and `DATABASE_URL` for your disposable development database before initialization; see [Contributing](CONTRIBUTING.md).
 
 ```bash
 git clone https://github.com/Maneek21/Deft.git
 cd Deft
 pnpm install
 cp .env.example .env
-
+# Set the four secrets and DATABASE_URL before continuing.
 pnpm db:push-full
 pnpm db:seed
 pnpm dev
@@ -187,6 +170,7 @@ deft/
 |   `-- api/       Hono, Socket.io, PostgreSQL job workers, agent and MCP runtime
 |-- packages/
 |   |-- db/        PostgreSQL, pgvector, Drizzle schema and migrations
+|   |-- mcp/       Shared MCP protocol support
 |   `-- shared/    Shared types, schemas, and constants
 |-- docker-compose.yml
 `-- pnpm-workspace.yaml
@@ -199,7 +183,7 @@ deft/
 | Data | PostgreSQL 16, pgvector, Drizzle ORM |
 | Realtime | Socket.io in-process (single app instance) |
 | Jobs | PostgreSQL `job_queue` and in-process workers |
-| Auth | better-auth with JWT and refresh tokens |
+| Auth | Email/password with bcrypt, JWT access tokens, and refresh tokens |
 | AI | Provider-neutral routing plus MCP |
 | Storage | Local disk with R2-compatible paths |
 | Monorepo | pnpm workspaces |
