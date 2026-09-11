@@ -2,13 +2,12 @@ import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { Hono } from 'hono';
 import { authRoutes } from '../src/routes/auth.js';
 import { messageRoutes } from '../src/routes/messages.js';
 import { authMiddleware } from '../src/middleware/auth.js';
-import { env } from '../src/lib/env.js';
+import { createWebSession } from '../src/lib/web-sessions.js';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
@@ -33,15 +32,13 @@ const USER_ID = crypto.randomUUID();
 const SPACE_ID = crypto.randomUUID();
 const EMAIL = `profile-${RUN_ID}@test.local`;
 
-function accessToken() {
-  return jwt.sign({ id: USER_ID, email: EMAIL, org_id: ORG_ID }, env.JWT_SECRET, { expiresIn: '15m' });
-}
+let accessToken = '';
 
 async function authed(path: string, init: RequestInit = {}) {
   return app.fetch(new Request(`http://localhost${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${accessToken()}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
       ...(init.headers ?? {}),
     },
@@ -77,10 +74,12 @@ before(async () => {
       [crypto.randomUUID(), SPACE_ID, USER_ID],
     );
   });
+  accessToken = (await createWebSession({ id: USER_ID, email: EMAIL, org_id: ORG_ID })).accessToken;
 });
 
 after(async () => {
   await withClient(async (c) => {
+    await c.query(`DELETE FROM web_sessions WHERE user_id = $1`, [USER_ID]);
     await c.query(`DELETE FROM messages WHERE space_id = $1`, [SPACE_ID]);
     await c.query(`DELETE FROM space_members WHERE space_id = $1`, [SPACE_ID]);
     await c.query(`DELETE FROM spaces WHERE id = $1`, [SPACE_ID]);

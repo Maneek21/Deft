@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -22,21 +23,49 @@ import {
 } from '../lib/oauth-mcp.js';
 import { isHttpsPublicUrl } from '../lib/public-url.js';
 import { enrichOAuthAuditActions } from '../lib/oauth-audit-receipts.js';
+import { oauthPublicGlobalLimiter, oauthPublicIpLimiter } from '../middleware/rate-limit.js';
 
 export const oauthWellKnownRoutes = new Hono();
 export const oauthPublicRoutes = new Hono();
 export const oauthProtectedRoutes = new Hono();
 
+const httpsMetadataUrl = z.string().max(2048).url().refine((value) => new URL(value).protocol === 'https:', {
+  message: 'Metadata URLs must use HTTPS',
+});
+
 const dcrSchema = z.object({
-  client_name: z.string().min(1).max(160).default('Remote AI app'),
+  client_name: z.string().trim().min(1).max(160).default('Remote AI app'),
   application_type: z.enum(['native', 'web']).optional(),
-  client_uri: z.string().url().optional(),
-  logo_uri: z.string().url().optional(),
-  redirect_uris: z.array(z.string().url()).min(1).max(20),
-  grant_types: z.array(z.string()).optional(),
-  response_types: z.array(z.string()).optional(),
-  token_endpoint_auth_method: z.string().optional(),
-  scope: z.string().optional(),
+  client_uri: httpsMetadataUrl.optional(),
+  logo_uri: httpsMetadataUrl.optional(),
+  redirect_uris: z.array(z.string().max(2048).url()).min(1).max(20),
+  grant_types: z.array(z.enum(['authorization_code', 'refresh_token'])).min(1).max(2).optional(),
+  response_types: z.array(z.literal('code')).length(1).optional(),
+  token_endpoint_auth_method: z.literal('none').optional(),
+  scope: z.string().max(1024).optional(),
+});
+
+const tokenSchema = z.discriminatedUnion('grant_type', [
+  z.object({
+    grant_type: z.literal('authorization_code'),
+    client_id: z.string().min(1).max(256),
+    code: z.string().min(1).max(8192),
+    redirect_uri: z.string().max(2048).url(),
+    code_verifier: z.string().min(16).max(256),
+    resource: z.string().max(2048).url().optional(),
+  }),
+  z.object({
+    grant_type: z.literal('refresh_token'),
+    client_id: z.string().min(1).max(256),
+    refresh_token: z.string().min(1).max(8192),
+    resource: z.string().max(2048).url().optional(),
+  }),
+]);
+
+const revokeSchema = z.object({
+  token: z.string().max(8192).optional(),
+  token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
+  client_id: z.string().min(1).max(256).optional(),
 });
 
 const authorizeSchema = z.object({
@@ -63,9 +92,15 @@ function oauthError(c: any, err: unknown) {
   if (err instanceof OAuthMcpError) {
     return c.json({ error: err.code, error_description: err.message }, err.status);
   }
-  const message = err instanceof Error ? err.message : String(err);
-  return c.json({ error: 'server_error', error_description: message }, 500);
+  console.error('[oauth-mcp] unexpected request failure');
+  return c.json({ error: 'server_error', error_description: 'OAuth request failed' }, 500);
 }
+
+oauthPublicRoutes.use('*', bodyLimit({
+  maxSize: 64 * 1024,
+  onError: (c) => c.json({ error: 'invalid_request', error_description: 'Request body is too large' }, 413),
+}));
+oauthPublicRoutes.use('*', oauthPublicGlobalLimiter, oauthPublicIpLimiter);
 
 oauthWellKnownRoutes.get('/oauth-protected-resource', (c) => {
   const urls = metadataUrls();
@@ -97,7 +132,7 @@ oauthWellKnownRoutes.get('/oauth-authorization-server', (c) => {
 
 oauthPublicRoutes.post('/register', async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch(() => null);
     const parsed = dcrSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: 'invalid_client_metadata', error_description: 'Invalid client metadata', details: parsed.error.flatten() }, 400);
@@ -125,7 +160,7 @@ oauthPublicRoutes.post('/register', async (c) => {
       grant_types: grantTypes,
       response_types: responseTypes,
       token_endpoint_auth_method: authMethod,
-      metadata: body,
+      metadata: parsed.data,
     });
     await auditOAuth({ clientId, event: 'client_registered', metadata: { client_name: parsed.data.client_name } });
     return c.json({
@@ -150,24 +185,23 @@ oauthPublicRoutes.post('/register', async (c) => {
 oauthPublicRoutes.post('/token', async (c) => {
   try {
     const body = await requestBody(c);
-    const grantType = String(body.grant_type ?? '');
-    const clientId = String(body.client_id ?? '');
-    if (!clientId) throw new OAuthMcpError(400, 'invalid_client', 'client_id is required');
-    if (grantType === 'authorization_code') {
+    const parsed = tokenSchema.safeParse(body);
+    if (!parsed.success) throw new OAuthMcpError(400, 'invalid_request', 'Invalid token request');
+    if (parsed.data.grant_type === 'authorization_code') {
       const result = await exchangeAuthorizationCode({
-        code: String(body.code ?? ''),
-        clientId,
-        redirectUri: String(body.redirect_uri ?? ''),
-        codeVerifier: String(body.code_verifier ?? ''),
-        resource: body.resource ? String(body.resource) : null,
+        code: parsed.data.code,
+        clientId: parsed.data.client_id,
+        redirectUri: parsed.data.redirect_uri,
+        codeVerifier: parsed.data.code_verifier,
+        resource: parsed.data.resource ?? null,
       });
       return c.json(result);
     }
-    if (grantType === 'refresh_token') {
+    if (parsed.data.grant_type === 'refresh_token') {
       const result = await refreshOAuthAccessToken({
-        refreshToken: String(body.refresh_token ?? ''),
-        clientId,
-        resource: body.resource ? String(body.resource) : null,
+        refreshToken: parsed.data.refresh_token,
+        clientId: parsed.data.client_id,
+        resource: parsed.data.resource ?? null,
       });
       return c.json(result);
     }
@@ -180,7 +214,9 @@ oauthPublicRoutes.post('/token', async (c) => {
 oauthPublicRoutes.post('/revoke', async (c) => {
   try {
     const body = await requestBody(c);
-    const token = String(body.token ?? '');
+    const parsed = revokeSchema.safeParse(body);
+    if (!parsed.success) throw new OAuthMcpError(400, 'invalid_request', 'Invalid revocation request');
+    const token = parsed.data.token ?? '';
     if (!token) return c.json({ ok: true });
     const tokenHash = sha256(token);
     await db.update(oauthAccessTokens).set({ revoked_at: new Date() }).where(eq(oauthAccessTokens.token_hash, tokenHash));

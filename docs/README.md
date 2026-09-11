@@ -2,6 +2,8 @@
 
 ## Start here
 
+- [What you can use today](product-status.md)
+- [Getting started](getting-started.md)
 - [Self-hosting](self-hosting.md)
 - [VPS, domain, and HTTPS](self-hosting-vps-domain-https.md)
 - [Self-hosted v1 contract](self-hosted-v1-contract.md)
@@ -14,7 +16,7 @@
 ## Operator and integration guides
 
 - [Connected App author guide](connected-app-author-guide.md)
-- [Hermes native employee integration](../integrations/hermes/deft-platform/README.md)
+- [Historical Hermes compatibility guide](../integrations/hermes/deft-platform/README.md) (use only with a release that explicitly certifies it; excluded from the preview.15 core release)
 - [Legacy Hermes Agent Channel bridge rollback](hermes-agent-channel-service.md)
 - Public product capabilities: [FEATURES.md](../FEATURES.md)
 

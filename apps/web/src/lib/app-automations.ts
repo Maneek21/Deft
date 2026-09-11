@@ -42,6 +42,10 @@ export type AppAutomationDefinition = {
   validity: { validFrom: string; validUntil: string };
   budgets: { maxOrgRunsPerUtcDay: number; maxPendingOrgFires: number };
   nextFireAtUtc: string | null;
+  eligibility: {
+    status: 'awaiting_delivery_check' | 'waiting' | 'delivery_disabled' | 'paused' | 'revoked' | 'expired';
+    reason: string;
+  };
   fireSummary: { pending: number; claimed: number; runCreated: number; skipped: number; deadLetter: number };
   latestFire: null | {
     id: string;
@@ -59,6 +63,7 @@ export type AppAutomationManagement = {
   generatedAt: string;
   killSwitchEnabled: boolean;
   definitions: AppAutomationDefinition[];
+  nextCursor: string | null;
 };
 
 function object(value: unknown, label: string): UnknownRecord {
@@ -152,6 +157,7 @@ export function normalizeAppAutomationManagement(value: unknown): AppAutomationM
   return {
     generatedAt: stringValue(management.generated_at, 'App automation generated time'),
     killSwitchEnabled: killSwitch.enabled === true,
+    nextCursor: nullableString(management.next_cursor, 'App automation next cursor'),
     definitions: management.definitions.map((entry) => {
       const row = object(entry, 'App automation definition');
       const state = row.state;
@@ -163,6 +169,7 @@ export function normalizeAppAutomationManagement(value: unknown): AppAutomationM
       const budgets = object(row.budgets, 'App automation budgets');
       const summary = object(row.fire_summary, 'App automation fire summary');
       const retry = object(row.retry, 'App automation retry state');
+      const eligibility = object(row.eligibility, 'App automation eligibility');
       const fire = row.latest_fire == null ? null : object(row.latest_fire, 'latest App automation fire');
       const run = row.latest_run == null ? null : object(row.latest_run, 'latest App automation Run');
       return {
@@ -185,6 +192,16 @@ export function normalizeAppAutomationManagement(value: unknown): AppAutomationM
           maxPendingOrgFires: integer(budgets.max_pending_org_fires, 'App automation pending budget'),
         },
         nextFireAtUtc: nullableString(row.next_fire_at_utc, 'App automation next fire'),
+        eligibility: {
+          status: (() => {
+            const status = stringValue(eligibility.status, 'App automation eligibility status');
+            if (!['awaiting_delivery_check', 'waiting', 'delivery_disabled', 'paused', 'revoked', 'expired'].includes(status)) {
+              throw new Error('Invalid App automation eligibility status.');
+            }
+            return status as AppAutomationDefinition['eligibility']['status'];
+          })(),
+          reason: stringValue(eligibility.reason, 'App automation eligibility reason'),
+        },
         fireSummary: {
           pending: integer(summary.pending, 'pending fire count'),
           claimed: integer(summary.claimed, 'claimed fire count'),

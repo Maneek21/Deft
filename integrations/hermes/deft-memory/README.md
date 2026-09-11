@@ -1,5 +1,7 @@
 # Deft memory provider for Hermes
 
+> **Release-specific compatibility:** use this integration only when the selected Deft release's integration manifest and certificate identify it as compatible. A source checkout by itself is not certification. See [Deft's current product status](https://github.com/Maneek21/Deft/blob/master/docs/product-status.md).
+
 This adapter uses Hermes's native `MemoryProvider` contract. Deft remains the
 canonical company wiki; Hermes keeps its normal local `MEMORY.md` and `USER.md`.
 

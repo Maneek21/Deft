@@ -1,7 +1,6 @@
 import { Server as SocketIOServer } from 'socket.io';
 import type { Server as HTTPServer } from 'node:http';
-import jwt from 'jsonwebtoken';
-import { env } from './lib/env.js';
+import { verifyWebAccess, webSessionEvents } from './lib/web-sessions.js';
 import { db } from './lib/db.js';
 import { users, orgMembers, spaceMembers, spaces } from '@deft/db/schema';
 import { eq, and, ne } from 'drizzle-orm';
@@ -13,6 +12,8 @@ export type SocketUser = {
   id: string;
   email: string;
   org_id: string;
+  sid?: string;
+  exp?: number;
   role?: 'owner' | 'admin' | 'member' | 'guest';
 };
 type HuddleEventName = 'huddle:create' | 'huddle:list' | 'huddle:join' | 'huddle:leave' | 'huddle:signal' | 'huddle:mute';
@@ -264,7 +265,19 @@ export function getUserStatus(userId: string): 'online' | 'idle' | 'offline' {
   return 'offline';
 }
 
-export function setupSocket(server: HTTPServer) {
+type SocketSetupDependencies = {
+  verifyAccess?: typeof verifyWebAccess;
+  requireMembership?: typeof requireActiveOrgMembership;
+  getSpaceAccess?: typeof getHuddleSpaceAccess;
+  recordLastSeen?: typeof updateLastSeen;
+  onPacketIngress?: (eventName: string) => void;
+};
+
+export function setupSocket(server: HTTPServer, dependencies: SocketSetupDependencies = {}) {
+  const verifyAccess = dependencies.verifyAccess ?? verifyWebAccess;
+  const requireMembership = dependencies.requireMembership ?? requireActiveOrgMembership;
+  const getSpaceAccess = dependencies.getSpaceAccess ?? getHuddleSpaceAccess;
+  const recordLastSeen = dependencies.recordLastSeen ?? updateLastSeen;
   io = new SocketIOServer(server, {
     cors: {
       origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
@@ -275,15 +288,18 @@ export function setupSocket(server: HTTPServer) {
   });
 
   // Auth middleware
+  const disconnectSession = (sid: string) => io?.in(`web-session:${sid}`).disconnectSockets(true);
+  webSessionEvents.on('revoked', disconnectSession);
+  server.once('close', () => webSessionEvents.off('revoked', disconnectSession));
   io.use(async (socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
       return next(new Error('Authentication required'));
     }
     try {
-      const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+      const payload = await verifyAccess(token);
       const authorizationGeneration = captureRealtimeAccessGeneration();
-      const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
+      const membership = await requireMembership(payload.org_id, payload.id);
       if (!isRealtimeAccessGenerationCurrent(authorizationGeneration)) {
         return next(new Error('Workspace access changed; reconnect'));
       }
@@ -296,27 +312,73 @@ export function setupSocket(server: HTTPServer) {
   });
 
   io.on('connection', async (socket) => {
+    let settleInitialization!: (ready: boolean) => void;
+    let initializationSettled = false;
+    const initializationReady = new Promise<boolean>((resolve) => {
+      settleInitialization = (ready) => {
+        if (initializationSettled) return;
+        initializationSettled = true;
+        resolve(ready);
+      };
+    });
+    socket.once('disconnect', () => settleInitialization(false));
+    socket.use(async (event, next) => {
+      dependencies.onPacketIngress?.(String(event[0] ?? ''));
+      const packetGeneration = captureRealtimeAccessGeneration();
+      try {
+        if (!await initializationReady || !socket.connected) {
+          next(new Error('Socket initialization failed'));
+          return;
+        }
+        await verifyAccess(socket.handshake.auth.token);
+        if (!socket.connected || !isRealtimeAccessGenerationCurrent(packetGeneration)) {
+          socket.disconnect(true);
+          next(new Error('Workspace access changed; reconnect'));
+          return;
+        }
+        next();
+      } catch {
+        settleInitialization(false);
+        socket.disconnect(true);
+        next(new Error('Session unavailable; reconnect'));
+      }
+    });
     const user = (socket as any).user as SocketUser;
+    const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, (user.exp ?? 0) * 1000 - Date.now()));
+    expiryTimer.unref();
+    socket.once('disconnect', () => clearTimeout(expiryTimer));
     const connectionGeneration = (socket as any).realtimeAccessGeneration as number;
     if (!socket.connected || !isRealtimeAccessGenerationCurrent(connectionGeneration)) {
+      settleInitialization(false);
       socket.disconnect(true);
       return;
     }
 
     try {
-      const initialRooms = [
+      // Join only the session-control room until the second verification has
+      // closed the handshake/revocation race. Sensitive data rooms follow.
+      await socket.join(`web-session:${user.sid}`);
+      await verifyAccess(socket.handshake.auth.token);
+      if (!socket.connected || !isRealtimeAccessGenerationCurrent(connectionGeneration)) {
+        settleInitialization(false);
+        socket.disconnect(true);
+        return;
+      }
+      const dataRooms = [
         `org:${user.org_id}`,
         `user:${user.id}`,
         `org-user:${user.org_id}:${user.id}`,
       ];
-      if (user.role !== 'guest') initialRooms.push(`org-members:${user.org_id}`);
-      await socket.join(initialRooms);
+      if (user.role !== 'guest') dataRooms.push(`org-members:${user.org_id}`);
+      await socket.join(dataRooms);
     } catch (error) {
       console.error('Failed to initialize socket rooms:', error);
+      settleInitialization(false);
       socket.disconnect(true);
       return;
     }
     if (!socket.connected || !isRealtimeAccessGenerationCurrent(connectionGeneration)) {
+      settleInitialization(false);
       socket.disconnect(true);
       return;
     }
@@ -334,7 +396,7 @@ export function setupSocket(server: HTTPServer) {
     idleUsers.delete(user.id);
 
     // Update last_seen_at on connect
-    updateLastSeen(user.id);
+    recordLastSeen(user.id);
 
     // Broadcast online to org (only if this is the first socket for this user)
     if (onlineUsers.get(user.id)!.size === 1) {
@@ -357,7 +419,7 @@ export function setupSocket(server: HTTPServer) {
     socket.on('space:join', async (spaceId: string) => {
       if (typeof spaceId !== 'string' || spaceId.length === 0 || spaceId.length > 128) return;
       const authorizationGeneration = captureRealtimeAccessGeneration();
-      const access = await getHuddleSpaceAccess(spaceId, user).catch(() => undefined);
+      const access = await getSpaceAccess(spaceId, user).catch(() => undefined);
       if (!access || !isRealtimeAccessGenerationCurrent(authorizationGeneration)) return;
       try {
         await socket.join(`space:${spaceId}`);
@@ -414,7 +476,7 @@ export function setupSocket(server: HTTPServer) {
     });
 
     socket.on('presence:active', () => {
-      updateLastSeen(user.id);
+      recordLastSeen(user.id);
       if (idleUsers.has(user.id)) {
         idleUsers.delete(user.id);
         socket.to(`org:${user.org_id}`).emit('presence:update', {
@@ -458,7 +520,7 @@ export function setupSocket(server: HTTPServer) {
       const authorizationGeneration = captureRealtimeAccessGeneration();
       let access: Awaited<ReturnType<typeof getHuddleSpaceAccess>>;
       try {
-        access = await getHuddleSpaceAccess(data.space_id, user);
+        access = await getSpaceAccess(data.space_id, user);
       } catch (error) {
         console.error('Failed to authorize huddle creation:', error);
         emitHuddleError('huddle:create', 'INTERNAL_ERROR', 'Unable to start huddle');
@@ -606,7 +668,7 @@ export function setupSocket(server: HTTPServer) {
       const authorizationGeneration = captureRealtimeAccessGeneration();
       let access: Awaited<ReturnType<typeof getHuddleSpaceAccess>>;
       try {
-        access = await getHuddleSpaceAccess(room.space_id, user);
+        access = await getSpaceAccess(room.space_id, user);
       } catch (error) {
         console.error('Failed to authorize huddle join:', error);
         emitHuddleError('huddle:join', 'INTERNAL_ERROR', 'Unable to join huddle');
@@ -829,7 +891,7 @@ export function setupSocket(server: HTTPServer) {
         if (sockets.size === 0) {
           onlineUsers.delete(user.id);
           idleUsers.delete(user.id);
-          updateLastSeen(user.id);
+          recordLastSeen(user.id);
           socket.to(`org:${user.org_id}`).emit('presence:update', {
             user_id: user.id,
             status: 'offline',
@@ -837,6 +899,10 @@ export function setupSocket(server: HTTPServer) {
         }
       }
     });
+    // Socket.IO awaits per-packet middleware before dispatching to listeners.
+    // Packets emitted from the client's `connect` callback remain queued here
+    // until initialization and every handler registration above are complete.
+    settleInitialization(true);
   });
 
   return io;

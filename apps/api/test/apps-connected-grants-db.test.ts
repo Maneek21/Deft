@@ -1,5 +1,9 @@
+import './fixtures/app-run-enabled-env.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { and, count, eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -16,10 +20,12 @@ import {
 import {
   agentActions,
   appActionBindings,
+  appAutomationDefinitions,
   appDependencyLocks,
   appGrantSnapshots,
   appInstallations,
   appModuleBindings,
+  appRunReceipts,
   appRuns,
   appVersions,
   capabilityProviderSnapshots,
@@ -37,6 +43,7 @@ import {
 } from '@deft/db/schema';
 import { AppError } from '../src/lib/app-errors.js';
 import { AppActionService } from '../src/lib/app-action-service.js';
+import { CapabilityService } from '../src/lib/capability-service.js';
 import {
   createReviewedAppAutomationDefinition,
   pauseAppAutomationDefinition,
@@ -59,7 +66,12 @@ import { PostgresAppRunRepository } from '../src/lib/app-run-repository.js';
 import { AppRunSecretRepository } from '../src/lib/app-run-secret-repository.js';
 import { AppRunSecretService } from '../src/lib/app-run-secrets.js';
 import { AppRunService } from '../src/lib/app-run-service.js';
+import { listManagedAppAutomations } from '../src/lib/app-automation-management-service.js';
 import { closeDb, db } from '../src/lib/db.js';
+import { runAppAutomationFire, runAppAutomationScan } from '../src/lib/app-automation-runtime.js';
+import { completeJob, dequeueJob, QUEUE_NAMES } from '../src/lib/queues.js';
+import { handleAppRunAttempt } from '../src/lib/app-run-worker-handler.js';
+import { getAppRunRuntime, shutdownAppRunRuntime } from '../src/lib/app-run-runtime.js';
 import { ModuleError } from '../src/lib/module-errors.js';
 import {
   activateAppInstallation,
@@ -90,7 +102,7 @@ import {
   buildPhase5DependencyAppPackage,
   buildTrackAAutomatedConnectedAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
-import { databaseCompleteAppRunTestKeyrings } from './fixtures/app-run-test-keyrings.js';
+import { databaseCompleteAppRunTestKeyringFixture } from './fixtures/app-run-test-keyrings.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
@@ -155,7 +167,7 @@ async function sandboxReviewCapability(orgId: string, connectionId: string) {
         operation_name: 'send_email',
       },
       title: 'Send sandbox email',
-      description: 'Accept one deterministic sandbox email.',
+      description: 'Accept one deterministic sandbox email without network egress.',
       input_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.input_schema,
       output_schema: SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT.output_schema,
     }],
@@ -593,8 +605,29 @@ test('Protocol v1 staging writes one requested snapshot and no executable author
 });
 
 test('Protocol v2 review and automation lifecycle converge on one governed Run', async (t) => {
-  const orgId = randomUUID();
+  const capacityMode = process.env.DEFT_PREVIEW_CAPACITY_PROOF === 'true';
+  const orgId = capacityMode ? '00000000-0000-4000-8000-000000000001' : randomUUID();
   const userId = randomUUID();
+  const providerRoot = resolve(import.meta.dirname, '..', '..', '..', 'examples', 'app-platform-sandbox-email-provider');
+  const providerOutboxRoot = await mkdtemp(resolve(tmpdir(), 'deft-track-a-outbox-'));
+  const providerOutbox = resolve(providerOutboxRoot, 'effects.jsonl');
+  const providerEnvironment = {
+    selfHosted: process.env.DEFT_SELF_HOSTED,
+    unsafeStdio: process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO,
+    allowlist: process.env.MCP_STDIO_ALLOWED_COMMANDS,
+  };
+  t.after(async () => {
+    if (providerEnvironment.selfHosted === undefined) delete process.env.DEFT_SELF_HOSTED;
+    else process.env.DEFT_SELF_HOSTED = providerEnvironment.selfHosted;
+    if (providerEnvironment.unsafeStdio === undefined) delete process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO;
+    else process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = providerEnvironment.unsafeStdio;
+    if (providerEnvironment.allowlist === undefined) delete process.env.MCP_STDIO_ALLOWED_COMMANDS;
+    else process.env.MCP_STDIO_ALLOWED_COMMANDS = providerEnvironment.allowlist;
+    await rm(providerOutboxRoot, { recursive: true, force: true });
+  });
+  process.env.DEFT_SELF_HOSTED = 'true';
+  process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = 'true';
+  process.env.MCP_STDIO_ALLOWED_COMMANDS = process.execPath;
   await db.insert(orgs).values({
     id: orgId,
     name: 'Protocol v2 lifecycle',
@@ -659,13 +692,15 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     org_id: orgId,
     name: 'Protocol v2 sandbox mail',
     slug: `track-a-v2-mail-${randomUUID()}`,
-    server_url: 'https://track-a-v2.example.test/mcp',
-    transport: 'streamable-http',
+    server_url: null,
+    transport: 'stdio',
+    stdio_command: process.execPath,
+    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', providerOutbox],
     auth_type: 'none',
     is_active: true,
     created_by: userId,
   });
-  const { capability } = await sandboxReviewCapability(orgId, connectionId);
+  const capability = new CapabilityService();
   const request = {
     app_version_id: version.id,
     expected_package_digest: version.package_digest,
@@ -783,6 +818,8 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   const createDefinition = async (
     minuteOffset: number,
     maxOrgRunsPerUtcDay = 100,
+    createdAt = approvedAt,
+    validitySeconds = 24 * 60 * 60,
   ) => {
     const scheduledAt = new Date(scheduleBase + minuteOffset * 60_000);
     const input = {
@@ -802,7 +839,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       },
       local_time: scheduledAt.toISOString().slice(11, 16),
       timezone: 'UTC',
-      validity_seconds: 24 * 60 * 60,
+      validity_seconds: validitySeconds,
       max_org_runs_per_utc_day: maxOrgRunsPerUtcDay,
       max_pending_org_fires: 25,
     } as const;
@@ -811,7 +848,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       ...input,
       expected_review_digest: review.review_digest,
       accept_code_owned_policy: true,
-    }, { now: () => approvedAt });
+    }, { now: () => createdAt });
     return { definition, scheduledAt };
   };
   const persistFire = ({ definition, scheduledAt }: Awaited<ReturnType<typeof createDefinition>>) => (
@@ -834,6 +871,205 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal((definition.authorization_vector as any).approver.user_id, userId);
   assert.equal((definition.authorization_vector as any).relation.revision, relation.revision);
 
+  const newerDefinitions = await Promise.all(Array.from({ length: 100 }, async (_value, index) => {
+    const createdAt = new Date(approvedAt.getTime() + index + 1);
+    const created = await createDefinition(10 + index, 100, createdAt);
+    return pauseAppAutomationDefinition(actor, {
+      definition_id: created.definition.id,
+      expected_epoch: created.definition.definition_epoch,
+    });
+  }));
+  assert.equal(newerDefinitions.length, 100);
+  const managedIds: string[] = [];
+  let managementCursor: string | undefined;
+  do {
+    const management = await listManagedAppAutomations(actor, staged.id, {
+      cursor: managementCursor,
+      limit: 50,
+    }, new Date(approvedAt.getTime() + 1));
+    managedIds.push(...management.definitions.map((item) => item.id));
+    managementCursor = management.next_cursor ?? undefined;
+  } while (managementCursor);
+  assert.ok(managedIds.includes(definition.id), 'older active automation stays discoverable after 100 newer paused definitions');
+  assert.equal(new Set(managedIds).size, managedIds.length, 'management cursor pages do not duplicate definitions');
+
+  if (capacityMode) {
+    const currentDue = await Promise.all(Array.from({ length: 23 }, (_value, index) => (
+      createDefinition(1, 100, new Date(approvedAt.getTime() + index + 1))
+    )));
+    const historical = await createDefinition(
+      1,
+      100,
+      new Date(approvedAt.getTime() - 29 * 24 * 60 * 60 * 1_000),
+      30 * 24 * 60 * 60,
+    );
+    const future = await Promise.all(Array.from({ length: 76 }, (_value, index) => (
+      createDefinition(600, 100, new Date(approvedAt.getTime() + 100 + index))
+    )));
+    assert.equal(1 + currentDue.length + 1 + future.length, 101);
+
+    const orgB = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const userB = randomUUID();
+    await db.insert(orgs).values({ id: orgB, name: 'Capacity org B', slug: `capacity-b-${randomUUID()}` });
+    await db.insert(users).values({ id: userB, email: `capacity-b-${randomUUID()}@example.test`, name: 'Capacity B owner' });
+    await db.insert(orgMembers).values({
+      id: randomUUID(), org_id: orgB, user_id: userB, role: 'owner', is_active: true,
+    });
+    const actorB = humanModuleActor({ orgId: orgB, userId: userB, role: 'owner' });
+    const dependencyB = await stageAppPackage(actorB, dependencyBuilt.json);
+    await activateAppInstallation(actorB, dependencyB.id, dependencyB.package_digest);
+    const stagedB = await stageAppPackage(actorB, built.json);
+    const [versionB] = await db.select().from(appVersions).where(and(
+      eq(appVersions.org_id, orgB), eq(appVersions.id, stagedB.version_id),
+    ));
+    const [requestedB] = await db.select().from(appGrantSnapshots).where(and(
+      eq(appGrantSnapshots.org_id, orgB), eq(appGrantSnapshots.id, versionB!.requested_grant_snapshot_id!),
+    ));
+    const connectionB = randomUUID();
+    await db.insert(mcpConnections).values({
+      id: connectionB,
+      org_id: orgB,
+      name: 'Capacity B sandbox mail',
+      slug: `capacity-b-mail-${randomUUID()}`,
+      server_url: null,
+      transport: 'stdio',
+      stdio_command: process.execPath,
+      stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', providerOutbox],
+      auth_type: 'none',
+      is_active: true,
+      created_by: userB,
+    });
+    const requestB = {
+      app_version_id: versionB!.id,
+      expected_package_digest: versionB!.package_digest,
+      expected_requested_snapshot_digest: requestedB!.snapshot_digest,
+      expected_lifecycle_epoch: stagedB.lifecycle_epoch,
+      expected_grant_epoch: stagedB.grant_epoch,
+      connector_selections: [{ connector_requirement_key: 'mail_provider', mcp_connection_id: connectionB }],
+    };
+    const reviewB = await prepareConnectedAppReview(actorB, stagedB.id, requestB, capability);
+    await activateConnectedAppInstallation(actorB, stagedB.id, {
+      ...requestB, expected_review_digest: reviewB.review_digest, accept_host_policy: true,
+    }, capability);
+    const [campaignBindingB] = await db.select({ binding: appModuleBindings, version: moduleVersions })
+      .from(appModuleBindings).innerJoin(moduleVersions, and(
+        eq(moduleVersions.org_id, appModuleBindings.org_id),
+        eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+        eq(moduleVersions.id, appModuleBindings.module_version_id),
+      )).where(and(
+        eq(appModuleBindings.org_id, orgB),
+        eq(appModuleBindings.app_installation_id, stagedB.id),
+        eq(appModuleBindings.app_version_id, versionB!.id),
+      ));
+    const [contactBindingB] = await db.select({ binding: appModuleBindings, version: moduleVersions })
+      .from(appModuleBindings).innerJoin(moduleVersions, and(
+        eq(moduleVersions.org_id, appModuleBindings.org_id),
+        eq(moduleVersions.installation_id, appModuleBindings.module_installation_id),
+        eq(moduleVersions.id, appModuleBindings.module_version_id),
+      )).where(and(
+        eq(appModuleBindings.org_id, orgB), eq(appModuleBindings.app_installation_id, dependencyB.id),
+      ));
+    const contactB = await createModuleRecord(actorB, {
+      module_id: 'org.deft.reference.resource-contacts', collection_key: 'contacts',
+      data: { name: 'Capacity contact', email: 'capacity@example.test' }, relations: {},
+      expected_manifest_digest: contactBindingB!.version.manifest_digest,
+      idempotency_key: `capacity-contact-${randomUUID()}`,
+    });
+    const campaignB = await createModuleRecord(actorB, {
+      module_id: 'org.deft.reference.resource-campaigns', collection_key: 'campaigns',
+      data: { name: 'Capacity campaign', subject: 'Capacity', body: 'Bounded.', status: 'ready' }, relations: {},
+      expected_manifest_digest: campaignBindingB!.version.manifest_digest,
+      idempotency_key: `capacity-campaign-${randomUUID()}`,
+    });
+    const placementB = moduleRef(campaignBindingB!.binding.module_installation_id, 'campaigns', campaignB.record!.id);
+    const selectedB = moduleRef(contactBindingB!.binding.module_installation_id, 'contacts', contactB.record!.id);
+    const relationB = await replaceResourceRelation(actorB, {
+      schema_version: RESOURCE_CONTRACT_VERSIONS.relation, source: placementB, relation_key: 'contacts',
+      refs: [selectedB], expected_revision: 0, idempotency_key: `capacity-relation-${randomUUID()}`,
+    });
+    const [actionB] = await db.select().from(appActionBindings).where(and(
+      eq(appActionBindings.org_id, orgB), eq(appActionBindings.app_installation_id, stagedB.id),
+      eq(appActionBindings.app_version_id, versionB!.id), eq(appActionBindings.action_key, 'send_campaign_email'),
+    ));
+    const createDefinitionB = async (minuteOffset: number, createdAt = approvedAt, validitySeconds = 86_400) => {
+      const scheduledAt = new Date(scheduleBase + minuteOffset * 60_000);
+      const input = {
+        app_installation_id: stagedB.id, app_version_id: versionB!.id, action_binding_id: actionB!.id,
+        automation_request_key: 'daily_campaign_send',
+        placement: { resource_ref: placementB, revision: String(campaignB.record!.revision), content_digest: digestAppGrantValue(campaignB.record!.data) },
+        selected: { resource_ref: selectedB, revision: String(contactB.record!.revision), content_digest: digestAppGrantValue(contactB.record!.data) },
+        local_time: scheduledAt.toISOString().slice(11, 16), timezone: 'UTC', validity_seconds: validitySeconds,
+        max_org_runs_per_utc_day: 100, max_pending_org_fires: 25,
+      } as const;
+      const reviewed = await prepareAppAutomationDefinitionReview(actorB, input);
+      return createReviewedAppAutomationDefinition(actorB, {
+        ...input, expected_review_digest: reviewed.review_digest, accept_code_owned_policy: true,
+      }, { now: () => createdAt });
+    };
+    const activeB = await Promise.all([
+      ...Array.from({ length: 24 }, (_value, index) => createDefinitionB(1, new Date(approvedAt.getTime() + index + 1))),
+      createDefinitionB(1, new Date(approvedAt.getTime() - 29 * 86_400_000), 30 * 86_400),
+      ...Array.from({ length: 76 }, (_value, index) => createDefinitionB(600, new Date(approvedAt.getTime() + 100 + index))),
+    ]);
+    const pausedB = await Promise.all(Array.from({ length: 100 }, async (_value, index) => {
+      const item = await createDefinitionB(10 + index, new Date(approvedAt.getTime() + index + 1));
+      return pauseAppAutomationDefinition(actorB, { definition_id: item.id, expected_epoch: item.definition_epoch });
+    }));
+    assert.equal(activeB.length, 101);
+    assert.equal(pausedB.length, 100);
+
+    const querySamples: number[] = [];
+    let capacityCursor: string | undefined;
+    let managedCount = 0;
+    do {
+      const started = performance.now();
+      const page = await listManagedAppAutomations(actorB, stagedB.id, { cursor: capacityCursor, limit: 50 });
+      querySamples.push(performance.now() - started);
+      managedCount += page.definitions.length;
+      capacityCursor = page.next_cursor ?? undefined;
+    } while (capacityCursor);
+    assert.equal(managedCount, 201);
+    const managementP95 = [...querySamples].sort((a, b) => a - b)[
+      Math.max(Math.ceil(querySamples.length * 0.95) - 1, 0)
+    ]!;
+    console.log('PREVIEW_MANAGEMENT_QUERY_RESULT', JSON.stringify({
+      definitions: managedCount,
+      pages: querySamples.length,
+      p95_ms: managementP95,
+    }));
+    const scanStarted = performance.now();
+    const scanAt = new Date(scheduleBase + 2 * 60_000);
+    await runAppAutomationScan(scanAt);
+    const scanMs = performance.now() - scanStarted;
+    const p95 = managementP95;
+    assert.equal((await db.select({ value: count() }).from(appAutomationDefinitions).where(
+      eq(appAutomationDefinitions.state, 'active'),
+    ))[0]?.value, 202);
+    assert.ok(p95 <= 250, `management query p95 ${p95}ms exceeds 250ms`);
+    assert.ok(scanMs <= 45_000, `full scan ${scanMs}ms exceeds 45s`);
+    let orgBJob: Awaited<ReturnType<typeof dequeueJob>> = null;
+    for (let index = 0; index < 100; index += 1) {
+      const candidate = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, { lockedBy: 'capacity-proof' });
+      if (!candidate) break;
+      if (candidate.name === 'app-automation-fire' && candidate.data.organization_id === orgB) {
+        orgBJob = candidate;
+        break;
+      }
+      await completeJob(candidate.id, candidate.lockToken);
+    }
+    assert.ok(orgBJob, 'Org B due fire is durably enqueued');
+    assert.ok(scanMs <= 15_000, `Org B fire persistence/enqueue ${scanMs}ms exceeds 15s`);
+    console.log('PREVIEW_CAPACITY_RESULT', JSON.stringify({
+      total: 402,
+      active: 202,
+      management_query_p95_ms: p95,
+      full_scan_ms: scanMs,
+      org_b_persist_enqueue_ms_max: scanMs,
+      org_b_fire_id: orgBJob.data.fire_id,
+    }));
+    return;
+  }
+
   const [fire, duplicateFire] = await Promise.all([
     persistFire(primary),
     persistFire(primary),
@@ -841,8 +1077,17 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal(duplicateFire.id, fire.id);
   const claimAt = new Date(primary.scheduledAt.getTime() + 60_000);
   const leaseExpiresAt = new Date(primary.scheduledAt.getTime() + 10 * 60_000);
-  const keys = await databaseCompleteAppRunTestKeyrings('loop5-lifecycle');
-  t.after(() => keys.destroy());
+  await shutdownAppRunRuntime();
+  const keyringFixture = await databaseCompleteAppRunTestKeyringFixture('loop5-lifecycle');
+  const keys = keyringFixture.keys;
+  const initialKeyringEnvironment = process.env.DEFT_APP_RUN_KEYRINGS;
+  process.env.DEFT_APP_RUN_KEYRINGS = keyringFixture.environment;
+  t.after(async () => {
+    await shutdownAppRunRuntime();
+    keys.destroy();
+    if (initialKeyringEnvironment === undefined) delete process.env.DEFT_APP_RUN_KEYRINGS;
+    else process.env.DEFT_APP_RUN_KEYRINGS = initialKeyringEnvironment;
+  });
   const secrets = new AppRunSecretService(keys);
   const preparedInputs = new AppRunPreparedInputService(secrets);
   const repository = new PostgresAppRunRepository();
@@ -953,6 +1198,131 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal((await db.select({ value: count() }).from(appRuns).where(
     eq(appRuns.org_id, orgId),
   ))[0]?.value, runCountBefore + 1);
+
+  // Production path: actual discovery/review above pins this stdio provider;
+  // the scanner owns the fire ledger, the durable queues own delivery, and
+  // the generic App Run handler owns the only provider call.
+  const scannerCase = await createDefinition(10);
+  const scannerNow = new Date(scannerCase.scheduledAt.getTime() + 60_000);
+  await runAppAutomationScan(scannerNow);
+  await runAppAutomationScan(scannerNow);
+  const fireJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, {
+    lockedBy: 'track-a-due-flow',
+    orgId,
+    jobName: 'app-automation-fire',
+    dataMatch: { key: 'definition_id', value: scannerCase.definition.id },
+  });
+  assert.ok(fireJob);
+  assert.equal(fireJob.name, 'app-automation-fire');
+  assert.equal(fireJob.data.definition_id, scannerCase.definition.id);
+  await runAppAutomationFire({
+    id: fireJob.id,
+    name: fireJob.name,
+    data: fireJob.data,
+    attempts: fireJob.attempts,
+    leaseExpiresAt: fireJob.lockExpiresAt,
+  }, scannerNow);
+  await runAppAutomationFire({
+    id: `${fireJob.id}:duplicate`,
+    name: fireJob.name,
+    data: fireJob.data,
+    attempts: fireJob.attempts + 1,
+    leaseExpiresAt: fireJob.lockExpiresAt,
+  }, scannerNow);
+  const scannedFire = await postgresAppAutomationVerificationReadPort.load({
+    organization_id: orgId,
+    definition_id: scannerCase.definition.id,
+    fire_id: String(fireJob.data.fire_id),
+  });
+  assert.equal(scannedFire?.fire.state, 'run_created');
+  assert.ok(scannedFire?.fire.app_run_id);
+  let attemptJob = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, {
+    lockedBy: 'track-a-due-attempt',
+    orgId,
+    jobName: 'app-run-attempt',
+    dataMatch: { key: 'runId', value: scannedFire!.fire.app_run_id! },
+  });
+  if (!attemptJob) {
+    const runtime = await getAppRunRuntime();
+    const preparedAttempt = await runtime.attemptRunner.prepareAttempt(orgId, scannedFire!.fire.app_run_id!);
+    assert.ok(preparedAttempt, 'production runtime can schedule the released automation Run');
+    attemptJob = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, {
+      lockedBy: 'track-a-due-attempt-rearm',
+      orgId,
+      jobName: 'app-run-attempt',
+      dataMatch: { key: 'runId', value: scannedFire!.fire.app_run_id! },
+    });
+  }
+  assert.ok(attemptJob);
+  assert.equal(attemptJob.name, 'app-run-attempt');
+  await handleAppRunAttempt({
+    id: attemptJob.id,
+    name: attemptJob.name,
+    data: attemptJob.data,
+    attempts: attemptJob.attempts,
+    leaseExpiresAt: attemptJob.lockExpiresAt,
+  });
+  await handleAppRunAttempt({
+    id: `${attemptJob.id}:duplicate`,
+    name: attemptJob.name,
+    data: attemptJob.data,
+    attempts: attemptJob.attempts + 1,
+    leaseExpiresAt: attemptJob.lockExpiresAt,
+  });
+  const effects = (await readFile(providerOutbox, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(effects.length, 1, 'duplicate scanner and worker delivery creates one durable provider effect');
+  assert.equal((await db.select({ value: count() }).from(appRunReceipts).where(and(
+    eq(appRunReceipts.org_id, orgId),
+    eq(appRunReceipts.run_id, scannedFire!.fire.app_run_id!),
+  )))[0]?.value, 1, 'generic worker writes the durable receipt');
+
+  const revokedCase = await createDefinition(11);
+  const revokedNow = new Date(revokedCase.scheduledAt.getTime() + 60_000);
+  await runAppAutomationScan(revokedNow);
+  const revokedFireJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, {
+    lockedBy: 'track-a-revoked-fire',
+    orgId,
+    jobName: 'app-automation-fire',
+    dataMatch: { key: 'definition_id', value: revokedCase.definition.id },
+  });
+  assert.ok(revokedFireJob);
+  await runAppAutomationFire({
+    id: revokedFireJob.id,
+    name: revokedFireJob.name,
+    data: revokedFireJob.data,
+    attempts: revokedFireJob.attempts,
+    leaseExpiresAt: revokedFireJob.lockExpiresAt,
+  }, revokedNow);
+  const revokedFire = await postgresAppAutomationVerificationReadPort.load({
+    organization_id: orgId,
+    definition_id: revokedCase.definition.id,
+    fire_id: String(revokedFireJob.data.fire_id),
+  });
+  assert.ok(revokedFire?.fire.app_run_id);
+  const revokedAttemptJob = await dequeueJob(QUEUE_NAMES.AGENT_JOBS, {
+    lockedBy: 'track-a-revoked-attempt',
+    orgId,
+    jobName: 'app-run-attempt',
+    dataMatch: { key: 'runId', value: revokedFire!.fire.app_run_id! },
+  });
+  assert.ok(revokedAttemptJob);
+  await revokeAppAutomationDefinition(actor, {
+    definition_id: revokedCase.definition.id,
+    expected_epoch: revokedCase.definition.definition_epoch,
+  });
+  await handleAppRunAttempt({
+    id: revokedAttemptJob.id,
+    name: revokedAttemptJob.name,
+    data: revokedAttemptJob.data,
+    attempts: revokedAttemptJob.attempts,
+    leaseExpiresAt: revokedAttemptJob.lockExpiresAt,
+  });
+  assert.equal((await readFile(providerOutbox, 'utf8')).trim().split('\n').length, 1,
+    'revocation before delivery creates no provider effect');
+  assert.equal((await db.select({ value: count() }).from(appRunReceipts).where(and(
+    eq(appRunReceipts.org_id, orgId),
+    eq(appRunReceipts.run_id, revokedFire!.fire.app_run_id!),
+  )))[0]?.value, 0, 'revocation before delivery writes no receipt');
 
   const budgetLimited = await createDefinition(1, 1);
   const budgetFire = await persistFire(budgetLimited);
@@ -1934,6 +2304,39 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.ok(retentionRefusal instanceof AppError);
   assert.equal(retentionRefusal.code, 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION');
   assert.deepEqual(retentionRefusal.details, { cascaded: false, data_preserved: true });
+  assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
+
+  const upgradeRouteApp = new Hono();
+  upgradeRouteApp.use('*', async (context, next) => {
+    context.set('user', {
+      id: userId,
+      org_id: orgId,
+      email: 'connected-upgrade@example.test',
+      name: 'Connected upgrade owner',
+      role: 'owner',
+    });
+    await next();
+  });
+  upgradeRouteApp.route('/api/apps', appRoutes);
+
+  const emptyUninstallResponse = await upgradeRouteApp.request(`/api/apps/${predecessor.id}/uninstall`, {
+    method: 'POST',
+  });
+  assert.equal(emptyUninstallResponse.status, 400);
+  assert.equal((await emptyUninstallResponse.json()).code, 'VALIDATION_ERROR');
+  assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
+
+  const retentionResponse = await upgradeRouteApp.request(`/api/apps/${predecessor.id}/uninstall`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expected_lifecycle_epoch: afterUpgrade!.lifecycle_epoch }),
+  });
+  assert.equal(retentionResponse.status, 409);
+  assert.deepEqual(await retentionResponse.json(), {
+    error: 'App uninstall requires an explicit export and retention decision',
+    code: 'APP_UNINSTALL_REQUIRES_RETENTION_DECISION',
+    details: { cascaded: false, data_preserved: true },
+  });
   assert.deepEqual(await snapshotGraph(), graphBeforeUninstallRefusals);
 
   const identicalBuilt = await buildPhase5ConnectedAppPackage({ app_version: '3.0.2' });

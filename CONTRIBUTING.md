@@ -14,8 +14,8 @@ Deft welcomes focused bug fixes, tests, documentation, accessibility improvement
 
 ### Requirements
 
-- Node.js 20 or newer (22 recommended)
-- pnpm 9 or newer
+- Node.js 22.13.0 or newer
+- pnpm 11.10.0 (pinned in `package.json`)
 - PostgreSQL 16 with pgvector
 
 ```bash
@@ -25,6 +25,8 @@ pnpm install
 cp .env.example .env
 
 createdb deft
+# Set DATABASE_URL for this database and generate the four secrets in .env.
+# See docs/self-hosting.md before continuing.
 pnpm db:push-full
 pnpm db:seed
 pnpm dev

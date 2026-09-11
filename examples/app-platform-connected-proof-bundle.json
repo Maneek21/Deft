@@ -29,8 +29,8 @@
           "files": [
             {
               "path": "README.md",
-              "byte_length": 1322,
-              "digest": "sha256:942acfd4bc6275f6d192e5524e71b0a0fbc3749b28f37fdc01490fae31cdd423"
+              "byte_length": 1942,
+              "digest": "sha256:3e61eaabd7902cd6d8565123cd844641f810cebaaefa30e747fd1dc8caf009e2"
             },
             {
               "path": "package.json",
@@ -39,11 +39,11 @@
             },
             {
               "path": "server.mjs",
-              "byte_length": 7167,
-              "digest": "sha256:67e96908b77d3915f25d9d0bc0ebbc36b83d6f7f947d04c1f9fcc6fb92a87108"
+              "byte_length": 9234,
+              "digest": "sha256:4a32de735bc102b76f7ad55dc80ba01a4e5ccd85071d8b1411ced0f3c43ab4f3"
             }
           ],
-          "digest": "sha256:70b3c9dc9d74422aaf13168f74c3502218b28eabc3ac77d7bceb5bca0d835e2c"
+          "digest": "sha256:2c408313632a43f7ef88afd6f385a6f99c619b19cb56896f42ea8aa03a752c6b"
         }
       },
       "transport": "stdio",

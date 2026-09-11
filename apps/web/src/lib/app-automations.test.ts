@@ -47,6 +47,7 @@ test('automation management normalization keeps schedule, health, and safe Run s
     schema: 'deft.app_automation_management.v1',
     generated_at: '2026-09-01T04:00:00.000Z',
     kill_switch: { enabled: true, status: 'enabled' },
+    next_cursor: 'older-page',
     definitions: [{
       id: 'definition-1',
       action_key: 'send_campaign_email',
@@ -57,6 +58,7 @@ test('automation management normalization keeps schedule, health, and safe Run s
       validity: { valid_from: '2026-09-01T00:00:00.000Z', valid_until: '2026-10-01T00:00:00.000Z' },
       budgets: { max_org_runs_per_utc_day: 100, max_pending_org_fires: 25 },
       next_fire_at_utc: '2026-09-02T04:00:00.000Z',
+      eligibility: { status: 'awaiting_delivery_check', reason: 'Schedule time is eligible; pinned authority and resources are rechecked before delivery.' },
       fire_summary: { pending: 0, claimed: 0, run_created: 1, skipped: 0, dead_letter: 0 },
       latest_fire: {
         id: 'fire-1', logical_local_date: '2026-09-01', resolved_at_utc: '2026-09-01T04:00:00.000Z',
@@ -68,6 +70,8 @@ test('automation management normalization keeps schedule, health, and safe Run s
     }],
   } });
   assert.equal(management.killSwitchEnabled, true);
+  assert.equal(management.nextCursor, 'older-page');
+  assert.equal(management.definitions[0].eligibility.status, 'awaiting_delivery_check');
   assert.equal(management.definitions[0].latestRun?.state, 'succeeded');
   assert.equal('authorization_vector' in management.definitions[0], false);
 });

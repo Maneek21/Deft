@@ -3,25 +3,25 @@
  *
  * Purpose: lock down the server-side refresh endpoint contract so that future
  * refactors cannot silently break the web client's 401-retry logic that now
- * relies on it. The server is NOT being changed here — we are merely asserting
- * its current behaviour.
+ * relies on it. Browser credentials use durable one-use session families.
  *
  * Covers:
  *   1. Valid refresh token → 200 + rotated accessToken + refreshToken
- *   2. Revoked refresh token → 401 + code: TOKEN_REVOKED
+ *   2. Revoked refresh token → 401 + code: INVALID_TOKEN
  *   3. Malformed / garbage token → 401 + code: INVALID_TOKEN
- *   4. Missing refresh token → 401 + code: NO_TOKEN
+ *   4. Missing refresh token → 400 + code: VALIDATION_ERROR
  *
  * Run: pnpm --filter @deft/api test -- auth-refresh-contract
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { createHash } from 'node:crypto';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import { Hono } from 'hono';
 import { authRoutes } from '../src/routes/auth.js';
+import { createWebSession, revokeWebSession } from '../src/lib/web-sessions.js';
+import { env } from '../src/lib/env.js';
 
 // ── Database helpers ──────────────────────────────────────────────────────────
 
@@ -55,8 +55,7 @@ async function callRefresh(body: unknown): Promise<{ status: number; json: unkno
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const JWT_REFRESH_SECRET =
-  process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret-change-me';
+const JWT_REFRESH_SECRET = env.JWT_REFRESH_SECRET;
 
 // Unique ids per run so parallel test suites don't collide.
 const TEST_USER_ID = `auth-refresh-contract-user-${crypto.randomUUID()}`;
@@ -93,21 +92,13 @@ before(async () => {
   });
 
   // Generate a valid refresh token via the same algorithm the server uses.
-  validRefreshToken = jwt.sign(
+  validRefreshToken = (await createWebSession(
     { id: TEST_USER_ID, email: `contract-test-${TEST_USER_ID.slice(-8)}@test.local`, org_id: TEST_ORG_ID },
-    JWT_REFRESH_SECRET,
-    { expiresIn: '30d' },
-  );
+  )).refreshToken;
 });
 
 after(async () => {
   await withClient(async (c) => {
-    // Clean up revoked tokens first (FK constraint) — guard against seeding failure
-    if (validRefreshToken) {
-      const tokenHash = createHash('sha256').update(validRefreshToken).digest('hex');
-      await c.query(`DELETE FROM revoked_tokens WHERE token_hash = $1`, [tokenHash]);
-    }
-
     await c.query(`DELETE FROM org_members WHERE user_id = $1`, [TEST_USER_ID]);
     await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);
     await c.query(`DELETE FROM orgs WHERE id = $1`, [TEST_ORG_ID]);
@@ -135,27 +126,12 @@ describe('/api/auth/refresh contract', () => {
     assert.equal(decoded.id, TEST_USER_ID, 'rotated refreshToken should carry the correct user id');
   });
 
-  test('2. revoked refresh token → 401 with code TOKEN_REVOKED', async () => {
-    // Revoke the token by inserting its hash into revoked_tokens (same logic as /logout).
-    const tokenHash = createHash('sha256').update(validRefreshToken).digest('hex');
-    await withClient(async (c) => {
-      await c.query(
-        `INSERT INTO revoked_tokens (id, token_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [crypto.randomUUID(), tokenHash],
-      );
-    });
-
-    try {
-      const { status, json } = await callRefresh({ refreshToken: validRefreshToken });
-      assert.equal(status, 401, `expected 401 for revoked token, got ${status}`);
-      const body = json as Record<string, unknown>;
-      assert.equal(body.code, 'TOKEN_REVOKED', `expected code TOKEN_REVOKED, got ${body.code}`);
-    } finally {
-      // Remove the revocation so other tests (e.g. test 1 if run order changes) aren't affected.
-      await withClient(async (c) => {
-        await c.query(`DELETE FROM revoked_tokens WHERE token_hash = $1`, [tokenHash]);
-      });
-    }
+  test('2. revoked refresh token → 401 with code INVALID_TOKEN', async () => {
+    const pair = await createWebSession({ id: TEST_USER_ID, email: `${TEST_USER_ID}@test.local`, org_id: TEST_ORG_ID });
+    await revokeWebSession(pair.refreshToken);
+    const { status, json } = await callRefresh({ refreshToken: pair.refreshToken });
+    assert.equal(status, 401, `expected 401 for revoked token, got ${status}`);
+    assert.equal((json as Record<string, unknown>).code, 'INVALID_TOKEN');
   });
 
   test('3. malformed / garbage token → 401 with code INVALID_TOKEN', async () => {
@@ -168,10 +144,10 @@ describe('/api/auth/refresh contract', () => {
     );
   });
 
-  test('4. missing refresh token → 401 with code NO_TOKEN', async () => {
+  test('4. missing refresh token → 400 with code VALIDATION_ERROR', async () => {
     const { status, json } = await callRefresh({});
-    assert.equal(status, 401, `expected 401 when no token provided, got ${status}`);
+    assert.equal(status, 400, `expected 400 when no token provided, got ${status}`);
     const body = json as Record<string, unknown>;
-    assert.equal(body.code, 'NO_TOKEN', `expected NO_TOKEN code, got ${body.code}`);
+    assert.equal(body.code, 'VALIDATION_ERROR', `expected VALIDATION_ERROR code, got ${body.code}`);
   });
 });

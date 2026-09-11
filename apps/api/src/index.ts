@@ -99,6 +99,7 @@ app.use('*', cors({
   ],
   credentials: true,
   allowHeaders: [
+    'Idempotency-Key',
     'Content-Type',
     'Authorization',
     'x-deft-audit-token',
@@ -131,6 +132,8 @@ app.use('/api/auth/login', loginIpLimiter);
 app.use('/api/auth/signup', authLimiter);
 app.use('/api/auth/refresh', authLimiter);
 app.use('/api/auth/logout', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/auth/has-workspace', defaultLimiter);
 app.use('/api/auth/me', defaultLimiter);
 app.use('/api/auth/onboarding', defaultLimiter);

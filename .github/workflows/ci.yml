@@ -7,9 +7,24 @@ on:
     branches: [master, main]
 
 jobs:
+  release-scope:
+    name: Release Scope
+    runs-on: ubuntu-latest
+    outputs:
+      release_scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate commit-pinned release scope
+        id: scope
+        run: node scripts/resolve-release-scope.mjs --github-output
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
+    needs: release-scope
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.0.10
@@ -26,6 +41,8 @@ jobs:
         run: pnpm --filter @deft/app-kit test
       - name: Verify release publishing contract
         run: pnpm test:release-workflow
+      - name: Verify container process supervision
+        run: node --test scripts/docker-entrypoint.test.mjs
       - name: Verify deterministic Hermes integration bundle
         run: pnpm test:hermes-integration-bundle
       - name: Lint web
@@ -38,6 +55,15 @@ jobs:
           src/lib/space-socket.test.ts
           src/lib/module-collection-nav.test.ts
           src/lib/apps.test.ts
+          src/lib/api-retry.test.ts
+          src/lib/api-auth.test.ts
+          src/lib/editor-attribute-security.test.ts
+          src/lib/native-create-intent.test.ts
+          src/lib/time.test.ts
+          src/lib/calendar-event-form.test.ts
+          'src/app/(app)/notes/note-save-coordinator.test.ts'
+          'src/app/(app)/notes/protected-note-image.test.ts'
+          'src/app/(app)/notes/note-load-state.test.ts'
       - name: Type check API
         run: pnpm --filter @deft/api typecheck
       - name: Type check Web
@@ -104,7 +130,8 @@ jobs:
   hermes-release-gate:
     name: Hermes Employee Release Gate
     runs-on: ubuntu-latest
-    needs: typecheck
+    needs: [release-scope, typecheck]
+    if: needs.release-scope.outputs.release_scope == 'hermes-certified'
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -183,7 +210,13 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [typecheck, test, hermes-release-gate]
+    needs: [release-scope, typecheck, test, hermes-release-gate]
+    if: >-
+      always() && !cancelled() &&
+      needs.release-scope.result == 'success' &&
+      needs.typecheck.result == 'success' &&
+      needs.test.result == 'success' &&
+      (needs.release-scope.outputs.release_scope == 'core' || needs.hermes-release-gate.result == 'success')
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.0.10

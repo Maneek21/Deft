@@ -66,6 +66,86 @@ test('concurrent dequeue claims a job once with a unique ownership token', async
   assert.equal(await completeJob(claimed[0]!.id, claimed[0]!.lockToken), true);
 });
 
+test('exact dequeue filters claim one matching job without consuming older unrelated work', async (t) => {
+  const orgId = crypto.randomUUID();
+  const otherOrgId = crypto.randomUUID();
+  const name = `filtered-claim:${crypto.randomUUID()}`;
+  const otherName = `${name}:other-name`;
+  t.after(async () => {
+    await db.delete(jobQueue).where(and(
+      eq(jobQueue.queue, TEST_QUEUE),
+      sql`${jobQueue.name} IN (${name}, ${otherName})`,
+    ));
+  });
+  const marker = crypto.randomUUID();
+  const unrelatedIds = Array.from({ length: 101 }, () => crypto.randomUUID());
+
+  await db.insert(jobQueue).values([
+    ...unrelatedIds.map((id) => ({
+      id,
+      org_id: otherOrgId,
+      queue: TEST_QUEUE,
+      name,
+      data: { marker },
+      status: 'pending',
+    })),
+    {
+      id: crypto.randomUUID(),
+      org_id: orgId,
+      queue: TEST_QUEUE,
+      name: otherName,
+      data: { marker },
+      status: 'pending',
+    },
+    {
+      id: crypto.randomUUID(),
+      org_id: orgId,
+      queue: TEST_QUEUE,
+      name,
+      data: { marker: `${marker}:other-value` },
+      status: 'pending',
+    },
+  ]);
+  const targetId = crypto.randomUUID();
+  await db.insert(jobQueue).values({
+    id: targetId,
+    org_id: orgId,
+    queue: TEST_QUEUE,
+    name,
+    data: { marker },
+    status: 'pending',
+  });
+
+  const claimed = await dequeueJob(TEST_QUEUE, {
+    lockedBy: 'filtered-owner',
+    leaseMs: 30_000,
+    orgId,
+    jobName: name,
+    dataMatch: { key: 'marker', value: marker },
+  });
+  assert.ok(claimed);
+  assert.equal(claimed.id, targetId);
+  assert.equal(claimed.lockedBy, 'filtered-owner');
+  assert.match(claimed.lockToken, /^[0-9a-f-]{36}$/i);
+  assert.ok(claimed.lockExpiresAt.getTime() > Date.now());
+
+  const [persisted] = await db.select().from(jobQueue).where(eq(jobQueue.id, targetId));
+  assert.equal(persisted?.status, 'running');
+  assert.equal(persisted?.locked_by, claimed.lockedBy);
+  assert.equal(persisted?.lock_token, claimed.lockToken);
+  assert.equal(persisted?.lock_expires_at?.getTime(), claimed.lockExpiresAt.getTime());
+
+  const [unrelated] = await db.select({ count: sql<number>`count(*)::int` })
+    .from(jobQueue)
+    .where(and(
+      eq(jobQueue.queue, TEST_QUEUE),
+      sql`${jobQueue.id} <> ${targetId}`,
+      eq(jobQueue.status, 'pending'),
+    ));
+  assert.equal(Number(unrelated?.count), 103);
+  assert.equal(await completeJob(claimed.id, claimed.lockToken), true);
+});
+
 test('expired and superseded tokens cannot settle a reclaimed job', async () => {
   const name = `token-fence:${crypto.randomUUID()}`;
   await enqueue(TEST_QUEUE, name, {}, { maxAttempts: 3 });

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { eq, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../lib/db.js';
+import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { events } from '@deft/db/schema';
 
 export const eventRoutes = new Hono();
@@ -26,6 +27,7 @@ export const createEventSchema = z.object({
 
 // POST / — create a native calendar event
 eventRoutes.post('/', async (c) => {
+  try {
   const user = c.get('user');
   const body = await c.req.json();
 
@@ -48,7 +50,12 @@ eventRoutes.post('/', async (c) => {
     return c.json({ error: 'end must be after start', code: 'INVALID_RANGE' }, 400);
   }
 
-  const [created] = await db.insert(events).values({
+  const { value: created } = await nativeCreate({
+    orgId: user.org_id, userId: user.id, operation: 'event',
+    key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
+    replay: async (tx, id) => (await tx.select().from(events).where(and(eq(events.id, id), eq(events.org_id, user.org_id), eq(events.user_id, user.id), eq(events.source, 'native'))).limit(1))[0],
+    create: async (tx) => {
+  const [created] = await tx.insert(events).values({
     org_id: user.org_id,
     source: 'native' as const,
     event_type: 'calendar_event',
@@ -74,7 +81,13 @@ eventRoutes.post('/', async (c) => {
     connected_account_id: null,
   }).returning();
 
+  return created!;
+  } });
   return c.json(created, 201);
+  } catch (err) {
+    if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // PATCH /:id — update a native event

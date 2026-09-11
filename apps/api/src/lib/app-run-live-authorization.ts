@@ -192,12 +192,20 @@ function actorIdentity(actor: AppRunActor): string {
   }
 }
 
-function runActor(type: AppRunSafeView['execution_actor_type'], id: string): AppRunActor {
+function runActor(
+  type: AppRunSafeView['execution_actor_type'],
+  id: string,
+  automationUserId?: string,
+): AppRunActor {
   switch (type) {
     case 'human': return { actor_type: 'human', user_id: id };
     case 'agent_employee': return { actor_type: 'agent_employee', agent_employee_id: id };
     case 'system': return { actor_type: 'system', system_id: id };
-    case 'automation': return { actor_type: 'automation', automation_id: id };
+    case 'automation': return {
+      actor_type: 'automation',
+      automation_id: id,
+      ...(automationUserId ? { user_id: automationUserId } : {}),
+    };
   }
 }
 
@@ -510,7 +518,13 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     const current = await this.#capture(tx, {
       org_id: run.org_id,
       authenticated_subject: stored.authenticated_subject,
-      execution_actor: runActor(run.execution_actor_type, run.execution_actor_id),
+      execution_actor: runActor(
+        run.execution_actor_type,
+        run.execution_actor_id,
+        stored.authenticated_subject.actor_type === 'human'
+          ? stored.authenticated_subject.user_id
+          : undefined,
+      ),
       provider_instance_id: run.provider_instance_id,
       provider_snapshot_id: internal.provider_snapshot_id,
       operation_name: run.operation_name,
@@ -586,7 +600,13 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     return this.#captureAppVector(tx, {
       org_id: run.org_id,
       initiating_actor: runActor(run.initiating_actor_type, run.initiating_actor_id),
-      execution_actor: runActor(run.execution_actor_type, run.execution_actor_id),
+      execution_actor: runActor(
+        run.execution_actor_type,
+        run.execution_actor_id,
+        baseAuthorization.authenticated_subject.actor_type === 'human'
+          ? baseAuthorization.authenticated_subject.user_id
+          : undefined,
+      ),
       installation_id: internal.origin_app_installation_id,
       app_version_id: internal.origin_app_version_id,
       binding_key: internal.origin_app_binding_key,

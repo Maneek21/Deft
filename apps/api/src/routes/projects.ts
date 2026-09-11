@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
@@ -612,35 +613,46 @@ projectRoutes.post('/:id/tasks', async (c) => {
       return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
     }
 
-    const taskNumber = await reserveNextTaskNumber({
-      projectId,
-      orgId: user.org_id,
-    });
+    const { value: task, replayed } = await nativeCreate({
+      orgId: user.org_id, userId: user.id, operation: `task:${projectId}`,
+      key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
+      replay: async (tx, id) => (await tx.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.org_id, user.org_id), eq(tasks.project_id, projectId), eq(tasks.created_by, user.id), eq(tasks.is_deleted, false))).limit(1))[0],
+      create: async (tx) => {
+      const taskNumber = await reserveNextTaskNumber({
+        projectId,
+        orgId: user.org_id,
+        executor: tx,
+      });
 
-    const [task] = await db.insert(tasks).values({
-      org_id: user.org_id,
-      project_id: projectId,
-      number: taskNumber,
-      title: parsed.data.title,
-      description: parsed.data.description || undefined,
-      status: (parsed.data.status || 'backlog') as any,
-      priority: (parsed.data.priority || 'p2') as any,
-      assignee_id: assigneeId ?? undefined,
-      created_by: user.id,
-      due_date: parsed.data.due_date ? new Date(parsed.data.due_date) : undefined,
-      sort_order: parsed.data.sort_order ?? 0,
-      source_message_id: parsed.data.source_message_id || undefined,
-      parent_task_id: parsed.data.parent_task_id || undefined,
-      metadata: parsed.data.metadata ?? undefined,
-    }).returning();
+      const [task] = await tx.insert(tasks).values({
+        org_id: user.org_id,
+        project_id: projectId,
+        number: taskNumber,
+        title: parsed.data.title,
+        description: parsed.data.description || undefined,
+        status: (parsed.data.status || 'backlog') as any,
+        priority: (parsed.data.priority || 'p2') as any,
+        assignee_id: assigneeId ?? undefined,
+        created_by: user.id,
+        due_date: parsed.data.due_date ? new Date(parsed.data.due_date) : undefined,
+        sort_order: parsed.data.sort_order ?? 0,
+        source_message_id: parsed.data.source_message_id || undefined,
+        parent_task_id: parsed.data.parent_task_id || undefined,
+        metadata: parsed.data.metadata ?? undefined,
+      }).returning();
 
-    // Create activity log entry
-    await db.insert(taskActivity).values({
-      org_id: user.org_id,
-      task_id: task!.id,
-      user_id: user.id,
-      action: 'created',
-    });
+      // Create activity log entry
+      await tx.insert(taskActivity).values({
+        org_id: user.org_id,
+        task_id: task!.id,
+        user_id: user.id,
+        action: 'created',
+      });
+
+        return task!;
+    } });
+    if (replayed) return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
+    const taskNumber = task.number;
 
     // Broadcast task:created via socket to org
     const io = getIO();
@@ -701,6 +713,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
       project_name: project.name,
     }, 201);
   } catch (err) {
+    if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
     console.error('Failed to create task:', err);
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
   }

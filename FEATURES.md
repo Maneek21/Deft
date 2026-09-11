@@ -1,6 +1,6 @@
 # Deft capability reference
 
-> Last verified against the repository on July 16, 2026.
+> Availability last reconciled on September 8, 2026. The latest published image is `v0.3.0-preview.15`, a core release. Features present on `master` may be absent from that image. See the [availability map](docs/product-status.md).
 >
 > Deft is an alpha. This file describes the current product surface, not a compatibility guarantee. See [current limitations](docs/current-limitations.md) and the [roadmap](ROADMAP.md) before planning a production deployment.
 
@@ -113,7 +113,7 @@ Agent employees are separate workspace identities backed by a customer-controlle
 - Operate under trust level, scope, health, action-cap, audit, and approval rules
 - Expose supervision state, recent contact, failures, and bridge health to admins
 
-Deft does not require a specific agent framework. A compatible runtime can be built with Hermes, Codex, Claude, or another streamable HTTP MCP client. The external runtime is operated separately from the Deft application stack.
+Deft does not require a specific agent framework. A compatible customer-operated runtime can use the streamable HTTP MCP endpoint. Hermes support is release-specific historical compatibility; it is excluded from the preview.15 core release and is not a new compatibility claim.
 
 ## Personal AI app connections
 
@@ -126,7 +126,9 @@ Human employees can connect their own AI client from Settings -> Connections.
 - Read-only and work-capable scope bundles
 - Tokens act as the user who created them and inherit that user's workspace access
 - Connection history, last use, recent actions, scopes, and revocation
-- Idempotency support on write tools to reduce duplicate agent actions
+- Tool-specific idempotency support to reduce duplicate writes; clients must follow the selected tool's retry contract
+
+Personal native writes act under the user's scopes and normal permissions; they do not automatically enter the Agent Employee approval queue. A `write:workspace` grant can include the user's permitted approval actions. See [identity and approval boundaries](docs/self-hosting.md#identity-approvals-and-action-history).
 
 Representative MCP tools cover:
 
@@ -161,7 +163,7 @@ Deft supports provider-neutral AI configuration:
 - OpenAI-compatible endpoints
 - Local Ollama-style endpoints
 
-Provider keys are optional. Core workspace functionality remains available without AI.
+Provider keys are optional. Core workspace functionality remains available without AI. Configured models can receive prompts and workspace context; embedding/transcription providers can receive text/audio. Personal MCP clients use their own provider settings. See [AI data flow](docs/self-hosting.md#ai-data-flow).
 
 ## Self-hosting and operations
 
@@ -174,7 +176,14 @@ Provider keys are optional. Core workspace functionality remains available witho
 - Production guidance for VPS, domain, HTTPS, and reverse proxy setup
 - Synthetic 60-person certification tooling for isolation, bulk operations, job backlog, notification volume, and recovery exercises
 
-Fresh installs currently use `pnpm db:push-full`. A supported versioned upgrade workflow is still deferred; see [current limitations](docs/current-limitations.md).
+Fresh installs use `init` (`pnpm db:push-full` plus platform seed). Supported versioned upgrades begin at `v0.2.0-preview.1` and use the backup-first `pnpm selfhost:upgrade` flow. Upgrades are forward-only; recovery requires the previous image, database, uploads, and configuration. See [self-hosting](docs/self-hosting.md#upgrading).
+
+## Apps and Modules
+
+- Modules define domain records, relationships, and Deft-rendered native views.
+- Declarative internal Apps package Modules for review and installation and are an opt-in alpha capability.
+- Connected Apps and bounded daily actions are included in preview.15. They are experimental, disabled by default, and require the flags and review flow in the [operator guide](docs/app-run-operations.md).
+- The current App protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
 
 ## Security posture
 

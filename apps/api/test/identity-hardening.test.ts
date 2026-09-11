@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import { Hono } from 'hono';
 import { authRoutes } from '../src/routes/auth.js';
 import { authMiddleware } from '../src/middleware/auth.js';
@@ -22,6 +23,7 @@ import { apiKeyRoutes } from '../src/routes/api-keys.js';
 import { memberRoutes } from '../src/routes/members.js';
 import { taskRoutes } from '../src/routes/tasks.js';
 import { inviteRoutes } from '../src/routes/invites.js';
+import { createWebSession } from '../src/lib/web-sessions.js';
 import { env } from '../src/lib/env.js';
 
 const DATABASE_URL =
@@ -68,13 +70,15 @@ const TARGET_OAUTH_GRANT_ID = crypto.randomUUID();
 const TARGET_OAUTH_ACCESS_ID = crypto.randomUUID();
 const TARGET_OAUTH_REFRESH_ID = crypto.randomUUID();
 const INVITED_EMAIL = `invite-${RUN_ID}@test.local`;
+const RACE_EMAIL = `invite-race-${RUN_ID}@test.local`;
 
-function accessToken(userId: string, orgId = ORG_ID, email = `${userId}@test.local`) {
-  return jwt.sign({ id: userId, email, org_id: orgId }, env.JWT_SECRET, { expiresIn: '15m' });
+const sessions = new Map<string, Awaited<ReturnType<typeof createWebSession>>>();
+const sessionKey = (userId: string, orgId: string) => `${orgId}:${userId}`;
+function accessToken(userId: string, orgId = ORG_ID) {
+  return sessions.get(sessionKey(userId, orgId))!.accessToken;
 }
-
-function refreshToken(userId: string, orgId = ORG_ID, email = `${userId}@test.local`) {
-  return jwt.sign({ id: userId, email, org_id: orgId }, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
+function refreshToken(userId: string, orgId = ORG_ID) {
+  return sessions.get(sessionKey(userId, orgId))!.refreshToken;
 }
 
 async function authed(path: string, userId: string, init: RequestInit = {}) {
@@ -211,11 +215,27 @@ before(async () => {
       [OTHER_GROUP_MEMBER_ID, OTHER_GROUP_ID, OTHER_USER_ID],
     );
   });
+  const identities = [
+    [ADMIN_ID, ORG_ID, `admin-${RUN_ID}@test.local`],
+    [MEMBER_ID, ORG_ID, `member-${RUN_ID}@test.local`],
+    [TARGET_ID, ORG_ID, `target-${RUN_ID}@test.local`],
+    [OTHER_USER_ID, OTHER_ORG_ID, `other-${RUN_ID}@test.local`],
+  ] as const;
+  for (const [id, orgId, email] of identities) {
+    sessions.set(sessionKey(id, orgId), await createWebSession({ id, org_id: orgId, email }));
+  }
+  await withClient(c => c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [ORG_ID, INACTIVE_ID]).then(() => undefined));
+  sessions.set(sessionKey(INACTIVE_ID, ORG_ID), await createWebSession({ id: INACTIVE_ID, org_id: ORG_ID, email: `inactive-${RUN_ID}@test.local` }));
+  await withClient(c => c.query(`UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`, [ORG_ID, INACTIVE_ID]).then(() => undefined));
 });
 
 after(async () => {
   await withClient(async (c) => {
+    await c.query(`DELETE FROM web_sessions WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM invites WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
+    await c.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE created_by IN (SELECT id FROM users WHERE email = ANY($1::text[])))`, [[INVITED_EMAIL, RACE_EMAIL]]);
+    await c.query(`DELETE FROM spaces WHERE created_by IN (SELECT id FROM users WHERE email = ANY($1::text[]))`, [[INVITED_EMAIL, RACE_EMAIL]]);
+    await c.query(`DELETE FROM space_members WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`, [[INVITED_EMAIL, RACE_EMAIL]]);
     await c.query(`DELETE FROM oauth_access_tokens WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM oauth_refresh_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE org_id IN ($1, $2))`, [ORG_ID, OTHER_ORG_ID]);
     await c.query(`DELETE FROM oauth_grants WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
@@ -231,7 +251,7 @@ after(async () => {
     await c.query(`DELETE FROM space_members WHERE space_id = $1`, [SPACE_ID]);
     await c.query(`DELETE FROM spaces WHERE id = $1`, [SPACE_ID]);
     await c.query(`DELETE FROM org_members WHERE org_id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
-    await c.query(`DELETE FROM users WHERE email = $1`, [INVITED_EMAIL]);
+    await c.query(`DELETE FROM users WHERE email = ANY($1::text[])`, [[INVITED_EMAIL, RACE_EMAIL]]);
     await c.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [[ADMIN_ID, MEMBER_ID, TARGET_ID, INACTIVE_ID, OTHER_USER_ID]]);
     await c.query(`DELETE FROM orgs WHERE id IN ($1, $2)`, [ORG_ID, OTHER_ORG_ID]);
   });
@@ -326,10 +346,12 @@ describe('Loop 0 identity hardening', () => {
   });
 
   test('member invite creates a durable invite row used by preview', async () => {
-    const res = await authed('/api/members/invite', ADMIN_ID, {
+    const adminSession = await createWebSession({ id: ADMIN_ID, org_id: ORG_ID, email: `admin-${RUN_ID}@test.local` });
+    const res = await app.fetch(new Request('http://localhost/api/members/invite', {
       method: 'POST',
+      headers: { Authorization: `Bearer ${adminSession.accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: INVITED_EMAIL, role: 'member' }),
-    });
+    }));
     const body = await res.json() as { invite_url: string; expires_at: string };
     assert.equal(res.status, 201, JSON.stringify(body));
     const token = new URL(body.invite_url).pathname.split('/').pop();
@@ -348,6 +370,79 @@ describe('Loop 0 identity hardening', () => {
     assert.equal(preview.status, 200, JSON.stringify(previewBody));
     assert.equal(previewBody.email, INVITED_EMAIL);
     assert.equal(previewBody.already_accepted, false);
+
+    const passwords = ['Invite-race-alpha-2026!', 'Invite-race-beta-2026!'];
+    const responses = await Promise.all(passwords.map((password, index) => app.fetch(new Request('http://localhost/api/invites/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password, name: `Invite winner ${index}` }),
+    }))));
+    const statuses = responses.map(response => response.status).sort();
+    assert.deepEqual(statuses, [200, 400]);
+    const winnerIndex = responses.findIndex(response => response.status === 200);
+    assert.notEqual(winnerIndex, -1);
+    assert.equal((await responses[1 - winnerIndex]!.json() as Record<string, unknown>).code, 'INVITE_ALREADY_ACCEPTED');
+
+    await withClient(async (c) => {
+      const { rows } = await c.query(
+        `SELECT u.password_hash, u.password_version,
+                (SELECT count(*)::int FROM web_sessions ws WHERE ws.user_id = u.id) AS session_count,
+                (SELECT count(*)::int FROM invites i WHERE i.org_id = $1 AND i.email = $2 AND i.accepted_at IS NOT NULL) AS accepted_count
+         FROM users u WHERE u.email = $2`,
+        [ORG_ID, INVITED_EMAIL],
+      );
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].password_version, 1);
+      assert.equal(rows[0].session_count, 1);
+      assert.equal(rows[0].accepted_count, 1);
+      assert.equal(await bcrypt.compare(passwords[winnerIndex]!, rows[0].password_hash), true);
+      assert.equal(await bcrypt.compare(passwords[1 - winnerIndex]!, rows[0].password_hash), false);
+    });
+
+    const raceInviteResponse = await app.fetch(new Request('http://localhost/api/members/invite', {
+      method: 'POST', headers: { Authorization: `Bearer ${adminSession.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: RACE_EMAIL, role: 'member' }),
+    }));
+    const raceInviteBody = await raceInviteResponse.json() as { invite_url: string; error?: string };
+    assert.equal(raceInviteResponse.status, 201, JSON.stringify(raceInviteBody));
+    const raceToken = new URL(raceInviteBody.invite_url).pathname.split('/').pop()!;
+    const raceInvite = await withClient(async (c) => {
+      const { rows } = await c.query(`SELECT id FROM invites WHERE token = $1`, [raceToken]);
+      return rows[0] as { id: string };
+    });
+    const [acceptRace, revokeRace] = await Promise.all([
+      app.fetch(new Request('http://localhost/api/invites/accept', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: raceToken, password: 'Invite-revoke-race-2026!' }),
+      })),
+      app.fetch(new Request(`http://localhost/api/members/invites/${raceInvite.id}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${adminSession.accessToken}` },
+      })),
+    ]);
+    assert.equal(
+      (acceptRace.status === 200 && revokeRace.status === 409)
+      || (acceptRace.status === 400 && revokeRace.status === 200),
+      true,
+      `unexpected accept/revoke results ${acceptRace.status}/${revokeRace.status}`,
+    );
+    await withClient(async (c) => {
+      const { rows } = await c.query(
+        `SELECT u.password_hash, om.is_active,
+                (SELECT count(*)::int FROM web_sessions ws WHERE ws.user_id = u.id AND ws.revoked_at IS NULL) session_count
+         FROM users u JOIN org_members om ON om.user_id = u.id AND om.org_id = $1 WHERE u.email = $2`,
+        [ORG_ID, RACE_EMAIL],
+      );
+      assert.equal(rows.length, 1);
+      if (acceptRace.status === 200) {
+        assert.equal(rows[0].is_active, true);
+        assert.ok(rows[0].password_hash);
+        assert.equal(rows[0].session_count, 1);
+      } else {
+        assert.equal(rows[0].is_active, false);
+        assert.equal(rows[0].password_hash, null);
+        assert.equal(rows[0].session_count, 0);
+      }
+    });
   });
 
   test('task writes reject inactive or cross-org assignees', async () => {
@@ -405,6 +500,32 @@ describe('Loop 0 identity hardening', () => {
   });
 
   test('member removal revokes space access and personal MCP tokens', async () => {
+    const triggerSuffix = RUN_ID.replace(/-/g, '_');
+    const triggerName = `fail_web_session_revoke_${triggerSuffix}`;
+    const functionName = `fail_web_session_revoke_fn_${triggerSuffix}`;
+    const before = await withClient(async (c) => {
+      const { rows } = await c.query(`SELECT password_version FROM users WHERE id = $1`, [TARGET_ID]);
+      await c.query(`CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected revoke failure'; END $$`);
+      await c.query(`CREATE TRIGGER ${triggerName} BEFORE UPDATE ON web_sessions FOR EACH ROW WHEN (OLD.user_id = '${TARGET_ID}' AND NEW.revoked_at IS NOT NULL) EXECUTE FUNCTION ${functionName}()`);
+      return rows[0] as { password_version: number };
+    });
+    const rollbackResponse = await authed(`/api/members/${TARGET_ID}`, ADMIN_ID, { method: 'DELETE' });
+    assert.equal(rollbackResponse.status, 500);
+    await withClient(async (c) => {
+      await c.query(`DROP TRIGGER ${triggerName} ON web_sessions`);
+      await c.query(`DROP FUNCTION ${functionName}()`);
+      const { rows } = await c.query(
+        `SELECT om.is_active, u.password_version FROM users u JOIN org_members om ON om.user_id = u.id WHERE u.id = $1 AND om.org_id = $2`,
+        [TARGET_ID, ORG_ID],
+      );
+      assert.equal(rows[0].is_active, true, 'membership deactivation must roll back with session revocation');
+      assert.equal(rows[0].password_version, before.password_version, 'password version must roll back with session revocation');
+    });
+
+    const oldAccessToken = accessToken(TARGET_ID);
+    const oldResetToken = jwt.sign({
+      id: TARGET_ID, org_id: ORG_ID, purpose: 'password-reset', password_version: before.password_version,
+    }, env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '24h' });
     const res = await authed(`/api/members/${TARGET_ID}`, ADMIN_ID, { method: 'DELETE' });
     assert.equal(res.status, 200, await res.text());
 
@@ -450,6 +571,17 @@ describe('Loop 0 identity hardening', () => {
         [TARGET_OAUTH_REFRESH_ID],
       );
       assert.equal(oauthRefreshRows.rows[0].revoked, true);
+      const version = await c.query(`SELECT password_version FROM users WHERE id = $1`, [TARGET_ID]);
+      assert.equal(version.rows[0].password_version, before.password_version + 1);
     });
+
+    await withClient(c => c.query(`UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`, [ORG_ID, TARGET_ID]).then(() => undefined));
+    const revivedAccess = await app.fetch(new Request('http://localhost/api/groups', { headers: { Authorization: `Bearer ${oldAccessToken}` } }));
+    assert.equal(revivedAccess.status, 401, 'reactivation must not revive a pre-removal session');
+    const staleReset = await app.fetch(new Request('http://localhost/api/auth/reset-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: oldResetToken, password: 'stale-reset-must-fail-2026' }),
+    }));
+    assert.equal(staleReset.status, 400, 'reactivation must not revive a pre-removal recovery URL');
   });
 });

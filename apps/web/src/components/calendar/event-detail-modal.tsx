@@ -56,15 +56,11 @@ export function EventDetailModal({
   };
 
   if (showEdit && isNative) {
-    const startDate = meta.start ? new Date(meta.start) : new Date(event.timestamp);
-    const endDate = meta.end ? new Date(meta.end) : new Date(startDate.getTime() + 3600000);
     return (
       <CreateEventModal
         onClose={() => setShowEdit(false)}
         onCreated={() => { setShowEdit(false); onUpdated?.(); }}
-        defaultDate={`${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`}
-        defaultStart={`${String(startDate.getHours()).padStart(2, '0')}:${String(startDate.getMinutes()).padStart(2, '0')}`}
-        defaultEnd={`${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`}
+        editEvent={event}
       />
     );
   }

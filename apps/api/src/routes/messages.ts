@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
+import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
@@ -17,6 +18,7 @@ import { dispatchAgentEmployeeMessage } from '../lib/dispatch-agent-message.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
   getMessageAttachments,
+  type MessageAttachment,
   MAX_MESSAGE_ATTACHMENTS,
   normalizeAttachmentIds,
   toMessageAttachment,
@@ -459,21 +461,26 @@ messageRoutes.post('/:spaceId', async (c) => {
       }, 400);
     }
 
-    const { message, messageAttachments } = await db.transaction(async (tx) => {
-      const [insertedMessage] = await tx.insert(messages).values({
+    let messageAttachments: MessageAttachment[] = [];
+    const { value: message, replayed } = await nativeCreate({
+      orgId: user.org_id, userId: user.id, operation: `message:${spaceId}`,
+      key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
+      replay: async (tx, id) => (await tx.select().from(messages).where(and(eq(messages.id, id), eq(messages.org_id, user.org_id), eq(messages.space_id, spaceId), eq(messages.user_id, user.id), eq(messages.is_deleted, false))).limit(1))[0],
+      create: async (tx) => {
+        const [insertedMessage] = await tx.insert(messages).values({
         org_id: user.org_id,
         space_id: spaceId,
         user_id: user.id,
         content: normalizedContent,
         parent_id: parsed.data.parent_id,
-      }).returning();
-      if (!insertedMessage) throw new Error('Message insert returned no row');
+        }).returning();
+        if (!insertedMessage) throw new Error('Message insert returned no row');
 
-      if (attachmentIds.length === 0) {
-        return { message: insertedMessage, messageAttachments: [] };
-      }
+        if (attachmentIds.length === 0) {
+        return insertedMessage;
+        }
 
-      const claimedFiles = await tx.update(files)
+        const claimedFiles = await tx.update(files)
         .set({ message_id: insertedMessage.id, staged_expires_at: null })
         .where(and(
           inArray(files.id, attachmentIds),
@@ -489,23 +496,22 @@ messageRoutes.post('/:spaceId', async (c) => {
           size_bytes: files.size_bytes,
         });
 
-      if (claimedFiles.length !== attachmentIds.length) {
+        if (claimedFiles.length !== attachmentIds.length) {
         throw new AttachmentClaimError('One or more attachments are unavailable');
-      }
+        }
 
-      await tx.insert(messageAttachmentLinks).values(attachmentIds.map((fileId, position) => ({
+        await tx.insert(messageAttachmentLinks).values(attachmentIds.map((fileId, position) => ({
         org_id: user.org_id,
         message_id: insertedMessage.id,
         file_id: fileId,
         position,
-      })));
+        })));
 
-      const claimedById = new Map(claimedFiles.map((file) => [file.id, file]));
-      return {
-        message: insertedMessage,
-        messageAttachments: attachmentIds.map((id) => toMessageAttachment(claimedById.get(id)!)),
-      };
-    });
+        const claimedById = new Map(claimedFiles.map((file) => [file.id, file]));
+        messageAttachments = attachmentIds.map((id) => toMessageAttachment(claimedById.get(id)!));
+        return insertedMessage;
+    } });
+    if (replayed) messageAttachments = (await getMessageAttachments([message.id], user.org_id)).get(message.id) ?? [];
 
     // Get user info for the broadcast
     const [userData] = await db.select({
@@ -523,6 +529,8 @@ messageRoutes.post('/:spaceId', async (c) => {
       file_ids: messageAttachments.map((file) => file.id),
       files: messageAttachments,
     };
+
+    if (replayed) return c.json(messageWithUser, 201);
 
     // Broadcast via Socket.io
     const io = getIO();
@@ -837,6 +845,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     if (err instanceof AttachmentClaimError) {
       return c.json({ error: err.message, code: 'ATTACHMENT_NOT_FOUND' }, 404);
     }
+    if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
     console.error('Failed to send message:', err);
     return c.json({ error: 'Failed to send message', code: 'INTERNAL_ERROR' }, 500);
   }

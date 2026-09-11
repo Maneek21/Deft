@@ -600,9 +600,8 @@ export default function LibraryPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <PageHeader
-        title="Templates"
+        title="Task templates"
         description="Turn repeatable work into ready-made task sets that can be applied to any project."
-        compact
       />
 
       {/* Skills tab */}

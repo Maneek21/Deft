@@ -49,6 +49,10 @@ const WEBHOOK_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_WEBHOOK_RATE_LIMIT_PER_MINUTE',
   isProduction ? 60 : 600,
 );
+const OAUTH_PUBLIC_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_OAUTH_PUBLIC_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 120 : 1200,
+);
 
 function userOrIpKey(c: Context): string {
   const user = c.get('user') as { id?: string } | undefined;
@@ -201,4 +205,28 @@ export const webhookLimiter = withAuditBypass(rateLimiter({
     error: 'Webhook rate limit hit.',
     code: 'WEBHOOK_RATE_LIMITED',
   }, 429),
+}));
+
+const oauthLimitResponse = (c: Context) => c.json({
+  error: 'temporarily_unavailable',
+  error_description: 'OAuth request rate limit exceeded. Retry shortly.',
+}, 429);
+
+// DCR and token endpoints are intentionally public. Keep both a per-source
+// budget and a process-wide ceiling: forwarded IP headers are deployment input
+// and must not let an attacker create an unbounded number of limiter buckets.
+export const oauthPublicGlobalLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: OAUTH_PUBLIC_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: () => 'oauth-public-global',
+  handler: oauthLimitResponse,
+}));
+
+export const oauthPublicIpLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: OAUTH_PUBLIC_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: ipKey,
+  handler: oauthLimitResponse,
 }));

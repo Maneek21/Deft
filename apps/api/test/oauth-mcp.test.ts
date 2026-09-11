@@ -469,6 +469,26 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   const scopeLessClient = (await scopeLessClientRes.json()) as Record<string, unknown>;
   assert.ok(String(scopeLessClient.client_id).startsWith('deft_dcr_'));
   assert.equal(Object.hasOwn(scopeLessClient, 'scope'), false);
+
+  const extensionClientRes = await jsonPost('/oauth/register', {
+    client_name: `OAuth MCP Test Extension ${TEST_ID}`,
+    redirect_uris: ['http://localhost:3999/callback'],
+    software_id: 'standard-client-extension',
+    software_version: '1.2.3',
+    contacts: ['operator@example.test'],
+  });
+  assert.equal(extensionClientRes.status, 201);
+  const extensionClient = await extensionClientRes.json() as { client_id: string };
+  const storedMetadata = await withClient(async (client) => {
+    const result = await client.query<{ metadata: Record<string, unknown> }>(
+      'SELECT metadata FROM oauth_clients WHERE client_id = $1',
+      [extensionClient.client_id],
+    );
+    return result.rows[0]!.metadata;
+  });
+  assert.equal(Object.hasOwn(storedMetadata, 'software_id'), false);
+  assert.equal(Object.hasOwn(storedMetadata, 'contacts'), false);
+  assert.deepEqual(storedMetadata.redirect_uris, ['http://localhost:3999/callback']);
 });
 
 test('OAuth PKCE token exchange resolves to a scoped human MCP principal', async () => {

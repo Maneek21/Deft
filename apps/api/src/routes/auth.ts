@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -13,26 +14,27 @@ import {
   spaces,
   spaceMembers,
   onboardingState,
-  revokedTokens,
   type UserNotificationPreferences,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membership.js';
+import { createWebSession, rotateWebSession, revokeWebSession, changeWebPassword, verifyWebAccess, WebCredentialsChangedError } from '../lib/web-sessions.js';
 
 export const authRoutes = new Hono();
+authRoutes.use('*', bodyLimit({ maxSize: 64 * 1024, onError: (c) => c.json({ error: 'Request body is too large', code: 'VALIDATION_ERROR' }, 413) }));
 
 const signupSchema = z.object({
-  name: z.string().min(1),
-  email: z.string().email(),
-  password: z.string().min(8),
-  org_name: z.string().min(1),
+  name: z.string().min(1).max(160),
+  email: z.string().email().max(320),
+  password: z.string().min(8).max(1024),
+  org_name: z.string().min(1).max(160),
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.string().email().max(320),
+  password: z.string().min(1).max(1024),
 });
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -46,25 +48,12 @@ export function allowAccountLoginAttempt(email: string): boolean {
   const key = createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
   const current = loginAttempts.get(key);
   if (!current || current.resetAt <= now) {
+    if (!current && loginAttempts.size >= 10_000) return false;
     loginAttempts.set(key, { count: 1, resetAt: now + 60_000 });
     return true;
   }
   current.count += 1;
   return current.count <= 10;
-}
-
-function generateTokens(user: { id: string; email: string; org_id: string }) {
-  const accessToken = jwt.sign(
-    { id: user.id, email: user.email, org_id: user.org_id },
-    env.JWT_SECRET,
-    { expiresIn: '15m' }
-  );
-  const refreshToken = jwt.sign(
-    { id: user.id, email: user.email, org_id: user.org_id },
-    env.JWT_REFRESH_SECRET,
-    { expiresIn: '30d' }
-  );
-  return { accessToken, refreshToken };
 }
 
 // GET /api/auth/has-workspace — public pre-check for the signup page
@@ -75,7 +64,7 @@ authRoutes.get('/has-workspace', async (c) => {
 
 // POST /api/auth/signup
 authRoutes.post('/signup', async (c) => {
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => null);
   const parsed = signupSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -160,7 +149,7 @@ authRoutes.post('/signup', async (c) => {
     org_created: true,
   });
 
-  const tokens = generateTokens({ id: user!.id, email: user!.email!, org_id: org!.id });
+  const tokens = await createWebSession({ id: user!.id, email: user!.email!, org_id: org!.id });
 
   return c.json({
     user: { id: user!.id, name: user!.name, email: user!.email },
@@ -171,7 +160,7 @@ authRoutes.post('/signup', async (c) => {
 
 // POST /api/auth/login
 authRoutes.post('/login', async (c) => {
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => null);
   const parsed = loginSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -212,7 +201,14 @@ authRoutes.post('/login', async (c) => {
     return c.json({ error: 'No active organization membership found', code: 'ORG_MEMBERSHIP_INACTIVE' }, 403);
   }
 
-  const tokens = generateTokens({ id: user.id, email: user.email!, org_id: membership.org_id });
+  let tokens;
+  try {
+    tokens = await createWebSession({ id: user.id, email: user.email!, org_id: membership.org_id }, user.password_hash);
+  } catch (error) {
+    if (error instanceof WebCredentialsChangedError) return c.json({ error: 'Credentials changed. Please sign in again.', code: 'INVALID_CREDENTIALS' }, 401);
+    if (error instanceof OrgMembershipError) return c.json({ error: error.message, code: error.code }, 403);
+    throw error;
+  }
 
   return c.json({
     user: { id: user.id, name: user.name, email: user.email },
@@ -223,24 +219,11 @@ authRoutes.post('/login', async (c) => {
 
 // POST /api/auth/refresh
 authRoutes.post('/refresh', async (c) => {
-  const body = await c.req.json();
-  const { refreshToken } = body;
-
-  if (!refreshToken) {
-    return c.json({ error: 'No refresh token', code: 'NO_TOKEN' }, 401);
-  }
-
-  // Check revocation list before validating the JWT
-  const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
-  const [revoked] = await db.select().from(revokedTokens).where(eq(revokedTokens.token_hash, tokenHash)).limit(1);
-  if (revoked) {
-    return c.json({ error: 'Token revoked', code: 'TOKEN_REVOKED' }, 401);
-  }
+  const parsed = z.object({ refreshToken: z.string().min(1).max(8192) }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
 
   try {
-    const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { id: string; email: string; org_id: string };
-    await requireActiveOrgMembership(payload.org_id, payload.id);
-    const tokens = generateTokens({ id: payload.id, email: payload.email, org_id: payload.org_id });
+    const tokens = await rotateWebSession(parsed.data.refreshToken);
     return c.json(tokens);
   } catch (err) {
     if (err instanceof OrgMembershipError) {
@@ -250,23 +233,17 @@ authRoutes.post('/refresh', async (c) => {
   }
 });
 
-// POST /api/auth/logout — revoke the caller's refresh token
+// POST /api/auth/logout — revoke the entire caller session, including access.
 authRoutes.post('/logout', async (c) => {
+  const parsed = z.object({ refreshToken: z.string().min(1).max(8192).optional() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
   try {
-    const body = await c.req.json().catch(() => ({} as { refreshToken?: string }));
-    const token = body.refreshToken;
+    const token = parsed.data.refreshToken;
     if (!token) return c.json({ ok: true }); // idempotent: nothing to revoke
-
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    await db.insert(revokedTokens).values({
-      id: crypto.randomUUID(),
-      token_hash: tokenHash,
-    }).onConflictDoNothing();
-
+    await revokeWebSession(token);
     return c.json({ ok: true });
   } catch (err) {
-    console.error('[auth] Failed to logout:', err);
-    return c.json({ error: 'Failed to logout', code: 'INTERNAL_ERROR' }, 500);
+    return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });
 
@@ -279,7 +256,7 @@ authRoutes.get('/me', async (c) => {
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+    const payload = await verifyWebAccess(token);
 
     const [user] = await db.select({
       id: users.id,
@@ -413,12 +390,12 @@ authRoutes.post('/forgot-password', async (c) => {
 
 // POST /api/auth/reset-password — reset password with token
 const resetPasswordSchema = z.object({
-  token: z.string().min(1),
-  password: z.string().min(8),
+  token: z.string().min(1).max(8192),
+  password: z.string().min(8).max(128),
 });
 
 authRoutes.post('/reset-password', async (c) => {
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => null);
   const parsed = resetPasswordSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -427,13 +404,10 @@ authRoutes.post('/reset-password', async (c) => {
   const { token, password } = parsed.data;
 
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; purpose?: string };
-    if (payload.purpose !== 'password-reset') {
-      return c.json({ error: 'Invalid reset token', code: 'INVALID_TOKEN' }, 400);
-    }
+    const payload = z.object({ id: z.string().min(1), org_id: z.string().min(1), purpose: z.literal('password-reset'), password_version: z.number().int().nonnegative() }).parse(jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }));
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await db.update(users).set({ password_hash: passwordHash }).where(eq(users.id, payload.id));
+    await changeWebPassword(payload.id, passwordHash, { resetToken: token, passwordVersion: payload.password_version, orgId: payload.org_id });
 
     return c.json({ success: true, message: 'Password has been reset. You can now log in.' });
   } catch {
@@ -451,9 +425,9 @@ authRoutes.patch('/password', async (c) => {
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+    const payload = await verifyWebAccess(token);
     await requireActiveOrgMembership(payload.org_id, payload.id);
-    const body = await c.req.json();
+    const body = await c.req.json().catch(() => null);
     const parsed = passwordChangeSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -474,7 +448,7 @@ authRoutes.patch('/password', async (c) => {
     }
 
     const passwordHash = await bcrypt.hash(parsed.data.new_password, 12);
-    await db.update(users).set({ password_hash: passwordHash }).where(eq(users.id, payload.id));
+    await changeWebPassword(payload.id, passwordHash, { expectedPasswordHash: user.password_hash });
 
     return c.json({ success: true });
   } catch (err) {
@@ -492,7 +466,7 @@ authRoutes.get('/onboarding', async (c) => {
   }
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; org_id: string };
+    const payload = await verifyWebAccess(token);
     await requireActiveOrgMembership(payload.org_id, payload.id);
     let [state] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
     if (!state) {
@@ -526,7 +500,7 @@ authRoutes.patch('/onboarding', async (c) => {
   }
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; org_id: string };
+    const payload = await verifyWebAccess(token);
     await requireActiveOrgMembership(payload.org_id, payload.id);
     const body = await c.req.json().catch(() => ({}));
     const parsed = onboardingUpdateSchema.safeParse(body);
@@ -560,9 +534,9 @@ authRoutes.patch('/me', async (c) => {
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+    const payload = await verifyWebAccess(token);
     const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
-    const body = await c.req.json();
+    const body = await c.req.json().catch(() => null);
     const parsed = profileUpdateSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);

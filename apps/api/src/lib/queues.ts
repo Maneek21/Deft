@@ -39,6 +39,9 @@ export type DequeuedJob = {
 export type DequeueOptions = {
   lockedBy?: string;
   leaseMs?: number;
+  orgId?: string;
+  jobName?: string;
+  dataMatch?: Readonly<{ key: string; value: string }>;
 };
 
 export type FailJobOptions = {
@@ -173,6 +176,10 @@ export async function dequeueJob(
   const lockedBy = opts?.lockedBy?.trim() || DEFAULT_WORKER_ID;
   const lockToken = crypto.randomUUID();
   const leaseMs = positiveInteger(opts?.leaseMs, DEFAULT_LEASE_MS);
+  const orgId = opts?.orgId;
+  const jobName = opts?.jobName;
+  const dataKey = opts?.dataMatch?.key;
+  const dataValue = opts?.dataMatch?.value;
   const result = await db.execute(sql`
     UPDATE job_queue
     SET status = 'running',
@@ -188,6 +195,9 @@ export async function dequeueJob(
       WHERE status = 'pending'
         AND queue = ${queueName}
         AND run_at <= now()
+        AND (${orgId ?? null}::text IS NULL OR org_id = ${orgId ?? null})
+        AND (${jobName ?? null}::text IS NULL OR name = ${jobName ?? null})
+        AND (${dataKey ?? null}::text IS NULL OR data->>${dataKey ?? null} = ${dataValue ?? null})
       ORDER BY
         CASE
           WHEN queue = ${QUEUE_NAMES.AGENT_JOBS} AND name IN ('agent-reply', 'agent-employee-message', 'agent-employee-task') THEN 0

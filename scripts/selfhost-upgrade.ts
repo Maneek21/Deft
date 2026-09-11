@@ -89,7 +89,7 @@ export function composeArgs(options: UpgradeOptions): string[] {
 }
 
 function backupArgs(options: UpgradeOptions): string[] {
-  const args = ['selfhost:backup'];
+  const args = ['selfhost:backup', '--app-stopped'];
   if (options.prod) args.push('--prod');
   for (const file of options.composeFiles) args.push('--compose-file', file);
   args.push('--backup-dir', options.backupDir);
@@ -99,22 +99,22 @@ function backupArgs(options: UpgradeOptions): string[] {
 export function buildUpgradePlan(options: UpgradeOptions): CommandStep[] {
   const compose = composeArgs(options);
   const steps: CommandStep[] = [];
+  steps.push({ label: 'Stop app writes', command: 'docker', args: [...compose, 'stop', 'deft'] });
+  if (options.backup) {
+    steps.push({ label: 'Back up the stopped recovery set', command: 'pnpm', args: backupArgs(options) });
+  }
   if (!options.skipBuild) {
     steps.push(options.release
       ? {
-          label: 'Pull target release images before downtime',
+          label: 'Pull target release images',
           command: 'docker',
           args: [...compose, 'pull', 'deft', 'upgrade', 'doctor', 'smoke'],
         }
       : {
-          label: 'Build target app and upgrade tool images before downtime',
+          label: 'Build target app and upgrade tool images',
           command: 'docker',
           args: [...compose, 'build', 'deft', 'upgrade', 'doctor', 'smoke'],
         });
-  }
-  steps.push({ label: 'Stop app writes', command: 'docker', args: [...compose, 'stop', 'deft'] });
-  if (options.backup) {
-    steps.push({ label: 'Back up the stopped database', command: 'pnpm', args: backupArgs(options) });
   }
   steps.push({
     label: 'Apply versioned database upgrade',
@@ -139,7 +139,7 @@ function commandLine(step: CommandStep): string {
   return [step.command, ...step.args].map((part) => part.includes(' ') ? `"${part}"` : part).join(' ');
 }
 
-async function runStep(step: CommandStep, dryRun: boolean) {
+export async function runStep(step: CommandStep, dryRun: boolean) {
   console.log('');
   console.log(`[STEP] ${step.label}`);
   console.log(`[RUN] ${commandLine(step)}`);
@@ -153,32 +153,52 @@ async function runStep(step: CommandStep, dryRun: boolean) {
   });
 }
 
+type StepRunner = (step: CommandStep, dryRun: boolean) => Promise<void>;
+
+export async function executeUpgradePlan(
+  options: UpgradeOptions,
+  runner: StepRunner = runStep,
+) {
+  const compose = composeArgs(options);
+  const plan = buildUpgradePlan(options);
+  let appStopped = false;
+  let schemaMayHaveChanged = false;
+
+  try {
+    for (const step of plan) {
+      if (step.label === 'Apply versioned database upgrade' && !options.dryRun) {
+        // The upgrader commits migrations individually. From the moment it starts,
+        // failure cannot prove that the previous image can read the resulting schema.
+        schemaMayHaveChanged = true;
+      }
+      await runner(step, options.dryRun);
+      if (step.label === 'Stop app writes' && !options.dryRun) appStopped = true;
+    }
+  } catch (error) {
+    if (appStopped && !schemaMayHaveChanged) {
+      console.error('[WARN] Upgrade failed before schema migration started. Restarting the previous app container.');
+      await runner({ label: 'Restart previous app container', command: 'docker', args: [...compose, 'start', 'deft'] }, false)
+        .catch((restartError) => console.error('[WARN] Automatic restart failed:', restartError));
+    } else if (appStopped) {
+      await runner({ label: 'Stop app after failed upgrade', command: 'docker', args: [...compose, 'stop', 'deft'] }, false)
+        .catch((stopError) => console.error('[WARN] Could not confirm the app is stopped:', stopError));
+      console.error('[RECOVERY REQUIRED] The schema may have changed. The app remains stopped; do not start the previous image against this database.');
+      console.error('[RECOVERY REQUIRED] Restore the pre-upgrade database, uploads, configuration/keyrings, and previous image digest as documented in docs/self-hosting.md.');
+    }
+    throw error;
+  }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const options = parseUpgradeArgs(argv);
   const compose = composeArgs(options);
-  const plan = buildUpgradePlan(options);
   console.log('Deft self-host upgrade');
   console.log(`  mode: ${options.release ? 'published release image' : 'source build'}`);
   console.log(`  compose: ${compose.slice(1).join(' ')}`);
   console.log(`  backup: ${options.backup ? options.backupDir : 'disabled'}`);
   console.log(`  execute: ${options.dryRun ? 'dry run' : 'yes'}`);
 
-  let appStopped = false;
-  let appRecreated = false;
-  try {
-    for (const step of plan) {
-      await runStep(step, options.dryRun);
-      if (step.label === 'Stop app writes' && !options.dryRun) appStopped = true;
-      if (step.label === 'Recreate app on target version' && !options.dryRun) appRecreated = true;
-    }
-  } catch (error) {
-    if (appStopped && !appRecreated) {
-      console.error('[WARN] Upgrade stopped before app recreation. Restarting the existing app container.');
-      await runStep({ label: 'Restart previous app container', command: 'docker', args: [...compose, 'start', 'deft'] }, false)
-        .catch((restartError) => console.error('[WARN] Automatic restart failed:', restartError));
-    }
-    throw error;
-  }
+  await executeUpgradePlan(options);
 
   console.log('');
   console.log(options.dryRun

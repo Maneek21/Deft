@@ -10,6 +10,54 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.15] — 2026-09-08
+
+### Added
+
+- Connected Apps can request access to supported workspace resources and run
+  bounded scheduled actions after operator review. App Kit includes the matching
+  package and authoring support. These experimental features are disabled by
+  default; see [product status](docs/product-status.md) before enabling them.
+
+### Fixed
+
+- Retrying a task, project, event or message after a lost response no longer
+  creates a duplicate of the same request.
+- Notes retain pending edits through interrupted saves and refresh expired image
+  access. Unavailable private notes show a recoverable error instead of an empty
+  editor.
+- Native calendar creation and editing use the profile timezone consistently;
+  editing targets the existing event. Task date controls support keyboard use.
+- Chat attachments appear once in the composer, and search previews show readable
+  text rather than stored HTML.
+- Connections wait for initialization before joining chat rooms, and background
+  queues wait until storage is ready. Automation lists use fewer database queries.
+- Approved task creation records its result. Invalid App uninstall requests
+  return a useful client error instead of a server failure.
+- Backups and upgrades preserve recovery assets; container process supervision
+  propagates startup failures and shutdown correctly.
+
+### Security
+
+- Browser sessions rotate durable refresh credentials and invalidate outstanding
+  credentials on password changes. Public OAuth endpoints have bounded requests.
+- Tiptap dependencies are updated to 3.30.4, including the fix for
+  [GHSA-cp6q-959q-f8rh](https://github.com/advisories/GHSA-cp6q-959q-f8rh).
+
+### Release and upgrade notes
+
+- This is a **core** release. Hermes is not certified or distributed as a
+  supported integration bundle for this release. Existing
+  integration source and historical certification records are not new proof.
+- The schema advances to `0.3.0-preview.29`, including durable browser-session
+  state and scoped native-create identities. Back up first and use the documented
+  versioned upgrade path; do not run fresh-install initialization on existing data.
+- Keep the previous image, database backup, uploads, and encryption secrets
+  together for recovery. Image rollback alone is not a database rollback.
+- Images remain Linux amd64 previews. This release does not claim long-duration
+  soak coverage or Hermes certification. Read the release's verification results
+  and [current limitations](docs/current-limitations.md) before deployment.
+
 ## [0.3.0-preview.14] — 2026-08-31
 
 ### Fixed
@@ -395,7 +443,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.14...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.15...HEAD
+[0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
 [0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
 [0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13
 [0.3.0-preview.12]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12

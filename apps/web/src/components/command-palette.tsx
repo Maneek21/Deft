@@ -9,6 +9,7 @@ import {
   BookOpen, FileText, Scale, BellOff, Smile, Clock, Boxes,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { stripHtml } from '@/lib/strip-html';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { useTheme } from './theme-provider';
@@ -598,7 +599,7 @@ export function CommandPalette() {
                     onClick={() => { router.push(`/chat?space=${item.space_id}&message=${item.id}`); close(); }}
                   >
                     <MessageSquare size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
-                    <span className="text-[13px] flex-1 truncate">{item.content}</span>
+                    <span className="text-[13px] flex-1 truncate">{stripHtml(item.content)}</span>
                     <span className="text-[11px]" style={{ color: 'var(--outline)' }}>#{item.space_name}</span>
                   </button>
                 )}

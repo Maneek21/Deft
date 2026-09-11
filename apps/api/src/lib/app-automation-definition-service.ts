@@ -41,6 +41,7 @@ import {
   terminalizeUnclaimedAppAutomationFireMisfireWithExecutor,
   transitionAppAutomationDefinitionWithExecutor,
   type AppAutomationDefinitionRow,
+  type AppAutomationDefinitionListCursor,
   type AppAutomationFireRow,
 } from './app-automation-repository.js';
 
@@ -742,7 +743,11 @@ export async function getAppAutomationDefinition(
 
 export async function listAppAutomationDefinitions(
   actor: ModuleActor,
-  input: Readonly<{ app_installation_id?: string; limit?: number }> = {},
+  input: Readonly<{
+    app_installation_id?: string;
+    limit?: number;
+    after?: AppAutomationDefinitionListCursor;
+  }> = {},
 ): Promise<AppAutomationDefinitionRow[]> {
   return db.transaction(async (tx) => {
     await assertManager(tx, actor);
@@ -750,6 +755,7 @@ export async function listAppAutomationDefinitions(
       organization_id: actor.org_id,
       app_installation_id: input.app_installation_id,
       limit: Math.max(1, Math.min(APP_AUTOMATION_FOUNDATION_LIMITS.list_limit, input.limit ?? 50)),
+      after: input.after,
     });
   });
 }

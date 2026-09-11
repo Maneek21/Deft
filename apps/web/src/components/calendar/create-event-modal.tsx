@@ -1,38 +1,50 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { calendarMemberDisplayName, calendarMemberMatches } from '@/lib/calendar-members';
+import type { CalEvent } from '@/lib/calendar';
+import { eventFormDefaults, eventSaveTarget } from '@/lib/calendar-event-form';
+import { dateKeyInUserTimezone, getUserTimezone, userWallTimeToIso } from '@/lib/time';
 import { X, Users } from 'lucide-react';
 import { PersonAvatar } from '../person-avatar';
 
 type OrgMember = { id: string; name: string | null; email: string | null; avatar_url: string | null };
 
 export function CreateEventModal({
-  onClose, onCreated, defaultDate, defaultStart, defaultEnd,
+  onClose, onCreated, defaultDate, defaultStart, defaultEnd, editEvent,
 }: {
   onClose: () => void;
   onCreated?: () => void;
   defaultDate?: string;
   defaultStart?: string;
   defaultEnd?: string;
+  editEvent?: CalEvent;
 }) {
   const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const todayStr = dateKeyInUserTimezone(today);
 
-  const [title, setTitle] = useState('');
-  const [date, setDate] = useState(defaultDate || todayStr);
-  const [startTime, setStartTime] = useState(defaultStart || '09:00');
-  const [endTime, setEndTime] = useState(defaultEnd || '10:00');
-  const [description, setDescription] = useState('');
-  const [location, setLocation] = useState('');
-  const [attendees, setAttendees] = useState<OrgMember[]>([]);
+  const initial = editEvent ? eventFormDefaults(editEvent) : null;
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [date, setDate] = useState(initial?.date ?? defaultDate ?? todayStr);
+  const [endDate, setEndDate] = useState(initial?.endDate ?? defaultDate ?? todayStr);
+  const [startTime, setStartTime] = useState(initial?.startTime ?? defaultStart ?? '09:00');
+  const [endTime, setEndTime] = useState(initial?.endTime ?? defaultEnd ?? '10:00');
+  const [description, setDescription] = useState(initial?.description ?? '');
+  const [location, setLocation] = useState(initial?.location ?? '');
+  const [attendees, setAttendees] = useState<OrgMember[]>(initial?.attendees ?? []);
   const [allMembers, setAllMembers] = useState<OrgMember[]>([]);
   const [attendeeSearch, setAttendeeSearch] = useState('');
   const [showAttendeeDropdown, setShowAttendeeDropdown] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const createIntentRef = useRef(createNativeCreateIntent('event:create-modal'));
+  const handleClose = useCallback(() => {
+    createIntentRef.current.cancel();
+    onClose();
+  }, [onClose]);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -48,44 +60,57 @@ export function CreateEventModal({
   );
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
+  }, [handleClose]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !date || !startTime || !endTime) return;
+    if (!title.trim() || !date || !endDate || !startTime || !endTime || submitting) return;
 
     setSubmitting(true);
     setError('');
 
     try {
-      const start = new Date(`${date}T${startTime}:00`).toISOString();
-      const end = new Date(`${date}T${endTime}:00`).toISOString();
+      const start = userWallTimeToIso(date, startTime);
+      const end = userWallTimeToIso(endDate, endTime);
+      if (end <= start) throw new Error('End must be after start');
 
-      const res = await api.post('/api/events', {
+      const originalAttendeeEmails = editEvent
+        ? (editEvent.metadata?.attendees ?? []).map((a: { email?: string }) => a.email ?? '').filter(Boolean).sort()
+        : [];
+      const attendeeEmails = attendees.map((a) => a.email ?? '').filter(Boolean).sort();
+      const attendeesChanged = !editEvent || originalAttendeeEmails.join('\n') !== attendeeEmails.join('\n');
+
+      const body = {
         title: title.trim(),
         start,
         end,
-        description: description.trim() || undefined,
-        location: location.trim() || undefined,
-        metadata: attendees.length > 0 ? {
+        description: editEvent ? description.trim() : description.trim() || undefined,
+        location: editEvent ? location.trim() : location.trim() || undefined,
+        metadata: attendeesChanged ? {
           attendees: attendees.map(a => ({
             name: calendarMemberDisplayName(a),
             email: a.email ?? '',
           })),
         } : undefined,
-      });
+      };
+      const target = eventSaveTarget(editEvent?.id);
+      const intentKey = editEvent ? null : await createIntentRef.current.keyFor(body);
+      const res = target.method === 'patch'
+        ? await api.patch(target.path, body)
+        : await api.post('/api/events', body, { headers: { 'Idempotency-Key': intentKey! } });
 
       if (res.ok) {
+        if (intentKey) createIntentRef.current.acknowledgeSuccess(intentKey);
         onCreated?.();
       } else {
         const data = await res.json();
         setError(data.error || 'Failed to create event');
       }
-    } catch {
-      setError('Failed to create event');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Failed to save event');
     } finally {
       setSubmitting(false);
     }
@@ -94,14 +119,14 @@ export function CreateEventModal({
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center"
       style={{ background: 'rgba(0, 0, 0, 0.5)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
       <div className="w-[calc(100vw-2rem)] max-w-[420px] rounded-xl overflow-hidden"
         style={{ background: 'var(--card-bg, var(--surface-container-low))', border: '1px solid var(--border-default)', boxShadow: '0 25px 50px -12px rgba(0,0,0,.25)' }}>
         {/* Header */}
         <div className="px-5 py-4 flex items-center justify-between"
           style={{ borderBottom: '1px solid var(--border-default)' }}>
-          <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>New event</h2>
-          <button onClick={onClose} className="p-1 rounded hover:opacity-70"
+          <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{editEvent ? 'Edit event' : 'New event'}</h2>
+          <button onClick={handleClose} className="p-1 rounded hover:opacity-70"
             style={{ color: 'var(--text-tertiary)' }}>
             <X size={16} />
           </button>
@@ -109,6 +134,7 @@ export function CreateEventModal({
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-3">
+          <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>Times in {getUserTimezone()}</p>
           <div>
             <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Title</label>
             <input ref={inputRef} value={title} onChange={(e) => setTitle(e.target.value)}
@@ -120,10 +146,14 @@ export function CreateEventModal({
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Date</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              <input type="date" value={date} onChange={(e) => {
+                const nextDate = e.target.value;
+                setEndDate((current) => current === date ? nextDate : current);
+                setDate(nextDate);
+              }}
                 className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
                 style={{ background: 'var(--surface-container-highest, var(--bg-surface))', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
               />
@@ -131,6 +161,13 @@ export function CreateEventModal({
             <div>
               <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Start</label>
               <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
+                style={{ background: 'var(--surface-container-highest, var(--bg-surface))', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>End date</label>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
                 style={{ background: 'var(--surface-container-highest, var(--bg-surface))', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
               />
@@ -219,7 +256,7 @@ export function CreateEventModal({
           )}
 
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose}
+            <button type="button" onClick={handleClose}
               className="px-4 py-2 rounded-lg text-[12px] font-medium"
               style={{ color: 'var(--text-secondary)' }}>
               Cancel
@@ -227,7 +264,7 @@ export function CreateEventModal({
             <button type="submit" disabled={!title.trim() || submitting}
               className="px-4 py-2 rounded-lg text-[12px] font-medium transition-opacity"
               style={{ background: 'var(--accent)', color: 'white', opacity: !title.trim() || submitting ? 0.5 : 1 }}>
-              {submitting ? 'Creating...' : 'Create event'}
+              {submitting ? (editEvent ? 'Saving...' : 'Creating...') : (editEvent ? 'Save changes' : 'Create event')}
             </button>
           </div>
         </form>

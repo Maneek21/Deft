@@ -1,5 +1,7 @@
 # Governed App Run operations
 
+> **Experimental in preview.15:** these operations are included in the published `v0.3.0-preview.15` core release. They are experimental and disabled by default.
+
 Governed App Runs are a disabled-by-default self-host opt-in with three controls.
 Exact `DEFT_APP_RUNS_ENABLED=true` enables key access, runtime composition, and
 draining of accepted work. Exact
@@ -20,6 +22,12 @@ and API startup rejects it. App-origin intake additionally requires
 | On | On | On | Both intake planes use the same governed engine |
 | Off | On | Any | Invalid startup configuration |
 | Off | Any | On | Invalid startup configuration |
+
+Bounded automations have one further opt-in: `DEFT_APP_AUTOMATIONS_ENABLED=true`.
+They require Apps, the Run engine and App-origin intake to be enabled together,
+plus the valid Run keyring described below. API startup rejects an incomplete
+flag combination. Keep legacy MCP cutover off unless you are separately
+validating that path.
 
 This feature has two independent operational assets: the additive PostgreSQL
 Run ledger and `DEFT_APP_RUN_KEYRINGS`. Back them up, restore them, and rotate
