@@ -9,8 +9,7 @@ notes before upgrading, and keep a tested backup of your workspace.
 
 ## Choose a version
 
-The latest published preview is **v0.3.0-preview.14**. The **v0.3.0-preview.15
-core preview is being prepared**; it is not yet a downloadable release.
+The latest published preview is **v0.3.0-preview.15**, a **core** release.
 Development on `master` may include changes absent from the published image.
 
 | Capability | Availability | How to start |
@@ -19,8 +18,8 @@ Development on `master` may include changes absent from the published image.
 | Defty | Available when an operator configures a supported AI provider | [AI and agent limits](current-limitations.md#ai-and-agents) |
 | Personal MCP access | Available; authentication and client support vary | [Connect an AI client](getting-started.md#connect-an-ai-client) |
 | Declarative Modules and internal Apps | Available as an opt-in alpha capability; use a matching release's authoring guide | [Build an internal App](getting-started.md#build-an-internal-app) |
-| Connected Apps and bounded scheduled actions | Implemented on master and included in the upcoming core candidate; experimental and disabled by default | [Connected App author guide](connected-app-author-guide.md) |
-| Certified Hermes bundle | Release-specific historical support; excluded from the upcoming core preview | Read the chosen release's compatibility and certification notes |
+| Connected Apps and bounded scheduled actions | Included in the published preview; experimental and disabled by default | [Connected App author guide](connected-app-author-guide.md) |
+| Certified Hermes bundle | Release-specific historical support; excluded from preview.15 | Read the chosen release's compatibility and certification notes |
 | Arbitrary custom App UI, public portals, external runtimes and sync | Planned; not a general-purpose contract available today | [Roadmap](../ROADMAP.md) |
 | Hosted Deft service | Not currently offered | Self-host using the supported Docker Compose path |
 

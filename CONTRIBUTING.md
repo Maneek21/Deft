@@ -25,6 +25,8 @@ pnpm install
 cp .env.example .env
 
 createdb deft
+# Set DATABASE_URL for this database and generate the four secrets in .env.
+# See docs/self-hosting.md before continuing.
 pnpm db:push-full
 pnpm db:seed
 pnpm dev

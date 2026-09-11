@@ -6,7 +6,9 @@ operator tasks for a self-hosted Deft workspace.
 ## Overview
 
 Self-hosted Deft is a single-workspace deployment. You run the PostgreSQL
-database and application stack yourself. Your data stays on your infrastructure.
+database and application stack yourself. Workspace storage is on your infrastructure;
+configured AI providers and external clients can receive workspace content as
+described under [AI data flow](#ai-data-flow).
 
 Each deployment supports one organisation. The first user to sign up becomes
 the workspace owner; everyone else joins through invite links generated from
@@ -25,30 +27,43 @@ Redis and BullMQ are not runtime dependencies. See the
 
 | Requirement | Notes |
 |---|---|
-| Docker Desktop 4.x+ | Includes Docker Compose v2 |
+| Docker Desktop or Docker Engine | A running Linux container engine and Compose v2 |
 | openssl | Used to generate secrets; ships with macOS, Linux, Git for Windows |
 | AI provider | Optional; configure later from Settings -> AI |
 
-The stack runs comfortably on 2 vCPU / 4 GB RAM for small pilots.
+Start with 2 vCPU / 4 GB RAM for a small evaluation and measure resource use on
+your workload. This is a starting configuration, not a capacity guarantee.
+Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 
 ## First Boot
 
-### Choose source build or named release
+### Recommended: prebuilt release
 
-The source-build path below is the most flexible option for contributors.
-Tagged preview releases also publish an amd64 image to
+For a fresh evaluation, follow the [README quick start](../README.md#quick-start-with-docker),
+which pins `v0.3.0-preview.15` and its image digest. Use that release's own Compose
+files and environment template together; this source checkout can differ from
+the published image. The source-build instructions below are for contributors.
+Tagged preview releases publish an amd64 image to
 `ghcr.io/maneek21/deft`. The release image injects `NEXT_PUBLIC_APP_URL`,
 `NEXT_PUBLIC_API_URL`, and `NEXT_PUBLIC_WS_URL` when the container starts, so
 the same image works on localhost or a custom domain.
 
 For a named release, download `docker-compose.yml`, `compose.prod.yml`,
 `compose.release.yml`, `default.env.example`, `self-hosting.md`,
-`release-manifest.json`, and `SHA256SUMS` from the GitHub release into one
-directory. Copy `default.env.example` to `.env`, then set:
+`release-manifest.json`, and `SHA256SUMS` from the selected GitHub release into
+a new directory. Copy
+`default.env.example` to `.env`. Generate separate values with `openssl rand -hex 32`
+for **all four** required secrets: `POSTGRES_PASSWORD`, `JWT_SECRET`,
+`JWT_REFRESH_SECRET`, and `ENCRYPTION_KEY`. Docker runs in production mode even
+on localhost. Set the image in `.env` (the tag has no leading `v`):
 
 ```bash
-DEFT_IMAGE=ghcr.io/maneek21/deft:<release-version>
+DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
 ```
+
+For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,
+and `NEXT_PUBLIC_WS_URL` to the browser-reachable URLs first. Keep their defaults
+for localhost ports 3000/3001. Leave provider keys empty for a basic evaluation.
 
 Use the release overlay in every application/tool command:
 
@@ -75,7 +90,7 @@ workflow and carry GitHub build provenance. Verify checksums and the image
 digest before deploying or installing the Hermes bundle:
 
 ```bash
-export TAG=v0.3.0-preview.14
+export TAG="$(jq -r .tag release-manifest.json)"
 export VERSION="${TAG#v}"
 export IMAGE=ghcr.io/maneek21/deft
 export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
@@ -85,6 +100,12 @@ cosign verify "$IMAGE@$DIGEST" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 gh attestation verify "oci://$IMAGE@$DIGEST" --repo Maneek21/Deft
 ```
+
+Verify downloaded assets against `SHA256SUMS`; older checksum files may name
+`default.env.example` as `.env.example`, so verify the unedited template under
+that name before copying it to `.env`. Do not compare your secret-filled `.env`
+against the template checksum. Image verification above additionally requires
+`jq`, Cosign, Docker Buildx, and GitHub CLI.
 
 Compare `DIGEST` with `release-manifest.json` and verify every downloaded asset
 against `SHA256SUMS`. For a Hermes-certified release, also confirm the manifest's
@@ -97,12 +118,18 @@ SBOM and corresponding source. Then set `DEFT_IMAGE` to the immutable
 Versioned release upgrades begin at `v0.2.0-preview.1` and use the dedicated
 `upgrade` service described below.
 
-### Fast path: one-command bootstrap
+Preview.15 is a core release and carries no new Hermes certification or
+integration bundle; a configured employee identity is not proof of a running
+external runtime.
+
+### Source checkout: bootstrap wrapper
 
 If you are working from a cloned repo with Node.js and pnpm available on the
-host, use the bootstrap wrapper:
+host, first complete the clone and configuration step below, then use the
+bootstrap wrapper:
 
 ```bash
+pnpm install --frozen-lockfile
 pnpm selfhost:bootstrap
 ```
 
@@ -146,6 +173,9 @@ openssl rand -hex 32   # paste into JWT_REFRESH_SECRET
 openssl rand -hex 32   # paste into ENCRYPTION_KEY
 ```
 
+All four are required for Docker, including local evaluation. `ENCRYPTION_KEY`
+must be a unique, non-placeholder secret of at least 32 characters.
+
 Leave `OLLAMA_URL` commented unless an Ollama server is actually running.
 Otherwise Deft will correctly show AI features as off until a provider is
 configured.
@@ -167,13 +197,15 @@ Corresponding Source you run, including the scripts needed to build and install
 it. The in-product `/license` page presents this link to users.
 
 If signup or login shows "Failed to fetch", the browser is probably trying to
-call the wrong API URL. Fix the `NEXT_PUBLIC_*` values and rebuild.
+call the wrong API URL. Fix the `NEXT_PUBLIC_*` values. Rebuild source images;
+for prebuilt releases, recreate the app container with `up -d --force-recreate deft`
+and the same three Compose files so startup injects the new URLs.
 
 ### 2. Start the stack
 
 ```bash
 docker compose build deft init doctor smoke
-docker compose up -d
+docker compose up -d postgres
 ```
 
 This builds the app and one-shot tool images, then starts Postgres with pgvector.
@@ -192,6 +224,11 @@ docker compose run --rm init
 The init service first refuses any database that already contains application
 tables, then runs `pnpm db:push-full && pnpm db:seed` inside the Deft image.
 No host Node.js or pnpm install is required for the Docker self-host path.
+After successful initialization, start the app:
+
+```bash
+docker compose up -d deft
+```
 
 `db:push-full` enables the `vector` extension, syncs the schema, and applies the
 supplemental SQL files for search indexes and safe metadata backfills that
@@ -222,7 +259,9 @@ exercise an authenticated MCP `tools/list` call, set `DEFT_MCP_BEARER_TOKEN` in
 ### 5. Open the app
 
 Open `http://localhost:3000`, create the first account, and keep that account as
-the owner/admin seat.
+the owner/admin seat. Post a message in a space, then create and update a task.
+Doctor and smoke check infrastructure and connector protocol behavior; they do
+not prove first login, chat, task creation, or a model-driven approval flow.
 
 ## Fresh Reset For A Pilot Or Internal Workspace
 
@@ -287,8 +326,9 @@ For production, use the overlay that does not publish Postgres to host ports:
 
 ```bash
 docker compose -f docker-compose.yml -f compose.prod.yml build deft init doctor smoke
-docker compose -f docker-compose.yml -f compose.prod.yml up -d
+docker compose -f docker-compose.yml -f compose.prod.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
+docker compose -f docker-compose.yml -f compose.prod.yml up -d deft
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm smoke
 ```
@@ -387,6 +427,60 @@ the same authority model. Use personal tokens when a human wants their own AI
 assistant to help with work. Use agent employee tokens when an autonomous or
 semi-autonomous runtime should show up as a shared coworker in Deft.
 
+### Identity, approvals, and action history
+
+Personal ChatGPT and other MCP connections act as the authorizing user. Scopes
+limit available tools; handlers also enforce the user's organization, role,
+membership, and resource access. Personal native writes execute under that user
+and do **not** automatically enter the Agent Employee approval queue. A personal
+client with `write:workspace` can also exercise the user's permitted approval
+actions, so grant that scope deliberately.
+
+Defty and Agent Employees use agent identities. The API routes governed writes
+through tool tiers and trust policy, then resolves required approvals on the
+server. In the shared tier policy, Conservative auto-executes `auto` actions,
+Standard also permits `quick`, and Autonomous also permits `full` except guarded
+destructive/admin operations. Individual workflows can require stricter review.
+Task creation is normally `quick`; posting a message is `full`. A task proposal
+in the walkthrough is not a promise that every configured task write pauses.
+
+The resolver checks review authority and action state and claims pending work
+before execution. Repeated approval of a completed action returns its existing
+state. Idempotency and stale-target checks vary by tool; do not assume global
+exactly-once execution or that every intervening edit invalidates a proposal.
+Inspect the proposed details and current target before approving.
+
+Personal token/grant revocation blocks subsequent authenticated calls. It does
+not undo completed writes or withdraw content already read by an external client.
+Governed agent actions use signed receipts; personal MCP calls have OAuth/MCP
+audit history. Receipts use a deployment-held HMAC secret, not independent
+third-party proof. Receipt recording can fail after a write succeeds, so inspect
+the resulting record and operational logs when reconciling an uncertain result.
+
+### Knowledge and AI data flow
+
+Knowledge capture stores durable wiki records and source citations. Visibility
+is scoped to the organization and, for restricted pages, the owner or space
+membership. A source link is evidence to inspect, not a guarantee that an AI
+summary is correct. Correct the durable knowledge record as well as the source
+when needed; do not assume editing a chat message rewrites every derived page or
+already-created task. Wiki editing and version history support human correction.
+
+#### AI data flow
+
+With a provider enabled, classification/extraction can send chat content to the
+configured model, and Defty can send prompts, retrieved messages, tasks, knowledge,
+and tool results needed for a request. Embedding and transcription features can
+send text or audio to their separately configured providers. Personal MCP clients
+and external employee runtimes receive the records returned by their permitted
+tools and have their own provider, retention, and cost policies. Self-hosting the
+workspace does not by itself keep model traffic local.
+
+Without a Deft AI provider, normal chat, tasks, notes, manual knowledge editing,
+calendar, and auth remain usable. Model-driven extraction and Defty reasoning
+need a provider; deterministic capture paths may still run. A personal MCP client
+can supply its own AI independently of Deft's provider configuration.
+
 ## Environment Variables
 
 | Variable | Required | Purpose | Default |
@@ -394,7 +488,7 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `POSTGRES_PASSWORD` | Yes | Database password for Compose Postgres | none |
 | `JWT_SECRET` | Yes | Signs access tokens | none |
 | `JWT_REFRESH_SECRET` | Yes | Signs refresh tokens | none |
-| `ENCRYPTION_KEY` | Production | Encrypts provider keys at rest; at least 32 chars | dev value |
+| `ENCRYPTION_KEY` | Yes for Docker/production | Encrypts stored credentials and signs receipts; at least 32 characters, unique and non-placeholder | none suitable for Docker |
 | `DEFT_APPS_ENABLED` | No | Exact `true` enables the experimental Apps API; keep aligned with the web build flag | `false` |
 | `NEXT_PUBLIC_FEATURE_APPS` | No | Build-time public flag that exposes Apps in the web bundle; changing it requires rebuilding the image | `false` |
 | `DEFT_APP_RUNS_ENABLED` | No | Exact `true` enables the App Run runtime and draining; invalid or missing keyrings then fail startup | `false` |
@@ -587,6 +681,13 @@ cd /path/to/original-release-directory
 export COMPOSE_PROJECT_NAME=deft
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml start deft
 ```
+
+### Content exports
+
+Available exports include wiki JSON/Markdown/CSV (`GET /api/wiki/export`, with
+`format=md` or `format=csv`), note Markdown download, and calendar ICS feeds.
+These are content exports, not a complete restorable workspace archive. Use
+Postgres, uploads, and configuration backups for recovery.
 
 ## Upgrading
 

@@ -1,6 +1,6 @@
 'use client';
 
-// Task 5.7 — Workflows settings page. Lists workflow_rules for the org
+// Task 5.7 — Task rules settings page. Lists workflow_rules for the org
 // and a minimal create form: trigger (status-changed + target status)
 // and action checkboxes (add_comment / assign_to / add_label / notify).
 import { useCallback, useEffect, useState } from 'react';
@@ -31,7 +31,7 @@ const TARGET_STATUSES: Array<{ value: string; label: string }> = [
   { value: 'cancelled', label: 'Cancelled' },
 ];
 
-export default function WorkflowsPage() {
+export default function TaskRulesPage() {
   const [rules, setRules] = useState<WorkflowRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -132,7 +132,7 @@ export default function WorkflowsPage() {
   };
 
   const handleDelete = async (rule: WorkflowRule) => {
-    if (!window.confirm(`Delete workflow "${rule.name}"?`)) return;
+    if (!window.confirm(`Delete task rule "${rule.name}"?`)) return;
     const res = await api.delete(`/api/workflows/${rule.id}`);
     if (res.ok) setRules((prev) => prev.filter((r) => r.id !== rule.id));
   };
@@ -140,10 +140,10 @@ export default function WorkflowsPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-[820px] mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-6">
+        <div className="mb-6 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
           <div>
             <h1 className="section-title" style={{ fontFamily: 'var(--font-heading)' }}>
-              Workflows
+              Task rules
             </h1>
             <p className="lede mt-0.5">
               Run deterministic task automations for simple, repeatable handoffs.
@@ -151,9 +151,9 @@ export default function WorkflowsPage() {
           </div>
           {!creating && (
             <button onClick={() => setCreating(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
+              className="flex min-h-10 shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
               style={{ background: 'var(--accent)' }}>
-              <Plus size={14} /> New workflow
+              <Plus size={14} /> New task rule
             </button>
           )}
         </div>
@@ -171,7 +171,7 @@ export default function WorkflowsPage() {
               <div className="flex items-center gap-2">
                 <Zap size={14} style={{ color: 'var(--accent)' }} />
                 <h3 className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>
-                  New workflow
+                  New task rule
                 </h3>
               </div>
               <button onClick={() => { resetForm(); setCreating(false); }} className="p-1 rounded-lg"
@@ -253,7 +253,7 @@ export default function WorkflowsPage() {
                 disabled={!name.trim() || selectedActions.size === 0}
                 className="px-4 h-9 rounded-lg text-[13px] font-medium text-white disabled:opacity-40"
                 style={{ background: 'var(--accent)' }}>
-                Create workflow
+                Create task rule
               </button>
             </div>
           </div>
@@ -269,7 +269,7 @@ export default function WorkflowsPage() {
             style={{ background: 'var(--surface-container-low)', border: '1px dashed var(--border-default, var(--outline-variant))' }}
           >
             <Zap size={28} className="mx-auto mb-3" style={{ color: 'var(--muted)' }} />
-            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>No workflows yet.</p>
+            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>No task rules yet.</p>
             <p className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>
               Start with a small rule like adding a label or notifying a lead when work moves to review.
             </p>

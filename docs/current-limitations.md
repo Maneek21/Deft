@@ -1,6 +1,8 @@
 # Current limitations
 
-Last reviewed September 7, 2026. The latest published preview is `v0.3.0-preview.14`; `master` also contains work for an unpublished `v0.3.0-preview.15` core candidate.
+Last reviewed September 8, 2026. The latest published preview is `v0.3.0-preview.15`, a core release.
+
+Installation and agent boundary notes updated September 11, 2026.
 
 Deft is an alpha. It is suitable for technical evaluation, internal use, and controlled pilots where an operator can tolerate breaking changes and investigate failures.
 
@@ -15,6 +17,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
   automatic downgrade. Operators should pin an image digest, back up Postgres
   and uploads, and rehearse restoring both with the previous image digest
   before updating.
+- Content exports are partial (wiki, notes, calendar); recovery requires database, uploads, and configuration backups.
 
 ## Deployment contract
 
@@ -26,9 +29,13 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 
 ## AI and agents
 
-- Core workspace features run without an AI provider; agent features do not.
+- Core workspace features run without a Deft AI provider. Defty reasoning needs one; personal MCP clients can use their own AI provider.
+- Personal MCP clients act as the authorizing user; their writes do not automatically enter the Agent Employee approval queue. See [identity and approval boundaries](self-hosting.md#identity-approvals-and-action-history).
+- Knowledge summaries can be wrong or outlive a correction to their source; review and correct durable knowledge and resulting tasks.
+- Self-hosted storage does not imply local AI processing: configured providers and permitted external clients can receive workspace content. See [AI data flow](self-hosting.md#ai-data-flow).
 - Model output is probabilistic. Deft validates structured drafts and applies permission and approval rules, but cannot guarantee perfect interpretation.
 - Agent employees require a separately operated compatible runtime. Deft does not host every external runtime or tool.
+- A seeded demo identity is not proof of a live Hermes integration. Preview.15 is a core release without new Hermes certification.
 - A healthy token or connection does not guarantee that an external runtime is online, subscribed, or able to finish assigned work.
 - Autonomous behavior remains bounded by scopes, trust, approvals, action caps, provider availability, and customer configuration.
 
@@ -43,7 +50,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 ## Apps and Modules
 
 - Apps are disabled by default. The API requires `DEFT_APPS_ENABLED=true`, and the web build requires `NEXT_PUBLIC_FEATURE_APPS=true`.
-- Connected App execution and bounded automations add further flags and operator review. They are implemented on `master` for the upcoming core candidate, not available in the current preview.14 image.
+- Connected App execution and bounded automations add further flags and operator review. They are included in preview.15, experimental, and disabled by default.
 - App Protocol v0 provides declarative internal records and native views. Current protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
 - A package's requested permissions are review input. The host owns installation, grants, connector binding, activation, and execution authority.
 

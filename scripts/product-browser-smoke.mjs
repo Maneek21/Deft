@@ -107,7 +107,7 @@ async function main() {
       ['/settings', 'Settings'],
       ['/settings/profile', 'Profile'],
       ['/settings/apps', 'Apps'],
-      ['/settings/mcp-access', 'What do you want to connect?'],
+      ['/settings/mcp-access', 'Your connections'],
     ]) {
       await settle(page, path);
       await page.getByRole('heading', { name: heading }).first().waitFor({ timeout: 10_000 });
@@ -116,6 +116,62 @@ async function main() {
       }
     }
     record('Navigate core settings surfaces');
+
+    await page.getByRole('searchbox', { name: 'Search connections' }).fill('no-such-smoke-connection');
+    await page.getByRole('heading', { name: 'No matching connections' }).waitFor();
+    await page.getByRole('button', { name: 'Clear search', exact: true }).click();
+    await page.getByRole('button', { name: 'Add connection', exact: true }).click();
+    await page.getByRole('heading', { name: 'Which app would you like to connect?', exact: true }).waitFor();
+    await page.getByRole('button', { name: /^Claude Code Use a personal token/ }).click();
+    await page.getByRole('button', { name: 'Review access', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Access level', exact: true }).selectOption('custom');
+    for (const width of [1440, 1024, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const setupOverflow = await page.locator('section[aria-labelledby="setup-heading"]').evaluate((section) => section.scrollWidth - section.clientWidth);
+      if (setupOverflow > 2) throw new Error(`Claude Code setup overflows its cards by ${setupOverflow}px at ${width}px`);
+      await page.getByRole('button', { name: 'Continue to connect', exact: true }).click();
+      await page.getByRole('textbox', { name: 'Connection name', exact: true }).fill('Smoke test draft');
+      const commandOverflow = await page.getByRole('textbox', { name: 'Connection name', exact: true }).evaluate((input) => {
+        const section = input.closest('section');
+        return section.scrollWidth - section.clientWidth;
+      });
+      if (commandOverflow > 2) throw new Error(`Claude Code command expands its card at ${width}px`);
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await page.getByRole('button', { name: 'Continue to connect', exact: true }).click();
+      if (await page.getByRole('textbox', { name: 'Connection name', exact: true }).inputValue() !== 'Smoke test draft') {
+        throw new Error('Connection name was lost between setup steps');
+      }
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+    }
+    record('Claude Code custom permissions stay inside setup cards at desktop, tablet and mobile widths');
+
+    for (const checkbox of await page.getByRole('checkbox').all()) await checkbox.uncheck();
+    if (await page.getByRole('button', { name: 'Continue to connect', exact: true }).isEnabled()) {
+      throw new Error('Setup permits an empty permission selection');
+    }
+    await page.getByRole('checkbox', { name: 'Read tasks, comments and progress', exact: true }).check();
+    await page.getByRole('button', { name: 'Continue to connect', exact: true }).click();
+    const personalConnectionName = `Browser smoke ${Date.now()}`;
+    await page.getByRole('textbox', { name: 'Connection name', exact: true }).fill(personalConnectionName);
+    await page.getByRole('button', { name: 'Generate token', exact: true }).click();
+    await page.getByRole('checkbox', { name: 'I have saved this token securely.', exact: true }).waitFor({ timeout: 10_000 });
+    if (await page.getByRole('button', { name: 'Check connection', exact: true }).isEnabled()) {
+      throw new Error('Setup skipped the one-time token acknowledgement');
+    }
+    await page.getByRole('checkbox', { name: 'I have saved this token securely.', exact: true }).check();
+    await page.getByRole('button', { name: 'Check connection', exact: true }).click();
+    await page.getByRole('heading', { name: 'Waiting for the first request', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Your connections', exact: true }).click();
+    await page.getByRole('searchbox', { name: 'Search connections' }).fill(personalConnectionName);
+    await page.getByText(personalConnectionName, { exact: true }).click();
+    await page.getByRole('button', { name: 'Revoke access', exact: true }).click();
+    await page.getByRole('button', { name: 'Keep connection', exact: true }).click();
+    await page.getByRole('button', { name: 'Revoke access', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm revoke', exact: true }).click();
+    await page.getByRole('heading', { name: 'No matching connections', exact: true }).waitFor();
+    await page.getByRole('button', { name: /^Connection history/ }).click();
+    await page.locator('summary').filter({ hasText: personalConnectionName }).waitFor();
+    record('Create, acknowledge, inspect and revoke a personal connection without exposing its token');
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await settle(page, '/settings/modules');
