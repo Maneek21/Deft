@@ -88,7 +88,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - run: pnpm install --frozen-lockfile
@@ -203,7 +203,7 @@ jobs:
 
       - name: Download Hermes employee certification
         if: needs.scope.outputs.release_scope == 'hermes-certified'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hermes-employee-release-certification
           path: dist
@@ -352,7 +352,7 @@ jobs:
             "${{ steps.release.outputs.sha }}"
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0.24.0
+        uses: anchore/sbom-action@v0.24.2
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
           format: spdx-json
