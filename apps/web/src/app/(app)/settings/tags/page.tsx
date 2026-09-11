@@ -156,22 +156,23 @@ export default function TagsPage() {
         {/* Create tag */}
         {creating && (
           <div className="mb-6 p-4 rounded-xl" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-5 h-5 rounded-full flex-shrink-0" style={{ background: newColor }} />
+            <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 sm:flex">
+              <div className="hidden w-5 h-5 rounded-full flex-shrink-0 sm:block" style={{ background: newColor }} />
               <input autoFocus value={newName}
                 onChange={e => setNewName(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setCreating(false); }}
                 placeholder="Tag name (e.g. launch, q3-planning)"
-                className="flex-1 h-9 px-3 rounded-lg text-[13px] outline-none"
+                aria-label="Tag name"
+                className="col-span-2 min-w-0 w-full flex-1 h-9 px-3 rounded-lg text-[13px] outline-none"
                 style={{ background: 'var(--input-bg)', color: 'var(--foreground)', border: '1px solid var(--input-border)' }} />
               <button onClick={handleCreate} className="px-4 h-9 rounded-lg text-[13px] font-medium text-white"
                 style={{ background: 'var(--accent)' }}>Create</button>
-              <button onClick={() => setCreating(false)} className="p-2 rounded-lg" style={{ color: 'var(--muted)' }}>
+              <button aria-label="Cancel tag creation" onClick={() => setCreating(false)} className="p-2 rounded-lg" style={{ color: 'var(--muted)' }}>
                 <X size={16} /></button>
             </div>
             <div className="flex gap-1.5 flex-wrap">
               {TAG_COLORS.map(c => (
-                <button key={c} onClick={() => setNewColor(c)}
+                <button key={c} aria-label={`Choose tag color ${c}`} aria-pressed={newColor === c} onClick={() => setNewColor(c)}
                   className="w-6 h-6 rounded-full transition-all"
                   style={{ background: c, boxShadow: newColor === c ? `0 0 0 2px var(--background), 0 0 0 4px ${c}` : 'none' }} />
               ))}

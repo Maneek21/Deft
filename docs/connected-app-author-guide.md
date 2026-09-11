@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Upcoming core candidate:** this connected-App and bounded-automation flow is implemented on `master` for the unpublished `v0.3.0-preview.15` core candidate. It is experimental and disabled by default. It is not available in the latest published `v0.3.0-preview.14` image.
+> **Experimental in preview.15:** this connected-App and bounded-automation flow is included in the published `v0.3.0-preview.15` core release. It is experimental and disabled by default.
 
 This guide shows how to build a connected App, check that it matches the host,
 and submit it for workspace review. It supports App Protocol v1 connected Apps

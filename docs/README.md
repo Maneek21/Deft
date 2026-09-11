@@ -16,7 +16,7 @@
 ## Operator and integration guides
 
 - [Connected App author guide](connected-app-author-guide.md)
-- [Historical Hermes compatibility guide](../integrations/hermes/deft-platform/README.md) (use only with a release that explicitly certifies it; excluded from the upcoming core preview)
+- [Historical Hermes compatibility guide](../integrations/hermes/deft-platform/README.md) (use only with a release that explicitly certifies it; excluded from the preview.15 core release)
 - [Legacy Hermes Agent Channel bridge rollback](hermes-agent-channel-service.md)
 - Public product capabilities: [FEATURES.md](../FEATURES.md)
 

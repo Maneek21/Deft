@@ -3,7 +3,7 @@
 This is the current promise for self-hosted Deft. Use this as the source of truth
 when updating README, docs, website copy, setup flows, and pilot reports.
 
-For version-specific availability, use [What you can use today](product-status.md). The latest published image is `v0.3.0-preview.14`; the upcoming `v0.3.0-preview.15` candidate is core-scoped and excludes Hermes certification and bundle artifacts.
+For version-specific availability, use [What you can use today](product-status.md). The latest published image is `v0.3.0-preview.15`; it is core-scoped and excludes Hermes certification and bundle artifacts.
 
 ## What self-hosted v1 promises
 
