@@ -126,7 +126,9 @@ Human employees can connect their own AI client from Settings -> Connections.
 - Read-only and work-capable scope bundles
 - Tokens act as the user who created them and inherit that user's workspace access
 - Connection history, last use, recent actions, scopes, and revocation
-- Idempotency support on write tools to reduce duplicate agent actions
+- Tool-specific idempotency support to reduce duplicate writes; clients must follow the selected tool's retry contract
+
+Personal native writes act under the user's scopes and normal permissions; they do not automatically enter the Agent Employee approval queue. A `write:workspace` grant can include the user's permitted approval actions. See [identity and approval boundaries](docs/self-hosting.md#identity-approvals-and-action-history).
 
 Representative MCP tools cover:
 
@@ -161,7 +163,7 @@ Deft supports provider-neutral AI configuration:
 - OpenAI-compatible endpoints
 - Local Ollama-style endpoints
 
-Provider keys are optional. Core workspace functionality remains available without AI.
+Provider keys are optional. Core workspace functionality remains available without AI. Configured models can receive prompts and workspace context; embedding/transcription providers can receive text/audio. Personal MCP clients use their own provider settings. See [AI data flow](docs/self-hosting.md#ai-data-flow).
 
 ## Self-hosting and operations
 
@@ -174,7 +176,7 @@ Provider keys are optional. Core workspace functionality remains available witho
 - Production guidance for VPS, domain, HTTPS, and reverse proxy setup
 - Synthetic 60-person certification tooling for isolation, bulk operations, job backlog, notification volume, and recovery exercises
 
-Fresh installs use `pnpm db:push-full`. Supported release-to-release upgrades use `pnpm db:upgrade` from the `v0.2.0-preview.1` baseline; see [current limitations](docs/current-limitations.md).
+Fresh installs use `init` (`pnpm db:push-full` plus platform seed). Supported versioned upgrades begin at `v0.2.0-preview.1` and use the backup-first `pnpm selfhost:upgrade` flow. Upgrades are forward-only; recovery requires the previous image, database, uploads, and configuration. See [self-hosting](docs/self-hosting.md#upgrading).
 
 ## Apps and Modules
 
