@@ -696,7 +696,7 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
               }}
               aria-expanded={advancedOpen}
             >
-              <span className="text-[0.625rem] font-semibold uppercase tracking-[0.06em]">Advanced</span>
+              <span className="text-[0.625rem] font-semibold uppercase tracking-[0.06em]">{advancedGroup.label}</span>
               <ChevronDown size={13} className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
             </button>
             {advancedOpen && (

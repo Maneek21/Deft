@@ -48,7 +48,7 @@ Generate required secrets:
 openssl rand -hex 32   # POSTGRES_PASSWORD
 openssl rand -hex 32   # JWT_SECRET
 openssl rand -hex 32   # JWT_REFRESH_SECRET
-openssl rand -base64 24 | cut -c1-32   # ENCRYPTION_KEY, exactly 32 chars
+openssl rand -hex 32   # ENCRYPTION_KEY, at least 32 characters
 ```
 
 Set the public URLs in `.env`:

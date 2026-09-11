@@ -1,0 +1,47 @@
+.settings {
+  display: contents;
+  --border: color-mix(in srgb, var(--text-primary) 17%, transparent);
+  --border-default: var(--border);
+  --border-strong: color-mix(in srgb, var(--text-primary) 28%, transparent);
+  --settings-action: #7056dc;
+}
+
+.settings :is(button, a, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.settings :is(input, textarea, select) {
+  max-width: 100%;
+  accent-color: var(--accent);
+}
+
+.settings :is(input:not([type='checkbox']):not([type='radio']):not([type='file']), select) {
+  min-height: 2.5rem;
+}
+
+.settings textarea {
+  line-height: 1.6;
+}
+
+.settings :is(button, summary) {
+  transition: box-shadow 140ms ease, background-color 140ms ease;
+}
+
+.settings button:not(:disabled):hover {
+  box-shadow: inset 0 0 0 100px color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.settings button:disabled {
+  cursor: not-allowed;
+}
+
+.settings :is(h1, h2, h3) {
+  text-wrap: balance;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings :is(button, summary) {
+    transition: none;
+  }
+}

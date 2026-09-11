@@ -1,13 +1,13 @@
 # Getting started
 
-Choose the journey that matches what you want to evaluate. The latest downloadable image is `v0.3.0-preview.14`. Work described as part of the upcoming `v0.3.0-preview.15` core candidate is present in source but is not yet a published release.
+Choose the journey that matches what you want to evaluate. The latest downloadable image is `v0.3.0-preview.15`.
 
 ## Start a team workspace
 
-You need Docker Compose and `openssl`. Download the [preview.14 release assets](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14) into an empty directory, copy `default.env.example` to `.env`, and use a separate `openssl rand -hex 32` value for each required secret: `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and `ENCRYPTION_KEY`.
+You need Docker Compose and `openssl`. Download the [preview.15 release assets](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15) into an empty directory, copy `default.env.example` to `.env`, and use a separate `openssl rand -hex 32` value for each required secret: `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and `ENCRYPTION_KEY`.
 
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.14
+export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
@@ -29,7 +29,7 @@ Ask the client to list your tasks or search visible workspace knowledge. A succe
 This source/tarball path avoids assuming that `@deft/app-kit` is available from a public registry. Use a checkout matching the host release and Node.js 22.13+ with pnpm 11.10.0.
 
 ```bash
-git clone --branch v0.3.0-preview.14 --depth 1 https://github.com/Maneek21/Deft.git deft-app-source
+git clone --branch v0.3.0-preview.15 --depth 1 https://github.com/Maneek21/Deft.git deft-app-source
 cd deft-app-source
 pnpm install
 mkdir -p "$HOME/deft-artifacts"
@@ -37,7 +37,7 @@ pnpm --dir packages/app-kit pack --pack-destination "$HOME/deft-artifacts"
 mkdir -p "$HOME/deft-apps/hello-workspace"
 cd "$HOME/deft-apps/hello-workspace"
 pnpm init
-pnpm add --save-dev "$HOME/deft-artifacts/deft-app-kit-0.1.0-alpha.0.tgz"
+pnpm add --save-dev "$HOME/deft-artifacts/deft-app-kit-0.1.0-alpha.2.tgz"
 pnpm exec deft app init
 pnpm exec deft app check
 pnpm exec deft app build
@@ -45,8 +45,8 @@ pnpm exec deft app doctor --url http://localhost:3001
 pnpm exec deft app install-local --url http://localhost:3001
 ```
 
-These commands use the published preview.14 and its App Kit `0.1.0-alpha.0`. The upcoming core candidate uses `0.1.0-alpha.2`; use the guide from the same release as your host.
+These commands use the published preview.15 and its App Kit `0.1.0-alpha.2`. Use the guide from the same release as your host.
 
 The host API must have `DEFT_APPS_ENABLED=true` and `DEFT_APP_DEVELOPER_PAIRING_ENABLED=true`; the web build needs `NEXT_PUBLIC_FEATURE_APPS=true`. In **Settings → Apps**, an owner or admin creates the one-time developer pairing code; enter it when `install-local` prompts. For Protocol v0, a successful install stages and activates a Deft-rendered internal App. Open **Apps** and confirm its native navigation and Module view.
 
-Connected Apps and bounded daily actions are an experimental path in the upcoming core candidate. They require separate review, grants, bindings, activation, and additional operator flags. Follow the [connected App author guide](connected-app-author-guide.md) and [App Run operator guide](app-run-operations.md). Current protocols do not provide arbitrary custom UI or public portals.
+Connected Apps and bounded daily actions are an experimental path in preview.15. They require separate review, grants, bindings, activation, and additional operator flags. Follow the [connected App author guide](connected-app-author-guide.md) and [App Run operator guide](app-run-operations.md). Current protocols do not provide arbitrary custom UI or public portals.

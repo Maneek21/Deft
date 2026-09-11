@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
+import { SettingsSectionNav } from '@/components/settings-section-nav';
 import {
   Calendar,
   Copy,
@@ -84,23 +85,30 @@ function nextSyncAt(sub: Subscription): string {
 }
 
 export default function CalendarSettingsPage() {
+  const [section, setSection] = useState<'connected' | 'share'>('connected');
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-6 max-w-[720px]">
-        <div className="mb-6">
-          <h2
-            className="text-[18px] font-semibold"
+      <div className="mx-auto w-full min-w-0 max-w-4xl px-4 py-7 md:px-6">
+        <div className="mb-6 border-b pb-6" style={{ borderColor: 'var(--border)' }}>
+          <h1
+            className="text-2xl font-semibold tracking-tight"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
-            Calendar sync
-          </h2>
-          <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
+            Calendar connections
+          </h1>
+          <p className="text-sm mt-2 leading-6" style={{ color: 'var(--foreground-secondary)' }}>
             Connect calendars with ICS links: show Deft work in your calendar, and read external calendar events into Deft without OAuth.
           </p>
         </div>
 
-        <OutboundSection />
-        <InboundSection />
+        <SettingsSectionNav
+          label="Calendar settings sections"
+          sections={[{ id: 'connected', label: 'Connected calendars' }, { id: 'share', label: 'Share Deft calendar' }]}
+          value={section}
+          onChange={setSection}
+        />
+        <div hidden={section !== 'connected'}><InboundSection /></div>
+        <div hidden={section !== 'share'}><OutboundSection /></div>
       </div>
     </div>
   );
@@ -156,12 +164,12 @@ function OutboundSection() {
   return (
     <section className="mb-10">
       <h3
-        className="text-[11px] font-semibold uppercase tracking-wide mb-1"
+        className="text-sm font-semibold mb-1"
         style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
       >
         Show Deft in your calendar
       </h3>
-      <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
+      <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
         Paste this URL into your calendar app to see your Deft tasks alongside your other events. Your calendar app re-fetches automatically — no OAuth, no plugin.
       </p>
 
@@ -177,10 +185,10 @@ function OutboundSection() {
             <Calendar size={14} />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>
+            <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>
               Your personal Deft feed URL
             </p>
-            <p className="text-[12px] mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
+            <p className="text-sm mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
               Tasks with due dates and synced events for the next 12 months.
             </p>
           </div>
@@ -189,7 +197,7 @@ function OutboundSection() {
         <div className="mt-3">
           {error && (
             <div
-              className="mb-2 px-3 py-2 text-[12px] rounded"
+              className="mb-2 px-3 py-2 text-sm rounded"
               style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}
             >
               {error}
@@ -197,7 +205,7 @@ function OutboundSection() {
           )}
 
           {loading ? (
-            <div className="h-9 flex items-center text-[12px]" style={{ color: 'var(--muted)' }}>
+            <div className="h-9 flex items-center text-sm" style={{ color: 'var(--muted)' }}>
               <Loader2 size={13} className="animate-spin mr-2" /> Loading…
             </div>
           ) : feedUrl ? (
@@ -207,13 +215,13 @@ function OutboundSection() {
                 readOnly
                 value={feedUrl}
                 onFocus={(e) => e.currentTarget.select()}
-                className="flex-1 h-9 px-3 text-[12px] rounded-md outline-none font-mono"
+                className="flex-1 h-9 px-3 text-sm rounded-md outline-none font-mono"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
               />
               <button
                 type="button"
                 onClick={copy}
-                className="h-9 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md"
+                className="h-9 px-3 flex items-center gap-1.5 text-sm font-medium rounded-md"
                 style={{
                   background: copied ? 'var(--accent)' : 'var(--surface)',
                   color: copied ? 'white' : 'var(--foreground)',
@@ -231,7 +239,7 @@ function OutboundSection() {
         <button
           type="button"
           onClick={() => setHowToOpen((v) => !v)}
-          className="mt-3 inline-flex items-center gap-1 text-[12px]"
+          className="mt-3 inline-flex items-center gap-1 text-sm"
           style={{ color: 'var(--muted)' }}
         >
           {howToOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -239,7 +247,7 @@ function OutboundSection() {
         </button>
 
         {howToOpen && (
-          <div className="mt-2 space-y-2 text-[12px] leading-relaxed" style={{ color: 'var(--foreground-secondary)' }}>
+          <div className="mt-2 space-y-2 text-sm leading-relaxed" style={{ color: 'var(--foreground-secondary)' }}>
             <p>
               <span className="font-medium" style={{ color: 'var(--foreground)' }}>Apple Calendar.</span>{' '}
               File → New Calendar Subscription → paste the URL.
@@ -260,7 +268,7 @@ function OutboundSection() {
           {confirmRegen ? (
             <div className="flex flex-wrap items-center gap-2">
               <span
-                className="inline-flex items-center gap-1.5 text-[12px]"
+                className="inline-flex items-center gap-1.5 text-sm"
                 style={{ color: 'var(--foreground-secondary)' }}
               >
                 <AlertCircle size={12} />
@@ -271,7 +279,7 @@ function OutboundSection() {
                   type="button"
                   onClick={() => setConfirmRegen(false)}
                   disabled={regenerating}
-                  className="h-8 px-3 text-[12px] font-medium rounded-md"
+                  className="h-8 px-3 text-sm font-medium rounded-md"
                   style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
                 >
                   Cancel
@@ -280,7 +288,7 @@ function OutboundSection() {
                   type="button"
                   onClick={regenerate}
                   disabled={regenerating}
-                  className="h-8 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
+                  className="h-8 px-3 flex items-center gap-1.5 text-sm font-medium rounded-md disabled:opacity-50"
                   style={{ background: 'var(--error)', color: 'white' }}
                 >
                   <RefreshCw size={12} className={regenerating ? 'animate-spin' : ''} />
@@ -293,7 +301,7 @@ function OutboundSection() {
               type="button"
               onClick={() => setConfirmRegen(true)}
               disabled={!feedUrl}
-              className="inline-flex items-center gap-1.5 text-[12px] disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 text-sm disabled:opacity-50"
               style={{ color: 'var(--muted)' }}
             >
               <KeyRound size={12} />
@@ -328,7 +336,7 @@ function InboundSection() {
     <section>
       <div className="flex items-center justify-between mb-1">
         <h3
-          className="text-[11px] font-semibold uppercase tracking-wide"
+          className="text-sm font-semibold"
           style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
         >
           Connect external calendars to Deft
@@ -336,15 +344,15 @@ function InboundSection() {
         {!showAdd && (
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1 px-3 py-1 rounded-md text-[12px] font-medium"
-            style={{ background: 'var(--accent)', color: 'white' }}
+            className="flex items-center gap-1 px-3 py-1 rounded-md text-sm font-medium"
+            style={{ background: 'var(--settings-action)', color: 'white' }}
           >
             <Plus size={12} />
             Add
           </button>
         )}
       </div>
-      <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
+      <p className="text-sm mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
         Paste a secret ICS feed URL from Google, iCloud, or Outlook to read those events into Deft. The agent uses them for context — nothing's sent back.
       </p>
 
@@ -361,14 +369,14 @@ function InboundSection() {
       <div className="space-y-2 mb-3">
         {loading ? (
           <div
-            className="p-4 rounded-lg flex items-center gap-2 text-[12px]"
+            className="p-4 rounded-lg flex items-center gap-2 text-sm"
             style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--muted)' }}
           >
             <Loader2 size={13} className="animate-spin" /> Loading subscriptions…
           </div>
         ) : subs.length === 0 ? (
           <div
-            className="p-4 rounded-lg text-[12px] leading-relaxed"
+            className="p-4 rounded-lg text-sm leading-relaxed"
             style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--muted)' }}
           >
             No inbound calendar subscriptions yet. Add one above to start ingesting events.
@@ -388,7 +396,7 @@ function InboundSection() {
       <button
         type="button"
         onClick={() => setWhereOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-[12px]"
+        className="inline-flex items-center gap-1 text-sm"
         style={{ color: 'var(--muted)' }}
       >
         {whereOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -396,7 +404,7 @@ function InboundSection() {
       </button>
 
       {whereOpen && (
-        <div className="mt-2 space-y-2 text-[12px] leading-relaxed" style={{ color: 'var(--foreground-secondary)' }}>
+        <div className="mt-2 space-y-2 text-sm leading-relaxed" style={{ color: 'var(--foreground-secondary)' }}>
           <p>
             <span className="font-medium" style={{ color: 'var(--foreground)' }}>Google Calendar.</span>{' '}
             Settings → Settings for my calendars → pick the calendar → Integrate calendar → "Secret address in iCal format".
@@ -483,12 +491,12 @@ function AddSubscriptionForm({
       style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
     >
       {err && (
-        <div className="px-3 py-2 text-[12px] rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
+        <div className="px-3 py-2 text-sm rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
           {err}
         </div>
       )}
       <div>
-        <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+        <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
           Calendar provider
         </label>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-1">
@@ -508,12 +516,12 @@ function AddSubscriptionForm({
             </button>
           ))}
         </div>
-        <p className="mt-2 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+        <p className="mt-2 text-sm leading-relaxed" style={{ color: 'var(--muted)' }}>
           {selectedProvider.hint}
         </p>
       </div>
       <div>
-        <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+        <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
           ICS URL
         </label>
         <input
@@ -523,7 +531,7 @@ function AddSubscriptionForm({
           placeholder="https://calendar.google.com/… or webcal://…"
           autoFocus
           required
-          className="w-full h-9 px-3 text-[13px] rounded-md outline-none font-mono"
+          className="w-full h-9 px-3 text-sm rounded-md outline-none font-mono"
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
         />
       </div>
@@ -531,10 +539,10 @@ function AddSubscriptionForm({
         <div className="rounded-md p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
           <div className="flex items-center justify-between gap-2">
             <div>
-              <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>
+              <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>
                 {preview.calendar_name || 'Calendar feed'}
               </p>
-              <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+              <p className="text-sm" style={{ color: 'var(--muted)' }}>
                 Found {preview.event_count} event{preview.event_count === 1 ? '' : 's'}.
               </p>
             </div>
@@ -545,7 +553,7 @@ function AddSubscriptionForm({
           {preview.upcoming.length > 0 && (
             <div className="mt-3 space-y-1">
               {preview.upcoming.map((event) => (
-                <div key={event.uid} className="flex justify-between gap-3 text-[12px]">
+                <div key={event.uid} className="flex justify-between gap-3 text-sm">
                   <span className="truncate" style={{ color: 'var(--foreground-secondary)' }}>{event.title}</span>
                   <span className="shrink-0" style={{ color: 'var(--muted)' }}>{formatDateTime(event.starts_at)}</span>
                 </div>
@@ -556,7 +564,7 @@ function AddSubscriptionForm({
       )}
       <div className="flex gap-3">
         <div className="flex-1">
-          <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+          <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
             Label <span className="font-normal normal-case" style={{ color: 'var(--muted)' }}>(optional)</span>
           </label>
           <input
@@ -565,18 +573,18 @@ function AddSubscriptionForm({
             onChange={(e) => setLabel(e.target.value)}
             placeholder="Personal calendar"
             maxLength={120}
-            className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
+            className="w-full h-9 px-3 text-sm rounded-md outline-none"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
           />
         </div>
         <div>
-          <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+          <label className="text-sm font-semibold block mb-1.5" style={{ color: 'var(--muted)' }}>
             Sync every
           </label>
           <select
             value={interval}
             onChange={(e) => setInterval(Number(e.target.value))}
-            className="h-9 px-2 text-[13px] rounded-md outline-none"
+            className="h-9 px-2 text-sm rounded-md outline-none"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
           >
             {INTERVAL_OPTIONS.map((o) => (
@@ -592,7 +600,7 @@ function AddSubscriptionForm({
           type="button"
           onClick={onCancel}
           disabled={submitting}
-          className="h-9 px-3 text-[12px] font-medium rounded-md"
+          className="h-9 px-3 text-sm font-medium rounded-md"
           style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
         >
           Cancel
@@ -601,7 +609,7 @@ function AddSubscriptionForm({
           type="button"
           onClick={previewFeed}
           disabled={previewing || submitting || !url.trim()}
-          className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
+          className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-medium rounded-md disabled:opacity-50"
           style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
         >
           <Eye size={12} />
@@ -610,8 +618,8 @@ function AddSubscriptionForm({
         <button
           type="submit"
           disabled={submitting || previewing || !url.trim()}
-          className="h-9 px-4 text-[12px] font-medium rounded-md disabled:opacity-50"
-          style={{ background: 'var(--accent)', color: 'white' }}
+          className="h-9 px-4 text-sm font-medium rounded-md disabled:opacity-50"
+          style={{ background: 'var(--settings-action)', color: 'white' }}
         >
           {submitting ? 'Adding…' : 'Add subscription'}
         </button>
@@ -690,7 +698,7 @@ function SubscriptionRow({
           <Calendar size={14} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-medium truncate" style={{ color: 'var(--foreground)' }}>
+          <p className="text-sm font-medium truncate" style={{ color: 'var(--foreground)' }}>
             {displayLabel}
           </p>
           {sub.label && (
@@ -756,7 +764,7 @@ function SubscriptionRow({
             onClick={sync}
             disabled={syncing}
             title="Sync now"
-            className="h-8 px-2 inline-flex items-center gap-1 text-[12px] font-medium rounded-md disabled:opacity-50"
+            className="h-8 px-2 inline-flex items-center gap-1 text-sm font-medium rounded-md disabled:opacity-50"
             style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
           >
             <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />

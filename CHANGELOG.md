@@ -10,7 +10,7 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
-Planned for the v0.3.0-preview.15 core preview. Publication is pending release checks.
+## [0.3.0-preview.15] — 2026-09-08
 
 ### Added
 
@@ -46,8 +46,8 @@ Planned for the v0.3.0-preview.15 core preview. Publication is pending release c
 
 ### Release and upgrade notes
 
-- The next preview is a **core** release. Hermes is not certified or
-  distributed as a supported integration bundle for this candidate. Existing
+- This is a **core** release. Hermes is not certified or distributed as a
+  supported integration bundle for this release. Existing
   integration source and historical certification records are not new proof.
 - The schema advances to `0.3.0-preview.29`, including durable browser-session
   state and scoped native-create identities. Back up first and use the documented
@@ -443,7 +443,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.14...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.15...HEAD
+[0.3.0-preview.15]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15
 [0.3.0-preview.14]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.14
 [0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13
 [0.3.0-preview.12]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12
