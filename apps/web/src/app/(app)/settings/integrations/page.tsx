@@ -176,15 +176,15 @@ export default function IntegrationsPage() {
     <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[640px]">
       <h1 className="text-[1.5rem] font-semibold mb-1" style={{ color: 'var(--on-surface)' }}>
-        Agent tool servers
+        Tool connections
       </h1>
       <p className="text-[0.8125rem] mb-6" style={{ color: 'var(--outline)' }}>
         Connect MCP-compatible tool servers that extend what agent employees can do. Personal AI apps and calendar feeds are managed in their own settings.
       </p>
 
       <div className="grid gap-3 md:grid-cols-3 mb-6">
-        <IntegrationRoute icon={CalendarDays} title="Calendar feeds" body="Subscribe to ICS calendars and publish your Deft task feed." href="/settings/calendar" />
-        <IntegrationRoute icon={Bot} title="Personal AI apps" body="Connect Claude, Codex, and other MCP clients as yourself." href="/settings/mcp-access" />
+        <IntegrationRoute icon={CalendarDays} title="Calendar connections" body="Subscribe to ICS calendars and publish your Deft task feed." href="/settings/calendar" />
+        <IntegrationRoute icon={Bot} title="Personal AI connections" body="Connect Claude, Codex, and other MCP clients as yourself." href="/settings/mcp-access" />
         <IntegrationRoute icon={Users} title="Shared agents" body="Onboard agent employees for the whole workspace." href="/settings/agent-employees" />
       </div>
 

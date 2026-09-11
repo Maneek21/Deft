@@ -11,12 +11,12 @@ This roadmap communicates direction, not delivery dates. Deft is an alpha and pr
 - Replace stale repository claims with current product proof
 - Keep permission, org isolation, and private-space tests mandatory
 
-## Upcoming core preview
+## Current core preview
 
-- Publish the prepared `v0.3.0-preview.15` core candidate after its release gates pass
-- Ship connected Apps and bounded scheduled actions as experimental, opt-in capabilities
-- Keep the release explicitly core-scoped; Hermes certification and its bundle are excluded
-- Publish operational release notes, checksums, provenance, SBOM, and the exact tested revision
+- `v0.3.0-preview.15` is published as a core release
+- Connected Apps and bounded scheduled actions ship as experimental, opt-in capabilities
+- Hermes certification and its bundle are excluded from this release
+- Release assets include operational notes, checksums, provenance, SBOM, and the exact revision
 
 ## Before stable v1
 

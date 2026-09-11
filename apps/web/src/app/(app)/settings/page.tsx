@@ -18,16 +18,16 @@ import {
   Users,
   Workflow,
 } from 'lucide-react';
-import { APPS_ENABLED } from '@/lib/feature-flags';
 
-const overviewCards = [
-  { title: 'Profile', body: 'Identity, status, notifications, and security.', href: '/settings/profile', icon: UserRound, admin: false },
-  { title: 'People & teams', body: 'Membership, access, ownership, and team context.', href: '/settings/members', icon: Users, admin: true },
-  { title: 'Modules', body: 'Install workspace modules and govern their agent access.', href: '/settings/modules', icon: Boxes, admin: true },
-  ...(APPS_ENABLED ? [{ title: 'Apps', body: 'Expand Deft with locally authored declarative Apps.', href: '/settings/apps', icon: Boxes, admin: true }] : []),
-  { title: 'Calendar', body: 'Bring external calendar context into Deft or subscribe to Deft events.', href: '/settings/calendar', icon: CalendarDays, admin: false },
-  { title: 'AI connections', body: 'Connect Codex, Claude, ChatGPT, and other MCP clients.', href: '/settings/mcp-access', icon: Workflow, admin: false },
-  { title: 'Agent employees', body: 'Operate shared agents as accountable members of the workspace.', href: '/settings/agent-employees', icon: Bot, admin: true },
+const overviewLinks = [
+  { href: '/settings/profile', icon: UserRound },
+  { href: '/settings/members', icon: Users },
+  { href: '/settings/teams', icon: Users },
+  { href: '/settings/apps', icon: Boxes },
+  { href: '/settings/modules', icon: Boxes },
+  { href: '/settings/calendar', icon: CalendarDays },
+  { href: '/settings/mcp-access', icon: Workflow },
+  { href: '/settings/agent-employees', icon: Bot },
 ] as const;
 
 export default function SettingsPage() {
@@ -37,6 +37,10 @@ export default function SettingsPage() {
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
   const groups = getSettingsNavGroups(user?.role ?? 'member');
   const availableItems = groups.flatMap((group) => group.items);
+  const overviewCards = overviewLinks.flatMap(({ href, icon }) => {
+    const item = availableItems.find((candidate) => candidate.href === href);
+    return item ? [{ title: item.name, body: item.description, href, icon }] : [];
+  });
   const results = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return [];
@@ -99,7 +103,7 @@ export default function SettingsPage() {
         <section>
           <h2 className="mb-3 text-[12px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--text-tertiary)' }}>Common settings</h2>
           <div className="grid gap-3 md:grid-cols-2">
-            {overviewCards.filter((card) => !card.admin || isAdmin).map(({ title, body, href, icon: Icon }) => (
+            {overviewCards.map(({ title, body, href, icon: Icon }) => (
               <Link key={href} href={href} className="deft-soft-card group flex items-start gap-3 p-4">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: 'var(--surface-container-low)', color: 'var(--accent)' }}><Icon size={17} /></div>
                 <div className="min-w-0 flex-1"><h3 className="text-[14px] font-semibold" style={{ color: 'var(--foreground)' }}>{title}</h3><p className="mt-1 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>{body}</p></div>
@@ -112,8 +116,8 @@ export default function SettingsPage() {
         {isAdmin && (
           <section className="mt-6 border-t pt-5" style={{ borderColor: 'var(--border-default)' }}>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div><h2 className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>Advanced administration</h2><p className="mt-0.5 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>Automation, recovery, providers, governance, and developer access live in the Advanced section of the sidebar.</p></div>
-              <Link href="/settings/library" className="deft-pill" style={{ color: 'var(--accent)', border: '1px solid var(--border)' }}>Open task settings <ChevronRight size={13} /></Link>
+              <div><h2 className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>Developer & operator</h2><p className="mt-0.5 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>Service credentials and self-hosted source information are in Developer & operator. Task rules and recovery are in Work management.</p></div>
+              <Link href="/settings/api-access" className="deft-pill" style={{ color: 'var(--accent)', border: '1px solid var(--border)' }}>Service API access <ChevronRight size={13} /></Link>
             </div>
           </section>
         )}

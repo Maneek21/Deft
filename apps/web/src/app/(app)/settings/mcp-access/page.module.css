@@ -1,0 +1,98 @@
+.page {
+  /* Local contrast: the workspace ghost border is too faint for form controls. */
+  --border-default: color-mix(in srgb, var(--text-primary) 17%, transparent);
+  --connection-action: #7056dc;
+  color: var(--text-primary);
+}
+
+.page :is(button, a, input, select, summary, pre):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.page :is(button, a, summary) {
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.page button:not(:disabled):hover {
+  box-shadow: inset 0 0 0 100px color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.page button:disabled {
+  cursor: not-allowed;
+}
+
+.page :is(input:not([type='checkbox']), select) {
+  background-color: var(--surface-container-low);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--text-primary) 30%, transparent);
+}
+
+.page input::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+
+.page input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+}
+
+.page :is(summary, p, code, strong) {
+  overflow-wrap: anywhere;
+}
+
+.page summary {
+  border-radius: 6px;
+}
+
+.page summary:hover {
+  background-color: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+.connectionList {
+  background: var(--surface-container-low);
+  overflow: clip;
+}
+
+.connectionList > details + details {
+  border-color: var(--border-default);
+}
+
+.connectionList > details[open] {
+  background: color-mix(in srgb, var(--surface-container) 65%, var(--surface));
+}
+
+.connectionList > details > summary:focus-visible {
+  outline-offset: -2px;
+}
+
+.setup {
+  width: 100%;
+  max-width: 44rem;
+}
+
+.setup nav {
+  padding: 1rem;
+  border: 1px solid var(--border-default);
+  border-radius: 0.75rem;
+  background: var(--surface-container-low);
+}
+
+.setup nav [aria-current='step'] > span:first-child {
+  background: var(--accent-muted);
+}
+
+.clientChoice {
+  min-height: 4.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page :is(button, a, summary) {
+    transition: none;
+  }
+}
