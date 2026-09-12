@@ -18,7 +18,7 @@ Do not open a public GitHub issue for a suspected vulnerability.
 
 Preferred channel: [GitHub Security Advisories](https://github.com/Maneek21/Deft/security/advisories/new).
 
-Alternative: email `security@deft.ing`.
+Alternative: email [maneek@deft.ing](mailto:maneek@deft.ing).
 
 Include, when possible:
 

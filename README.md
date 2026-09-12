@@ -208,6 +208,10 @@ Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), run th
 
 If Deft is useful to you, starring the repository helps more teams find the project.
 
+## Contact
+
+Email [maneek@deft.ing](mailto:maneek@deft.ing) for questions, demos, or private support requests. See [SUPPORT.md](SUPPORT.md) for community support and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
+
 ## License
 
 Deft is free software licensed under the [GNU Affero General Public License
