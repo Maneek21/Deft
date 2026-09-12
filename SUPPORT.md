@@ -4,6 +4,7 @@ Deft is an alpha, open-source self-hosted project. Community support is best eff
 
 ## Where to ask
 
+- **Contact Deft:** email [maneek@deft.ing](mailto:maneek@deft.ing) for general questions, demos, or private support requests.
 - **Bug:** open a GitHub issue with reproduction steps.
 - **Feature or product proposal:** start a GitHub Discussion before a large implementation.
 - **Installation or usage question:** use GitHub Discussions.
