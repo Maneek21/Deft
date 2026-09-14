@@ -2,6 +2,8 @@
 
 > **Experimental in preview.15:** this connected-App and bounded-automation flow is included in the published `v0.3.0-preview.15` core release. It is experimental and disabled by default.
 
+For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings → Modules; this guide packages resources in a separate `deft.app.json` and uses Settings → Apps. [Compare the two paths](modules-and-apps.md).
+
 This guide shows how to build a connected App, check that it matches the host,
 and submit it for workspace review. It supports App Protocol v1 connected Apps
 and the bounded scheduling requests in Protocol v2. The workspace operator

@@ -1,2 +1,3 @@
 scripts/docker-entrypoint.sh text eol=lf
+docs/examples/operations/*.sh text eol=lf
 **/deft.app.lock.json text eol=lf

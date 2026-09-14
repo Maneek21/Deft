@@ -24,7 +24,13 @@ Start a workspace first. Sign in as the person whose permissions the client shou
 
 Ask the client to list your tasks or search visible workspace knowledge. A successful connection returns only data that the signed-in person may access. A write-enabled connection can change workspace data as you, within its scopes and your permissions. Employee approval policies apply to the governed agent paths, not every personal-client write. Vendor UI and custom-connector availability vary by client and account tier; follow the client-specific instructions shown in Settings.
 
+## Build a Module
+
+For a tracker with native records and views, start with [Build your first Module](tutorials/first-module.md). Install its `deft.module.json` in **Settings → Modules → Install local**. This path uses the Module CLI and does not require App Kit or the Apps feature flags.
+
 ## Build an internal App
+
+An App package has a `deft.app.json` manifest and referenced Module files. Choose this flow when you need an App package and its installation lifecycle. See [Modules and Apps](modules-and-apps.md) if you are unsure which path fits.
 
 This source/tarball path avoids assuming that `@deft/app-kit` is available from a public registry. Use a checkout matching the host release and Node.js 22.13+ with pnpm 11.10.0.
 

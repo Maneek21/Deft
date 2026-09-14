@@ -152,3 +152,7 @@ Historical tags through `v0.2.0-preview.4` retain BSL 1.1 as shipped.
 Do not rewrite those tags. GitHub's source archive plus the repository's
 build and installation scripts are the Corresponding Source offered with
 the official image.
+
+## Documentation gate
+
+Complete [the documentation release checks](docs/documentation-maintenance.md#before-a-release) before publication. Keep the website and README on the same recommended installation path, and record install, restore, upgrade, MCP, and Module evidence for the release.
