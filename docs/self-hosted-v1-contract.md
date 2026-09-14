@@ -16,7 +16,8 @@ For version-specific availability, use [What you can use today](product-status.m
 - External tools through MCP/BYOA agents, not managed provider OAuth.
 - Provider-neutral AI configuration: Anthropic, OpenAI, OpenRouter, or Ollama.
 - Core product operation without AI keys. Chat, tasks, wiki, calendar, and auth still work.
-- Opt-in declarative Modules and internal Apps when the chosen release documents the matching App Protocol and App Kit.
+- Declarative Modules for native records and views; standalone manifests use Settings → Modules.
+- Experimental App packages when explicitly enabled, using the matching release's App Protocol and App Kit. See [Modules and Apps](modules-and-apps.md) for the separate installation paths.
 
 ## What self-hosted v1 does not promise
 

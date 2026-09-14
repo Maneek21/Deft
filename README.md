@@ -60,6 +60,13 @@ Use `init` only with a fresh database. For custom ports, public URLs, image veri
 
 [Architecture](#architecture) · [Current limitations](docs/current-limitations.md) · [Licensing](#license)
 
+## Try one workflow
+
+- [Set up your first workspace](docs/tutorials/first-workspace.md)
+- [Ask Defty for a task and approve it](docs/tutorials/first-agent-action.md)
+- [Connect a personal AI client](docs/tutorials/first-mcp-connection.md)
+- [Build a small vendor Module](docs/tutorials/first-module.md)
+
 ## The core loop
 
 1. **Capture the discussion.** Save useful decisions and references in Knowledge with links back to their source conversation.
@@ -78,7 +85,7 @@ Optional video chapters: [Knowledge capture — 1:09](https://youtu.be/7z9EH4c9k
 ### A workspace people can use normally
 
 - Real-time chat with spaces, DMs, threads, mentions, reactions, files, presence, and rich text
-- Task management with Board, Table, Timeline, Calendar, Pipeline, and personal views
+- Task management with Board, Table, Timeline, Calendar, and personal views
 - Notes, company knowledge, channel memory, decisions, references, and knowledge graph views
 - Native calendar events plus read-only ICS subscriptions
 - Dashboard, inbox, notifications, people, teams, roles, and profile management
@@ -97,7 +104,7 @@ Deft still works as a normal workspace without an AI provider key. Chat, tasks, 
 
 ### An extensible workspace through Modules and Apps
 
-Modules add domain records, relationships, and native views. Apps package supported workspace extensions for operator review and installation. Declarative internal Apps, connected Apps, and bounded scheduled actions are opt-in alpha capabilities and remain disabled by default. Arbitrary custom UI and public portals are planned rather than part of the current contract.
+Modules add domain records, relationships, and native views. Apps package Module resources and may request supported connected actions. They use different manifests and installation flows; start with [Modules and Apps](docs/modules-and-apps.md). Declarative internal Apps, connected Apps, and bounded scheduled actions are opt-in alpha capabilities and remain disabled by default. Arbitrary custom UI and public portals are planned rather than part of the current contract.
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
@@ -111,7 +118,7 @@ Chat is both a human communication surface and part of the workspace record. Thr
 
 ### Tasks turn context into accountable work
 
-Projects support Board, Table, Timeline, Calendar, and Pipeline views, plus dependencies, subtasks, recurrence, comments, activity diffs, bulk actions, and agent-created drafts.
+Projects support Board, Table, Timeline, and Calendar views, plus dependencies, subtasks, recurrence, comments, activity diffs, bulk actions, and agent-created drafts.
 
 ![Deft task table](docs/assets/repository/tasks-table.png)
 

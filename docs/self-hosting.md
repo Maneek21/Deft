@@ -706,7 +706,24 @@ pnpm selfhost:upgrade --prod
 For a named GHCR release, first create the recovery artifact above using the
 current `.env` and previous image digest, but leave `deft` stopped instead of
 running the final `start deft` command. Then pin `DEFT_IMAGE` in the working
-`.env` to the target digest and run using only the downloaded Compose assets:
+`.env` to the target digest. Keep Deft stopped and set `RECOVERY` to the absolute
+recovery-folder path. Before replacing its container, copy any captured legacy
+uploads into the persistent volume; older releases may have written files into
+the container's writable layer.
+
+```bash
+set -euo pipefail
+test -d "$RECOVERY" || { echo 'Set RECOVERY to the absolute recovery folder path.'; exit 1; }
+(cd "$RECOVERY" && sha256sum -c SHA256SUMS)
+if [ -d "$RECOVERY/legacy-container-uploads" ]; then
+  container_id="$(docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml ps -aq deft)"
+  uploads_volume="$(docker inspect "$container_id" --format '{{range .Mounts}}{{if eq .Destination "/app/uploads"}}{{.Name}}{{end}}{{end}}')"
+  test -n "$uploads_volume" || { echo 'Uploads volume not found. Keep Deft stopped and check its storage mounts.'; exit 1; }
+  docker run --rm -v "$uploads_volume:/target" -v "$RECOVERY/legacy-container-uploads:/legacy:ro" alpine:3.22 cp -a /legacy/. /target/
+fi
+```
+
+Then run using the target release's downloaded Compose assets:
 
 ```bash
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull deft upgrade doctor smoke

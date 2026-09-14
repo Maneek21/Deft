@@ -180,7 +180,8 @@ Fresh installs use `init` (`pnpm db:push-full` plus platform seed). Supported ve
 
 ## Apps and Modules
 
-- Modules define domain records, relationships, and Deft-rendered native views.
+- Modules define domain records, relationships, and Deft-rendered native views. Standalone manifests install through Settings → Modules without the Apps feature flags.
+- Module v1 data is shared with owners, admins, and members; it has no private rows or fields. [Choose between a Module and an App](docs/modules-and-apps.md).
 - Declarative internal Apps package Modules for review and installation and are an opt-in alpha capability.
 - Connected Apps and bounded daily actions are included in preview.15. They are experimental, disabled by default, and require the flags and review flow in the [operator guide](docs/app-run-operations.md).
 - The current App protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.

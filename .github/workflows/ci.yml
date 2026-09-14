@@ -35,6 +35,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check public documentation and tutorial manifest
+        run: pnpm docs:check
       - name: Verify bundled module provenance
         run: pnpm module:verify
       - name: Test App Kit authoring contracts

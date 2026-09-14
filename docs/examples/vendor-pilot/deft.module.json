@@ -1,0 +1,131 @@
+{
+  "schema_version": "1",
+  "id": "community.example.vendor-pilot",
+  "slug": "vendor-pilot",
+  "version": "0.1.0",
+  "name": "Vendor pilot",
+  "description": "Vendors and the services they provide.",
+  "icon": "boxes",
+  "navigation": {
+    "default_collection": "vendors",
+    "default_view": "table"
+  },
+  "collections": [
+    {
+      "key": "vendors",
+      "name": "Vendors",
+      "singular_name": "Vendor",
+      "fields": [
+        {
+          "key": "name",
+          "label": "Name",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "email",
+          "label": "Email",
+          "type": "email"
+        },
+        {
+          "key": "notes",
+          "label": "Notes",
+          "type": "long_text"
+        }
+      ],
+      "search": {
+        "title_field": "name",
+        "fields": [
+          "name",
+          "notes"
+        ]
+      },
+      "views": [
+        {
+          "key": "table",
+          "name": "Table",
+          "type": "table",
+          "fields": [
+            "name",
+            "email"
+          ]
+        },
+        {
+          "key": "form",
+          "name": "New vendor",
+          "type": "form",
+          "fields": [
+            "name",
+            "email",
+            "notes"
+          ]
+        },
+        {
+          "key": "detail",
+          "name": "Details",
+          "type": "detail",
+          "fields": [
+            "name",
+            "email",
+            "notes"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "services",
+      "name": "Services",
+      "singular_name": "Service",
+      "fields": [
+        {
+          "key": "name",
+          "label": "Name",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "vendor",
+          "label": "Vendor",
+          "type": "relation",
+          "target_collection": "vendors",
+          "multiple": false
+        }
+      ],
+      "search": {
+        "title_field": "name",
+        "fields": [
+          "name"
+        ]
+      },
+      "views": [
+        {
+          "key": "table",
+          "name": "Table",
+          "type": "table",
+          "fields": [
+            "name",
+            "vendor"
+          ]
+        },
+        {
+          "key": "form",
+          "name": "New service",
+          "type": "form",
+          "fields": [
+            "name",
+            "vendor"
+          ]
+        },
+        {
+          "key": "detail",
+          "name": "Details",
+          "type": "detail",
+          "fields": [
+            "name",
+            "vendor"
+          ]
+        }
+      ]
+    }
+  ]
+}

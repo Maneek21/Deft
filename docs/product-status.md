@@ -17,11 +17,14 @@ Development on `master` may include changes absent from the published image.
 | Chat, tasks, notes, Knowledge, calendar and team administration | Available in the published preview | [Install Deft](self-hosting.md) |
 | Defty | Available when an operator configures a supported AI provider | [AI and agent limits](current-limitations.md#ai-and-agents) |
 | Personal MCP access | Available; authentication and client support vary | [Connect an AI client](getting-started.md#connect-an-ai-client) |
-| Declarative Modules and internal Apps | Available as an opt-in alpha capability; use a matching release's authoring guide | [Build an internal App](getting-started.md#build-an-internal-app) |
+| Standalone Modules | Available; install a manifest in Settings → Modules | [Build your first Module](tutorials/first-module.md) |
+| Internal App packages | Experimental and disabled by default; package declarative resources with App Kit | [Build an internal App](getting-started.md#build-an-internal-app) |
 | Connected Apps and bounded scheduled actions | Included in the published preview; experimental and disabled by default | [Connected App author guide](connected-app-author-guide.md) |
 | Certified Hermes bundle | Release-specific historical support; excluded from preview.15 | Read the chosen release's compatibility and certification notes |
 | Arbitrary custom App UI, public portals, external runtimes and sync | Planned; not a general-purpose contract available today | [Roadmap](../ROADMAP.md) |
 | Hosted Deft service | Not currently offered | Self-host using the supported Docker Compose path |
+
+Standalone Modules do not need the experimental Apps flags. See [Modules and Apps](modules-and-apps.md) for the two installation paths.
 
 Apps require `DEFT_APPS_ENABLED=true` on the API and
 `NEXT_PUBLIC_FEATURE_APPS=true` in the web build. Connected execution needs

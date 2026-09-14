@@ -49,6 +49,8 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 
 ## Apps and Modules
 
+[Modules and Apps](modules-and-apps.md) use different packaging and installation paths. Standalone Modules do not require the experimental Apps flags. Module v1 records are organization-wide for owners, admins, and members; guests are denied, and private rows, collections, and fields are not supported.
+
 - Apps are disabled by default. The API requires `DEFT_APPS_ENABLED=true`, and the web build requires `NEXT_PUBLIC_FEATURE_APPS=true`.
 - Connected App execution and bounded automations add further flags and operator review. They are included in preview.15, experimental, and disabled by default.
 - App Protocol v0 provides declarative internal records and native views. Current protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.

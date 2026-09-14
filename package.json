@@ -76,7 +76,8 @@
     "test:upgrade": "pnpm --filter @deft/db test:upgrade && tsx --test scripts/selfhost-upgrade.test.ts",
     "test:release-workflow": "node --test scripts/release-workflow.test.mjs scripts/app-platform-certification-workflow.test.mjs",
     "test:public-env": "node --test scripts/inject-public-env.test.mjs",
-    "typecheck": "pnpm -r --parallel typecheck"
+    "typecheck": "pnpm -r --parallel typecheck",
+    "docs:check": "node scripts/check-public-docs.mjs && node --test scripts/docs-operations.test.mjs && pnpm module:check docs/examples/vendor-pilot"
   },
   "engines": {
     "node": ">=22.13.0"
