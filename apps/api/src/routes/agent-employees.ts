@@ -5,8 +5,10 @@ import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import {
   EMPLOYEE_MCP_APP_SCOPES,
+  EMPLOYEE_MCP_RESOURCE_SCOPES,
   issueScopedEmployeeMcpToken,
   type EmployeeMcpAppScope,
+  type EmployeeMcpResourceScope,
   type EmployeeMcpScope,
 } from '../lib/mcp-token.js';
 import {
@@ -503,6 +505,9 @@ const externalRuntimeKindSchema = z.string().trim().min(1).max(64).refine(
 const employeeMcpAppScopesSchema = z.array(z.enum(EMPLOYEE_MCP_APP_SCOPES))
   .max(EMPLOYEE_MCP_APP_SCOPES.length)
   .default([]);
+const employeeMcpResourceScopesSchema = z.array(z.enum(EMPLOYEE_MCP_RESOURCE_SCOPES))
+  .max(EMPLOYEE_MCP_RESOURCE_SCOPES.length)
+  .default([]);
 
 const createSchema = z.object({
   name: z.string().min(1).max(100).refine(
@@ -532,6 +537,7 @@ const createSchema = z.object({
   // Additive token capabilities. Omission intentionally preserves the
   // historical App-blind employee credential contract.
   mcp_app_scopes: employeeMcpAppScopesSchema,
+  mcp_resource_scopes: employeeMcpResourceScopesSchema,
 });
 
 function roleToTitle(role: string): string {
@@ -1588,6 +1594,7 @@ async function issueMcpToken({
   employeeName,
   createdBy,
   appScopes = [],
+  resourceScopes = [],
   deactivateExisting = false,
 }: {
   orgId: string;
@@ -1595,6 +1602,7 @@ async function issueMcpToken({
   employeeName: string;
   createdBy: string;
   appScopes?: readonly EmployeeMcpAppScope[];
+  resourceScopes?: readonly EmployeeMcpResourceScope[];
   deactivateExisting?: boolean;
 }): Promise<{ raw: string; scopes: readonly EmployeeMcpScope[] }> {
   const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
@@ -1608,6 +1616,7 @@ async function issueMcpToken({
     createdBy,
     rawToken: rawApiKey,
     scopes: appScopes,
+    resourceScopes,
     revokeExisting: deactivateExisting,
     bcryptRounds: 12,
   });
@@ -1774,6 +1783,7 @@ agentEmployeeRoutes.post('/', async (c) => {
       employeeName: data.name,
       createdBy: currentUser.id,
       appScopes: data.mcp_app_scopes,
+      resourceScopes: data.mcp_resource_scopes,
     });
     const channelToken = await issueAgentChannelToken({
       orgId: currentUser.org_id,
@@ -3428,6 +3438,7 @@ agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
 
 const regenerateMcpTokenSchema = z.strictObject({
   mcp_app_scopes: employeeMcpAppScopesSchema,
+  mcp_resource_scopes: employeeMcpResourceScopesSchema,
 });
 
 agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
@@ -3455,6 +3466,7 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       employeeName: employee.name,
       createdBy: user.id,
       appScopes: parsed.data.mcp_app_scopes,
+      resourceScopes: parsed.data.mcp_resource_scopes,
       deactivateExisting: true,
     });
 

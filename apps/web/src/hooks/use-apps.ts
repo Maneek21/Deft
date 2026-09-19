@@ -5,6 +5,14 @@ import useSWR, { mutate as mutateSWR } from 'swr';
 import useSWRInfinite from 'swr/infinite';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { useAuth } from '@/lib/auth-context';
+import {
+  getActiveSessionCacheScope,
+  isActiveSessionCacheKey,
+  sessionSWRKey,
+  sessionSWRPath,
+} from '@/lib/session-cache';
+import { moduleSessionRequestPath } from '@/lib/module-session-cache';
 import {
   normalizeAppConnectors,
   normalizeAppGrantManagement,
@@ -17,6 +25,7 @@ import type { AppNavigationResponseItem } from '@/lib/app-navigation';
 import { normalizeAppAutomationManagement } from '@/lib/app-automations';
 
 async function fetchJson(path: string): Promise<unknown> {
+  path = sessionSWRPath(path);
   const response = await api.get(path);
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { error?: unknown };
@@ -26,7 +35,8 @@ async function fetchJson(path: string): Promise<unknown> {
 }
 
 export function useApps(enabled = true) {
-  const swr = useSWR<unknown>(APPS_ENABLED && enabled ? '/api/apps' : null, fetchJson, {
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, APPS_ENABLED && enabled ? '/api/apps' : null), fetchJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -35,7 +45,8 @@ export function useApps(enabled = true) {
 }
 
 export function useAppNavigation(enabled = true) {
-  const swr = useSWR<unknown>(APPS_ENABLED && enabled ? '/api/apps/navigation' : null, fetchJson);
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, APPS_ENABLED && enabled ? '/api/apps/navigation' : null), fetchJson);
   const navigation = useMemo(() => {
     const value = swr.data as { navigation?: unknown } | undefined;
     return Array.isArray(value?.navigation) ? value.navigation as AppNavigationResponseItem[] : [];
@@ -44,10 +55,11 @@ export function useAppNavigation(enabled = true) {
 }
 
 export function useAppGrantManagement(installationId: string, enabled = true) {
+  const { sessionCacheScope } = useAuth();
   const key = APPS_ENABLED && enabled && installationId
     ? `/api/apps/${encodeURIComponent(installationId)}/grants`
     : null;
-  const swr = useSWR<unknown>(key, fetchJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
     refreshInterval: 10_000,
@@ -64,7 +76,8 @@ export function useAppGrantManagement(installationId: string, enabled = true) {
 }
 
 export function useAppConnectors(enabled = true) {
-  const swr = useSWR<unknown>(APPS_ENABLED && enabled ? '/api/mcp-connections' : null, fetchJson, {
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, APPS_ENABLED && enabled ? '/api/mcp-connections' : null), fetchJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -80,12 +93,13 @@ export function useAppConnectors(enabled = true) {
 }
 
 export function useAppAutomations(installationId: string, enabled = true) {
+  const { sessionCacheScope } = useAuth();
   const getKey = (pageIndex: number, previousPage: unknown) => {
     if (!APPS_ENABLED || !enabled || !installationId) return null;
-    if (pageIndex === 0) return `/api/apps/${encodeURIComponent(installationId)}/automations?limit=50`;
+    if (pageIndex === 0) return sessionSWRKey(sessionCacheScope, `/api/apps/${encodeURIComponent(installationId)}/automations?limit=50`);
     const prior = normalizeAppAutomationManagement(previousPage);
     return prior.nextCursor
-      ? `/api/apps/${encodeURIComponent(installationId)}/automations?limit=50&cursor=${encodeURIComponent(prior.nextCursor)}`
+      ? sessionSWRKey(sessionCacheScope, `/api/apps/${encodeURIComponent(installationId)}/automations?limit=50&cursor=${encodeURIComponent(prior.nextCursor)}`)
       : null;
   };
   const swr = useSWRInfinite<unknown>(getKey, fetchJson, {
@@ -127,18 +141,30 @@ export function useAppAutomations(installationId: string, enabled = true) {
   };
 }
 
+export function isAppCacheKey(key: unknown): boolean {
+  if (!isActiveSessionCacheKey(key) || typeof key !== 'string') return false;
+  const path = moduleSessionRequestPath(key);
+  return path.startsWith('/api/apps')
+    || path.startsWith('/api/app-runs')
+    || path.startsWith('app-actions:')
+    || path.startsWith('module-app-run-outcomes:');
+}
+
 export async function refreshApps(): Promise<void> {
-  await mutateSWR((key) => typeof key === 'string' && key.startsWith('/api/apps'));
+  await mutateSWR((key) => isAppCacheKey(key));
 }
 
 export function useAppRealtime() {
+  const { sessionCacheScope } = useAuth();
   useEffect(() => {
-    if (!APPS_ENABLED) return;
+    if (!APPS_ENABLED || !sessionCacheScope || getActiveSessionCacheScope() !== sessionCacheScope) return;
     const token = window.localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
-    const refresh = () => void refreshApps();
+    const refresh = () => {
+      if (getActiveSessionCacheScope() === sessionCacheScope) void refreshApps();
+    };
     socket.on('app:changed', refresh);
     return () => { socket.off('app:changed', refresh); };
-  }, []);
+  }, [sessionCacheScope]);
 }

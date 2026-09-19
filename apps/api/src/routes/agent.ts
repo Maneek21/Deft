@@ -1,4 +1,16 @@
 import { Hono } from 'hono';
+import {
+  authorizedDurableAgentResult,
+  durableAgentResultInMessageMetadata,
+  normalizeAgentToolHistory,
+} from '../lib/agent-tool-history.js';
+import { AppRunSafePreviewSchema } from '@deft/shared';
+import { SandboxEmailSendInputSchema } from '@deft/app-kit';
+import { getAppRunRuntime } from '../lib/app-run-runtime.js';
+import { AppRunError } from '../lib/app-run-errors.js';
+import { getModuleInstallation, getModuleRecord, humanModuleActor, listModuleRecordReferences } from '../lib/module-service.js';
+import { parseModuleRecordResourceId } from '@deft/shared/modules';
+import { appHttpFailure } from './app-http-errors.js';
 import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +24,9 @@ import {
   agentEmployees,
   actionReceipts,
   orgs,
+  orgMembers,
   tasks,
+  projects,
   messages,
   taskActivity,
   users,
@@ -24,11 +38,12 @@ import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-s
 import { env } from '../lib/env.js';
 import { resolveReasonProvider, type ResolvedReasonProvider } from '../lib/org-ai-config.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
-import { executeToolCall } from '../lib/agent-context.js';
+import { buildModuleReadActor, executeToolCall } from '../lib/agent-context.js';
 import {
   executeAction,
   executeActionDirect,
   isModuleTaskLinkWriteAction,
+  resolveTaskIdentifier,
   sanitizeModuleTaskLinkActionParamsForHistory,
 } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
@@ -54,6 +69,7 @@ import {
   isApprovalResolverAction,
   rejectAction as resolveRejectAction,
   sanitizeModuleActionParamsForReceipt,
+  hasHumanMcpBulkProvenance,
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
 import {
@@ -68,7 +84,12 @@ import {
   isModuleWriteActionName,
   visibleModuleActionSql,
 } from '../lib/module-action-visibility.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { sanitizeAgentMetadataForStorage } from '../lib/module-agent-history.js';
+import {
+  durableAgentActionResult,
+  durableAgentActionResultHistoryText,
+} from '../lib/agent-tool-result.js';
 import {
   isModuleRecordBulkCreateAction,
   sanitizeModuleBulkCreateParamsForHistory,
@@ -90,96 +111,136 @@ async function maybePostApprovalConfirmation(params: {
   actorUserId: string;
 }) {
   if (!params.actionMessageId) return;
+  const actionMessageId = params.actionMessageId;
+  const posted = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+      ${`approval-confirmation:${params.orgId}:${actionMessageId}`}, 0
+    ))`);
+    const [approvalMessage] = await tx
+      .select({
+        id: messages.id,
+        space_id: messages.space_id,
+        parent_id: messages.parent_id,
+        user_id: messages.user_id,
+      })
+      .from(messages)
+      .where(and(
+        eq(messages.id, actionMessageId),
+        eq(messages.org_id, params.orgId),
+        eq(messages.is_deleted, false),
+      ))
+      .limit(1);
+    if (!approvalMessage) return null;
 
-  const [approvalMessage] = await db
-    .select({
-      id: messages.id,
-      space_id: messages.space_id,
-      parent_id: messages.parent_id,
-      user_id: messages.user_id,
-    })
-    .from(messages)
-    .where(and(
-      eq(messages.id, params.actionMessageId),
-      eq(messages.org_id, params.orgId),
-      eq(messages.is_deleted, false),
-    ))
-    .limit(1);
-  if (!approvalMessage) return;
+    const [existingConfirmation] = await tx
+      .select({ id: messages.id })
+      .from(messages)
+      .where(and(
+        eq(messages.org_id, params.orgId),
+        eq(messages.space_id, approvalMessage.space_id),
+        sql`${messages.metadata}->>'approval_confirmation_for_message_id' = ${actionMessageId}`,
+      ))
+      .limit(1);
+    if (existingConfirmation) return null;
 
-  const [existingConfirmation] = await db
-    .select({ id: messages.id })
-    .from(messages)
-    .where(and(
-      eq(messages.org_id, params.orgId),
-      eq(messages.space_id, approvalMessage.space_id),
-      sql`${messages.metadata}->>'approval_confirmation_for_message_id' = ${params.actionMessageId}`,
-    ))
-    .limit(1);
-  if (existingConfirmation) return;
+    const siblingActions = await tx
+      .select()
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, params.orgId),
+        eq(agentActions.message_id, actionMessageId),
+      ))
+      .orderBy(asc(agentActions.created_at));
+    if (siblingActions.length === 0) return null;
+    if (siblingActions.some((row) => row.approval_status === 'pending')) return null;
 
-  const siblingActions = await db
-    .select()
-    .from(agentActions)
-    .where(and(
-      eq(agentActions.org_id, params.orgId),
-      eq(agentActions.message_id, params.actionMessageId),
-    ))
-    .orderBy(asc(agentActions.created_at));
-  if (siblingActions.length === 0) return;
+    const approvedActions = siblingActions.filter((row) => row.approval_status === 'approved');
+    const rejectedActions = siblingActions.filter((row) => row.approval_status === 'rejected');
+    if (approvedActions.length === 0 && rejectedActions.length === 0) return null;
 
-  const pendingCount = siblingActions.filter((row) => row.approval_status === 'pending').length;
-  if (pendingCount > 0) return;
+    // Most approved actions execute synchronously, so approval alone is not a
+    // settled group outcome. App Runs are the deliberate exception: approval
+    // durably releases an asynchronous run, and their safe result records that
+    // release even though the provider attempt has not executed yet.
+    const releasedAppActions = approvedActions.filter((row) => (
+      row.action === 'app_run_invoke'
+      && row.executed_at === null
+      && row.result !== null
+      && typeof row.result === 'object'
+      && !Array.isArray(row.result)
+      && (row.result as Record<string, unknown>).execution_released === true
+    ));
+    const releasedAppActionIds = new Set(releasedAppActions.map((row) => row.id));
+    if (approvedActions.some((row) => (
+      row.executed_at === null && !releasedAppActionIds.has(row.id)
+    ))) return null;
 
-  const approvedActions = siblingActions.filter((row) => row.approval_status === 'approved');
-  if (approvedActions.length === 0) return;
-
-  const content = formatApprovalConfirmation(approvedActions);
-
-  const proposingEmployeeId = approvedActions.find((row) => row.agent_employee_id)?.agent_employee_id;
-  const [proposingEmployee] = proposingEmployeeId
-    ? await db
-        .select({ user_id: agentEmployees.user_id })
-        .from(agentEmployees)
-        .where(and(
-          eq(agentEmployees.id, proposingEmployeeId),
-          eq(agentEmployees.org_id, params.orgId),
-        ))
-        .limit(1)
-    : [];
-  const confirmationAuthorId = proposingEmployee?.user_id
-    ?? approvalMessage.user_id
-    ?? params.actorUserId;
-  const [actor] = await db
-    .select({ name: users.name, avatar_url: users.avatar_url })
-    .from(users)
-    .where(eq(users.id, confirmationAuthorId))
-    .limit(1);
-
-  const [confirmation] = await db
-    .insert(messages)
-    .values({
-      org_id: params.orgId,
-      space_id: approvalMessage.space_id,
-      user_id: confirmationAuthorId,
-      content,
-      parent_id: approvalMessage.parent_id ?? null,
-      metadata: {
-        is_agent_reply: true,
-        subtype: 'approval_confirmation',
-        approval_confirmation_for_message_id: params.actionMessageId,
-        confirmed_action_ids: approvedActions.map((row) => row.id),
-        requested_by_user_id: params.actorUserId,
-      } as any,
-    })
-    .returning();
+    const rejectedCountSummary = `${rejectedActions.length} proposed action${rejectedActions.length === 1 ? '' : 's'}`;
+    const rejectedDetails = rejectedActions.length === 0
+      ? ''
+      : `\n${rejectedActions.map((row) => `- ${rejectedActionLabel(row)}.`).join('\n')}`;
+    const rejectedSummary = rejectedActions.length === 0
+      ? ''
+      : `Rejected ${rejectedCountSummary}.${rejectedDetails}`;
+    const executedApprovedActions = approvedActions.filter((row) => row.executed_at !== null);
+    const releasedAppSummary = releasedAppActions.length === 0
+      ? ''
+      : releasedAppActions.length === 1
+        ? 'Approved the app action and queued it for execution.'
+        : `Approved ${releasedAppActions.length} app actions and queued them for execution.`;
+    const approvedSummary = [
+      executedApprovedActions.length > 0 ? formatApprovalConfirmation(executedApprovedActions) : '',
+      releasedAppSummary,
+    ].filter(Boolean).join('\n');
+    const content = approvedActions.length === 0
+      ? `Done - rejected ${rejectedCountSummary}.${rejectedDetails}`
+      : [approvedSummary, rejectedSummary].filter(Boolean).join('\n');
+    const proposingEmployeeId = siblingActions.find((row) => row.agent_employee_id)?.agent_employee_id;
+    const [proposingEmployee] = proposingEmployeeId
+      ? await tx
+          .select({ user_id: agentEmployees.user_id })
+          .from(agentEmployees)
+          .where(and(
+            eq(agentEmployees.id, proposingEmployeeId),
+            eq(agentEmployees.org_id, params.orgId),
+          ))
+          .limit(1)
+      : [];
+    const confirmationAuthorId = proposingEmployee?.user_id
+      ?? approvalMessage.user_id
+      ?? params.actorUserId;
+    const [actor] = await tx
+      .select({ name: users.name, avatar_url: users.avatar_url })
+      .from(users)
+      .where(eq(users.id, confirmationAuthorId))
+      .limit(1);
+    const [confirmation] = await tx
+      .insert(messages)
+      .values({
+        org_id: params.orgId,
+        space_id: approvalMessage.space_id,
+        user_id: confirmationAuthorId,
+        content,
+        parent_id: approvalMessage.parent_id ?? null,
+        metadata: {
+          is_agent_reply: true,
+          subtype: 'approval_confirmation',
+          approval_confirmation_for_message_id: actionMessageId,
+          confirmed_action_ids: approvedActions.map((row) => row.id),
+          rejected_action_ids: rejectedActions.map((row) => row.id),
+          requested_by_user_id: params.actorUserId,
+        } as any,
+      })
+      .returning();
+    return { confirmation, approvalMessage, actor };
+  });
 
   const io = getIO();
-  if (io && confirmation) {
-    io.to(`space:${approvalMessage.space_id}`).emit('message:new', {
-      ...confirmation,
-      user_name: actor?.name ?? 'Defty',
-      user_avatar: actor?.avatar_url ?? null,
+  if (io && posted?.confirmation) {
+    io.to(`space:${posted.approvalMessage.space_id}`).emit('message:new', {
+      ...posted.confirmation,
+      user_name: posted.actor?.name ?? 'Defty',
+      user_avatar: posted.actor?.avatar_url ?? null,
     });
   }
 }
@@ -300,6 +361,146 @@ function actionParamString(params: unknown, key: string): string | null {
   if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
   const value = (params as Record<string, unknown>)[key];
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function rejectedActionLabel(action: { action: string; params: unknown }): string {
+  const actionLabel = action.action.replace(/_/g, ' ');
+  const target = actionParamString(action.params, 'title')
+    ?? actionParamString(action.params, 'task_identifier')
+    ?? actionParamString(action.params, 'resource_id');
+  return target ? `${actionLabel} "${target}"` : actionLabel;
+}
+
+async function recordRejectedActionDecisionContext(action: {
+  id: string;
+  org_id: string;
+  conversation_id: string | null;
+  tool_use_id: string | null;
+  action: string;
+  params: unknown;
+}, actorUserId: string) {
+  if (!action.conversation_id) return;
+  const conversationId = action.conversation_id;
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+      ${`approval-rejection-result:${action.org_id}:${action.id}`}, 0
+    ))`);
+    const [existing] = await tx
+      .select({ id: messages.id })
+      .from(messages)
+      .where(and(
+        eq(messages.org_id, action.org_id),
+        eq(messages.space_id, conversationId),
+        sql`${messages.metadata}->>'approval_rejection_result_for_action_id' = ${action.id}`,
+      ))
+      .limit(1);
+    if (existing) return;
+    const toolResultNames = action.tool_use_id
+      ? new Map([[action.tool_use_id, action.action]])
+      : new Map<string, string>();
+    const agentBlocks: unknown[] = [];
+    if (action.tool_use_id) {
+      agentBlocks.push({
+        type: 'tool_result',
+        tool_use_id: action.tool_use_id,
+        is_error: true,
+        content: JSON.stringify({
+          status: 'rejected',
+          action: action.action,
+          retry_requires_explicit_user_request: true,
+        }),
+      });
+    }
+    agentBlocks.push({
+      type: 'text',
+      text: `The user rejected the ${rejectedActionLabel(action)} action. It did not execute. Retry this rejected action only after a new explicit user request.`,
+    });
+    await tx.insert(messages).values({
+      org_id: action.org_id,
+      space_id: conversationId,
+      user_id: actorUserId,
+      content: '',
+      metadata: {
+        kind: 'tool_result',
+        hidden: true,
+        approval_rejection_result_for_action_id: action.id,
+        agent_blocks: sanitizeAgentMetadataForStorage(
+          { agent_blocks: agentBlocks },
+          toolResultNames,
+        ).agent_blocks,
+      } as any,
+    });
+  });
+}
+
+async function recordApprovedActionExecutionContext(action: {
+  id: string;
+  org_id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  tool_use_id: string | null;
+  action: string;
+}, actorUserId: string, executionResult: unknown) {
+  if (!action.conversation_id || !action.message_id) return;
+  const durableResult = durableAgentActionResult(action.action, executionResult);
+  if (!durableResult) return;
+  const conversationId = action.conversation_id;
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+      ${`approval-execution-result:${action.org_id}:${action.id}`}, 0
+    ))`);
+    const [sourceMessage] = await tx
+      .select({ parent_id: messages.parent_id })
+      .from(messages)
+      .where(and(
+        eq(messages.id, action.message_id!),
+        eq(messages.org_id, action.org_id),
+        eq(messages.space_id, conversationId),
+      ))
+      .limit(1);
+    if (!sourceMessage) return;
+    const [existing] = await tx
+      .select({ id: messages.id })
+      .from(messages)
+      .where(and(
+        eq(messages.org_id, action.org_id),
+        eq(messages.space_id, conversationId),
+        sql`${messages.metadata}->>'approval_execution_result_for_action_id' = ${action.id}`,
+      ))
+      .limit(1);
+    if (existing) return;
+
+    const toolResultNames = action.tool_use_id
+      ? new Map([[action.tool_use_id, action.action]])
+      : new Map<string, string>();
+    const agentBlocks = action.tool_use_id
+      ? [{
+        type: 'tool_result' as const,
+        tool_use_id: action.tool_use_id,
+        content: JSON.stringify(executionResult),
+      }]
+      : [{
+        type: 'text' as const,
+        text: durableAgentActionResultHistoryText(durableResult),
+      }];
+    await tx.insert(messages).values({
+      org_id: action.org_id,
+      space_id: conversationId,
+      user_id: actorUserId,
+      content: '',
+      parent_id: sourceMessage.parent_id,
+      metadata: {
+        kind: 'tool_result',
+        hidden: true,
+        approval_execution_result_for_action_id: action.id,
+        approval_execution_result: durableResult,
+        agent_blocks: sanitizeAgentMetadataForStorage(
+          { agent_blocks: agentBlocks },
+          toolResultNames,
+        ).agent_blocks,
+      } as any,
+    });
+  });
 }
 
 async function attachSourceMessagePreviews<T extends { params: unknown }>(
@@ -642,8 +843,47 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   // message history so the model sees its previous reasoning (just not shown in UI).
   const apiMessages: Anthropic.MessageParam[] = [];
   const historyToolNames = new Map<string, string>();
+  const durableHistoryCandidates = history
+    .map((message) => ({ message, result: durableAgentResultInMessageMetadata(message.metadata) }))
+    .filter((candidate) => candidate.result !== null)
+    .slice(-32);
+  const authorizedDurableMessages = new Map<string, NonNullable<(typeof durableHistoryCandidates)[number]['result']>>();
+  if (durableHistoryCandidates.length > 0) {
+    try {
+      const actor = await buildModuleReadActor(user.org_id, user.id, {
+        conversationId: convoId,
+        ...(agentEmployeeId ? { agentEmployeeId } : {}),
+      });
+      for (let index = 0; index < durableHistoryCandidates.length; index += 4) {
+        const batch = durableHistoryCandidates.slice(index, index + 4);
+        const decisions = await Promise.all(batch.map(async ({ message }) => ({
+          id: message.id,
+          result: await authorizedDurableAgentResult({
+            actor,
+            orgId: user.org_id,
+            conversationId: convoId,
+            metadata: message.metadata,
+          }),
+        })));
+        for (const decision of decisions) {
+          if (decision.result) authorizedDurableMessages.set(decision.id, decision.result);
+        }
+      }
+    } catch {
+      // Current membership, employee policy, or Module access no longer allows
+      // these historical identifiers. Omit them from the provider context.
+    }
+  }
   for (const m of history) {
-    const meta = sanitizeAgentMetadataForStorage(m.metadata, historyToolNames);
+    if (
+      durableAgentResultInMessageMetadata(m.metadata)
+      && !authorizedDurableMessages.has(m.id)
+    ) continue;
+    const meta = sanitizeAgentMetadataForStorage(
+      m.metadata,
+      historyToolNames,
+      authorizedDurableMessages.get(m.id),
+    );
     const role: 'user' | 'assistant' = m.user_id === resolvedAgentUserId ? 'assistant' : 'user';
     const blocks = meta.agent_blocks;
     if (blocks && Array.isArray(blocks) && blocks.length > 0) {
@@ -655,7 +895,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
   return {
     _kind: 'ok',
-    apiMessages: attachUntrustedContextToCurrentUserMessage(apiMessages, untrustedContext),
+    apiMessages: attachUntrustedContextToCurrentUserMessage(normalizeAgentToolHistory(apiMessages), untrustedContext),
     systemPrompt,
     tools,
     allActionTools,
@@ -1098,7 +1338,7 @@ agentRoutes.get('/actions/pending', async (c) => {
   const rowsWithSources = await attachSourceMessagePreviews(user, rows);
   const actions = rowsWithSources.map((r) => ({
     ...r,
-    proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
+    proposer: hasHumanMcpBulkProvenance(r) ? 'user' : r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
   }));
   return c.json({ actions });
 });
@@ -1210,7 +1450,7 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
             source_message_space_id: row.source_message_space_id ?? null,
           }
         : row.params,
-      proposer: row.source === 'defty_capture' || !row.agent_employee_id ? 'defty' : 'employee',
+      proposer: hasHumanMcpBulkProvenance(row) ? 'user' : row.source === 'defty_capture' || !row.agent_employee_id ? 'defty' : 'employee',
       created_at: normalizeTimestamp(row.created_at),
       updated_at: normalizeTimestamp(row.updated_at),
       approved_at: normalizeTimestamp(row.approved_at),
@@ -1375,9 +1615,95 @@ agentRoutes.get('/actions/recent', async (c) => {
   return c.json({
     actions: rows.map((r) => ({
       ...r,
-      proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
+      proposer: hasHumanMcpBulkProvenance(r) ? 'user' : r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
     })),
   });
+});
+
+// Plaintext is materialized only for an eligible human reviewer, never stored
+// in the action's shared safe preview or returned by general history endpoints.
+agentRoutes.get('/actions/:id/message-review', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  try {
+    const user = c.get('user');
+    const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers).where(and(
+      eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id),
+      eq(orgMembers.is_active, true),
+    )).limit(1);
+    if (!membership) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const [action] = await db.select().from(agentActions).where(and(
+      eq(agentActions.id, c.req.param('id')), eq(agentActions.org_id, user.org_id),
+      eq(agentActions.action, 'app_run_invoke'),
+      reviewableActionSql({ ...user, role: membership.role }),
+    )).limit(1);
+    if (!action?.app_run_id) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    if (action.approval_status !== 'pending') throw new AppRunError('APP_RUN_APPROVAL_EXPIRED');
+    const runtime = await getAppRunRuntime();
+    const run = await runtime.repository.inspect(user.org_id, action.app_run_id);
+    if (run && (run.origin_kind !== 'app' || run.operation_name !== 'send_email')) {
+      throw new AppRunError('APP_RUN_INPUT_INVALID');
+    }
+    if (!run || run.state !== 'pending_approval' || run.input_purged_at
+      || run.input_expires_at.getTime() <= Date.now()) {
+      throw new AppRunError('APP_RUN_APPROVAL_EXPIRED');
+    }
+    if (!await runtime.liveAuthorization.authorizeDelivery({ org_id: user.org_id, run })) {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const preview = AppRunSafePreviewSchema.parse(run.safe_preview);
+    if (preview.resource_refs.length === 0) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const actor = humanModuleActor({ orgId: user.org_id, userId: user.id, role: membership.role, source: 'ui' });
+    for (const ref of preview.resource_refs) {
+      const match = /^module:([^:]+):([^:]+)$/u.exec(ref.resource_kind);
+      if (!match) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const record = await getModuleRecord(actor, ref.resource_id).catch(() => {
+        throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      });
+      if (record.installation_id !== match[1] || record.collection_key !== match[2]) {
+        throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      }
+    }
+    const message = SandboxEmailSendInputSchema.parse(await runtime.secretRepository.readInput(user.org_id, run.id));
+    return c.json({ message: { to: message.to, subject: message.subject, body_text: message.body_text } });
+  } catch (error) {
+    return appHttpFailure(c, error, 'App Run', 'app-runs');
+  }
+});
+
+// Resolve task-link targets only for the current human reviewer. Target labels
+// and URLs are intentionally absent from the shared action params/history.
+agentRoutes.get('/actions/:id/task-link-review', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  try {
+    const user = c.get('user');
+    const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers).where(and(
+      eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true),
+    )).limit(1);
+    if (!membership || membership.role === 'guest') return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    const [action] = await db.select().from(agentActions).where(and(
+      eq(agentActions.id, c.req.param('id')), eq(agentActions.org_id, user.org_id),
+      inArray(agentActions.action, ['module_record_task_link', 'module_record_task_unlink']),
+      eq(agentActions.approval_status, 'pending'), reviewableActionSql({ ...user, role: membership.role }),
+    )).limit(1);
+    if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    const params = action.params && typeof action.params === 'object' && !Array.isArray(action.params)
+      ? action.params as Record<string, unknown>
+      : {};
+    const resourceId = typeof params.resource_id === 'string' ? params.resource_id : '';
+    const taskIdentifier = typeof params.task_identifier === 'string' ? params.task_identifier : '';
+    const record = await getModuleRecord(humanModuleActor({ orgId: user.org_id, userId: user.id, role: membership.role, source: 'ui' }), parseModuleRecordResourceId(resourceId));
+    const installation = await getModuleInstallation(humanModuleActor({ orgId: user.org_id, userId: user.id, role: membership.role, source: 'ui' }), { moduleId: record.module_id });
+    const [reference] = await listModuleRecordReferences(humanModuleActor({ orgId: user.org_id, userId: user.id, role: membership.role, source: 'ui' }), installation.slug, record.collection_key, [record.id]);
+    const taskId = await resolveTaskIdentifier(taskIdentifier, user.org_id);
+    if (!taskId) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    const [task] = await db.select({ id: tasks.id, title: tasks.title, number: tasks.number, prefix: projects.prefix, project_name: projects.name }).from(tasks)
+      .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, tasks.org_id), eq(projects.is_deleted, false)))
+      .where(and(eq(tasks.org_id, user.org_id), eq(tasks.id, taskId), eq(tasks.is_deleted, false), visibleTaskCondition(user.id)!)).limit(1);
+    if (!reference || !task) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    return c.json({ record: { label: reference.label, href: `/modules/${encodeURIComponent(installation.slug)}/${encodeURIComponent(record.collection_key)}/${encodeURIComponent(record.id)}` }, task: { identifier: `${task.prefix}-${task.number}`, title: task.title, project_name: task.project_name, href: `/tasks?task=${encodeURIComponent(task.id)}` } });
+  } catch {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
 });
 
 agentRoutes.post('/actions/:id/approve', async (c) => {
@@ -1418,6 +1744,16 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         userId: user.id,
         decision: 'approved',
       });
+    }
+    if (result.status === 'approved' && 'result' in result) {
+      try {
+        await recordApprovedActionExecutionContext(action, user.id, result.result);
+      } catch (err) {
+        console.warn('[agent-routes] Failed to record approved action result context', {
+          actionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     try {
       await maybePostApprovalConfirmation({
@@ -1694,7 +2030,19 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   // the next streaming turn (via /continue) sees a valid Anthropic tool_use →
   // tool_result pair. This eliminates the "messages repeated over and over"
   // disclaimers — the model can see its own prior call and its real result.
-  if (action.tool_use_id && action.conversation_id) {
+  const durableExecutionResult = execResult.success
+    ? durableAgentActionResult(action.action, execResult.result)
+    : null;
+  if (durableExecutionResult) {
+    try {
+      await recordApprovedActionExecutionContext(action, user.id, execResult.result);
+    } catch (err) {
+      console.warn('[agent-routes] Failed to record approved action result context', {
+        actionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else if (action.tool_use_id && action.conversation_id) {
     const preservedToolFailure = execResult.result
       && typeof execResult.result === 'object'
       && !Array.isArray(execResult.result)
@@ -1785,6 +2133,21 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
         decision: 'rejected',
       });
     }
+    if (result.status === 'rejected') {
+      await recordRejectedActionDecisionContext(action, user.id);
+    }
+    try {
+      await maybePostApprovalConfirmation({
+        orgId: user.org_id,
+        actionMessageId: action.message_id,
+        actorUserId: action.user_id,
+      });
+    } catch (err) {
+      console.warn('[agent-routes] Failed to post approval confirmation', {
+        actionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     await resolveAttentionBySource({
       orgId: user.org_id,
       sourceType: 'agent_action',
@@ -1796,6 +2159,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
   }
 
   if (action.approval_status === 'rejected') {
+    await recordRejectedActionDecisionContext(action, user.id);
     return c.json({ success: true, status: 'rejected', message: 'already rejected' });
   }
   if (action.approval_status === 'approved') {
@@ -1847,6 +2211,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     userId: user.id,
     decision: 'rejected',
   });
+  await recordRejectedActionDecisionContext(action, user.id);
   await resolveAttentionBySource({
     orgId: user.org_id,
     sourceType: 'agent_action',
@@ -1884,6 +2249,18 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       actionParams: action.params,
       dismissedBy: user.id,
       reason: reason ?? null,
+    });
+  }
+  try {
+    await maybePostApprovalConfirmation({
+      orgId: user.org_id,
+      actionMessageId: action.message_id,
+      actorUserId: action.user_id,
+    });
+  } catch (err) {
+    console.warn('[agent-routes] Failed to post approval confirmation', {
+      actionId,
+      error: err instanceof Error ? err.message : String(err),
     });
   }
   return c.json({ success: true });

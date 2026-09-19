@@ -51,10 +51,14 @@ import {
 import {
   MODULE_OPERATION_DEFINITIONS,
   MODULE_OPERATION_NAMES,
+  moduleTaskOperationRequiredScopes,
   parseModuleRecordResourceId,
   type ModuleOperationName,
 } from '@deft/shared/modules';
 import { humanModuleActor, getModuleRecord } from '../module-service.js';
+import { executeHumanModuleTaskWrite, isModuleTaskWriteOperation } from '../module-task-write-operation.js';
+import { proposeHumanModuleBulkCreate } from '../agent-actions.js';
+import { isModuleRecordBulkCreateAction } from '../module-record-bulk-create.js';
 import { searchAuthorizedModuleResources as searchModuleRecords } from '../resource-search-service.js';
 import {
   visibleModuleActionScopeSql,
@@ -62,7 +66,7 @@ import {
   visibleModuleAttentionScopeSql,
 } from '../module-action-visibility.js';
 import {
-  executeModuleOperationForActor,
+  executeModuleMcpOperationForActor,
   moduleOperationErrorResult,
   parseModuleOperationArgs,
 } from './modules.js';
@@ -1277,6 +1281,10 @@ export async function humanModuleOperation(
   args: Record<string, unknown>,
   ctx: HumanToolContext,
 ): Promise<ToolResult> {
+  const taskScopes = moduleTaskOperationRequiredScopes(operation);
+  if (taskScopes && !taskScopes.every((scope) => ctx.scopes.includes(scope))) {
+    return errorResult(`Missing MCP scope: ${taskScopes.join(' and ')}`);
+  }
   const requiredScope = MODULE_OPERATION_DEFINITIONS[operation].mode === 'read'
     ? 'read:modules'
     : 'write:modules';
@@ -1297,7 +1305,31 @@ export async function humanModuleOperation(
       source: 'mcp',
       scopes: ctx.scopes,
     });
-    return textResult(await executeModuleOperationForActor(operation, actor, input));
+    if (isModuleTaskWriteOperation(operation)) {
+      return textResult(await executeHumanModuleTaskWrite(operation, actor, input,
+        ctx.client_id ?? `personal-token:${ctx.token_id ?? 'unknown'}`));
+    }
+    if (isModuleRecordBulkCreateAction(operation)) {
+      const proposal = await proposeHumanModuleBulkCreate({
+        input: input as Record<string, unknown>,
+        orgId: ctx.org_id,
+        userId: ctx.user_id,
+        clientId: ctx.client_id ?? `personal-token:${ctx.token_id ?? 'unknown'}`,
+      });
+      if (proposal.requiresApproval) {
+        return textResult({
+          action_id: proposal.actionId,
+          status: proposal.isRetry ? 'pending_retry_approval' : 'pending_approval',
+          approval_tier: 'full',
+          message: proposal.isRetry
+            ? 'Bulk create retry requires fresh human approval. No additional records have been created.'
+            : 'Bulk create requires human approval. No records have been created.',
+        });
+      }
+      if (!proposal.success) return errorResult(proposal.error ?? 'Bulk-create proposal failed');
+      return textResult(proposal.result);
+    }
+    return await executeModuleMcpOperationForActor(operation, actor, input);
   } catch (error) {
     return moduleOperationErrorResult(operation, error);
   }
@@ -3644,8 +3676,11 @@ export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
   project_create: 'write:workspace', project_update: 'write:workspace', project_archive: 'write:workspace',
   task_saved_view_list: 'read:tasks', task_saved_view_create: 'write:tasks',
   agent_employee_list: 'read:workspace', agent_employee_get: 'read:workspace', agent_employee_update_state: 'write:workspace',
-  module_list: 'read:modules', module_schema_get: 'read:modules', module_record_search: 'read:modules', module_record_query: 'read:modules', module_record_get: 'read:modules',
-  module_record_create: 'write:modules', module_record_update: 'write:modules', module_record_archive: 'write:modules',
+  module_list: 'read:modules', module_schema_get: 'read:modules', module_record_search: 'read:modules', module_record_query: 'read:modules', module_record_get: 'read:modules', module_record_incoming: 'read:modules', module_record_latest_related: 'read:modules',
+  module_record_create: 'write:modules', module_record_bulk_create: 'write:modules', module_record_update: 'write:modules', module_record_archive: 'write:modules',
+  module_record_task_links: 'read:modules', // Also requires read:tasks; see the conjunctive scope helpers below.
+  module_record_task_link: 'write:modules', // Also requires write:tasks.
+  module_record_task_unlink: 'write:modules',
   capability_list: APP_ACTION_OPERATION_PRIMARY_SCOPES.capability_list,
   capability_get: APP_ACTION_OPERATION_PRIMARY_SCOPES.capability_get,
   app_binding_invoke: APP_ACTION_OPERATION_PRIMARY_SCOPES.app_binding_invoke,
@@ -3654,6 +3689,8 @@ export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
 
 /** Array requirements are alternatives (any one scope is sufficient). */
 export function humanToolHasRequiredScope(scopes: readonly string[], toolName: string): boolean {
+  const taskScopes = moduleTaskOperationRequiredScopes(toolName);
+  if (taskScopes) return taskScopes.every((scope) => scopes.includes(scope));
   if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
     const operation = toolName as AppActionOperationName;
     const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];
@@ -3669,6 +3706,8 @@ export function humanToolHasRequiredScope(scopes: readonly string[], toolName: s
 }
 
 export function humanToolScopeError(toolName: string): string | null {
+  const taskScopes = moduleTaskOperationRequiredScopes(toolName);
+  if (taskScopes) return `Missing MCP scope: ${taskScopes.join(' and ')}`;
   if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
     const operation = toolName as AppActionOperationName;
     const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];
@@ -3687,6 +3726,8 @@ export function humanToolChallengeScope(
   toolName: string,
   scopes: readonly string[] = [],
 ): string | undefined {
+  const taskScopes = moduleTaskOperationRequiredScopes(toolName);
+  if (taskScopes) return taskScopes.find((scope) => !scopes.includes(scope)) ?? taskScopes[0];
   if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
     const operation = toolName as AppActionOperationName;
     const primary = APP_ACTION_OPERATION_PRIMARY_SCOPES[operation];

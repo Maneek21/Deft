@@ -32,7 +32,7 @@ import { errorResult, textResult } from './types.js';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
-import { employeeModuleActor, listModuleSummaries } from '../module-service.js';
+import { readEmployeeModuleDiscovery } from '../module-discovery.js';
 import { loadEmployeeProjectAccess } from './employee-project-access.js';
 
 type TriggerDescriptor = {
@@ -308,6 +308,15 @@ export function invalidatePlatformContextCacheFor(employeeId: string) {
   }
 }
 
+/** Keep security-sensitive discovery fields live when the base context is cached. */
+export async function mergeFreshEmployeeDiscovery(
+  cachedPayload: Record<string, unknown>,
+  ctx: ToolContext,
+  load = readEmployeeModuleDiscovery,
+): Promise<Record<string, unknown>> {
+  return { ...cachedPayload, ...await load(ctx) };
+}
+
 // ─── Main handler ─────────────────────────────────────────────────────────
 
 export async function platformContext(
@@ -379,9 +388,9 @@ export async function platformContext(
     try {
       const parsed = JSON.parse(cached.content[0]!.text);
       parsed._cache_hit = true;
-      return textResult(parsed);
+      return textResult(await mergeFreshEmployeeDiscovery(parsed, ctx));
     } catch {
-      return cached;
+      return errorResult('Unable to read cached workspace context. Retry platform_context.');
     }
   }
 
@@ -588,31 +597,7 @@ export async function platformContext(
       teamSummaries = [];
     }
 
-    let installedModules: Array<Record<string, unknown>> = [];
-    try {
-      installedModules = (await listModuleSummaries(employeeModuleActor({
-        orgId: ctx.org_id,
-        employeeId: ctx.employee_id,
-        trustLevel: ctx.trust_level,
-        source: 'mcp',
-      }))).map((module) => ({
-        module_id: module.module_id,
-        name: module.name,
-        version: module.version,
-        manifest_digest: module.manifest_digest,
-        collections: module.collections,
-        untrusted_metadata: true,
-        retrieval_hint: {
-          tool: 'module_schema_get',
-          args_template: {
-            caller_employee_slug: ctx.employee_slug,
-            module_id: module.module_id,
-          },
-        },
-      }));
-    } catch {
-      installedModules = [];
-    }
+    const moduleDiscovery = await readEmployeeModuleDiscovery(ctx);
 
     const now = new Date();
     const payload = {
@@ -636,7 +621,7 @@ export async function platformContext(
       })),
       active_projects: activeProjects,
       teams: teamSummaries,
-      installed_modules: installedModules,
+      ...moduleDiscovery,
       relevant_wiki_snippets: wikiSnippets,
       context_packets: buildContextPackets(wikiSnippets, trigger, ctx),
       trigger_context: trigger ?? null,

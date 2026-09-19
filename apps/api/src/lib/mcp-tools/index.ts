@@ -198,7 +198,8 @@ export const toolSchemas: ToolSchema[] = [
       'date, org + role info, teammates, active projects, and relevant wiki ' +
       'snippets. Call this first on every turn — it is the source of truth for ' +
       'who you are, what day it is, and what you know. ' +
-      'The response also includes context_packets that separate company, channel, and employee memory.',
+      'The response also includes context_packets that separate company, channel, and employee memory. ' +
+      'installed_modules lists authorized Module summaries. Check module_discovery.status: unavailable is a lookup/access failure, not evidence that no Apps are installed.',
     inputSchema: {
       type: 'object',
       properties: {

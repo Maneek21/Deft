@@ -54,6 +54,7 @@ export type AppRunSafePreview = {
 export type AppActionPrepared = {
   action: AppActionItem;
   safePreview: AppRunSafePreview;
+  reviewFields: { to: string; subject: string; bodyText: string } | null;
   inputCandidate: Record<string, unknown>;
   replayIdentity: string;
 };
@@ -73,6 +74,22 @@ export type AppRunView = {
   updatedAt: string;
   terminalAt: string | null;
 };
+
+export type ModuleAppRunOutcome = {
+  resourceId: string;
+  runId: string;
+  operationName: string;
+  state: AppRunState;
+  createdAt: string;
+  updatedAt: string;
+  providerCallAttempted: boolean;
+  outcomeSuccess: boolean | null;
+  errorCode: string | null;
+  environment: 'sandbox' | 'unknown';
+  fromMergedRecord: boolean;
+};
+
+export type ModuleAppRunOutcomesResult = { outcomes: ModuleAppRunOutcome[] };
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
@@ -241,9 +258,11 @@ export function normalizeAppActionResolve(value: unknown): AppActionResolveResul
 export function normalizeAppActionPrepare(value: unknown): AppActionPrepared {
   const body = object(value, 'App action preparation response');
   const row = object(body.result ?? value, 'App action preparation');
+  const message = row.review_fields == null ? null : object(row.review_fields, 'authorized message review');
   return {
     action: normalizeAction(row.action),
     safePreview: normalizePreview(row.safe_preview),
+    reviewFields: message ? { to: stringValue(message.to, 'review recipient'), subject: stringValue(message.subject, 'review subject'), bodyText: stringValue(message.body_text, 'review message') } : null,
     inputCandidate: object(row.input_candidate, 'sealed App action candidate'),
     replayIdentity: stringValue(row.replay_identity, 'App action replay identity'),
   };
@@ -275,6 +294,43 @@ export function normalizeAppRun(value: unknown): AppRunView {
 export function normalizeAppRunResult(value: unknown): { run: AppRunView; value: JsonValue } {
   const body = object(value, 'App Run result response');
   return { run: normalizeAppRun(body.run), value: normalizeJson(body.value) };
+}
+
+export function normalizeModuleAppRunOutcomes(value: unknown): ModuleAppRunOutcomesResult {
+  const body = object(value, 'Module App Run outcomes response');
+  if (!Array.isArray(body.outcomes) || body.outcomes.length > 100) {
+    throw new Error('Invalid Module App Run outcomes.');
+  }
+  return {
+    outcomes: body.outcomes.map((entry) => {
+      const row = object(entry, 'Module App Run outcome');
+      if (typeof row.state !== 'string' || !RUN_STATES.has(row.state as AppRunState)) {
+        throw new Error('Invalid Module App Run outcome state.');
+      }
+      if (row.environment !== 'sandbox' && row.environment !== 'unknown') {
+        throw new Error('Invalid Module App Run environment.');
+      }
+      if (typeof row.provider_call_attempted !== 'boolean'
+        || (row.outcome_success !== null && typeof row.outcome_success !== 'boolean')
+        || (row.error_code !== null && typeof row.error_code !== 'string')
+        || typeof row.from_merged_record !== 'boolean') {
+        throw new Error('Invalid Module App Run outcome facts.');
+      }
+      return {
+        resourceId: stringValue(row.resource_id, 'Module resource identity'),
+        runId: stringValue(row.run_id, 'App Run identity'),
+        operationName: stringValue(row.operation_name, 'App Run operation'),
+        state: row.state as AppRunState,
+        createdAt: stringValue(row.created_at, 'App Run created time'),
+        updatedAt: stringValue(row.updated_at, 'App Run updated time'),
+        providerCallAttempted: row.provider_call_attempted,
+        outcomeSuccess: row.outcome_success,
+        errorCode: row.error_code,
+        environment: row.environment,
+        fromMergedRecord: row.from_merged_record,
+      };
+    }),
+  };
 }
 
 async function post(path: string, body: unknown, fallback: string): Promise<unknown> {
@@ -312,6 +368,15 @@ export async function getAppRunResult(runId: string): Promise<{ run: AppRunView;
   const response = await api.get(`/api/app-runs/${encodeURIComponent(runId)}/result`);
   if (!response.ok) throw new Error(await appApiError(response, 'The App Run result is unavailable.'));
   return normalizeAppRunResult(await response.json());
+}
+
+export async function listModuleAppRunOutcomes(resourceRefs: ResourceRef[]): Promise<ModuleAppRunOutcomesResult> {
+  if (resourceRefs.length === 0 || resourceRefs.length > 100) {
+    throw new Error('App Run outcomes require between 1 and 100 records.');
+  }
+  return normalizeModuleAppRunOutcomes(await post('/api/app-runs/record-outcomes', {
+    resource_refs: resourceRefs.map(resourceRefPayload),
+  }, 'Unable to load action outcomes.'));
 }
 
 export function isTerminalAppRun(state: AppRunState): boolean {

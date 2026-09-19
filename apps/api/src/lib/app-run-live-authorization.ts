@@ -45,6 +45,7 @@ import {
 } from '@deft/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from './db.js';
+import { readModuleDirectResourceRelations } from './module-direct-resource-relations.js';
 import type {
   AppRunExecutionAuthorizer,
   AppRunReadAuthorityRef,
@@ -650,7 +651,6 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(resourceRelationSets.source_resource_type, source.resource_type),
       eq(resourceRelationSets.source_resource_id, source.resource_id),
     ));
-    if (sets.length === 0) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     const edges = await tx.select().from(resourceRelationEdges).where(and(
       eq(resourceRelationEdges.org_id, orgId),
       inArray(resourceRelationEdges.relation_set_id, sets.map((set) => set.id)),
@@ -675,6 +675,14 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
           relation_key: set.relation_key,
           selected_ref: selected.data,
         };
+        if (expectedIds.has(appRelationAuthorityId(relation))) result.push(relation);
+      }
+    }
+    const direct = await readModuleDirectResourceRelations(tx, orgId, source);
+    for (const group of direct) {
+      for (const selected of group.refs) {
+        if (!targets.has(appResourceAuthorityId(selected))) continue;
+        const relation = { source_ref: source, relation_key: group.relation_key, selected_ref: selected };
         if (expectedIds.has(appRelationAuthorityId(relation))) result.push(relation);
       }
     }
@@ -923,6 +931,15 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         !resourceIds.has(appResourceAuthorityId(relation.source_ref))
         || !resourceIds.has(appResourceAuthorityId(relation.selected_ref))
       ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+      const direct = (await readModuleDirectResourceRelations(tx, input.org_id, relation.source_ref))
+        .find((group) => group.relation_key === relation.relation_key);
+      if (direct) {
+        if (!direct.refs.some((ref) => appResourceAuthorityId(ref) === appResourceAuthorityId(relation.selected_ref))) {
+          throw new Error('APP_RUN_AUTHORIZATION_STALE');
+        }
+        relations.push({ ...relation, revision: direct.revision });
+        continue;
+      }
       const [set] = await tx.select().from(resourceRelationSets).where(and(
         eq(resourceRelationSets.org_id, input.org_id),
         eq(resourceRelationSets.source_provider_kind, relation.source_ref.provider.kind),

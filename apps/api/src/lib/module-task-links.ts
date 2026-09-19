@@ -1,7 +1,10 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   formatModuleRecordResourceId,
+  ModuleRecordNextTasksRequestSchema,
+  moduleTaskOperationRequiredScopes,
   parseModuleRecordResourceId,
+  projectModuleRecordDisplayTitle,
   projectModuleRecordSearch,
   type ModuleActor,
   type ModuleRecord,
@@ -14,6 +17,8 @@ import {
   moduleRecords,
   projects,
   tasks,
+  users,
+  orgMembers,
 } from '@deft/db/schema';
 import { db } from './db.js';
 import {
@@ -28,6 +33,8 @@ import {
 } from './module-service.js';
 import { ModuleError } from './module-errors.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
+import { loadEmployeeProjectAccess } from './mcp-tools/employee-project-access.js';
 
 const MODULE_RECORD_SOURCE_TYPE = 'module_record';
 const TASK_TARGET_TYPE = 'task';
@@ -53,10 +60,18 @@ export type ModuleRecordTaskLink = {
   identifier: string | null;
   status: string;
   priority: string;
+  due_date: string | null;
+  assignee_id: string | null;
+  assignee_name: string | null;
   project_id: string;
   project_name: string;
   url: string;
   created_at: string;
+};
+
+export type ModuleTaskLinkPageInput = {
+  offset: number;
+  limit: number;
 };
 
 export class ModuleTaskLinkError extends Error {
@@ -87,6 +102,12 @@ function recordTitle(record: LinkableModuleRecord, installation: ModuleInstallat
       record.data,
     );
     if (projected?.title) return projected.title;
+    const displayTitle = projectModuleRecordDisplayTitle(
+      installation.manifest,
+      record.collection_key,
+      record.data,
+    );
+    if (displayTitle) return displayTitle;
   } catch {
     // A record validated against an older module version can briefly be read
     // while an upgrade is being reconciled. The stable fallback avoids making
@@ -166,7 +187,7 @@ async function actorWorkspaceUserId(
         eq(agentEmployees.id, actor.actor_id),
         eq(agentEmployees.org_id, actor.org_id),
         eq(agentEmployees.is_active, true),
-        eq(agentEmployees.is_deleted, false),
+        or(eq(agentEmployees.is_deleted, false), canonicalDeftyEmployeeCondition()),
       ))
       .limit(1);
     if (employee?.user_id) return employee.user_id;
@@ -186,6 +207,10 @@ async function requireModuleTaskWriteContext(
   record: LinkableModuleRecord;
   employeePolicy: { trustLevel: 'conservative' | 'standard' | 'autonomous' } | null;
 }> {
+  if (actor.kind === 'human' && actor.source === 'mcp') {
+    const missing = moduleTaskOperationRequiredScopes(operation)?.find((scope) => !actor.scopes.includes(scope));
+    if (missing) throw new ModuleError(`Missing MCP scope: ${missing}`, 'MODULE_SCOPE_REQUIRED', 403);
+  }
   // Employee state and per-tool policy are linearized with the edge write.
   // Human and Defty actors are no-ops here and continue through the same
   // installation/task checks below.
@@ -282,6 +307,7 @@ export async function preflightModuleRecordTaskMutationWithExecutor(
 export async function listTaskModuleRecordLinks(
   actor: ModuleActor,
   taskId: string,
+  page?: ModuleTaskLinkPageInput,
 ): Promise<TaskModuleRecordLink[]> {
   await requireVisibleTask(actor, taskId);
 
@@ -289,57 +315,41 @@ export async function listTaskModuleRecordLinks(
   // only receive installations explicitly enabled for their access level.
   const installations = await listModuleInstallations(actor);
   const installationById = new Map(installations.map((item) => [item.id, item]));
+  const installationIds = [...installationById.keys()];
+  if (installationIds.length === 0) return [];
+  const currentCollection = or(...installations.map((installation) => and(
+    eq(moduleRecords.installation_id, installation.id),
+    inArray(moduleRecords.collection_key, installation.manifest.collections.map((collection) => collection.key)),
+  )));
 
-  const edges = await db
+  const rows = await db
     .select({
       id: crossReferences.id,
-      source_id: crossReferences.source_id,
       created_at: crossReferences.created_at,
+      record: moduleRecords,
     })
     .from(crossReferences)
+    .innerJoin(moduleRecords, and(
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.is_deleted, false),
+      inArray(moduleRecords.installation_id, installationIds),
+      currentCollection,
+      sql`${crossReferences.source_id} = 'module_record:' || ${moduleRecords.id}`,
+    ))
     .where(and(
       eq(crossReferences.org_id, actor.org_id),
       eq(crossReferences.source_type, MODULE_RECORD_SOURCE_TYPE),
       eq(crossReferences.target_type, TASK_TARGET_TYPE),
       eq(crossReferences.target_id, taskId),
     ))
-    .orderBy(asc(crossReferences.created_at))
-    .limit(MAX_LINKS_PER_RESOURCE);
-
-  const edgeByRecordId = new Map<string, (typeof edges)[number]>();
-  for (const edge of edges) {
-    try {
-      edgeByRecordId.set(parseModuleRecordResourceId(edge.source_id), edge);
-    } catch {
-      // Only canonical module_record:<id> edges belong to this integration.
-    }
-  }
-  const recordIds = [...edgeByRecordId.keys()];
-  if (recordIds.length === 0) return [];
-
-  const rows = await db
-    .select({ record: moduleRecords })
-    .from(moduleRecords)
-    .innerJoin(moduleInstallations, and(
-      eq(moduleInstallations.org_id, moduleRecords.org_id),
-      eq(moduleInstallations.id, moduleRecords.installation_id),
-      eq(moduleInstallations.is_enabled, true),
-      eq(moduleInstallations.is_deleted, false),
-      actor.kind === 'defty' || actor.kind === 'agent_employee'
-        ? inArray(moduleInstallations.agent_access, ['read', 'write'])
-        : undefined,
-    ))
-    .where(and(
-      eq(moduleRecords.org_id, actor.org_id),
-      eq(moduleRecords.is_deleted, false),
-      inArray(moduleRecords.id, recordIds),
-    ));
+    .orderBy(asc(crossReferences.created_at), asc(crossReferences.id))
+    .limit(page ? Math.min(101, Math.max(1, page.limit)) : MAX_LINKS_PER_RESOURCE)
+    .offset(page ? Math.min(100000, Math.max(0, page.offset)) : 0);
 
   const links: TaskModuleRecordLink[] = [];
-  for (const { record: row } of rows) {
+  for (const { id, created_at, record: row } of rows) {
     const installation = installationById.get(row.installation_id);
-    const edge = edgeByRecordId.get(row.id);
-    if (!installation || !edge) continue;
+    if (!installation) continue;
     const record: LinkableModuleRecord = {
       resource_id: formatModuleRecordResourceId(row.id),
       id: row.id,
@@ -348,17 +358,21 @@ export async function listTaskModuleRecordLinks(
       collection_key: row.collection_key,
       data: row.data as ModuleRecord['data'],
     };
-    const link = recordLinkView(edge, record, installation);
+    const link = recordLinkView({ id, created_at }, record, installation);
     if (link) links.push(link);
   }
-  return links.sort((left, right) => left.created_at.localeCompare(right.created_at));
+  return links;
 }
 
 export async function listModuleRecordTaskLinks(
   actor: ModuleActor,
   slug: string,
   recordId: string,
+  page?: ModuleTaskLinkPageInput,
 ): Promise<ModuleRecordTaskLink[]> {
+  if (actor.kind === 'human' && actor.source === 'mcp' && !actor.scopes.includes('read:tasks')) {
+    throw new ModuleError('Missing MCP scope: read:tasks', 'MODULE_ACCESS_DENIED', 403);
+  }
   const installation = await getModuleInstallation(actor, { slug });
   const record = await getModuleRecord(actor, recordId);
   if (record.installation_id !== installation.id) {
@@ -367,6 +381,11 @@ export async function listModuleRecordTaskLinks(
 
   const resourceId = formatModuleRecordResourceId(record.id);
   const userId = await actorWorkspaceUserId(actor);
+  const employeeAccess = actor.kind === 'agent_employee'
+    ? await loadEmployeeProjectAccess({ org_id: actor.org_id, employee_id: actor.actor_id }) : null;
+  if (employeeAccess && !employeeAccess.resolved) {
+    throw new ModuleError('Employee access unavailable', 'MODULE_ACCESS_DENIED', 403);
+  }
   const rows = await db
     .select({
       edge_id: crossReferences.id,
@@ -374,6 +393,9 @@ export async function listModuleRecordTaskLinks(
       title: tasks.title,
       status: tasks.status,
       priority: tasks.priority,
+      due_date: tasks.due_date,
+      assignee_id: orgMembers.user_id,
+      assignee_name: users.name,
       number: tasks.number,
       project_id: projects.id,
       project_name: projects.name,
@@ -392,14 +414,19 @@ export async function listModuleRecordTaskLinks(
       eq(projects.org_id, actor.org_id),
       eq(projects.is_deleted, false),
     ))
+    .leftJoin(orgMembers, and(eq(orgMembers.user_id, tasks.assignee_id), eq(orgMembers.org_id, actor.org_id)))
+    .leftJoin(users, eq(users.id, orgMembers.user_id))
     .where(and(
       eq(crossReferences.org_id, actor.org_id),
       eq(crossReferences.source_type, MODULE_RECORD_SOURCE_TYPE),
       eq(crossReferences.source_id, resourceId),
       visibleTaskCondition(userId),
+      employeeAccess?.resolved && !employeeAccess.unrestricted
+        ? inArray(projects.id, employeeAccess.projectIds) : undefined,
     ))
-    .orderBy(asc(crossReferences.created_at))
-    .limit(MAX_LINKS_PER_RESOURCE);
+    .orderBy(sql`case when ${tasks.status}::text in ('done', 'cancelled', 'won', 'lost') then 1 else 0 end`, sql`${tasks.due_date} asc nulls last`, asc(crossReferences.id))
+    .limit(page ? Math.min(101, Math.max(1, page.limit)) : MAX_LINKS_PER_RESOURCE)
+    .offset(page ? Math.min(100000, Math.max(0, page.offset)) : 0);
 
   return rows.map((row) => {
     const identifier = row.project_prefix && row.number != null
@@ -412,6 +439,9 @@ export async function listModuleRecordTaskLinks(
       identifier,
       status: row.status,
       priority: row.priority,
+      due_date: row.due_date ? iso(row.due_date) : null,
+      assignee_id: row.assignee_id,
+      assignee_name: row.assignee_name,
       project_id: row.project_id,
       project_name: row.project_name,
       url: `/tasks?task=${encodeURIComponent(identifier ?? row.task_id)}`,
@@ -420,13 +450,164 @@ export async function listModuleRecordTaskLinks(
   });
 }
 
+export async function listModuleRecordNextTasks(actor: ModuleActor, slug: string, inputValue: unknown) {
+  const { record_ids: recordIds } = ModuleRecordNextTasksRequestSchema.parse(inputValue);
+  const installation = await getModuleInstallation(actor, { slug });
+  const userId = await actorWorkspaceUserId(actor);
+  const liveRecords = await db.select({ id: moduleRecords.id }).from(moduleRecords).where(and(
+    eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installation.id),
+    eq(moduleRecords.is_deleted, false), inArray(moduleRecords.id, recordIds),
+  ));
+  const rows = await db
+    .selectDistinctOn([crossReferences.source_id], {
+      record_id: moduleRecords.id,
+      edge_id: crossReferences.id,
+      task_id: tasks.id,
+      title: tasks.title,
+      status: tasks.status,
+      priority: tasks.priority,
+      due_date: tasks.due_date,
+      assignee_id: orgMembers.user_id,
+      assignee_name: users.name,
+      number: tasks.number,
+      project_id: projects.id,
+      project_name: projects.name,
+      project_prefix: projects.prefix,
+      created_at: crossReferences.created_at,
+    })
+    .from(crossReferences)
+    .innerJoin(moduleRecords, and(
+      sql`${crossReferences.source_id} = 'module_record:' || ${moduleRecords.id}`,
+      eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installation.id),
+      eq(moduleRecords.is_deleted, false),
+    ))
+    .innerJoin(tasks, and(
+      eq(crossReferences.target_type, TASK_TARGET_TYPE),
+      eq(crossReferences.target_id, tasks.id),
+      eq(tasks.org_id, actor.org_id),
+      eq(tasks.is_deleted, false),
+    ))
+    .innerJoin(projects, and(
+      eq(tasks.project_id, projects.id),
+      eq(projects.org_id, actor.org_id),
+      eq(projects.is_deleted, false),
+    ))
+    .leftJoin(orgMembers, and(eq(orgMembers.user_id, tasks.assignee_id), eq(orgMembers.org_id, actor.org_id)))
+    .leftJoin(users, eq(users.id, orgMembers.user_id))
+    .where(and(
+      eq(crossReferences.org_id, actor.org_id),
+      eq(crossReferences.source_type, MODULE_RECORD_SOURCE_TYPE),
+      inArray(moduleRecords.id, recordIds),
+      sql`${tasks.status}::text not in ('done', 'cancelled', 'won', 'lost')`,
+      visibleTaskCondition(userId),
+    ))
+    .orderBy(asc(crossReferences.source_id), sql`${tasks.due_date} asc nulls last`, asc(crossReferences.id))
+    .limit(100);
+
+  return { record_ids: liveRecords.map((record) => record.id), links: rows.map((row) => {
+    const identifier = row.project_prefix && row.number != null
+      ? `${row.project_prefix}-${row.number}`
+      : null;
+    return {
+      record_id: row.record_id,
+      edge_id: row.edge_id,
+      task_id: row.task_id,
+      title: row.title,
+      identifier,
+      status: row.status,
+      priority: row.priority,
+      due_date: row.due_date ? iso(row.due_date) : null,
+      assignee_id: row.assignee_id,
+      assignee_name: row.assignee_name,
+      project_id: row.project_id,
+      project_name: row.project_name,
+      url: `/tasks?task=${encodeURIComponent(identifier ?? row.task_id)}`,
+      created_at: iso(row.created_at),
+    };
+  }) };
+}
+
+export type ModuleTaskQueueInput = {
+  bucket: 'open' | 'overdue' | 'today' | 'upcoming' | 'undated' | 'closed';
+  assignee: 'all' | 'mine' | 'unassigned';
+  today: string;
+  limit: number;
+  offset: number;
+};
+
+export async function listModuleTaskQueue(actor: ModuleActor, slug: string, input: ModuleTaskQueueInput) {
+  const installation = await getModuleInstallation(actor, { slug });
+  const userId = await actorWorkspaceUserId(actor);
+  const closed = sql`${tasks.status}::text in ('done', 'cancelled', 'won', 'lost')`;
+  const dueDay = sql`${tasks.due_date}::date`;
+  const bucket = input.bucket === 'overdue' ? sql`${dueDay} < ${input.today}::date`
+    : input.bucket === 'today' ? sql`${dueDay} = ${input.today}::date`
+      : input.bucket === 'upcoming' ? sql`${dueDay} > ${input.today}::date`
+        : input.bucket === 'undated' ? isNull(tasks.due_date) : undefined;
+  // EXISTS keeps pagination over tasks rather than over their reference edges.
+  const related = sql`exists (
+    select 1 from ${crossReferences} queue_edge
+    join ${moduleRecords} queue_record on queue_edge.source_id = 'module_record:' || queue_record.id
+      and queue_record.org_id = ${actor.org_id}
+      and queue_record.installation_id = ${installation.id}
+      and queue_record.is_deleted = false
+    where queue_edge.org_id = ${actor.org_id} and queue_edge.source_type = 'module_record'
+      and queue_edge.target_type = 'task' and queue_edge.target_id = ${tasks.id}
+  )`;
+  const rows = await db.select({
+    task_id: tasks.id, title: tasks.title, number: tasks.number, status: tasks.status, priority: tasks.priority,
+    due_date: tasks.due_date, assignee_id: orgMembers.user_id, assignee_name: users.name,
+    project_id: projects.id, project_name: projects.name, project_prefix: projects.prefix,
+  }).from(tasks)
+    .innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, actor.org_id), eq(projects.is_deleted, false)))
+    .leftJoin(orgMembers, and(eq(orgMembers.org_id, actor.org_id), eq(orgMembers.user_id, tasks.assignee_id)))
+    .leftJoin(users, eq(users.id, orgMembers.user_id))
+    .where(and(eq(tasks.org_id, actor.org_id), eq(tasks.is_deleted, false), visibleTaskCondition(userId), related,
+      input.bucket === 'closed' ? closed : sql`not (${closed})`, bucket,
+      input.assignee === 'mine' ? eq(tasks.assignee_id, userId) : input.assignee === 'unassigned' ? isNull(tasks.assignee_id) : undefined))
+    .orderBy(sql`${tasks.due_date} asc nulls last`, asc(tasks.id))
+    .limit(input.limit + 1).offset(input.offset);
+  const selected = rows.slice(0, input.limit);
+  const referenceQuery = db.select({ taskId: crossReferences.target_id, id: moduleRecords.id,
+    collectionKey: moduleRecords.collection_key, data: moduleRecords.data,
+    position: sql<number>`row_number() over (partition by ${crossReferences.target_id} order by ${moduleRecords.search_title}, ${moduleRecords.id})`.as('position'),
+    total: sql<number>`count(*) over (partition by ${crossReferences.target_id})`.as('total'),
+  })
+    .from(crossReferences)
+    .innerJoin(moduleRecords, and(
+      sql`${crossReferences.source_id} = 'module_record:' || ${moduleRecords.id}`,
+      eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installation.id), eq(moduleRecords.is_deleted, false)))
+    .where(and(eq(crossReferences.org_id, actor.org_id), eq(crossReferences.source_type, MODULE_RECORD_SOURCE_TYPE),
+      eq(crossReferences.target_type, TASK_TARGET_TYPE), inArray(crossReferences.target_id, selected.map((row) => row.task_id))))
+    .as('queue_references');
+  const references = selected.length ? await db.select().from(referenceQuery).where(sql`${referenceQuery.position} <= 3`).orderBy(asc(referenceQuery.position)) : [];
+  return {
+    tasks: selected.map((row) => {
+      const identifier = `${row.project_prefix}-${row.number}`;
+      return {
+        task_id: row.task_id, title: row.title, identifier, status: row.status, priority: row.priority,
+        due_date: row.due_date ? iso(row.due_date) : null, assignee_id: row.assignee_id, assignee_name: row.assignee_name,
+        project_id: row.project_id, project_name: row.project_name, url: `/tasks?task=${encodeURIComponent(identifier)}`,
+        record_count: Number(references.find((reference) => reference.taskId === row.task_id)?.total ?? 0),
+        records: references.filter((reference) => reference.taskId === row.task_id).map((record) => ({
+          id: record.id, collection_key: record.collectionKey,
+          title: recordTitle({ id: record.id, collection_key: record.collectionKey, data: record.data as ModuleRecord['data'], installation_id: installation.id, resource_id: formatModuleRecordResourceId(record.id), module_id: installation.module_id }, installation),
+          url: `/modules/${encodeURIComponent(slug)}/${encodeURIComponent(record.collectionKey)}/${encodeURIComponent(record.id)}`,
+        })),
+      };
+    }),
+    next_offset: rows.length > input.limit ? input.offset + input.limit : null,
+  };
+}
+
 export async function linkModuleRecordToTask(
   actor: ModuleActor,
   taskId: string,
   resourceId: string,
+  executor?: ModuleDbExecutor,
 ): Promise<{ link: TaskModuleRecordLink; created: boolean }> {
   const recordId = parseModuleRecordResourceId(resourceId);
-  const { inserted, edge, record, installation } = await db.transaction(async (tx) => {
+  const mutate = async (tx: ModuleDbExecutor) => {
     const context = await requireModuleTaskWriteContext(
       tx,
       actor,
@@ -473,7 +654,8 @@ export async function linkModuleRecordToTask(
       });
     }
     return { inserted, edge, record: context.record, installation: context.installation };
-  });
+  };
+  const { inserted, edge, record, installation } = executor ? await mutate(executor) : await db.transaction(mutate);
   if (!edge) throw new Error('Module task link was not persisted');
 
   const link = recordLinkView(edge, record, installation);
@@ -485,8 +667,9 @@ export async function unlinkModuleRecordFromTask(
   actor: ModuleActor,
   taskId: string,
   recordId: string,
+  executor?: ModuleDbExecutor & Pick<typeof db, 'delete'>,
 ): Promise<{ removed: boolean }> {
-  const deleted = await db.transaction(async (tx) => {
+  const mutate = async (tx: ModuleDbExecutor & Pick<typeof db, 'delete'>) => {
     // Requiring write access to an active record is intentional:
     // disabled/deleted/read-only modules are not mutation or existence
     // oracles. Re-enable or grant write access before managing hidden links.
@@ -521,7 +704,8 @@ export async function unlinkModuleRecordFromTask(
       });
     }
     return deleted;
-  });
+  };
+  const deleted = executor ? await mutate(executor) : await db.transaction(mutate);
   // Natural edge uniqueness makes unlink retry-safe: a replay after a lost
   // response succeeds without emitting a second audit event.
   return { removed: deleted.length > 0 };

@@ -40,7 +40,7 @@ export function ModuleLoadingState({ label = 'Loading modules…' }: { label?: s
   return (
     <div className="flex min-h-[240px] flex-col items-center justify-center gap-3" role="status">
       <Loader2 size={22} className="animate-spin" style={{ color: 'var(--primary)' }} />
-      <span className="text-[0.8125rem]" style={{ color: 'var(--outline)' }}>{label}</span>
+      <span className="text-[0.8125rem]" style={{ color: 'var(--on-surface-variant)' }}>{label}</span>
     </div>
   );
 }
@@ -59,7 +59,7 @@ export function ModuleErrorState({
       </span>
       <div>
         <p className="text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Modules could not be loaded</p>
-        <p className="mt-1 max-w-sm text-[0.75rem]" style={{ color: 'var(--outline)' }}>{message}</p>
+        <p className="mt-1 max-w-sm text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>{message}</p>
       </div>
       <button
         type="button"

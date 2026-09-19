@@ -1,5 +1,7 @@
 'use client';
 
+import { formatChatInline, linkifyChatTaskReferences } from '@/lib/chat-links';
+
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
@@ -14,6 +16,8 @@ import { RichComposer } from './rich-composer';
 import { useFileUpload } from './file-upload';
 import { ProtectedDownload } from './protected-file';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
+import { AgentMessageBlocks, type AgentMessageBlocksProps } from './agent-message-blocks';
+import { resolveAgentCitationLink } from '@/lib/agent-citations';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
 
@@ -44,6 +48,10 @@ type Message = {
   reactions?: Reaction[];
   file_ids?: string[];
   files?: FileAttachment[];
+  metadata?: AgentMessageBlocksProps & {
+    is_agent_reply?: boolean;
+    agent_blocks?: AgentMessageBlocksProps['blocks'];
+  };
 };
 
 const FILE_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -132,21 +140,9 @@ function displayEmoji(emoji: string): string {
   return SHORTCODE_TO_EMOJI[key] || emoji;
 }
 
-function inlineFormat(text: string): string {
-  const escaped = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-  return escaped
-    .replace(/`([^`]+)`/g, '<code style="background:var(--surface-container-highest);color:var(--tertiary);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/~~([^~]+)~~/g, '<del>$1</del>');
-}
-
-function renderSimpleMarkdown(text: string): string {
+function renderSimpleMarkdown(text: string, resolveHref?: (href: string) => string | null): string {
   if (!text) return '';
+  const inlineFormat = (value: string) => formatChatInline(value, resolveHref);
 
   const codeBlocks: string[] = [];
   let processed = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
@@ -192,7 +188,7 @@ function renderSimpleMarkdown(text: string): string {
   return htmlParts.join('');
 }
 
-function renderContent(content: string) {
+function renderContent(content: string, metadata?: Message['metadata']) {
   if (!content) return null;
 
   // Detect HTML content (from TipTap)
@@ -209,13 +205,35 @@ function renderContent(content: string) {
   }
 
   // Plain text / markdown (agent replies, seed data)
-  let html = renderSimpleMarkdown(content);
+  let html = renderSimpleMarkdown(content, metadata?.is_agent_reply
+    ? href => resolveAgentCitationLink(href, metadata.citations)
+    : undefined);
   html = html
     .replace(/<@([^|]+)\|([^>]+)>/g,
       '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>')
-    .replace(/([A-Z]{2,6})-(\d+)/g,
-      '<a href="/tasks?task=$1-$2" style="background:var(--surface-container-highest);color:var(--primary);padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem;text-decoration:none">$1-$2</a>');
+;
+  // Agent task references stay plain unless the model supplied an exact
+  // citation-backed Markdown link. Canonical task links remain available in
+  // the Sources block rendered below the message.
+  if (shouldLinkifyTaskReferences(metadata)) html = linkifyChatTaskReferences(html);
   return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
+}
+
+export function shouldLinkifyTaskReferences(metadata?: Message['metadata']): boolean {
+  return metadata?.is_agent_reply !== true;
+}
+
+export function ThreadMessageContent({ content, metadata }: Pick<Message, 'content' | 'metadata'>) {
+  return <>
+    {renderContent(content, metadata)}
+    <AgentMessageBlocks
+      blocks={metadata?.agent_blocks}
+      citations={metadata?.citations}
+      model={metadata?.model}
+      tokens_in={metadata?.tokens_in}
+      tokens_out={metadata?.tokens_out}
+    />
+  </>;
 }
 
 type Props = {
@@ -534,7 +552,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                 className="text-[13px] break-words mt-0.5"
                 style={{ color: 'var(--text-primary)', lineHeight: '20px' }}
               >
-                {renderContent(displayContent)}
+                <ThreadMessageContent content={displayContent} metadata={msg.metadata} />
                 {msg.edited_at && (
                   <span className="text-[10px] ml-1.5" style={{ color: 'var(--muted)' }}>
                     (edited)

@@ -1,0 +1,7 @@
+subject,kind,outcome,occurred_at,notes
+Northstar discovery call,call,completed,2026-09-08T10:00:00Z,Fictional conversation: Avery needs a two-week pilot. Link Avery Chen and Northstar Studio.
+Northstar working session,meeting,planned,2026-10-01T10:00:00Z,Future meeting; must not count as a completed customer interaction.
+Maple Harbor recap,email,completed,2026-09-09T08:30:00Z,Fictional manually recorded historical email. Link Mina Chen and Maple Harbor.
+Cedar account research,note,,,Undated research note; should remain visible without claiming customer contact.
+Orbit postponed review,meeting,cancelled,2026-09-07T15:00:00Z,Cancelled meeting; does not count as completed contact.
+Northstar original introduction,call,completed,2025-11-12T09:00:00Z,Old conversation for history sorting. Link Avery Chen.

@@ -3,18 +3,14 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatToolLabel } from '@/lib/tool-display';
+import { normalizeAgentCitations, type AgentCitation } from '@/lib/agent-citations';
+
+export type { AgentCitation } from '@/lib/agent-citations';
 
 export type AgentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input?: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
-
-export type AgentCitation = {
-  type: 'task' | 'message' | 'wiki' | 'event' | 'mcp' | string;
-  id: string;
-  title: string;
-  url?: string;
-};
 
 export type AgentMessageBlocksProps = {
   blocks?: AgentBlock[] | null;
@@ -58,18 +54,15 @@ export function AgentMessageBlocks({
   tokens_in,
   tokens_out,
 }: AgentMessageBlocksProps) {
+  const [showAllCitations, setShowAllCitations] = useState(false);
   const toolUses = (blocks ?? []).filter(
     (b): b is Extract<AgentBlock, { type: 'tool_use' }> => b.type === 'tool_use',
   );
 
-  // Filter citations like agent-chat.tsx does
-  const filteredCitations = (citations ?? [])
-    .filter((c) => c.type !== 'mcp') // tool_calls render handles these
-    .filter((c) => !c.title.includes(',')) // Remove DM-style "Maneek, Rahul" citations
-    .filter((c, ci, arr) => arr.findIndex((x) => x.id === c.id) === ci); // dedupe
+  const citationSources = normalizeAgentCitations(citations);
 
   const showTokensFooter = !!model || tokens_in != null || tokens_out != null;
-  const hasCitations = filteredCitations.length > 0;
+  const hasCitations = citationSources.length > 0;
 
   if (toolUses.length === 0 && !hasCitations && !showTokensFooter) return null;
 
@@ -86,25 +79,26 @@ export function AgentMessageBlocks({
 
       {/* Citations footer */}
       {hasCitations && (
-        <div className="flex flex-wrap gap-1.5 mt-2.5">
-          {filteredCitations.slice(0, 5).map((c, ci) => (
-            <button
-              key={ci}
-              className="px-2 py-0.5 rounded-full text-[11px] font-medium cursor-pointer hover:opacity-80 transition-opacity"
-              style={{ background: 'var(--bg-active)', color: 'var(--text-secondary)' }}
-            >
-              {c.type === 'task' ? '📋 ' : '💬 '}
-              {c.title.length > 40 ? c.title.slice(0, 40) + '...' : c.title}
-            </button>
-          ))}
-          {filteredCitations.length > 5 && (
-            <button
-              className="px-2 py-0.5 rounded-md text-[10px]"
-              style={{ color: 'var(--outline)' }}
-            >
-              +{filteredCitations.length - 5} more
-            </button>
-          )}
+        <div className="mt-2.5" aria-label="Sources">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--on-surface-variant)' }}>Sources</div>
+          <div className="flex flex-wrap gap-1.5">
+            {(showAllCitations ? citationSources : citationSources.slice(0, 5)).map((c) => {
+              const href = c.href;
+              const label = c.title.length > 40 ? c.title.slice(0, 40) + '...' : c.title;
+              const className = "px-2 py-0.5 rounded-full text-[11px] font-medium hover:opacity-80 transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2";
+              const style = { background: 'var(--bg-active)', color: 'var(--text-secondary)' };
+              const key = `${c.id}:${href ?? ''}`;
+              return href
+                ? <a key={key} href={href} title={c.title} className={className} style={style}>{label}</a>
+                : <span key={key} title={c.title} className={className} style={style}>{label}</span>;
+            })}
+            {citationSources.length > 5 && (
+              <button type="button" onClick={() => setShowAllCitations(value => !value)} aria-expanded={showAllCitations}
+                className="px-2 py-0.5 rounded-md text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                {showAllCitations ? 'Show fewer sources' : `+${citationSources.length - 5} more`}
+              </button>
+            )}
+          </div>
         </div>
       )}
 

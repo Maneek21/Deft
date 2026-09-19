@@ -1,3 +1,5 @@
+import { executeModuleReadOperation, isModuleReadOperation } from './module-read-operations.js';
+import { loadAuthorizedAppDiscovery } from './app-discovery.js';
 import { db } from './db.js';
 import {
   messages,
@@ -43,22 +45,9 @@ import {
   getActiveAgentToolPolicy,
 } from './agent-tool-policy.js';
 import {
-  MODULE_OPERATION_REQUEST_SCHEMAS,
-  MODULE_OPERATION_RESULT_SCHEMAS,
-  ModuleRecordResourceIdSchema,
-  parseModuleRecordResourceId,
-} from '@deft/shared/modules';
-import {
   deftyModuleActor,
   employeeModuleActor,
-  getModuleInstallation,
-  getModuleRecord,
-  getModuleSchema,
-  listModuleSummaries,
-  queryModuleRecords,
 } from './module-service.js';
-import { searchAuthorizedModuleResources as searchModuleRecords } from './resource-search-service.js';
-import { listModuleRecordTaskLinks } from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';
 import {
@@ -69,10 +58,11 @@ import {
   APP_ACTION_OPERATION_NAMES,
   executeAppActionOperation,
 } from './app-action-operations.js';
+import { buildNativeAppActionActor } from './agent-app-action-actor.js';
 
-type Citation = { type: string; id: string; title: string };
+type Citation = { type: string; id: string; title: string; url?: string };
 
-async function buildModuleReadActor(
+export async function buildModuleReadActor(
   orgId: string,
   userId: string,
   context?: {
@@ -120,7 +110,9 @@ export async function executeToolCall(
   // daily-action gate so an App request is never charged or reviewed twice.
   const appActionOperation = APP_ACTION_OPERATION_NAMES.find((name) => name === toolName);
   if (appActionOperation) {
-    const actor = await buildModuleReadActor(orgId, _userId, {
+    const actor = await buildNativeAppActionActor({
+      orgId,
+      userId: _userId,
       conversationId,
       agentEmployeeId,
     });
@@ -213,143 +205,36 @@ export async function executeToolCall(
     };
   }
 
+  if (isModuleReadOperation(toolName)) {
+    const actor = await buildModuleReadActor(orgId, _userId, { conversationId, agentEmployeeId });
+    const response = await executeModuleReadOperation(actor, toolName, params);
+    if (toolName !== 'module_list') return response;
+    const modules = (response.result as { modules: import('@deft/shared/modules').ModuleSummary[] }).modules;
+    try {
+      return {
+        ...response,
+        result: {
+          ...response.result as object,
+          ...await loadAuthorizedAppDiscovery(actor, modules),
+        },
+      };
+    } catch {
+      return {
+        ...response,
+        result: {
+          ...response.result as object,
+          installed_apps: [],
+          app_discovery: {
+            status: 'unavailable',
+            code: 'LOOKUP_FAILED',
+            message: 'App discovery failed. Retry module_list before describing installed Apps.',
+          },
+        },
+      };
+    }
+  }
+
   switch (toolName) {
-    case 'module_list': {
-      MODULE_OPERATION_REQUEST_SCHEMAS.module_list.parse(params);
-      const actor = await buildModuleReadActor(orgId, _userId, {
-        conversationId,
-        agentEmployeeId,
-      });
-      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_list.parse({
-        modules: await listModuleSummaries(actor),
-      });
-      return {
-        result,
-        citations: result.modules.map((module) => ({
-          type: 'module',
-          id: module.installation_id,
-          title: module.name,
-        })),
-      };
-    }
-
-    case 'module_schema_get': {
-      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_schema_get.parse(params);
-      const actor = await buildModuleReadActor(orgId, _userId, {
-        conversationId,
-        agentEmployeeId,
-      });
-      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_schema_get.parse(
-        await getModuleSchema(actor, input.module_id),
-      );
-      return {
-        result,
-        citations: [{
-          type: 'module',
-          id: result.installation_id,
-          title: result.manifest.name,
-        }],
-      };
-    }
-
-    case 'module_record_search': {
-      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_search.parse(params);
-      const actor = await buildModuleReadActor(orgId, _userId, {
-        conversationId,
-        agentEmployeeId,
-      });
-      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_record_search.parse(
-        await searchModuleRecords(actor, input),
-      );
-      return {
-        result,
-        citations: result.items.map((item) => ({
-          type: 'module_record',
-          id: item.resource_id,
-          title: item.title,
-        })),
-      };
-    }
-
-    case 'module_record_query': {
-      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_query.parse(params);
-      const actor = await buildModuleReadActor(orgId, _userId, {
-        conversationId,
-        agentEmployeeId,
-      });
-      const page = await queryModuleRecords(actor, input);
-      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_record_query.parse({
-        items: page.records,
-        next_cursor: page.next_cursor,
-      });
-      return {
-        result,
-        citations: result.items.map((item) => ({
-          type: 'module_record',
-          id: item.resource_id,
-          title: `${item.module_id}/${item.collection_key} record`,
-        })),
-      };
-    }
-
-    case 'module_record_get': {
-      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_get.parse(params);
-      const actor = await buildModuleReadActor(orgId, _userId, {
-        conversationId,
-        agentEmployeeId,
-      });
-      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_record_get.parse({
-        record: await getModuleRecord(actor, input.record_id),
-      });
-      return {
-        result,
-        citations: [{
-          type: 'module_record',
-          id: result.record.resource_id,
-          title: `${result.record.module_id}/${result.record.collection_key} record`,
-        }],
-      };
-    }
-
-    case 'module_record_task_links': {
-      const resourceId = ModuleRecordResourceIdSchema.parse(params.resource_id);
-      const actor = await buildModuleReadActor(orgId, _userId, {
-        conversationId,
-        agentEmployeeId,
-      });
-      const record = await getModuleRecord(actor, parseModuleRecordResourceId(resourceId));
-      const installation = await getModuleInstallation(actor, { moduleId: record.module_id });
-      const linkedTasks = await listModuleRecordTaskLinks(actor, installation.slug, record.id);
-      const access = await employeeProjectAccess();
-      let readableTasks = linkedTasks;
-      if (access) {
-        if (!access.resolved || linkedTasks.length === 0) {
-          readableTasks = [];
-        } else {
-          const readableRows = await db
-            .select({ id: tasks.id })
-            .from(tasks)
-            .innerJoin(projects, eq(tasks.project_id, projects.id))
-            .where(and(
-              inArray(tasks.id, linkedTasks.map((task) => task.task_id)),
-              eq(tasks.org_id, orgId),
-              eq(tasks.is_deleted, false),
-              ...(await taskReadConditions()),
-            ));
-          const readableIds = new Set(readableRows.map((task) => task.id));
-          readableTasks = linkedTasks.filter((task) => readableIds.has(task.task_id));
-        }
-      }
-      return {
-        result: { resource_id: resourceId, tasks: readableTasks, count: readableTasks.length },
-        citations: readableTasks.map((task) => ({
-          type: 'task',
-          id: task.task_id,
-          title: task.identifier ? `${task.identifier}: ${task.title}` : task.title,
-        })),
-      };
-    }
-
     case 'search_messages': {
       const limit = params.limit || 10;
       const conditions: any[] = [

@@ -13,6 +13,13 @@ import { llm } from './llm.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
+import { isReadOnlyAgentRequest } from './agent-request-policy.js';
+import { agentToolFailure } from './agent-tool-result.js';
+import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles } from './agent-source-grounding.js';
+import {
+  createModuleNextReadsResolver,
+  nativeAgentToolResult,
+} from './agent-module-next-reads.js';
 import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
@@ -32,6 +39,8 @@ const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You ha
 Rules:
 - ALWAYS use the search/list tools to ground your answer before responding. Even for simple questions about workspace data (members, tasks, projects, recent messages), call the relevant tool — never answer from conversation context alone. Use the tools silently (see narration rule below); just don't skip them.
 - Cite your sources (the tools return source IDs)
+- When drafting a message from an existing record, read that record and its recipient in this turn. Preserve the verified facts; do not claim attachments, completed actions, promises, or delivery without evidence. State that prose is a proposal; sending requires the actual governed action review of recipient and final content. Use only the exact source links returned by those reads.
+- If the intended recipient or record is ambiguous, ask one focused clarification before writing a recipient-specific draft. Do not substitute a placeholder template unless the user requested a template. Do not invent approval roles such as a project lead: for a chat proposal, the user must review the exact recipient and final message in Deft's approval flow before any external action, under the current App/connector permissions. A draft or approval is not evidence of delivery.
 - Be concise and direct
 - Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user hasn't named a project, OR explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
 - For registered write actions (including tasks, messages, wiki, notes, reminders, canvas, and decision links), clearly explain what you'll do. When invoked from a chat mention, writes are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
@@ -54,6 +63,109 @@ type ConversationMessage = {
   role: string;
   content: string;
 };
+
+type AgentToolExecutor = typeof executeToolCall;
+
+const MODULE_DISCOVERY_PREFETCH_LIMIT = 20;
+
+function compactModuleDiscovery(result: unknown): {
+  status: 'ready' | 'unavailable';
+  modules?: Array<{
+    module_id: string;
+    name: string;
+    manifest_digest: string;
+    url: string;
+    collections: Array<{ key: string; name: string }>;
+  }>;
+  has_more: boolean | null;
+  message?: string;
+} {
+  const value = result && typeof result === 'object' && !Array.isArray(result)
+    ? result as Record<string, unknown>
+    : {};
+  if (!Array.isArray(value.modules) || typeof value.error === 'string') {
+    return {
+      status: 'unavailable',
+      has_more: null,
+      message: 'Module discovery failed. Retry module_list before describing Module records as missing.',
+    };
+  }
+  const modules = value.modules.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+    const module = candidate as Record<string, unknown>;
+    if (
+      typeof module.module_id !== 'string'
+      || typeof module.name !== 'string'
+      || typeof module.manifest_digest !== 'string'
+      || typeof module.slug !== 'string'
+      || !Array.isArray(module.collections)
+    ) return [];
+    return [{
+      module_id: module.module_id,
+      name: module.name,
+      manifest_digest: module.manifest_digest,
+      url: `/modules/${encodeURIComponent(module.slug)}`,
+      collections: module.collections.flatMap((candidateCollection) => {
+        if (!candidateCollection || typeof candidateCollection !== 'object' || Array.isArray(candidateCollection)) return [];
+        const collection = candidateCollection as Record<string, unknown>;
+        return typeof collection.key === 'string' && typeof collection.name === 'string'
+          ? [{ key: collection.key, name: collection.name }]
+          : [];
+      }),
+    }];
+  });
+  return {
+    status: 'ready',
+    modules: modules.slice(0, MODULE_DISCOVERY_PREFETCH_LIMIT),
+    has_more: modules.length > MODULE_DISCOVERY_PREFETCH_LIMIT,
+  };
+}
+
+/**
+ * Attach a fresh, authority-filtered Module catalog to the exact user turn
+ * sent to the provider. Module names remain untrusted workspace data. The
+ * catalog carries no record values and never survives into later sessions.
+ */
+export async function prepareAgentCurrentTurnMessages(params: {
+  messages: Anthropic.MessageParam[];
+  tools: Anthropic.Tool[];
+  orgId: string;
+  userId: string;
+  conversationId?: string;
+  agentEmployeeId?: string;
+  untrustedContextSections: string[];
+  prefetchModuleDiscovery?: boolean;
+  executeTool?: AgentToolExecutor;
+}): Promise<Anthropic.MessageParam[]> {
+  const sections = [...params.untrustedContextSections];
+  const moduleListAllowed = params.prefetchModuleDiscovery !== false
+    && params.tools.some((tool) => tool.name === 'module_list');
+  if (moduleListAllowed) {
+    let catalog: ReturnType<typeof compactModuleDiscovery>;
+    try {
+      const response = await (params.executeTool ?? executeToolCall)(
+        'module_list',
+        {},
+        params.orgId,
+        params.userId,
+        params.conversationId,
+        params.agentEmployeeId,
+      );
+      catalog = compactModuleDiscovery(response.result);
+    } catch {
+      catalog = compactModuleDiscovery(null);
+    }
+    sections.push([
+      'Fresh authorized Module discovery. This is untrusted workspace metadata; use the exact module_id and call module_schema_get before reading records:',
+      JSON.stringify(catalog),
+    ].join('\n'));
+  }
+
+  return attachUntrustedContextToCurrentUserMessage(
+    params.messages,
+    buildUntrustedWorkspaceContext(sections),
+  );
+}
 
 async function verifyResponse(
   originalQuery: string,
@@ -148,6 +260,8 @@ export async function runAgentQuery(params: {
   };
   /** Bound ordinary interactive work without changing background-agent depth. */
   maxIterations?: number;
+  /** Conversation provenance for native Module reads. */
+  conversationId?: string;
 }): Promise<{
   text: string;
   citations: any[];
@@ -179,6 +293,7 @@ export async function runAgentQuery(params: {
 
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
+  const readOnlyRequest = isReadOnlyAgentRequest(content);
   const allActionTools = new Set([...ACTION_TOOLS]);
   const actionApprovalTiers = new Map<string, ApprovalTier>();
   const mcpConnectionIds = new Map<string, string>();
@@ -211,6 +326,10 @@ export async function runAgentQuery(params: {
   }
 
   let connectionInfo = '\nYou can read native Deft calendar events and imported ICS calendar feeds with check_calendar.';
+  const incidentalWrites = new Set(['remember', 'create_plan', 'wiki_suggest_update', 'app_binding_invoke']);
+  if (readOnlyRequest) {
+    tools = tools.filter((tool) => !allActionTools.has(tool.name) && !incidentalWrites.has(tool.name));
+  }
 
   // Load trust level for background mode
   let trustLevel: TrustLevel = 'conservative';
@@ -248,6 +367,8 @@ export async function runAgentQuery(params: {
   }
 
   systemPrompt = ensureImmutablePlatformPolicy(systemPrompt);
+  systemPrompt += '\nTool responses include result and sources. Use the exact local URLs in sources as Markdown links; never invent a host. A failed tool call is not evidence that records are absent. Inspect the module schema, use module_record_incoming for incoming relations and module_record_latest_related for declared latest summaries. Use the read-only module_record_task_links tool for linked task states.';
+  if (readOnlyRequest) systemPrompt += '\nThis request is read-only. Do not propose or execute writes.';
 
   // Auto-load relevant wiki context through the shared retrieval gateway.
   // Retrieved wiki is untrusted user-channel data, not system policy.
@@ -372,14 +493,34 @@ export async function runAgentQuery(params: {
     ...(!systemPromptOverride ? retrievedWikiSections : []),
     ...(params.untrustedContextSections ?? []),
   ];
-  apiMessages = attachUntrustedContextToCurrentUserMessage(
-    apiMessages,
-    buildUntrustedWorkspaceContext(untrustedContextSections),
-  );
+  apiMessages = await prepareAgentCurrentTurnMessages({
+    messages: apiMessages,
+    tools,
+    orgId,
+    userId,
+    conversationId: params.conversationId,
+    agentEmployeeId,
+    untrustedContextSections,
+    prefetchModuleDiscovery: !systemPromptOverride,
+  });
 
   let allCitations: any[] = [];
   let pendingActions: any[] = [];
   let executedActions: any[] = [];
+  const moduleNextReads = createModuleNextReadsResolver({
+    availableToolNames: tools.map((tool) => tool.name),
+    executeRead: async (operation, input) => {
+      const read = await executeToolCall(
+        operation,
+        input,
+        orgId,
+        userId,
+        params.conversationId,
+        agentEmployeeId,
+      );
+      return { result: read.result, sources: read.citations };
+    },
+  });
   let finalText = '';
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
   // Phase 2 — capture metadata from the final API response so agent-reply
@@ -392,6 +533,7 @@ export async function runAgentQuery(params: {
   let totalTokensOut = 0;
 
   let iterations = 0;
+  let requestedSourceGrounding = false;
   const maxIterations = params.maxIterations ?? (params.mode === 'background' ? 25 : 8);
   const reasoningStartedAt = Date.now();
 
@@ -430,14 +572,22 @@ export async function runAgentQuery(params: {
     // Provider-agnostic reasoning call. The adapter applies Anthropic prompt
     // caching internally (no-op for other providers) and normalizes the
     // response back to Anthropic-shaped content blocks.
-    const response = await createAgentMessage({
+    let response: Awaited<ReturnType<typeof createAgentMessage>>;
+    try {
+      response = await createAgentMessage({
       resolved: reasonProvider,
       system: systemPrompt,
       messages: apiMessages,
-      tools,
+      tools: requestedSourceGrounding
+        ? tools.filter(tool => !allActionTools.has(tool.name) && !incidentalWrites.has(tool.name))
+        : tools,
       maxTokens: 4096,
       abortSignal: params.abortSignal,
-    });
+      });
+    } catch {
+      finalText = 'I could not complete this lookup because the AI provider did not return a usable response. Please retry. This failure does not mean the requested records are missing.';
+      break;
+    }
 
     if (response.usage) {
       const cacheRead = response.usage.cache_read ?? 0;
@@ -462,6 +612,32 @@ export async function runAgentQuery(params: {
     const newText = textBlocks.map((b) => b.text).join('\n\n').trim();
 
     if (toolUseBlocks.length === 0 || response.stop_reason === 'end_turn') {
+      const failedLookup = executedActions.some(action => action.readOnly && !action.success)
+        && allCitations.length === 0;
+      const missingLookup = requiresWorkspaceEvidence(content)
+        && allCitations.length === 0
+        && !executedActions.some(action => action.readOnly && action.success
+          && !['module_list', 'module_get', 'app_list', 'app_get'].includes(action.action));
+      const inventedApproval = readOnlyRequest && hasUnverifiedApprovalRoles(newText);
+      if (hasUnverifiedNativeLinks(newText, allCitations) || failedLookup || missingLookup || inventedApproval) {
+        if (!requestedSourceGrounding && iterations < maxIterations) {
+          requestedSourceGrounding = true;
+          apiMessages = [
+            ...apiMessages,
+            { role: 'assistant', content: newText },
+            { role: 'user', content: 'Verify this reply before returning it. Read the requested workspace records in this turn. Review any rejected arguments against the tool schema and fresh Module catalog, using identifiers available there. Use exact returned source URLs. If the target is ambiguous, ask one clarification. If access or evidence is unavailable, say so without claiming records are absent. Do not invent project-lead, account-manager or stakeholder approval requirements: chat proposals require the user to review the exact recipient and final content in Deft’s governed approval flow, under current App and connector permissions. A draft or approval is not delivery. Do not execute or repeat any write.' },
+          ];
+          continue;
+        }
+        finalText = 'I could not verify the workspace facts and approval requirements for this reply. Please retry the lookup; this does not mean the records are absent.';
+        lastResponseContent = [{ type: 'text', text: finalText, citations: null }];
+        break;
+      }
+      if (readOnlyRequest && hasUnresolvedRecipient(newText, content)) {
+        finalText = 'Which record and recipient do you mean? Please provide the name or a record link so I can ground the draft. I have not prepared a recipient-specific draft or sent anything.';
+        lastResponseContent = [{ type: 'text', text: finalText, citations: null }];
+        break;
+      }
       // This is the final response — use this text
       finalText = newText;
       emitTaskProgress(iterations - 1, 'Wrapping up and posting results', 'completed');
@@ -488,6 +664,14 @@ export async function runAgentQuery(params: {
     // Execute tool calls
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const tool of toolUseBlocks) {
+      if (requestedSourceGrounding && (allActionTools.has(tool.name) || incidentalWrites.has(tool.name))) {
+        toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ code: 'READ_ONLY_REQUEST', error: 'Source verification permits reads only.' }) });
+        continue;
+      }
+      if ((readOnlyRequest || requestedSourceGrounding) && !tools.some((allowed) => allowed.name === tool.name)) {
+        toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ code: 'READ_ONLY_REQUEST', error: 'This tool is not available for this read-only request.' }) });
+        continue;
+      }
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
@@ -567,15 +751,15 @@ export async function runAgentQuery(params: {
         }
       } else {
         // Read-only tools — execute immediately
+        try {
         const { result, citations } = await executeToolCall(
           tool.name,
           tool.input as any,
           orgId,
           userId,
-          undefined,
+          params.conversationId,
           agentEmployeeId,
         );
-        allCitations.push(...citations);
         executedActions.push({
           actionId: null,
           action: tool.name,
@@ -585,11 +769,25 @@ export async function runAgentQuery(params: {
           readOnly: true,
         });
 
+        const formatted = await nativeAgentToolResult({
+          resolver: moduleNextReads,
+          operation: tool.name,
+          input: tool.input,
+          result,
+          sources: citations,
+        });
+        allCitations.push(...formatted.sources);
         toolResults.push({
           type: 'tool_result' as const,
           tool_use_id: tool.id,
-          content: JSON.stringify(result),
+          content: formatted.content,
+          ...(result && typeof result === 'object' && 'error' in result ? { is_error: true } : {}),
         });
+        } catch (error) {
+          const result = agentToolFailure(error);
+          executedActions.push({ actionId: null, action: tool.name, params: tool.input, success: false, result, readOnly: true });
+          toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result), is_error: true });
+        }
       }
     }
 
@@ -602,7 +800,10 @@ export async function runAgentQuery(params: {
   }
 
   // Use final text if available, fall back to intermediate text from tool-call iterations
-  const responseText = finalText || intermediateText;
+  const responseText = finalText || (requestedSourceGrounding
+    ? 'I could not finish verifying the referenced workspace records. Please retry with a narrower lookup.'
+    : intermediateText);
+  if (requestedSourceGrounding && !finalText) lastResponseContent = [{ type: 'text', text: responseText, citations: null }];
 
   // Persist durable notes for agent employees
   if (agentEmployeeId && responseText && responseText.length > 100) {

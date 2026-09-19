@@ -1,47 +1,46 @@
 import { createHash } from 'node:crypto';
-import { z } from 'zod';
 import {
-  ModuleIdSchema,
-  ModuleIdempotencyKeySchema,
-  ModuleKeySchema,
-  ModuleManifestDigestSchema,
-  ModuleRecordDataSchema,
+  ModuleRecordBulkCreateRequestSchema,
+  type ModuleRecordBulkCreateRequest,
+  MODULE_OPERATION_RESULT_SCHEMAS,
   type ModuleActor,
   type ModuleMutationResult,
 } from '@deft/shared/modules';
+import { ModuleError } from './module-errors.js';
 import { createModuleRecord, preflightModuleMutation } from './module-service.js';
 
 export const MODULE_RECORD_BULK_CREATE_ACTION = 'module_record_bulk_create' as const;
 export const MAX_MODULE_BULK_CREATE_ROWS = 100;
 
-export const ModuleRecordBulkCreateParamsSchema = z.strictObject({
-  module_id: ModuleIdSchema,
-  module_name: z.string().trim().min(1).max(160),
-  collection_key: ModuleKeySchema,
-  collection_name: z.string().trim().min(1).max(160),
-  expected_manifest_digest: ModuleManifestDigestSchema,
-  source_file_name: z.string().trim().min(1).max(255),
-  rows: z.array(z.strictObject({ data: ModuleRecordDataSchema }))
-    .min(1)
-    .max(MAX_MODULE_BULK_CREATE_ROWS),
-  idempotency_key: ModuleIdempotencyKeySchema,
-});
+export const ModuleRecordBulkCreateParamsSchema = ModuleRecordBulkCreateRequestSchema;
+export type ModuleRecordBulkCreateParams = ModuleRecordBulkCreateRequest;
 
-export type ModuleRecordBulkCreateParams = z.infer<typeof ModuleRecordBulkCreateParamsSchema>;
-
-export type ModuleRecordBulkCreateResult = {
+export type ModuleRecordBulkCreateProgress = {
   module_id: string;
   collection_key: string;
+  status: 'completed' | 'partial_failed';
   requested: number;
   created: number;
   replayed: number;
+  failed: 0 | 1;
+  failed_index: number | null;
   resource_ids: string[];
+};
+
+export type ModuleRecordBulkCreateResult = ModuleRecordBulkCreateProgress & {
+  status: 'completed';
+  failed: 0;
+  failed_index: null;
 };
 
 export class ModuleRecordBulkCreateError extends Error {
   constructor(
     message: string,
-    public readonly progress: ModuleRecordBulkCreateResult & { failed_index: number },
+    public readonly progress: ModuleRecordBulkCreateProgress & {
+      status: 'partial_failed';
+      failed: 1;
+      failed_index: number;
+    },
   ) {
     super(message);
     this.name = 'ModuleRecordBulkCreateError';
@@ -110,11 +109,11 @@ export function sanitizeModuleBulkCreateParamsForHistory(value: unknown): Record
   }
   return {
     module_id: parsed.data.module_id,
-    module_name: parsed.data.module_name,
+    module_name: parsed.data.module_name ?? parsed.data.module_id,
     collection_key: parsed.data.collection_key,
-    collection_name: parsed.data.collection_name,
+    collection_name: parsed.data.collection_name ?? parsed.data.collection_key,
     expected_manifest_digest: parsed.data.expected_manifest_digest,
-    source_file_name: parsed.data.source_file_name,
+    ...(parsed.data.source_file_name ? { source_file_name: parsed.data.source_file_name } : {}),
     row_count: parsed.data.rows.length,
     changed_fields: [...changedFields].sort(),
     input_digest: moduleBulkCreateInputDigest(parsed.data),
@@ -155,8 +154,12 @@ export async function executeModuleRecordBulkCreate(
       });
       mutations.push(created.mutation);
     } catch (error) {
+      // Drizzle includes bound SQL parameters in generic query errors. Those
+      // values are persisted on the parent action and signed receipt, so only
+      // established ModuleError messages may cross this batch boundary.
+      const detail = error instanceof ModuleError ? error.message : 'record creation failed';
       throw new ModuleRecordBulkCreateError(
-        `Bulk import stopped at row ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
+        `Bulk import stopped at row ${index + 1}: ${detail}`,
         {
           module_id: input.module_id,
           collection_key: input.collection_key,
@@ -164,17 +167,20 @@ export async function executeModuleRecordBulkCreate(
           created: mutations.filter((mutation) => !mutation.replayed).length,
           replayed: mutations.filter((mutation) => mutation.replayed).length,
           resource_ids: mutations.map((mutation) => mutation.resource_id),
+          status: 'partial_failed' as const,
+          failed: 1,
           failed_index: index,
         },
       );
     }
   }
-  return {
+  return MODULE_OPERATION_RESULT_SCHEMAS.module_record_bulk_create.parse({
     module_id: input.module_id,
     collection_key: input.collection_key,
     requested: input.rows.length,
     created: mutations.filter((mutation) => !mutation.replayed).length,
     replayed: mutations.filter((mutation) => mutation.replayed).length,
     resource_ids: mutations.map((mutation) => mutation.resource_id),
-  };
+    status: 'completed', failed: 0, failed_index: null,
+  }) as ModuleRecordBulkCreateResult;
 }

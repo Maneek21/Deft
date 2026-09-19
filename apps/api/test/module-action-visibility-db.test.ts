@@ -6,11 +6,10 @@ import pg from 'pg';
 import { agentActions } from '@deft/db/schema';
 import { db, closeDb } from '../src/lib/db.js';
 import { visibleModuleActionSql } from '../src/lib/module-action-visibility.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-const canRun = Boolean(
-  TEST_DATABASE_URL && /(?:test|ci|acceptance)/i.test(new URL(TEST_DATABASE_URL).pathname),
-);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 
 after(async () => closeDb());
 
@@ -23,6 +22,7 @@ test('module actions are visible only to requester, explicit reviewer, or admin'
   const reviewerId = `visibility-reviewer-${suffix}`;
   const unrelatedId = `visibility-unrelated-${suffix}`;
   const ownerId = `visibility-owner-${suffix}`;
+  const adminId = `visibility-admin-${suffix}`;
   const guestId = `visibility-guest-${suffix}`;
   const moduleActionId = `visibility-module-action-${suffix}`;
   const ordinaryActionId = `visibility-ordinary-action-${suffix}`;
@@ -38,6 +38,7 @@ test('module actions are visible only to requester, explicit reviewer, or admin'
       [reviewerId, 'member'],
       [unrelatedId, 'member'],
       [ownerId, 'owner'],
+      [adminId, 'admin'],
       [guestId, 'guest'],
     ] as const) {
       await client.query(
@@ -87,6 +88,10 @@ test('module actions are visible only to requester, explicit reviewer, or admin'
       moduleActionId,
       ordinaryActionId,
     ]));
+    assert.deepEqual(new Set(await visibleIds('admin', adminId)), new Set([
+      moduleActionId,
+      ordinaryActionId,
+    ]));
     assert.deepEqual(new Set(await visibleIds('member', requesterId)), new Set([
       moduleActionId,
       ordinaryActionId,
@@ -106,6 +111,7 @@ test('module actions are visible only to requester, explicit reviewer, or admin'
       reviewerId,
       unrelatedId,
       ownerId,
+      adminId,
       guestId,
     ]]);
     await client.query('DELETE FROM orgs WHERE id = $1', [orgId]);

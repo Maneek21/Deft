@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Experimental in preview.15:** this connected-App and bounded-automation flow is included in the published `v0.3.0-preview.15` core release. It is experimental and disabled by default.
+> **Experimental:** connected Apps and bounded automation were introduced in published `v0.3.0-preview.15` and remain disabled by default. This checkout describes the unreleased App Kit `0.1.0-alpha.3` candidate; preview.15 uses `0.1.0-alpha.2` and its matching release guide.
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings → Modules; this guide packages resources in a separate `deft.app.json` and uses Settings → Apps. [Compare the two paths](modules-and-apps.md).
 
@@ -9,7 +9,7 @@ and submit it for workspace review. It supports App Protocol v1 connected Apps
 and the bounded scheduling requests in Protocol v2. The workspace operator
 reviews access, chooses provider bindings and activates the App.
 
-The current authoring artifact is `@deft/app-kit@0.1.0-alpha.2`. Use a packed
+The current candidate authoring artifact is `@deft/app-kit@0.1.0-alpha.3`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
@@ -38,7 +38,7 @@ Then install it in a clean directory outside the repository:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.2.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.3.tgz
 ```
 
 When a release or proof bundle already supplies the tarball, install that exact
@@ -182,7 +182,7 @@ contract. A compatible current host retains the legacy fields
 | v1 | `deft.app.package.v1` | `stage_only` |
 
 The additive compatibility object must include `@deft/app-kit` version
-`0.1.0-alpha.2` (with `0.1.0-alpha.1` retained as a compatible predecessor).
+`0.1.0-alpha.3` (with `0.1.0-alpha.2` and `0.1.0-alpha.1` retained as compatible predecessors on this host).
 The legacy `app_protocol: "0"` scalar remains `"0"` even when
 the additive object advertises v1; do not use that scalar alone to infer v1
 support.
@@ -278,7 +278,7 @@ pnpm --dir examples/app-platform-sandbox-email-provider pack --pack-destination 
 mkdir sandbox-email-proof
 cd sandbox-email-proof
 pnpm init
-pnpm add /absolute/path/to/artifacts/deft-app-platform-sandbox-email-provider-0.1.0-alpha.1.tgz
+pnpm add /absolute/path/to/artifacts/deft-app-platform-sandbox-email-provider-0.1.0-alpha.2.tgz
 node node_modules/@deft/app-platform-sandbox-email-provider/server.mjs
 ```
 

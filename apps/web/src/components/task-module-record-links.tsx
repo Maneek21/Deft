@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Boxes, Link2, Loader2, Plus, Search, X } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { moduleSearchNotice } from '@/lib/module-search-notice';
 import {
-  normalizeTaskModuleRecordLinks,
+  normalizeTaskModuleRecordLinkPage,
   type TaskModuleRecordLink,
 } from '@/lib/module-task-links';
 
@@ -28,37 +30,65 @@ export function TaskModuleRecordLinks({
   onCountChange?: (count: number) => void;
 }) {
   const [links, setLinks] = useState<TaskModuleRecordLink[]>([]);
+  const linksRef = useRef<TaskModuleRecordLink[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ModuleSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { sessionCacheScope } = useAuth();
   const searchSequence = useRef(0);
   const loadSequence = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: { offset?: number; append?: boolean } = {}) => {
+    const offset = options.offset ?? 0;
+    const append = options.append ?? false;
     const sequence = ++loadSequence.current;
-    setLoading(true);
-    setLinks([]);
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setLoadingMore(false);
+      setLinks([]);
+      linksRef.current = [];
+      setNextOffset(null);
+    }
     setError(null);
-    onCountChange?.(0);
+    if (!append) onCountChange?.(0);
+    if (!sessionCacheScope) {
+      setLoading(false);
+      setLoadingMore(false);
+      return;
+    }
     try {
-      const response = await api.get(`/api/tasks/${encodeURIComponent(taskId)}/module-records`);
+      const response = await api.get(`/api/tasks/${encodeURIComponent(taskId)}/module-records?limit=25&offset=${offset}`);
       if (!response.ok) throw new Error('Unable to load module records.');
-      const next = normalizeTaskModuleRecordLinks(await response.json());
+      const page = normalizeTaskModuleRecordLinkPage(await response.json());
       if (sequence !== loadSequence.current) return;
+      const seen = new Set<string>();
+      const next = [...(append ? linksRef.current : []), ...page.links].filter((link) => {
+        if (seen.has(link.edgeId)) return false;
+        seen.add(link.edgeId);
+        return true;
+      });
+      linksRef.current = next;
       setLinks(next);
+      setNextOffset(page.nextOffset);
       onCountChange?.(next.length);
     } catch (reason) {
       if (sequence !== loadSequence.current) return;
       setError(reason instanceof Error ? reason.message : 'Unable to load module records.');
-      onCountChange?.(0);
+      if (!append) onCountChange?.(0);
     } finally {
-      if (sequence === loadSequence.current) setLoading(false);
+      if (sequence === loadSequence.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [onCountChange, taskId]);
+  }, [onCountChange, sessionCacheScope, taskId]);
 
   useEffect(() => {
     setAdding(false);
@@ -78,12 +108,15 @@ export function TaskModuleRecordLinks({
       return;
     }
     setSearching(true);
+    setError(null);
     const timer = window.setTimeout(async () => {
       try {
         const response = await api.get(`/api/search?q=${encodeURIComponent(trimmed)}`);
         if (!response.ok) throw new Error('Search failed.');
         const body = await response.json() as { modules?: unknown };
         if (sequence !== searchSequence.current) return;
+        const notice = moduleSearchNotice(body);
+        if (notice) throw new Error(notice);
         const rows = Array.isArray(body.modules) ? body.modules : [];
         setResults(rows.flatMap((value) => {
           if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
@@ -148,6 +181,7 @@ export function TaskModuleRecordLinks({
       );
       if (!response.ok) throw new Error('Unable to remove the link.');
       const next = links.filter((candidate) => candidate.edgeId !== link.edgeId);
+      linksRef.current = next;
       setLinks(next);
       onCountChange?.(next.length);
     } catch (reason) {
@@ -218,7 +252,7 @@ export function TaskModuleRecordLinks({
         </div>
       )}
 
-      {error && <p role="alert" className="px-1 text-[0.6875rem]" style={{ color: 'var(--error)' }}>{error}</p>}
+      {error && <div role="alert" className="px-1 text-[0.6875rem]" style={{ color: 'var(--error)' }}>{error}{links.length === 0 && <button type="button" onClick={() => void load()} className="ml-2 min-h-10 underline">Try again</button>}</div>}
       {loading ? (
         <div className="flex items-center gap-2 px-2 py-2 text-[0.6875rem]" style={{ color: 'var(--muted)' }}><Loader2 size={12} className="animate-spin" /> Loading records…</div>
       ) : links.length === 0 ? (
@@ -239,6 +273,11 @@ export function TaskModuleRecordLinks({
               )}
             </div>
           ))}
+          {nextOffset !== null && (
+            <button type="button" disabled={loadingMore} onClick={() => void load({ offset: nextOffset, append: true })} className="flex min-h-10 w-full items-center justify-center rounded-lg px-3 text-[0.6875rem] font-medium underline disabled:opacity-60" style={{ color: 'var(--primary)', background: 'var(--surface-container)' }}>
+              {loadingMore ? <><Loader2 size={12} className="mr-2 animate-spin" />Loading more…</> : `Load more records · ${links.length} loaded`}
+            </button>
+          )}
         </div>
       )}
     </section>

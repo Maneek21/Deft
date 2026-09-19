@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { ModelRouteSchema, type ModelRoute } from '@deft/shared';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { SettingsSectionNav } from '@/components/settings-section-nav';
@@ -10,8 +11,6 @@ type Provider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
 type Task = 'classify' | 'summarize' | 'reason' | 'extract';
 type EmbedProvider = 'openai' | 'off';
 type TranscriptionProvider = 'local' | 'openai' | 'deepgram';
-
-type ModelRoute = { provider: Provider; model: string; baseUrl?: string };
 
 type EmbedConfig = {
   provider: EmbedProvider;
@@ -425,6 +424,8 @@ function ModelRouteCard({
   const [editing, setEditing] = useState(false);
   const [provider, setProvider] = useState<Provider>(current?.provider ?? 'anthropic');
   const [model, setModel] = useState<string>(current?.model ?? '');
+  const [reasoningEffort, setReasoningEffort] = useState(current?.reasoning_effort ?? '');
+  const [baseUrl, setBaseUrl] = useState(current?.baseUrl ?? '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -433,11 +434,20 @@ function ModelRouteCard({
       setErr('Model name required');
       return;
     }
+    const route = ModelRouteSchema.safeParse({
+      provider, model: model.trim(),
+      ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+      ...(reasoningEffort.trim() ? { reasoning_effort: reasoningEffort.trim() } : {}),
+    });
+    if (!route.success) {
+      setErr('Reasoning effort must be a short lowercase value, such as medium.');
+      return;
+    }
     setSaving(true);
     setErr('');
     try {
       const r = await api.put('/api/org/ai-config', {
-        ai_models: { [task]: { provider, model: model.trim() } },
+        ai_models: { [task]: route.data },
       });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
@@ -484,14 +494,14 @@ function ModelRouteCard({
           <p className="text-sm mt-0.5 leading-snug" style={{ color: 'var(--muted)' }}>
             {description}
           </p>
-          <p className="text-[11px] mt-1 font-mono" style={{ color: current ? 'var(--foreground-secondary)' : 'var(--muted)' }}>
-            {current ? `${current.provider} · ${current.model}` : 'Default — uses the first configured provider'}
+          <p className="text-[11px] mt-1 font-mono break-words" style={{ color: current ? 'var(--foreground-secondary)' : 'var(--muted)' }}>
+            {current ? `${current.provider} · ${current.model}${current.reasoning_effort ? ` · ${current.reasoning_effort} reasoning` : ''}` : 'Default — uses the first configured provider'}
           </p>
         </div>
         {!editing && (
           <div className="flex gap-2 flex-shrink-0">
             <button
-              onClick={() => { setEditing(true); setProvider(current?.provider ?? 'anthropic'); setModel(current?.model ?? ''); setErr(''); }}
+              onClick={() => { setEditing(true); setProvider(current?.provider ?? 'anthropic'); setModel(current?.model ?? ''); setReasoningEffort(current?.reasoning_effort ?? ''); setBaseUrl(current?.baseUrl ?? ''); setErr(''); }}
               className="text-sm font-medium px-3 py-1.5 rounded-md"
               style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
             >
@@ -525,6 +535,7 @@ function ModelRouteCard({
           <div className="flex gap-2 flex-wrap">
             <select
               value={provider}
+              aria-label={`${label} provider`}
               onChange={(e) => setProvider(e.target.value as Provider)}
               className="h-9 px-2 text-sm rounded-md outline-none"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
@@ -537,6 +548,7 @@ function ModelRouteCard({
             <input
               type="text"
               value={model}
+              aria-label={`${label} model`}
               onChange={(e) => setModel(e.target.value)}
               placeholder="e.g. claude-sonnet-4-20250514"
               className="flex-1 min-w-[200px] h-9 px-3 text-sm rounded-md outline-none font-mono"
@@ -557,6 +569,22 @@ function ModelRouteCard({
             >
               Cancel
             </button>
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="text-sm" style={{ color: 'var(--foreground-secondary)' }}>
+              Reasoning effort
+              <input aria-label={`${label} reasoning effort`} value={reasoningEffort}
+                onChange={(e) => setReasoningEffort(e.target.value)} maxLength={32} placeholder="Provider default"
+                className="mt-1 w-full min-w-0 h-9 px-3 rounded-md outline-none"
+                style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }} />
+              <span className="mt-1 block text-xs" style={{ color: 'var(--muted)' }}>Use a value supported by your model, such as medium. Leave blank for its default.</span>
+            </label>
+            <label className="text-sm" style={{ color: 'var(--foreground-secondary)' }}>
+              Custom endpoint
+              <input aria-label={`${label} custom endpoint`} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="Provider default" className="mt-1 w-full min-w-0 h-9 px-3 rounded-md outline-none"
+                style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }} />
+            </label>
           </div>
         </div>
       )}

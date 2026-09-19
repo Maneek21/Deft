@@ -28,8 +28,11 @@ import {
   orgMembers,
   orgs,
   resourceRelationEdges,
+  moduleRecordRelations,
+  moduleRecords,
   users,
 } from '@deft/db/schema';
+import { listModuleAppRunHistory, listModuleAppRunOutcomes } from '../src/lib/module-app-run-history.js';
 import { AppActionService, type AppActionCaller } from '../src/lib/app-action-service.js';
 import { AppRunAttemptRunner } from '../src/lib/app-run-attempt-runner.js';
 import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from '../src/lib/app-run-approval-adapter.js';
@@ -66,25 +69,32 @@ import {
 } from '../src/lib/app-review-service.js';
 import {
   createModuleRecord,
+  getModuleRecord,
+  previewModuleMerge,
+  commitModuleMerge,
+  restoreModuleRecord,
   deftyModuleActor,
   employeeModuleActor,
   getModuleInstallation,
   humanModuleActor,
   readModuleRecordScalarFields,
   updateModuleInstallation,
+  updateModuleRecord,
 } from '../src/lib/module-service.js';
+import { buildNativeAppActionActor } from '../src/lib/agent-app-action-actor.js';
 import { replaceResourceRelation } from '../src/lib/resource-relation-service.js';
 import { Phase4SandboxEmailProvider } from './fixtures/phase4-sandbox-email-provider.js';
 import {
   buildPhase5ConnectedAppPackage,
+  buildDirectRelationConnectedAppPackage,
   buildPhase5DependencyAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
 import { databaseCompleteAppRunTestKeyrings } from './fixtures/app-run-test-keyrings.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
+import { ensureDeftyEmployee } from '../src/lib/ensure-defty-membership.js';
 
-const databaseUrl = process.env.DEFT_TEST_DATABASE_URL;
-const canRun = Boolean(databaseUrl && /phase5.*(?:test|loop4)|(?:test|loop4).*phase5/i.test(
-  new URL(databaseUrl).pathname,
-));
+const databaseUrl = safeTestDatabaseUrl();
+const canRun = Boolean(databaseUrl);
 
 after(async () => closeDb());
 
@@ -101,7 +111,8 @@ function moduleRef(
   };
 }
 
-test('App actions create governed Runs once across every caller surface and fail closed on revocation', {
+for (const directRelations of [false, true]) {
+test(`App actions create governed Runs once and fail closed (${directRelations ? 'direct' : 'resource_ref'})`, {
   skip: !canRun,
 }, async () => {
   const suffix = randomUUID();
@@ -163,6 +174,7 @@ test('App actions create governed Runs once across every caller surface and fail
       is_active: true,
     },
   ]);
+  const canonicalDefty = await ensureDeftyEmployee(orgId);
   const owner = humanModuleActor({
     orgId,
     userId: ownerUserId,
@@ -175,7 +187,7 @@ test('App actions create governed Runs once across every caller surface and fail
   const dependency = await stageAppPackage(owner, dependencyPackage.json);
   await activateAppInstallation(owner, dependency.id, dependency.package_digest);
 
-  const connectedPackage = await buildPhase5ConnectedAppPackage();
+  const connectedPackage = await (directRelations ? buildDirectRelationConnectedAppPackage() : buildPhase5ConnectedAppPackage());
   const connected = await stageAppPackage(owner, connectedPackage.json);
   const [connectedVersion] = await db.select().from(appVersions).where(and(
     eq(appVersions.org_id, orgId),
@@ -295,8 +307,8 @@ test('App actions create governed Runs once across every caller surface and fail
   ));
   if (!binding) throw new Error('Reviewed App action binding is missing');
 
-  let contacts = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-contacts' });
-  let campaigns = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-campaigns' });
+  let contacts = await getModuleInstallation(owner, { moduleId: directRelations ? 'com.deft.contacts' : 'org.deft.reference.resource-contacts' });
+  let campaigns = await getModuleInstallation(owner, { moduleId: directRelations ? 'com.deft.contacts' : 'org.deft.reference.resource-campaigns' });
   contacts = await updateModuleInstallation(owner, contacts.slug, { agent_access: 'read' });
   campaigns = await updateModuleInstallation(owner, campaigns.slug, { agent_access: 'read' });
   const contact = await createModuleRecord(owner, {
@@ -309,16 +321,22 @@ test('App actions create governed Runs once across every caller surface and fail
   });
   const campaign = await createModuleRecord(owner, {
     module_id: campaigns.module_id,
-    collection_key: 'campaigns',
+    collection_key: directRelations ? 'outreach' : 'campaigns',
     data: { name: 'Connected campaign', subject, body: bodyText, status: 'draft' },
     relations: {},
     expected_manifest_digest: campaigns.manifest_digest,
     idempotency_key: `loop5-campaign-${suffix}`,
   });
   if (!contact.record || !campaign.record) throw new Error('Loop 5 proof records were not created');
-  const campaignRef = moduleRef(campaigns.id, 'campaigns', campaign.record.id);
+  const campaignRef = moduleRef(campaigns.id, directRelations ? 'outreach' : 'campaigns', campaign.record.id);
   const contactRef = moduleRef(contacts.id, 'contacts', contact.record.id);
-  await replaceResourceRelation(owner, {
+  if (directRelations) {
+    await updateModuleRecord(owner, {
+      record_id: campaign.record.id, patch: {}, relations: { contacts: [contact.record.id] },
+      expected_revision: campaign.record.revision, expected_manifest_digest: campaigns.manifest_digest,
+      idempotency_key: `direct-link-${suffix}`,
+    });
+  } else await replaceResourceRelation(owner, {
     schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
     source: campaignRef,
     relation_key: 'contacts',
@@ -344,6 +362,51 @@ test('App actions create governed Runs once across every caller surface and fail
     is_deleted: false,
     created_by: ownerUserId,
   });
+  const nativeDeftyActor = await buildNativeAppActionActor({
+    orgId,
+    userId: ownerUserId,
+    agentEmployeeId: canonicalDefty.employeeId,
+  });
+  const legacyDeftyActor = deftyModuleActor({ orgId, userId: ownerUserId, role: 'owner' });
+  assert.deepEqual(nativeDeftyActor, legacyDeftyActor, 'canonical Defty runtime must retain the requesting human authority');
+  await db.update(agentEmployees).set({ is_active: false }).where(and(
+    eq(agentEmployees.org_id, orgId),
+    eq(agentEmployees.id, canonicalDefty.employeeId),
+  ));
+  await assert.rejects(
+    buildNativeAppActionActor({ orgId, userId: ownerUserId, agentEmployeeId: canonicalDefty.employeeId }),
+    /inactive, deleted, or outside this organization/,
+  );
+  await db.update(agentEmployees).set({ is_active: true }).where(and(
+    eq(agentEmployees.org_id, orgId),
+    eq(agentEmployees.id, canonicalDefty.employeeId),
+  ));
+  await db.update(orgMembers).set({ is_active: false }).where(and(
+    eq(orgMembers.org_id, orgId),
+    eq(orgMembers.user_id, ownerUserId),
+  ));
+  await assert.rejects(
+    buildNativeAppActionActor({ orgId, userId: ownerUserId }),
+    /membership|active/i,
+  );
+  await db.update(orgMembers).set({ is_active: true }).where(and(
+    eq(orgMembers.org_id, orgId),
+    eq(orgMembers.user_id, ownerUserId),
+  ));
+  await db.update(agentEmployees).set({ runtime_kind: 'defty_system' }).where(and(
+    eq(agentEmployees.org_id, orgId),
+    eq(agentEmployees.id, employeeId),
+  ));
+  const forgedRuntimeActor = await buildNativeAppActionActor({
+    orgId,
+    userId: ownerUserId,
+    agentEmployeeId: employeeId,
+  });
+  assert.equal(forgedRuntimeActor.kind, 'agent_employee', 'runtime_kind alone must not become human Defty authority');
+  await db.update(agentEmployees).set({ runtime_kind: 'custom_mcp' }).where(and(
+    eq(agentEmployees.org_id, orgId),
+    eq(agentEmployees.id, employeeId),
+  ));
   await db.insert(mcpTokens).values([
     {
       id: mcpTokenId,
@@ -446,14 +509,14 @@ test('App actions create governed Runs once across every caller surface and fail
       receiptReader,
     );
     const callers: ReadonlyArray<Readonly<{
-      name: 'ui' | 'defty' | 'employee' | 'human_mcp';
+      name: 'ui' | 'defty' | 'employee' | 'canonical_defty' | 'human_mcp';
       caller: AppActionCaller;
     }>> = [
       { name: 'ui', caller: { actor: owner } },
       {
         name: 'defty',
         caller: {
-          actor: deftyModuleActor({ orgId, userId: ownerUserId, role: 'owner' }),
+          actor: nativeDeftyActor,
         },
       },
       {
@@ -625,6 +688,64 @@ test('App actions create governed Runs once across every caller surface and fail
         assert.equal(persisted.execution_actor_id, ownerUserId);
       }
     }
+    const history = await listModuleAppRunHistory(owner, { resource_ref: campaignRef, limit: 1 });
+    assert.equal(history.runs.length, 1);
+    assert.ok(history.next_cursor);
+    assert.deepEqual(Object.keys(history.runs[0]!).sort(), [
+      'id', 'operation_name', 'state', 'created_at', 'updated_at', 'provider_call_attempted',
+      'outcome_success', 'error_code', 'environment', 'can_inspect_receipts', 'from_merged_record',
+    ].sort());
+    assert.equal(history.runs[0]!.environment, 'sandbox');
+    const nextHistory = await listModuleAppRunHistory(owner, { resource_ref: campaignRef, before: history.next_cursor, limit: 25 });
+    assert.equal(nextHistory.runs.length, persistedRuns.length - 1);
+    assert.ok(nextHistory.runs.every(run => run.id !== history.runs[0]!.id));
+    const recipientHistory = await listModuleAppRunHistory(owner, { resource_ref: contactRef });
+    assert.equal(recipientHistory.runs.length, persistedRuns.length);
+    const teammate = humanModuleActor({ orgId, userId: otherUserId, role: 'member', source: 'ui' });
+    const sharedHistory = await listModuleAppRunHistory(teammate, { resource_ref: campaignRef });
+    assert.equal(sharedHistory.runs.length, persistedRuns.length);
+    assert.ok(sharedHistory.runs.every(run => !run.can_inspect_receipts));
+    assert.ok(recipientHistory.runs.some(run => run.can_inspect_receipts));
+    const currentOutcomes = await listModuleAppRunOutcomes(owner, {
+      resource_refs: [campaignRef],
+    });
+    assert.deepEqual(currentOutcomes.outcomes.map(outcome => outcome.resource_id), [
+      campaignRef.resource_id,
+    ]);
+    assert.ok(currentOutcomes.outcomes.every(outcome => outcome.state === 'pending_approval'));
+    assert.ok(currentOutcomes.outcomes.every(outcome => outcome.environment === 'sandbox'));
+    assert.ok(currentOutcomes.outcomes.every(outcome => outcome.provider_call_attempted === false));
+    assert.deepEqual(Object.keys(currentOutcomes.outcomes[0]!).sort(), [
+      'resource_id', 'run_id', 'operation_name', 'state', 'created_at', 'updated_at',
+      'provider_call_attempted', 'outcome_success', 'error_code', 'environment', 'from_merged_record',
+    ].sort());
+    await assert.rejects(listModuleAppRunOutcomes(owner, {
+      resource_refs: [campaignRef, contactRef],
+    }), /one module collection/);
+    await assert.rejects(listModuleAppRunOutcomes(owner, {
+      resource_refs: [campaignRef, { ...campaignRef, resource_id: randomUUID() }],
+    }), /denied/);
+    await assert.rejects(listModuleAppRunOutcomes(
+      humanModuleActor({ orgId: randomUUID(), userId: otherUserId, role: 'owner', source: 'ui' }),
+      { resource_refs: [campaignRef] },
+    ), /denied/);
+    const serializedHistory = JSON.stringify(sharedHistory);
+    for (const secret of [recipient, subject, bodyText, connectionId, ownerUserId, employeeId]) {
+      assert.equal(serializedHistory.includes(secret), false, 'shared history must exclude sensitive Run context');
+    }
+    await assert.rejects(listModuleAppRunHistory(teammate, {
+      resource_ref: { ...campaignRef, resource_type: 'unknown_collection' },
+    }), /denied/);
+    await assert.rejects(listModuleAppRunHistory(humanModuleActor({ orgId: randomUUID(), userId: otherUserId, role: 'owner', source: 'ui' }), { resource_ref: campaignRef }), /denied/);
+    await assert.rejects(listModuleAppRunHistory(humanModuleActor({ orgId, userId: ownerUserId, role: 'owner', source: 'mcp' }), { resource_ref: campaignRef }), /denied/);
+    await db.update(orgMembers).set({ is_active: false }).where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, otherUserId)));
+    try {
+      await assert.rejects(listModuleAppRunHistory(teammate, { resource_ref: campaignRef }), /denied/);
+      await assert.rejects(listModuleAppRunOutcomes(teammate, { resource_refs: [campaignRef] }), /denied/);
+    } finally {
+      await db.update(orgMembers).set({ is_active: true }).where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, otherUserId)));
+    }
+
     const recapturedBase = await liveAuthorization.capture({
       org_id: orgId,
       authenticated_subject: initiatingActor,
@@ -826,6 +947,15 @@ test('App actions create governed Runs once across every caller surface and fail
       }
     }
     assert.equal(sandbox.callCount, distinctPositiveRuns.length, 'each caller-authority Run must produce one provider effect');
+    const completedOutcomes = await listModuleAppRunOutcomes(teammate, {
+      resource_refs: [campaignRef],
+    });
+    assert.ok(completedOutcomes.outcomes.every(outcome => outcome.state === 'succeeded'));
+    assert.ok(completedOutcomes.outcomes.every(outcome => outcome.outcome_success === true));
+    const serializedOutcomes = JSON.stringify(completedOutcomes);
+    for (const secret of [recipient, subject, bodyText, connectionId, ownerUserId, employeeId]) {
+      assert.equal(serializedOutcomes.includes(secret), false, 'record outcomes must exclude sensitive Run context');
+    }
     assert.equal(pinnedRequests.length, distinctPositiveRuns.length);
     for (const request of pinnedRequests) {
       assert.equal(request.org_id, orgId);
@@ -833,6 +963,115 @@ test('App actions create governed Runs once across every caller surface and fail
       assert.equal(request.operation_name, 'send_email');
       assert.deepEqual(request.dispatch_pin, dispatchPin);
       assert.equal(Object.hasOwn(request, 'connection_slug'), false);
+    }
+
+    // A human owner may approve an employee-proposed App Run without becoming
+    // its execution actor. The signed review ledger must remain visible to
+    // that actual reviewer, while provider output and token-bound MCP reads
+    // stay bound to the original employee authority.
+    const reviewerInput = actionInput(`loop7-owner-reviewer-${suffix}`);
+    const reviewerPrepared = await actions.prepare(callers[2]!.caller, reviewerInput);
+    const reviewerRun = await actions.invoke(callers[2]!.caller, {
+      ...reviewerInput,
+      input_candidate: reviewerPrepared.input_candidate,
+    });
+    const [reviewerApproval] = await db.select().from(agentActions).where(and(
+      eq(agentActions.org_id, orgId),
+      eq(agentActions.source, 'app_run'),
+      eq(agentActions.app_run_id, reviewerRun.id),
+    ));
+    if (!reviewerApproval) throw new Error('owner-reviewer App-origin approval is missing');
+    assert.equal(reviewerApproval.action, 'app_run_invoke');
+    assert.equal(reviewerApproval.approval_status, 'pending');
+    assert.equal(
+      (await listModuleAppRunHistory(owner, { resource_ref: campaignRef })).runs
+        .find(run => run.id === reviewerRun.id)?.can_inspect_receipts,
+      false,
+      'record history must not offer reviewer access before approval',
+    );
+    assert.equal((await approvalResolver.approve(reviewerApproval.id, ownerUserId)).status, 'approved');
+    const [[approvedReviewer], [activeReviewerMembership]] = await Promise.all([
+      db.select({
+        action: agentActions.action,
+        source: agentActions.source,
+        approval_status: agentActions.approval_status,
+        approved_by_user_id: agentActions.approved_by_user_id,
+      }).from(agentActions).where(and(
+        eq(agentActions.org_id, orgId),
+        eq(agentActions.id, reviewerApproval.id),
+        eq(agentActions.app_run_id, reviewerRun.id),
+      )).limit(1),
+      db.select({ id: orgMembers.id }).from(orgMembers).where(and(
+        eq(orgMembers.org_id, orgId),
+        eq(orgMembers.user_id, ownerUserId),
+        eq(orgMembers.is_active, true),
+      )).limit(1),
+    ]);
+    assert.deepEqual(approvedReviewer, {
+      action: 'app_run_invoke',
+      source: 'app_run',
+      approval_status: 'approved',
+      approved_by_user_id: ownerUserId,
+    });
+    assert.ok(activeReviewerMembership, 'reviewer must still hold an active organization membership');
+    assert.equal(
+      (await listModuleAppRunHistory(owner, { resource_ref: campaignRef })).runs
+        .find(run => run.id === reviewerRun.id)?.can_inspect_receipts,
+      true,
+      'record history must expose the receipt link to the actual active reviewer',
+    );
+    assert.equal(
+      (await listModuleAppRunHistory(teammate, { resource_ref: campaignRef })).runs
+        .find(run => run.id === reviewerRun.id)?.can_inspect_receipts,
+      false,
+      'record visibility must not confer another person\'s reviewer access',
+    );
+    assert.equal(
+      (await actions.inspectRun(callers[0]!.caller, reviewerRun.id)).id,
+      reviewerRun.id,
+      'the actual UI approver can inspect the reviewed Run safely',
+    );
+    assert.equal(
+      (await actions.inspectReceipts(callers[0]!.caller, reviewerRun.id)).receipts.length,
+      1,
+      'the actual UI approver can inspect the signed approval receipt',
+    );
+    for (const read of [
+      () => actions.result(callers[0]!.caller, reviewerRun.id),
+      () => actions.inspectRun(callers[3]!.caller, reviewerRun.id),
+      () => actions.inspectReceipts(callers[3]!.caller, reviewerRun.id),
+      () => actions.inspectRun({ actor: humanModuleActor({
+        orgId,
+        userId: otherUserId,
+        role: 'member',
+        source: 'ui',
+      }) }, reviewerRun.id),
+    ]) {
+      await assert.rejects(
+        read,
+        (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_ACCESS_DENIED',
+      );
+    }
+
+    await db.update(orgMembers)
+      .set({ is_active: false })
+      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, ownerUserId)));
+    try {
+      for (const read of [
+        () => actions.inspectRun(callers[0]!.caller, reviewerRun.id),
+        () => actions.inspectReceipts(callers[0]!.caller, reviewerRun.id),
+        () => listModuleAppRunHistory(owner, { resource_ref: campaignRef }),
+      ]) {
+        await assert.rejects(
+          read,
+          (error: unknown) => error instanceof AppRunError && error.code === 'APP_RUN_ACCESS_DENIED',
+          'an App reviewer must lose inspection access when their organization membership is revoked',
+        );
+      }
+    } finally {
+      await db.update(orgMembers)
+        .set({ is_active: true })
+        .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, ownerUserId)));
     }
 
     const approvedRun = async (label: string) => {
@@ -1189,7 +1428,12 @@ test('App actions create governed Runs once across every caller surface and fail
       eq(resourceRelationEdges.target_resource_id, contact.record.id),
       eq(resourceRelationEdges.is_deleted, false),
     ));
-    if (!relationEdge) throw new Error('The connected proof relation edge is missing');
+    const [directEdge] = directRelations ? await db.select().from(moduleRecordRelations).where(and(
+      eq(moduleRecordRelations.org_id, orgId), eq(moduleRecordRelations.installation_id, campaigns.id),
+      eq(moduleRecordRelations.source_record_id, campaign.record.id),
+      eq(moduleRecordRelations.target_record_id, contact.record.id), eq(moduleRecordRelations.is_deleted, false),
+    )) : [];
+    if (directRelations ? !directEdge : !relationEdge) throw new Error('The connected proof relation edge is missing');
 
     const providerSchemaInput = actionInput(`loop7-stale-provider-schema-${suffix}`);
     const providerSchemaPrepared = await actions.prepare(callers[0]!.caller, providerSchemaInput);
@@ -1249,10 +1493,13 @@ test('App actions create governed Runs once across every caller surface and fail
       },
       {
         label: 'relation',
-        probe: () => expectTransactionalStale('relation', uiStaleRun, (tx) => tx.update(resourceRelationEdges).set({
+        probe: () => expectTransactionalStale('relation', uiStaleRun, (tx) => directRelations
+          ? tx.update(moduleRecordRelations).set({ is_deleted: true, deleted_at: new Date(), deleted_by_actor_type: 'human', deleted_by_actor_id: ownerUserId })
+            .where(and(eq(moduleRecordRelations.org_id, orgId), eq(moduleRecordRelations.id, directEdge!.id)))
+          : tx.update(resourceRelationEdges).set({
           is_deleted: true,
           deleted_at: new Date(),
-        }).where(and(eq(resourceRelationEdges.org_id, orgId), eq(resourceRelationEdges.id, relationEdge.id)))),
+        }).where(and(eq(resourceRelationEdges.org_id, orgId), eq(resourceRelationEdges.id, relationEdge!.id)))),
       },
       {
         label: 'provider schema',
@@ -1302,7 +1549,16 @@ test('App actions create governed Runs once across every caller surface and fail
         }).where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, ownerUserId)))),
       },
     ];
-    for (const staleCase of staleCases) await staleCase.probe();
+    for (const staleCase of staleCases.filter((item) => !directRelations || item.label !== 'dependency')) await staleCase.probe();
+    for (const [label, recordId] of [['draft', campaign.record.id], ['recipient', contact.record.id]] as const) {
+      await expectTransactionalStale(`${label} revision`, uiStaleRun, (tx) => tx.update(moduleRecords)
+        .set({ revision: sql`${moduleRecords.revision} + 1` })
+        .where(and(eq(moduleRecords.org_id, orgId), eq(moduleRecords.id, recordId))));
+      await expectTransactionalStale(`${label} archive`, uiStaleRun, (tx) => tx.update(moduleRecords)
+        .set({ is_deleted: true, deleted_at: new Date(), deleted_by_actor_type: 'human', deleted_by_actor_id: ownerUserId })
+        .where(and(eq(moduleRecords.org_id, orgId), eq(moduleRecords.id, recordId))));
+    }
+
 
     approvals = await db.select().from(agentActions).where(and(
       eq(agentActions.org_id, orgId),
@@ -1333,9 +1589,49 @@ test('App actions create governed Runs once across every caller surface and fail
         eq(agentActions.source, 'app_run'),
       )),
     ]);
-    assert.equal(runCount?.value, distinctPositiveRuns.length + 10);
-    assert.equal(approvalCount?.value, distinctPositiveRuns.length + 10);
+    assert.equal(runCount?.value, distinctPositiveRuns.length + 11);
+    assert.equal(approvalCount?.value, distinctPositiveRuns.length + 11);
+    if (directRelations) {
+      const mergeIntoNew = async (sourceId: string) => {
+        const original = await getModuleRecord(owner, sourceId);
+        const target = (await createModuleRecord(owner, {
+          module_id: contacts.module_id, collection_key: 'contacts', data: original.data,
+          expected_manifest_digest: contacts.manifest_digest, idempotency_key: randomUUID(),
+        })).record!;
+        const input = { source_record_id: sourceId, target_record_id: target.id,
+          expected_manifest_digest: contacts.manifest_digest, field_choices: {}, relation_choices: {} };
+        const preview = await previewModuleMerge(owner, contacts.id, input);
+        assert.equal(preview.ready, true);
+        await commitModuleMerge(owner, contacts.id, { ...input, expected_preview_digest: preview.preview_digest, idempotency_key: randomUUID() });
+        return target;
+      };
+      const survivor = await mergeIntoNew(contact.record.id);
+      const nextSurvivor = await mergeIntoNew(survivor.id);
+      const survivorRef = { ...contactRef, resource_id: nextSurvivor.id };
+      const inherited = await listModuleAppRunHistory(owner, { resource_ref: survivorRef, limit: 25 });
+      assert.equal(inherited.runs.length, runCount!.value);
+      assert.ok(inherited.runs.every(run => run.from_merged_record));
+      assert.equal(new Set(inherited.runs.map(run => run.id)).size, inherited.runs.length);
+      assert.ok(inherited.runs.some(run => run.id === uiRun.run.id && run.can_inspect_receipts));
+      const [archived] = await db.select().from(moduleRecords).where(eq(moduleRecords.id, contact.record.id));
+      await restoreModuleRecord(owner, contacts.id, { record_id: contact.record.id, expected_revision: archived!.revision,
+        expected_manifest_digest: contacts.manifest_digest, idempotency_key: randomUUID() });
+      // A new metadata-only fixture after restoration proves the merge cutoff.
+      // It is never approved, scheduled or supplied to the provider.
+      const [template] = await db.select().from(appRuns).where(eq(appRuns.id, uiStaleRun.id));
+      const laterId = randomUUID();
+      await db.insert(appRuns).values({ ...template!, id: laterId, root_run_id: laterId,
+        idempotency_fingerprint: `hmac-sha256:${randomUUID().replaceAll('-', '').repeat(2)}`, created_at: new Date(Date.now() + 1000), updated_at: new Date(Date.now() + 1000) });
+      assert.ok((await listModuleAppRunHistory(owner, { resource_ref: contactRef, limit: 25 })).runs.some(run => run.id === laterId));
+      assert.equal((await listModuleAppRunHistory(owner, { resource_ref: survivorRef, limit: 25 })).runs.some(run => run.id === laterId), false);
+      const inheritedOutcome = (await listModuleAppRunOutcomes(owner, { resource_refs: [survivorRef] })).outcomes[0];
+      assert.ok(inheritedOutcome?.from_merged_record);
+      assert.notEqual(inheritedOutcome.run_id, laterId, 'post-merge source history leaked into the survivor outcome');
+    }
+
   } finally {
     keys.destroy();
   }
 });
+
+}

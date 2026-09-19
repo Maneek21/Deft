@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { api } from '@/lib/api';
 import {
   AlertTriangle,
   BookOpen,
@@ -26,11 +27,16 @@ import {
   XCircle,
 } from 'lucide-react';
 import { ReceiptViewer } from './receipt-viewer';
+import { AppRunInspector } from './apps/app-run-inspector';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
   getAgentActionPresentation,
+  getAppRunApprovalCompletionLabel,
+  getAppRunInspectorLabel,
+  getAppRunReference,
   getSafeGenericParams,
+  normalizeTaskLinkReview,
   type ApprovalChipIconName,
   type ApprovalIconName,
 } from '@/lib/agent-action-presentation';
@@ -491,7 +497,19 @@ export function AgentActionCard({
   const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localResult, setLocalResult] = useState<unknown>(null);
+  const [messageReview, setMessageReview] = useState<{ actionId: string; to: string; subject: string; body_text: string } | null>(null);
+  const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  // Only the supported App-origin email contract has this message presenter.
+  // Other governed operations keep their existing review flow.
+  const needsMessageReview = action.action === 'app_run_invoke'
+    && action.params.capability_label === 'send_email'
+    && typeof action.params.safe_preview?.fields?.app_id === 'string';
+  const reviewedMessage = messageReview?.actionId === action.id ? messageReview : null;
+  const needsTaskLinkReview = action.action === 'module_record_task_link' || action.action === 'module_record_task_unlink';
+  const reviewedTaskLink = taskLinkReview?.actionId === action.id ? taskLinkReview : null;
   const [showReceipt, setShowReceipt] = useState(false);
+  const [showAppRunInspector, setShowAppRunInspector] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
 
   const humanized = humanizeToolName(action.action);
@@ -520,6 +538,26 @@ export function AgentActionCard({
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = Boolean(action.has_receipt || resolvedStatus === 'approved' || resolvedStatus === 'rejected');
+  const isAppRunAction = action.action === 'app_run_invoke' || action.source === 'app_run';
+  const appRunReference = isAppRunAction
+    ? getAppRunReference(action.params, localResult ?? action.result)
+    : null;
+  const completedLabel = isAppRunAction
+    ? getAppRunApprovalCompletionLabel(appRunReference?.runState ?? null)
+    : doneLabel;
+  const appRunTerminalFailure = isAppRunAction && [
+    'failed',
+    'cancelled',
+    'expired',
+    'unknown_outcome',
+  ].includes(appRunReference?.runState ?? '');
+  const appRunPendingOutcome = isAppRunAction && [
+    'pending',
+    'pending_approval',
+    'running',
+    'waiting_external',
+  ].includes(appRunReference?.runState ?? '');
+  const appRunOutcomeUnavailable = isAppRunAction && appRunReference?.runState == null;
   const sourceQuote = getDisplaySourceQuote(action.params);
   const draftDetailText = getDraftDetailText(action.action, action.params);
   const outcome = getProposedOutcome(action.action, action.params, displayLabel);
@@ -550,8 +588,89 @@ export function AgentActionCard({
   const isPossiblyStale = resolvedStatus === 'pending' && createdAtMs != null && Date.now() - createdAtMs > 60 * 60 * 1000;
   const isCompact = variant === 'compact';
 
+  async function loadMessageReview() {
+    setReviewLoading(true);
+    setLocalError(null);
+    setMessageReview(null);
+    try {
+      const response = await api.get(`/api/agent/actions/${encodeURIComponent(action.id)}/message-review`);
+      if (!response.ok) throw new Error('Message review unavailable');
+      const { message } = await response.json();
+      if (!message || typeof message.to !== 'string' || typeof message.subject !== 'string'
+        || typeof message.body_text !== 'string') throw new Error('Message review unavailable');
+      setMessageReview({ to: message.to, subject: message.subject, body_text: message.body_text, actionId: action.id });
+    } catch {
+      setLocalError('Message review is unavailable. The request may have expired or its access changed. Refresh the review or prepare a new action from the app.');
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  const loadTaskLinkReview = useCallback(async () => {
+    setReviewLoading(true);
+    setLocalError(null);
+    setTaskLinkReview(null);
+    try {
+      const response = await api.get(`/api/agent/actions/${encodeURIComponent(action.id)}/task-link-review`);
+      if (!response.ok) throw new Error('Task link review unavailable');
+      const value = normalizeTaskLinkReview(await response.json());
+      if (!value) throw new Error('Task link review unavailable');
+      setTaskLinkReview({ actionId: action.id, ...value });
+    } catch {
+      setLocalError('Task link review is unavailable. The request may have expired or your access may have changed.');
+    } finally {
+      setReviewLoading(false);
+    }
+  }, [action.id]);
+
+  useEffect(() => {
+    if (needsTaskLinkReview && resolvedStatus === 'pending') void loadTaskLinkReview();
+  }, [loadTaskLinkReview, needsTaskLinkReview, resolvedStatus]);
+
+  const messageReviewPanel = needsMessageReview ? (
+    <section aria-label="App message review" className="mt-3 rounded-xl border p-3 text-sm" style={{ borderColor: 'var(--border)' }}>
+      {reviewedMessage ? (
+        <dl className="space-y-2 break-words [overflow-wrap:anywhere]">
+          <div><dt className="font-medium">To</dt><dd>{reviewedMessage.to}</dd></div>
+          <div><dt className="font-medium">Subject</dt><dd>{reviewedMessage.subject}</dd></div>
+          <div><dt className="font-medium">Message</dt><dd className="max-h-72 overflow-y-auto whitespace-pre-wrap">{reviewedMessage.body_text}</dd></div>
+        </dl>
+      ) : <p>Review the recipient and exact message before approving.</p>}
+      <button type="button" onClick={loadMessageReview} disabled={reviewLoading || isBusy}
+        className="mt-2 min-h-9 rounded-md border px-3 py-1 text-xs disabled:opacity-60" style={{ borderColor: 'var(--border)' }}>
+        {reviewLoading ? 'Loading message…' : reviewedMessage ? 'Refresh message review' : 'Review recipient and message'}
+      </button>
+    </section>
+  ) : null;
+  const taskLinkReviewPanel = needsTaskLinkReview ? (
+    <section aria-label="Task link review" className="mt-3 rounded-xl border p-3 text-sm" style={{ borderColor: 'var(--border)' }}>
+      {reviewedTaskLink ? (
+        <dl className="space-y-2 break-words [overflow-wrap:anywhere]"><div><dt className="font-medium">Module record</dt><dd><a className="underline" href={reviewedTaskLink.record.href}>{reviewedTaskLink.record.label}</a></dd></div><div><dt className="font-medium">Task</dt><dd><a className="underline" href={reviewedTaskLink.task.href}>{reviewedTaskLink.task.identifier}: {reviewedTaskLink.task.title}</a></dd></div><div><dt className="font-medium">Project</dt><dd>{reviewedTaskLink.task.project_name}</dd></div></dl>
+      ) : <p>Resolve the current record and task before approving this link change.</p>}
+      <button type="button" onClick={loadTaskLinkReview} disabled={reviewLoading || isBusy} className="mt-2 min-h-9 rounded-md border px-3 py-1 text-xs disabled:opacity-60" style={{ borderColor: 'var(--border)' }}>{reviewLoading ? 'Loading targets…' : reviewedTaskLink ? 'Refresh target review' : 'Review link targets'}</button>
+    </section>
+  ) : null;
+
+  const appRunInspectorButton = isAppRunAction && appRunReference ? (
+    <button
+      type="button"
+      onClick={() => setShowAppRunInspector(true)}
+      className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] font-medium underline underline-offset-2"
+      style={{ color: 'var(--muted)' }}
+    >
+      <ReceiptText size={12} strokeWidth={1.7} />
+      {getAppRunInspectorLabel(resolvedStatus, appRunReference.runState)}
+    </button>
+  ) : null;
+  const appRunInspector = isAppRunAction ? (
+    <AppRunInspector
+      runId={showAppRunInspector ? appRunReference?.runId ?? null : null}
+      onClose={() => setShowAppRunInspector(false)}
+    />
+  ) : null;
+
   async function handleApprove() {
-    if (isBusy) return;
+    if (isBusy || (needsMessageReview && !reviewedMessage) || (needsTaskLinkReview && !reviewedTaskLink)) return;
     setLocalError(null);
     setLocalStatus('approving');
     try {
@@ -606,11 +725,23 @@ export function AgentActionCard({
       <>
         <div
           className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2 flex-wrap"
-          style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: 'var(--success)' }}
+          style={appRunTerminalFailure
+            ? { background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.22)', color: 'var(--status-red)' }
+            : appRunPendingOutcome
+              ? { background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.22)', color: 'var(--status-amber)' }
+              : appRunOutcomeUnavailable
+                ? { background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }
+                : { background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: 'var(--success)' }}
         >
-          <CheckCircle2 size={14} strokeWidth={1.8} />
-          <span className="font-medium">{doneLabel}</span>
-          {hasReceipt && (
+          {appRunTerminalFailure
+            ? <AlertTriangle size={14} strokeWidth={1.8} />
+            : appRunPendingOutcome
+              ? <Clock3 size={14} strokeWidth={1.8} />
+              : appRunOutcomeUnavailable
+                ? <ReceiptText size={14} strokeWidth={1.8} />
+                : <CheckCircle2 size={14} strokeWidth={1.8} />}
+          <span className="font-medium">{completedLabel}</span>
+          {isAppRunAction && appRunReference ? appRunInspectorButton : !isAppRunAction && hasReceipt && (
             <button onClick={() => setShowReceipt(true)} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
               <ReceiptText size={12} strokeWidth={1.7} />
               View receipt
@@ -641,43 +772,51 @@ export function AgentActionCard({
             </button>
           )}
         </div>
-        <ReceiptViewer actionId={action.id} isOpen={showReceipt} onClose={() => setShowReceipt(false)} />
+        {!isAppRunAction && <ReceiptViewer actionId={action.id} isOpen={showReceipt} onClose={() => setShowReceipt(false)} />}
+        {appRunInspector}
       </>
     );
   }
 
   if (resolvedStatus === 'failed') {
     return (
-      <div
-        className="rounded-lg px-3 py-2.5 mt-2 text-[12px] max-w-[460px]"
-        style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.22)', color: 'var(--status-red)' }}
-      >
-        <div className="flex items-start gap-2">
-          <AlertTriangle size={15} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
-          <div className="min-w-0">
-            <p className="font-medium break-words">{captureHeadline} could not run.</p>
-            <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
-              {action.error ? truncate(stripHtml(action.error), 160) : 'The proposal is preserved for review.'}
-            </p>
-            <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
-              Open Captures for retry
-              <ExternalLink size={12} strokeWidth={1.7} />
-            </a>
+      <>
+        <div
+          className="rounded-lg px-3 py-2.5 mt-2 text-[12px] max-w-[460px]"
+          style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.22)', color: 'var(--status-red)' }}
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={15} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
+            <div className="min-w-0">
+              <p className="font-medium break-words">{isAppRunAction ? 'App action could not run.' : `${captureHeadline} could not run.`}</p>
+              <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
+                {action.error ? truncate(stripHtml(action.error), 160) : 'The proposal is preserved for review.'}
+              </p>
+              {isAppRunAction ? appRunInspectorButton : <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
+                Open Captures for retry
+                <ExternalLink size={12} strokeWidth={1.7} />
+              </a>}
+            </div>
           </div>
         </div>
-      </div>
+        {appRunInspector}
+      </>
     );
   }
 
   if (resolvedStatus === 'expired') {
     return (
-      <div
-        className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-start gap-2 max-w-[460px]"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
-      >
-        <Clock3 size={14} strokeWidth={1.7} className="mt-0.5 flex-shrink-0" />
-        <span>{captureHeadline} expired before review. Check the source before recreating it.</span>
-      </div>
+      <>
+        <div
+          className="rounded-lg px-3 py-2 mt-2 text-[12px] flex flex-wrap items-start gap-2 max-w-[460px]"
+          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
+        >
+          <Clock3 size={14} strokeWidth={1.7} className="mt-0.5 flex-shrink-0" />
+          <span>{isAppRunAction ? 'App action expired before review.' : `${captureHeadline} expired before review. Check the source before recreating it.`}</span>
+          {appRunInspectorButton}
+        </div>
+        {appRunInspector}
+      </>
     );
   }
 
@@ -700,15 +839,16 @@ export function AgentActionCard({
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
         >
           <XCircle size={14} strokeWidth={1.8} />
-          <span>{isCapture ? 'Capture dismissed' : `${displayLabel} rejected`}</span>
-          {hasReceipt && (
+          <span>{isAppRunAction ? 'App action rejected' : isCapture ? 'Capture dismissed' : `${displayLabel} rejected`}</span>
+          {isAppRunAction ? appRunInspectorButton : hasReceipt && (
             <button onClick={() => setShowReceipt(true)} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
               <ReceiptText size={12} strokeWidth={1.7} />
               View receipt
             </button>
           )}
         </div>
-        <ReceiptViewer actionId={action.id} isOpen={showReceipt} onClose={() => setShowReceipt(false)} />
+        {!isAppRunAction && <ReceiptViewer actionId={action.id} isOpen={showReceipt} onClose={() => setShowReceipt(false)} />}
+        {appRunInspector}
       </>
     );
   }
@@ -885,11 +1025,12 @@ export function AgentActionCard({
           )}
         </div>
 
+        {messageReviewPanel}{taskLinkReviewPanel}
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleApprove}
-            disabled={isBusy}
+            disabled={isBusy || (needsMessageReview && !reviewedMessage) || (needsTaskLinkReview && !reviewedTaskLink)}
             className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm disabled:opacity-60"
             style={{ background: 'var(--primary-container)' }}
           >
@@ -905,6 +1046,7 @@ export function AgentActionCard({
           >
             Dismiss
           </button>
+          {appRunInspectorButton}
           <button
             type="button"
             onClick={() => setShowDetails((value) => !value)}
@@ -915,6 +1057,7 @@ export function AgentActionCard({
             Details
           </button>
         </div>
+        {appRunInspector}
       </div>
     );
   }
@@ -1029,6 +1172,7 @@ export function AgentActionCard({
         </div>
       )}
 
+      {!needsMessageReview && !needsTaskLinkReview && <>
       <div
         className="mt-3 rounded-md px-3 py-2 min-w-0"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
@@ -1084,6 +1228,8 @@ export function AgentActionCard({
         )}
       </div>
 
+      </>}
+
       {metaChips.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mt-2">
           {metaChips.map((chip) => (
@@ -1099,7 +1245,7 @@ export function AgentActionCard({
       )}
 
       <div className="text-[12px] mt-2 space-y-1" style={{ color: 'var(--foreground-secondary)' }}>
-        {!(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
+        {!needsMessageReview && !needsTaskLinkReview && !(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
         {captureLabel && (
           <p style={{ color: 'var(--muted)' }}>
             {captureLabel}
@@ -1133,10 +1279,11 @@ export function AgentActionCard({
         )}
       </div>
 
+      {messageReviewPanel}{taskLinkReviewPanel}
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
         <button
           onClick={handleApprove}
-          disabled={isBusy}
+          disabled={isBusy || (needsMessageReview && !reviewedMessage) || (needsTaskLinkReview && !reviewedTaskLink)}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"
           style={{ background: 'var(--status-green)' }}
         >
@@ -1152,7 +1299,9 @@ export function AgentActionCard({
           <XCircle size={13} strokeWidth={1.8} />
           Dismiss
         </button>
+        {appRunInspectorButton}
       </div>
+      {appRunInspector}
     </div>
   );
 }

@@ -173,3 +173,14 @@ export function parseConnectedAppProviderInput(
   if (!schema) throw new TypeError('Connected App private interface input parser is not registered');
   return schema.safeParse(value);
 }
+
+export function parseConnectedAppProviderInputForOperation(
+  operationName: string,
+  value: unknown,
+): ProviderInputParseResult {
+  const matches = DEFT_APP_PROTOCOL_SUPPORT['1'].private_interfaces.filter(
+    (candidate) => candidate.operation_name === operationName,
+  );
+  if (matches.length !== 1) throw new TypeError('Connected App private interface is not uniquely registered');
+  return parseConnectedAppProviderInput(matches[0]!, value);
+}

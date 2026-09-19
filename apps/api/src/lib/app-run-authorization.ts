@@ -1,6 +1,6 @@
 import { AppRunAuthorizationSnapshotSchema, type AppRunActor } from '@deft/shared';
-import { agentEmployees, appRuns, orgMembers } from '@deft/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { agentActions, agentEmployees, appRuns, orgMembers } from '@deft/db/schema';
+import { and, eq, type SQLWrapper } from 'drizzle-orm';
 import { db } from './db.js';
 import type { AppRunSafeView, AppRunTransaction } from './app-run-repository.js';
 
@@ -43,11 +43,31 @@ function actorMatchesRun(actor: AppRunActor, run: AppRunSafeView): boolean {
   );
 }
 
-/** Live owner access for exact result replay and cancellation. Operator-wide
- * inspection remains behind the separate operations authorizer. */
+/**
+ * Run initiators and execution actors retain their actor-bound Run authority.
+ * A human who approved the host-created App Run approval may additionally read
+ * its safe Run projection and verified receipt ledger. Approval never grants
+ * access to provider output, cancellation, reconciliation, or MCP token-bound
+ * reads. Operator-wide inspection remains behind the operations authorizer.
+ * This predicate does not check membership; both inspection and history callers
+ * must independently require a current active organization membership.
+ */
+export function approvedAppRunReviewerCondition(orgId: string, runId: string | SQLWrapper, userId: string) {
+  return and(
+    eq(agentActions.org_id, orgId),
+    eq(agentActions.app_run_id, runId),
+    eq(agentActions.source, 'app_run'),
+    eq(agentActions.action, 'app_run_invoke'),
+    eq(agentActions.approval_status, 'approved'),
+    eq(agentActions.approved_by_user_id, userId),
+  );
+}
+
 export class PostgresAppRunAuthorizer implements AppRunAuthorizer {
   async authorize(input: Parameters<AppRunAuthorizer['authorize']>[0]): Promise<boolean> {
-    if (input.org_id !== input.run.org_id || !actorMatchesRun(input.actor, input.run)) return false;
+    if (input.org_id !== input.run.org_id) return false;
+    const actorMatches = actorMatchesRun(input.actor, input.run);
+    if (!actorMatches && !await this.#isApprovedReviewer(input)) return false;
     if (input.required_authority_ref) {
       const required = input.required_authority_ref;
       const [stored] = await db.select({
@@ -92,6 +112,22 @@ export class PostgresAppRunAuthorizer implements AppRunAuthorizer {
       return Boolean(membership);
     }
     return false;
+  }
+
+  async #isApprovedReviewer(
+    input: Parameters<AppRunAuthorizer['authorize']>[0],
+  ): Promise<boolean> {
+    // The exact-token authority snapshot is intentionally not transferable to
+    // a reviewer. This exception is for a host-authenticated human reviewer.
+    if (
+      input.action !== 'inspect'
+      || input.required_authority_ref !== null
+      || input.actor.actor_type !== 'human'
+    ) return false;
+    const [approval] = await db.select({ id: agentActions.id }).from(agentActions).where(and(
+      approvedAppRunReviewerCondition(input.org_id, input.run.id, input.actor.user_id),
+    )).limit(1);
+    return Boolean(approval);
   }
 }
 

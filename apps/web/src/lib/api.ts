@@ -28,6 +28,16 @@ export function isSameWebSession(first: string | null, second: string | null): b
   return firstIdentity !== null && firstIdentity === webSessionIdentity(second);
 }
 
+function hasWebSessionChanged(
+  anchor: string | null,
+  currentAccessToken: string | null,
+  currentRefreshToken: string | null,
+): boolean {
+  if (!anchor) return false;
+  const current = currentAccessToken ?? currentRefreshToken;
+  return current !== anchor && !isSameWebSession(anchor, current);
+}
+
 /**
  * Silently refresh the access token using the stored refresh token.
  * Updates both the in-memory ApiClient singleton and localStorage.
@@ -129,12 +139,20 @@ class ApiClient {
       this.refreshToken = localStorage.getItem('deft-refresh-token');
     }
     const headers = new Headers(options.headers);
+    const requestSessionAnchor = this.accessToken ?? this.refreshToken;
 
     // Proactive refresh: if we have a refresh token but no access token
     // (e.g. cold page load after access token expired), refresh upfront
     // so the initial request doesn't 401 and force a retry.
     if (!this.accessToken && this.refreshToken) {
       await refreshAccessToken();
+      const currentAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
+      const currentRefreshToken = typeof window !== 'undefined' ? localStorage.getItem('deft-refresh-token') : this.refreshToken;
+      this.accessToken = currentAccessToken;
+      this.refreshToken = currentRefreshToken;
+      if (hasWebSessionChanged(requestSessionAnchor, currentAccessToken, currentRefreshToken)) {
+        return new Response(null, { status: 401 });
+      }
     }
 
     const requestAccessToken = this.accessToken;
@@ -213,15 +231,28 @@ class ApiClient {
   }
 
   async upload(path: string, file: File): Promise<Response> {
+    if (typeof window !== 'undefined') {
+      this.accessToken = localStorage.getItem('deft-access-token');
+      this.refreshToken = localStorage.getItem('deft-refresh-token');
+    }
     const headers = new Headers();
+    const requestSessionAnchor = this.accessToken ?? this.refreshToken;
 
     // Proactive refresh: if we have a refresh token but no access token
     // (e.g. cold page load after access token expired), refresh upfront
     // so the initial request doesn't 401 and force a retry.
     if (!this.accessToken && this.refreshToken) {
       await refreshAccessToken();
+      const currentAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
+      const currentRefreshToken = typeof window !== 'undefined' ? localStorage.getItem('deft-refresh-token') : this.refreshToken;
+      this.accessToken = currentAccessToken;
+      this.refreshToken = currentRefreshToken;
+      if (hasWebSessionChanged(requestSessionAnchor, currentAccessToken, currentRefreshToken)) {
+        return new Response(null, { status: 401 });
+      }
     }
 
+    const requestAccessToken = this.accessToken;
     if (this.accessToken) {
       headers.set('Authorization', `Bearer ${this.accessToken}`);
     }
@@ -237,11 +268,20 @@ class ApiClient {
 
     // Reactive 401 interceptor (same pattern as fetch() above)
     if (response.status === 401) {
+      const currentAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
+      if (currentAccessToken !== requestAccessToken && !isSameWebSession(requestAccessToken, currentAccessToken)) {
+        return response;
+      }
       const fresh = await refreshAccessToken();
       if (fresh) {
+        if (!isSameWebSession(requestAccessToken, fresh)) return response;
         headers.set('Authorization', `Bearer ${fresh}`);
         response = await this.fetchWithRetry(`${API_URL}${path}`, { method: 'POST', headers, body: formData });
       } else {
+        const latestAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
+        if (latestAccessToken !== requestAccessToken && !isSameWebSession(requestAccessToken, latestAccessToken)) {
+          return response;
+        }
         this.clearTokens();
         if (typeof window !== 'undefined') {
           sessionStorage.setItem('deft-redirect-after-login', window.location.pathname);

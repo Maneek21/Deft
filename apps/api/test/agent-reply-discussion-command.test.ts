@@ -14,9 +14,120 @@ import {
   preferSubtaskReferences,
   mergeWikiUpdateContent,
   shouldCompileRuntimeWikiSuggestion,
+  hasAppBindingInvokeAttempt,
+  shouldRecoverWithActionCompiler,
+  shouldAttemptActionCompiler,
+  selectGroundedOrFallbackActions,
+  runAgentQueryThenRecover,
 } from '../src/workers/handlers/agent-reply.js';
 
+test('production runner-first seam invokes the runner before compiler recovery', async () => {
+  const events: string[] = [];
+  const grounded = { text: 'grounded', pendingActions: [{ action: 'module_record_update' }], executedActions: [] };
+  const result = await runAgentQueryThenRecover(
+    async () => { events.push('runner'); return grounded; },
+    (queryResult) => shouldRecoverWithActionCompiler({
+      readOnlyRequest: false,
+      wantsDiscussionTask: false,
+      hasWriteIntent: true,
+      runnerPendingActions: queryResult.pendingActions,
+      runnerExecutedActions: queryResult.executedActions,
+    }),
+    async () => { events.push('compiler'); return [{ action: 'create_task' }]; },
+  );
+  assert.deepEqual(events, ['runner']);
+  assert.equal(result.compiledActionDraft, null);
+  assert.deepEqual(result.result.pendingActions, grounded.pendingActions);
+
+  const empty = await runAgentQueryThenRecover(
+    async () => { events.push('runner-empty'); return { text: 'empty', pendingActions: [], executedActions: [] }; },
+    (queryResult) => shouldRecoverWithActionCompiler({
+      readOnlyRequest: false,
+      wantsDiscussionTask: false,
+      hasWriteIntent: true,
+      runnerPendingActions: queryResult.pendingActions,
+      runnerExecutedActions: queryResult.executedActions,
+    }),
+    async () => { events.push('compiler-empty'); return null; },
+  );
+  assert.deepEqual(events, ['runner', 'runner-empty', 'compiler-empty']);
+  assert.equal(empty.compiledActionDraft, null);
+
+  const failedAppInvoke = await runAgentQueryThenRecover(
+    async () => ({ text: 'provider failed', pendingActions: [], executedActions: [{ action: 'app_binding_invoke', success: false }] }),
+    (queryResult) => shouldRecoverWithActionCompiler({
+      readOnlyRequest: false,
+      wantsDiscussionTask: false,
+      hasWriteIntent: true,
+      runnerPendingActions: queryResult.pendingActions,
+      runnerExecutedActions: queryResult.executedActions,
+    }),
+    async () => { events.push('compiler-after-app'); return [{ action: 'create_task' }]; },
+  );
+  assert.deepEqual(events, ['runner', 'runner-empty', 'compiler-empty']);
+  assert.equal(failedAppInvoke.compiledActionDraft, null);
+});
+
+test('ordinary write routing keeps grounded runner proposals and only recovers when runner is empty', () => {
+  const grounded = [{ action: 'module_record_update', params: { record_id: 'record-1' } }];
+  const compiler = [{ action: 'create_task', params: { title: 'compiler fallback' } }];
+  assert.equal(hasAppBindingInvokeAttempt([{ action: 'app_binding_invoke' }]), true);
+  assert.equal(hasAppBindingInvokeAttempt([{ action: 'read_contacts' }]), false);
+  assert.equal(shouldRecoverWithActionCompiler({
+    readOnlyRequest: false,
+    wantsDiscussionTask: false,
+    hasWriteIntent: true,
+    runnerPendingActions: grounded,
+    runnerExecutedActions: [],
+  }), false);
+  assert.equal(shouldAttemptActionCompiler({
+    attempted: true,
+    readOnlyRequest: false,
+    wantsDiscussionTask: false,
+    hasWriteIntent: true,
+    runnerPendingActions: [],
+    runnerExecutedActions: [],
+  }), false);
+  assert.deepEqual(selectGroundedOrFallbackActions({
+    readOnlyRequest: false,
+    runnerPendingActions: grounded,
+    runnerExecutedActions: [],
+    fallbackActions: compiler,
+  }), grounded);
+});
+
+test('empty runner may use compiler/fallback recovery, except after App invocation', () => {
+  const fallback = [{ action: 'create_task', params: { title: 'fallback' } }];
+  assert.equal(shouldRecoverWithActionCompiler({
+    readOnlyRequest: false,
+    wantsDiscussionTask: false,
+    hasWriteIntent: true,
+    runnerPendingActions: [],
+    runnerExecutedActions: [],
+  }), true);
+  assert.deepEqual(selectGroundedOrFallbackActions({
+    readOnlyRequest: false,
+    runnerPendingActions: [],
+    runnerExecutedActions: [],
+    fallbackActions: fallback,
+  }), fallback);
+  assert.deepEqual(selectGroundedOrFallbackActions({
+    readOnlyRequest: false,
+    runnerPendingActions: [],
+    runnerExecutedActions: [{ action: 'app_binding_invoke' }],
+    fallbackActions: fallback,
+  }), []);
+  assert.deepEqual(selectGroundedOrFallbackActions({
+    readOnlyRequest: true,
+    runnerPendingActions: [],
+    runnerExecutedActions: [],
+    fallbackActions: fallback,
+  }), []);
+});
+
 test('compiler recovery gate recognizes the registered write families without choosing one', () => {
+  assert.equal(hasExplicitRegisteredWriteIntent('Use module_record_task_links to find open and completed tasks. Read only.'), false);
+  assert.equal(hasExplicitRegisteredWriteIntent('Read the existing record and its tasks. Do not create or update any records or actions.'), false);
   for (const prompt of [
     'Create a wiki fact page about Cherokee Purple watering.',
     'Save this as an org note.',

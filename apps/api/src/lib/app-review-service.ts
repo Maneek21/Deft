@@ -57,6 +57,7 @@ import {
 } from './app-connected-contract.js';
 import {
   assertCurrentModuleManagerWithExecutor,
+  acquireModuleInstallLocks,
   installModuleFromManifestWithExecutor,
   invalidateModuleCatalogCaches,
   upgradeAppOwnedModuleAdditivelyWithExecutor,
@@ -133,7 +134,18 @@ export type ConnectedAppReviewRequest = Readonly<{
 export type ConnectedAppActivationRequest = ConnectedAppReviewRequest & Readonly<{
   expected_review_digest: string;
   accept_host_policy: boolean;
+  accept_module_adoptions?: boolean;
   allow_identical_carry_forward?: boolean;
+}>;
+
+export type AppModuleAdoption = Readonly<{
+  module_id: string;
+  module_installation_id: string;
+  module_version_id: string;
+  name: string;
+  is_enabled: boolean;
+  agent_access: string;
+  updated_at: string;
 }>;
 
 export type ConnectedAppReview = Readonly<{
@@ -156,6 +168,7 @@ export type ConnectedAppReview = Readonly<{
   resource_rights: readonly unknown[];
   dependencies: readonly ReviewDependency[];
   action_bindings: readonly ReviewActionBinding[];
+  module_adoptions: readonly AppModuleAdoption[];
   authority_surface_digest: string;
   review_digest: string;
 }>;
@@ -197,6 +210,7 @@ type ModuleDescriptor = Readonly<{
   manifest: DeftModuleManifest;
   module_installation_id: string | null;
   module_version_id: string | null;
+  adoption?: AppModuleAdoption;
 }>;
 
 type DependencyContext = Readonly<{
@@ -466,6 +480,35 @@ async function loadReviewContext(
   if (!requested) throw appError('The requested grant changed before review', 'APP_STALE');
 
   const includedModules = await includedModuleDescriptors(packageValue);
+  if (!installation.active_version_id) {
+    for (const [moduleId, descriptor] of includedModules) {
+      const [existing] = await executor.select({ installation: moduleInstallations, version: moduleVersions })
+        .from(moduleInstallations).innerJoin(moduleVersions, and(
+          eq(moduleVersions.org_id, moduleInstallations.org_id),
+          eq(moduleVersions.installation_id, moduleInstallations.id),
+          eq(moduleVersions.is_active, true),
+        )).where(and(eq(moduleInstallations.org_id, actor.org_id),
+          eq(moduleInstallations.module_id, moduleId), eq(moduleInstallations.is_deleted, false))).limit(1);
+      if (!existing) continue;
+      const [owner] = await executor.select({ id: appModuleBindings.id }).from(appModuleBindings).where(and(
+        eq(appModuleBindings.org_id, actor.org_id),
+        eq(appModuleBindings.module_installation_id, existing.installation.id),
+      )).limit(1);
+      if (owner) throw new AppError('An included Module already belongs to an App', 'APP_STATE_CONFLICT', 409);
+      if (existing.version.version !== descriptor.module_version || existing.version.manifest_digest !== descriptor.manifest_digest) {
+        throw new AppError('Update the existing Module to the exact included version before adopting it', 'APP_STATE_CONFLICT', 409);
+      }
+      includedModules.set(moduleId, { ...descriptor,
+        module_installation_id: existing.installation.id, module_version_id: existing.version.id,
+        adoption: {
+          module_id: moduleId, module_installation_id: existing.installation.id, module_version_id: existing.version.id,
+          name: descriptor.manifest.name, is_enabled: existing.installation.is_enabled,
+          agent_access: existing.installation.agent_access, updated_at: existing.installation.updated_at.toISOString(),
+        },
+      });
+    }
+  }
+
   if (installation.active_version_id && installation.active_version_id !== version.id) {
     const priorBindings = await executor.select({ module_id: appModuleBindings.module_id })
       .from(appModuleBindings)
@@ -664,11 +707,15 @@ function validateResourceAndActionContracts(context: ReviewContext): void {
           (item) => item.key === sourceRequirement.resource_type,
         )!;
         const relation = sourceCollection.fields.find((field) => field.key === source.relation_field_key);
-        if (
-          relation?.type !== 'resource_ref'
-          || relation.target.module_id !== targetModule.module_id
-          || relation.target.resource_type !== targetRequirement.resource_type
-        ) {
+        const matchesResourceRef = relation?.type === 'resource_ref'
+          && relation.target.module_id === targetModule.module_id
+          && relation.target.resource_type === targetRequirement.resource_type;
+        const matchesDirectRelation = relation?.type === 'relation'
+          && sourceRequirement.source.kind === 'included_module'
+          && targetRequirement.source.kind === 'included_module'
+          && sourceModule.module_id === targetModule.module_id
+          && relation.target_collection === targetRequirement.resource_type;
+        if (!matchesResourceRef && !matchesDirectRelation) {
           throw appError('The selected relation does not match the pinned target resource', 'APP_DEPENDENCY_UNHEALTHY');
         }
       }
@@ -843,6 +890,7 @@ function buildReview(
     classification,
     resource_rights: context.requested.resource_rights,
     dependencies,
+    module_adoptions: [...context.included_modules.values()].flatMap((item) => item.adoption ? [item.adoption] : []),
     action_bindings: actionBindings,
     authority_surface_digest: authoritySurfaceDigest,
   }) as Record<string, unknown>;
@@ -859,6 +907,7 @@ function buildReview(
     classification,
     resource_rights: context.requested.resource_rights,
     dependencies,
+    module_adoptions: [...context.included_modules.values()].flatMap((item) => item.adoption ? [item.adoption] : []),
     action_bindings: actionBindings,
     authority_surface_digest: authoritySurfaceDigest,
     review_digest: digestAppGrantValue(reviewWithoutDigest),
@@ -961,6 +1010,19 @@ async function lockReviewInputs(
       eq(appVersions.id, dependency.version.id),
     )).for('update');
   }
+  for (const descriptor of [...context.included_modules.values()].sort((a, b) => a.module_id.localeCompare(b.module_id))) {
+    await acquireModuleInstallLocks(executor, context.installation.org_id, descriptor.module_id, descriptor.manifest.slug);
+    const existing = await executor.select({ id: moduleInstallations.id }).from(moduleInstallations).where(and(
+      eq(moduleInstallations.org_id, context.installation.org_id),
+      eq(moduleInstallations.module_id, descriptor.module_id), eq(moduleInstallations.is_deleted, false),
+    )).for('update');
+    for (const item of existing) {
+      await executor.select({ id: moduleVersions.id }).from(moduleVersions).where(and(
+        eq(moduleVersions.org_id, context.installation.org_id),
+        eq(moduleVersions.installation_id, item.id), eq(moduleVersions.is_active, true),
+      )).for('update');
+    }
+  }
   const connectionIds = [...new Set(
     [...context.connections.values()].map((connection) => connection.id),
   )].sort();
@@ -1001,6 +1063,21 @@ async function installOrCarryIncludedModules(
       continue;
     }
     if (!context.installation.active_version_id) {
+      if (descriptor.adoption) {
+        await executor.update(moduleInstallations).set({ is_enabled: true, disabled_at: null,
+          updated_by_actor_type: actor.kind, updated_by_actor_id: actor.actor_id,
+        }).where(and(eq(moduleInstallations.org_id, actor.org_id), eq(moduleInstallations.id, descriptor.adoption.module_installation_id)));
+        await executor.insert(appModuleBindings).values({
+          org_id: actor.org_id, app_installation_id: context.installation.id, app_version_id: context.version.id,
+          module_installation_id: descriptor.adoption.module_installation_id,
+          module_version_id: descriptor.adoption.module_version_id, module_id: descriptor.module_id, ownership: 'app',
+        });
+        await executor.insert(auditLog).values({ org_id: actor.org_id, actor_type: actor.kind, actor_id: actor.actor_id,
+          action: 'app.module.adopt', entity_type: 'module_installation', entity_id: descriptor.adoption.module_installation_id,
+          before_state: descriptor.adoption, after_state: { app_installation_id: context.installation.id, ownership: 'app' },
+        });
+        continue;
+      }
       const installed = await installModuleFromManifestWithExecutor(
         executor,
         actor,
@@ -1110,6 +1187,9 @@ export async function activateConnectedAppInstallation(
       evidence,
       await priorAuthoritySurface(tx, context.installation),
     );
+    if (review.module_adoptions.length && request.accept_module_adoptions !== true) {
+      throw new AppError('Existing Module adoption must be explicitly accepted', 'APP_REVIEW_REQUIRED', 409);
+    }
     if (review.review_digest !== request.expected_review_digest) {
       throw appError('Reviewed App authority changed before activation', 'APP_STALE');
     }

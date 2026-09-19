@@ -98,6 +98,13 @@ export function sanitizeModuleActionParamsForReceipt(
       sanitized[key] = value;
     }
   }
+  if (
+    action === 'module_record_bulk_create'
+    && typeof params.__deft_bulk_retry_of_action_id === 'string'
+    && /^[A-Za-z0-9_-]{1,128}$/.test(params.__deft_bulk_retry_of_action_id)
+  ) {
+    sanitized.__deft_bulk_retry_of_action_id = params.__deft_bulk_retry_of_action_id;
+  }
   return sanitized;
 }
 

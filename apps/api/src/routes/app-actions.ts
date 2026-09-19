@@ -54,11 +54,13 @@ appActionRoutes.post('/prepare', async (c) => {
   try {
     const input = AppBindingInvokeInputSchema.parse(await jsonBody(c));
     const prepared = await appActionService.prepare(callerFromContext(c), input);
-    // The browser needs only the safe preview and opaque candidate. Keep the
-    // internal authority vector/digest inside the service and sealed payload.
+    const reviewFields = await appActionService.reviewPreparedMessage(callerFromContext(c), { ...input, input_candidate: prepared.input_candidate });
+    c.header('Cache-Control', 'no-store');
+    // Message fields are transient human presentation; keep them outside persisted safe metadata.
     return c.json({
       result: {
         action: prepared.action,
+        review_fields: reviewFields,
         safe_preview: prepared.safe_preview,
         input_candidate: prepared.input_candidate,
         replay_identity: prepared.replay_identity,

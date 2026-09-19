@@ -32,6 +32,7 @@ export function ConnectedAppManagement({
 }) {
   const grantsState = useAppGrantManagement(app.id, canManage);
   const connectorState = useAppConnectors(canManage);
+  const [acceptedAdoptions, setAcceptedAdoptions] = useState(false);
   const [connectorSelections, setConnectorSelections] = useState<Record<string, string>>({});
   const [review, setReview] = useState<ConnectedAppReview | null>(null);
   const [health, setHealth] = useState<ConnectedAppHealth | null>(null);
@@ -66,6 +67,7 @@ export function ConnectedAppManagement({
     });
     setReview(null);
     setAcceptedPolicy(false);
+    setAcceptedAdoptions(false);
   }, [target?.app_version_id, target?.requested_snapshot_digest]);
 
   const reviewInput = useMemo(() => {
@@ -85,7 +87,14 @@ export function ConnectedAppManagement({
     };
   }, [connectorSelections, grants, target]);
 
-  if (!installedManifest) return null;
+  if (!installedManifest && !target) {
+    if (grantsState.isLoading) return <div className="mt-4 flex min-h-16 items-center justify-center"><Loader2 size={16} className="animate-spin" aria-label="Loading connected App upgrade" /></div>;
+    if (grantsState.error) return <p role="alert" className="mt-4 text-xs" style={{ color: 'var(--error)' }}>{grantsState.error instanceof Error ? grantsState.error.message : 'Connected App upgrade details did not load.'}</p>;
+    return <section className="mt-4 space-y-3 border-t border-[var(--ghost-border)] pt-4" aria-label={`${app.name} connected upgrade management`}>
+      <p className="text-[11px]" style={{ color: 'var(--on-surface-variant)' }}>{app.state === 'disabled' ? 'This App is disabled; its records and relationships are preserved.' : 'Choose a newer connected package to review its access. Current records remain available.'}</p>
+      {canManage && (app.state === 'active' || app.state === 'disabled') && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onChooseUpgrade}><FileUp size={13} /> Stage connected upgrade</button>}
+    </section>;
+  }
   if (!canManage) {
     return <p className="mt-4 border-t border-[var(--ghost-border)] pt-3 text-[11px]" style={{ color: 'var(--outline)' }}>An owner or admin can review connected permissions and health.</p>;
   }
@@ -93,6 +102,7 @@ export function ConnectedAppManagement({
   const runReview = async () => {
     if (!reviewInput) return;
     setWorking('review'); setMessage(null); setReview(null); setAcceptedPolicy(false);
+    setAcceptedAdoptions(false);
     try {
       const response = await api.post(`/api/apps/${encodeURIComponent(app.id)}/review`, reviewInput);
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to review connected permissions.'));
@@ -112,6 +122,7 @@ export function ConnectedAppManagement({
         ...reviewInput,
         expected_review_digest: review.review_digest,
         accept_host_policy: true,
+        accept_module_adoptions: acceptedAdoptions,
       });
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to activate this connected App.'));
       setReview(normalizeConnectedAppReview(await response.json()));
@@ -210,6 +221,7 @@ export function ConnectedAppManagement({
                     onChange={(event) => {
                       setConnectorSelections((current) => ({ ...current, [requirement.key]: event.target.value }));
                       setReview(null); setAcceptedPolicy(false);
+    setAcceptedAdoptions(false);
                     }}
                   >
                     <option value="">Select a configured connector</option>
@@ -227,8 +239,14 @@ export function ConnectedAppManagement({
               <div className="space-y-1.5 text-[11px]">
                 {review.action_bindings.map((binding) => <div key={binding.binding_digest} className="rounded-lg px-2.5 py-2" style={{ background: 'var(--surface-container-low)' }}><span className="font-medium">{binding.action_key.replaceAll('_', ' ')}</span><span className="block" style={{ color: 'var(--outline)' }}>{connectorName(binding.mcp_connection_id, connectorState.connectors)} · {binding.operation_name}</span></div>)}
               </div>
+              {review.module_adoptions.length > 0 && <div className="space-y-2 rounded-lg p-3 text-xs" style={{ background: 'var(--surface-container-low)' }}>
+                <h3 className="font-semibold">Use your existing workspace records</h3>
+                <ul className="space-y-1">{review.module_adoptions.map((module) => <li key={module.module_installation_id}>{module.name} · {module.is_enabled ? 'enabled' : 'will be enabled'} · agent access: {module.agent_access}</li>)}</ul>
+                <p>Records, relationships, saved views and access settings stay in place. This App will manage these modules: disabling the App disables them, and App upgrades update them.</p>
+                <label className="flex min-h-11 items-start gap-2"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedAdoptions} onChange={(event) => setAcceptedAdoptions(event.target.checked)} /><span>I accept transferring these existing modules to this App.</span></label>
+              </div>}
               <label className="flex min-h-11 items-start gap-2 rounded-lg px-2 py-2 text-[11px]" style={{ background: 'var(--surface-container-low)' }}><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedPolicy} onChange={(event) => setAcceptedPolicy(event.target.checked)} /><span>I accept Deft’s host-owned approval, retention, egress, and retry policy for these exact bindings.</span></label>
-              <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={!acceptedPolicy || working !== null} onClick={() => void activate()}>{working === 'activate' && <Loader2 size={13} className="animate-spin" />} {activationAction(target.activation_kind)} reviewed App</button>
+              <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={!acceptedPolicy || (review.module_adoptions.length > 0 && !acceptedAdoptions) || working !== null} onClick={() => void activate()}>{working === 'activate' && <Loader2 size={13} className="animate-spin" />} {activationAction(target.activation_kind)} reviewed App</button>
             </div>}
 
             {grants.action_bindings.length > 0 && <div><h3 className="text-xs font-semibold">{grants.installation.active_grant_snapshot_id ? 'Effective action bindings' : 'Prior reviewed bindings'}</h3>{!grants.installation.active_grant_snapshot_id && <p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>These bindings are revoked while the App is disabled and are shown only as inputs to a fresh review.</p>}<ul className="mt-2 space-y-1.5">{grants.action_bindings.map((binding) => <li key={binding.id} className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: 'var(--surface-container-high)' }}><span className="font-medium">{binding.action_key.replaceAll('_', ' ')}</span><span className="block" style={{ color: 'var(--outline)' }}>{connectorName(binding.mcp_connection_id, connectorState.connectors)} · {binding.host_policy.review_requirement.replaceAll('_', ' ')} approval</span></li>)}</ul></div>}
@@ -236,14 +254,14 @@ export function ConnectedAppManagement({
             <div className="flex flex-wrap gap-2">
               {(app.state === 'active' || app.state === 'disabled') && target?.activation_kind !== 'upgrade' && <button type="button" className="deft-pill min-h-11" disabled={busy || working !== null} onClick={onChooseUpgrade}><FileUp size={13} /> Stage upgrade</button>}
               {app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={working !== null} onClick={() => void refreshHealth()}>{working === 'health' ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Refresh health</button>}
-              {app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={busy || working !== null} onClick={onDisable}>Disable</button>}
+              {installedManifest && app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={busy || working !== null} onClick={onDisable}>Disable</button>}
             </div>
             {health && <div role="status" className="rounded-lg px-3 py-2 text-[11px]" style={{ background: health.status === 'healthy' ? 'rgba(48,164,108,.10)' : 'var(--danger-subtle)', color: health.status === 'healthy' ? 'var(--status-green)' : 'var(--error)' }}>
               <p className="flex items-center gap-1.5 font-semibold">{health.status === 'healthy' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />} {health.status === 'healthy' ? 'Healthy' : `${health.issues.length} health issue${health.issues.length === 1 ? '' : 's'}`}</p>
               {health.issues.length > 0 && <ul className="mt-1 space-y-1">{health.issues.map((issue) => <li key={`${issue.code}:${issue.subject_id}`}>{issue.message}</li>)}</ul>}
             </div>}
 
-            {installedManifest.compatibility.app_protocol === '2' && app.state === 'active' && <AppAutomationManagement installationId={app.id} onInspectRun={setSelectedRunId} />}
+            {installedManifest?.compatibility.app_protocol === '2' && app.state === 'active' && <AppAutomationManagement installationId={app.id} onInspectRun={setSelectedRunId} />}
 
             <div><h3 className="text-xs font-semibold">Recent Runs</h3>{grants.recent_runs.length === 0 ? <p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>No App Runs yet.</p> : <ul className="mt-2 space-y-1.5">{grants.recent_runs.slice(0, 5).map((run) => <li key={run.id}><button type="button" className="flex min-h-11 w-full items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[11px]" style={{ background: 'var(--surface-container-high)' }} onClick={() => setSelectedRunId(run.id)}><span className="min-w-0"><span className="block truncate font-medium">{run.title}</span><span className="block truncate" style={{ color: 'var(--outline)' }}>{run.outcome_summary ?? run.summary ?? new Date(run.created_at).toLocaleString()}</span></span><RunState state={run.state} /></button></li>)}</ul>}</div>
           </>}

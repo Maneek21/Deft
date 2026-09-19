@@ -53,7 +53,7 @@ export function ModuleRecordRelations({
         </h2>
       </header>
       {relationState.isLoading ? (
-        <div className="flex items-center gap-2 px-4 py-5 text-[0.75rem]" style={{ color: 'var(--outline)' }}>
+        <div className="flex items-center gap-2 px-4 py-5 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
           <Loader2 size={14} className="animate-spin" /> Loading relationships…
         </div>
       ) : relationState.error ? (
@@ -162,8 +162,8 @@ function RelationField({
     <div className="p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-[0.6875rem] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--outline)' }}>{field.label}</h3>
-          <p className="mt-0.5 text-[0.625rem]" style={{ color: 'var(--outline)' }}>
+          <h3 className="text-[0.6875rem] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--on-surface-variant)' }}>{field.label}</h3>
+          <p className="mt-0.5 text-[0.625rem]" style={{ color: 'var(--on-surface-variant)' }}>
             {field.multiple ? 'Multiple' : 'One'} · {humanizeIdentifier(targetCollection)}
           </p>
         </div>
@@ -175,7 +175,7 @@ function RelationField({
               setIntentKey(createRelationIntentKey());
               setEditing(true);
             }}
-            className="flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-[0.6875rem] font-medium"
+            className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[0.6875rem] font-medium"
             style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}
           >
             <Pencil size={12} /> Edit
@@ -190,21 +190,21 @@ function RelationField({
               <Link
                 key={related.id}
                 href={moduleRecordHref(slug, related.collectionKey, related.id)}
-                className="flex min-h-10 items-center gap-2 rounded-lg px-2.5"
+                className="flex min-h-10 items-center gap-2 rounded-xl px-3"
                 style={{ background: 'var(--surface-container)' }}
               >
-                <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium" style={{ color: 'var(--on-surface)' }}>{related.label}</span>
+                <span className="min-w-0 flex-1 break-words py-2 text-[0.75rem] font-medium" style={{ color: 'var(--on-surface)' }}><span className="block">{related.label}</span>{related.subtitle && <span className="mt-1 block text-xs font-normal text-[var(--on-surface-variant)]">{related.subtitle}</span>}</span>
                 <ChevronRight size={13} className="flex-shrink-0" style={{ color: 'var(--outline)' }} />
               </Link>
             ))}
           </div>
         ) : (
-          <p className="mt-3 text-[0.75rem]" style={{ color: 'var(--outline)' }}>No related records.</p>
+          <p className="mt-3 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>No related records.</p>
         )
       ) : (
         <div className="mt-3">
           {candidates.isLoading ? (
-            <div className="flex min-h-20 items-center justify-center gap-2 text-[0.75rem]" style={{ color: 'var(--outline)' }}>
+            <div className="flex min-h-20 items-center justify-center gap-2 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
               <Loader2 size={14} className="animate-spin" /> Loading options…
             </div>
           ) : candidates.error ? (
@@ -212,7 +212,7 @@ function RelationField({
           ) : (
             <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg p-1" style={{ background: 'var(--surface-container)' }}>
               {candidates.records.filter((candidate) => candidate.id !== recordId).length === 0 ? (
-                <p className="px-3 py-4 text-center text-[0.75rem]" style={{ color: 'var(--outline)' }}>No records available.</p>
+                <p className="px-3 py-4 text-center text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>No records available.</p>
               ) : candidates.records.filter((candidate) => candidate.id !== recordId).map((candidate) => {
                 const checked = selected.includes(candidate.id);
                 return (
@@ -220,7 +220,7 @@ function RelationField({
                     key={candidate.id}
                     type="button"
                     onClick={() => toggle(candidate.id)}
-                    className="flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 text-left"
+                    className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 text-left"
                     style={{ background: checked ? 'var(--bg-active)' : 'transparent' }}
                   >
                     <span
@@ -231,7 +231,7 @@ function RelationField({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[0.75rem] font-medium" style={{ color: 'var(--on-surface)' }}>{getModuleRecordTitle(candidate, displayCollection)}</span>
-                      <span className="block truncate text-[0.625rem]" style={{ color: 'var(--outline)' }}>{getModuleRecordSubtitle(candidate, displayCollection) || candidate.id.slice(0, 8)}</span>
+                      <span className="block truncate text-[0.625rem]" style={{ color: 'var(--on-surface-variant)' }}>{getModuleRecordSubtitle(candidate, displayCollection) || candidate.id.slice(0, 8)}</span>
                     </span>
                   </button>
                 );
@@ -247,7 +247,7 @@ function RelationField({
                 setEditing(false);
               }}
               disabled={busy}
-              className="flex min-h-10 items-center justify-center gap-1.5 rounded-lg text-[0.75rem] font-medium disabled:opacity-50"
+              className="flex min-h-10 items-center justify-center gap-1.5 rounded-full text-[0.75rem] font-medium disabled:opacity-50"
               style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}
             >
               <X size={13} /> Cancel
@@ -256,7 +256,7 @@ function RelationField({
               type="button"
               onClick={() => void save()}
               disabled={busy || candidates.isLoading}
-              className="flex min-h-10 items-center justify-center gap-1.5 rounded-lg text-[0.75rem] font-medium text-white disabled:opacity-50"
+              className="flex min-h-10 items-center justify-center gap-1.5 rounded-full text-[0.75rem] font-medium text-white disabled:opacity-50"
               style={{ background: 'var(--primary-container)' }}
             >
               {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Save

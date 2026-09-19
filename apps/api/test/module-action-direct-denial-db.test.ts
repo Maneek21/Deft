@@ -17,19 +17,10 @@ import {
   updateModuleInstallation,
 } from '../src/lib/module-service.js';
 import { verifyReceipt } from '../src/lib/receipts.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-
-function isSafeTestDatabase(value: string | undefined): value is string {
-  if (!value) return false;
-  try {
-    return /(?:test|ci|acceptance)/i.test(new URL(value).pathname);
-  } catch {
-    return false;
-  }
-}
-
-const canRun = isSafeTestDatabase(TEST_DATABASE_URL);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 const ciRequiresDatabase = /^(?:1|true)$/i.test(process.env.CI ?? '');
 const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const ORG_ID = `module-direct-denial-org-${suffix}`;
@@ -381,7 +372,7 @@ for (const policy of ['unhealthy', 'disabled'] as const) {
       async () => {
         assert.ok(
           canRun && TEST_DATABASE_URL && client,
-          'CI must provide a DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+          'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
         );
         await assertEmployeePolicyBarrierWins({ policy, path });
       },
@@ -395,7 +386,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL && client,
-      'CI must provide a DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+      'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
     );
     const mutation = mutationInput('trust-downgrade');
     const digest = await agentModuleActionIdempotencyDigest(
@@ -520,7 +511,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL && client,
-      'CI must provide a DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+      'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
     );
     const mutation = mutationInput('budget-denial');
     const original = await client.query(
@@ -571,7 +562,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL && client,
-      'CI must provide a DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+      'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
     );
     const mutation = mutationInput('success-clears-error');
     const actionId = randomUUID();

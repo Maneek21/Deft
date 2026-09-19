@@ -62,16 +62,17 @@ test('AppActionService composes authorization, discovery, relation, and App Run 
   assert.ok(resolveStart >= 0 && resolveContext > resolveStart && resolveResource > resolveContext);
 
   const invokeStart = service.indexOf('async invoke(');
-  const invokePrepare = service.indexOf('await this.prepare(', invokeStart);
-  const invokeFreshOpen = service.indexOf('this.preparedInput.open', invokePrepare);
-  const invokeSubmit = service.indexOf('this.runs.submitPreparedApp', invokeFreshOpen);
+  const invokeEnd = service.indexOf('\n  /** Host-only', invokeStart);
+  const invokeSource = service.slice(invokeStart, invokeEnd);
+  const invokeRevalidate = invokeSource.indexOf('await this.#revalidatePrepared');
+  const invokeSubmit = invokeSource.indexOf('this.runs.submitPreparedApp');
   assert.ok(
     invokeStart >= 0
-      && invokePrepare > invokeStart
-      && invokeFreshOpen > invokePrepare
-      && invokeSubmit > invokeFreshOpen,
+      && invokeEnd > invokeStart
+      && invokeRevalidate >= 0
+      && invokeSubmit > invokeRevalidate,
   );
-  assert.match(service.slice(invokeSubmit), /current\.input_candidate/);
+  assert.match(invokeSource.slice(invokeSubmit), /current\.input_candidate/);
 
   const contextStart = service.indexOf('async function loadActionContext(');
   const contextEnd = service.indexOf('\nfunction assertPlacement(', contextStart);

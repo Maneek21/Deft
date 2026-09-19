@@ -12,6 +12,7 @@ import {
   connectedAppToolMatches,
   getConnectedAppPrivateInterface,
   parseConnectedAppProviderInput,
+  parseConnectedAppProviderInputForOperation,
 } from '../src/lib/app-connected-contract.js';
 
 const DIGEST = `sha256:${'0'.repeat(64)}` as const;
@@ -104,6 +105,14 @@ test('every registered interface has a closed host input parser', () => {
     success: true,
     data: valid,
   });
+  assert.deepEqual(parseConnectedAppProviderInputForOperation(registered.operation_name, valid), {
+    success: true,
+    data: valid,
+  });
+  assert.throws(
+    () => parseConnectedAppProviderInputForOperation('unregistered_operation', valid),
+    /not uniquely registered/,
+  );
   assert.equal(parseConnectedAppProviderInput(registered, {
     ...valid,
     subject: 'Injected\r\nBcc: hidden@example.com',

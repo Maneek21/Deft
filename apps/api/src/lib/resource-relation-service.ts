@@ -23,6 +23,7 @@ import {
 } from '@deft/shared/resources';
 import type { ModuleActor, ModuleFieldV2 } from '@deft/shared/modules';
 import { db } from './db.js';
+import { readModuleDirectResourceRelations } from './module-direct-resource-relations.js';
 import {
   resolveModuleRelationEndpointWithExecutor,
   type ModuleRelationEndpoint,
@@ -370,6 +371,10 @@ export async function listResourceRelation(
   const source = parsed.data.source;
   try {
     await resourceAuthorizationService.resolve(actorContext(actor), source);
+    const direct = moduleRef(source)
+      ? (await readModuleDirectResourceRelations(db, actor.org_id, source))
+        .find((relation) => relation.relation_key === parsed.data.relation_key)
+      : undefined;
     const tuple = refTuple(source);
     const [set] = await db.select().from(resourceRelationSets).where(and(
       eq(resourceRelationSets.org_id, actor.org_id),
@@ -387,8 +392,7 @@ export async function listResourceRelation(
         )).orderBy(asc(resourceRelationEdges.position))
       : [];
     const items: ResourceRelationListResultV1['items'] = [];
-    for (const edge of edges) {
-      const ref = rowRef(edge);
+    for (const ref of direct?.refs ?? edges.map(rowRef)) {
       try {
         const resource = await resourceAuthorizationService.resolve(actorContext(actor), ref);
         items.push({ state: 'available', ref, resource });
@@ -401,7 +405,7 @@ export async function listResourceRelation(
       schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
       source,
       relation_key: parsed.data.relation_key,
-      revision: set?.revision ?? 0,
+      revision: direct?.revision ?? set?.revision ?? 0,
       items,
     });
   } catch (error) {

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql, inArray } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } from '@deft/db/schema';
 import { evictActiveHuddleParticipants, getIO } from '../socket.js';
@@ -83,7 +83,8 @@ spaceRoutes.post('/', async (c) => {
           eq(spaces.type, type),
           eq(spaces.org_id, user.org_id),
           eq(spaceMembers.user_id, user.id),
-        ));
+        ))
+        .orderBy(asc(spaces.is_archived), asc(spaces.created_at), asc(spaces.id));
       for (const cand of candidateSpaces) {
         const memberRows = await db.select({ user_id: spaceMembers.user_id })
           .from(spaceMembers)
@@ -94,7 +95,20 @@ spaceRoutes.post('/', async (c) => {
         for (const id of targetSet) if (!memberSet.has(id)) { allMatch = false; break; }
         if (allMatch) {
           const [existingSpace] = await db.select().from(spaces).where(eq(spaces.id, cand.space_id)).limit(1);
-          return c.json(existingSpace, 200);
+          if (!existingSpace) continue;
+          if (!existingSpace.is_archived) return c.json(existingSpace, 200);
+
+          const [restoredSpace] = await db.update(spaces)
+            .set({ is_archived: false })
+            .where(and(
+              eq(spaces.id, existingSpace.id),
+              eq(spaces.org_id, user.org_id),
+            ))
+            .returning();
+          if (!restoredSpace) {
+            return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
+          }
+          return c.json(restoredSpace, 200);
         }
       }
     }

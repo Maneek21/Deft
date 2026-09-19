@@ -215,14 +215,14 @@ test('every operational tool is registered, classified, and advertised once', ()
   assert.equal((schemaByName.get('calendar_event_cancel')?.annotations as any)?.destructiveHint, true);
 });
 
-test('module MCP exposes exactly eight static operations from the shared contract', () => {
+test('module MCP exposes every static operation from the shared contract exactly once', () => {
   const operationNames = new Set<string>(MODULE_OPERATION_NAMES);
   const agentSchemas = toolSchemas.filter((schema) => operationNames.has(schema.name));
   assert.deepEqual(
     agentSchemas.map((schema) => schema.name).sort(),
     [...MODULE_OPERATION_NAMES].sort(),
   );
-  assert.equal(agentSchemas.length, 8);
+  assert.equal(agentSchemas.length, MODULE_OPERATION_NAMES.length);
 
   const humanSchemas = buildHumanToolSchemas(
     toolSchemas as unknown as Array<Record<string, unknown>>,
@@ -266,9 +266,22 @@ test('human module scopes are explicit and generic search/fetch use any granted 
       ? 'read:modules'
       : 'write:modules';
     assert.equal(HUMAN_TOOL_SCOPES[operation], expected);
-    assert.equal(humanToolHasRequiredScope([expected], operation), true);
+    const taskScope = operation === 'module_record_task_links'
+      ? 'read:tasks'
+      : operation === 'module_record_task_link' || operation === 'module_record_task_unlink'
+        ? 'write:tasks'
+        : undefined;
+    if (taskScope) {
+      assert.equal(humanToolHasRequiredScope([expected], operation), false);
+      assert.equal(humanToolHasRequiredScope([taskScope], operation), false);
+      assert.equal(humanToolHasRequiredScope([expected, taskScope], operation), true);
+    } else {
+      assert.equal(humanToolHasRequiredScope([expected], operation), true);
+    }
     assert.equal(humanToolHasRequiredScope([], operation), false);
   }
+  assert.equal(humanToolHasRequiredScope(['read:modules'], 'module_record_bulk_create'), false);
+  assert.equal(humanToolChallengeScope('module_record_bulk_create'), 'write:modules');
   assert.equal(humanToolHasRequiredScope(['read:modules'], 'search'), true);
   assert.equal(humanToolHasRequiredScope(['read:modules'], 'fetch'), true);
   assert.equal(humanToolHasRequiredScope(['read:tasks'], 'search'), true);

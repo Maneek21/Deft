@@ -57,7 +57,7 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
     const installedRoot = await realpath(resolve(consumer, 'node_modules', '@deft', 'app-kit'));
     assert.equal(installedRoot.startsWith(await realpath(consumer)), true);
     const installedPackage = JSON.parse(await readFile(resolve(installedRoot, 'package.json'), 'utf8')) as any;
-    assert.equal(installedPackage.version, '0.1.0-alpha.2');
+    assert.equal(installedPackage.version, '0.1.0-alpha.3');
     assert.equal(installedPackage.bin.deft, './dist/cli.js');
     const installedFiles = await readdir(installedRoot, { recursive: true });
     assert.equal(installedFiles.some((entry) => /^src(?:[\\/]|$)/.test(entry)), false);
