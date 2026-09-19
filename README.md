@@ -108,6 +108,8 @@ Modules add domain records, relationships, and native views. Apps package Module
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
+See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for the authoring contract, native UI conventions, permissions and current execution limits.
+
 ## Product surfaces
 
 ### Chat keeps the source conversation attached

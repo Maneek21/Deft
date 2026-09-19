@@ -90,9 +90,14 @@ export function visibleModuleActionScopeSql(
 ): SQL {
   const canRead = scopes.includes('read:modules');
   const canWrite = scopes.includes('write:modules');
-  return canRead && (access === 'read' || canWrite)
-    ? sql`true`
-    : notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]);
+  if (!canRead || (access === 'write' && !canWrite)) {
+    return notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]);
+  }
+  // Approval is a mutation entry point too: Module authority alone cannot
+  // authorize changing a native task's record links.
+  return access === 'write' && !scopes.includes('write:tasks')
+    ? notInArray(agentActions.action, [...MODULE_TASK_LINK_WRITE_ACTION_NAMES])
+    : sql`true`;
 }
 
 export function visibleModuleAttentionScopeSql(

@@ -3,6 +3,13 @@ import {
   classifyAppAutomationOccurrence,
   resolveAppAutomationOccurrence,
 } from './automation-schedule.js';
+import {
+  DEFT_MODULE_MANIFEST_FILENAME,
+  DEFT_MODULE_MANIFEST_SCHEMA_VERSION,
+  DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2,
+  DeftModuleManifestSchema,
+  type PortableModuleSchemaIssue,
+} from './module-contract/modules.js';
 
 export {
   appAutomationLocalDate,
@@ -26,7 +33,7 @@ export const DEFT_APP_PROTOCOL_VERSION_V2 = '2' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V2 = 'deft.app.package.v2' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
-export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.2' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.3' as const;
 export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
 export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
@@ -78,7 +85,7 @@ export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
   schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
   app_kit: Object.freeze({
     package: DEFT_APP_KIT_PACKAGE_NAME,
-    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.1']),
+    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.2', '0.1.0-alpha.1']),
   }),
   protocol_flows: Object.freeze({
     '0': Object.freeze({
@@ -600,7 +607,7 @@ export const DeftAppManifestV1Schema = z
       .optional(),
     modules: z.array(DeftAppModuleReferenceV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
     navigation: z.array(DeftAppNavigationItemV0Schema).max(APP_LIMITS.navigation_items).default([]),
-    dependencies: z.array(DeftAppDependencyRequirementV1Schema).min(1).max(APP_LIMITS.dependencies),
+    dependencies: z.array(DeftAppDependencyRequirementV1Schema).max(APP_LIMITS.dependencies),
     resource_requirements: z
       .array(DeftAppResourceRequirementV1Schema)
       .min(1)
@@ -1532,12 +1539,122 @@ export function getDeftAppManifestJsonSchema(schemaVersion: string): Record<stri
 
 type ModuleIdentity = { schema_version: string; id: string; version: string };
 
+export type DeftModuleSemanticValidationIssue = Readonly<{
+  artifact_path: string;
+  field_path: string;
+  reason: string;
+  correction: string;
+}>;
+
+export type DeftModuleSemanticValidationResult =
+  | Readonly<{ success: true; issues: readonly [] }>
+  | Readonly<{ success: false; issues: readonly DeftModuleSemanticValidationIssue[] }>;
+
+function moduleFieldPath(path: readonly PropertyKey[]): string {
+  if (path.length === 0) return '$';
+  return path.reduce<string>((result, segment) => typeof segment === 'number'
+    ? `${result}[${segment}]`
+    : `${result}${result ? '.' : ''}${String(segment)}`, '');
+}
+
+function moduleIssueCorrection(issue: PortableModuleSchemaIssue): string {
+  const reason = issue.message;
+  if (/schema version|Invalid input/i.test(reason) && moduleFieldPath(issue.path) === 'schema_version') {
+    return `Set schema_version to ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION} or ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2}.`;
+  }
+  if (/Relation target collection does not exist|Reference target collection does not exist/i.test(reason)) {
+    return 'Declare the referenced collection or change the relation target to an existing collection key.';
+  }
+  if (/Latest related summary/i.test(reason)) {
+    return 'Use a source collection with a direct relation back to this collection, a date or datetime field, and declared select filter values.';
+  }
+  if (/Summary requires/i.test(reason)) {
+    return 'Use a number value field and single-select group and unit fields for the board summary.';
+  }
+  if (/Default is invalid/i.test(reason)) {
+    return 'Choose a default accepted by the field type and, for select fields, one of the declared option values.';
+  }
+  if (/Search/i.test(reason)) {
+    return 'Reference declared searchable fields and include the title and subtitle fields in search.fields.';
+  }
+  if (/Default collection|Default view/i.test(reason)) {
+    return 'Point navigation to a declared collection and to a view that belongs to that collection.';
+  }
+  return `Correct ${moduleFieldPath(issue.path)} so it satisfies the Module manifest contract: ${reason}`;
+}
+
+/**
+ * Runs the same pure Module semantic schema used by the Deft host. This proves
+ * static manifest validity only; installation compatibility, setup, grants,
+ * and tenant-scoped authorization remain host decisions.
+ */
+export function validateDeftModuleManifest(
+  value: unknown,
+  options: Readonly<{ artifactPath?: string }> = {},
+): DeftModuleSemanticValidationResult {
+  const artifactPath = options.artifactPath ?? DEFT_MODULE_MANIFEST_FILENAME;
+  const schemaVersion = value && typeof value === 'object' && 'schema_version' in value
+    ? (value as { schema_version?: unknown }).schema_version
+    : undefined;
+  if (
+    schemaVersion !== DEFT_MODULE_MANIFEST_SCHEMA_VERSION
+    && schemaVersion !== DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2
+  ) {
+    return {
+      success: false,
+      issues: [{
+        artifact_path: artifactPath,
+        field_path: 'schema_version',
+        reason: `Unsupported Module schema version: ${String(schemaVersion)}`,
+        correction: `Set schema_version to ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION} or ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2}.`,
+      }],
+    };
+  }
+
+  const result = DeftModuleManifestSchema.safeParse(value);
+  if (result.success) return { success: true, issues: [] };
+  return {
+    success: false,
+    issues: result.error.issues.map((issue) => ({
+      artifact_path: artifactPath,
+      field_path: moduleFieldPath(issue.path),
+      reason: issue.message,
+      correction: moduleIssueCorrection(issue),
+    })),
+  };
+}
+
+export class DeftModuleSemanticValidationError extends Error {
+  readonly issues: readonly DeftModuleSemanticValidationIssue[];
+
+  constructor(issues: readonly DeftModuleSemanticValidationIssue[]) {
+    super(issues.map((issue) => (
+      `${issue.artifact_path}:${issue.field_path}: ${issue.reason} Correction: ${issue.correction}`
+    )).join('\n'));
+    this.name = 'DeftModuleSemanticValidationError';
+    this.issues = issues;
+  }
+}
+
+export function assertValidDeftModuleManifest<T>(
+  value: T,
+  options: Readonly<{ artifactPath?: string }> = {},
+): T {
+  const result = validateDeftModuleManifest(value, options);
+  if (!result.success) throw new DeftModuleSemanticValidationError(result.issues);
+  return value;
+}
+
 const ModuleResourceShapeSchema = z.object({
   collections: z.array(z.object({
     key: AppMachineKeyV1Schema,
+    views: z.array(z.object({
+      key: AppMachineKeyV1Schema,
+    }).passthrough()).optional(),
     fields: z.array(z.object({
       key: AppMachineKeyV1Schema,
       type: z.string(),
+      target_collection: AppMachineKeyV1Schema.optional(),
       target: z.object({
         module_id: AppIdSchema,
         resource_type: AppMachineKeyV1Schema,
@@ -1545,6 +1662,22 @@ const ModuleResourceShapeSchema = z.object({
     }).passthrough()),
   }).passthrough()),
 }).passthrough();
+
+function verifyNavigationBindings(
+  manifest: DeftAppManifest,
+  moduleManifests: ReadonlyMap<string, unknown>,
+): void {
+  for (const item of manifest.navigation) {
+    const moduleManifest = ModuleResourceShapeSchema.parse(moduleManifests.get(item.module_id));
+    const collection = moduleManifest.collections.find((candidate) => candidate.key === item.collection_key);
+    if (!collection) {
+      throw new Error(`Navigation ${item.key} references unknown collection ${item.collection_key}`);
+    }
+    if (item.view_key && !collection.views?.some((view) => view.key === item.view_key)) {
+      throw new Error(`Navigation ${item.key} references unknown view ${item.view_key} in collection ${item.collection_key}`);
+    }
+  }
+}
 
 function parseModuleArtifactIdentity(value: unknown): ModuleIdentity {
   return z
@@ -1562,6 +1695,7 @@ export async function prepareModuleArtifact(input: {
   manifest: unknown;
 }): Promise<DeftAppPackageArtifactV0> {
   const path = AppArtifactPathSchema.parse(input.path);
+  assertValidDeftModuleManifest(input.manifest, { artifactPath: path });
   parseModuleArtifactIdentity(input.manifest);
   const content = JSON.stringify(canonicalizeJson(input.manifest));
   assertByteLimit(content, APP_LIMITS.artifact_bytes, 'Module artifact');
@@ -1606,12 +1740,14 @@ async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
     } catch (error) {
       throw new Error(`Module artifact ${artifact.path} is not valid JSON`, { cause: error });
     }
+    assertValidDeftModuleManifest(moduleManifest, { artifactPath: artifact.path });
     const identity = parseModuleArtifactIdentity(moduleManifest);
     if (identity.id !== moduleReference.module_id || identity.version !== moduleReference.version) {
       throw new Error(`Module identity does not match app manifest for ${artifact.path}`);
     }
     moduleManifests.set(identity.id, moduleManifest);
   }
+  verifyNavigationBindings(packageValue.manifest, moduleManifests);
   if (
     packageValue.manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
     || packageValue.manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
@@ -1649,13 +1785,16 @@ function verifyV1ResourceBindings(
       if (!sourceCollection) continue;
       const relation = sourceCollection.fields.find((field) => field.key === source.relation_field_key);
       const targetResource = resources.get(source.target_resource_requirement_key);
-      if (
-        relation?.type !== 'resource_ref'
-        || !relation.target
-        || !targetResource
-        || relation.target.module_id !== targetResource.source.module_id
-        || relation.target.resource_type !== targetResource.resource_type
-      ) {
+      const sourceResource = resources.get(source.source_resource_requirement_key);
+      const matchesResourceRef = relation?.type === 'resource_ref'
+        && relation.target?.module_id === targetResource?.source.module_id
+        && relation.target?.resource_type === targetResource?.resource_type;
+      const matchesDirectRelation = relation?.type === 'relation'
+        && sourceResource?.source.kind === 'included_module'
+        && targetResource?.source.kind === 'included_module'
+        && sourceResource.source.module_id === targetResource.source.module_id
+        && relation.target_collection === targetResource.resource_type;
+      if (!targetResource || (!matchesResourceRef && !matchesDirectRelation)) {
         throw new Error(`Action ${action.key} selected relation does not target the declared resource requirement`);
       }
     }

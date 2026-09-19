@@ -60,7 +60,7 @@ import {
   type WikiCreateArgs,
   type WikiUpdateArgs,
 } from './mcp-tools/wiki-create.js';
-import { generateReceipt } from './receipts.js';
+import { generateReceipt, type ReceiptProposer } from './receipts.js';
 import { sanitizeModuleActionParamsForReceipt } from './receipt-params.js';
 import {
   markWorkIntentConvertedForAction,
@@ -75,9 +75,18 @@ import {
 import {
   executeAction as executeAgentAction,
   isModuleTaskLinkWriteAction,
+  moduleBulkCreateActionIdempotencyDigest,
+  normalizeAgentModuleBulkCreateParams,
   preflightAgentModuleAction,
   sanitizeModuleTaskLinkActionParamsForHistory,
+  terminalModuleTaskLinkActionParams,
 } from './agent-actions.js';
+import {
+  MODULE_RECORD_BULK_CREATE_ACTION,
+  moduleBulkCreateInputDigest,
+  sanitizeModuleBulkCreateParamsForHistory,
+  type ModuleRecordBulkCreateParams,
+} from './module-record-bulk-create.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import {
   APP_RUN_APPROVAL_ACTION,
@@ -240,9 +249,52 @@ function terminalModuleActionParams(
   action: string,
   paramsValue: unknown,
   ctx?: ToolContext | null,
+  identity?: { orgId: string; userId: string; agentEmployeeId?: string | null },
+  preserveHumanMcpProvenance = false,
 ): Record<string, unknown> | null {
-  if (!MODULE_MUTATION_ACTIONS.has(action)) return null;
   const params = recordValue(paramsValue);
+  if (isModuleTaskLinkWriteAction(action)) {
+    const orgId = identity?.orgId ?? ctx?.org_id;
+    const userId = identity?.userId;
+    if (!orgId || !userId) return sanitizeModuleTaskLinkActionParamsForHistory(params);
+    return terminalModuleTaskLinkActionParams(
+      action,
+      params,
+      orgId,
+      userId,
+      identity?.agentEmployeeId ?? ctx?.employee_id ?? undefined,
+    );
+  }
+  if (!MODULE_MUTATION_ACTIONS.has(action)) return null;
+  if (action === MODULE_RECORD_BULK_CREATE_ACTION) {
+    const input = normalizeAgentModuleBulkCreateParams(action, params) as ModuleRecordBulkCreateParams;
+    const principal = recordValue(params.__deft_human_mcp_principal);
+    const retryOfActionId = typeof params.__deft_bulk_retry_of_action_id === 'string'
+      && /^[A-Za-z0-9_-]{1,128}$/.test(params.__deft_bulk_retry_of_action_id)
+      ? params.__deft_bulk_retry_of_action_id
+      : undefined;
+    const clientId = typeof principal.client_id === 'string' ? principal.client_id : undefined;
+    const orgId = identity?.orgId ?? ctx?.org_id;
+    const userId = identity?.userId;
+    const idempotencyDigest = orgId && userId
+      ? moduleBulkCreateActionIdempotencyDigest({
+        orgId,
+        userId,
+        ...(identity?.agentEmployeeId ? { agentEmployeeId: identity.agentEmployeeId } : {}),
+        ...(clientId ? { clientId } : {}),
+        idempotencyKey: input.idempotency_key,
+      })
+      : undefined;
+    return {
+      ...sanitizeModuleBulkCreateParamsForHistory(input),
+      ...(idempotencyDigest ? { idempotency_digest: idempotencyDigest } : {}),
+      input_digest: moduleBulkCreateInputDigest(input),
+      ...(retryOfActionId ? { __deft_bulk_retry_of_action_id: retryOfActionId } : {}),
+      ...(preserveHumanMcpProvenance && principal.kind === 'human_mcp_v1' && typeof principal.client_id === 'string'
+        ? { __deft_human_mcp_principal: { kind: 'human_mcp_v1', client_id: principal.client_id } }
+        : {}),
+    };
+  }
   const sanitized = sanitizeModuleActionParamsForHistory(action, params);
   if (typeof params.idempotency_key !== 'string') return sanitized;
   const inputDigest = moduleMutationInputDigest(
@@ -284,14 +336,30 @@ function terminalAttentionResolution(
 }
 
 function moduleProposer(row: typeof agentActions.$inferSelect): {
-  proposer: 'defty' | 'employee';
+  proposer: ReceiptProposer;
   proposerId: string | null;
 } {
+  if (hasHumanMcpBulkProvenance(row)) {
+    return { proposer: 'user', proposerId: row.user_id };
+  }
   const isDefty = !row.agent_employee_id;
   return {
     proposer: isDefty ? 'defty' : 'employee',
     proposerId: isDefty ? row.user_id : row.agent_employee_id,
   };
+}
+
+export function hasHumanMcpBulkProvenance(
+  row: Pick<typeof agentActions.$inferSelect, 'action' | 'source' | 'agent_employee_id' | 'params'>,
+): boolean {
+  const principal = recordValue(recordValue(row.params).__deft_human_mcp_principal);
+  return row.action === MODULE_RECORD_BULK_CREATE_ACTION
+    && row.source === 'mcp'
+    && !row.agent_employee_id
+    && principal.kind === 'human_mcp_v1'
+    && typeof principal.client_id === 'string'
+    && principal.client_id.length > 0
+    && principal.client_id.length <= 256;
 }
 
 async function repairRejectedModuleTerminalState(
@@ -383,13 +451,13 @@ async function ensureApprovedModuleReceipt(
   if (!MODULE_MUTATION_ACTIONS.has(row.action)) return;
   const approverId = row.approved_by_user_id ?? null;
   const decision = row.approved_by_user_id ? 'approved' : 'auto_executed';
-  const isDefty = !row.agent_employee_id;
+  const proposer = moduleProposer(row);
   await generateReceipt({
     actionId: row.id,
     orgId: row.org_id,
     employeeId: row.agent_employee_id ?? null,
-    proposer: isDefty ? 'defty' : 'employee',
-    proposerId: isDefty ? row.user_id : row.agent_employee_id,
+    proposer: proposer.proposer,
+    proposerId: proposer.proposerId,
     approverId,
     decision,
     decisionReason: row.error ? `execution failed: ${row.error}`.slice(0, 2_000) : null,
@@ -408,6 +476,12 @@ async function expireModuleActionForEmployeePolicy(params: {
     params.row.action,
     params.row.params,
     params.ctx,
+    {
+      orgId: params.row.org_id,
+      userId: params.row.user_id,
+      agentEmployeeId: params.row.agent_employee_id,
+    },
+    hasHumanMcpBulkProvenance(params.row),
   ) ?? sanitizeModuleActionParamsForHistory(params.row.action, params.row.params);
   terminalParams[TERMINAL_ATTENTION_RESOLUTION] = 'employee_policy_invalidated';
   const expired = await db.transaction(async (tx) => {
@@ -459,22 +533,25 @@ async function expireModuleActionForEmployeePolicy(params: {
   }
 
   await Promise.all([
-    generateReceipt({
-      actionId: params.row.id,
-      orgId: params.row.org_id,
-      employeeId: params.row.agent_employee_id ?? null,
-      proposer: params.row.agent_employee_id ? 'employee' : 'defty',
-      proposerId: params.row.agent_employee_id ?? params.row.user_id,
-      // If the process died after the human approval claim but before the
-      // module mutation completed, preserve the reviewer who made that
-      // decision even when a later policy change terminalizes the action.
-      approverId: params.row.approved_by_user_id ?? null,
-      decision: 'expired',
-      decisionReason: params.reason,
-      actionName: params.row.action,
-      actionParams: sanitizeModuleActionParamsForReceipt(params.row.action, terminalParams),
-      resultJson: null,
-    }),
+    (() => {
+      const proposer = moduleProposer(params.row);
+      return generateReceipt({
+        actionId: params.row.id,
+        orgId: params.row.org_id,
+        employeeId: params.row.agent_employee_id ?? null,
+        proposer: proposer.proposer,
+        proposerId: proposer.proposerId,
+        // If the process died after the human approval claim but before the
+        // module mutation completed, preserve the reviewer who made that
+        // decision even when a later policy change terminalizes the action.
+        approverId: params.row.approved_by_user_id ?? null,
+        decision: 'expired',
+        decisionReason: params.reason,
+        actionName: params.row.action,
+        actionParams: sanitizeModuleActionParamsForReceipt(params.row.action, terminalParams),
+        resultJson: null,
+      });
+    })(),
     resolveAttentionBySource({
       orgId: params.row.org_id,
       sourceType: 'agent_action',
@@ -976,6 +1053,7 @@ async function approveActionLocked(
         row.org_id,
         row.user_id,
         row.agent_employee_id ?? undefined,
+        { trustedHumanMcpPrincipal: hasHumanMcpBulkProvenance(row) },
       );
     } catch (error) {
       const reason = `Module action no longer passes execution policy: ${
@@ -1064,7 +1142,10 @@ async function approveActionLocked(
         actionParams,
         row.org_id,
         row.user_id,
-        { agentEmployeeId: row.agent_employee_id ?? undefined },
+        {
+          agentEmployeeId: row.agent_employee_id ?? undefined,
+          trustedHumanMcpPrincipal: hasHumanMcpBulkProvenance(row),
+        },
       );
       toolResult = {
         content: [{
@@ -1101,17 +1182,30 @@ async function approveActionLocked(
   } catch {
     // leave as string
   }
+  const partialBulkResult = row.action === MODULE_RECORD_BULK_CREATE_ACTION
+    && isError
+    && parsedResult !== null
+    && typeof parsedResult === 'object'
+    && !Array.isArray(parsedResult)
+    && (parsedResult as Record<string, unknown>).result !== null
+    && typeof (parsedResult as Record<string, unknown>).result === 'object'
+    ? (parsedResult as Record<string, unknown>).result
+    : null;
 
   // Stamp exec outcome on the row. approval_status is already 'approved'
   // from the atomic claim; we only touch executed_at + result/error here.
   const now = new Date();
-  const terminalParams = terminalModuleActionParams(row.action, row.params, ctx);
+  const terminalParams = terminalModuleActionParams(row.action, row.params, ctx, {
+    orgId: row.org_id,
+    userId: row.user_id,
+    agentEmployeeId: row.agent_employee_id,
+  }, hasHumanMcpBulkProvenance(row));
   const stampedAction = await db.transaction(async (tx) => {
     const [stamped] = await tx
       .update(agentActions)
       .set({
         executed_at: now,
-        result: (isError ? null : parsedResult) as any,
+        result: (partialBulkResult ?? (isError ? null : parsedResult)) as any,
         error: isError ? String(resultText).slice(0, 2000) : null,
         ...(terminalParams ? { params: terminalParams } : {}),
       })
@@ -1175,15 +1269,17 @@ async function approveActionLocked(
   // the inner executor succeeded. decision_reason captures the failure
   // message so a compliance officer can read "approved but execution
   // failed: X" instead of silently losing the decision.
-  const isDeftyCapture = row.source === 'defty_capture';
-  const isDeftyModuleAction = isModuleMutation && !row.agent_employee_id;
-  const isDeftyProposer = isDeftyCapture || isDeftyModuleAction;
+  const proposer = isModuleMutation
+    ? moduleProposer(row)
+    : row.source === 'defty_capture'
+      ? { proposer: 'defty' as const, proposerId: row.user_id }
+      : { proposer: 'employee' as const, proposerId: ctx?.employee_id ?? null };
   await generateReceipt({
     actionId: row.id,
     orgId: row.org_id,
     employeeId: ctx?.employee_id ?? null,
-    proposer: isDeftyProposer ? 'defty' : 'employee',
-    proposerId: isDeftyProposer ? row.user_id : ctx?.employee_id ?? null,
+    proposer: proposer.proposer,
+    proposerId: proposer.proposerId,
     approverId: row.approved_by_user_id ?? approverUserId,
     decision: 'approved',
     decisionReason: isError
@@ -1303,7 +1399,11 @@ async function rejectActionOnce(
   const rejectionReason = reason ? reason.slice(0, 2_000) : null;
   const rejectedParams = isModuleMutation
     ? {
-      ...sanitizeModuleActionParamsForHistory(row.action, row.params),
+      ...(terminalModuleActionParams(row.action, row.params, null, {
+        orgId: row.org_id,
+        userId: row.user_id,
+        agentEmployeeId: row.agent_employee_id,
+      }, hasHumanMcpBulkProvenance(row)) ?? sanitizeModuleActionParamsForHistory(row.action, row.params)),
       [TERMINAL_REVIEWER_USER_ID]: rejecterUserId,
       [TERMINAL_ATTENTION_RESOLUTION]: 'rejected',
     }

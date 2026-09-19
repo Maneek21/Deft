@@ -706,12 +706,13 @@ export async function listActiveAppNavigation(actor: ModuleActor) {
   return rows.flatMap(({ installation, version, binding, moduleInstallation }) => {
     if (!isDeftAppProtocolOperationSupported(version.protocol_version, 'route')) return [];
     const manifest = version.manifest as DeftAppManifestV0;
-    return manifest.navigation.filter((item) => item.module_id === binding.module_id).map((item) => ({
+    return manifest.navigation.filter((item) => item.module_id === binding.module_id).map((item, navigationOrder) => ({
       app_installation_id: installation.id,
       app_id: installation.app_id,
       app_name: manifest.name,
       module_slug: moduleInstallation.slug,
       ...item,
+      navigation_order: navigationOrder,
     }));
   });
 }

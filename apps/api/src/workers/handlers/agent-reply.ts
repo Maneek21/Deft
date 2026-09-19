@@ -6,6 +6,13 @@ import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
+import { buildModuleReadActor } from '../../lib/agent-context.js';
+import {
+  authorizedDurableAgentResult,
+  durableAgentResultInMessageMetadata,
+  durableAgentResultWorkerHistory,
+} from '../../lib/agent-tool-history.js';
+import { isReadOnlyAgentRequest } from '../../lib/agent-request-policy.js';
 import { ensureDeftyMembership, DEFTY_NAME } from '../../lib/ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { resolveSpaceTarget } from '../../lib/resolve-space-target.js';
@@ -41,6 +48,7 @@ function hasExplicitCreateTaskIntent(content: string): boolean {
 
 export function hasExplicitRegisteredWriteIntent(content: string): boolean {
   const plain = stripMentionSyntax(content);
+  if (isReadOnlyAgentRequest(plain)) return false;
   const asksForChange = /\b(?:create|add|make|open|track|write|save|record|capture|post|send|put|share|update|edit|change|set|mark|move|close|reopen|assign|comment|label|link|unlink|remove|promote|convert)\b/i.test(plain);
   const namesWorkspaceObject =
     /\b(?:tasks?|todos?|tickets?|subtasks?|messages?|announcements?|channels?|spaces?|wiki|pages?|knowledge|facts?|decisions?|resources?|notes?|documents?|files?|reports?|spreadsheets?|csv|canvas|reminders?|status|assignees?|priorities|due dates?|labels?|dependencies|thread replies)\b/i.test(plain) ||
@@ -60,6 +68,85 @@ export function shouldCompileRuntimeWikiSuggestion(
 ): boolean {
   const asksForEdit = /\b(?:update|edit|revise|correct|append|add)\b/i.test(stripMentionSyntax(content));
   return asksForEdit && executedActions.some((action) => action.action === 'wiki_suggest_update');
+}
+
+export function hasAppBindingInvokeAttempt(
+  actions: Array<{ action?: unknown }> | null | undefined,
+): boolean {
+  return (actions ?? []).some((action) => action?.action === 'app_binding_invoke');
+}
+
+export function shouldRecoverWithActionCompiler({
+  readOnlyRequest,
+  wantsDiscussionTask,
+  hasWriteIntent,
+  runnerPendingActions,
+  runnerExecutedActions,
+}: {
+  readOnlyRequest: boolean;
+  wantsDiscussionTask: boolean;
+  hasWriteIntent: boolean;
+  runnerPendingActions: Array<{ action?: unknown }>;
+  runnerExecutedActions: Array<{ action?: unknown }>;
+}): boolean {
+  return !readOnlyRequest
+    && !wantsDiscussionTask
+    && hasWriteIntent
+    && runnerPendingActions.length === 0
+    && !hasAppBindingInvokeAttempt([...runnerPendingActions, ...runnerExecutedActions]);
+}
+
+export function shouldAttemptActionCompiler({
+  attempted,
+  readOnlyRequest,
+  wantsDiscussionTask,
+  hasWriteIntent,
+  runnerPendingActions,
+  runnerExecutedActions,
+}: {
+  attempted: boolean;
+  readOnlyRequest: boolean;
+  wantsDiscussionTask: boolean;
+  hasWriteIntent: boolean;
+  runnerPendingActions: Array<{ action?: unknown }>;
+  runnerExecutedActions: Array<{ action?: unknown }>;
+}): boolean {
+  return !attempted && shouldRecoverWithActionCompiler({
+    readOnlyRequest,
+    wantsDiscussionTask,
+    hasWriteIntent,
+    runnerPendingActions,
+    runnerExecutedActions,
+  });
+}
+
+export function selectGroundedOrFallbackActions({
+  readOnlyRequest,
+  runnerPendingActions,
+  runnerExecutedActions,
+  fallbackActions,
+}: {
+  readOnlyRequest: boolean;
+  runnerPendingActions: any[];
+  runnerExecutedActions: Array<{ action?: unknown }>;
+  fallbackActions: any[];
+}): any[] {
+  if (readOnlyRequest) return [];
+  if (runnerPendingActions.length > 0) return runnerPendingActions;
+  if (hasAppBindingInvokeAttempt(runnerExecutedActions)) return [];
+  return fallbackActions;
+}
+
+export async function runAgentQueryThenRecover<TQueryResult, TCompiledAction>(
+  runQuery: () => Promise<TQueryResult>,
+  shouldRecover: (result: TQueryResult) => boolean,
+  compileRecovery: (result: TQueryResult) => Promise<TCompiledAction | null>,
+): Promise<{ result: TQueryResult; compiledActionDraft: TCompiledAction | null }> {
+  const result = await runQuery();
+  return {
+    result,
+    compiledActionDraft: shouldRecover(result) ? await compileRecovery(result) : null,
+  };
 }
 
 export function mergeWikiUpdateContent(
@@ -1291,11 +1378,29 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       .limit(1);
     const conversationHistory: { role: string; content: string }[] = [];
     const threadContextMessages: DiscussionSourceMessage[] = [];
+    let moduleHistoryActor: Awaited<ReturnType<typeof buildModuleReadActor>> | null = null;
+    const approvedResultHistory = async (metadata: unknown): Promise<string | null | undefined> => {
+      const durableResult = durableAgentResultInMessageMetadata(metadata);
+      if (!durableResult) return undefined;
+      try {
+        moduleHistoryActor ??= await buildModuleReadActor(orgId, userId, { conversationId: spaceId });
+        if (!await authorizedDurableAgentResult({
+          actor: moduleHistoryActor,
+          orgId,
+          conversationId: spaceId,
+          metadata,
+        })) return null;
+        return durableAgentResultWorkerHistory(metadata);
+      } catch {
+        return null;
+      }
+    };
 
     if (isDmLike && !parentId) {
       const recent = await db.select({
         id: messages.id,
         content: messages.content,
+        metadata: messages.metadata,
         user_id: messages.user_id,
         user_name: users.name,
       })
@@ -1311,15 +1416,19 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         .orderBy(desc(messages.created_at))
         .limit(10);
       for (const msg of recent.reverse()) {
+        const resultHistory = await approvedResultHistory(msg.metadata);
+        if (resultHistory === null) continue;
         conversationHistory.push({
           role: msg.user_id === agentUserId ? 'assistant' : 'user',
-          content: msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`,
+          content: resultHistory
+            ?? (msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`),
         });
       }
     } else {
       const threadMessages = await db.select({
         id: messages.id,
         content: messages.content,
+        metadata: messages.metadata,
         user_id: messages.user_id,
         user_name: users.name,
       })
@@ -1336,6 +1445,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       const [parentMsg] = await db.select({
         id: messages.id,
         content: messages.content,
+        metadata: messages.metadata,
         user_id: messages.user_id,
         user_name: users.name,
       })
@@ -1345,27 +1455,38 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         .limit(1);
 
       if (parentMsg && parentMsg.id !== messageId) {
-        threadContextMessages.push({
-          id: parentMsg.id,
-          userName: parentMsg.user_name,
-          content: parentMsg.content,
-        });
-        conversationHistory.push({
-          role: parentMsg.user_id === agentUserId ? 'assistant' : 'user',
-          content: parentMsg.user_id === agentUserId ? parentMsg.content : `[${parentMsg.user_name}]: ${parentMsg.content}`,
-        });
+        const resultHistory = await approvedResultHistory(parentMsg.metadata);
+        if (resultHistory !== null) {
+          if (resultHistory === undefined) {
+            threadContextMessages.push({
+              id: parentMsg.id,
+              userName: parentMsg.user_name,
+              content: parentMsg.content,
+            });
+          }
+          conversationHistory.push({
+            role: parentMsg.user_id === agentUserId ? 'assistant' : 'user',
+            content: resultHistory
+              ?? (parentMsg.user_id === agentUserId ? parentMsg.content : `[${parentMsg.user_name}]: ${parentMsg.content}`),
+          });
+        }
       }
 
       for (const msg of [...threadMessages].reverse()) {
         if (msg.id === messageId) continue;
-        threadContextMessages.push({
-          id: msg.id,
-          userName: msg.user_name,
-          content: msg.content,
-        });
+        const resultHistory = await approvedResultHistory(msg.metadata);
+        if (resultHistory === null) continue;
+        if (resultHistory === undefined) {
+          threadContextMessages.push({
+            id: msg.id,
+            userName: msg.user_name,
+            content: msg.content,
+          });
+        }
         conversationHistory.push({
           role: msg.user_id === agentUserId ? 'assistant' : 'user',
-          content: msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`,
+          content: resultHistory
+            ?? (msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`),
         });
       }
     }
@@ -1463,7 +1584,8 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const promptContent = wantsDiscussionTask
       ? discussionTaskPrompt(cleanContent || 'Create tasks from this discussion.')
       : cleanContent || 'Hey, what can you help me with?';
-    const hasWriteIntent = !wantsDiscussionTask && hasExplicitRegisteredWriteIntent(promptContent);
+    const readOnlyRequest = isReadOnlyAgentRequest(promptContent);
+    const hasWriteIntent = !readOnlyRequest && !wantsDiscussionTask && hasExplicitRegisteredWriteIntent(promptContent);
 
     // Explicit writes go through the typed action compiler first. The general
     // reasoning loop remains the fallback for reads, discussion synthesis, and
@@ -1472,6 +1594,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const attachmentContextSections = await getMessageAttachmentContext({ messageId, orgId });
     let fallbackProjectName: string | null = null;
     let compiledActionDraft: Awaited<ReturnType<typeof compileDeftyActionDraft>> | null = null;
+    let actionCompilerRecoveryAttempted = false;
     if (attachmentContextSections.length > 0) {
       try {
         compiledActionDraft = await compileMessageWorkspacePlanImport({
@@ -1493,34 +1616,18 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         });
       }
     }
+    let recoveryPriorTaskReferences: Awaited<ReturnType<typeof collectRecentAgentTaskReferences>> | null = null;
     if (!compiledActionDraft && hasWriteIntent && attachmentContextSections.length === 0) {
-      try {
-        fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
-        const priorTaskReferences = await collectRecentAgentTaskReferences({
-          orgId,
-          spaceId,
-          agentUserId,
-          messageId,
-          parentId: threadParentId,
-          promptContent,
-        });
-        compiledActionDraft = await compileDeftyActionDraft({
-          orgId,
-          promptContent,
-          sourceMessageId: messageId,
-          projectNameHint: fallbackProjectName,
-          priorTaskReferences,
-          spaceName: space?.name ?? null,
-          callerName: callerUser?.name ?? null,
-        });
-      } catch (err) {
-        console.warn('[agent-reply] Fast action compiler failed; using the general reasoning path', {
-          messageId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+      fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
+      recoveryPriorTaskReferences = await collectRecentAgentTaskReferences({
+        orgId,
+        spaceId,
+        agentUserId,
+        messageId,
+        parentId: threadParentId,
+        promptContent,
+      });
     }
-
     // Call the agent reasoning engine with a 60s hard timeout so a stuck
     // MCP tool / Anthropic call can never wedge the worker.
     const AGENT_TIMEOUT_MS = 60_000;
@@ -1548,33 +1655,74 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           },
         } as Awaited<ReturnType<typeof runAgentQuery>>;
       } else {
-        result = await Promise.race([
-      runAgentQuery({
-        content: promptContent,
-        orgId,
-        userId,
-        orgName,
-        conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
-        untrustedContextSections: attachmentContextSections,
-        // Task 3.2 — thread the triggering message id so write actions like
-        // create_task can inherit source_message_id without the LLM having
-        // to know about it.
-        sourceMessageId: messageId,
-        spaceContext: space ? {
-          type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
-          name: space.name,
-          otherMemberName,
-        } : undefined,
-        abortSignal: abort.signal,
-        maxIterations: hasWriteIntent ? 4 : undefined,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
-      ),
-        ]);
+        const recovered = await runAgentQueryThenRecover(
+          () => Promise.race([
+            runAgentQuery({
+              content: promptContent,
+              orgId,
+              userId,
+              orgName,
+              conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+              untrustedContextSections: attachmentContextSections,
+              // Task 3.2 — thread the triggering message id so write actions like
+              // create_task can inherit source_message_id without the LLM having
+              // to know about it.
+              sourceMessageId: messageId,
+              conversationId: spaceId,
+              spaceContext: space ? {
+                type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
+                name: space.name,
+                otherMemberName,
+              } : undefined,
+              abortSignal: abort.signal,
+              maxIterations: undefined,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
+            ),
+          ]),
+          (queryResult) => shouldAttemptActionCompiler({
+            attempted: actionCompilerRecoveryAttempted,
+            readOnlyRequest,
+            wantsDiscussionTask,
+            hasWriteIntent,
+            runnerPendingActions: queryResult.pendingActions,
+            runnerExecutedActions: queryResult.executedActions,
+          }),
+          async (queryResult) => {
+            actionCompilerRecoveryAttempted = true;
+            try {
+              return await compileDeftyActionDraft({
+                orgId,
+                promptContent,
+                agentReplyText: queryResult.text,
+                sourceMessageId: messageId,
+                projectNameHint: fallbackProjectName,
+                priorTaskReferences: recoveryPriorTaskReferences ?? [],
+                spaceName: space?.name ?? null,
+                callerName: callerUser?.name ?? null,
+              });
+            } catch (err) {
+              console.warn('[agent-reply] Action draft compiler failed; using grounded runner result', {
+                messageId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+              return null;
+            }
+          },
+        );
+        result = recovered.result;
+        compiledActionDraft = recovered.compiledActionDraft;
       }
     } catch (err) {
-      if (!wantsDiscussionTask || discussionSourceMessages.length === 0) throw err;
+      if (!wantsDiscussionTask || discussionSourceMessages.length === 0) {
+        result = {
+          text: 'I could not complete this lookup. Please retry. This failure does not mean the requested records are missing.',
+          pendingActions: [], executedActions: [], assistantBlocks: [], model: 'agent-error',
+          tokensIn: 0, tokensOut: 0, citations: [],
+          metrics: { total_ms: 0, retrieval_ms: 0, reasoning_ms: 0, iterations: 0 },
+        };
+      } else {
       const fallbackAction = buildDiscussionTaskFallbackAction({
         command: cleanContent,
         sourceMessageId: messageId,
@@ -1595,15 +1743,15 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         citations: [],
         metrics: { total_ms: 0, retrieval_ms: 0, reasoning_ms: 0, iterations: 0 },
       } as Awaited<ReturnType<typeof runAgentQuery>>;
+      }
     } finally {
       clearTimeout(timeout);
     }
 
     if (!result.text) {
       if (!wantsDiscussionTask || discussionSourceMessages.length === 0) {
-        console.warn('[agent-reply] Agent returned empty text, skipping reply');
-        return;
-      }
+        result = { ...result, text: 'I could not finish this lookup with the available tool results. Please retry with a narrower question. This does not mean the records are missing.', assistantBlocks: [] };
+      } else {
       const fallbackAction = buildDiscussionTaskFallbackAction({
         command: cleanContent,
         sourceMessageId: messageId,
@@ -1620,6 +1768,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         citations: [],
         metrics: { total_ms: 0, retrieval_ms: 0, reasoning_ms: 0, iterations: 0 },
       } as Awaited<ReturnType<typeof runAgentQuery>>;
+      }
     }
 
     const discussionFallbackContent = discussionSourceMessages.map((message) => message.content).join('\n');
@@ -1632,20 +1781,28 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         callerName: callerUser?.name ?? null,
       })
       : null;
-    if (fallbackProjectName === null && result.pendingActions.length === 0 && !wantsDiscussionTask) {
+    const runnerHasAppBindingInvoke = hasAppBindingInvokeAttempt([
+      ...result.pendingActions,
+      ...result.executedActions,
+    ]);
+    const allowDeterministicFallbacks = result.pendingActions.length === 0 && !runnerHasAppBindingInvoke;
+    if (fallbackProjectName === null && allowDeterministicFallbacks && !wantsDiscussionTask) {
       fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
     }
-    const referentialStatusRequest = result.pendingActions.length === 0 && !wantsDiscussionTask
+    const referentialStatusRequest = allowDeterministicFallbacks && !wantsDiscussionTask
       ? extractReferentialStatusUpdateRequest(promptContent)
       : null;
     const runtimeResolvedWikiUpdate = shouldCompileRuntimeWikiSuggestion(promptContent, result.executedActions);
-    const shouldCompileActionDraft = !wantsDiscussionTask && (
-      hasWriteIntent ||
-      Boolean(referentialStatusRequest) ||
-      runtimeResolvedWikiUpdate ||
-      hasApprovalQueuedClaim(result.text)
-    );
-    if (shouldCompileActionDraft && !compiledActionDraft) {
+    const shouldCompileActionDraft = shouldRecoverWithActionCompiler({
+      readOnlyRequest,
+      wantsDiscussionTask,
+      hasWriteIntent,
+      runnerPendingActions: result.pendingActions,
+      runnerExecutedActions: result.executedActions,
+    }) || (allowDeterministicFallbacks && !readOnlyRequest && !wantsDiscussionTask && (
+      Boolean(referentialStatusRequest) || runtimeResolvedWikiUpdate || hasApprovalQueuedClaim(result.text)
+    ));
+    if (shouldCompileActionDraft && !compiledActionDraft && !actionCompilerRecoveryAttempted) {
       try {
         const priorTaskReferences = await collectRecentAgentTaskReferences({
           orgId,
@@ -1673,10 +1830,10 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         });
       }
     }
-    const fallbackStatusUpdate = result.pendingActions.length === 0 && !wantsDiscussionTask
+    const fallbackStatusUpdate = allowDeterministicFallbacks && !wantsDiscussionTask
       ? extractStatusUpdateAction(promptContent, messageId)
       : null;
-    const fallbackReferentialStatusUpdates = result.pendingActions.length === 0 && !wantsDiscussionTask && !fallbackStatusUpdate
+    const fallbackReferentialStatusUpdates = allowDeterministicFallbacks && !wantsDiscussionTask && !fallbackStatusUpdate
       ? await buildReferentialStatusUpdateFallback({
         orgId,
         spaceId,
@@ -1689,13 +1846,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const explicitPostMessageAction = !wantsDiscussionTask
       ? extractPostMessageAction(promptContent, messageId)
       : null;
-    const literalPostMessageOverride = explicitPostMessageAction && hasLiteralPostMessagePayload(promptContent)
+    const literalPostMessageOverride = allowDeterministicFallbacks && explicitPostMessageAction && hasLiteralPostMessagePayload(promptContent)
       ? explicitPostMessageAction
       : null;
-    const fallbackPostMessage = result.pendingActions.length === 0 && !wantsDiscussionTask && !fallbackStatusUpdate && !fallbackReferentialStatusUpdates
+    const fallbackPostMessage = allowDeterministicFallbacks && !wantsDiscussionTask && !fallbackStatusUpdate && !fallbackReferentialStatusUpdates
       ? explicitPostMessageAction
       : null;
-    const fallbackCreateTask = result.pendingActions.length === 0 && !fallbackStatusUpdate && !fallbackReferentialStatusUpdates && !fallbackPostMessage
+    const fallbackCreateTask = allowDeterministicFallbacks && !fallbackStatusUpdate && !fallbackReferentialStatusUpdates && !fallbackPostMessage
       ? wantsDiscussionTask
         ? explicitDiscussionFallback ?? extractDiscussionTaskActionFromReply(result.text, messageId) ?? (
           discussionSourceMessages.length > 0
@@ -1713,10 +1870,15 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       : null;
     const fallbackWriteAction = fallbackStatusUpdate ?? fallbackPostMessage ?? fallbackCreateTask;
     const compiledActions = compiledActionDraft?.actions?.length ? compiledActionDraft.actions : null;
-    const rawPendingActions = fallbackReferentialStatusUpdates
-      ?? (literalPostMessageOverride ? [literalPostMessageOverride] : null)
-      ?? (compiledActionDraft ? compiledActionDraft.actions : null)
-      ?? (fallbackWriteAction ? [fallbackWriteAction] : result.pendingActions);
+    const rawPendingActions = selectGroundedOrFallbackActions({
+      readOnlyRequest,
+      runnerPendingActions: result.pendingActions,
+      runnerExecutedActions: result.executedActions,
+      fallbackActions: fallbackReferentialStatusUpdates
+        ?? (literalPostMessageOverride ? [literalPostMessageOverride] : null)
+        ?? (compiledActionDraft ? compiledActionDraft.actions : null)
+        ?? (fallbackWriteAction ? [fallbackWriteAction] : []),
+    });
     const enrichedPendingActions = wantsDiscussionTask
       ? enrichDiscussionTaskActions(rawPendingActions, discussionSourceMessages)
       : rawPendingActions;
@@ -1771,7 +1933,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       });
     }
     const targetClarificationMessage = buildTargetClarificationMessage(pendingActionTargetWarnings);
-    const writeIntentClarificationMessage = pendingActions.length === 0 && !wantsDiscussionTask
+    const writeIntentClarificationMessage = !readOnlyRequest && pendingActions.length === 0 && !wantsDiscussionTask
       ? (compiledActionDraft?.clarification || buildWriteIntentClarification(promptContent, result.text))
       : '';
     const referentialApprovalReplyText = fallbackReferentialStatusUpdates?.length

@@ -15,7 +15,7 @@ import {
 } from '@/lib/module-navigation';
 import { useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
 import { useAppNavigation, useAppRealtime } from '@/hooks/use-apps';
-import { getAppNavigationItems, type AppNavigationItem } from '@/lib/app-navigation';
+import { appNavigationLinkKey, appNavigationModuleSlug, getAppNavigationItems, getAppNavigationModuleOwner, getVisibleModuleNavigationItems, isAppNavigationGroupActive, isAppNavigationLinkActive, type AppNavigationItem } from '@/lib/app-navigation';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
 import { ModuleIcon } from './modules/module-primitives';
@@ -44,6 +44,7 @@ import {
   Bookmark,
   FileText,
   CalendarDays,
+  CalendarCheck2,
   Headphones,
   BookOpen,
   Smile,
@@ -629,6 +630,65 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
   );
 }
 
+// ── App sidebar content (declared navigation) ────────────────────────
+function AppSidebarContent({ app, groups, pathname, onNav }: {
+  app: AppNavigationItem;
+  groups: readonly AppNavigationItem[];
+  pathname: string;
+  onNav: () => void;
+}) {
+  const searchParams = useSearchParams();
+  const moduleSlug = appNavigationModuleSlug(pathname);
+  const followUpsHref = moduleSlug && getAppNavigationModuleOwner(moduleSlug, groups)?.installationId === app.installationId
+    ? `/modules/${encodeURIComponent(moduleSlug)}?workspace=follow-ups`
+    : null;
+  const followUpsActive = Boolean(followUpsHref && searchParams.get('workspace') === 'follow-ups');
+  return (
+    <nav aria-label={`${app.name} navigation`} className="px-3 pt-4 pb-1">
+      <div className="px-2 mb-2 text-[0.6875rem] font-semibold uppercase tracking-[0.05em]" style={{ color: 'var(--outline)' }}>
+        {app.name}
+      </div>
+      {app.links.map((link) => {
+        const active = isAppNavigationLinkActive(pathname, link, searchParams.get('view'));
+        return (
+          <Link
+            key={appNavigationLinkKey(link)}
+            href={link.href}
+            onClick={onNav}
+            aria-current={active ? 'page' : undefined}
+            title={link.label}
+            className="flex w-full min-w-0 items-center gap-2 rounded-full px-2 text-left text-[0.8125rem] font-medium min-h-[44px] md:min-h-0 md:h-8 hover:bg-[var(--bg-hover)]"
+            style={{
+              background: active ? 'var(--bg-active)' : undefined,
+              color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
+            }}
+          >
+            <span className="flex-shrink-0" style={{ opacity: active ? 0.7 : 0.4 }}><ModuleIcon token="table" size={18} /></span>
+            <span className="truncate flex-1">{link.label}</span>
+          </Link>
+        );
+      })}
+      {followUpsHref && <>
+        <div className="mx-2 my-2 border-t" style={{ borderColor: 'var(--ghost-border)' }} />
+        <Link
+          href={followUpsHref}
+          onClick={onNav}
+          aria-current={followUpsActive ? 'page' : undefined}
+          title="Linked tasks"
+          className="flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-full px-2 text-left text-[0.8125rem] font-medium hover:bg-[var(--bg-hover)] md:h-8 md:min-h-0"
+          style={{
+            background: followUpsActive ? 'var(--bg-active)' : undefined,
+            color: followUpsActive ? 'var(--on-surface)' : 'var(--on-surface-variant)',
+          }}
+        >
+          <CalendarCheck2 size={18} className="flex-shrink-0" style={{ opacity: followUpsActive ? 0.7 : 0.4 }} />
+          <span className="truncate flex-1">Linked tasks</span>
+        </Link>
+      </>}
+    </nav>
+  );
+}
+
 // ── Settings sidebar content ─────────────────────────────────────────
 function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
   const pathname = usePathname();
@@ -756,12 +816,13 @@ export function Sidebar({
   useModuleRealtime();
   useAppRealtime();
   const appNavItems = APPS_ENABLED ? getAppNavigationItems(appNavigation.navigation) : [];
-  const moduleNavItems = getModuleNavigationItems(installedModules.modules, user?.role)
-    .filter((module) => !appNavItems.some((app) => app.href.startsWith(`${module.href}/`)));
+  const moduleNavItems = getModuleNavigationItems(installedModules.modules, user?.role);
+  const appNavigationAuthoritative = !appNavigation.isLoading && !appNavigation.error;
+  const standaloneModuleNavItems = getVisibleModuleNavigationItems(moduleNavItems, appNavigation.navigation, appNavigationAuthoritative);
   const visibleNavItems: PrimaryNavigationItem[] = [
     ...navItems.slice(0, -1),
     ...appNavItems,
-    ...moduleNavItems,
+    ...standaloneModuleNavItems,
     navItems[navItems.length - 1],
   ];
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -775,15 +836,29 @@ export function Sidebar({
   const [savedOpen, setSavedOpen] = useState(false);
   const [dnd, setDnd] = useState(() => user?.status_text === 'Do Not Disturb');
   const userMenuBtnRef = useRef<HTMLButtonElement>(null);
+  const navigationRef = useRef<HTMLElement>(null);
 
   // Escape-key handler for mobile drawer
   useEffect(() => {
     if (!mobileOpen) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = () => Array.from(navigationRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), [tabindex="0"]') ?? [])
+      .filter((element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden');
+    focusable()[0]?.focus();
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMobileOpen(false);
+      if (e.key !== 'Tab') return;
+      const items = focusable();
+      const first = items[0];
+      const last = items.at(-1);
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     };
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      previousFocus?.focus();
+    };
   }, [mobileOpen, setMobileOpen]);
 
   const toggleDnd = async () => {
@@ -857,6 +932,10 @@ export function Sidebar({
 
   // Determine which content section to render
   const renderContent = () => {
+    const activeApp = appNavItems.find((item) => isAppNavigationGroupActive(pathname, item, appNavItems));
+    if (activeApp) {
+      return <AppSidebarContent app={activeApp} groups={appNavItems} pathname={pathname} onNav={handleNav} />;
+    }
     if (pathname.startsWith('/tasks')) {
       return <TasksSidebarContent onNav={handleNav} />;
     }
@@ -866,6 +945,7 @@ export function Sidebar({
     if (pathname.startsWith('/settings')) {
       return <SettingsSidebarContent onNav={handleNav} />;
     }
+    if (!pathname.startsWith('/chat')) return null;
     return (
       <ChatSidebarContent
         spaces={spaces}
@@ -877,6 +957,7 @@ export function Sidebar({
     );
   };
 
+  const contextualContent = renderContent();
   const sidebarContent = (
     <>
       {/* Logo + org — no border, tonal separation */}
@@ -900,6 +981,7 @@ export function Sidebar({
           </button>
           <button
             onClick={() => setMobileOpen(false)}
+            aria-label="Close navigation"
             className="md:hidden p-1 rounded"
             style={{ color: 'var(--outline)' }}
           >
@@ -908,13 +990,19 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Nav items — vertical list */}
-      <div className="px-3 py-1 flex-shrink-0">
+      {/* Settings gets the full sidebar for its own navigation. */}
+      {pathname.startsWith('/settings') ? (
+        <Link href="/dashboard" onClick={handleNav} className="mx-3 mb-2 flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--bg-hover)]" style={{ color: 'var(--on-surface-variant)' }}>
+          <PanelLeftOpen size={16} /> Back to workspace
+        </Link>
+      ) : <div className="px-3 py-1 flex-1 min-h-0 overflow-y-auto">
         {visibleNavItems.map((item) => {
-          const active = isPrimaryNavigationItemActive(pathname, item.href);
+          const active = item.kind === 'app'
+            ? isAppNavigationGroupActive(pathname, item, appNavItems)
+            : isPrimaryNavigationItemActive(pathname, item.href);
           return (
-            <Link
-              key={item.href}
+            <div key={item.kind === 'app' ? item.installationId : item.href}>
+              <Link
               href={item.href}
               onClick={() => setMobileOpen(false)}
               className="relative flex items-center gap-2.5 px-2"
@@ -926,9 +1014,9 @@ export function Sidebar({
                 fontSize: '0.8125rem',
                 fontWeight: active ? 500 : 400,
               }}
-            >
-              <PrimaryNavigationIcon item={item} />
-              <span>{item.name}</span>
+              >
+                <PrimaryNavigationIcon item={item} />
+                <span>{item.name}</span>
               {item.kind === 'core' && item.href === '/chat' && totalUnread > 0 && (
                 <div
                   className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
@@ -946,15 +1034,18 @@ export function Sidebar({
                   {inboxCount > 99 ? '99+' : inboxCount}
                 </div>
               )}
-            </Link>
+              </Link>
+            </div>
           );
         })}
-      </div>
+      </div>}
 
       {/* Scrollable content area — contextual based on pathname */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-        {renderContent()}
-      </div>
+      {contextualContent && <div className="flex-1 overflow-y-auto min-h-0">
+        {contextualContent}
+      </div>}
+
+      {!pathname.startsWith('/settings') && <Link href="/settings" onClick={handleNav} className="mx-3 mb-2 flex min-h-10 items-center gap-2.5 rounded-lg px-2 text-[0.8125rem] hover:bg-[var(--bg-hover)]" style={{ color: 'var(--on-surface-variant)' }}><Settings size={18} strokeWidth={1.5} /> Settings</Link>}
 
       {/* Bottom user section — no border, tonal separation */}
       <div
@@ -1051,9 +1142,11 @@ export function Sidebar({
 
       {/* Nav icons */}
       {visibleNavItems.map((item) => {
-        const active = isPrimaryNavigationItemActive(pathname, item.href);
+        const active = item.kind === 'app'
+          ? isAppNavigationGroupActive(pathname, item, appNavItems)
+          : isPrimaryNavigationItemActive(pathname, item.href);
         return (
-          <Link key={item.href} href={item.href} title={item.name}
+          <Link key={item.kind === 'app' ? item.installationId : item.href} href={item.href} title={item.name}
             className="w-9 h-9 flex items-center justify-center rounded-full"
             style={{
               background: active ? 'var(--bg-active)' : 'transparent',
@@ -1065,6 +1158,8 @@ export function Sidebar({
       })}
 
       <div className="flex-1" />
+
+      <Link href="/settings" title="Settings" className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ color: 'var(--outline)' }}><Settings size={18} /></Link>
 
       {/* Expand button */}
       <button onClick={toggleCollapsed} title="Expand sidebar"
@@ -1097,6 +1192,7 @@ export function Sidebar({
 
       {/* Sidebar — NO borderRight, tonal layering only */}
       <aside
+        ref={navigationRef}
         role={mobileOpen ? 'dialog' : undefined}
         aria-modal={mobileOpen ? 'true' : undefined}
         aria-label={mobileOpen ? 'Navigation' : undefined}
@@ -1104,10 +1200,10 @@ export function Sidebar({
           fixed md:relative z-[70] md:z-auto
           h-full flex flex-col
           md:translate-x-0
-          ${mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          ${mobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-full md:visible md:translate-x-0'}
         `}
         style={{
-          width: collapsed ? '48px' : '240px',
+          width: collapsed && !mobileOpen ? '48px' : '240px',
           background: 'var(--surface-container-low)',
           transitionProperty: 'transform, width',
           transitionDuration: '200ms',
@@ -1116,7 +1212,7 @@ export function Sidebar({
           paddingLeft: 'env(safe-area-inset-left)',
         }}
       >
-        {collapsed ? collapsedContent : sidebarContent}
+        {collapsed && !mobileOpen ? collapsedContent : sidebarContent}
       </aside>
       {createSpaceOpen && typeof document !== 'undefined' && createPortal(
         <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />,

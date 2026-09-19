@@ -27,6 +27,7 @@ import {
   parseDeftModuleManifestJson,
   parseSupportedDeftModuleManifest,
   parseModuleRecordResourceId,
+  projectModuleRecordDisplayTitle,
   projectModuleRecordSearch,
   validateModuleRecordData,
 } from '../src/modules.js';
@@ -196,6 +197,60 @@ describe('deft.module.json v1 manifest', () => {
     const badNavigation = equipmentRegisterManifest();
     badNavigation.navigation = { default_collection: 'locations', default_view: 'missing' };
     assert.throws(() => parseDeftModuleManifest(badNavigation), /Default view/);
+  });
+
+  test('keeps manifest quick-filter field/operator validation aligned with runtime queries', () => {
+    const manifestWithFilter = (filter: {
+      field: string;
+      operator: 'eq' | 'neq' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'is_empty' | 'date_relative';
+      value: string | number | boolean | string[];
+    }) => {
+      const manifest = contactsManifest();
+      manifest.collections[0]!.fields.push(
+        { key: 'score', label: 'Score', type: 'number' },
+        { key: 'active', label: 'Active', type: 'boolean' },
+        { key: 'due_on', label: 'Due on', type: 'date' },
+        { key: 'watchers', label: 'Watchers', type: 'member', multiple: true },
+        { key: 'labels', label: 'Labels', type: 'tags' },
+      );
+      const table = manifest.collections[0]!.views?.find((view) => view.type === 'table');
+      assert.ok(table);
+      table.quick_filters = [{
+        key: 'filter_under_test',
+        name: 'Filter under test',
+        filters: [filter],
+      }];
+      return manifest;
+    };
+
+    const invalid = [
+      { field: 'status', operator: 'contains', value: 'lead', message: /contains is only valid/ },
+      { field: 'name', operator: 'gt', value: 'Ada', message: /gt is only valid/ },
+      { field: 'active', operator: 'in', value: ['true'], message: /in is not valid/ },
+      { field: 'status', operator: 'eq', value: 'missing', message: /declared option/ },
+      { field: 'tags', operator: 'contains', value: 'missing', message: /declared option/ },
+      { field: 'due_on', operator: 'in', value: ['not-a-date'], message: /calendar date/ },
+      { field: 'name', operator: 'date_relative', value: 'today', message: /requires a date field/ },
+    ] as const;
+    for (const filter of invalid) {
+      const { message, ...input } = filter;
+      assert.throws(() => parseDeftModuleManifest(manifestWithFilter(input)), message);
+    }
+
+    const valid = [
+      { field: 'name', operator: 'contains', value: 'Ada' },
+      { field: 'tags', operator: 'contains', value: 'founder' },
+      { field: 'status', operator: 'in', value: ['lead', 'customer'] },
+      { field: 'score', operator: 'gte', value: 10 },
+      { field: 'due_on', operator: 'lt', value: '2026-09-30' },
+      { field: 'active', operator: 'is_empty', value: true },
+      { field: 'due_on', operator: 'date_relative', value: 'next_7_days' },
+      { field: 'watchers', operator: 'contains', value: 'user_1' },
+      { field: 'labels', operator: 'in', value: ['priority', 'review'] },
+    ] as const;
+    for (const filter of valid) {
+      assert.doesNotThrow(() => parseDeftModuleManifest(manifestWithFilter(filter)));
+    }
   });
 
   test('enforces the manifest byte limit for already-parsed objects', () => {
@@ -553,6 +608,16 @@ describe('module record validation and search projection', () => {
     assert.equal(projectModuleRecordSearch(manifest, 'contacts', { name: 'Ada' }), null);
   });
 
+  test('uses the first declared field for host display when search is omitted', () => {
+    const manifest = contactsManifest();
+    delete manifest.collections[0]!.search;
+    assert.equal(
+      projectModuleRecordDisplayTitle(manifest, 'contacts', { name: 'North Lab' }),
+      'North Lab',
+    );
+    assert.equal(projectModuleRecordDisplayTitle(manifest, 'contacts', { name: '   ' }), null);
+  });
+
   test('bounds search projection without truncating source record data', () => {
     const longName = 'x'.repeat(1_000);
     const result = validateModuleRecordData(contactsManifest(), 'contacts', { name: longName });
@@ -653,7 +718,13 @@ describe('actors, resources, and generic operations', () => {
       'module_record_search',
       'module_record_query',
       'module_record_get',
+      'module_record_incoming',
+      'module_record_latest_related',
+      'module_record_task_links',
+      'module_record_task_link',
+      'module_record_task_unlink',
       'module_record_create',
+      'module_record_bulk_create',
       'module_record_update',
       'module_record_archive',
     ]);
@@ -757,4 +828,29 @@ describe('actors, resources, and generic operations', () => {
       data: { company: 'Sensitive customer value' },
     }).success, false);
   });
+});
+
+test('latest related declarations validate direct targets, date fields and categorical matches in v1 and v2', () => {
+  const manifest = {
+    schema_version: '1', id: 'community.deft.latest-test', slug: 'latest-test', version: '1.0.0', name: 'Latest test',
+    collections: [{ key: 'entries', name: 'Entries', fields: [
+      { key: 'name', label: 'Name', type: 'text' },
+      { key: 'parent', label: 'Parent', type: 'relation', target_collection: 'entries' },
+      { key: 'date', label: 'Date', type: 'datetime' },
+      { key: 'status', label: 'Status', type: 'single_select', options: [{ value: 'completed', label: 'Completed' }] },
+    ], latest_related: [{ key: 'latest', label: 'Latest completed', source_collection: 'entries', relation_field: 'parent', date_field: 'date', where: [{ field: 'status', values: ['completed'] }] }] }],
+  };
+  for (const schema_version of ['1', '2']) {
+    const schema = schema_version === '1' ? DeftModuleManifestV1Schema : DeftModuleManifestV2Schema;
+    const input = { ...manifest, schema_version };
+    assert.equal(schema.safeParse(input).success, true);
+    for (const patch of [{ relation_field: 'name' }, { source_collection: 'missing' }, { date_field: 'name' }, { where: [{ field: 'status', values: ['unknown'] }] }]) {
+      const invalid = structuredClone(input);
+      Object.assign(invalid.collections[0]!.latest_related[0]!, patch);
+      assert.equal(schema.safeParse(invalid).success, false);
+    }
+    const duplicate = structuredClone(input);
+    duplicate.collections[0]!.latest_related.push(duplicate.collections[0]!.latest_related[0]!);
+    assert.equal(schema.safeParse(duplicate).success, false);
+  }
 });

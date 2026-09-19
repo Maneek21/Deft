@@ -1,18 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   buildModuleRelationReplacePayload,
   diffModuleRecordUpdate,
   filterAndSortModuleRecords,
   findModuleCollection,
   formatModuleRecordFieldValue,
+  formatModuleNumberValue,
   getDefaultModuleCollection,
   getModuleBoardGroupField,
   getModuleCollectionFields,
+  getModuleCreatePrimaryFields,
   getModuleCollectionViews,
   getModuleRecordTitle,
   getModuleTimelineFields,
   moduleCollectionHref,
+  moduleOwningAppHref,
+  moduleApiError,
   moduleRecordHref,
   moduleRecordPayload,
   normalizeBundledModulesResponse,
@@ -29,6 +34,25 @@ import {
   resolveModuleView,
   validateModuleRecordValues,
 } from './modules';
+
+test('keeps generic create forms bounded to eight author-ordered primary fields', () => {
+  const manifest = normalizeModuleManifest(JSON.parse(readFileSync(new URL('../../../../modules/bundled/contacts/deft.module.json', import.meta.url), 'utf8')));
+  const primary = (collectionKey: string) => getModuleCreatePrimaryFields(
+    getModuleCollectionFields(manifest.collections.find((collection) => collection.key === collectionKey)!, 'form'),
+  ).map((field) => field.key);
+
+  assert.deepEqual(primary('deals'), ['name', 'company_id', 'primary_contact_id', 'value', 'currency', 'stage', 'close_date', 'owner']);
+  assert.deepEqual(primary('contacts'), ['name', 'company_id', 'email', 'phone', 'role', 'status', 'owner', 'tags']);
+  assert.deepEqual(primary('companies'), ['name', 'website', 'domain', 'industry', 'status', 'owner', 'tags', 'notes']);
+  assert.deepEqual(primary('activities'), ['subject', 'kind', 'outcome', 'occurred_at', 'contact_id', 'company_id', 'deal_id', 'owner']);
+});
+
+test('formats displayed module numbers without converting or rounding decimal strings', () => {
+  assert.equal(formatModuleNumberValue(24500), '24,500');
+  assert.equal(formatModuleNumberValue('12345678901234567890.123400'), '12,345,678,901,234,567,890.123400');
+  assert.equal(formatModuleNumberValue('-0012345.6700'), '-0,012,345.6700');
+  assert.equal(formatModuleNumberValue('1e21'), '1e21');
+});
 
 const rawManifest = {
   schema_version: '1',
@@ -101,13 +125,27 @@ test('normalizes bundled update metadata and installation provenance', () => {
     installedVersion: '1.0.0',
     updateAvailable: true,
   });
-  assert.equal(normalizeInstalledModulesResponse({ modules: [{
+  const standalone = normalizeInstalledModulesResponse({ modules: [{
     id: 'install-1',
     slug: rawManifest.slug,
     module_id: rawManifest.id,
     source: 'sideloaded',
     manifest: rawManifest,
-  }] })[0]?.source, 'sideloaded');
+  }] })[0]!;
+  assert.equal(standalone.source, 'sideloaded');
+  assert.equal(standalone.owningAppInstallationId, null);
+  assert.equal(moduleOwningAppHref(standalone), null);
+
+  const appOwned = normalizeInstalledModulesResponse({ modules: [{
+    id: 'install-2',
+    slug: rawManifest.slug,
+    module_id: rawManifest.id,
+    source: 'bundled',
+    owning_app_installation_id: 'app/install 2',
+    manifest: rawManifest,
+  }] })[0]!;
+  assert.equal(appOwned.owningAppInstallationId, 'app/install 2');
+  assert.equal(moduleOwningAppHref(appOwned), '/settings/apps/app%2Finstall%202');
 });
 
 test('resolves local installs and sideload upgrades without crossing module identity', async () => {
@@ -534,4 +572,10 @@ test('normalizes live resource relation and picker projections without accepting
     { ref: wireRef, label: 'Ada' },
     { ref: { ...wireRef, schema_version: 'unknown' }, label: 'Rejected' },
   ] }).map((option) => option.label), ['Ada']);
+});
+
+test('saved-view name conflicts suggest renaming while stale records suggest refresh', async () => {
+  const response = (code: string) => new Response(JSON.stringify({ error: 'Conflict', code }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+  assert.equal(await moduleApiError(response('MODULE_SAVED_VIEW_CONFLICT'), 'Failed'), 'Conflict. Choose a different name.');
+  assert.equal(await moduleApiError(response('MODULE_RECORD_CONFLICT'), 'Failed'), 'Conflict Refresh and try again.');
 });

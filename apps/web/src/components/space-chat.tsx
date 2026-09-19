@@ -1,5 +1,7 @@
 'use client';
 
+import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
+
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
@@ -63,6 +65,7 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
+import { approvalContinuationGate, consumeAgentContinuationStream } from '@/lib/approval-continuation';
 import { stripHtml } from '@/lib/strip-html';
 import { isTrustedSystemMessage, serializeQuotedMessage } from '@/lib/message-presentation';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -115,6 +118,7 @@ type Message = {
   latest_reply_at: string | null;
   file_ids: string[];
   files?: FileAttachment[];
+  metadata?: Record<string, unknown> | null;
 };
 
 type WorkIntentReceipt = {
@@ -201,18 +205,7 @@ function renderSimpleMarkdown(text: string): string {
   return result;
 }
 
-function inlineFormat(text: string): string {
-  const escaped = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-  return escaped
-    .replace(/`([^`]+)`/g, '<code style="background:var(--surface-container-highest);color:var(--tertiary);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/~~([^~]+)~~/g, '<del>$1</del>');
-}
+const inlineFormat = formatChatInline;
 
 function shouldGroup(prev: Message, curr: Message) {
   if (prev.user_id !== curr.user_id) return false;
@@ -387,13 +380,13 @@ function renderInlineFormatting(text: string, keyPrefix: string): React.ReactNod
         const label = linkMatch[1]!;
         const href = linkMatch[2]!;
         // Sanitize: only allow http, https, mailto
-        const safe = /^(https?:\/\/|mailto:)/i.test(href);
+        const safe = isSafeChatHref(href);
         if (safe) {
           result.push(
             <a
               key={`${keyPrefix}-lnk-${si}`}
               href={href}
-              target="_blank"
+              target={href.startsWith('/') ? undefined : '_blank'}
               rel="noopener noreferrer"
               className="underline"
               style={{ color: 'var(--accent)' }}
@@ -518,7 +511,7 @@ function renderContent(content: string) {
   // Plain text with markdown (agent replies, seed data, non-TipTap messages)
   // Use the full markdown renderer for any text that has markdown patterns
   const hasMarkdown = /\*\*|__|~~|`|^#{1,3} |^- |^\d+\. |^> /m.test(text);
-  if (hasMarkdown || text.includes('\n')) {
+  if (hasMarkdown || text.includes('\n') || /\[[^\]]+\]\([^)]+\)/.test(text)) {
     let html = renderSimpleMarkdown(text);
     // Process mentions
     html = html.replace(
@@ -529,10 +522,7 @@ function renderContent(content: string) {
       '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>'
     );
     // Process task references (DEFT-7 etc.)
-    html = html.replace(
-      /([A-Z]{2,6})-(\d+)/g,
-      '<a href="/tasks?task=$1-$2" style="background:var(--surface-container-highest);color:var(--primary);padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem;text-decoration:none">$1-$2</a>'
-    );
+    html = linkifyChatTaskReferences(html);
     // Highlight @here/@all/@channel broadcast mentions
     html = html.replace(
       /@(here|all|channel)\b/g,
@@ -602,6 +592,31 @@ function parseClipMarker(content: string): { clipId: string; status: string } | 
   return match ? { clipId: match[1]!, status: match[2]! } : null;
 }
 
+function ApprovalContinuationControl({
+  show,
+  disabled,
+  onContinue,
+}: {
+  show: boolean;
+  disabled: boolean;
+  onContinue: () => void;
+}) {
+  if (!show) return null;
+  return (
+    <button
+      type="button"
+      className="mt-2 inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+      style={{ background: 'var(--primary-container)', color: '#fff' }}
+      disabled={disabled}
+      aria-busy={disabled}
+      onClick={onContinue}
+    >
+      <Sparkles size={13} strokeWidth={1.7} className={disabled ? 'animate-pulse' : ''} />
+      {disabled ? 'Defty is continuing…' : 'Continue with Defty'}
+    </button>
+  );
+}
+
 export function SpaceChat({
   spaceId,
   spaceName,
@@ -669,6 +684,9 @@ export function SpaceChat({
   useEffect(() => { setCurrentSpaceMuted(isMuted); }, [isMuted]);
   const [cmdToast, setCmdToast] = useState<string | null>(null);
   const [capturingDiscussion, setCapturingDiscussion] = useState(false);
+  const [continuingApprovalId, setContinuingApprovalId] = useState<string | null>(null);
+  const continuingApprovalIdRef = useRef<string | null>(null);
+  const [continuedApprovalIds, setContinuedApprovalIds] = useState<Set<string>>(new Set());
 
   // P4-4 — pending agent_actions keyed by message_id for this space.
   // Polled every 5s so inline approval cards appear promptly.
@@ -676,11 +694,11 @@ export function SpaceChat({
     ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
     : null;
 
-  const { data: pendingByMessage } = useSWR(
+  const { data: pendingByMessage, error: pendingActionsError, isLoading: pendingActionsLoading } = useSWR(
     pendingBySpaceKey,
     async (url: string) => {
       const res = await api.get(url);
-      if (!res.ok) return {} as Record<string, AgentAction[]>;
+      if (!res.ok) throw new Error(`Unable to load pending actions (${res.status})`);
       const list: Array<AgentAction & { message_id: string }> = await res.json();
       const map: Record<string, AgentAction[]> = {};
       for (const a of list) {
@@ -689,8 +707,11 @@ export function SpaceChat({
       }
       return map;
     },
-    { refreshInterval: 5000, fallbackData: {} },
+    { refreshInterval: 5000 },
   );
+  const pendingActionsLoaded = pendingByMessage !== undefined
+    && !pendingActionsLoading
+    && !pendingActionsError;
 
   const displayContentForMessage = useCallback((msg: Message) => {
     const hasInlineApproval = Boolean(pendingByMessage?.[msg.id]?.length);
@@ -798,6 +819,63 @@ export function SpaceChat({
       setCmdToast(res.ok ? 'Discussion capture queued' : 'Failed to queue discussion capture');
     } finally {
       setCapturingDiscussion(false);
+    }
+  };
+
+  const continueAfterApproval = async (confirmationId: string) => {
+    if (continuingApprovalIdRef.current) return;
+
+    const gate = approvalContinuationGate({
+      spaceType,
+      confirmationId,
+      messages,
+      pendingByMessage: pendingByMessage ?? {},
+      pendingActionsLoaded,
+      pendingActionsUnavailable: Boolean(pendingActionsError),
+      busy: false,
+      alreadyContinued: continuedApprovalIds.has(confirmationId),
+    });
+    if (!gate.show || gate.disabled) return;
+
+    const requestSpaceId = spaceId;
+    continuingApprovalIdRef.current = confirmationId;
+    setContinuingApprovalId(confirmationId);
+    try {
+      const response = await api.fetch(`/api/agent/conversations/${encodeURIComponent(requestSpaceId)}/continue`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        throw new Error(await apiErrorMessage(response, `Continue failed (${response.status})`));
+      }
+      await consumeAgentContinuationStream(response);
+      setContinuedApprovalIds((current) => new Set(current).add(confirmationId));
+
+      const refreshed = await api.get(`/api/messages/${encodeURIComponent(requestSpaceId)}`);
+      if (refreshed.ok && activeSpaceIdRef.current === requestSpaceId) {
+        const data = await refreshed.json();
+        if (activeSpaceIdRef.current === requestSpaceId) {
+          setMessages(data.messages || data || []);
+          if (pendingBySpaceKey) void swrMutate(pendingBySpaceKey);
+          setTimeout(scrollToBottom, 50);
+        }
+      }
+    } catch {
+      const refreshed = await api.get(`/api/messages/${encodeURIComponent(requestSpaceId)}`).catch(() => null);
+      if (refreshed?.ok && activeSpaceIdRef.current === requestSpaceId) {
+        const data = await refreshed.json();
+        if (activeSpaceIdRef.current === requestSpaceId) setMessages(data.messages || data || []);
+      }
+      // A server can persist a successor action before the SSE connection
+      // fails. Refresh its approval state before allowing another continue.
+      if (pendingBySpaceKey) await swrMutate(pendingBySpaceKey).catch(() => undefined);
+      if (activeSpaceIdRef.current === requestSpaceId) {
+        setCmdToast('Defty could not continue. Try again.');
+      }
+    } finally {
+      if (continuingApprovalIdRef.current === confirmationId) {
+        continuingApprovalIdRef.current = null;
+      }
+      setContinuingApprovalId((current) => current === confirmationId ? null : current);
     }
   };
 
@@ -1487,6 +1565,16 @@ export function SpaceChat({
             const msgMeta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
             const isSystemMessage = isTrustedSystemMessage(msgMeta);
             const isBot = msg.user_name === 'Defty' || msg.user_name === 'Deft' || (msg as any).metadata?.is_agent_reply;
+            const continuationGate = approvalContinuationGate({
+              spaceType,
+              confirmationId: msg.id,
+              messages,
+              pendingByMessage: pendingByMessage ?? {},
+              pendingActionsLoaded,
+              pendingActionsUnavailable: Boolean(pendingActionsError),
+              busy: continuingApprovalId !== null,
+              alreadyContinued: continuedApprovalIds.has(msg.id),
+            });
 
             // Show "New messages" divider after the last-read message
             const showUnreadDivider = lastReadMsgIdRef.current
@@ -1931,6 +2019,11 @@ export function SpaceChat({
                                 />
                               );
                             })()}
+                            <ApprovalContinuationControl
+                              show={continuationGate.show}
+                              disabled={continuationGate.disabled}
+                              onContinue={() => { void continueAfterApproval(msg.id); }}
+                            />
                             {pendingByMessage?.[msg.id]?.map((action) => (
                               <AgentActionCard
                                 key={action.id}
@@ -2088,6 +2181,11 @@ export function SpaceChat({
                                 />
                               );
                             })()}
+                            <ApprovalContinuationControl
+                              show={continuationGate.show}
+                              disabled={continuationGate.disabled}
+                              onContinue={() => { void continueAfterApproval(msg.id); }}
+                            />
                             {pendingByMessage?.[msg.id]?.map((action) => (
                               <AgentActionCard
                                 key={action.id}

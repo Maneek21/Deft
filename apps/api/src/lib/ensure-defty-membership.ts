@@ -9,7 +9,7 @@
 
 import { db } from './db.js';
 import { users, orgMembers, spaces, spaceMembers, agentEmployees } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc } from 'drizzle-orm';
 import {
   DEFTY_EMAIL,
   DEFTY_NAME,
@@ -165,14 +165,18 @@ export async function ensureDeftyDm(orgId: string, userId: string): Promise<stri
 
   // Look up an existing 1:1 DM whose member set is exactly {userId, deftyUserId}.
   // Mirrors the dedup logic in apps/api/src/routes/spaces.ts.
-  const candidateSpaces = await db.select({ space_id: spaceMembers.space_id })
+  const candidateSpaces = await db.select({
+    space_id: spaceMembers.space_id,
+    is_archived: spaces.is_archived,
+  })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
     .where(and(
       eq(spaces.type, 'dm'),
       eq(spaces.org_id, orgId),
       eq(spaceMembers.user_id, userId),
-    ));
+    ))
+    .orderBy(asc(spaces.is_archived), asc(spaces.created_at), asc(spaces.id));
 
   for (const cand of candidateSpaces) {
     const memberRows = await db.select({ user_id: spaceMembers.user_id })
@@ -181,6 +185,15 @@ export async function ensureDeftyDm(orgId: string, userId: string): Promise<stri
     if (memberRows.length !== 2) continue;
     const memberSet = new Set(memberRows.map((m) => m.user_id));
     if (memberSet.has(userId) && memberSet.has(deftyUserId)) {
+      if (cand.is_archived) {
+        await db.update(spaces)
+          .set({ is_archived: false })
+          .where(and(
+            eq(spaces.id, cand.space_id),
+            eq(spaces.org_id, orgId),
+            eq(spaces.is_archived, true),
+          ));
+      }
       return cand.space_id;
     }
   }
@@ -213,14 +226,18 @@ export async function ensureDeftyDm(orgId: string, userId: string): Promise<stri
     return space.id;
   } catch (err) {
     // On race (unique index conflict or partial insert), re-run the lookup.
-    const retryCandidates = await db.select({ space_id: spaceMembers.space_id })
+    const retryCandidates = await db.select({
+      space_id: spaceMembers.space_id,
+      is_archived: spaces.is_archived,
+    })
       .from(spaceMembers)
       .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
       .where(and(
         eq(spaces.type, 'dm'),
         eq(spaces.org_id, orgId),
         eq(spaceMembers.user_id, userId),
-      ));
+      ))
+      .orderBy(asc(spaces.is_archived), asc(spaces.created_at), asc(spaces.id));
 
     for (const cand of retryCandidates) {
       const memberRows = await db.select({ user_id: spaceMembers.user_id })
@@ -229,6 +246,15 @@ export async function ensureDeftyDm(orgId: string, userId: string): Promise<stri
       if (memberRows.length !== 2) continue;
       const memberSet = new Set(memberRows.map((m) => m.user_id));
       if (memberSet.has(userId) && memberSet.has(deftyUserId)) {
+        if (cand.is_archived) {
+          await db.update(spaces)
+            .set({ is_archived: false })
+            .where(and(
+              eq(spaces.id, cand.space_id),
+              eq(spaces.org_id, orgId),
+              eq(spaces.is_archived, true),
+            ));
+        }
         return cand.space_id;
       }
     }

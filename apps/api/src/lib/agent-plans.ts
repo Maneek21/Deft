@@ -9,17 +9,24 @@
  *   - Failure recovery: agent reasons about alternatives on step failure
  */
 
-import { db } from './db.js';
-import { agentPlans, agentEmployees, orgs, tasks, messages } from '@deft/db/schema';
+import { createHash } from 'node:crypto';
+import { canonicalCapabilityJson } from '@deft/shared';
+import { db, withDbAdvisoryLock } from './db.js';
+import { agentActions, agentPlans, orgs, tasks, messages } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction } from './agent-approval.js';
-import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
+import {
+  executeActionDirect,
+  isModuleWriteAction,
+  preflightPlanActionInput,
+} from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
 import { getMCPToolsForAgent } from './mcp-tools.js';
+import { getActiveAgentToolPolicy } from './agent-tool-policy.js';
 
 // ─── Types ───
 
@@ -69,6 +76,160 @@ export type PlanEvent = {
   stepId?: string;
   data?: any;
 };
+
+type PlanWriteResult = {
+  actionId: string;
+  success: boolean;
+  result: any;
+  error?: string;
+  requiresApproval?: boolean;
+  approvalTier?: 'auto' | 'quick' | 'full';
+};
+
+class PlanApprovalBoundaryError extends Error {}
+
+function planStepRequestKey(
+  planId: string,
+  stepId: string,
+  action: string,
+  params: Record<string, any>,
+): string {
+  const digest = createHash('sha256')
+    .update(canonicalCapabilityJson({ action, params }))
+    .digest('hex');
+  return `plan-step:${planId}:${stepId}:${digest}`;
+}
+
+async function executeReviewedPlanDependency(params: {
+  planId: string;
+  step: PlanStep;
+  resolvedParams: Record<string, any>;
+  orgId: string;
+  userId: string;
+  conversationId: string | null;
+  agentEmployeeId: string | null;
+  approvalTier: 'auto' | 'quick' | 'full';
+}): Promise<PlanWriteResult> {
+  const employeeScope = params.agentEmployeeId
+    ? eq(agentActions.agent_employee_id, params.agentEmployeeId)
+    : sql`${agentActions.agent_employee_id} IS NULL`;
+  const priorActions = await db
+    .select()
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, params.orgId),
+      eq(agentActions.user_id, params.userId),
+      eq(agentActions.plan_id, params.planId),
+      eq(agentActions.plan_step_id, params.step.id),
+      eq(agentActions.source, 'plan'),
+      employeeScope,
+    ))
+    .limit(2);
+
+  if (priorActions.length > 1) {
+    throw new PlanApprovalBoundaryError(`Plan step '${params.step.id}' has multiple approval actions`);
+  }
+  const [prior] = priorActions;
+  let canonicalParams: Record<string, any>;
+  try {
+    canonicalParams = await preflightPlanActionInput(
+      params.step.tool,
+      params.resolvedParams,
+      params.orgId,
+      params.userId,
+      params.agentEmployeeId ?? undefined,
+      { replay: Boolean(prior) },
+    );
+  } catch (error) {
+    throw new PlanApprovalBoundaryError((error as Error).message);
+  }
+  const requestKey = planStepRequestKey(
+    params.planId,
+    params.step.id,
+    params.step.tool,
+    canonicalParams,
+  );
+  if (prior) {
+    if (prior.action !== params.step.tool || prior.runtime_request_key !== requestKey) {
+      if (prior.approval_status === 'pending') {
+        await db
+          .update(agentActions)
+          .set({
+            approval_status: 'expired',
+            error: `Plan step '${params.step.id}' changed after review was requested`,
+            updated_at: new Date(),
+          })
+          .where(and(
+            eq(agentActions.id, prior.id),
+            eq(agentActions.org_id, params.orgId),
+            eq(agentActions.approval_status, 'pending'),
+          ));
+      }
+      throw new PlanApprovalBoundaryError(
+        `Plan step '${params.step.id}' input changed after review was requested`,
+      );
+    }
+    if (prior.approval_status === 'pending') {
+      return {
+        actionId: prior.id,
+        success: false,
+        result: null,
+        error: prior.error ?? 'Action requires human approval',
+        requiresApproval: true,
+        approvalTier: prior.approval_tier,
+      };
+    }
+    if (prior.approval_status === 'approved' && prior.executed_at) {
+      return {
+        actionId: prior.id,
+        success: prior.error === null,
+        result: prior.result,
+        ...(prior.error ? { error: prior.error } : {}),
+      };
+    }
+    if (prior.approval_status === 'approved') {
+      throw new PlanApprovalBoundaryError(
+        `Plan step '${params.step.id}' is approved but its execution outcome is unavailable`,
+      );
+    }
+    throw new PlanApprovalBoundaryError(
+      `Plan step '${params.step.id}' approval was ${prior.approval_status}`,
+    );
+  }
+
+  try {
+    return await executeActionDirect(
+      params.step.tool,
+      canonicalParams,
+      params.orgId,
+      params.userId,
+      params.conversationId,
+      params.approvalTier,
+      {
+        agentEmployeeId: params.agentEmployeeId ?? undefined,
+        source: 'plan',
+        planId: params.planId,
+        planStepId: params.step.id,
+        runtimeRequestKey: requestKey,
+        forceApproval: true,
+      },
+    );
+  } catch (error) {
+    throw new PlanApprovalBoundaryError((error as Error).message);
+  }
+}
+
+export async function executePlan(
+  planId: string,
+  orgId: string,
+  userId: string,
+  onEvent?: (event: PlanEvent) => void,
+): Promise<void> {
+  return withDbAdvisoryLock(
+    `agent-plan:${orgId}:${planId}`,
+    () => executePlanUnlocked(planId, orgId, userId, onEvent),
+  );
+}
 
 // ─── Reference Resolution ───
 
@@ -252,7 +413,7 @@ export async function createPlanRow(
  * 4. On failure: ask agent for alternative. If ESCALATE → pause.
  * 5. Store results in context for downstream step references.
  */
-export async function executePlan(
+async function executePlanUnlocked(
   planId: string,
   orgId: string,
   userId: string,
@@ -267,24 +428,18 @@ export async function executePlan(
 
   if (!plan) throw new Error(`Plan ${planId} not found`);
   if (plan.status !== 'approved' && plan.status !== 'executing') {
+    // Duplicate queued workers are serialized by the plan lock. Once the
+    // first has paused or finished, a follower has no remaining work.
+    if (plan.status === 'paused' || plan.status === 'completed' || plan.status === 'failed') return;
     throw new Error(`Plan ${planId} cannot be executed in status '${plan.status}'`);
   }
 
   // 2. Load trust level
   let trustLevel: TrustLevel = 'standard';
   if (plan.agent_employee_id) {
-    const [employee] = await db
-      .select({ trust_level: agentEmployees.trust_level })
-      .from(agentEmployees)
-      .where(and(
-        eq(agentEmployees.id, plan.agent_employee_id),
-        eq(agentEmployees.org_id, orgId),
-        eq(agentEmployees.is_active, true),
-        eq(agentEmployees.is_deleted, false),
-      ))
-      .limit(1);
-    if (!employee) throw new Error('Plan agent employee is inactive, deleted, or outside this organization');
-    trustLevel = employee.trust_level as TrustLevel;
+    const employeePolicy = await getActiveAgentToolPolicy(orgId, plan.agent_employee_id);
+    if (!employeePolicy) throw new Error('Plan agent employee is inactive, deleted, or outside this organization');
+    trustLevel = employeePolicy.trustLevel;
   } else {
     const [org] = await db
       .select({ trust_level: orgs.trust_level })
@@ -429,10 +584,9 @@ export async function executePlan(
         );
         const autoExec = shouldAutoExecute(step.tool, trustLevel, resolvedParams, approvalTierOverride);
 
-        if (autoExec || !isDependency) {
-          // Auto-execute or non-blocking write
-          const tier = getApprovalTier(step.tool, approvalTierOverride);
-          const execResult = await executeActionDirect(
+        const tier = getApprovalTier(step.tool, approvalTierOverride);
+        const execResult = autoExec || !isDependency
+          ? await executeActionDirect(
             step.tool,
             resolvedParams,
             orgId,
@@ -445,39 +599,40 @@ export async function executePlan(
               planId,
               planStepId: step.id,
             },
-          );
+          )
+          : await executeReviewedPlanDependency({
+            planId,
+            step,
+            resolvedParams,
+            orgId,
+            userId,
+            conversationId: plan.conversation_id,
+            agentEmployeeId: plan.agent_employee_id,
+            approvalTier: tier,
+          });
 
-          if (execResult.success) {
-            step.status = 'completed';
-            step.result = execResult.result;
-            context[step.id] = { result: execResult.result };
-          } else if (execResult.requiresApproval) {
-            step.status = 'waiting_approval';
-            step.error = execResult.error;
-            await updatePlanProgress(planId, steps, context, i, 'paused');
-            onEvent?.({
-              type: 'plan:pause',
-              stepId: step.id,
-              data: {
-                reason: 'approval_policy_changed',
-                action_id: execResult.actionId,
-                approval_tier: execResult.approvalTier,
-              },
-            });
-            return;
-          } else {
-            throw new Error(execResult.error || 'Action execution failed');
-          }
-        } else {
-          // Needs approval — pause the plan
+        if (execResult.success) {
+          step.status = 'completed';
+          step.result = execResult.result;
+          delete step.error;
+          context[step.id] = { result: execResult.result };
+        } else if (execResult.requiresApproval) {
           step.status = 'waiting_approval';
+          step.error = execResult.error;
           await updatePlanProgress(planId, steps, context, i, 'paused');
           onEvent?.({
             type: 'plan:pause',
             stepId: step.id,
-            data: { reason: 'approval_required', tool: step.tool },
+            data: {
+              reason: 'approval_required',
+              tool: step.tool,
+              action_id: execResult.actionId,
+              approval_tier: execResult.approvalTier,
+            },
           });
           return;
+        } else {
+          throw new Error(execResult.error || 'Action execution failed');
         }
       }
 
@@ -488,6 +643,28 @@ export async function executePlan(
     } catch (err) {
       const errorMsg = (err as Error).message;
       emitTaskProgress(i, step.description, 'failed', errorMsg);
+
+      if (err instanceof PlanApprovalBoundaryError) {
+        step.status = 'failed';
+        step.error = errorMsg;
+        await db
+          .update(agentPlans)
+          .set({
+            steps,
+            context,
+            current_step: i,
+            status: 'paused',
+            error: errorMsg,
+            updated_at: new Date(),
+          })
+          .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
+        onEvent?.({
+          type: 'plan:pause',
+          stepId: step.id,
+          data: { reason: 'approval_boundary_failed', error: errorMsg },
+        });
+        return;
+      }
 
       // Task 3.9 — fail-fast mode short-circuits the recovery path, marks
       // every later step 'skipped_due_to_failure', and optionally rolls
@@ -579,11 +756,39 @@ export async function executePlan(
     }
   }
 
-  // All steps processed
+  // A recovery response may let the loop inspect later steps, but it cannot
+  // convert a failed or dependency-blocked step into a successful plan.
+  const failedSteps = steps.filter(
+    (step) => step.status === 'failed' || step.status === 'skipped_due_to_failure',
+  );
+  if (failedSteps.length > 0) {
+    const error = `${failedSteps.length} plan step${failedSteps.length === 1 ? '' : 's'} failed`;
+    await db
+      .update(agentPlans)
+      .set({ status: 'failed', context, error, updated_at: new Date() })
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
+    onEvent?.({ type: 'plan:fail', data: { reason: 'step_failures', error } });
+    return;
+  }
+
+  const incompleteSteps = steps.filter(
+    (step) => step.status !== 'completed' && step.status !== 'skipped',
+  );
+  if (incompleteSteps.length > 0) {
+    const error = `${incompleteSteps.length} plan step${incompleteSteps.length === 1 ? '' : 's'} remained incomplete`;
+    await db
+      .update(agentPlans)
+      .set({ status: 'paused', context, error, updated_at: new Date() })
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
+    onEvent?.({ type: 'plan:pause', data: { reason: 'incomplete_steps', error } });
+    return;
+  }
+
+  // All applicable steps completed or were conditionally skipped.
   await db
     .update(agentPlans)
-    .set({ status: 'completed', context, updated_at: new Date() })
-    .where(eq(agentPlans.id, planId));
+    .set({ status: 'completed', context, error: null, updated_at: new Date() })
+    .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)));
   onEvent?.({ type: 'plan:complete' });
 }
 

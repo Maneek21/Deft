@@ -5,7 +5,7 @@ import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spac
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { humanModuleActor } from '../lib/module-service.js';
-import { searchAuthorizedModuleResources as searchModuleRecords } from '../lib/resource-search-service.js';
+import { searchAuthorizedModuleResourcesWithDiagnostics as searchModuleRecords } from '../lib/resource-search-service.js';
 
 export const searchRoutes = new Hono();
 
@@ -55,6 +55,8 @@ searchRoutes.get('/', async (c) => {
         } else {
           taskConditions.push(eq(tasks.project_id, proj.id));
         }
+      } else {
+        taskConditions.push(ilike(tasks.title, pattern));
       }
     } else {
       taskConditions.push(ilike(tasks.title, pattern));
@@ -187,7 +189,7 @@ searchRoutes.get('/', async (c) => {
         source_id: r.source_id,
       }));
 
-    const moduleGroup = await searchModuleRecords(
+    const moduleSearch = await searchModuleRecords(
       humanModuleActor({
         orgId: user.org_id,
         userId: user.id,
@@ -195,7 +197,8 @@ searchRoutes.get('/', async (c) => {
         source: 'rest',
       }),
       { query: q, limit: 5 },
-    ).then(({ items }) => items.map((item) => ({
+    );
+    const moduleGroup = moduleSearch.items.map((item) => ({
       id: item.resource_id,
       type: 'module_record' as const,
       title: item.title,
@@ -207,10 +210,7 @@ searchRoutes.get('/', async (c) => {
       collection_name: item.collection_name,
       updated_at: item.updated_at,
       score: item.score,
-    }))).catch((error) => {
-      console.warn('[search] module search failed:', error instanceof Error ? error.message : String(error));
-      return [];
-    });
+    }));
 
     return c.json({
       spaces: spaceResults,
@@ -223,6 +223,9 @@ searchRoutes.get('/', async (c) => {
       privateNotes: notesGroup,
       decisions: decisionsGroup,
       modules: moduleGroup,
+      search_diagnostics: {
+        modules: moduleSearch.diagnostic ?? { source: 'modules', status: 'ready' },
+      },
     });
   } catch (err) {
     console.error('Search error:', err);

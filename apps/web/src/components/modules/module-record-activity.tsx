@@ -21,18 +21,18 @@ export function ModuleRecordActivity({ resourceId, fields }: { resourceId: strin
         </h2>
       </header>
       {state.isLoading ? (
-        <div className="flex items-center gap-2 px-4 py-5 text-[0.75rem]" style={{ color: 'var(--outline)' }}>
+        <div className="flex items-center gap-2 px-4 py-5 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
           <Loader2 size={14} className="animate-spin" /> Loading activity…
         </div>
       ) : state.error ? (
-        <div className="px-4 py-4 text-[0.75rem]" style={{ color: 'var(--outline)' }}>
+        <div className="px-4 py-4 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
           <p>Activity is temporarily unavailable.</p>
           <button type="button" onClick={() => void state.mutate()} className="mt-2 inline-flex min-h-9 items-center gap-1.5 font-medium" style={{ color: 'var(--primary)' }}>
             <RefreshCw size={12} /> Retry
           </button>
         </div>
       ) : state.activity.length === 0 ? (
-        <p className="px-4 py-5 text-[0.75rem]" style={{ color: 'var(--outline)' }}>No recorded changes yet.</p>
+        <p className="px-4 py-5 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>No recorded changes yet.</p>
       ) : (
         <ol className="divide-y divide-[var(--ghost-border)]">
           {state.activity.map((event) => {
@@ -44,11 +44,11 @@ export function ModuleRecordActivity({ resourceId, fields }: { resourceId: strin
                 <span className="absolute left-4 top-[1.15rem] h-2 w-2 rounded-full" style={{ background: activityColor(event.action) }} />
                 <p className="text-[0.75rem] font-medium" style={{ color: 'var(--on-surface)' }}>{activityLabel(event.action)}</p>
                 {changed.length > 0 && (
-                  <p className="mt-1 line-clamp-2 text-[0.6875rem]" style={{ color: 'var(--outline)' }}>
+                  <p className="mt-1 line-clamp-2 text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)' }}>
                     {changed.join(', ')}
                   </p>
                 )}
-                <p className="mt-1 text-[0.625rem]" style={{ color: 'var(--outline)' }}>
+                <p className="mt-1 text-[0.625rem]" style={{ color: 'var(--on-surface-variant)' }}>
                   {event.createdAt ? new Date(event.createdAt).toLocaleString() : 'Time unavailable'}
                   {event.actorName
                     ? ` · ${event.actorName}${event.actorType === 'agent_employee' ? ' (AI)' : ''}`

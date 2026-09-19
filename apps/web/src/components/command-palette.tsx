@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { api } from '@/lib/api';
+import { moduleSearchNotice } from '@/lib/module-search-notice';
 import {
   Search, Hash, CheckSquare, User, MessageSquare,
   Sun, Plus, Settings, Bot, Tag, CalendarDays,
@@ -87,6 +88,8 @@ export function CommandPalette() {
   const { toggleTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [searchNotice, setSearchNotice] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
   const [selectedIndex, setSelectedIndex] = useState(0);
   // When set, the palette is in "args prompt" sub-mode for the picked command.
@@ -210,16 +213,22 @@ export function CommandPalette() {
   // Debounced search
   useEffect(() => {
     const requestId = ++searchRequestRef.current;
+    setSearchNotice(null);
     if (!query || query.startsWith('/') || activePrompt) {
+      setSearching(false);
       setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
       return;
     }
+    setSearching(true);
+    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
     const timer = setTimeout(async () => {
       try {
         const res = await api.get(`/api/search?q=${encodeURIComponent(query)}`);
+        if (!res.ok) throw new Error('Search unavailable');
         if (res.ok) {
           const data = await res.json();
           if (requestId !== searchRequestRef.current) return;
+          setSearchNotice(moduleSearchNotice(data));
           setResults({
             spaces: data.spaces ?? [],
             tasks: data.tasks ?? [],
@@ -233,7 +242,9 @@ export function CommandPalette() {
           });
         }
       } catch {
-        // silently fail
+        if (requestId === searchRequestRef.current) setSearchNotice('Search is unavailable. Please try again.');
+      } finally {
+        if (requestId === searchRequestRef.current) setSearching(false);
       }
     }, 200);
     return () => clearTimeout(timer);
@@ -491,6 +502,7 @@ export function CommandPalette() {
             </>
           ) : hasQuery && hasResults ? (
             <>
+              {searchNotice && <p role="status" className="px-4 py-3 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{searchNotice}</p>}
               {/* Spaces */}
               <ResultGroup
                 title="Spaces"
@@ -737,7 +749,7 @@ export function CommandPalette() {
           ) : hasQuery && !hasResults ? (
             <div className="py-8 text-center">
               <p className="text-[13px]" style={{ color: 'var(--outline)' }}>
-                No results for &ldquo;{query}&rdquo;
+                {searching ? 'Searching…' : searchNotice || <>No results for &ldquo;{query}&rdquo;</>}
               </p>
             </div>
           ) : (

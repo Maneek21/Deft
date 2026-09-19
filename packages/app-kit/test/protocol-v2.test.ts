@@ -33,7 +33,7 @@ import {
   simulateDeftAppAutomation,
   verifyDeftAppPackageJson,
   type DeftAppManifestV2Input,
-} from '../src/index.js';
+} from '../dist/index.js';
 
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
 const connectedExample = 'examples/connected-resource-campaigns-app';

@@ -1,0 +1,4 @@
+name,email,phone,role,status,tags,notes
+Avery Chen,person01@crm-demo.example.test,+1 202 555 0100,Founder,lead,crm-demo;priority,Fictional contact. Link to Northstar Studio.
+Mina Chen,person02@crm-demo.example.test,+1 202 555 0101,Operations lead,active,crm-demo;priority,Fictional contact. Link to Maple Harbor.
+Theo Chen,person03@crm-demo.example.test,+1 202 555 0102,Finance manager,active,crm-demo;priority,Fictional contact. Link to Northstar Studio.

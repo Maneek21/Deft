@@ -6,6 +6,7 @@ import {
   normalizeAppActionResolve,
   normalizeAppRun,
   normalizeAppRunResult,
+  normalizeModuleAppRunOutcomes,
 } from './app-actions';
 
 const ref = {
@@ -95,4 +96,45 @@ test('Run normalization projects safe status and authorized retained results', (
   assert.equal(run.safeOutcome?.summary, 'Sent');
   assert.equal('provider_instance_id' in run, false);
   assert.deepEqual(result.value, { schema_version: 'deft.app_run_provider_result.v1', provider_succeeded: true, output: { message_id: 'provider-message-1' } });
+});
+
+test('record outcome normalization keeps only bounded safe execution facts', () => {
+  const normalized = normalizeModuleAppRunOutcomes({ outcomes: [{
+    resource_id: 'campaign-1',
+    run_id: 'run-1',
+    operation_name: 'send_email',
+    state: 'succeeded',
+    created_at: '2026-09-01T00:00:00.000Z',
+    updated_at: '2026-09-01T00:01:00.000Z',
+    provider_call_attempted: true,
+    outcome_success: true,
+    error_code: null,
+    environment: 'sandbox',
+    from_merged_record: false,
+    recipient: 'must-not-project@example.test',
+    provider_result: { message_id: 'must-not-project' },
+  }] });
+  assert.deepEqual(normalized.outcomes[0], {
+    resourceId: 'campaign-1', runId: 'run-1', operationName: 'send_email', state: 'succeeded',
+    createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:01:00.000Z',
+    providerCallAttempted: true, outcomeSuccess: true, errorCode: null,
+    environment: 'sandbox', fromMergedRecord: false,
+  });
+  assert.throws(() => normalizeModuleAppRunOutcomes({ outcomes: [{
+    resource_id: 'campaign-1', run_id: 'run-1', operation_name: 'send_email', state: 'succeeded',
+    created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:01:00.000Z',
+    provider_call_attempted: true, outcome_success: true, error_code: null,
+    environment: 'delivered', from_merged_record: false,
+  }] }), /environment/);
+});
+
+
+test('authorized message review is separate from safe metadata and excludes arbitrary provider fields', () => {
+  const prepared = normalizeAppActionPrepare({ result: { action, safe_preview: preview,
+    input_candidate: { ciphertext_b64: 'sealed' }, replay_identity: `sha256:${'a'.repeat(64)}`,
+    review_fields: { to: 'jordan@example.test', subject: 'Hello', body_text: 'A useful message', idempotency_key: 'must-not-project' },
+  } });
+  assert.deepEqual(prepared.reviewFields, { to: 'jordan@example.test', subject: 'Hello', bodyText: 'A useful message' });
+  assert.equal(JSON.stringify(prepared.safePreview).includes('jordan@example.test'), false);
+  assert.equal('idempotency_key' in prepared.reviewFields!, false);
 });

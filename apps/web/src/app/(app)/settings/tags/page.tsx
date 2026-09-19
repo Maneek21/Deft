@@ -140,7 +140,7 @@ export default function TagsPage() {
           </div>
           {!creating && (
             <button onClick={() => setCreating(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
+              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
               style={{ background: 'var(--accent)' }}>
               <Plus size={14} /> New Tag
             </button>

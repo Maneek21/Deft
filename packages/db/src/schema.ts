@@ -2558,6 +2558,30 @@ export const moduleRecordRelations = pgTable('module_record_relations', {
   ),
 ]);
 
+// Immutable merge provenance; values inherit Module access, never general audit visibility.
+export const moduleRecordMerges = pgTable('module_record_merges', {
+  ...id(), ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  source_record_id: text('source_record_id').notNull(),
+  target_record_id: text('target_record_id').notNull(),
+  source_revision: integer('source_revision').notNull(),
+  target_revision: integer('target_revision').notNull(),
+  source_data: jsonb('source_data').$type<Record<string, unknown>>().notNull(),
+  target_data: jsonb('target_data').$type<Record<string, unknown>>().notNull(),
+  link_snapshot: jsonb('link_snapshot').$type<Record<string, unknown>>().notNull(),
+  choices: jsonb('choices').$type<Record<string, unknown>>().notNull(),
+  created_by: text('created_by').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.installation_id, t.source_record_id], foreignColumns: [moduleRecords.org_id, moduleRecords.installation_id, moduleRecords.id], name: 'module_record_merges_source_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.installation_id, t.target_record_id], foreignColumns: [moduleRecords.org_id, moduleRecords.installation_id, moduleRecords.id], name: 'module_record_merges_target_fk' }).onDelete('restrict'),
+  check('module_record_merges_distinct_check', sql`${t.source_record_id} <> ${t.target_record_id}`),
+  check('module_record_merges_revision_check', sql`${t.source_revision} > 0 AND ${t.target_revision} > 0`),
+  check('module_record_merges_snapshot_check', sql`jsonb_typeof(${t.source_data}) = 'object' AND jsonb_typeof(${t.target_data}) = 'object' AND jsonb_typeof(${t.link_snapshot}) = 'object' AND jsonb_typeof(${t.choices}) = 'object'`),
+  index('module_record_merges_target_idx').on(t.org_id, t.installation_id, t.target_record_id, t.created_at),
+  index('module_record_merges_source_idx').on(t.org_id, t.installation_id, t.source_record_id),
+]);
+
 // Saved views are personal in v1. The owner is mandatory and the service only
 // exposes a row back to that user. The config is declarative query metadata;
 // it cannot contain executable code or URLs because the shared schema is

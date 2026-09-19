@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, type RefObject } from 'react';
 import { AppDialog } from './overlay-primitives';
 
 interface ConfirmDialogProps {
@@ -11,6 +11,7 @@ interface ConfirmDialogProps {
   danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 export default function ConfirmDialog({
@@ -21,6 +22,7 @@ export default function ConfirmDialog({
   danger,
   onConfirm,
   onCancel,
+  returnFocusRef,
 }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -33,6 +35,7 @@ export default function ConfirmDialog({
       danger={danger}
       width={380}
       initialFocusRef={cancelRef}
+      returnFocusRef={returnFocusRef}
       footer={
         <div className="flex justify-end gap-2">
           <button
@@ -57,7 +60,7 @@ export default function ConfirmDialog({
         </div>
       }
     >
-      <span className="sr-only">{message}</span>
+      <span className="sr-only">Confirmation required.</span>
     </AppDialog>
   );
 }

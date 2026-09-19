@@ -17,6 +17,10 @@ import {
   agentActions,
   agentEmployees,
   appActionBindings,
+  appModuleBindings,
+  appInstallations,
+  moduleInstallations,
+  moduleRecords,
   appGrantSnapshots,
   appRuns,
   appVersions,
@@ -35,8 +39,10 @@ import {
   type AppActionRunPort,
 } from '../src/lib/app-action-service.js';
 import { closeDb, db } from '../src/lib/db.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 import {
   activateAppInstallation,
+  disableAppInstallation,
   stageAppPackage,
 } from '../src/lib/app-service.js';
 import {
@@ -57,6 +63,7 @@ import {
   employeeModuleActor,
   getModuleInstallation,
   humanModuleActor,
+  installModuleFromManifest,
   readModuleRecordScalarFields,
   updateModuleInstallation,
   updateModuleRecord,
@@ -65,13 +72,12 @@ import { replaceResourceRelation } from '../src/lib/resource-relation-service.js
 import { Phase4SandboxEmailProvider } from './fixtures/phase4-sandbox-email-provider.js';
 import {
   buildPhase5ConnectedAppPackage,
+  buildDirectRelationConnectedAppPackage,
   buildPhase5DependencyAppPackage,
 } from './fixtures/phase5-connected-app-package.js';
 
-const databaseUrl = process.env.DEFT_TEST_DATABASE_URL;
-const canRun = Boolean(databaseUrl && /phase5.*(?:test|loop4)|(?:test|loop4).*phase5/i.test(
-  new URL(databaseUrl).pathname,
-));
+const databaseUrl = safeTestDatabaseUrl();
+const canRun = Boolean(databaseUrl);
 
 after(async () => closeDb());
 
@@ -172,7 +178,8 @@ async function effectCounts(orgId: string) {
   return { app_runs: runs?.value ?? 0, approvals: approvals?.value ?? 0 };
 }
 
-test('App actions resolve and prepare one reviewed relation identically across four live caller surfaces', {
+for (const directRelations of [false, true]) {
+test(`App actions resolve and prepare one reviewed relation across four surfaces (${directRelations ? 'direct' : 'resource_ref'})`, {
   skip: !canRun,
 }, async () => {
   const suffix = randomUUID();
@@ -215,7 +222,13 @@ test('App actions resolve and prepare one reviewed relation identically across f
   const dependencyStaged = await stageAppPackage(owner, dependencyPackage.json);
   await activateAppInstallation(owner, dependencyStaged.id, dependencyStaged.package_digest);
 
-  const connectedPackage = await buildPhase5ConnectedAppPackage();
+  const connectedPackage = await (directRelations ? buildDirectRelationConnectedAppPackage() : buildPhase5ConnectedAppPackage());
+  const preexistingModule = directRelations ? await installModuleFromManifest(owner,
+    JSON.parse(JSON.parse(connectedPackage.json).artifacts[0].content), { source: 'sideloaded' }) : null;
+  const preservedContact = preexistingModule ? await createModuleRecord(owner, {
+    module_id: preexistingModule.module_id, collection_key: 'contacts', data: { name: 'Keep this canonical contact', email: 'preserved@example.test' },
+    relations: {}, expected_manifest_digest: preexistingModule.manifest_digest, idempotency_key: `adoption-preserve-${suffix}`,
+  }) : null;
   const connectedStaged = await stageAppPackage(owner, connectedPackage.json);
   const [connectedVersion] = await db.select().from(appVersions).where(and(
     eq(appVersions.org_id, orgId),
@@ -252,25 +265,50 @@ test('App actions resolve and prepare one reviewed relation identically across f
       mcp_connection_id: connectionId,
     }],
   };
-  const review = await prepareConnectedAppReview(
+  let review = await prepareConnectedAppReview(
     owner,
     connectedStaged.id,
     reviewRequest,
     provider.capability,
   );
+  if (preexistingModule) {
+    assert.equal(review.module_adoptions.length, 1);
+    assert.equal(review.module_adoptions[0]!.module_installation_id, preexistingModule.id);
+    await assert.rejects(activateConnectedAppInstallation(owner, connectedStaged.id, {
+      ...reviewRequest, expected_review_digest: review.review_digest, accept_host_policy: true,
+    }, provider.capability), (error: unknown) => error instanceof AppError && error.code === 'APP_REVIEW_REQUIRED');
+    const bindingRows = await db.select().from(appModuleBindings).where(eq(appModuleBindings.app_installation_id, connectedStaged.id));
+    assert.equal(bindingRows.length, 0, 'refused adoption leaves no ownership binding');
+    await updateModuleInstallation(owner, preexistingModule.slug, { agent_access: 'read' });
+    await assert.rejects(activateConnectedAppInstallation(owner, connectedStaged.id, {
+      ...reviewRequest, expected_review_digest: review.review_digest, accept_host_policy: true, accept_module_adoptions: true,
+    }, provider.capability), (error: unknown) => error instanceof AppError && error.code === 'APP_STALE');
+    review = await prepareConnectedAppReview(owner, connectedStaged.id, reviewRequest, provider.capability);
+  }
   await activateConnectedAppInstallation(owner, connectedStaged.id, {
     ...reviewRequest,
     expected_review_digest: review.review_digest,
     accept_host_policy: true,
+    accept_module_adoptions: directRelations,
   }, provider.capability);
   const [binding] = await db.select().from(appActionBindings).where(and(
     eq(appActionBindings.org_id, orgId),
     eq(appActionBindings.app_installation_id, connectedStaged.id),
   ));
   if (!binding) throw new Error('Reviewed App action binding is missing');
+  if (preexistingModule && preservedContact?.record) {
+    const [adopted] = await db.select().from(appModuleBindings).where(eq(appModuleBindings.app_installation_id, connectedStaged.id));
+    assert.equal(adopted?.module_installation_id, preexistingModule.id);
+    const [preserved] = await db.select().from(moduleRecords).where(eq(moduleRecords.id, preservedContact.record.id));
+    assert.deepEqual(preserved?.data, preservedContact.record.data);
+    assert.equal(preserved?.revision, preservedContact.record.revision);
+    const current = await getModuleInstallation(owner, { moduleId: preexistingModule.module_id });
+    assert.equal(current.agent_access, 'read');
+  }
 
-  let contacts = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-contacts' });
-  let campaigns = await getModuleInstallation(owner, { moduleId: 'org.deft.reference.resource-campaigns' });
+
+  let contacts = await getModuleInstallation(owner, { moduleId: directRelations ? 'com.deft.contacts' : 'org.deft.reference.resource-contacts' });
+  let campaigns = await getModuleInstallation(owner, { moduleId: directRelations ? 'com.deft.contacts' : 'org.deft.reference.resource-campaigns' });
   contacts = await updateModuleInstallation(owner, contacts.slug, { agent_access: 'read' });
   campaigns = await updateModuleInstallation(owner, campaigns.slug, { agent_access: 'read' });
 
@@ -295,7 +333,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
   });
   const campaign = await createModuleRecord(owner, {
     module_id: campaigns.module_id,
-    collection_key: 'campaigns',
+    collection_key: directRelations ? 'outreach' : 'campaigns',
     data: { name: 'Connected campaign', subject, body: bodyText, status: 'draft' },
     relations: {},
     expected_manifest_digest: campaigns.manifest_digest,
@@ -304,10 +342,26 @@ test('App actions resolve and prepare one reviewed relation identically across f
   if (!linkedContact.record || !unrelatedContact.record || !campaign.record) {
     throw new Error('Loop 4 Module records were not created');
   }
-  const campaignRef = moduleRef(campaigns.id, 'campaigns', campaign.record.id);
+  const campaignRef = moduleRef(campaigns.id, directRelations ? 'outreach' : 'campaigns', campaign.record.id);
   const contactRef = moduleRef(contacts.id, 'contacts', linkedContact.record.id);
   const unrelatedRef = moduleRef(contacts.id, 'contacts', unrelatedContact.record.id);
-  const linked = await replaceResourceRelation(owner, {
+  let directRevision = campaign.record.revision;
+  const replaceSelectedRelation: typeof replaceResourceRelation = async (actor, value) => {
+    if (!directRelations) return replaceResourceRelation(actor, value);
+    const result = await updateModuleRecord(actor, {
+      record_id: campaign.record!.id,
+      patch: {},
+      relations: { contacts: value.refs.map((ref) => ref.resource_id) },
+      expected_revision: directRevision,
+      expected_manifest_digest: campaigns.manifest_digest,
+      idempotency_key: value.idempotency_key,
+    });
+    if (!result.record) throw new Error('Direct relation update failed');
+    directRevision = result.record.revision;
+    return { schema_version: RESOURCE_CONTRACT_VERSIONS.relation, source: value.source,
+      relation_key: value.relation_key, revision: directRevision, refs: value.refs, replayed: false };
+  };
+  const linked = await replaceSelectedRelation(owner, {
     schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
     source: campaignRef,
     relation_key: 'contacts',
@@ -315,7 +369,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
     expected_revision: 0,
     idempotency_key: `loop4-link-${suffix}`,
   });
-  assert.equal(linked.revision, 1);
+  assert.equal(linked.revision, directRelations ? 2 : 1);
 
   await db.insert(agentEmployees).values({
     id: employeeId,
@@ -516,6 +570,8 @@ test('App actions resolve and prepare one reviewed relation identically across f
     const relationInput = resolved.inputs.find((input) => input.kind === 'selected_relation_field');
     assert.ok(relationInput && relationInput.kind === 'selected_relation_field');
     assert.deepEqual(relationInput.options.map((option) => option.ref.resource_id), [contactRef.resource_id]);
+    assert.equal(resolved.resource.label, 'Connected campaign');
+    assert.deepEqual(relationInput.options.map((option) => option.label), ['Linked contact']);
     assert.equal(relationInput.options.some((option) => option.ref.resource_id === unrelatedRef.resource_id), false);
 
     const prepared = await service.prepare(surface.caller, {
@@ -526,6 +582,9 @@ test('App actions resolve and prepare one reviewed relation identically across f
       idempotency_key: `loop4-send-${suffix}`,
     });
     assert.equal(prepared.action.binding_id, binding.id);
+    assert.deepEqual(prepared.safe_preview.resource_refs.map((ref) => ref.label), [
+      'Connected campaign', 'Linked contact',
+    ]);
     assert.equal(prepared.authority_vector.resources.length, 2);
     assert.equal(prepared.authority_vector.relations[0]?.selected_ref.resource_id, contactRef.resource_id);
     assert.deepEqual(protectedInputs.at(-1)?.provider_input, {
@@ -534,6 +593,14 @@ test('App actions resolve and prepare one reviewed relation identically across f
       subject,
       body_text: bodyText,
     });
+    const messageReviewInput = { binding_id: binding.id, resource_ref: campaignRef,
+      selections: [{ input_key: 'to', resource_ref: contactRef }], user_inputs: {},
+      idempotency_key: `loop4-send-${suffix}`, input_candidate: prepared.input_candidate };
+    if (surface.caller.actor.kind === 'human' && surface.caller.actor.source === 'ui') {
+      assert.deepEqual(await service.reviewPreparedMessage(surface.caller, messageReviewInput), { to: recipient, subject, body_text: bodyText });
+    } else {
+      await assert.rejects(service.reviewPreparedMessage(surface.caller, messageReviewInput), /authenticated human UI/i);
+    }
     const safeJson = JSON.stringify({ listed, resolved, prepared });
     for (const [field, secret] of [['recipient', recipient], ['subject', subject], ['body', bodyText]]) {
       assert.equal(
@@ -552,8 +619,8 @@ test('App actions resolve and prepare one reviewed relation identically across f
     callers.length,
     'replay identity must isolate every pinned caller surface and token authority',
   );
-  assert.equal(protectedInputs.length, callers.length);
-  assert.equal(fieldReads, callers.length * 2);
+  assert.equal(protectedInputs.length, callers.length + 1, 'human message review performs one additional live reprepare');
+  assert.equal(fieldReads, (callers.length + 1) * 2);
 
   const uiPrepared = preparedBySurface.get('ui');
   if (!uiPrepared) throw new Error('UI preparation result is missing');
@@ -661,7 +728,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
     ));
   }
 
-  const cleared = await replaceResourceRelation(owner, {
+  const cleared = await replaceSelectedRelation(owner, {
     schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
     source: campaignRef,
     relation_key: 'contacts',
@@ -679,7 +746,7 @@ test('App actions resolve and prepare one reviewed relation identically across f
     assert.equal(fieldReads, beforeReads, 'revoked relation must fail before scalar field reads');
     assert.equal(protectedInputs.length, beforeProtect);
   } finally {
-    await replaceResourceRelation(owner, {
+    await replaceSelectedRelation(owner, {
       schema_version: RESOURCE_CONTRACT_VERSIONS.relation,
       source: campaignRef,
       relation_key: 'contacts',
@@ -751,4 +818,17 @@ test('App actions resolve and prepare one reviewed relation identically across f
   assert.equal(provider.invokeCalls(), 0);
   assert.equal(sandboxEffect.callCount, 0);
   assert.equal(provider.discoveryCalls() > 0, true);
+  if (preexistingModule && preservedContact?.record) {
+    const [active] = await db.select().from(appInstallations).where(eq(appInstallations.id, connectedStaged.id));
+    await disableAppInstallation(owner, connectedStaged.id, active!.lifecycle_epoch);
+    const [module] = await db.select().from(moduleInstallations).where(eq(moduleInstallations.id, preexistingModule.id));
+    const [preserved] = await db.select().from(moduleRecords).where(eq(moduleRecords.id, preservedContact.record.id));
+    assert.equal(module?.is_enabled, false, 'the reviewed App lifecycle controls its adopted Module');
+    assert.equal(module?.agent_access, 'read');
+    assert.equal(preserved?.is_deleted, false);
+    assert.deepEqual(preserved?.data, preservedContact.record.data);
+  }
+
 });
+
+}

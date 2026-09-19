@@ -21,11 +21,10 @@ import {
   parseDeftModuleManifest,
   type DeftModuleManifestV1,
 } from '@deft/shared/modules';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-const canRun = Boolean(
-  TEST_DATABASE_URL && /(?:test|ci|acceptance)/i.test(new URL(TEST_DATABASE_URL).pathname),
-);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 
 after(async () => {
   await closeDb();

@@ -83,6 +83,19 @@ export function isConnectedAppManifest(manifest: AppManifest): manifest is Conne
   return manifest.compatibility.app_protocol !== '0';
 }
 
+/** Protocol v0 has no connected controls in its manifest, but an installed
+ * active/disabled v0 App can accept a separately inspected v1 upgrade. */
+export function canStageConnectedUpgrade(app: Pick<AppInstallation, 'state' | 'manifest'>): boolean {
+  return app.manifest.compatibility.app_protocol === '0'
+    && (app.state === 'active' || app.state === 'disabled');
+}
+
+/** A disabled Protocol v0 App may restore its already-active Module version
+ * without activating any separately staged connected upgrade authority. */
+export function canEnableAppWithoutReview(app: Pick<AppInstallation, 'state' | 'manifest'>): boolean {
+  return app.state === 'disabled' && app.manifest.compatibility.app_protocol === '0';
+}
+
 export type AppInstallation = {
   id: string;
   version_id: string;
@@ -307,6 +320,7 @@ export type AppGrantManagement = {
 };
 
 export type ConnectedAppReview = {
+  module_adoptions: Array<{ module_id: string; module_installation_id: string; name: string; is_enabled: boolean; agent_access: string }>;
   review_version: string;
   app_installation_id: string;
   app_version_id: string;
@@ -943,6 +957,13 @@ export function normalizeConnectedAppReview(value: unknown): ConnectedAppReview 
   const diff = object(row.permission_diff, 'App permission diff');
   if (diff.kind !== 'initial' && diff.kind !== 'unchanged' && diff.kind !== 'widening_or_incompatible') throw new Error('Invalid App permission diff.');
   return {
+    module_adoptions: recordArray(row.module_adoptions ?? [], 'reviewed Module adoptions').map((entry) => ({
+      module_id: stringValue(entry.module_id, 'Module identity'),
+      module_installation_id: stringValue(entry.module_installation_id, 'Module installation identity'),
+      name: stringValue(entry.name, 'Module name'),
+      is_enabled: entry.is_enabled === true,
+      agent_access: stringValue(entry.agent_access, 'Module agent access'),
+    })),
     review_version: stringValue(row.review_version, 'App review version'),
     app_installation_id: stringValue(row.app_installation_id, 'App installation identity'),
     app_version_id: stringValue(row.app_version_id, 'App version identity'),

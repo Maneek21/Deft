@@ -1,0 +1,61 @@
+name,email,phone,role,status,tags,notes
+Avery Chen,person01@crm-demo.example.test,+1 202 555 0100,Founder,lead,crm-demo;priority,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Mina Chen,person02@crm-demo.example.test,+1 202 555 0101,Operations lead,active,crm-demo;priority,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Theo Chen,person03@crm-demo.example.test,+1 202 555 0102,Finance manager,active,crm-demo;priority,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Leila Chen,person04@crm-demo.example.test,+1 202 555 0103,Product lead,inactive,crm-demo;priority,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Noah Chen,person05@crm-demo.example.test,+1 202 555 0104,Founder,lead,crm-demo;priority,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Riya Chen,person06@crm-demo.example.test,+1 202 555 0105,Operations lead,active,crm-demo;priority,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Sam Chen,person07@crm-demo.example.test,+1 202 555 0106,Finance manager,active,crm-demo;priority,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Imani Chen,person08@crm-demo.example.test,+1 202 555 0107,Product lead,inactive,crm-demo;priority,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Arun Chen,person09@crm-demo.example.test,+1 202 555 0108,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Zoe Chen,person10@crm-demo.example.test,+1 202 555 0109,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Avery Patel,person11@crm-demo.example.test,+1 202 555 0110,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Mina Patel,person12@crm-demo.example.test,+1 202 555 0111,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Theo Patel,person13@crm-demo.example.test,+1 202 555 0112,Founder,lead,crm-demo,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Leila Patel,person14@crm-demo.example.test,+1 202 555 0113,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Noah Patel,person15@crm-demo.example.test,+1 202 555 0114,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Riya Patel,person16@crm-demo.example.test,+1 202 555 0115,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Sam Patel,person17@crm-demo.example.test,+1 202 555 0116,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Imani Patel,person18@crm-demo.example.test,+1 202 555 0117,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Arun Patel,person19@crm-demo.example.test,+1 202 555 0118,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Zoe Patel,person20@crm-demo.example.test,+1 202 555 0119,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Avery Rivera,person21@crm-demo.example.test,+1 202 555 0120,Founder,lead,crm-demo,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Mina Rivera,person22@crm-demo.example.test,+1 202 555 0121,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Theo Rivera,person23@crm-demo.example.test,+1 202 555 0122,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Leila Rivera,person24@crm-demo.example.test,+1 202 555 0123,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Noah Rivera,person25@crm-demo.example.test,+1 202 555 0124,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Riya Rivera,person26@crm-demo.example.test,+1 202 555 0125,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Sam Rivera,person27@crm-demo.example.test,+1 202 555 0126,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Imani Rivera,person28@crm-demo.example.test,+1 202 555 0127,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Arun Rivera,person29@crm-demo.example.test,+1 202 555 0128,Founder,lead,crm-demo,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Zoe Rivera,person30@crm-demo.example.test,+1 202 555 0129,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Avery Morgan,person31@crm-demo.example.test,+1 202 555 0130,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Mina Morgan,person32@crm-demo.example.test,+1 202 555 0131,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Theo Morgan,person33@crm-demo.example.test,+1 202 555 0132,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Leila Morgan,person34@crm-demo.example.test,+1 202 555 0133,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Noah Morgan,person35@crm-demo.example.test,+1 202 555 0134,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Riya Morgan,person36@crm-demo.example.test,+1 202 555 0135,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Sam Morgan,person37@crm-demo.example.test,+1 202 555 0136,Founder,lead,crm-demo,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Imani Morgan,person38@crm-demo.example.test,+1 202 555 0137,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Arun Morgan,person39@crm-demo.example.test,+1 202 555 0138,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Zoe Morgan,person40@crm-demo.example.test,+1 202 555 0139,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Avery Kim,person41@crm-demo.example.test,+1 202 555 0140,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Mina Kim,person42@crm-demo.example.test,+1 202 555 0141,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Theo Kim,person43@crm-demo.example.test,+1 202 555 0142,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Leila Kim,person44@crm-demo.example.test,+1 202 555 0143,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Noah Kim,person45@crm-demo.example.test,+1 202 555 0144,Founder,lead,crm-demo,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Riya Kim,person46@crm-demo.example.test,+1 202 555 0145,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Sam Kim,person47@crm-demo.example.test,+1 202 555 0146,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Imani Kim,person48@crm-demo.example.test,+1 202 555 0147,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Arun Kim,person49@crm-demo.example.test,+1 202 555 0148,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Zoe Kim,person50@crm-demo.example.test,+1 202 555 0149,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Avery Bennett,person51@crm-demo.example.test,+1 202 555 0150,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Mina Bennett,person52@crm-demo.example.test,+1 202 555 0151,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.
+Theo Bennett,person53@crm-demo.example.test,+1 202 555 0152,Founder,lead,crm-demo,Fictional contact. Suggested Company: Willow Systems. Link the Company field after import.
+Leila Bennett,person54@crm-demo.example.test,+1 202 555 0153,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Harborlight Labs. Link the Company field after import.
+Noah Bennett,person55@crm-demo.example.test,+1 202 555 0154,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Meadow Works. Link the Company field after import.
+Riya Bennett,person56@crm-demo.example.test,+1 202 555 0155,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Juniper Collective. Link the Company field after import.
+Sam Bennett,person57@crm-demo.example.test,+1 202 555 0156,Founder,lead,crm-demo,Fictional contact. Suggested Company: Northstar Studio. Link the Company field after import.
+Imani Bennett,person58@crm-demo.example.test,+1 202 555 0157,Operations lead,active,crm-demo,Fictional contact. Suggested Company: Maple Harbor. Link the Company field after import.
+Arun Bennett,person59@crm-demo.example.test,+1 202 555 0158,Finance manager,active,crm-demo,Fictional contact. Suggested Company: Cedar Workshop. Link the Company field after import.
+Zoe Bennett,person60@crm-demo.example.test,+1 202 555 0159,Product lead,inactive,crm-demo,Fictional contact. Suggested Company: Orbit Fieldworks. Link the Company field after import.

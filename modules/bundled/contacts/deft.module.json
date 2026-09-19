@@ -10,9 +10,10 @@
         },
         {
           "key": "company",
-          "label": "Company",
+          "label": "Legacy company name",
           "required": false,
-          "type": "text"
+          "type": "text",
+          "description": "Historical company text. The Company link identifies the current company. Preserve this text for reference, or clear it after reviewing the linked company."
         },
         {
           "key": "company_id",
@@ -76,9 +77,10 @@
         },
         {
           "key": "last_contacted_at",
-          "label": "Last contacted",
+          "label": "Last contacted (manual)",
           "required": false,
-          "type": "datetime"
+          "type": "datetime",
+          "description": "Manually entered historical date. Last recorded contact is calculated separately from directly linked completed interactions; editing this field does not log an activity."
         },
         {
           "key": "notes",
@@ -99,8 +101,8 @@
           "status"
         ],
         "subtitle_fields": [
-          "company",
-          "role"
+          "role",
+          "email"
         ],
         "title_field": "name"
       },
@@ -144,7 +146,8 @@
             "owner",
             "tags",
             "last_contacted_at",
-            "notes"
+            "notes",
+            "company"
           ],
           "key": "form",
           "name": "Form",
@@ -161,11 +164,38 @@
             "owner",
             "tags",
             "last_contacted_at",
-            "notes"
+            "notes",
+            "company"
           ],
           "key": "detail",
           "name": "Details",
           "type": "detail"
+        }
+      ],
+      "latest_related": [
+        {
+          "key": "last_recorded_contact",
+          "label": "Last recorded contact",
+          "description": "Latest completed call, email or meeting linked directly to this record. Notes, unclassified activities and future dates are excluded.",
+          "source_collection": "activities",
+          "relation_field": "contact_id",
+          "date_field": "occurred_at",
+          "where": [
+            {
+              "field": "kind",
+              "values": [
+                "call",
+                "email",
+                "meeting"
+              ]
+            },
+            {
+              "field": "outcome",
+              "values": [
+                "completed"
+              ]
+            }
+          ]
         }
       ]
     },
@@ -312,6 +342,32 @@
           "name": "Details",
           "type": "detail"
         }
+      ],
+      "latest_related": [
+        {
+          "key": "last_recorded_contact",
+          "label": "Last recorded contact",
+          "description": "Latest completed call, email or meeting linked directly to this record. Notes, unclassified activities and future dates are excluded.",
+          "source_collection": "activities",
+          "relation_field": "company_id",
+          "date_field": "occurred_at",
+          "where": [
+            {
+              "field": "kind",
+              "values": [
+                "call",
+                "email",
+                "meeting"
+              ]
+            },
+            {
+              "field": "outcome",
+              "values": [
+                "completed"
+              ]
+            }
+          ]
+        }
       ]
     },
     {
@@ -342,7 +398,65 @@
           "key": "value",
           "label": "Value",
           "required": false,
-          "type": "number"
+          "type": "number",
+          "description": "Amount in the selected currency. Values without a currency remain unclassified."
+        },
+        {
+          "key": "currency",
+          "label": "Currency",
+          "description": "Choose the unit for this amount. Leave unset if the original currency is unknown.",
+          "required": false,
+          "type": "single_select",
+          "options": [
+            {
+              "label": "USD",
+              "value": "usd"
+            },
+            {
+              "label": "EUR",
+              "value": "eur"
+            },
+            {
+              "label": "GBP",
+              "value": "gbp"
+            },
+            {
+              "label": "INR",
+              "value": "inr"
+            },
+            {
+              "label": "CAD",
+              "value": "cad"
+            },
+            {
+              "label": "AUD",
+              "value": "aud"
+            },
+            {
+              "label": "JPY",
+              "value": "jpy"
+            },
+            {
+              "label": "CNY",
+              "value": "cny"
+            },
+            {
+              "label": "SGD",
+              "value": "sgd"
+            },
+            {
+              "label": "AED",
+              "value": "aed"
+            },
+            {
+              "label": "CHF",
+              "value": "chf"
+            },
+            {
+              "label": "NZD",
+              "value": "nzd"
+            }
+          ]
         },
         {
           "default": "lead",
@@ -425,13 +539,155 @@
             "company_id",
             "primary_contact_id",
             "value",
+            "currency",
             "owner",
             "close_date"
           ],
           "group_by": "stage",
+          "summary": {
+            "value_field": "value",
+            "unit_field": "currency"
+          },
           "key": "pipeline",
           "name": "Pipeline",
-          "type": "board"
+          "type": "board",
+          "quick_filters": [
+            {
+              "key": "open",
+              "name": "Open deals",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "closed",
+              "name": "Closed deals",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "won",
+                    "lost"
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "unassigned",
+              "name": "Unassigned",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "owner",
+                  "operator": "is_empty",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "key": "missing_close_date",
+              "name": "Missing close date",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "is_empty",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "key": "overdue_close",
+              "name": "Overdue close",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "past"
+                }
+              ]
+            },
+            {
+              "key": "closing_today",
+              "name": "Closing today",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "today"
+                }
+              ]
+            },
+            {
+              "key": "closing_week",
+              "name": "Closing next 7 days",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "next_7_days"
+                }
+              ]
+            }
+          ]
         },
         {
           "fields": [
@@ -439,12 +695,150 @@
             "company_id",
             "stage",
             "value",
+            "currency",
             "owner"
           ],
           "key": "timeline",
           "name": "Close timeline",
           "start_field": "close_date",
-          "type": "timeline"
+          "type": "timeline",
+          "quick_filters": [
+            {
+              "key": "open",
+              "name": "Open deals",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "closed",
+              "name": "Closed deals",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "won",
+                    "lost"
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "unassigned",
+              "name": "Unassigned",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "owner",
+                  "operator": "is_empty",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "key": "missing_close_date",
+              "name": "Missing close date",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "is_empty",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "key": "overdue_close",
+              "name": "Overdue close",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "past"
+                }
+              ]
+            },
+            {
+              "key": "closing_today",
+              "name": "Closing today",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "today"
+                }
+              ]
+            },
+            {
+              "key": "closing_week",
+              "name": "Closing next 7 days",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "next_7_days"
+                }
+              ]
+            }
+          ]
         },
         {
           "fields": [
@@ -452,13 +846,151 @@
             "company_id",
             "primary_contact_id",
             "value",
+            "currency",
             "stage",
             "owner",
             "close_date"
           ],
           "key": "table",
           "name": "Table",
-          "type": "table"
+          "type": "table",
+          "quick_filters": [
+            {
+              "key": "open",
+              "name": "Open deals",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "closed",
+              "name": "Closed deals",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "won",
+                    "lost"
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "unassigned",
+              "name": "Unassigned",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "owner",
+                  "operator": "is_empty",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "key": "missing_close_date",
+              "name": "Missing close date",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "is_empty",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "key": "overdue_close",
+              "name": "Overdue close",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "past"
+                }
+              ]
+            },
+            {
+              "key": "closing_today",
+              "name": "Closing today",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "today"
+                }
+              ]
+            },
+            {
+              "key": "closing_week",
+              "name": "Closing next 7 days",
+              "filters": [
+                {
+                  "field": "stage",
+                  "operator": "in",
+                  "value": [
+                    "lead",
+                    "qualified",
+                    "proposal",
+                    "negotiation"
+                  ]
+                },
+                {
+                  "field": "close_date",
+                  "operator": "date_relative",
+                  "value": "next_7_days"
+                }
+              ]
+            }
+          ]
         },
         {
           "fields": [
@@ -466,6 +998,7 @@
             "company_id",
             "primary_contact_id",
             "value",
+            "currency",
             "stage",
             "close_date",
             "owner",
@@ -482,6 +1015,7 @@
             "company_id",
             "primary_contact_id",
             "value",
+            "currency",
             "stage",
             "close_date",
             "owner",
@@ -491,6 +1025,32 @@
           "key": "detail",
           "name": "Details",
           "type": "detail"
+        }
+      ],
+      "latest_related": [
+        {
+          "key": "last_recorded_contact",
+          "label": "Last recorded contact",
+          "description": "Latest completed call, email or meeting linked directly to this record. Notes, unclassified activities and future dates are excluded.",
+          "source_collection": "activities",
+          "relation_field": "deal_id",
+          "date_field": "occurred_at",
+          "where": [
+            {
+              "field": "kind",
+              "values": [
+                "call",
+                "email",
+                "meeting"
+              ]
+            },
+            {
+              "field": "outcome",
+              "values": [
+                "completed"
+              ]
+            }
+          ]
         }
       ]
     },
@@ -526,6 +1086,27 @@
           ],
           "required": false,
           "type": "single_select"
+        },
+        {
+          "key": "outcome",
+          "label": "Outcome",
+          "type": "single_select",
+          "required": false,
+          "options": [
+            {
+              "value": "completed",
+              "label": "Completed"
+            },
+            {
+              "value": "planned",
+              "label": "Planned"
+            },
+            {
+              "value": "cancelled",
+              "label": "Cancelled"
+            }
+          ],
+          "description": "Choose Completed only for an interaction that happened. A past dated completed call, email or meeting updates Last recorded contact. Leaving this blank preserves an unclassified historical activity."
         },
         {
           "key": "occurred_at",
@@ -578,11 +1159,13 @@
           "subject",
           "kind",
           "occurred_at",
-          "notes"
+          "notes",
+          "outcome"
         ],
         "subtitle_fields": [
           "kind",
-          "occurred_at"
+          "occurred_at",
+          "outcome"
         ],
         "title_field": "subject"
       },
@@ -592,6 +1175,7 @@
           "fields": [
             "subject",
             "kind",
+            "outcome",
             "contact_id",
             "company_id",
             "deal_id",
@@ -606,6 +1190,7 @@
           "fields": [
             "subject",
             "kind",
+            "outcome",
             "occurred_at",
             "contact_id",
             "company_id",
@@ -620,6 +1205,7 @@
           "fields": [
             "subject",
             "kind",
+            "outcome",
             "occurred_at",
             "contact_id",
             "company_id",
@@ -635,6 +1221,7 @@
           "fields": [
             "subject",
             "kind",
+            "outcome",
             "occurred_at",
             "contact_id",
             "company_id",
@@ -647,6 +1234,139 @@
           "type": "detail"
         }
       ]
+    },
+    {
+      "key": "outreach",
+      "name": "Outreach",
+      "singular_name": "Outreach draft",
+      "description": "Prepare messages for selected CRM contacts and review them with your team.",
+      "fields": [
+        {
+          "key": "name",
+          "label": "Name",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "subject",
+          "label": "Subject",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "body",
+          "label": "Message",
+          "type": "long_text",
+          "description": "Draft content for review. Saving this record does not send a message."
+        },
+        {
+          "key": "contacts",
+          "label": "Recipients",
+          "type": "relation",
+          "target_collection": "contacts",
+          "multiple": true,
+          "description": "Selected CRM contacts. Review their current email addresses before any execution."
+        },
+        {
+          "key": "status",
+          "label": "Draft status",
+          "type": "single_select",
+          "default": "draft",
+          "options": [
+            {
+              "value": "draft",
+              "label": "Draft"
+            },
+            {
+              "value": "ready_for_review",
+              "label": "Ready for review"
+            },
+            {
+              "value": "paused",
+              "label": "Paused"
+            }
+          ]
+        },
+        {
+          "key": "owner",
+          "label": "Owner",
+          "type": "member",
+          "multiple": false
+        },
+        {
+          "key": "audience_notes",
+          "label": "Audience notes",
+          "type": "long_text"
+        }
+      ],
+      "views": [
+        {
+          "key": "table",
+          "name": "All drafts",
+          "type": "table",
+          "fields": [
+            "name",
+            "subject",
+            "contacts",
+            "status",
+            "owner"
+          ]
+        },
+        {
+          "key": "board",
+          "name": "Review board",
+          "type": "board",
+          "group_by": "status",
+          "fields": [
+            "name",
+            "subject",
+            "contacts",
+            "owner"
+          ]
+        },
+        {
+          "key": "form",
+          "name": "Form",
+          "type": "form",
+          "fields": [
+            "name",
+            "subject",
+            "body",
+            "contacts",
+            "status",
+            "owner",
+            "audience_notes"
+          ]
+        },
+        {
+          "key": "detail",
+          "name": "Details",
+          "type": "detail",
+          "fields": [
+            "name",
+            "subject",
+            "body",
+            "contacts",
+            "status",
+            "owner",
+            "audience_notes"
+          ]
+        }
+      ],
+      "search": {
+        "title_field": "name",
+        "subtitle_fields": [
+          "subject",
+          "status"
+        ],
+        "fields": [
+          "name",
+          "subject",
+          "body",
+          "status",
+          "audience_notes"
+        ]
+      }
     }
   ],
   "description": "A native relationship workspace for contacts, companies, deals, and activity.",
@@ -659,5 +1379,5 @@
   },
   "schema_version": "1",
   "slug": "contacts",
-  "version": "1.1.0"
+  "version": "1.8.0"
 }

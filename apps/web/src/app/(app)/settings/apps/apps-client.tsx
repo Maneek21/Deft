@@ -9,7 +9,7 @@ import { ConnectedAppManagement } from '@/components/apps/connected-app-manageme
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { APP_PACKAGE_MAX_BYTES, appApiError, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
+import { APP_PACKAGE_MAX_BYTES, appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
 
 export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
@@ -102,6 +102,16 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     finally { setBusy(null); }
   };
 
+  const enable = async (app: AppInstallation) => {
+    setBusy(app.id); setMessage(null);
+    try {
+      const response = await api.post(`/api/apps/${encodeURIComponent(app.id)}/enable`, { expected_lifecycle_epoch: app.lifecycle_epoch });
+      if (!response.ok) throw new Error(await appApiError(response, 'Unable to re-enable this App.'));
+      await refreshApps(); setMessage({ tone: 'success', text: `${app.name} ${app.version} is active again. Connected upgrades still require review.` });
+    } catch (reason) { setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : 'Unable to re-enable App.' }); }
+    finally { setBusy(null); }
+  };
+
   const createPairing = async () => {
     setBusy('pairing'); setMessage(null);
     try {
@@ -136,7 +146,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           : apps.length === 0 ? <EmptyState icon={<AppWindow size={20} />} title="No Apps installed" description="Inspect a Deft App package to review what it adds to your workspace." action={canManage ? { label: 'Inspect a package', onClick: () => choosePackage() } : undefined} />
           : selectedApp ? <>
             <Link href="/settings/apps" className="deft-pill min-h-11">← All Apps</Link>
-            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} />
+            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} />
           </> : <section aria-label="Installed Apps" className="space-y-3">
             <label className="block text-xs font-medium">
               Find an App
@@ -168,15 +178,16 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
   </section>;
 }
 
-function AppCard({ app, canManage, busy, onActivate, onDisable, onChooseUpgrade }: { app: AppInstallation; canManage: boolean; busy: boolean; onActivate: () => void; onDisable: () => void; onChooseUpgrade: () => void }) {
+function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChooseUpgrade }: { app: AppInstallation; canManage: boolean; busy: boolean; onActivate: () => void; onEnable: () => void; onDisable: () => void; onChooseUpgrade: () => void }) {
   const connected = app.manifest.compatibility.app_protocol !== '0';
+  const showConnectedManagement = connected || canStageConnectedUpgrade(app);
   const tone = app.state === 'active' ? 'var(--status-green)' : app.state === 'disabled' ? 'var(--outline)' : 'var(--status-amber)';
   return <article className={`flex min-h-56 min-w-0 flex-col rounded-xl p-4 ${connected ? 'md:col-span-2' : ''}`} style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}>
     <div className="flex items-start gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ background: 'var(--bg-active)', color: 'var(--primary)' }}><AppWindow size={20} /></span><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate text-sm font-semibold">{app.name}</h2><span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase" style={{ color: tone, background: 'var(--surface-container-high)' }}>{app.state}</span></div><p className="mt-1 truncate font-mono text-[11px]" style={{ color: 'var(--outline)' }}>{app.app_id}@{app.version}</p></div></div>
     <p className="mt-3 line-clamp-2 text-xs leading-5" style={{ color: 'var(--on-surface-variant)' }}>{app.manifest.description ?? 'Declarative workspace App.'}</p>
     <div className="mt-3 text-[11px]" style={{ color: 'var(--outline)' }}>{app.manifest.modules.length} Module{app.manifest.modules.length === 1 ? '' : 's'} · Protocol v{app.manifest.compatibility.app_protocol} · {app.manifest.license}</div>
-    {!connected && <div className="mt-auto flex items-center justify-between gap-3 pt-4"><span className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--status-green)' }}><ShieldCheck size={13} /> No connected permissions</span>{canManage && app.state === 'staged' ? <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={busy} onClick={onActivate}>{busy && <Loader2 size={13} className="animate-spin" />} Activate</button> : canManage && app.state === 'active' ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Disable</button> : null}</div>}
-    {connected && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
+    {!connected && <div className="mt-auto flex items-center justify-between gap-3 pt-4"><span className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--status-green)' }}><ShieldCheck size={13} /> No connected permissions</span>{canManage && app.state === 'staged' ? <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={busy} onClick={onActivate}>{busy && <Loader2 size={13} className="animate-spin" />} Activate</button> : canManage && app.state === 'active' ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Disable</button> : canManage && canEnableAppWithoutReview(app) ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onEnable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Re-enable version {app.version}</button> : null}</div>}
+    {showConnectedManagement && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
   </article>;
 }
 

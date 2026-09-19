@@ -19,7 +19,12 @@ import {
   deftyModuleActor,
   employeeModuleActor,
 } from './module-service.js';
-import { searchAuthorizedModuleResources as searchModuleRecords } from './resource-search-service.js';
+import {
+  moduleReadFailureDiagnostic,
+  moduleReadForbiddenDiagnostic,
+  searchAuthorizedModuleResourcesWithDiagnostics as searchModuleRecords,
+  type ModuleReadDiagnostic,
+} from './resource-search-service.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -53,6 +58,13 @@ export interface RetrieveContextParams {
    * ranking (useful for testing or when vector search is not desired).
    */
   hybrid?: boolean;
+}
+
+/** Additive detailed retrieval result for callers that need to distinguish a
+ * safe empty result from an unavailable Module branch. */
+export interface RetrieveContextDetailedResult {
+  results: ContextResult[];
+  diagnostics: ModuleReadDiagnostic[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -953,7 +965,7 @@ async function fetchModuleContext(
   agentEmployeeId: string | undefined,
   query: string,
   limit: number,
-): Promise<ContextResult[]> {
+): Promise<{ results: ContextResult[]; diagnostic?: ModuleReadDiagnostic }> {
   try {
     let actor;
     if (agentEmployeeId) {
@@ -971,12 +983,12 @@ async function fetchModuleContext(
           eq(agentEmployees.is_deleted, false),
         ))
         .limit(1);
-      if (!employee) return [];
+      if (!employee) return { results: [], diagnostic: moduleReadFailureDiagnostic(undefined) };
       // Retrieval is an implicit module_record_search call. Respect the same
       // employee tool policy as explicit Defty/MCP discovery so disabling the
       // tool cannot be bypassed through the default context gateway.
       if (isAgentToolDisabled(employee.disabled_tools, 'module_record_search')) {
-        return [];
+        return { results: [], diagnostic: moduleReadForbiddenDiagnostic() };
       }
       actor = employeeModuleActor({
         orgId,
@@ -994,7 +1006,7 @@ async function fetchModuleContext(
           eq(orgMembers.is_active, true),
         ))
         .limit(1);
-      if (!membership) return [];
+      if (!membership) return { results: [], diagnostic: moduleReadForbiddenDiagnostic() };
       actor = deftyModuleActor({
         orgId,
         userId,
@@ -1002,11 +1014,12 @@ async function fetchModuleContext(
       });
     } else {
       // Never expose org-wide module records to an unresolved/system query.
-      return [];
+      return { results: [] };
     }
 
-    const { items } = await searchModuleRecords(actor, { query, limit });
-    return items.map((item) => ({
+    const outcome = await searchModuleRecords(actor, { query, limit });
+    return {
+      results: outcome.items.map((item) => ({
       source_type: 'module_record' as const,
       source_id: item.record_id,
       title: item.title,
@@ -1024,18 +1037,19 @@ async function fetchModuleContext(
         url: item.url,
         untrusted_data: true,
       },
-    }));
+      })),
+      ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
+    };
   } catch (error) {
-    console.warn('[retrieveContext] module branch failed:', error instanceof Error ? error.message : String(error));
-    return [];
+    return { results: [], diagnostic: moduleReadFailureDiagnostic(error) };
   }
 }
 
 // ─── Main gateway ─────────────────────────────────────────────────────────────
 
-export async function retrieveContext(
+export async function retrieveContextWithDiagnostics(
   params: RetrieveContextParams,
-): Promise<ContextResult[]> {
+): Promise<RetrieveContextDetailedResult> {
   const {
     query,
     org_id,
@@ -1055,7 +1069,7 @@ export async function retrieveContext(
   // 2. Gate on the aggressively-stripped form — FTS can handle longer inputs
   //    but ILIKE with < 2 chars produces meaningless results.
   if (forIlike.length < 2) {
-    return [];
+    return { results: [], diagnostics: [] };
   }
 
   // 3. Generate query embedding once — reused by wiki and decisions branches.
@@ -1068,7 +1082,7 @@ export async function retrieveContext(
     : null;
 
   // 4. Run all requested branches concurrently; each returns its own array.
-  const [wikiRows, decisionRows, memRows, noteRows, taskRows, moduleRows] = await Promise.all([
+  const [wikiRows, decisionRows, memRows, noteRows, taskRows, moduleOutcome] = await Promise.all([
     types.includes('wiki')
       ? fetchWiki(org_id, user_id, forFTS, forIlike, words, agent_employee_id, space_id, include_org, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
@@ -1100,11 +1114,23 @@ export async function retrieveContext(
 
     types.includes('modules')
       ? fetchModuleContext(org_id, user_id, agent_employee_id, forFTS, limit)
-      : Promise.resolve([]),
+      : Promise.resolve<{ results: ContextResult[]; diagnostic?: ModuleReadDiagnostic }>({ results: [] }),
   ]);
 
   // 8. Merge, sort by score DESC, return top `limit`.
-  const results = [...wikiRows, ...decisionRows, ...memRows, ...noteRows, ...taskRows, ...moduleRows];
+  const results = [...wikiRows, ...decisionRows, ...memRows, ...noteRows, ...taskRows, ...moduleOutcome.results];
   results.sort((a, b) => b.score - a.score);
-  return results.slice(0, limit);
+  return {
+    results: results.slice(0, limit),
+    diagnostics: moduleOutcome.diagnostic ? [moduleOutcome.diagnostic] : [],
+  };
+}
+
+/** Legacy result-only gateway. Existing agent/tool callers retain the same
+ * authorized records and empty-result behavior; aggregate callers can opt in
+ * to retrieveContextWithDiagnostics when they need a safe branch state. */
+export async function retrieveContext(
+  params: RetrieveContextParams,
+): Promise<ContextResult[]> {
+  return (await retrieveContextWithDiagnostics(params)).results;
 }

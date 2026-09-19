@@ -43,6 +43,7 @@ export type ModuleField = {
 };
 
 export type ModuleCollection = {
+  hasRelatedLatest?: boolean;
   key: string;
   name: string;
   singularName: string;
@@ -56,6 +57,8 @@ export type ModuleCollection = {
 export type ModuleViewType = 'table' | 'board' | 'timeline' | 'form' | 'detail';
 
 export type ModuleView = {
+  quickFilters?: { key: string; name: string; filters: import('./module-saved-views').ModuleQueryFilter[] }[];
+  summary?: { valueField: string; unitField: string };
   key: string;
   name: string;
   type: ModuleViewType;
@@ -92,6 +95,7 @@ export type ModuleInstallation = {
   agentAccess: 'none' | 'read' | 'write';
   activeVersionId: string | null;
   manifestDigest: string | null;
+  owningAppInstallationId: string | null;
   manifest: ModuleManifest;
 };
 
@@ -141,6 +145,7 @@ export type ModuleRecordPage = {
 };
 
 export type ModuleRecordRelation = {
+  subtitle?: string;
   id: string;
   collectionKey: string;
   label: string;
@@ -273,6 +278,7 @@ export function normalizeModuleManifest(value: unknown, _fallbackSlug = ''): Mod
       }),
       titleField: collection.search?.title_field ?? collection.fields[0]?.key ?? null,
       subtitleFields: collection.search?.subtitle_fields ?? [],
+      ...(collection.latest_related?.length ? { hasRelatedLatest: true } : {}),
       views: (collection.views ?? []).map((view) => {
         const rawView = view as unknown as UnknownRecord;
         return {
@@ -280,7 +286,9 @@ export function normalizeModuleManifest(value: unknown, _fallbackSlug = ''): Mod
           name: view.name,
           type: view.type as ModuleViewType,
           fields: [...view.fields],
+          ...(view.quick_filters ? { quickFilters: view.quick_filters } : {}),
           groupBy: asString(rawView.group_by),
+          ...(view.type === 'board' && view.summary ? { summary: { valueField: view.summary.value_field, unitField: view.summary.unit_field } } : {}),
           startField: asString(rawView.start_field),
           endField: asString(rawView.end_field),
         };
@@ -323,8 +331,15 @@ export function normalizeModuleInstallation(value: unknown): ModuleInstallation 
     agentAccess: row.agent_access === 'read' || row.agent_access === 'write' ? row.agent_access : 'none',
     activeVersionId: asString(row.active_version_id),
     manifestDigest: asString(row.manifest_digest),
+    owningAppInstallationId: asString(row.owning_app_installation_id),
     manifest,
   };
+}
+
+export function moduleOwningAppHref(module: ModuleInstallation): string | null {
+  return module.owningAppInstallationId
+    ? `/settings/apps/${encodeURIComponent(module.owningAppInstallationId)}`
+    : null;
 }
 
 export function normalizeInstalledModulesResponse(value: unknown): ModuleInstallation[] {
@@ -477,6 +492,7 @@ export function normalizeModuleRelationsResponse(value: unknown): ModuleRelation
             id,
             collectionKey,
             label: asString(record.label) ?? `Record ${id.slice(0, 8)}`,
+            ...(asString(record.subtitle) ? { subtitle: asString(record.subtitle)! } : {}),
           }];
         })
       : [];
@@ -714,6 +730,10 @@ export function getModuleCollectionFields(
   return view.fields.map((key) => byKey.get(key)).filter((field): field is ModuleField => Boolean(field));
 }
 
+export function getModuleCreatePrimaryFields(fields: ModuleField[]): ModuleField[] {
+  return fields.slice(0, 8);
+}
+
 export function getModuleViewFields(collection: ModuleCollection, view: ModuleView): ModuleField[] {
   const byKey = new Map(collection.fields.map((field) => [field.key, field]));
   const configured = view.fields
@@ -802,6 +822,14 @@ export function getModuleRecordSubtitle(record: ModuleRecord, collection: Module
     .join(' · ');
 }
 
+export function formatModuleNumberValue(value: string | number): string {
+  const raw = String(value);
+  const match = /^([+-]?)(\d+)(\.\d+)?$/.exec(raw);
+  if (!match) return raw;
+  const [, sign, integer, fraction = ''] = match;
+  return `${sign}${integer!.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${fraction}`;
+}
+
 export function formatModuleFieldValue(value: unknown, field?: Pick<ModuleField, 'type' | 'options'>): string {
   if (value === null || value === undefined || value === '') return '—';
   if (Array.isArray(value)) {
@@ -822,6 +850,7 @@ export function formatModuleFieldValue(value: unknown, field?: Pick<ModuleField,
     }
   }
   if (field?.type === 'single_select') return optionLabel(String(value), field.options);
+  if (field?.type === 'number' && (typeof value === 'string' || typeof value === 'number')) return formatModuleNumberValue(value);
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
@@ -830,10 +859,10 @@ function optionLabel(value: string, options: ModuleFieldOption[]): string {
   return options.find((option) => option.value === value)?.label ?? value;
 }
 
-export function initialModuleRecordValues(collection: ModuleCollection, record?: ModuleRecord | null): Record<string, unknown> {
+export function initialModuleRecordValues(collection: ModuleCollection, record?: ModuleRecord | null, initialData?: Record<string, unknown>): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   for (const field of collection.fields) {
-    const current = record?.data[field.key];
+    const current = record ? record.data[field.key] : initialData?.[field.key];
     if (current !== undefined && current !== null) {
       values[field.key] = field.type === 'datetime' && typeof current === 'string'
         ? toDatetimeLocalValue(current)
@@ -942,6 +971,7 @@ export function diffModuleRecordUpdate(
 export async function moduleApiError(response: Response, fallback: string): Promise<string> {
   const body = await response.json().catch(() => ({})) as { error?: unknown; code?: unknown };
   const detail = typeof body.error === 'string' ? body.error : fallback;
+  if (response.status === 409 && body.code === 'MODULE_SAVED_VIEW_CONFLICT') return `${detail.replace(/[.!?]$/, '')}. Choose a different name.`;
   if (response.status === 409) return `${detail} Refresh and try again.`;
   return detail;
 }

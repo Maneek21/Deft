@@ -5,6 +5,7 @@ import { api } from './api';
 import { setUserTimezone } from './time';
 import { useRouter } from 'next/navigation';
 import { disconnectSocket } from './socket';
+import { createSessionCacheScope, setActiveSessionCacheScope } from './session-cache';
 
 type NotificationPreferences = {
   keywords: string[];
@@ -54,6 +55,7 @@ type AuthContextType = {
   user: User | null;
   org: Org | null;
   loading: boolean;
+  sessionCacheScope: string | null;
   login: (email: string, password: string) => Promise<void>;
   signup: (name: string, email: string, password: string, orgName: string) => Promise<void>;
   logout: (options?: LogoutOptions) => Promise<void>;
@@ -168,8 +170,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<Org | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionCacheScope, setSessionCacheScope] = useState<string | null>(null);
   const router = useRouter();
   const authGeneration = useRef(new AuthRequestGeneration());
+  const sessionCacheEpoch = useRef(0);
+
+  const clearSessionCacheScope = useCallback(() => {
+    setActiveSessionCacheScope(null);
+    setSessionCacheScope(null);
+  }, []);
 
   const fetchMe = useCallback(async () => {
     const generation = authGeneration.current.capture();
@@ -179,6 +188,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.ok) {
         const data = await res.json();
         if (!authGeneration.current.isCurrent(generation)) return;
+        const cacheScope = createSessionCacheScope({
+          accessToken: localStorage.getItem('deft-access-token'),
+          authenticatedUserId: data.user.id,
+          authenticatedOrgId: data.org.id,
+          authEpoch: sessionCacheEpoch.current,
+        });
+        setActiveSessionCacheScope(cacheScope);
+        setSessionCacheScope(cacheScope);
         setUser(data.user);
         setOrg(data.org);
         // Use browser timezone if DB has default 'UTC' (means not yet auto-detected)
@@ -188,26 +205,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else if (res.status === 429) {
         console.warn('[auth] /me rate limited; preserving current session state');
       } else {
+        clearSessionCacheScope();
         setUser(null);
         setOrg(null);
       }
     } catch {
       if (!authGeneration.current.isCurrent(generation)) return;
+      clearSessionCacheScope();
       setUser(null);
       setOrg(null);
     } finally {
       if (authGeneration.current.isCurrent(generation)) setLoading(false);
     }
-  }, []);
+  }, [clearSessionCacheScope]);
 
   useEffect(() => {
     const token = localStorage.getItem('deft-access-token');
     if (token) {
       fetchMe();
     } else {
+      clearSessionCacheScope();
       setLoading(false);
     }
-  }, [fetchMe]);
+  }, [clearSessionCacheScope, fetchMe]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -215,8 +235,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!isCurrentRefreshStorageEvent(event.newValue, localStorage.getItem('deft-refresh-token'))) return;
       if (event.newValue === null) {
         authGeneration.current.advance();
+        sessionCacheEpoch.current += 1;
         api.clearTokens();
         disconnectSocket();
+        clearSessionCacheScope();
         setUser(null);
         setOrg(null);
         setLoading(false);
@@ -228,7 +250,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       api.setTokens(accessToken, event.newValue);
       if (!isCrossTabSessionReplacement(event.oldValue, event.newValue)) return;
       authGeneration.current.advance();
+      sessionCacheEpoch.current += 1;
       disconnectSocket();
+      clearSessionCacheScope();
       setUser(null);
       setOrg(null);
       setLoading(true);
@@ -236,49 +260,85 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
-  }, [fetchMe, router]);
+  }, [clearSessionCacheScope, fetchMe, router]);
 
   const login = async (email: string, password: string) => {
     const generation = authGeneration.current.advance();
-    const res = await api.post('/api/auth/login', { email, password });
-    if (!authGeneration.current.isCurrent(generation)) return;
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Login failed');
+    sessionCacheEpoch.current += 1;
+    api.clearTokens();
+    disconnectSocket();
+    clearSessionCacheScope();
+    setUser(null);
+    setOrg(null);
+    setLoading(true);
+    try {
+      const res = await api.post('/api/auth/login', { email, password });
+      if (!authGeneration.current.isCurrent(generation)) return;
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Login failed');
+      }
+      const data = await res.json();
+      if (!authGeneration.current.isCurrent(generation)) return;
+      api.setTokens(data.accessToken, data.refreshToken);
+      await fetchMe();
+      if (!authGeneration.current.isCurrent(generation)) return;
+      const redirect = safePostLoginDestination(
+        sessionStorage.getItem('deft-redirect-after-login'),
+      );
+      sessionStorage.removeItem('deft-redirect-after-login');
+      router.push(redirect ?? '/dashboard');
+    } catch (error) {
+      if (authGeneration.current.isCurrent(generation)) {
+        clearSessionCacheScope();
+        setUser(null);
+        setOrg(null);
+        setLoading(false);
+      }
+      throw error;
     }
-    const data = await res.json();
-    if (!authGeneration.current.isCurrent(generation)) return;
-    api.setTokens(data.accessToken, data.refreshToken);
-    await fetchMe();
-    if (!authGeneration.current.isCurrent(generation)) return;
-    const redirect = safePostLoginDestination(
-      sessionStorage.getItem('deft-redirect-after-login'),
-    );
-    sessionStorage.removeItem('deft-redirect-after-login');
-    router.push(redirect ?? '/dashboard');
   };
 
   const signup = async (name: string, email: string, password: string, orgName: string) => {
     const generation = authGeneration.current.advance();
-    const res = await api.post('/api/auth/signup', { name, email, password, org_name: orgName });
-    if (!authGeneration.current.isCurrent(generation)) return;
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Signup failed');
+    sessionCacheEpoch.current += 1;
+    api.clearTokens();
+    disconnectSocket();
+    clearSessionCacheScope();
+    setUser(null);
+    setOrg(null);
+    setLoading(true);
+    try {
+      const res = await api.post('/api/auth/signup', { name, email, password, org_name: orgName });
+      if (!authGeneration.current.isCurrent(generation)) return;
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Signup failed');
+      }
+      const data = await res.json();
+      if (!authGeneration.current.isCurrent(generation)) return;
+      api.setTokens(data.accessToken, data.refreshToken);
+      await fetchMe();
+      if (!authGeneration.current.isCurrent(generation)) return;
+      router.push('/setup-ai');
+    } catch (error) {
+      if (authGeneration.current.isCurrent(generation)) {
+        clearSessionCacheScope();
+        setUser(null);
+        setOrg(null);
+        setLoading(false);
+      }
+      throw error;
     }
-    const data = await res.json();
-    if (!authGeneration.current.isCurrent(generation)) return;
-    api.setTokens(data.accessToken, data.refreshToken);
-    await fetchMe();
-    if (!authGeneration.current.isCurrent(generation)) return;
-    router.push('/setup-ai');
   };
 
   const logout = async (options: LogoutOptions = {}) => {
     const refreshToken = localStorage.getItem('deft-refresh-token');
     authGeneration.current.advance();
+    sessionCacheEpoch.current += 1;
     api.clearTokens();
     disconnectSocket();
+    clearSessionCacheScope();
     setUser(null);
     setOrg(null);
     router.replace(options.destination ?? '/login');
@@ -295,7 +355,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
+    <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
       {children}
     </AuthContext.Provider>
   );

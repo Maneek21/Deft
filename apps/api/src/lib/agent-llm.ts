@@ -192,9 +192,18 @@ async function callOpenAIResponsesAgent(p: CreateAgentMessageParams): Promise<Ag
   }
 
   const data = await res.json();
+  // HTTP success does not mean generation completed. Never turn truncated
+  // function arguments (or a failed/empty response) into executable tool calls.
+  if (data.status !== 'completed') {
+    throw new Error('AI provider response incomplete; retry the request.');
+  }
+  const content = fromResponsesOutput(data);
+  if (!content.some((block) => block.type === 'tool_use' || (block.type === 'text' && block.text.trim()))) {
+    throw new Error('AI provider returned an empty response; retry the request.');
+  }
   const hasToolCall = (data.output ?? []).some((o: any) => o.type === 'function_call');
   return {
-    content: fromResponsesOutput(data),
+    content,
     stop_reason: hasToolCall ? 'tool_use' : 'end_turn',
     usage: {
       input_tokens: data.usage?.input_tokens ?? 0,
@@ -344,6 +353,10 @@ function toResponsesTools(tools: Anthropic.Tool[]): any[] {
     type: 'function',
     name: t.name,
     description: (t as any).description || '',
+    // Shared tools include optional fields and manifest-defined dictionaries.
+    // Preserve that contract instead of letting Responses normalize it to
+    // strict mode. The host still validates arguments before executing tools.
+    strict: false,
     parameters: (t as any).input_schema || { type: 'object', properties: {} },
   }));
 }

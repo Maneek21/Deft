@@ -21,8 +21,14 @@ import {
   enableAppInstallation,
   listActiveAppNavigation,
   stageAppPackage,
+  stageAppUpgrade,
 } from '../src/lib/app-service.js';
-import { humanModuleActor, updateModuleInstallation } from '../src/lib/module-service.js';
+import {
+  getModuleInstallation,
+  humanModuleActor,
+  listModuleInstallations,
+  updateModuleInstallation,
+} from '../src/lib/module-service.js';
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
@@ -80,6 +86,54 @@ async function packageJson(suffix: string) {
       license: 'AGPL-3.0-only', compatibility: { app_protocol: '0' },
       modules: [{ module_id: moduleManifest.id, version: '1.0.0', manifest_path: artifact.path, manifest_digest: artifact.digest }],
       navigation: [{ key: 'items', label: `Test ${suffix}`, module_id: moduleManifest.id, collection_key: 'items', view_key: 'all' }],
+    },
+    artifacts: [artifact],
+  });
+}
+
+async function connectedUpgradePackageJson(suffix: string) {
+  const moduleManifest = {
+    schema_version: '1',
+    id: `test.deft.${suffix}`,
+    slug: suffix,
+    version: '1.0.0',
+    name: `Test ${suffix}`,
+    collections: [{
+      key: 'items', name: 'Items',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      views: [{ key: 'all', name: 'All items', type: 'table', fields: ['name'] }],
+      search: { title_field: 'name', subtitle_fields: [], fields: ['name'] },
+    }],
+  };
+  const artifact = await prepareModuleArtifact({ path: `modules/${suffix}/deft.module.json`, manifest: moduleManifest });
+  return buildDeftAppPackage({
+    manifest: {
+      schema_version: '1', id: `test.deft.${suffix}-app`, version: '2.0.0', name: `Test ${suffix}`,
+      license: 'AGPL-3.0-only', compatibility: { app_protocol: '1' },
+      modules: [{ module_id: moduleManifest.id, version: '1.0.0', manifest_path: artifact.path, manifest_digest: artifact.digest }],
+      navigation: [{ key: 'items', label: `Test ${suffix}`, module_id: moduleManifest.id, collection_key: 'items', view_key: 'all' }],
+      dependencies: [],
+      resource_requirements: [{
+        key: 'item',
+        source: { kind: 'included_module', module_id: moduleManifest.id, version: '1.0.0' },
+        resource_type: 'items',
+        fields: ['name'],
+      }],
+      capability_requirements: [{
+        key: 'send_email',
+        interface: { kind: 'private', namespace: 'app_lineage', key: 'sandbox_email_send', version: '1' },
+      }],
+      connector_requirements: [{ key: 'mail_provider', provider_kind: 'mcp' }],
+      actions: [{
+        key: 'send_item_email', label: 'Send item email', capability_requirement_key: 'send_email',
+        connector_requirement_key: 'mail_provider',
+        placement: { kind: 'resource_detail', resource_requirement_key: 'item' },
+        input_bindings: [
+          { input_key: 'to', source: { kind: 'user_input', label: 'Recipient', input_type: 'email', required: true } },
+          { input_key: 'subject', source: { kind: 'user_input', label: 'Subject', input_type: 'text', required: true } },
+          { input_key: 'body_text', source: { kind: 'user_input', label: 'Message', input_type: 'text', required: true } },
+        ],
+      }],
     },
     artifacts: [artifact],
   });
@@ -149,7 +203,8 @@ test('App activation is atomic, tenant-bound, zero-rights while staged, and pres
   assert.equal(active.state, 'active');
   const [binding] = await db.select().from(appModuleBindings).where(eq(appModuleBindings.app_installation_id, staged.id));
   assert.ok(binding);
-  assert.ok((await listActiveAppNavigation(actor)).some((item) => item.module_slug === suffix));
+  const navigation = await listActiveAppNavigation(actor);
+  assert.equal(navigation.find((item) => item.module_slug === suffix)?.view_key, 'all');
 
   await db.insert(moduleRecords).values({
     id: recordId, org_id: orgId, installation_id: binding.module_installation_id,
@@ -157,16 +212,48 @@ test('App activation is atomic, tenant-bound, zero-rights while staged, and pres
     search_title: 'Preserve me', search_text: 'Preserve me', created_by_actor_type: 'human', created_by_actor_id: userId,
     updated_by_actor_type: 'human', updated_by_actor_id: userId,
   });
+  const connectedUpgrade = await connectedUpgradePackageJson(suffix);
+  const stagedUpgrade = await stageAppUpgrade(actor, active.id, connectedUpgrade.json, active.lifecycle_epoch);
+  assert.equal(stagedUpgrade.state, 'active');
+  assert.equal(stagedUpgrade.active_version_id, active.active_version_id);
+  const [pendingVersion] = await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.installation_id, active.id),
+    eq(appVersions.version, '2.0.0'),
+  ));
+  assert.equal(pendingVersion?.state, 'staged');
+  assert.ok(pendingVersion?.requested_grant_snapshot_id);
   const disabled = await disableAppInstallation(actor, active.id, active.lifecycle_epoch);
   assert.equal(disabled.state, 'disabled');
   assert.equal((await listActiveAppNavigation(actor)).some((item) => item.module_slug === suffix), false);
   assert.equal((await db.select().from(moduleRecords).where(eq(moduleRecords.id, recordId))).length, 1);
   const reenabled = await enableAppInstallation(actor, disabled.id, disabled.lifecycle_epoch);
   assert.equal(reenabled.state, 'active');
+  assert.equal(reenabled.active_version_id, active.active_version_id);
+  const [reenabledInstallation] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, orgId),
+    eq(appInstallations.id, active.id),
+  ));
+  assert.equal(reenabledInstallation?.active_grant_snapshot_id, null);
+  assert.equal((await db.select().from(appVersions).where(and(
+    eq(appVersions.org_id, orgId),
+    eq(appVersions.id, pendingVersion!.id),
+    eq(appVersions.state, 'staged'),
+  ))).length, 1);
   assert.ok((await listActiveAppNavigation(actor)).some((item) => item.module_slug === suffix));
   assert.equal((await db.select().from(moduleRecords).where(eq(moduleRecords.id, recordId))).length, 1);
   const disabledAgain = await disableAppInstallation(actor, reenabled.id, reenabled.lifecycle_epoch);
   assert.equal(disabledAgain.state, 'disabled');
+
+  const listedModule = (await listModuleInstallations(actor, { includeDisabled: true }))
+    .find((installation) => installation.slug === suffix);
+  assert.equal(listedModule?.owning_app_installation_id, staged.id);
+  const fetchedModule = await getModuleInstallation(actor, { slug: suffix }, { allowDisabledForAdmin: true });
+  assert.equal(fetchedModule.owning_app_installation_id, staged.id);
+  const configuredModule = await updateModuleInstallation(actor, suffix, { agent_access: 'read' });
+  assert.equal(configuredModule.enabled, false);
+  assert.equal(configuredModule.agent_access, 'read');
+  assert.equal(configuredModule.owning_app_installation_id, staged.id);
   await assert.rejects(
     () => updateModuleInstallation(actor, suffix, { enabled: true }),
     /owned by an App/,

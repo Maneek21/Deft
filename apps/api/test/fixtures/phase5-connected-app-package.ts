@@ -129,3 +129,9 @@ export async function buildTrackAAutomatedConnectedAppPackage(options: {
   };
   return buildDeftAppPackage({ manifest, artifacts: connected.package.artifacts });
 }
+
+/** Exercise the distributable CRM package, built from the canonical bundled manifest. */
+export async function buildDirectRelationConnectedAppPackage() {
+  const { buildContactsCrmApp } = await import('../../../../scripts/build-crm-app.mts');
+  return buildContactsCrmApp();
+}

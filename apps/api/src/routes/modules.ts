@@ -11,10 +11,16 @@ import {
   ModuleRelationReplaceRequestSchema,
   ModuleRecordDataSchema,
   ModuleRecordQueryRequestSchema,
+  ModuleRecordSummaryRequestSchema,
   ModuleSavedViewCreateRequestSchema,
   ModuleSavedViewUpdateRequestSchema,
   ModuleSlugSchema,
   ModuleRecordArchiveRequestSchema,
+  ModuleRecordRestoreRequestSchema,
+  ModuleArchiveListRequestSchema,
+  ModuleDuplicateListRequestSchema,
+  ModuleImportPreviewRequestSchema,
+  ModuleImportCommitRequestSchema,
 } from '@deft/shared/modules';
 import type { AuthUser } from '../middleware/auth.js';
 import {
@@ -24,10 +30,19 @@ import {
 } from '@deft/shared/resources';
 import {
   archiveModuleRecord,
+  listArchivedModuleRecords,
+  restoreModuleRecord,
+  listModuleDuplicateCandidates,
+  previewModuleMerge,
+  commitModuleMerge,
+  listModuleMergeHistory,
+  previewModuleImport,
+  commitModuleImport,
   createModuleSavedView,
   createModuleRecord,
   deleteModuleSavedView,
   getModuleRecordRelations,
+  getModuleRelatedLatest,
   getModuleInstallation,
   getModuleRecord,
   humanModuleActor,
@@ -37,9 +52,11 @@ import {
   listModuleInstallations,
   listModuleNavigation,
   listModuleRecords,
+  listIncomingModuleRecords,
   listModuleRecordReferences,
   listModuleSavedViews,
   queryModuleRecords,
+  summarizeModuleRecords,
   replaceModuleRecordRelations,
   updateBundledModule,
   upgradeModuleInstallationToManifest,
@@ -69,6 +86,7 @@ const lifecycleSchema = z.strictObject({
 const createBodySchema = z.strictObject({
   collection_key: ModuleKeySchema,
   data: ModuleRecordDataSchema,
+  relations: ModuleRelationPatchSchema.default({}),
   expected_manifest_digest: ModuleManifestDigestSchema,
   idempotency_key: ModuleIdempotencyKeySchema,
 });
@@ -369,6 +387,18 @@ moduleRoutes.get('/:slug/records', async (c) => {
   }
 });
 
+moduleRoutes.post('/:slug/records/summary', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    const body = ModuleRecordSummaryRequestSchema.omit({ module_id: true }).parse(await c.req.json().catch(() => null));
+    const installation = await getModuleInstallation(actor, { slug });
+    return c.json(await summarizeModuleRecords(actor, { module_id: installation.module_id, ...body }));
+  } catch (error) {
+    return moduleFailure(c, error);
+  }
+});
+
 moduleRoutes.post('/:slug/records/query', async (c) => {
   try {
     const actor = actorFromContext(c);
@@ -410,6 +440,27 @@ moduleRoutes.get('/:slug/records/:recordId/relations', async (c) => {
         expectedInstallationId: installation.id,
       }),
     });
+  } catch (error) {
+    return moduleFailure(c, error);
+  }
+});
+
+moduleRoutes.get('/:slug/records/:recordId/incoming-relations', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    const installation = await getModuleInstallation(actor, { slug });
+    const query = z.strictObject({
+      collection_key: ModuleKeySchema,
+      field_key: ModuleFieldKeySchema,
+      date_field: ModuleFieldKeySchema.optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      cursor: z.string().max(200).optional(),
+    }).parse(c.req.query());
+    return c.json(await listIncomingModuleRecords(actor, c.req.param('recordId'), {
+      ...query,
+      expectedInstallationId: installation.id,
+    }));
   } catch (error) {
     return moduleFailure(c, error);
   }
@@ -570,4 +621,79 @@ moduleRoutes.delete('/:slug/records/:recordId', async (c) => {
   } catch (error) {
     return moduleFailure(c, error);
   }
+});
+
+moduleRoutes.get('/:slug/records/:recordId/latest-related', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    return c.json(await getModuleRelatedLatest(actor, c.req.param('recordId'), installation.id));
+  } catch (error) {
+    return moduleFailure(c, error);
+  }
+});
+
+
+moduleRoutes.post('/:slug/import/preview', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    const body = ModuleImportPreviewRequestSchema.omit({ module_id: true }).parse(await c.req.json().catch(() => null));
+    return c.json(await previewModuleImport(actor, { ...body, module_id: installation.module_id }));
+  } catch (error) { return moduleFailure(c, error); }
+});
+moduleRoutes.post('/:slug/import/commit', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    const body = ModuleImportCommitRequestSchema.omit({ module_id: true }).parse(await c.req.json().catch(() => null));
+    return c.json(await commitModuleImport(actor, { ...body, module_id: installation.module_id }));
+  } catch (error) { return moduleFailure(c, error); }
+});
+
+
+moduleRoutes.get('/:slug/archive', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    return c.json(await listArchivedModuleRecords(actor, installation.id, ModuleArchiveListRequestSchema.parse(c.req.query())));
+  } catch (error) { return moduleFailure(c, error); }
+});
+moduleRoutes.post('/:slug/records/:recordId/restore', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    const body = ModuleRecordRestoreRequestSchema.omit({ record_id: true }).parse(await c.req.json().catch(() => null));
+    return c.json(await restoreModuleRecord(actor, installation.id, { ...body, record_id: c.req.param('recordId') }));
+  } catch (error) { return moduleFailure(c, error); }
+});
+
+moduleRoutes.get('/:slug/duplicates', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    return c.json(await listModuleDuplicateCandidates(actor, installation.id, ModuleDuplicateListRequestSchema.parse(c.req.query())));
+  } catch (error) { return moduleFailure(c, error); }
+});
+
+moduleRoutes.post('/:slug/merge/preview', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    return c.json(await previewModuleMerge(actor, installation.id, await c.req.json().catch(() => null)));
+  } catch (error) { return moduleFailure(c, error); }
+});
+moduleRoutes.post('/:slug/merge/commit', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    return c.json(await commitModuleMerge(actor, installation.id, await c.req.json().catch(() => null)));
+  } catch (error) { return moduleFailure(c, error); }
+});
+moduleRoutes.get('/:slug/records/:recordId/merge-history', async (c) => {
+  try {
+    const actor = actorFromContext(c);
+    const installation = await getModuleInstallation(actor, { slug: ModuleSlugSchema.parse(c.req.param('slug')) });
+    return c.json(await listModuleMergeHistory(actor, installation.id, c.req.param('recordId'), c.req.query()));
+  } catch (error) { return moduleFailure(c, error); }
 });

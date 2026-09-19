@@ -6,13 +6,15 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import pg from 'pg';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
+const DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(DATABASE_URL);
 
-const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
+const ORG_ID = randomUUID();
 const USER_ID = `srp-user-${Date.now()}`;
 const USER_EMAIL = `srp-user-${Date.now()}@test.local`;
 const OTHER_USER_ID = `srp-other-${Date.now()}`;
@@ -30,8 +32,10 @@ let otherPrivateNoteId: string;
 let projectId: string;
 let visibleTaskId: string;
 let restrictedTaskId: string;
+let singleWordTaskId: string;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
+  if (!DATABASE_URL) throw new Error('Safe disposable test database is required');
   const c = new pg.Client({ connectionString: DATABASE_URL });
   await c.connect();
   try {
@@ -42,7 +46,9 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 }
 
 before(async () => {
+  if (!canRun) return;
   await withClient(async (c) => {
+    await c.query(`INSERT INTO orgs (id, name, slug) VALUES ($1, 'Search Privacy', $2)`, [ORG_ID, `search-privacy-${Date.now()}`]);
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
        VALUES ($1, $2, 'Search Privacy User', false)
@@ -163,10 +169,18 @@ before(async () => {
       ],
     );
     ids.push({ table: 'tasks', id: restrictedTaskId });
+    singleWordTaskId = `srp-single-word-task-${Date.now()}`;
+    await c.query(
+      `INSERT INTO tasks (id, org_id, project_id, number, title, description, status, priority, assignee_id, created_by, is_deleted, is_template, sort_order, created_at, updated_at)
+       VALUES ($1, $2, $3, 3, 'Proposal', 'Single-word title fixture.', 'todo', 'p2', $4, $4, false, false, 3, NOW(), NOW())`,
+      [singleWordTaskId, ORG_ID, projectId, OTHER_USER_ID],
+    );
+    ids.push({ table: 'tasks', id: singleWordTaskId });
   });
 });
 
 after(async () => {
+  if (!canRun) return;
   await withClient(async (c) => {
     for (const { table, id } of [...ids].reverse()) {
       await c.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
@@ -178,10 +192,11 @@ after(async () => {
     await c.query(`DELETE FROM people_relationships WHERE user_a_id IN ($1, $2) OR user_b_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await c.query(`DELETE FROM org_members WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
+    await c.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
   });
 });
 
-async function callSearch(userId = USER_ID): Promise<any> {
+async function callSearch(userId = USER_ID, query = SEARCH_TERM): Promise<any> {
   const { searchRoutes } = await import('../src/routes/search.js');
   const app = new Hono();
 
@@ -191,10 +206,18 @@ async function callSearch(userId = USER_ID): Promise<any> {
   });
   app.route('/', searchRoutes);
 
-  const res = await app.fetch(new Request(`http://localhost/?q=${encodeURIComponent(SEARCH_TERM)}`));
+  const res = await app.fetch(new Request(`http://localhost/?q=${encodeURIComponent(query)}`));
   assert.equal(res.status, 200);
   return res.json();
 }
+
+test('global search keeps single-word title matches and excludes unknown project prefixes', { skip: !canRun }, async () => {
+  const titleMatch = await callSearch(USER_ID, 'Proposal');
+  assert.ok(titleMatch.tasks.some((task: any) => task.id === singleWordTaskId));
+  assert.equal(titleMatch.tasks.some((task: any) => task.id === visibleTaskId), false);
+  const body = await callSearch(USER_ID, 'NOEXISTSPREFIX');
+  assert.deepEqual(body.tasks, []);
+});
 
 async function callTaskRoute(path: string, userId = USER_ID): Promise<Response> {
   const { taskRoutes } = await import('../src/routes/tasks.js');
@@ -222,7 +245,7 @@ async function callProjectRoute(path: string, userId = USER_ID): Promise<Respons
   return app.request(path, { method: 'GET' });
 }
 
-test('global search only returns spaces and messages the caller can access', async () => {
+test('global search only returns spaces and messages the caller can access', { skip: !canRun }, async () => {
   const body = await callSearch();
 
   assert.ok(body.spaces.some((s: any) => s.id === visibleSpaceId));
@@ -232,21 +255,21 @@ test('global search only returns spaces and messages the caller can access', asy
   assert.ok(!body.messages.some((m: any) => m.id === privateMessageId));
 });
 
-test('global search legacy notes group respects private-note ownership', async () => {
+test('global search legacy notes group respects private-note ownership', { skip: !canRun }, async () => {
   const body = await callSearch();
 
   assert.ok(body.notes.some((n: any) => n.id === ownNoteId));
   assert.ok(!body.notes.some((n: any) => n.id === otherPrivateNoteId));
 });
 
-test('global search retrieved privateNotes group respects private-note ownership', async () => {
+test('global search retrieved privateNotes group respects private-note ownership', { skip: !canRun }, async () => {
   const body = await callSearch();
 
   assert.ok(body.privateNotes.some((n: any) => n.id === ownNoteId));
   assert.ok(!body.privateNotes.some((n: any) => n.id === otherPrivateNoteId));
 });
 
-test('global search hides restricted tasks unless caller has direct access', async () => {
+test('global search hides restricted tasks unless caller has direct access', { skip: !canRun }, async () => {
   const memberBody = await callSearch(USER_ID);
 
   assert.ok(memberBody.tasks.some((t: any) => t.id === visibleTaskId));
@@ -256,7 +279,7 @@ test('global search hides restricted tasks unless caller has direct access', asy
   assert.ok(assigneeBody.tasks.some((t: any) => t.id === restrictedTaskId));
 });
 
-test('task and project routes hide restricted tasks from unrelated members', async () => {
+test('task and project routes hide restricted tasks from unrelated members', { skip: !canRun }, async () => {
   const memberSearch = await callTaskRoute(`/api/tasks/search?q=${encodeURIComponent(SEARCH_TERM)}`, USER_ID);
   assert.equal(memberSearch.status, 200);
   const memberSearchBody = await memberSearch.json() as any[];

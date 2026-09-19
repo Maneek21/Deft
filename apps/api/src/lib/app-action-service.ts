@@ -15,6 +15,7 @@ import {
 } from '@deft/db/schema';
 import {
   APP_AUTOMATION_POLICY_V1,
+  SandboxEmailSendInputSchema,
   DeftAppManifestV1Schema,
   DeftAppManifestV2Schema,
   type DeftAppPrivateInterfaceDescriptorV1,
@@ -503,14 +504,11 @@ function actionItem(context: ActionContext): AppActionListItem {
 }
 
 function actionResourceProjection(resource: ResourceSafeProjectionV1): ResourceSafeProjectionV1 {
-  const identitySuffix = resource.ref.resource_id.slice(0, 8);
-  return Object.freeze({
-    ...resource,
-    // A Module's ordinary display label may be backed by a field that becomes
-    // provider input. App action responses therefore use only host-owned
-    // identity copy.
-    label: `${resource.ref.resource_type} record ${identitySuffix}`,
-  });
+  // This is the actor-authorized safe projection returned by the resource
+  // service. Preserve its human label so a person can identify the exact
+  // related record they are selecting and later approving. Provider input
+  // remains sealed and is still exposed only by the dedicated UI review route.
+  return Object.freeze({ ...resource });
 }
 
 function actionResourceEvidence(
@@ -1197,10 +1195,10 @@ export class AppActionService {
     });
   }
 
-  async invoke(
+  async #revalidatePrepared(
     callerValue: AppActionCaller,
     input: AppActionPrepareInput & Readonly<{ input_candidate: AppRunPreparedInputCandidate }>,
-  ): Promise<AppRunSafeView> {
+  ) {
     const caller = callerContext(callerValue);
     let original: AppRunPreparedInputPayload;
     try {
@@ -1233,13 +1231,27 @@ export class AppActionService {
       throw actionError('Prepared App action changed before invocation', 'APP_STALE');
     }
 
-    // submitPreparedApp owns another authenticated open and the in-transaction
-    // re-derivation of every pinned authority. This seam cannot call a provider.
-    return this.runs.submitPreparedApp({
-      org_id: caller.actor.org_id,
-      initiating_actor: caller.authenticated_subject,
-      execution_actor: caller.execution_actor,
-    }, current.input_candidate);
+    return { caller, current, payload: currentPayload };
+  }
+
+  async reviewPreparedMessage(callerValue: AppActionCaller,
+    input: AppActionPrepareInput & Readonly<{ input_candidate: AppRunPreparedInputCandidate }>) {
+    const caller = callerContext(callerValue);
+    if (caller.actor.kind !== 'human' || caller.actor.source !== 'ui') {
+      throw actionError('Message review requires the authenticated human UI', 'APP_ACCESS_DENIED', 403);
+    }
+    const checked = await this.#revalidatePrepared(callerValue, input);
+    const message = SandboxEmailSendInputSchema.parse(checked.payload.provider_input);
+    // Transient authorized presentation only. Never place these fields in safe_preview, receipts or audit metadata.
+    return Object.freeze({ to: message.to, subject: message.subject, body_text: message.body_text });
+  }
+
+  async invoke(callerValue: AppActionCaller,
+    input: AppActionPrepareInput & Readonly<{ input_candidate: AppRunPreparedInputCandidate }>): Promise<AppRunSafeView> {
+    const { caller, current } = await this.#revalidatePrepared(callerValue, input);
+    // Submission performs its own authenticated open and in-transaction authority recheck.
+    return this.runs.submitPreparedApp({ org_id: caller.actor.org_id, initiating_actor: caller.authenticated_subject,
+      execution_actor: caller.execution_actor }, current.input_candidate);
   }
 
   /** Host-only, effect-free eligibility check immediately before claim. */

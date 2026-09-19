@@ -21,6 +21,7 @@ import {
   canvases,
   crossReferences,
   agentEmployees,
+  moduleRecords,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc, inArray, or } from 'drizzle-orm';
@@ -49,9 +50,11 @@ import {
 import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
+  ModuleIdSchema,
   ModuleIdempotencyKeySchema,
   ModuleMutationResultSchema,
   ModuleRecordResourceIdSchema,
+  ModuleRecordTaskWriteRequestSchema,
   parseModuleRecordResourceId,
   type ModuleActor,
   type ModuleMutationResult,
@@ -61,10 +64,12 @@ import {
   createModuleRecord,
   deftyModuleActor,
   employeeModuleActor,
+  humanModuleActor,
   moduleIdempotencyDigest,
   moduleMutationInputDigest,
   preflightModuleMutation,
   preflightModuleMutationWithExecutor,
+  requireModuleInstallationWriteAccessWithExecutor,
   type ModuleDbExecutor,
   recoverModuleMutationByAgentActionId,
   sanitizeModuleActionParamsForHistory,
@@ -86,8 +91,10 @@ import {
   MODULE_RECORD_BULK_CREATE_ACTION,
   ModuleRecordBulkCreateError,
   ModuleRecordBulkCreateParamsSchema,
+  type ModuleRecordBulkCreateParams,
   executeModuleRecordBulkCreate,
   isModuleRecordBulkCreateAction,
+  moduleBulkCreateInputDigest,
   preflightModuleRecordBulkCreate,
   sanitizeModuleBulkCreateParamsForHistory,
 } from './module-record-bulk-create.js';
@@ -144,6 +151,7 @@ async function buildModuleActionActor(
   userId: string,
   actionId?: string,
   agentEmployeeId?: string,
+  principal?: HumanMcpPrincipal | null,
 ) {
   if (agentEmployeeId) {
     const policy = await getActiveAgentToolPolicy(orgId, agentEmployeeId);
@@ -159,6 +167,15 @@ async function buildModuleActionActor(
     }, orgId, action, actionId);
   }
   const membership = await requireActiveOrgMembership(orgId, userId);
+  if (principal) {
+    return humanModuleActor({
+      orgId,
+      userId,
+      role: membership.role,
+      source: 'mcp',
+      scopes: ['write:modules'],
+    });
+  }
   return deftyModuleActor({
     orgId,
     userId,
@@ -200,9 +217,10 @@ async function buildModuleActionActorWithExecutor(
   userId: string,
   actionId?: string,
   agentEmployeeId?: string,
+  principal?: HumanMcpPrincipal | null,
 ) {
   if (!agentEmployeeId) {
-    return buildModuleActionActor(action, orgId, userId, actionId);
+    return buildModuleActionActor(action, orgId, userId, actionId, undefined, principal);
   }
 
   let query = executor
@@ -249,6 +267,84 @@ const MODULE_WRITE_ACTIONS = new Set([
 type ModuleWriteAction = 'module_record_create' | 'module_record_update' | 'module_record_archive';
 type ModuleGovernedRecordWriteAction = ModuleWriteAction | typeof MODULE_RECORD_BULK_CREATE_ACTION;
 
+const HUMAN_MCP_PRINCIPAL_KEY = '__deft_human_mcp_principal';
+const BULK_RETRY_OF_ACTION_ID_KEY = '__deft_bulk_retry_of_action_id';
+type HumanMcpPrincipal = { kind: 'human_mcp_v1'; client_id: string };
+
+function humanMcpPrincipal(params: Record<string, unknown>): HumanMcpPrincipal | null {
+  const value = params[HUMAN_MCP_PRINCIPAL_KEY];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const marker = value as Record<string, unknown>;
+  const clientId = marker.client_id;
+  return marker.kind === 'human_mcp_v1'
+    && typeof clientId === 'string' && clientId.trim() && clientId.length <= 256
+    ? { kind: 'human_mcp_v1', client_id: clientId }
+    : null;
+}
+
+function stripHumanMcpPrincipal(params: Record<string, unknown>): Record<string, unknown> {
+  const { [HUMAN_MCP_PRINCIPAL_KEY]: _principal, ...canonical } = params;
+  return canonical;
+}
+
+function bulkRetryOfActionId(params: Record<string, unknown>): string | null {
+  const value = params[BULK_RETRY_OF_ACTION_ID_KEY];
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : null;
+}
+
+async function authoritativeBulkProposalParams(
+  executor: ModuleDbExecutor,
+  actor: ModuleActor,
+  input: ModuleRecordBulkCreateParams,
+  idempotencyDigest: string,
+  inputDigest: string,
+  principal: HumanMcpPrincipal | null,
+  preserveAttachmentName: boolean,
+): Promise<Record<string, unknown>> {
+  // A proposal is a write. Resolve its display labels through the same live
+  // write boundary so a write-only personal-MCP token never needs read scope.
+  const installation = await requireModuleInstallationWriteAccessWithExecutor(
+    executor,
+    actor,
+    { moduleId: input.module_id },
+  );
+  const collection = installation.manifest.collections.find((item) => item.key === input.collection_key);
+  if (!collection) throw new Error('Module collection is unavailable');
+  return {
+    module_id: input.module_id,
+    module_name: installation.manifest.name,
+    collection_key: input.collection_key,
+    collection_name: collection.name,
+    expected_manifest_digest: input.expected_manifest_digest,
+    rows: input.rows,
+    idempotency_key: input.idempotency_key,
+    idempotency_digest: idempotencyDigest,
+    input_digest: inputDigest,
+    ...(preserveAttachmentName && input.source_file_name ? { source_file_name: input.source_file_name } : {}),
+    ...(principal ? { [HUMAN_MCP_PRINCIPAL_KEY]: principal } : {}),
+  };
+}
+
+/** Shared by the personal MCP adapter and approval executor. The client is
+ * part of the retry domain, while the actor remains the actual human user. */
+export function moduleBulkCreateActionIdempotencyDigest(params: {
+  orgId: string;
+  userId: string;
+  agentEmployeeId?: string;
+  clientId?: string;
+  idempotencyKey: string;
+}): string {
+  return `sha256:${createHash('sha256')
+    .update([
+      params.orgId,
+      params.agentEmployeeId ? 'agent_employee' : 'human',
+      params.agentEmployeeId ?? params.userId,
+      params.clientId ?? '',
+      params.idempotencyKey,
+    ].join('\u0000'))
+    .digest('hex')}`;
+}
+
 const MODULE_TASK_LINK_WRITE_ACTIONS = new Set([
   'module_record_task_link',
   'module_record_task_unlink',
@@ -271,8 +367,11 @@ export function normalizeAgentModuleBulkCreateParams(
     source_message_id: _sourceMessageId,
     proposal_node_id: _proposalNodeId,
     proposal_depends_on: _proposalDependsOn,
+    idempotency_digest: _idempotencyDigest,
+    input_digest: _inputDigest,
+    [BULK_RETRY_OF_ACTION_ID_KEY]: _retryOfActionId,
     ...canonical
-  } = params;
+  } = stripHumanMcpPrincipal(params);
   return ModuleRecordBulkCreateParamsSchema.parse(canonical) as Record<string, unknown>;
 }
 
@@ -282,6 +381,7 @@ export async function preflightAgentModuleBulkCreateAction(
   orgId: string,
   userId: string,
   agentEmployeeId?: string,
+  options?: { trustedHumanMcpPrincipal?: boolean },
 ): Promise<Record<string, unknown>> {
   if (!isModuleRecordBulkCreateAction(action)) return params;
   const normalized = normalizeAgentModuleBulkCreateParams(action, params);
@@ -291,6 +391,7 @@ export async function preflightAgentModuleBulkCreateAction(
     userId,
     undefined,
     agentEmployeeId,
+    options?.trustedHumanMcpPrincipal ? humanMcpPrincipal(params) : null,
   );
   await preflightModuleRecordBulkCreate(actor, normalized);
   return normalized;
@@ -338,14 +439,9 @@ function moduleTaskLinkCanonicalInput(value: Record<string, unknown>): {
   resource_id: string;
   task_identifier: string;
 } {
-  const resourceId = ModuleRecordResourceIdSchema.parse(value.resource_id);
-  const taskIdentifier = z.string()
-    .trim()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/, 'Invalid task identifier')
-    .parse(value.task_identifier);
-  return { resource_id: resourceId, task_identifier: taskIdentifier };
+  return ModuleRecordTaskWriteRequestSchema.pick({ resource_id: true, task_identifier: true }).parse({
+    resource_id: value.resource_id, task_identifier: value.task_identifier,
+  });
 }
 
 function moduleTaskLinkInputDigest(value: Record<string, unknown>): string {
@@ -379,7 +475,7 @@ export function sanitizeModuleTaskLinkActionParamsForHistory(
   return sanitized;
 }
 
-function terminalModuleTaskLinkActionParams(
+export function terminalModuleTaskLinkActionParams(
   action: ModuleTaskLinkWriteAction,
   value: Record<string, unknown>,
   orgId: string,
@@ -423,9 +519,13 @@ export async function preflightAgentModuleAction(
   orgId: string,
   userId: string,
   agentEmployeeId?: string,
+  options?: { trustedHumanMcpPrincipal?: boolean },
 ): Promise<Record<string, unknown>> {
   if (isModuleTaskLinkWriteAction(action)) {
     return normalizeAgentModuleTaskLinkParams(action, params);
+  }
+  if (isModuleRecordBulkCreateAction(action)) {
+    return preflightAgentModuleBulkCreateAction(action, params, orgId, userId, agentEmployeeId, options);
   }
   if (!isModuleWriteAction(action)) {
     return params;
@@ -663,6 +763,175 @@ export async function claimModuleAgentAction(params: {
   });
 }
 
+function terminalModuleBulkCreateParams(
+  value: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): Record<string, unknown> {
+  const principal = humanMcpPrincipal(value);
+  const retryOfActionId = bulkRetryOfActionId(value);
+  const input = normalizeAgentModuleBulkCreateParams(MODULE_RECORD_BULK_CREATE_ACTION, value);
+  const idempotencyKey = input.idempotency_key as string;
+  return {
+    ...sanitizeModuleBulkCreateParamsForHistory(input),
+    idempotency_digest: moduleBulkCreateActionIdempotencyDigest({
+      orgId,
+      userId,
+      ...(agentEmployeeId ? { agentEmployeeId } : {}),
+      ...(principal ? { clientId: principal.client_id } : {}),
+      idempotencyKey,
+    }),
+    input_digest: moduleBulkCreateInputDigest(input as ModuleRecordBulkCreateParams),
+    ...(retryOfActionId ? { [BULK_RETRY_OF_ACTION_ID_KEY]: retryOfActionId } : {}),
+  };
+}
+
+/** One reviewed parent action owns a batch. Child record receipts remain
+ * independently idempotent. A terminal partial failure is retained and an
+ * exact resubmission creates a linked, newly reviewed retry attempt. */
+export async function claimModuleBulkCreateAgentAction(params: {
+  input: Record<string, unknown>;
+  orgId: string;
+  userId: string;
+  agentEmployeeId?: string;
+  values: typeof agentActions.$inferInsert;
+}): Promise<{ action: typeof agentActions.$inferSelect; reused: boolean; retry?: boolean }> {
+  const principal = humanMcpPrincipal(params.input);
+  const input = normalizeAgentModuleBulkCreateParams(
+    MODULE_RECORD_BULK_CREATE_ACTION,
+    params.input,
+  );
+  const idempotencyKey = input.idempotency_key;
+  if (typeof idempotencyKey !== 'string') throw new Error('Bulk creates require an idempotency key');
+  const idempotencyDigest = moduleBulkCreateActionIdempotencyDigest({
+    orgId: params.orgId,
+    userId: params.userId,
+    ...(params.agentEmployeeId ? { agentEmployeeId: params.agentEmployeeId } : {}),
+    ...(principal ? { clientId: principal.client_id } : {}),
+    idempotencyKey,
+  });
+  const inputDigest = moduleBulkCreateInputDigest(input as ModuleRecordBulkCreateParams);
+
+  return db.transaction(async (tx) => {
+    const lockKey = agentModuleActionClaimKey(
+      params.orgId,
+      MODULE_RECORD_BULK_CREATE_ACTION,
+      idempotencyDigest,
+    );
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    const actorScope = params.agentEmployeeId
+      ? eq(agentActions.agent_employee_id, params.agentEmployeeId)
+      : and(eq(agentActions.user_id, params.userId), sql`${agentActions.agent_employee_id} IS NULL`);
+    const idempotencyMatch = principal
+      ? sql`${agentActions.params}->>'idempotency_digest' = ${idempotencyDigest}`
+      : or(
+        sql`${agentActions.params}->>'idempotency_key' = ${idempotencyKey}`,
+        sql`${agentActions.params}->>'idempotency_digest' = ${idempotencyDigest}`,
+      );
+    const [existing] = await tx.select().from(agentActions).where(and(
+      eq(agentActions.org_id, params.orgId),
+      eq(agentActions.action, MODULE_RECORD_BULK_CREATE_ACTION),
+      actorScope,
+      inArray(agentActions.approval_status, ['pending', 'approved', 'rejected', 'expired']),
+      idempotencyMatch,
+    )).orderBy(desc(agentActions.created_at)).limit(1);
+    if (existing) {
+      const existingParams = existing.params && typeof existing.params === 'object'
+        ? existing.params as Record<string, unknown>
+        : {};
+      const existingInputDigest = typeof existingParams.input_digest === 'string'
+        ? existingParams.input_digest
+        : moduleBulkCreateInputDigest(
+          normalizeAgentModuleBulkCreateParams(
+            MODULE_RECORD_BULK_CREATE_ACTION,
+            existingParams,
+          ) as ModuleRecordBulkCreateParams,
+        );
+      if (existingInputDigest !== inputDigest) {
+        throw new Error('Idempotency key was already used for a different module bulk create');
+      }
+      const partialResult = existing.result && typeof existing.result === 'object'
+        ? existing.result as Record<string, unknown>
+        : null;
+      if (
+        existing.approval_status === 'approved'
+        && existing.executed_at
+        && partialResult?.status === 'partial_failed'
+      ) {
+        // The caller resubmits the same bounded batch after a partial failure.
+        // Preserve the failed parent and its immutable receipt; a fresh full
+        // review governs this linked retry attempt.
+        const actor = await buildModuleActionActor(
+          MODULE_RECORD_BULK_CREATE_ACTION,
+          params.orgId,
+          params.userId,
+          undefined,
+          params.agentEmployeeId,
+          principal,
+        );
+        await preflightModuleRecordBulkCreate(actor, input);
+        const proposalParams = await authoritativeBulkProposalParams(
+          tx,
+          actor,
+          input as ModuleRecordBulkCreateParams,
+          idempotencyDigest,
+          inputDigest,
+          principal,
+          params.values.source !== 'mcp',
+        );
+        const [retry] = await tx.insert(agentActions).values({
+          ...params.values,
+          org_id: params.orgId,
+          user_id: params.userId,
+          action: MODULE_RECORD_BULK_CREATE_ACTION,
+          approval_tier: 'full',
+          approval_status: 'pending',
+          approved_at: null,
+          params: { ...proposalParams, [BULK_RETRY_OF_ACTION_ID_KEY]: existing.id },
+          ...(params.agentEmployeeId ? { agent_employee_id: params.agentEmployeeId } : {}),
+        }).returning();
+        if (!retry) throw new Error('Failed to create module bulk-create retry action log');
+        return { action: retry, reused: false, retry: true };
+      }
+      return { action: existing, reused: true };
+    }
+
+    const actor = await buildModuleActionActor(
+      MODULE_RECORD_BULK_CREATE_ACTION,
+      params.orgId,
+      params.userId,
+      undefined,
+      params.agentEmployeeId,
+      principal,
+    );
+    await preflightModuleRecordBulkCreate(actor, input);
+    const proposalParams = await authoritativeBulkProposalParams(
+      tx,
+      actor,
+      input as ModuleRecordBulkCreateParams,
+      idempotencyDigest,
+      inputDigest,
+      principal,
+      params.values.source !== 'mcp',
+    );
+    const [inserted] = await tx.insert(agentActions).values({
+      ...params.values,
+      org_id: params.orgId,
+      user_id: params.userId,
+      action: MODULE_RECORD_BULK_CREATE_ACTION,
+      // Batch creation is never auto-executed, including autonomous employees.
+      approval_tier: 'full',
+      approval_status: 'pending',
+      approved_at: null,
+      params: proposalParams,
+      ...(params.agentEmployeeId ? { agent_employee_id: params.agentEmployeeId } : {}),
+    }).returning();
+    if (!inserted) throw new Error('Failed to create module bulk-create action log');
+    return { action: inserted, reused: false };
+  });
+}
+
 /**
  * Claim one durable action for a module-record/task edge mutation. The edge
  * itself is naturally unique, while this claim prevents a lost-response retry
@@ -892,7 +1161,7 @@ async function persistModuleMutationAction(
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
  * the internal task uuid for the given org. Returns null if not found.
  */
-async function resolveTaskIdentifier(
+export async function resolveTaskIdentifier(
   identifier: string,
   orgId: string,
   executor: Pick<typeof db, 'select'> = db,
@@ -1050,6 +1319,86 @@ async function employeeTaskWriteScopeError(
   return scopedTasks.length === taskIds.length ? null : 'Task not found';
 }
 
+/**
+ * Rebuild the current authorization boundary before a paused plan creates or
+ * reuses a reviewed action. This returns the canonical input used by both the
+ * persisted replay identity and the eventual executor.
+ */
+export async function preflightPlanActionInput(
+  action: string,
+  input: Record<string, any>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+  options?: { replay?: boolean },
+): Promise<Record<string, any>> {
+  await requireActiveOrgMembership(orgId, userId);
+  const policyError = await agentToolPolicyError(orgId, agentEmployeeId, action);
+  if (policyError) throw new Error(policyError);
+
+  let params = normalizeAgentModuleActionParams(action, input) as Record<string, any>;
+  params = normalizeAgentModuleBulkCreateParams(action, params) as Record<string, any>;
+  params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
+
+  const taskScopeError = await employeeTaskWriteScopeError(
+    action,
+    params,
+    orgId,
+    agentEmployeeId ?? null,
+  );
+  if (taskScopeError) throw new Error(taskScopeError);
+
+  if (options?.replay && (isModuleWriteAction(action) || isModuleRecordBulkCreateAction(action))) {
+    const actor = await buildModuleActionActor(
+      action as ModuleGovernedRecordWriteAction,
+      orgId,
+      userId,
+      undefined,
+      agentEmployeeId,
+    );
+    const identifier = action === 'module_record_create' || isModuleRecordBulkCreateAction(action)
+      ? { moduleId: ModuleIdSchema.parse(params.module_id) }
+      : await (async () => {
+        const recordId = z.string().min(1).parse(params.record_id);
+        const [record] = await db
+          .select({ installation_id: moduleRecords.installation_id })
+          .from(moduleRecords)
+          .where(and(eq(moduleRecords.id, recordId), eq(moduleRecords.org_id, orgId)))
+          .limit(1);
+        if (!record) throw new Error('Module record not found');
+        return { installationId: record.installation_id };
+      })();
+    // A completed update/archive has necessarily made its reviewed revision
+    // stale. Replay rechecks live installation and actor authority without
+    // attempting to validate the already-applied optimistic revision again.
+    await db.transaction((tx) => requireModuleInstallationWriteAccessWithExecutor(tx, actor, identifier));
+  } else {
+    params = await preflightAgentModuleAction(
+      action,
+      params,
+      orgId,
+      userId,
+      agentEmployeeId,
+    ) as Record<string, any>;
+  }
+
+  if (isModuleTaskLinkWriteAction(action)) {
+    const parsed = ModuleRecordTaskWriteRequestSchema.parse(params);
+    const taskId = await resolveTaskIdentifier(parsed.task_identifier, orgId);
+    if (!taskId) throw new Error('Task not found');
+    const actor = await buildModuleTaskLinkActor(orgId, userId, agentEmployeeId);
+    await db.transaction((tx) => preflightModuleRecordTaskMutationWithExecutor(
+      tx,
+      actor,
+      taskId,
+      parsed.resource_id,
+      action,
+    ));
+  }
+
+  return params;
+}
+
 async function terminalizeModuleTaskLinkActionFailure(
   actionId: string,
   action: ModuleTaskLinkWriteAction,
@@ -1096,6 +1445,8 @@ export async function executeAction(
      * is attributed back to the specific agent employee that acted.
      */
     agentEmployeeId?: string;
+    /** Set only by the approval resolver after it validates persisted MCP provenance. */
+    trustedHumanMcpPrincipal?: boolean;
   },
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
@@ -1362,12 +1713,13 @@ export async function executeAction(
           userId,
           undefined,
           agentEmployeeId ?? undefined,
+          options?.trustedHumanMcpPrincipal ? humanMcpPrincipal(params) : null,
         );
         const result = await executeModuleRecordBulkCreate(actor, input);
         await db.update(agentActions).set({
           result,
           error: null,
-          params: sanitizeModuleBulkCreateParamsForHistory(input),
+          params: terminalModuleBulkCreateParams(params, orgId, userId, agentEmployeeId ?? undefined),
           after_state: result,
           executed_at: new Date(),
         }).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
@@ -3157,6 +3509,14 @@ export async function executeAction(
         agentEmployeeId ?? undefined,
         msg,
       );
+    } else if (isModuleRecordBulkCreateAction(action)) {
+      await db.update(agentActions).set({
+        result: partialBulkResult,
+        after_state: partialBulkResult,
+        error: msg,
+        params: terminalModuleBulkCreateParams(params, orgId, userId, agentEmployeeId ?? undefined),
+        executed_at: new Date(),
+      }).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
     } else {
       await db.update(agentActions).set({ error: msg }).where(eq(agentActions.id, actionId));
     }
@@ -3169,6 +3529,8 @@ export async function executeAction(
  * Unlike executeAction(), this creates the agentActions row as already approved.
  */
 type ExecuteActionDirectOptions = {
+  channelEventId?: string;
+  runtimeRequestKey?: string;
   agentEmployeeId?: string;
   source?: string;
   mcpConnectionId?: string;
@@ -3176,6 +3538,10 @@ type ExecuteActionDirectOptions = {
   planStepId?: string;
   messageId?: string;
   toolUseId?: string;
+  /** Internal authenticated-adapter provenance, never accepted from action input. */
+  humanMcpClientId?: string;
+  /** Internal plan rail that can only add a human checkpoint. */
+  forceApproval?: boolean;
 };
 
 type ExecuteActionDirectResult = {
@@ -3185,7 +3551,28 @@ type ExecuteActionDirectResult = {
   error?: string;
   requiresApproval?: boolean;
   approvalTier?: 'auto' | 'quick' | 'full';
+  isRetry?: boolean;
 };
+
+/** Queue a reviewed batch on behalf of a personal MCP principal. The stored
+ * metadata contains a bounded client identifier only; execution resolves the
+ * member again and rebuilds a human actor instead of impersonating Defty. */
+export async function proposeHumanModuleBulkCreate(params: {
+  input: Record<string, unknown>;
+  orgId: string;
+  userId: string;
+  clientId: string;
+}): Promise<ExecuteActionDirectResult> {
+  return executeActionDirect(
+    MODULE_RECORD_BULK_CREATE_ACTION,
+    params.input,
+    params.orgId,
+    params.userId,
+    null,
+    'full',
+    { source: 'mcp', humanMcpClientId: params.clientId.slice(0, 256) },
+  );
+}
 
 export async function executeActionDirect(
   action: string,
@@ -3196,15 +3583,45 @@ export async function executeActionDirect(
   approvalTier: 'auto' | 'quick' | 'full',
   options?: ExecuteActionDirectOptions,
 ): Promise<ExecuteActionDirectResult> {
+  if (isModuleRecordBulkCreateAction(action)) {
+    // Native model/action parameters cannot select a human authority. The
+    // authenticated personal-MCP adapter is the only caller that can attach
+    // the persisted marker through this internal execution option.
+    params = stripHumanMcpPrincipal(params);
+    if (
+      options?.source === 'mcp'
+      && !options.agentEmployeeId
+      && typeof options.humanMcpClientId === 'string'
+      && options.humanMcpClientId.trim()
+    ) {
+      params = {
+        ...params,
+        [HUMAN_MCP_PRINCIPAL_KEY]: {
+          kind: 'human_mcp_v1',
+          client_id: options.humanMcpClientId.slice(0, 256),
+        },
+      };
+    }
+  }
   if (isModuleTaskLinkWriteAction(action)) {
     params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
   }
   if (
-    (isModuleWriteAction(action) || isModuleTaskLinkWriteAction(action))
+    (isModuleWriteAction(action) || isModuleTaskLinkWriteAction(action) || isModuleRecordBulkCreateAction(action))
     && typeof params.idempotency_key === 'string'
   ) {
-    const actor = agentModuleDigestActor(orgId, userId, options?.agentEmployeeId);
-    const lockDigest = moduleIdempotencyDigest(actor, params.idempotency_key);
+    const principal = humanMcpPrincipal(params);
+    const lockDigest = isModuleRecordBulkCreateAction(action)
+      ? moduleBulkCreateActionIdempotencyDigest({
+        orgId, userId,
+        ...(options?.agentEmployeeId ? { agentEmployeeId: options.agentEmployeeId } : {}),
+        ...(principal ? { clientId: principal.client_id } : {}),
+        idempotencyKey: params.idempotency_key,
+      })
+      : moduleIdempotencyDigest(
+        agentModuleDigestActor(orgId, userId, options?.agentEmployeeId),
+        params.idempotency_key,
+      );
     return withDbAdvisoryLock(
       agentModuleExecutionLockKey(orgId, action, lockDigest),
       () => executeActionDirectLocked(
@@ -3241,9 +3658,11 @@ async function executeActionDirectLocked(
   // This is the common safety net for every direct execution path (streaming,
   // background runner, plans, and MCP). Invalid/disabled module writes must not
   // create even a pending agent_actions row containing record values.
+  const humanPrincipal = humanMcpPrincipal(params);
   params = normalizeAgentModuleActionParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleBulkCreateParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
+  if (humanPrincipal) params = { ...params, [HUMAN_MCP_PRINCIPAL_KEY]: humanPrincipal };
 
   const taskScopeError = await employeeTaskWriteScopeError(
     action,
@@ -3255,7 +3674,7 @@ async function executeActionDirectLocked(
 
   let effectiveApprovalTier = approvalTier;
   let effectiveMcpConnectionId = options?.mcpConnectionId;
-  let requiresFreshApproval = false;
+  let requiresFreshApproval = options?.forceApproval === true;
   let executionBlockedError: string | null = null;
 
   // Re-resolve outbound MCP policy immediately before an auto/direct write.
@@ -3306,11 +3725,15 @@ async function executeActionDirectLocked(
     ...(options?.planStepId ? { plan_step_id: options.planStepId } : {}),
     ...(options?.messageId ? { message_id: options.messageId } : {}),
     ...(options?.toolUseId ? { tool_use_id: options.toolUseId } : {}),
+    ...(options?.channelEventId ? { channel_event_id: options.channelEventId } : {}),
+    ...(options?.runtimeRequestKey ? { runtime_request_key: options.runtimeRequestKey } : {}),
   };
 
   let actionRecord: typeof agentActions.$inferSelect;
   let reusedModuleAction = false;
   let reusedModuleTaskLinkAction = false;
+  let reusedModuleBulkCreateAction = false;
+  let retryModuleBulkCreateAction = false;
   if (isModuleWriteAction(action)) {
     const claimed = await claimModuleAgentAction({
       action,
@@ -3333,10 +3756,35 @@ async function executeActionDirectLocked(
     });
     actionRecord = claimed.action;
     reusedModuleTaskLinkAction = claimed.reused;
+  } else if (isModuleRecordBulkCreateAction(action)) {
+    const claimed = await claimModuleBulkCreateAgentAction({
+      input: params, orgId, userId,
+      ...(options?.agentEmployeeId ? { agentEmployeeId: options.agentEmployeeId } : {}),
+      values: actionValues,
+    });
+    actionRecord = claimed.action;
+    reusedModuleBulkCreateAction = claimed.reused;
+    retryModuleBulkCreateAction = claimed.retry === true;
   } else {
     const [inserted] = await db.insert(agentActions).values(actionValues).returning();
     if (!inserted) throw new Error('Failed to create action log');
     actionRecord = inserted;
+  }
+
+  const reusedGovernedAction = reusedModuleAction
+    || reusedModuleTaskLinkAction
+    || reusedModuleBulkCreateAction;
+  if (
+    options?.forceApproval
+    && reusedGovernedAction
+    && (
+      !options.planId
+      || !options.planStepId
+      || actionRecord.plan_id !== options.planId
+      || actionRecord.plan_step_id !== options.planStepId
+    )
+  ) {
+    throw new Error('Idempotency key is already bound to a different approval context');
   }
 
   if (isModuleWriteAction(action) && actionRecord.approval_status === 'pending') {
@@ -3393,6 +3841,33 @@ async function executeActionDirectLocked(
       error,
       requiresApproval: true,
       approvalTier: actionRecord.approval_tier,
+    };
+  }
+  if (isModuleRecordBulkCreateAction(action) && actionRecord.approval_status === 'pending') {
+    const error = reusedModuleBulkCreateAction
+      ? actionRecord.error ?? 'Bulk create already requires human approval'
+      : retryModuleBulkCreateAction
+        ? 'Bulk create retry requires fresh human approval. No additional records have been created.'
+        : 'Bulk create requires full human approval. No records have been created.';
+    if (!reusedModuleBulkCreateAction) {
+      await db.update(agentActions).set({ error }).where(and(
+        eq(agentActions.id, actionRecord.id), eq(agentActions.org_id, orgId),
+      ));
+      try {
+        const { syncApprovalToAttention } = await import('./attention.js');
+        await syncApprovalToAttention(actionRecord);
+      } catch {
+        // The durable action is still reviewable if attention sync is delayed.
+      }
+    }
+    return {
+      actionId: actionRecord.id,
+      success: false,
+      result: null,
+      error,
+      requiresApproval: true,
+      approvalTier: 'full',
+      ...(retryModuleBulkCreateAction ? { isRetry: true } : {}),
     };
   }
   if (reusedModuleAction && actionRecord.approval_status === 'approved') {
@@ -3499,6 +3974,25 @@ async function executeActionDirectLocked(
       };
     }
   }
+  if (reusedModuleBulkCreateAction && actionRecord.approval_status === 'approved') {
+    return {
+      actionId: actionRecord.id,
+      success: !actionRecord.error,
+      result: actionRecord.result,
+      ...(actionRecord.error ? { error: actionRecord.error } : {}),
+    };
+  }
+  if (
+    reusedModuleBulkCreateAction
+    && (actionRecord.approval_status === 'rejected' || actionRecord.approval_status === 'expired')
+  ) {
+    return {
+      actionId: actionRecord.id,
+      success: false,
+      result: actionRecord.result,
+      error: actionRecord.error ?? `Bulk create was ${actionRecord.approval_status}`,
+    };
+  }
 
   if (executionBlockedError) {
     await db.update(agentActions).set({ error: executionBlockedError }).where(eq(agentActions.id, actionRecord.id));
@@ -3529,6 +4023,12 @@ async function executeActionDirectLocked(
 
   const result = await executeAction(actionRecord.id, action, params, orgId, userId, {
     agentEmployeeId: options?.agentEmployeeId,
+    trustedHumanMcpPrincipal: Boolean(
+      isModuleRecordBulkCreateAction(action)
+      && humanPrincipal
+      && options?.source === 'mcp'
+      && !options.agentEmployeeId,
+    ),
   });
 
   if (isModuleWriteAction(action)) {

@@ -145,6 +145,7 @@
   --surface-bright: #D7D8E3;
   --on-surface: #1C1C1E;
   --on-surface-variant: #555560;
+  --error: #B3261E;
   --outline: #7E7E8A;
   --outline-variant: #D5D5DD;
   --primary: #6A59E0;
@@ -337,6 +338,7 @@ input:focus, textarea:focus {
   background: var(--surface-container);
 }
 
+@layer components {
 .deft-icon-button {
   display: inline-flex;
   min-width: 2.5rem;
@@ -354,6 +356,8 @@ input:focus, textarea:focus {
 .deft-icon-button:hover {
   background: var(--bg-hover);
   color: var(--on-surface);
+}
+
 }
 
 .deft-menu-surface {

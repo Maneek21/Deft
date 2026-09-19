@@ -14,19 +14,10 @@ import { verifyReceipt, type ActionReceipt } from '../src/lib/receipts.js';
 import { mcpServerV1Routes } from '../src/routes/mcp-server-v1.js';
 import { moduleRoutes } from '../src/routes/modules.js';
 import { searchRoutes } from '../src/routes/search.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-
-function isSafeTestDatabase(value: string | undefined): value is string {
-  if (!value) return false;
-  try {
-    return /(?:test|ci|acceptance|gauntlet)/i.test(new URL(value).pathname);
-  } catch {
-    return false;
-  }
-}
-
-const canRun = isSafeTestDatabase(TEST_DATABASE_URL);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 const ciRequiresDatabase = /^(?:1|true)$/i.test(process.env.CI ?? '');
 
 after(async () => {
@@ -49,7 +40,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL,
-      'CI must provide DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, acceptance, or gauntlet',
+      'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
     );
 
     const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
@@ -243,6 +234,8 @@ test(
       );
       assert.equal(deftyRead.result.record.data.name, contactName);
       assert.deepEqual(deftyRead.citations.map((citation) => citation.id), [resourceId]);
+      assert.equal(deftyRead.citations[0]?.url, `/modules/contacts/contacts/${recordId}`);
+      assert.equal(deftyRead.citations[0]?.title, contactName);
 
       // The universal app search returns the canonical resource id and the
       // generic module deep link, which resolves through the native REST route.
@@ -304,7 +297,7 @@ test(
         orgId,
         userId: ownerId,
         name: 'Contacts acceptance personal MCP',
-        scopes: ['read:workspace', 'write:workspace', 'read:modules', 'write:modules'],
+        scopes: ['read:workspace', 'write:workspace', 'read:modules', 'write:modules', 'write:tasks'],
         createdBy: ownerId,
       })).raw;
 
@@ -644,31 +637,153 @@ test(
       const restoredFetch = await callMcp(personalToken, 'fetch', { id: resourceId });
       assert.notEqual(restoredFetch.isError, true);
       assert.equal(toolPayload(restoredFetch).revision, 2);
-    } finally {
-      // Delete only this test's unique tenant, in dependency order.
-      await client.query('DELETE FROM attention_deliveries WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM attention_events WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM attention_items WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM action_receipts WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM module_mutation_receipts WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM agent_actions WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM agent_mcp_call_audit WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM oauth_audit_events WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM mcp_tokens WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM module_records WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM module_versions WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM module_installations WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM audit_log WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM agent_employees WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]);
-      await client.query('DELETE FROM org_members WHERE org_id = $1', [foreignOrgId]);
-      await client.query('DELETE FROM orgs WHERE id = $1', [orgId]);
-      await client.query('DELETE FROM orgs WHERE id = $1', [foreignOrgId]);
-      await client.query(
-        'DELETE FROM users WHERE id = ANY($1::text[])',
-        [[ownerId, recoveryAdminId, employeeUserId, foreignOwnerId]],
+
+      // Flagship outreach uses the same contact identity and governed native
+      // record path. This deterministic tool journey does not call an LLM or
+      // an email provider and must not be described as a live-agent demo.
+      const crmSchema = await executeToolCall(
+        'module_schema_get', { module_id: 'com.deft.contacts' }, orgId, ownerId, conversationId,
       );
-      await client.end();
+      const outreachCollection = crmSchema.result.manifest.collections.find((collection: any) => collection.key === 'outreach');
+      assert.ok(outreachCollection, 'agent schema must expose canonical outreach drafts');
+      assert.ok(outreachCollection.fields.some((field: any) => field.key === 'contacts' && field.target_collection === 'contacts'));
+      const currentDigest = crmSchema.result.manifest_digest;
+      const draftName = `Reviewed CRM introduction ${suffix}`;
+      const draftInput = {
+        caller_employee_slug: employeeSlug,
+        module_id: 'com.deft.contacts', collection_key: 'outreach',
+        data: { name: draftName, subject: 'A useful next step', body: 'Hello Ada, let us discuss the next step.', status: 'draft' },
+        relations: { contacts: [recordId] },
+        expected_manifest_digest: currentDigest,
+        idempotency_key: `crm-draft-${suffix}`,
+      };
+      const draftCount = async () => (await client.query(
+        "SELECT count(*)::int AS count FROM module_records WHERE org_id=$1 AND collection_key='outreach'",
+        [orgId],
+      )).rows[0].count;
+      const beforeDrafts = await draftCount();
+      const proposedDraft = await callMcp(employeeToken, 'module_record_create', draftInput);
+      assert.notEqual(proposedDraft.isError, true, JSON.stringify(proposedDraft));
+      const draftApprovalId = toolPayload(proposedDraft).approval_id;
+      assert.ok(draftApprovalId, 'conservative employee must propose the draft for review');
+      assert.equal(await draftCount(), beforeDrafts, 'proposal must not create the draft before approval');
+      const draftApproval = await callMcp(personalToken, 'approval_approve', {
+        action_id: draftApprovalId, idempotency_key: `approve-crm-draft-${suffix}`,
+      });
+      assert.notEqual(draftApproval.isError, true, JSON.stringify(draftApproval));
+      const draftReplay = await callMcp(employeeToken, 'module_record_create', draftInput);
+      assert.notEqual(draftReplay.isError, true, JSON.stringify(draftReplay));
+      const draftId = toolPayload(draftReplay).record_id;
+      assert.ok(draftId);
+      assert.equal(await draftCount(), beforeDrafts + 1);
+      const draftRead = await executeToolCall('module_record_get', { record_id: draftId }, orgId, ownerId, conversationId);
+      assert.equal(draftRead.result.record.data.subject, draftInput.data.subject);
+      assert.equal(draftRead.result.record.data.body, draftInput.data.body);
+      assert.deepEqual(draftRead.result.record.relations[0].records.map((record: any) => record.id), [recordId]);
+      assert.deepEqual(draftRead.citations.map((citation) => citation.id), [`module_record:${draftId}`]);
+      const sharedDraft = await nativeJson(`/api/modules/contacts/records/${draftId}`);
+      assert.equal(sharedDraft.response.status, 200);
+      assert.deepEqual(sharedDraft.body.record.data, draftRead.result.record.data);
+      const draftReceipts = await client.query('SELECT * FROM action_receipts WHERE org_id=$1 AND action_id=$2', [orgId, draftApprovalId]);
+      assert.equal(draftReceipts.rows.length, 1);
+      assert.equal(await verifyReceipt(draftReceipts.rows[0] as ActionReceipt), true);
+      assert.equal(JSON.stringify(draftReceipts.rows[0].action_params_json).includes(draftInput.data.body), false);
+
+      const followupProjectId = randomUUID();
+      await client.query('INSERT INTO projects (id,org_id,name,prefix) VALUES ($1,$2,$3,$4)',
+        [followupProjectId, orgId, 'CRM follow-ups', 'CRM']);
+      const proposedTask = await callMcp(employeeToken, 'task_create', {
+        caller_employee_slug: employeeSlug, title: 'Confirm the next CRM conversation',
+        project_id: followupProjectId, assignee_id: ownerId, due_date: '2026-10-01',
+        description: `Follow up with ${contactName}. Source: /modules/contacts/contacts/${recordId}`,
+      });
+      assert.notEqual(proposedTask.isError, true, JSON.stringify(proposedTask));
+      const taskApprovalId = toolPayload(proposedTask).approval_id;
+      assert.ok(taskApprovalId);
+      const taskRows = () => client.query('SELECT *, due_date::date::text AS due_day FROM tasks WHERE org_id=$1 AND project_id=$2', [orgId, followupProjectId]);
+      assert.equal((await taskRows()).rowCount, 0, 'task remains a proposal before approval');
+      const taskApproved = await callMcp(personalToken, 'approval_approve', {
+        action_id: taskApprovalId, idempotency_key: `approve-followup-${suffix}`,
+      });
+      assert.notEqual(taskApproved.isError, true, JSON.stringify(taskApproved));
+      const createdTasks = await taskRows();
+      assert.equal(createdTasks.rowCount, 1);
+      const followup = createdTasks.rows[0];
+      assert.equal(followup.assignee_id, ownerId);
+      assert.equal(followup.due_day, '2026-10-01');
+      const linkInput = { resource_id: resourceId, task_identifier: followup.id, idempotency_key: `link-followup-${suffix}` };
+      const linkProposal = await executeActionDirect('module_record_task_link', linkInput,
+        orgId, ownerId, conversationId, 'quick', { source: 'agent_chat', agentEmployeeId: employeeId });
+      assert.equal(linkProposal.requiresApproval, true);
+      assert.equal((await client.query('SELECT id FROM cross_references WHERE org_id=$1 AND target_id=$2', [orgId, followup.id])).rowCount, 0);
+      const linkApproved = await approveAction(linkProposal.actionId, ownerId);
+      assert.equal(linkApproved.status, 'approved');
+      const linkReplay = await executeActionDirect('module_record_task_link', linkInput,
+        orgId, ownerId, conversationId, 'quick', { source: 'agent_chat', agentEmployeeId: employeeId });
+      assert.equal(linkReplay.actionId, linkProposal.actionId);
+      assert.equal(linkReplay.success, true, linkReplay.error);
+      assert.equal((await client.query('SELECT id FROM cross_references WHERE org_id=$1 AND target_id=$2', [orgId, followup.id])).rowCount, 1);
+      const linkedWork = await executeToolCall('module_record_task_links', { resource_id: resourceId }, orgId, ownerId, conversationId, employeeId);
+      assert.equal(linkedWork.result.tasks[0].task_id, followup.id);
+      assert.deepEqual(linkedWork.citations.map(citation => citation.id), [followup.id]);
+      await client.query('UPDATE agent_employees SET project_ids=$1 WHERE id=$2', [[randomUUID()], employeeId]);
+      const revokedWork = await executeToolCall('module_record_task_links', { resource_id: resourceId }, orgId, ownerId, conversationId, employeeId);
+      assert.deepEqual(revokedWork.result.tasks, []);
+      assert.deepEqual(revokedWork.citations, []);
+      const ownerWork = await executeToolCall('module_record_task_links', { resource_id: resourceId }, orgId, ownerId, conversationId);
+      assert.equal(ownerWork.result.tasks[0].task_id, followup.id, 'employee scope does not remove shared human work');
+      // Hidden canonical Defty uses the same identity exception as tool policy.
+      // A deleted ordinary employee or runtime-kind-only impostor stays denied.
+      const { listModuleRecordTaskLinks } = await import('../src/lib/module-task-links.js');
+      const { employeeModuleActor } = await import('../src/lib/module-service.js');
+      const hiddenActor = employeeModuleActor({ orgId, employeeId, trustLevel: 'conservative' });
+      await client.query('UPDATE agent_employees SET project_ids=NULL,is_deleted=true WHERE id=$1', [employeeId]);
+      await assert.rejects(listModuleRecordTaskLinks(hiddenActor, 'contacts', recordId));
+      await client.query("UPDATE agent_employees SET runtime_kind='defty_system',is_byoa=false WHERE id=$1", [employeeId]);
+      await assert.rejects(listModuleRecordTaskLinks(hiddenActor, 'contacts', recordId));
+      await client.query("UPDATE agent_employees SET slug='defty-system' WHERE id=$1", [employeeId]);
+      const canonicalWork = await listModuleRecordTaskLinks(hiddenActor, 'contacts', recordId);
+      assert.equal(canonicalWork[0]?.task_id, followup.id);
+
+
+
+    } catch (error) {
+      console.error('CRM agent acceptance assertion:', error);
+      throw error;
+    } finally {
+      try {
+        // Delete only this test's unique tenant, in dependency order.
+        await client.query('DELETE FROM attention_deliveries WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM attention_events WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM attention_items WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM action_receipts WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM module_mutation_receipts WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM agent_actions WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM agent_mcp_call_audit WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM oauth_audit_events WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM mcp_tokens WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM cross_references WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM task_activity WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM job_queue WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM tasks WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM projects WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM module_record_relations WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM module_records WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM module_versions WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM module_installations WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM audit_log WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM agent_employees WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM org_members WHERE org_id = $1', [orgId]);
+        await client.query('DELETE FROM org_members WHERE org_id = $1', [foreignOrgId]);
+        await client.query('DELETE FROM orgs WHERE id = $1', [orgId]);
+        await client.query('DELETE FROM orgs WHERE id = $1', [foreignOrgId]);
+        await client.query(
+          'DELETE FROM users WHERE id = ANY($1::text[])',
+          [[ownerId, recoveryAdminId, employeeUserId, foreignOwnerId]],
+        );
+      } finally {
+        await client.end();
+      }
     }
   },
 );

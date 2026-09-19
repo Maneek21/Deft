@@ -43,6 +43,85 @@ test('module tool history preserves protocol shape without record values or idem
   assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
 });
 
+test('successful module writes retain validated resource identities for a later turn', () => {
+  const toolNames = new Map<string, string>();
+  sanitizeAgentBlocksForStorage([{
+    type: 'tool_use',
+    id: 'toolu_module_create_identity',
+    name: 'module_record_create',
+    input: {
+      module_id: 'com.deft.contacts',
+      collection_key: 'contacts',
+      data: { email: 'must-not-survive@example.test' },
+    },
+  }], toolNames);
+
+  const [result] = sanitizeAgentBlocksForStorage([{
+    type: 'tool_result',
+    tool_use_id: 'toolu_module_create_identity',
+    content: JSON.stringify({
+      resource_id: 'module_record:record_123',
+      record_id: 'record_123',
+      installation_id: 'installation_123',
+      module_id: 'com.deft.contacts',
+      collection_key: 'contacts',
+      manifest_digest: `sha256:${'a'.repeat(64)}`,
+      revision: 1,
+      archived: false,
+      changed_fields: ['email'],
+      replayed: false,
+    }),
+  }], toolNames) as Array<Record<string, unknown>>;
+
+  const durableResult = JSON.parse(String(result?.content));
+  assert.deepEqual(durableResult, {
+    status: 'completed',
+    operation: 'module_record_create',
+    resource_id: 'module_record:record_123',
+    record_id: 'record_123',
+    installation_id: 'installation_123',
+    module_id: 'com.deft.contacts',
+    collection_key: 'contacts',
+    revision: 1,
+    archived: false,
+    changed_fields: ['email'],
+    replayed: false,
+  });
+  assert.doesNotMatch(JSON.stringify(durableResult), /must-not-survive/);
+  const [untrustedRehydration] = sanitizeAgentBlocksForStorage([result], toolNames) as Array<Record<string, unknown>>;
+  assert.match(String(untrustedRehydration?.content), /module_result_redacted/);
+  const [rehydratedResult] = sanitizeAgentBlocksForStorage(
+    [result],
+    toolNames,
+    durableResult,
+  ) as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    JSON.parse(String(rehydratedResult?.content)),
+    durableResult,
+    'rehydrating already-sanitized history must not erase the durable identifiers',
+  );
+
+  const [invalidResult] = sanitizeAgentBlocksForStorage([{
+    type: 'tool_result',
+    tool_use_id: 'toolu_module_create_identity',
+    content: JSON.stringify({
+      resource_id: 'module_record:record_123',
+      record_id: 'record_123',
+      installation_id: 'installation_123',
+      module_id: 'com.deft.contacts',
+      collection_key: 'contacts',
+      manifest_digest: `sha256:${'a'.repeat(64)}`,
+      revision: 1,
+      archived: false,
+      changed_fields: ['email'],
+      replayed: false,
+      record: { data: { email: 'extra-secret@example.test' } },
+    }),
+  }], toolNames) as Array<Record<string, unknown>>;
+  assert.match(String(invalidResult?.content), /module_result_redacted/);
+  assert.doesNotMatch(String(invalidResult?.content), /extra-secret/);
+});
+
 test('legacy module reads are redacted while unrelated tool history remains intact', () => {
   const secret = 'legacy-module-secret';
   const names = new Map<string, string>();

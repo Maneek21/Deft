@@ -24,7 +24,7 @@ import {
   humanSearch,
 } from '../src/lib/mcp-tools/human.js';
 import type { ToolContext, ToolResult } from '../src/lib/mcp-tools/types.js';
-import { issueEmployeeToken, issuePersonalMcpToken } from '../src/lib/mcp-token.js';
+import { issuePersonalMcpToken, issueScopedEmployeeMcpToken } from '../src/lib/mcp-token.js';
 import {
   approveAction,
   rejectAction,
@@ -33,6 +33,7 @@ import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { MCP_ACTION_KINDS } from '../src/lib/mcp-approval-actions.js';
 import { syncApprovalToAttention } from '../src/lib/attention.js';
 import { mcpServerV1Routes } from '../src/routes/mcp-server-v1.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL;
 
@@ -45,7 +46,7 @@ function isSafeTestDatabase(value: string | undefined): value is string {
   }
 }
 
-const canRun = isSafeTestDatabase(TEST_DATABASE_URL);
+const canRun = isSafeTestDatabase(TEST_DATABASE_URL) && Boolean(safeTestDatabaseUrl());
 const ciRequiresDatabase = /^(?:1|true)$/i.test(process.env.CI ?? '');
 if (!canRun && ciRequiresDatabase) {
   throw new Error(
@@ -195,7 +196,11 @@ before(async () => {
   const installation = await installBundledModule(adminActor, 'contacts');
   manifestDigest = installation.manifest_digest;
   await updateModuleInstallation(adminActor, 'contacts', { agent_access: 'write' });
-  employeeToken = await issueEmployeeToken(ORG_ID, EMPLOYEE_ID);
+  employeeToken = (await issueScopedEmployeeMcpToken({
+    orgId: ORG_ID,
+    employeeId: EMPLOYEE_ID,
+    resourceScopes: ['write:modules'],
+  })).raw;
   personalToken = (await issuePersonalMcpToken({
     orgId: ORG_ID,
     userId: ADMIN_ID,
@@ -1852,4 +1857,83 @@ test('employee catalogs retain governed writes and personal calls receive audit 
     assert.equal(JSON.stringify(writeAudit.rows[0].metadata).includes(privateIdempotencyKey), false);
     assert.equal(JSON.stringify(writeAudit.rows[0].metadata).includes(privateName), false);
   });
+});
+
+test('standard HTTP JSON-RPC clients discover CRM, reuse writes and respect token scopes', async () => {
+  const app = new Hono();
+  app.route('/api/mcp/v1', mcpServerV1Routes);
+  const readToken = (await issuePersonalMcpToken({
+    orgId: ORG_ID, userId: ADMIN_ID, name: 'CRM read compatibility',
+    scopes: ['read:modules'], createdBy: ADMIN_ID,
+  })).raw;
+  const appToken = (await issuePersonalMcpToken({
+    orgId: ORG_ID, userId: ADMIN_ID, name: 'CRM App compatibility',
+    scopes: ['read:modules', 'write:modules', 'read:tasks', 'write:tasks', 'read:apps', 'invoke:apps', 'read:app-runs'],
+    createdBy: ADMIN_ID,
+  })).raw;
+  let requestId = 0;
+  for (const protocolVersion of ['2025-03-26', '2025-11-25']) {
+    async function rpc(method: string, params: Record<string, unknown>, token = appToken) {
+      const response = await app.request('/api/mcp/v1', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': protocolVersion,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params }),
+      });
+      const body = await response.json() as any;
+      return { status: response.status, body };
+    }
+    async function call(name: string, args: Record<string, unknown>, token = appToken) {
+      const { status, body } = await rpc('tools/call', { name, arguments: args }, token);
+      assert.equal(status, 200);
+      assert.equal(body.error, undefined, JSON.stringify(body.error));
+      assert.notEqual(body.result.isError, true, JSON.stringify(body.result));
+      return textPayload(body.result);
+    }
+    const handshake = await rpc('initialize', {
+      protocolVersion, capabilities: {}, clientInfo: { name: 'crm-compatibility-test', version: '1.0.0' },
+    });
+    assert.equal(handshake.status, 200);
+    assert.equal(handshake.body.result.protocolVersion, protocolVersion);
+    const catalog = await rpc('tools/list', {});
+    const names = new Set(catalog.body.result.tools.map((tool: { name: string }) => tool.name));
+    for (const name of ['module_list', 'module_schema_get', 'module_record_create', 'module_record_update',
+      'module_record_task_links', 'module_record_task_link', 'capability_list', 'app_run_get']) {
+      assert.ok(names.has(name), `${name} must be discoverable`);
+    }
+    const readCatalog = await rpc('tools/list', {}, readToken);
+    assert.ok(readCatalog.body.result.tools.some((tool: { name: string }) => tool.name === 'module_list'));
+    assert.ok(!readCatalog.body.result.tools.some((tool: { name: string }) => tool.name === 'module_record_create'));
+    const modules = await call('module_list', {});
+    assert.ok(modules.modules.some((module: { module_id: string }) => module.module_id === 'com.deft.contacts'));
+    const schema = await call('module_schema_get', { module_id: 'com.deft.contacts' });
+    assert.ok(JSON.stringify(schema).includes(manifestDigest));
+    const input = {
+      module_id: 'com.deft.contacts', collection_key: 'contacts',
+      data: { name: `HTTP compatibility ${protocolVersion}` },
+      expected_manifest_digest: manifestDigest, idempotency_key: `http-create-${protocolVersion}-${suffix}`,
+    };
+    const created = await call('module_record_create', input);
+    const replayed = await call('module_record_create', input);
+    assert.equal(replayed.record_id, created.record_id);
+    assert.equal(replayed.replayed, true);
+    const fetched = await call('module_record_get', { record_id: created.record_id });
+    assert.equal(fetched.record.data.name, input.data.name);
+    const update = {
+      record_id: created.record_id, patch: { name: 'HTTP compatibility updated' },
+      expected_revision: created.revision, expected_manifest_digest: manifestDigest,
+      idempotency_key: `http-update-${protocolVersion}-${suffix}`,
+    };
+    const updated = await call('module_record_update', update);
+    assert.ok(updated.revision > created.revision);
+    const confirmed = await call('module_record_get', { record_id: created.record_id });
+    assert.equal(confirmed.record.data.name, update.patch.name);
+    const denied = await rpc('tools/call', { name: 'module_record_create', arguments: {
+      ...input, idempotency_key: `denied-${protocolVersion}-${suffix}`,
+    } }, readToken);
+    assert.ok(denied.status === 403 || denied.body.error || denied.body.result?.isError,
+      'read-only credentials must not authorize writes');
+  }
 });

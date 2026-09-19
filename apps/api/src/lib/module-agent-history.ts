@@ -4,6 +4,11 @@ import {
   type ModuleOperationName,
 } from '@deft/shared/modules';
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
+import {
+  durableAgentActionResult,
+  durableAgentActionResultFromMetadata,
+  type DurableAgentActionResult,
+} from './agent-tool-result.js';
 
 const MODULE_OPERATION_SET = new Set<string>(MODULE_OPERATION_NAMES);
 const MODULE_TASK_LINK_TOOL_SET = new Set([
@@ -40,9 +45,9 @@ function sanitizeGovernedModuleToolInput(
   toolName: string,
   value: unknown,
 ): Record<string, unknown> {
-  return isModuleOperationName(toolName)
-    ? sanitizeModuleToolInput(toolName, value)
-    : sanitizeModuleTaskLinkToolInput(value);
+  return MODULE_TASK_LINK_TOOL_SET.has(toolName)
+    ? sanitizeModuleTaskLinkToolInput(value)
+    : sanitizeModuleToolInput(toolName as ModuleOperationName, value);
 }
 
 /**
@@ -83,6 +88,26 @@ function redactedModuleToolResult(operation: string): string {
   });
 }
 
+function durableOrRedactedModuleToolResult(
+  operation: string,
+  value: unknown,
+  trustedDurableResult?: DurableAgentActionResult,
+): string {
+  const durableResult = durableAgentActionResult(operation, value);
+  if (durableResult) return JSON.stringify(durableResult);
+  if (typeof value === 'string' && trustedDurableResult?.operation === operation) {
+    try {
+      const storedResult = durableAgentActionResultFromMetadata(JSON.parse(value));
+      if (storedResult && JSON.stringify(storedResult) === JSON.stringify(trustedDurableResult)) {
+        return JSON.stringify(storedResult);
+      }
+    } catch {
+      // Fall through to the standard redaction below.
+    }
+  }
+  return redactedModuleToolResult(operation);
+}
+
 /**
  * Sanitize Anthropic-shaped tool blocks while preserving valid tool_use /
  * tool_result pairs. Pass the same registry across ordered message rows so a
@@ -91,6 +116,7 @@ function redactedModuleToolResult(operation: string): string {
 export function sanitizeAgentBlocksForStorage(
   value: unknown,
   toolNames: ToolNameRegistry = new Map(),
+  trustedDurableResult?: DurableAgentActionResult,
 ): unknown {
   if (!Array.isArray(value)) return value;
 
@@ -114,7 +140,7 @@ export function sanitizeAgentBlocksForStorage(
       if (!isGovernedModuleToolName(operation)) return block;
       return {
         ...block,
-        content: redactedModuleToolResult(operation),
+        content: durableOrRedactedModuleToolResult(operation, block.content, trustedDurableResult),
       };
     }
     return block;
@@ -135,12 +161,13 @@ export function sanitizeAgentToolCallsForStorage(value: unknown): unknown {
 export function sanitizeAgentMetadataForStorage(
   value: unknown,
   toolNames: ToolNameRegistry = new Map(),
+  trustedDurableResult?: DurableAgentActionResult,
 ): Record<string, unknown> {
   const metadata = isRecord(value) ? value : {};
   return {
     ...metadata,
     ...(Object.hasOwn(metadata, 'agent_blocks')
-      ? { agent_blocks: sanitizeAgentBlocksForStorage(metadata.agent_blocks, toolNames) }
+      ? { agent_blocks: sanitizeAgentBlocksForStorage(metadata.agent_blocks, toolNames, trustedDurableResult) }
       : {}),
     ...(Object.hasOwn(metadata, 'tool_calls')
       ? { tool_calls: sanitizeAgentToolCallsForStorage(metadata.tool_calls) }
