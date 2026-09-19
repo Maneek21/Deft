@@ -475,8 +475,8 @@ test('rejecting a document scrubs draft content, creates no file, and posts one 
     params: Record<string, unknown>;
     decision: string;
     receipt_params: Record<string, unknown>;
-    confirmation_content: string | null;
-    confirmation_metadata: Record<string, unknown> | null;
+    rejection_result_content: string | null;
+    rejection_result_metadata: Record<string, unknown> | null;
   }>(
     `SELECT
        (SELECT count(*)::int FROM files WHERE org_id = $1) AS files,
@@ -487,14 +487,12 @@ test('rejecting a document scrubs draft content, creates no file, and posts one 
        (SELECT action_params_json FROM action_receipts WHERE action_id = $2 LIMIT 1) AS receipt_params,
        (SELECT content FROM messages
           WHERE org_id = $1
-            AND metadata->>'approval_confirmation_for_message_id' =
-              (SELECT message_id FROM agent_actions WHERE id = $2)
-          LIMIT 1) AS confirmation_content,
+            AND metadata->>'approval_rejection_result_for_action_id' = $2
+          LIMIT 1) AS rejection_result_content,
        (SELECT metadata FROM messages
           WHERE org_id = $1
-            AND metadata->>'approval_confirmation_for_message_id' =
-              (SELECT message_id FROM agent_actions WHERE id = $2)
-          LIMIT 1) AS confirmation_metadata`,
+            AND metadata->>'approval_rejection_result_for_action_id' = $2
+          LIMIT 1) AS rejection_result_metadata`,
     [orgId, queued.action_id],
   )).rows[0]!);
   assert.equal(afterState.files, before.files);
@@ -503,9 +501,9 @@ test('rejecting a document scrubs draft content, creates no file, and posts one 
   assert.equal(afterState.params.content, undefined);
   assert.equal(afterState.receipt_params.content, undefined);
   assert.equal(afterState.decision, 'rejected');
-  assert.match(afterState.confirmation_content ?? '', /Done - rejected 1 proposed action\./i);
-  assert.doesNotMatch(afterState.confirmation_content ?? '', /This draft must be discarded\.|rejected\.txt/i);
-  assert.equal(afterState.confirmation_metadata?.subtype, 'approval_confirmation');
-  assert.deepEqual(afterState.confirmation_metadata?.rejected_action_ids, [queued.action_id]);
-  assert.doesNotMatch(JSON.stringify(afterState.confirmation_metadata ?? {}), /This draft must be discarded\.|rejected\.txt/i);
+  assert.equal(afterState.rejection_result_content, '');
+  assert.equal(afterState.rejection_result_metadata?.kind, 'tool_result');
+  assert.equal(afterState.rejection_result_metadata?.hidden, true);
+  assert.match(JSON.stringify(afterState.rejection_result_metadata ?? {}), /The user rejected the document send action\./i);
+  assert.doesNotMatch(JSON.stringify(afterState.rejection_result_metadata ?? {}), /This draft must be discarded\.|rejected\.txt/i);
 });
