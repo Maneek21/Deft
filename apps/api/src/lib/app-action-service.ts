@@ -15,7 +15,6 @@ import {
 } from '@deft/db/schema';
 import {
   APP_AUTOMATION_POLICY_V1,
-  SandboxEmailSendInputSchema,
   DeftAppManifestV1Schema,
   DeftAppManifestV2Schema,
   type DeftAppPrivateInterfaceDescriptorV1,
@@ -51,6 +50,7 @@ import {
   isConnectedAppProtocolVersion,
   normalizeConnectedMcpOverrides,
   parseConnectedAppProviderInput,
+  parseConnectedAppProviderInputForOperation,
   type ConnectedDeftAppManifest,
 } from './app-connected-contract.js';
 import type { CapabilityDiscoveryResult } from './capability-service.js';
@@ -1241,7 +1241,14 @@ export class AppActionService {
       throw actionError('Message review requires the authenticated human UI', 'APP_ACCESS_DENIED', 403);
     }
     const checked = await this.#revalidatePrepared(callerValue, input);
-    const message = SandboxEmailSendInputSchema.parse(checked.payload.provider_input);
+    const parsedMessage = parseConnectedAppProviderInputForOperation(
+      checked.payload.app_run!.authority_vector.provider.operation_name,
+      checked.payload.provider_input,
+    );
+    if (!parsedMessage.success) {
+      throw actionError('Prepared App action input is invalid', 'APP_ACTION_INVALID', 400);
+    }
+    const message = parsedMessage.data;
     // Transient authorized presentation only. Never place these fields in safe_preview, receipts or audit metadata.
     return Object.freeze({ to: message.to, subject: message.subject, body_text: message.body_text });
   }

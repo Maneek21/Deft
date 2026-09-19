@@ -8,7 +8,7 @@ import { executeActionDirect } from '../src/lib/agent-actions.js';
 import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { closeDb } from '../src/lib/db.js';
-import { issueEmployeeToken, issuePersonalMcpToken } from '../src/lib/mcp-token.js';
+import { issuePersonalMcpToken, issueScopedEmployeeMcpToken } from '../src/lib/mcp-token.js';
 import { retrieveContext } from '../src/lib/retrieve-context.js';
 import { verifyReceipt, type ActionReceipt } from '../src/lib/receipts.js';
 import { mcpServerV1Routes } from '../src/routes/mcp-server-v1.js';
@@ -292,7 +292,11 @@ test(
         );
       }
 
-      const employeeToken = await issueEmployeeToken(orgId, employeeId);
+      const employeeToken = (await issueScopedEmployeeMcpToken({
+        orgId,
+        employeeId,
+        resourceScopes: ['write:modules'],
+      })).raw;
       const personalToken = (await issuePersonalMcpToken({
         orgId,
         userId: ownerId,

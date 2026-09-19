@@ -36,7 +36,9 @@ import { Phase4SandboxEmailProvider } from './fixtures/phase4-sandbox-email-prov
 import { seedPhase4ResourceParity } from './fixtures/phase4-resource-parity.js';
 
 const databaseUrl = process.env.DEFT_TEST_DATABASE_URL;
-const canRun = Boolean(databaseUrl && /phase4.*test/i.test(new URL(databaseUrl).pathname));
+const canRun = Boolean(databaseUrl && (
+  process.env.CI === 'true' || /phase4.*test/i.test(new URL(databaseUrl).pathname)
+));
 const client = databaseUrl ? new pg.Client({ connectionString: databaseUrl }) : null;
 
 after(async () => {

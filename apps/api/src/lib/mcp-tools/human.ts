@@ -3677,7 +3677,7 @@ export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
   task_saved_view_list: 'read:tasks', task_saved_view_create: 'write:tasks',
   agent_employee_list: 'read:workspace', agent_employee_get: 'read:workspace', agent_employee_update_state: 'write:workspace',
   module_list: 'read:modules', module_schema_get: 'read:modules', module_record_search: 'read:modules', module_record_query: 'read:modules', module_record_get: 'read:modules', module_record_incoming: 'read:modules', module_record_latest_related: 'read:modules',
-  module_record_create: 'write:modules', module_record_update: 'write:modules', module_record_archive: 'write:modules',
+  module_record_create: 'write:modules', module_record_bulk_create: 'write:modules', module_record_update: 'write:modules', module_record_archive: 'write:modules',
   module_record_task_links: 'read:modules', // Also requires read:tasks; see the conjunctive scope helpers below.
   module_record_task_link: 'write:modules', // Also requires write:tasks.
   module_record_task_unlink: 'write:modules',
