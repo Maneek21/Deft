@@ -12,7 +12,7 @@ import { createModuleRecord, getModuleRecord, humanModuleActor } from '../src/li
 import { activateAppInstallation, stageAppPackage, stageAppUpgrade } from '../src/lib/app-service.js';
 import { activateConnectedAppInstallation, prepareConnectedAppReview } from '../src/lib/app-review-service.js';
 import { linkModuleRecordToTask, listModuleRecordTaskLinks } from '../src/lib/module-task-links.js';
-import { buildContactsCrmManifest } from '../../../modules/bundled/contacts/author/manifest.mjs';
+import { buildContactsCrmManifest } from '../../../modules/projects/contacts/author/manifest.mjs';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const DATABASE_URL = safeTestDatabaseUrl();

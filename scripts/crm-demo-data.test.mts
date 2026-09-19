@@ -9,7 +9,7 @@ test('fictional CRM CSVs remain importable against the canonical manifest', asyn
   const manifest = parseSupportedDeftModuleManifestJson(await readFile(new URL('../modules/bundled/contacts/deft.module.json', import.meta.url), 'utf8'));
   const normalized = normalizeModuleManifest(manifest);
   for (const [key, count] of [['contacts', 60], ['companies', 8], ['deals', 12], ['activities', 6], ['outreach', 2]] as const) {
-    const parsed = parseModuleCsv(await readFile(new URL(`../modules/bundled/contacts/examples/${key}.csv`, import.meta.url), 'utf8'));
+    const parsed = parseModuleCsv(await readFile(new URL(`../modules/projects/contacts/examples/${key}.csv`, import.meta.url), 'utf8'));
     assert.equal(parsed.rows.length, count);
     const collection = normalized.collections.find(item => item.key === key)!;
     const rows = mapModuleImportRows(collection, parsed.headers, parsed.rows);
@@ -28,7 +28,7 @@ test('fictional CRM CSVs remain importable against the canonical manifest', asyn
 test('repair practice has one deliberate invalid email and one existing sample email', async () => {
   const manifest = parseSupportedDeftModuleManifestJson(await readFile(new URL('../modules/bundled/contacts/deft.module.json', import.meta.url), 'utf8'));
   const collection = normalizeModuleManifest(manifest).collections.find(item => item.key === 'contacts')!;
-  const parsed = parseModuleCsv(await readFile(new URL('../modules/bundled/contacts/examples/repair-practice.csv', import.meta.url), 'utf8'));
+  const parsed = parseModuleCsv(await readFile(new URL('../modules/projects/contacts/examples/repair-practice.csv', import.meta.url), 'utf8'));
   const rows = mapModuleImportRows(collection, parsed.headers, parsed.rows);
   assert.equal(validateModuleRecordData(manifest, 'contacts', rows[0]).success, false);
   assert.equal(validateModuleRecordData(manifest, 'contacts', rows[1]).success, true);
@@ -40,7 +40,7 @@ test('compact flagship demo fixture is bounded and valid', async () => {
   const normalized = normalizeModuleManifest(manifest);
   const expected = { companies: 2, contacts: 3, deals: 3, activities: 2, outreach: 1 } as const;
   for (const [key, count] of Object.entries(expected) as Array<[keyof typeof expected, number]>) {
-    const parsed = parseModuleCsv(await readFile(new URL(`../modules/bundled/contacts/examples/flagship-demo/${key}.csv`, import.meta.url), 'utf8'));
+    const parsed = parseModuleCsv(await readFile(new URL(`../modules/projects/contacts/examples/flagship-demo/${key}.csv`, import.meta.url), 'utf8'));
     assert.equal(parsed.rows.length, count);
     const collection = normalized.collections.find(item => item.key === key)!;
     const rows = mapModuleImportRows(collection, parsed.headers, parsed.rows);

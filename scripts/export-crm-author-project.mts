@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const canonical = resolve(repoRoot, 'modules/bundled/contacts/deft.module.json');
-const examples = resolve(repoRoot, 'modules/bundled/contacts/examples');
-const authorBuilder = resolve(repoRoot, 'modules/bundled/contacts/author/build.mjs');
+const examples = resolve(repoRoot, 'modules/projects/contacts/examples');
+const authorBuilder = resolve(repoRoot, 'modules/projects/contacts/author/build.mjs');
 
 export async function exportCrmAuthorProject(outputDir: string, appKitTarball?: string): Promise<string> {
   const kitPackage = JSON.parse(await readFile(resolve(repoRoot, 'packages/app-kit/package.json'), 'utf8')) as { version?: string };
@@ -29,9 +29,9 @@ export async function exportCrmAuthorProject(outputDir: string, appKitTarball?: 
   await mkdir(resolve(target, 'modules/contacts'), { recursive: true });
   await cp(canonical, resolve(target, 'modules/contacts/deft.module.json'));
   await cp(examples, resolve(target, 'examples'), { recursive: true });
-  await cp(resolve(repoRoot, 'modules/bundled/contacts/author/README.md'), resolve(target, 'README.md'));
+  await cp(resolve(repoRoot, 'modules/projects/contacts/author/README.md'), resolve(target, 'README.md'));
   const builder = await readFile(authorBuilder, 'utf8');
-  const manifestFactory = await readFile(resolve(repoRoot, 'modules/bundled/contacts/author/manifest.mjs'), 'utf8');
+  const manifestFactory = await readFile(resolve(repoRoot, 'modules/projects/contacts/author/manifest.mjs'), 'utf8');
   const portableBuilder = builder.replace("import { buildContactsCrmManifest, CRM_APP_VERSIONS } from './manifest.mjs';", '');
   const buildScript = `${portableBuilder}\n${manifestFactory}\nimport { readFile, writeFile } from 'node:fs/promises';\nconst module = JSON.parse(await readFile(new URL('./modules/contacts/deft.module.json', import.meta.url), 'utf8'));\nconst connected = process.argv.includes('--connected');\nconst versionIndex = process.argv.indexOf('--app-version');\nconst appVersion = versionIndex >= 0 ? process.argv[versionIndex + 1] : undefined;\nif (versionIndex >= 0 && !appVersion) throw new Error('Usage: node build.mjs [--connected] [--app-version <semver>]');\nconst built = await buildContactsCrmPackage(module, { connected, ...(appVersion ? { appVersion } : {}) });\nawait writeFile(new URL('./contacts-crm.deftapp.json', import.meta.url), built.json, 'utf8');\nconsole.log(connected ? 'Built connected Contacts CRM' : 'Built connector-free Contacts CRM');\n`;
   let appKitDependency = kitPackage.version;

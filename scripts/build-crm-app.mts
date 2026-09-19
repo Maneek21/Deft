@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDeftAppPackage, prepareModuleArtifact } from '../packages/app-kit/dist/index.js';
-import { buildContactsCrmManifest, CRM_APP_VERSIONS } from '../modules/bundled/contacts/author/manifest.mjs';
+import { buildContactsCrmManifest, CRM_APP_VERSIONS } from '../modules/projects/contacts/author/manifest.mjs';
 
 /** Build from the canonical bundled artifact; never maintain a second CRM schema. */
 export async function buildContactsCrmApp() {

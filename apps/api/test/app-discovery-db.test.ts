@@ -5,7 +5,7 @@ import test, { after } from 'node:test';
 import { buildDeftAppPackage, prepareModuleArtifact } from '@deft/app-kit';
 import { appInstallations, orgMembers, orgs, users } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
-import { buildContactsCrmManifest } from '../../../modules/bundled/contacts/author/manifest.mjs';
+import { buildContactsCrmManifest } from '../../../modules/projects/contacts/author/manifest.mjs';
 import { loadAuthorizedAppDiscovery } from '../src/lib/app-discovery.js';
 import { activateAppInstallation, stageAppPackage } from '../src/lib/app-service.js';
 import { closeDb, db } from '../src/lib/db.js';

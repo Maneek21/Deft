@@ -112,11 +112,11 @@ human review remains an open gate.
 
 ## Five-minute fictional walkthrough
 
-Use the compact [flagship demo fixture](../modules/bundled/contacts/examples/flagship-demo/README.md)
+Use the compact [flagship demo fixture](../modules/projects/contacts/examples/flagship-demo/README.md)
 in a disposable workspace, or use the retained Human QA record when the
 candidate runtime is already prepared. Keep all imported rows labeled
 `crm-demo`; the fixtures use `.test` addresses. The larger CSV set under
-`modules/bundled/contacts/examples/` remains available for regression and
+`modules/projects/contacts/examples/` remains available for regression and
 repair practice.
 
 1. Open Contacts and find **Avery Chen**, then link Avery to **Northstar
