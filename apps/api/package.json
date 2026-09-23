@@ -34,7 +34,7 @@
     "socket.io": "^4.8.3",
     "tsx": "^4.23.15",
     "web-push": "^3.6.7",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
