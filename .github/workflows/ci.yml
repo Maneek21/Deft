@@ -60,6 +60,8 @@ jobs:
           src/lib/api-retry.test.ts
           src/lib/api-auth.test.ts
           src/lib/editor-attribute-security.test.ts
+          src/lib/chat-links.test.ts
+          src/lib/agent-citations.test.ts
           src/lib/native-create-intent.test.ts
           src/lib/time.test.ts
           src/lib/calendar-event-form.test.ts
