@@ -1,3 +1,5 @@
+import { decodeHtmlEntitiesOnce } from '@deft/shared/rich-text';
+
 /** Link only supported schemes and local paths; never protocol-relative URLs. */
 export function isSafeChatHref(href: string): boolean {
   return !/[\\\u0000-\u0020]/.test(href) && (/^\/(?!\/)/.test(href) || /^(https?:\/\/|mailto:)/i.test(href));
@@ -10,7 +12,7 @@ export function formatChatInline(text: string, resolveHref?: (href: string) => s
   const protect = (html: string) => { protectedParts.push(html); return `\u0000${protectedParts.length - 1}\u0000`; };
   const escaped = escapeHtml(text).replace(/`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g, (match, code, label, escapedHref) => {
     if (code !== undefined) return protect(`<code>${code}</code>`);
-    const originalHref = escapedHref.replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+    const originalHref = decodeHtmlEntitiesOnce(escapedHref);
     const href = resolveHref ? resolveHref(originalHref) : originalHref;
     if (href === null) return protect(label);
     if (!isSafeChatHref(href)) return protect(match);
