@@ -13,7 +13,8 @@ shapes. Do not weaken that assertion as part of routine maintenance.
 
 Keep the direct API, shared and App Kit Zod versions at their master baseline
 and exclude Zod from Dependabot's patch/minor group so it receives separate
-review. Tooling may retain its own transitive Zod version. This is not a
+review. A workspace override also holds transitive MCP and lint dependencies
+at 4.4.3; remove it as part of the reviewed compatibility update. This is not a
 security exception: the dependency audit reports no known vulnerabilities.
 
 Re-entry criteria:
