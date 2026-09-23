@@ -21,3 +21,27 @@ test('formatting cannot inject markup and code does not become a task link', () 
   assert.ok(html.includes('<strong>verified</strong>'));
   assert.ok(!html.includes('<script>'));
 });
+
+test('link resolvers receive the original URL with exactly one escaping layer removed', () => {
+  for (const href of [
+    '/search?q=&quot;',
+    '/search?q=&amp;quot;',
+    '/search?q="quoted"&other=<value>',
+    '/search?q=&#34;&other=&#x22;',
+  ]) {
+    let resolved: string | undefined;
+    const html = formatChatInline(`[Search](${href})`, (value) => {
+      resolved = value;
+      return value;
+    });
+    assert.equal(resolved, href);
+    assert.ok(html.includes('<a href='));
+    assert.ok(!html.includes('<value>'));
+  }
+});
+
+test('nested entities remain literal in link attributes and cannot create attributes', () => {
+  const html = formatChatInline('[Search](/search?q=&quot;onmouseover=&quot;alert)');
+  assert.ok(html.includes('href="/search?q=&amp;quot;onmouseover=&amp;quot;alert"'));
+  assert.equal(formatChatInline('[bad](javascript&#58;alert)').includes('<a '), false);
+});
