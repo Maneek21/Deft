@@ -21,6 +21,10 @@ updates:
     open-pull-requests-limit: 5
     groups:
       patch-and-minor:
+        # Zod upgrades can change the public App Kit validation error contract.
+        # Review them independently from routine dependency updates.
+        exclude-patterns:
+          - "zod"
         update-types:
           - "patch"
           - "minor"
