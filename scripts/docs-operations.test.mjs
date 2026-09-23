@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve, join, dirname } from 'node:path';
+import { resolve, join, dirname, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const bash = process.env.BASH_PATH || (process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash');
@@ -36,8 +36,11 @@ function fixture() {
   return {
     dir,
     run(script, args = [], env = {}) {
-      return spawnSync(bash, ['-c', 'export PATH="$PWD/bin:$PATH"; bash "$@"', '--', posix(script), ...args], {
-        cwd: dir, encoding: 'utf8', env: { ...process.env, TEST_LOG: posix(log), ...env },
+      return spawnSync(bash, [posix(script), ...args], {
+        cwd: dir, encoding: 'utf8', env: {
+          ...process.env, ...env, TEST_LOG: posix(log),
+          PATH: `${join(dir, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
+        },
       });
     },
     log: () => readFileSync(log, 'utf8'),
@@ -71,6 +74,18 @@ test('failed database dump leaves the app stopped and returns failure', () => {
     assert.notEqual(result.status, 0);
     assert(f.log().includes('stop deft'));
     assert(!f.log().includes('start deft'));
+  } finally { f.cleanup(); }
+});
+
+test('operation script paths and arguments remain literal shell data', () => {
+  const f = fixture();
+  try {
+    const script = join(f.dir, "operation ' $() `literal` &;.sh");
+    writeFileSync(script, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@"\n');
+    const args = ['space here', '$(echo injected)', '`echo injected`', 'a;b&c'];
+    const result = f.run(script, args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, args.join('\n') + '\n');
   } finally { f.cleanup(); }
 });
 
