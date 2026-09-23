@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { abortOnUnknownContractKeys } from './module-contract/zod-compat.js';
 import {
   classifyAppAutomationOccurrence,
   resolveAppAutomationOccurrence,
@@ -69,6 +70,7 @@ export const DeftAppDeveloperCompatibilitySchema = z.strictObject({
     '2': DeftAppDeveloperProtocolV2FlowSchema.optional(),
   }),
 }).superRefine((value, ctx) => {
+  if (abortOnUnknownContractKeys(ctx)) return;
   if (new Set(value.app_kit.versions).size !== value.app_kit.versions.length) {
     ctx.addIssue({ code: 'custom', path: ['app_kit', 'versions'], message: 'App Kit versions must be unique' });
   }
@@ -258,6 +260,7 @@ export const DeftAppManifestV0Schema = z
       .default([]),
   })
   .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     const identities = new Set<string>();
     const moduleIds = new Set<string>();
     const paths = new Set<string>();
@@ -623,6 +626,7 @@ export const DeftAppManifestV1Schema = z
     actions: z.array(DeftAppActionBindingV1Schema).min(1).max(APP_LIMITS.actions),
   })
   .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     const moduleIdentities = new Set<string>();
     const moduleIds = new Set<string>();
     const modulePaths = new Set<string>();
@@ -761,6 +765,7 @@ export const DeftAppManifestV2Schema = z
       .max(APP_LIMITS.automation_requests),
   })
   .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     const { automation_requests: _automationRequests, ...v1Fields } = manifest;
     const v1Validation = DeftAppManifestV1Schema.safeParse({
       ...v1Fields,

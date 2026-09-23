@@ -19,6 +19,7 @@ async function transpileAuthoritativeSource(name) {
       throw new Error(`Expected authoritative Module schema import in ${sourcePath}`);
     }
     source = source.replace(originalImport, portableImport);
+    source = source.replace("from './zod-compat'", "from './zod-compat.js'");
   }
 
   const result = ts.transpileModule(source, {
@@ -50,4 +51,5 @@ async function transpileAuthoritativeSource(name) {
 }
 
 await transpileAuthoritativeSource('schemas');
+await transpileAuthoritativeSource('zod-compat');
 await transpileAuthoritativeSource('modules');

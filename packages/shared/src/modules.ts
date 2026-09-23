@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { abortOnUnknownContractKeys } from './zod-compat';
 import { SEMVER_REGEX } from './schemas';
 
 /**
@@ -496,6 +497,7 @@ export const ModuleCollectionSchema = z
     latest_related: z.array(ModuleRelatedLatestSchema).max(4).optional(),
   })
   .superRefine((collection, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     addDuplicateIssues(
       collection.fields.map((field) => field.key),
       ['fields'],
@@ -674,6 +676,7 @@ export const ModuleCollectionV2Schema = z
     latest_related: z.array(ModuleRelatedLatestSchema).max(4).optional(),
   })
   .superRefine((collection, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     // Reuse the exact v1 collection invariants by projecting resource refs to
     // the already non-inline v1 relation shape. This keeps defaults, views,
     // search restrictions, duplicate checks, and all scalar behavior aligned.
@@ -736,6 +739,7 @@ export const DeftModuleManifestV1Schema = z
     navigation: ModuleNavigationSchema.optional(),
   })
   .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     validateLatestRelated(manifest.collections, ctx);
     addDuplicateIssues(
       manifest.collections.map((collection) => collection.key),
@@ -796,6 +800,7 @@ export const DeftModuleManifestV2Schema = z
     navigation: ModuleNavigationSchema.optional(),
   })
   .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
     validateLatestRelated(manifest.collections, ctx);
     addDuplicateIssues(
       manifest.collections.map((collection) => collection.key),
