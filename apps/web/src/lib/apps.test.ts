@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
+  canEnableAppWithoutReview,
+  canStageConnectedUpgrade,
   isConnectedAppManifest,
   normalizeAppGrantManagement,
   normalizeAppInstallation,
@@ -159,6 +162,32 @@ test('App installation normalization preserves v0 and expanded connected manifes
     assert.equal(v1.manifest.actions[0].placement.resource_requirement_key, 'campaign');
     assert.equal(v1.manifest.actions[0].input_bindings[0].source.kind, 'selected_relation_field');
   }
+});
+
+test('Protocol v0 active and disabled installations expose connected upgrade review', () => {
+  const v0 = installation('0') as unknown as Parameters<typeof canStageConnectedUpgrade>[0];
+  const v1 = installation('1') as unknown as Parameters<typeof canStageConnectedUpgrade>[0];
+  assert.equal(canStageConnectedUpgrade(v0), false, 'fixture starts staged');
+  assert.equal(canStageConnectedUpgrade({ ...v0, state: 'active' }), true);
+  assert.equal(canStageConnectedUpgrade({ ...v0, state: 'disabled' }), true);
+  assert.equal(canStageConnectedUpgrade({ ...v1, state: 'active' }), false);
+});
+
+test('only a disabled active Protocol v0 installation can re-enable without connected review', () => {
+  const v0 = installation('0') as unknown as Parameters<typeof canEnableAppWithoutReview>[0];
+  const v1 = installation('1') as unknown as Parameters<typeof canEnableAppWithoutReview>[0];
+  assert.equal(canEnableAppWithoutReview(v0), false, 'fixture starts staged');
+  assert.equal(canEnableAppWithoutReview({ ...v0, state: 'active' }), false);
+  assert.equal(canEnableAppWithoutReview({ ...v0, state: 'disabled' }), true);
+  assert.equal(canEnableAppWithoutReview({ ...v1, state: 'disabled' }), false);
+});
+
+test('connected management remains renderable for a v0 installation with a connected review target', () => {
+  const source = readFileSync(new URL('../components/apps/connected-app-management.tsx', import.meta.url), 'utf8');
+  assert.match(source, /if \(!installedManifest && !target\)/);
+  assert.doesNotMatch(source, /if \(!installedManifest\) return null/);
+  assert.match(source, /Stage connected upgrade/);
+  assert.match(source, /installedManifest\?\.compatibility\.app_protocol/);
 });
 
 test('connected grant management projects staged review, active grants, compatibility, and recent Run data', () => {
@@ -380,11 +409,13 @@ test('review and health normalizers keep only safe management fields', () => {
     lifecycle_epoch: 0, grant_epoch: 0,
     permission_diff: { kind: 'initial', carry_forward_eligible: false, changed_atoms: ['action:send'], prior_authority_surface_digest: null, proposed_authority_surface_digest: 'sha256:surface' },
     classification: {}, resource_rights: [{}], dependencies: [],
+    module_adoptions: [{ module_id: 'com.deft.contacts', module_installation_id: 'crm-1', name: 'Contacts', is_enabled: true, agent_access: 'read', private_value: 'must not leak' }],
     action_bindings: [{ action_key: 'send', capability_requirement_key: 'send_email', connector_requirement_key: 'mail', interface_identity: 'private:app_lineage:send_email:1', provider_kind: 'mcp', mcp_connection_id: 'connection-1', operation_name: 'send_email', operation_schema_digest: 'sha256:schema', connector_authorization_version: 1, binding_digest: 'sha256:binding' }],
     authority_surface_digest: 'sha256:surface', review_digest: 'sha256:review',
   } });
   const health = normalizeConnectedAppHealth({ health: { status: 'unhealthy', installation_id: 'installation-1', active_grant_snapshot_id: null, lifecycle_epoch: 0, grant_epoch: 0, checked_provider_schemas: true, issues: [{ code: 'APP_NOT_ACTIVE', subject_id: 'installation-1', message: 'The App is not active' }] } });
   assert.equal(review.permission_diff.kind, 'initial');
+  assert.deepEqual(review.module_adoptions, [{ module_id: 'com.deft.contacts', module_installation_id: 'crm-1', name: 'Contacts', is_enabled: true, agent_access: 'read' }]);
   assert.equal(review.action_bindings[0].mcp_connection_id, 'connection-1');
   assert.equal(health.issues[0].code, 'APP_NOT_ACTIVE');
 });

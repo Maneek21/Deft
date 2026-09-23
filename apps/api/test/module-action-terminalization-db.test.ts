@@ -9,11 +9,10 @@ import { maintainAttentionSystem } from '../src/lib/attention-maintenance.js';
 import { syncApprovalToAttention } from '../src/lib/attention.js';
 import { verifyReceipt } from '../src/lib/receipts.js';
 import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL;
-const canRun = Boolean(
-  TEST_DATABASE_URL && /(?:test|ci)/i.test(new URL(TEST_DATABASE_URL).pathname),
-);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 const suffix = randomUUID();
 const ORG_ID = `module-terminal-org-${suffix}`;
 const ADMIN_ID = `module-terminal-admin-${suffix}`;

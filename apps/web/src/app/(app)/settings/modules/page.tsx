@@ -22,6 +22,7 @@ import {
   type BundledModule,
   type ModuleInstallation,
   type ModuleManifestPreview,
+  moduleOwningAppHref,
   type ModuleManifestUploadDecision,
 } from '@/lib/modules';
 import {
@@ -325,6 +326,7 @@ function InstalledModuleCard({
   onChooseManifest: () => void;
   onBundledUpdate: () => void;
 }) {
+  const owningAppHref = moduleOwningAppHref(module);
   return (
     <article
       className="flex min-h-[220px] flex-col rounded-xl p-4"
@@ -339,7 +341,7 @@ function InstalledModuleCard({
             <h2 className="truncate text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>{module.manifest.name}</h2>
             <ModuleStatusBadge enabled={module.enabled} />
           </div>
-          <p className="mt-1 text-[0.6875rem]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
+          <p className="mt-1 text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)', fontFamily: 'var(--font-mono)' }}>
             v{module.manifest.version ?? '—'} · {module.source === 'sideloaded' ? 'Local' : 'Bundled'} · {module.manifest.collections.length} collection{module.manifest.collections.length === 1 ? '' : 's'}
           </p>
         </div>
@@ -364,6 +366,11 @@ function InstalledModuleCard({
           </select>
         </label>
       )}
+      {canManage && (
+        <p className="mt-2 text-[0.6875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
+          Agent access controls Defty and agent employees. Personal AI connections use the permissions of the person who connected them.
+        </p>
+      )}
       <div className="mt-auto flex items-center gap-2 pt-4">
         <Link
           href={`/modules/${encodeURIComponent(module.slug)}`}
@@ -372,7 +379,15 @@ function InstalledModuleCard({
         >
           Open
         </Link>
-        {canManage && (
+        {canManage && owningAppHref ? (
+          <Link
+            href={owningAppHref}
+            className="flex min-h-11 items-center justify-center rounded-lg px-3 text-[0.8125rem] font-medium"
+            style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
+          >
+            Managed by an App
+          </Link>
+        ) : canManage ? (
           <button
             type="button"
             onClick={() => onUpdate({ enabled: !module.enabled })}
@@ -383,9 +398,9 @@ function InstalledModuleCard({
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Power size={14} />}
             {module.enabled ? 'Disable' : 'Enable'}
           </button>
-        )}
+        ) : null}
       </div>
-      {canManage && module.source === 'sideloaded' && (
+      {canManage && !owningAppHref && module.source === 'sideloaded' && (
         <button
           type="button"
           onClick={onChooseManifest}
@@ -397,7 +412,7 @@ function InstalledModuleCard({
           Update local manifest
         </button>
       )}
-      {canManage && module.source === 'bundled' && bundledRelease?.updateAvailable && (
+      {canManage && !owningAppHref && module.source === 'bundled' && bundledRelease?.updateAvailable && (
         <button
           type="button"
           onClick={onBundledUpdate}
@@ -435,7 +450,7 @@ function AvailableModuleCard({
         </span>
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-[0.875rem] font-semibold" style={{ color: 'var(--on-surface)' }}>{module.name}</h2>
-          <p className="mt-1 text-[0.6875rem]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
+          <p className="mt-1 text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)', fontFamily: 'var(--font-mono)' }}>
             v{module.version ?? '—'} · Bundled
           </p>
         </div>
@@ -499,7 +514,7 @@ function ManifestPreview({
                 {decision.mode === 'upgrade' ? 'Review local update' : 'Review local install'}
               </p>
               <h2 className="mt-0.5 text-[0.9375rem] font-semibold" style={{ color: 'var(--on-surface)' }}>
-                {preview.name} <span className="font-normal" style={{ color: 'var(--outline)' }}>v{preview.version}</span>
+                {preview.name} <span className="font-normal" style={{ color: 'var(--on-surface-variant)' }}>v{preview.version}</span>
               </h2>
             </div>
             <button
@@ -523,7 +538,7 @@ function ManifestPreview({
               wide
             />
           </dl>
-          <p className="mt-3 text-[0.6875rem] leading-relaxed" style={{ color: 'var(--outline)' }}>
+          <p className="mt-3 text-[0.6875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
             Deft will store only this declarative manifest. It will not fetch URLs or install code, scripts, or assets.
           </p>
           <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -566,7 +581,7 @@ function ManifestDetail({
 }) {
   return (
     <div className={wide ? 'sm:col-span-2' : undefined}>
-      <dt style={{ color: 'var(--outline)' }}>{label}</dt>
+      <dt style={{ color: 'var(--on-surface-variant)' }}>{label}</dt>
       <dd
         className="mt-0.5 break-all"
         style={{ color: 'var(--on-surface-variant)', fontFamily: mono ? 'var(--font-mono)' : undefined }}

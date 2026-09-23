@@ -59,6 +59,7 @@ test('JWT App action routes are strict human:ui adapters over AppActionService',
     list: service.list,
     resolve: service.resolve,
     prepare: service.prepare,
+    reviewPreparedMessage: service.reviewPreparedMessage,
     invoke: service.invoke,
   };
   t.after(() => Object.assign(service, original));
@@ -79,6 +80,10 @@ test('JWT App action routes are strict human:ui adapters over AppActionService',
       return { operation };
     };
   }
+  service.reviewPreparedMessage = async (caller: any, input: any) => {
+    calls.push({ operation: 'reviewPreparedMessage', caller, input });
+    return { to: 'recipient@example.test', subject: 'Safe subject', body_text: 'Safe body' };
+  };
 
   const app = testApp();
   const base = {
@@ -106,7 +111,7 @@ test('JWT App action routes are strict human:ui adapters over AppActionService',
   assert.equal('authority_vector' in preparedBody.result, false);
   assert.equal('authority_digest' in preparedBody.result, false);
 
-  assert.deepEqual(calls.map((call) => call.operation), ['list', 'resolve', 'prepare', 'invoke']);
+  assert.deepEqual(calls.map((call) => call.operation), ['list', 'resolve', 'prepare', 'reviewPreparedMessage', 'invoke']);
   for (const call of calls) {
     assert.deepEqual(call.caller, {
       actor: {
@@ -121,6 +126,10 @@ test('JWT App action routes are strict human:ui adapters over AppActionService',
   }
   assert.deepEqual(calls[2]?.input.selections, []);
   assert.deepEqual(calls[2]?.input.user_inputs, {});
+  assert.deepEqual(calls[3]?.input, { ...base, selections: [], user_inputs: {}, input_candidate: INPUT_CANDIDATE });
+  assert.deepEqual(preparedBody.result.review_fields, {
+    to: 'recipient@example.test', subject: 'Safe subject', body_text: 'Safe body',
+  });
 
   const callsBeforeInvalid = calls.length;
   const invalid = await app.request('/api/app-actions/list', {

@@ -356,6 +356,11 @@ test('module record task links enforce native task and module boundaries', async
       readModuleMcp,
     )).isError, true, 'write:modules is required to approve a module task-link action');
 
+    assert.equal((await humanApprovalApprove(
+      { action_id: pendingClaim.action.id },
+      { ...readModuleMcp, scopes: [...readModuleMcp.scopes, 'write:modules'] },
+    )).isError, true, 'approving a task-link mutation also requires write:tasks');
+
     const [guestOwnedAction] = await db.insert(agentActions).values({
       org_id: orgId,
       user_id: guestId,

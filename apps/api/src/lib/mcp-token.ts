@@ -77,8 +77,15 @@ export const EMPLOYEE_MCP_APP_SCOPES = [
   'read:app-runs',
 ] as const;
 
+export const EMPLOYEE_MCP_RESOURCE_SCOPES = [
+  'read:tasks',
+  'write:tasks',
+  'write:modules',
+] as const;
+
 export type EmployeeMcpAppScope = typeof EMPLOYEE_MCP_APP_SCOPES[number];
-export type EmployeeMcpScope = 'read:modules' | EmployeeMcpAppScope;
+export type EmployeeMcpResourceScope = typeof EMPLOYEE_MCP_RESOURCE_SCOPES[number];
+export type EmployeeMcpScope = 'read:modules' | EmployeeMcpAppScope | EmployeeMcpResourceScope;
 
 export type IssuedEmployeeMcpToken = Readonly<{
   raw: string;
@@ -100,6 +107,7 @@ export async function issueScopedEmployeeMcpToken(params: {
   name?: string;
   createdBy?: string;
   scopes?: readonly EmployeeMcpAppScope[];
+  resourceScopes?: readonly EmployeeMcpResourceScope[];
   rawToken?: string;
   revokeExisting?: boolean;
   bcryptRounds?: number;
@@ -108,10 +116,14 @@ export async function issueScopedEmployeeMcpToken(params: {
   if (requestedAppScopes.some((scope) => !EMPLOYEE_MCP_APP_SCOPES.includes(scope))) {
     throw new Error('issueScopedEmployeeMcpToken: unsupported employee MCP scope');
   }
+  const requestedResourceScopes = [...new Set(params.resourceScopes ?? [])];
+  if (requestedResourceScopes.some((scope) => !EMPLOYEE_MCP_RESOURCE_SCOPES.includes(scope))) {
+    throw new Error('issueScopedEmployeeMcpToken: unsupported employee MCP resource scope');
+  }
   // App discovery/invocation authorizes both the module-backed resource and
   // the App operation. First-class employee credentials therefore always
   // carry the base module-read scope, while every App scope remains opt-in.
-  const scopes: EmployeeMcpScope[] = ['read:modules', ...requestedAppScopes];
+  const scopes: EmployeeMcpScope[] = ['read:modules', ...requestedResourceScopes, ...requestedAppScopes];
   const raw = params.rawToken ?? randomBytes(32).toString('base64url');
   if (raw.length < 16) throw new Error('issueScopedEmployeeMcpToken: token is too short');
   const prefix = raw.slice(0, 18);

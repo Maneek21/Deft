@@ -7,7 +7,9 @@ import { isModuleError } from '../lib/module-errors.js';
 import {
   linkModuleRecordToTask,
   listModuleRecordTaskLinks,
+  listModuleRecordNextTasks,
   listTaskModuleRecordLinks,
+  listModuleTaskQueue,
   ModuleTaskLinkError,
   unlinkModuleRecordFromTask,
 } from '../lib/module-task-links.js';
@@ -17,6 +19,18 @@ export const moduleTaskLinkRoutes = new Hono();
 const linkBodySchema = z.strictObject({
   resource_id: ModuleRecordResourceIdSchema,
 });
+
+const linkPageSchema = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(100).default(100),
+  offset: z.coerce.number().int().min(0).max(100000).default(0),
+});
+
+function linkPage<T>(rows: T[], input: { limit: number; offset: number }) {
+  return {
+    links: rows.slice(0, input.limit),
+    next_offset: rows.length > input.limit ? input.offset + input.limit : null,
+  };
+}
 
 function actorFromContext(c: Context) {
   const user = c.get('user') as AuthUser;
@@ -45,7 +59,12 @@ function failure(c: Context, error: unknown) {
 
 moduleTaskLinkRoutes.get('/tasks/:taskId/module-records', async (c) => {
   try {
-    return c.json({ links: await listTaskModuleRecordLinks(actorFromContext(c), c.req.param('taskId')) });
+    const input = linkPageSchema.parse(c.req.query());
+    const rows = await listTaskModuleRecordLinks(actorFromContext(c), c.req.param('taskId'), {
+      offset: input.offset,
+      limit: input.limit + 1,
+    });
+    return c.json(linkPage(rows, input));
   } catch (error) {
     return failure(c, error);
   }
@@ -77,9 +96,37 @@ moduleTaskLinkRoutes.delete('/tasks/:taskId/module-records/:recordId', async (c)
 moduleTaskLinkRoutes.get('/modules/:slug/records/:recordId/tasks', async (c) => {
   try {
     const slug = ModuleSlugSchema.parse(c.req.param('slug'));
-    return c.json({
-      links: await listModuleRecordTaskLinks(actorFromContext(c), slug, c.req.param('recordId')),
+    const input = linkPageSchema.parse(c.req.query());
+    const rows = await listModuleRecordTaskLinks(actorFromContext(c), slug, c.req.param('recordId'), {
+      offset: input.offset,
+      limit: input.limit + 1,
     });
+    return c.json(linkPage(rows, input));
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+moduleTaskLinkRoutes.get('/modules/:slug/task-queue', async (c) => {
+  try {
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    const input = z.strictObject({
+      bucket: z.enum(['open', 'overdue', 'today', 'upcoming', 'undated', 'closed']).default('open'),
+      assignee: z.enum(['all', 'mine', 'unassigned']).default('all'),
+      today: z.iso.date(),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).parse(c.req.query());
+    return c.json(await listModuleTaskQueue(actorFromContext(c), slug, input));
+  } catch (error) {
+    return failure(c, error);
+  }
+});
+
+moduleTaskLinkRoutes.post('/modules/:slug/records/next-tasks', async (c) => {
+  try {
+    const slug = ModuleSlugSchema.parse(c.req.param('slug'));
+    return c.json(await listModuleRecordNextTasks(actorFromContext(c), slug, await c.req.json().catch(() => null)));
   } catch (error) {
     return failure(c, error);
   }

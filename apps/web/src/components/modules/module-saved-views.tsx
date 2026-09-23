@@ -125,7 +125,7 @@ export function ModuleSavedViews({
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <label
-          className="flex min-h-10 min-w-[180px] flex-1 items-center gap-2 rounded-lg px-3 sm:max-w-[280px]"
+          className="flex min-h-10 min-w-[180px] flex-1 items-center gap-2 rounded-full px-4 sm:max-w-[280px]"
           style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}
         >
           <Bookmark size={14} className="flex-shrink-0" style={{ color: activeView ? 'var(--primary)' : 'var(--outline)' }} />
@@ -138,7 +138,7 @@ export function ModuleSavedViews({
             aria-label="Personal view"
             disabled={disabled || saving}
           >
-            <option value="">Manifest view</option>
+            <option value="">Default view</option>
             {views.map((view) => <option key={view.id} value={view.id}>{view.name}</option>)}
           </select>
         </label>
@@ -147,7 +147,7 @@ export function ModuleSavedViews({
           type="button"
           onClick={() => { setMode('create'); setName(''); setError(null); }}
           disabled={disabled || saving}
-          className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-[0.75rem] font-medium disabled:opacity-50"
+          className="flex min-h-10 items-center gap-1.5 rounded-full px-4 text-[0.75rem] font-medium transition-colors hover:bg-[var(--surface-container-high)] disabled:opacity-50"
           style={{ background: 'var(--surface-container-low)', color: 'var(--on-surface-variant)', border: '1px solid var(--ghost-border)' }}
         >
           <Save size={14} /> Save view
@@ -159,7 +159,7 @@ export function ModuleSavedViews({
               type="button"
               onClick={() => void patch({ config: config() })}
               disabled={disabled || saving}
-              className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-[0.75rem] font-medium disabled:opacity-50"
+              className="flex min-h-10 items-center gap-1.5 rounded-full px-4 text-[0.75rem] font-medium disabled:opacity-50"
               style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
             >
               {saving && mode === 'closed' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
@@ -169,7 +169,7 @@ export function ModuleSavedViews({
               type="button"
               onClick={() => { setMode('rename'); setError(null); }}
               disabled={disabled || saving}
-              className="flex h-10 w-10 items-center justify-center rounded-lg disabled:opacity-50"
+              className="flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-[var(--surface-container-high)] disabled:opacity-50"
               style={{ color: 'var(--outline)', background: 'var(--surface-container-low)' }}
               aria-label={`Rename ${activeView.name}`}
             >
@@ -179,7 +179,7 @@ export function ModuleSavedViews({
               type="button"
               onClick={() => { setMode('delete'); setError(null); }}
               disabled={disabled || saving}
-              className="flex h-10 w-10 items-center justify-center rounded-lg disabled:opacity-50"
+              className="flex h-10 w-10 items-center justify-center rounded-full disabled:opacity-50"
               style={{ color: 'var(--error)', background: 'var(--danger-subtle)' }}
               aria-label={`Delete ${activeView.name}`}
             >
@@ -200,7 +200,7 @@ export function ModuleSavedViews({
           style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}
         >
           <label className="min-w-0 flex-1">
-            <span className="mb-1 block text-[0.6875rem] font-medium" style={{ color: 'var(--outline)' }}>
+            <span className="mb-1 block text-[0.6875rem] font-medium" style={{ color: 'var(--on-surface-variant)' }}>
               {mode === 'create' ? 'New personal view name' : 'Rename personal view'}
             </span>
             <input
@@ -216,7 +216,7 @@ export function ModuleSavedViews({
             <button
               type="submit"
               disabled={!name.trim() || saving}
-              className="flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-lg px-3 text-[0.75rem] font-medium text-white disabled:opacity-50 sm:flex-none"
+              className="flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-full px-4 text-[0.75rem] font-medium text-white disabled:opacity-50 sm:flex-none"
               style={{ background: 'var(--primary-container)' }}
             >
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
@@ -226,7 +226,7 @@ export function ModuleSavedViews({
               type="button"
               onClick={() => setMode('closed')}
               disabled={saving}
-              className="flex h-10 w-10 items-center justify-center rounded-lg"
+              className="flex h-10 w-10 items-center justify-center rounded-full"
               style={{ color: 'var(--outline)' }}
               aria-label="Cancel"
             >
@@ -245,19 +245,19 @@ export function ModuleSavedViews({
             Delete <strong>{activeView.name}</strong>? Records and manifest views are unaffected.
           </p>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setMode('closed')} disabled={saving} className="min-h-10 rounded-lg px-3 text-[0.75rem] font-medium" style={{ color: 'var(--outline)' }}>
+            <button type="button" onClick={() => setMode('closed')} disabled={saving} className="min-h-10 rounded-full px-4 text-[0.75rem] font-medium" style={{ color: 'var(--on-surface-variant)' }}>
               Cancel
             </button>
-            <button type="button" onClick={() => void remove()} disabled={saving} className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-[0.75rem] font-medium text-white disabled:opacity-50" style={{ background: 'var(--error)' }}>
+            <button type="button" onClick={() => void remove()} disabled={saving} className="flex min-h-10 items-center gap-1.5 rounded-full px-4 text-[0.75rem] font-medium text-white disabled:opacity-50" style={{ background: 'var(--error)' }}>
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Delete
             </button>
           </div>
         </div>
       )}
 
-      {error && <p role="alert" className="text-[0.75rem]" style={{ color: 'var(--error)' }}>{error}</p>}
+      {error && <p role="alert" className="rounded-lg border p-3 text-[0.75rem]" style={{ color: 'var(--on-surface)', background: 'var(--danger-subtle)', borderColor: 'var(--error)' }}>{error}</p>}
       {!error && activeView && (
-        <p className="text-[0.6875rem]" style={{ color: 'var(--outline)' }}>
+        <p className="text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)' }}>
           Personal to you. Update saves the current fields, filter, sort, and layout.
         </p>
       )}

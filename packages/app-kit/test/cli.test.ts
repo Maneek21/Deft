@@ -149,7 +149,7 @@ test('connected template emits a Module v2 dependency App and requested authorit
         single_use_install: true,
         compatibility: {
           schema: 'deft.app_developer.compatibility.v1',
-          app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.2', '0.1.0-alpha.1'] },
+          app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1'] },
           protocol_flows: {
             '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
             '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
@@ -184,7 +184,7 @@ test('connected template emits a Module v2 dependency App and requested authorit
     assert.equal(diagnosed.status, 0, diagnosed.stderr);
     assert.equal(
       diagnosed.stdout.trim(),
-      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.2; App Protocol v1; `
+      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.3; App Protocol v1; `
       + `package format deft.app.package.v1; install mode stage_only; host ${hostUrl}`,
     );
     assert.doesNotMatch(diagnosed.stdout, /registry|signature|signed|trusted|verified/i);
@@ -413,7 +413,7 @@ test('Protocol v2 check, build, requested-authority, and doctor paths stay stage
       single_use_install: true,
       compatibility: {
         schema: 'deft.app_developer.compatibility.v1',
-        app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.2', '0.1.0-alpha.1'] },
+        app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1'] },
         protocol_flows: {
           '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
           '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
@@ -431,7 +431,7 @@ test('Protocol v2 check, build, requested-authority, and doctor paths stay stage
     assert.equal(diagnosed.status, 0, diagnosed.stderr);
     assert.equal(
       diagnosed.stdout.trim(),
-      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.2; App Protocol v2; `
+      `Compatible App Kit package @deft/app-kit version 0.1.0-alpha.3; App Protocol v2; `
       + `package format deft.app.package.v2; install mode stage_only; host ${hostUrl}\n`
       + 'Bounded automation contracts ready; run `deft app simulate-automation --fixture <path>` before staging.',
     );

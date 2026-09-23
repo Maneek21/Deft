@@ -227,6 +227,81 @@ export const ModuleFieldV2Schema = z.discriminatedUnion('type', [
   ModuleResourceReferenceFieldSchema,
 ]);
 
+type ModuleFilterCompatibilityInput = {
+  operator: 'eq' | 'neq' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'is_empty' | 'date_relative';
+  value: unknown;
+};
+
+/** Match manifest quick-filter authoring to the runtime query compiler. */
+function moduleFilterCompatibilityIssue(
+  field: ModuleFieldV2,
+  filter: ModuleFilterCompatibilityInput,
+): string | null {
+  if (field.type === 'relation' || field.type === 'resource_ref') {
+    return 'Reference fields must be queried through the relation endpoint';
+  }
+  if (filter.operator === 'date_relative') {
+    return field.type === 'date' ? null : 'date_relative requires a date field';
+  }
+  if (filter.operator === 'is_empty') return null;
+  if (filter.operator === 'eq' || filter.operator === 'neq') {
+    const issue = validateModuleFieldValue(field, filter.value);
+    return issue ? `${filter.operator} value for ${field.key}: ${issue.message}` : null;
+  }
+  if (filter.operator === 'contains') {
+    if (typeof filter.value !== 'string') return 'contains requires a string value';
+    if (field.type === 'multi_select') {
+      return field.options.some((option) => option.value === filter.value)
+        ? null
+        : `contains value for ${field.key} must match a declared option`;
+    }
+    if (field.type === 'tags' || (field.type === 'member' && field.multiple)) {
+      const issue = validateModuleFieldValue(field, [filter.value]);
+      return issue ? `contains value for ${field.key}: ${issue.message}` : null;
+    }
+    return ['text', 'long_text', 'email', 'url'].includes(field.type)
+      ? null
+      : 'contains is only valid for text or multi-select fields';
+  }
+  if (filter.operator === 'in') {
+    if (!Array.isArray(filter.value) || !filter.value.every((item) => typeof item === 'string')) {
+      return 'in requires an array of string values';
+    }
+    if (![
+      'text',
+      'long_text',
+      'email',
+      'url',
+      'date',
+      'datetime',
+      'single_select',
+      'multi_select',
+      'member',
+      'tags',
+    ].includes(field.type)) return 'in is not valid for this field type';
+    if (field.type === 'tags' || (field.type === 'member' && field.multiple)) {
+      const issue = validateModuleFieldValue(field, filter.value);
+      return issue ? `in value for ${field.key}: ${issue.message}` : null;
+    }
+    for (const item of filter.value) {
+      if (field.type === 'multi_select') {
+        if (!field.options.some((option) => option.value === item)) {
+          return `in value for ${field.key} must match a declared option`;
+        }
+      } else {
+        const issue = validateModuleFieldValue(field, item);
+        if (issue) return `in value for ${field.key}: ${issue.message}`;
+      }
+    }
+    return null;
+  }
+  if (!['number', 'date', 'datetime'].includes(field.type)) {
+    return `${filter.operator} is only valid for number/date fields`;
+  }
+  const issue = validateModuleFieldValue(field, filter.value);
+  return issue ? `${filter.operator} value for ${field.key}: ${issue.message}` : null;
+}
+
 export const ModuleSearchSchema = z.strictObject({
   title_field: ModuleFieldKeySchema,
   subtitle_fields: z
@@ -243,6 +318,11 @@ const moduleViewCommonShape = {
   key: ModuleKeySchema,
   name: ModuleDisplayNameSchema,
   fields: z.array(ModuleFieldKeySchema).min(1).max(MODULE_LIMITS.fields_per_view),
+  quick_filters: z.array(z.strictObject({
+    key: ModuleKeySchema,
+    name: ModuleDisplayNameSchema,
+    filters: z.array(z.lazy(() => ModuleQueryFilterSchema)).min(1).max(16),
+  })).max(8).optional(),
 };
 
 export const ModuleViewSchema = z.discriminatedUnion('type', [
@@ -251,6 +331,7 @@ export const ModuleViewSchema = z.discriminatedUnion('type', [
     ...moduleViewCommonShape,
     type: z.literal('board'),
     group_by: ModuleFieldKeySchema,
+    summary: z.strictObject({ value_field: ModuleFieldKeySchema, unit_field: ModuleFieldKeySchema }).optional(),
   }),
   z.strictObject({
     ...moduleViewCommonShape,
@@ -390,6 +471,19 @@ function validateManifestDefault(
   }
 }
 
+export const ModuleRelatedLatestSchema = z.strictObject({
+  key: ModuleKeySchema,
+  label: ModuleDisplayNameSchema,
+  description: ModuleDescriptionSchema.optional(),
+  source_collection: ModuleKeySchema,
+  relation_field: ModuleFieldKeySchema,
+  date_field: ModuleFieldKeySchema,
+  where: z.array(z.strictObject({
+    field: ModuleFieldKeySchema,
+    values: z.array(ModuleSelectOptionSchema.shape.value).min(1).max(100),
+  })).max(4).optional(),
+});
+
 export const ModuleCollectionSchema = z
   .strictObject({
     key: ModuleKeySchema,
@@ -399,6 +493,7 @@ export const ModuleCollectionSchema = z
     fields: z.array(ModuleFieldSchema).min(1).max(MODULE_LIMITS.fields_per_collection),
     search: ModuleSearchSchema.optional(),
     views: z.array(ModuleViewSchema).max(MODULE_LIMITS.views_per_collection).optional(),
+    latest_related: z.array(ModuleRelatedLatestSchema).max(4).optional(),
   })
   .superRefine((collection, ctx) => {
     addDuplicateIssues(
@@ -503,9 +598,32 @@ export const ModuleCollectionSchema = z
             });
           }
         });
+        addDuplicateIssues((view.quick_filters ?? []).map((preset) => preset.key), ['views', viewIndex, 'quick_filters'], ctx, 'Quick filters');
+        for (const [presetIndex, preset] of (view.quick_filters ?? []).entries()) {
+          for (const [filterIndex, filter] of preset.filters.entries()) {
+            const field = fieldByKey.get(filter.field);
+            if (!field) {
+              ctx.addIssue({ code: 'custom', path: ['views', viewIndex, 'quick_filters', presetIndex], message: 'Quick filter must reference a non-reference collection field' });
+              continue;
+            }
+            const issue = moduleFilterCompatibilityIssue(field, filter);
+            if (issue) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['views', viewIndex, 'quick_filters', presetIndex, 'filters', filterIndex],
+                message: issue,
+              });
+            }
+          }
+        }
 
         if (view.type === 'board') {
           const groupField = fieldByKey.get(view.group_by);
+          if (view.summary && (groupField?.type !== 'single_select'
+            || fieldByKey.get(view.summary.value_field)?.type !== 'number'
+            || fieldByKey.get(view.summary.unit_field)?.type !== 'single_select')) {
+            ctx.addIssue({ code: 'custom', path: ['views', viewIndex, 'summary'], message: 'Summary requires a number value and single-select group and unit fields' });
+          }
           if (!groupField) {
             ctx.addIssue({
               code: 'custom',
@@ -553,6 +671,7 @@ export const ModuleCollectionV2Schema = z
     fields: z.array(ModuleFieldV2Schema).min(1).max(MODULE_LIMITS.fields_per_collection),
     search: ModuleSearchSchema.optional(),
     views: z.array(ModuleViewSchema).max(MODULE_LIMITS.views_per_collection).optional(),
+    latest_related: z.array(ModuleRelatedLatestSchema).max(4).optional(),
   })
   .superRefine((collection, ctx) => {
     // Reuse the exact v1 collection invariants by projecting resource refs to
@@ -579,6 +698,28 @@ export const ModuleCollectionV2Schema = z
     }
   });
 
+function validateLatestRelated(
+  collections: { key: string; fields: z.infer<typeof ModuleFieldV2Schema>[]; latest_related?: z.infer<typeof ModuleRelatedLatestSchema>[] }[],
+  ctx: z.RefinementCtx,
+): void {
+  for (const [collectionIndex, collection] of collections.entries()) {
+    addDuplicateIssues((collection.latest_related ?? []).map((item) => item.key), ['collections', collectionIndex, 'latest_related'], ctx, 'Related summary keys');
+    for (const [index, definition] of (collection.latest_related ?? []).entries()) {
+      const source = collections.find((item) => item.key === definition.source_collection);
+      const relation = source?.fields.find((field) => field.key === definition.relation_field);
+      const date = source?.fields.find((field) => field.key === definition.date_field);
+      const validMatches = (definition.where ?? []).every((match) => {
+        const field = source?.fields.find((candidate) => candidate.key === match.field);
+        return field?.type === 'single_select' && match.values.every((value) => field.options.some((option) => option.value === value));
+      });
+      if (relation?.type !== 'relation' || relation.target_collection !== collection.key
+        || !date || !['date', 'datetime'].includes(date.type) || !validMatches) {
+        ctx.addIssue({ code: 'custom', path: ['collections', collectionIndex, 'latest_related', index], message: 'Latest related summary requires a direct relation to this collection, a date field and declared select values' });
+      }
+    }
+  }
+}
+
 export const DeftModuleManifestV1Schema = z
   .strictObject({
     schema_version: z.literal(DEFT_MODULE_MANIFEST_SCHEMA_VERSION),
@@ -595,6 +736,7 @@ export const DeftModuleManifestV1Schema = z
     navigation: ModuleNavigationSchema.optional(),
   })
   .superRefine((manifest, ctx) => {
+    validateLatestRelated(manifest.collections, ctx);
     addDuplicateIssues(
       manifest.collections.map((collection) => collection.key),
       ['collections'],
@@ -654,6 +796,7 @@ export const DeftModuleManifestV2Schema = z
     navigation: ModuleNavigationSchema.optional(),
   })
   .superRefine((manifest, ctx) => {
+    validateLatestRelated(manifest.collections, ctx);
     addDuplicateIssues(
       manifest.collections.map((collection) => collection.key),
       ['collections'],
@@ -1145,6 +1288,31 @@ export function projectModuleRecordSearch(
   return { title, subtitle, text };
 }
 
+/** Resolve the generic host display title even when a Module intentionally
+ * omits search indexing. Host-rendered links must follow the same declared
+ * title/first-field fallback as the record workspace. */
+export function projectModuleRecordDisplayTitle(
+  manifestValue: unknown,
+  collectionKey: string,
+  dataValue: unknown,
+): string | null {
+  const manifest = parseSupportedDeftModuleManifest(manifestValue);
+  const collection = manifest.collections.find((candidate) => candidate.key === collectionKey);
+  if (!collection) throw new ModuleRecordValidationError([
+    validationIssue(null, 'invalid_collection', `Unknown collection: ${collectionKey}`),
+  ]);
+  const titleFieldKey = collection.search?.title_field ?? collection.fields[0]?.key;
+  if (!titleFieldKey) return null;
+  const field = collection.fields.find((candidate) => candidate.key === titleFieldKey);
+  if (!field) return null;
+  const data = parseModuleRecordData(manifest, collectionKey, dataValue);
+  const title = sliceUnicode(
+    collapseProjectionWhitespace(fieldProjectionText(field, data[titleFieldKey])),
+    MODULE_LIMITS.search_title_chars,
+  );
+  return title || null;
+}
+
 const OpaqueIdSchema = z
   .string()
   .min(1)
@@ -1234,12 +1402,24 @@ export const MODULE_OPERATION_NAMES = [
   'module_record_search',
   'module_record_query',
   'module_record_get',
+  'module_record_incoming',
+  'module_record_latest_related',
+  'module_record_task_links',
+  'module_record_task_link',
+  'module_record_task_unlink',
   'module_record_create',
+  'module_record_bulk_create',
   'module_record_update',
   'module_record_archive',
 ] as const;
 
 export const ModuleOperationNameSchema = z.enum(MODULE_OPERATION_NAMES);
+
+export function moduleTaskOperationRequiredScopes(operation: string): readonly string[] | undefined {
+  if (operation === 'module_record_task_links') return ['read:modules', 'read:tasks'];
+  if (operation === 'module_record_task_link' || operation === 'module_record_task_unlink') return ['write:modules', 'write:tasks'];
+  return undefined;
+}
 export type ModuleOperationName = z.infer<typeof ModuleOperationNameSchema>;
 
 export const MODULE_OPERATION_DEFINITIONS = Object.freeze({
@@ -1248,7 +1428,13 @@ export const MODULE_OPERATION_DEFINITIONS = Object.freeze({
   module_record_search: { mode: 'read', approval_tier: 'auto', destructive: false },
   module_record_query: { mode: 'read', approval_tier: 'auto', destructive: false },
   module_record_get: { mode: 'read', approval_tier: 'auto', destructive: false },
+  module_record_incoming: { mode: 'read', approval_tier: 'auto', destructive: false },
+  module_record_latest_related: { mode: 'read', approval_tier: 'auto', destructive: false },
+  module_record_task_links: { mode: 'read', approval_tier: 'auto', destructive: false },
+  module_record_task_link: { mode: 'write', approval_tier: 'quick', destructive: false },
+  module_record_task_unlink: { mode: 'write', approval_tier: 'quick', destructive: true },
   module_record_create: { mode: 'write', approval_tier: 'quick', destructive: false },
+  module_record_bulk_create: { mode: 'write', approval_tier: 'full', destructive: true },
   module_record_update: { mode: 'write', approval_tier: 'quick', destructive: false },
   module_record_archive: { mode: 'write', approval_tier: 'full', destructive: true },
 } as const satisfies Record<
@@ -1264,6 +1450,8 @@ export const ModuleRecordFieldValueSchema = z.union([
 ]);
 
 export const ModuleRecordDataSchema = z.record(ModuleFieldKeySchema, ModuleRecordFieldValueSchema);
+
+
 export const ModuleExpectedRevisionSchema = z.number().int().min(1);
 export const ModuleIdempotencyKeySchema = z
   .string()
@@ -1297,10 +1485,16 @@ export const ModuleRecordSearchRequestSchema = z
 export const ModuleQueryFilterSchema = z
   .strictObject({
     field: ModuleFieldKeySchema,
-    operator: z.enum(['eq', 'neq', 'contains', 'gt', 'gte', 'lt', 'lte', 'in']),
+    operator: z.enum(['eq', 'neq', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_empty', 'date_relative']),
     value: ModuleRecordFieldValueSchema,
   })
   .superRefine((filter, ctx) => {
+    if (filter.operator === 'date_relative' && (typeof filter.value !== 'string' || !['past', 'today', 'next_7_days'].includes(filter.value))) {
+      ctx.addIssue({ code: 'custom', path: ['value'], message: 'date_relative requires past, today or next_7_days' });
+    }
+    if (filter.operator === 'is_empty' && typeof filter.value !== 'boolean') {
+      ctx.addIssue({ code: 'custom', path: ['value'], message: 'is_empty requires a boolean value' });
+    }
     if (filter.operator === 'contains' && typeof filter.value !== 'string') {
       ctx.addIssue({
         code: 'custom',
@@ -1352,6 +1546,7 @@ export const ModuleSavedViewConfigSchema = z.discriminatedUnion('type', [
     ...moduleSavedViewCommonShape,
     type: z.literal('board'),
     group_by: ModuleFieldKeySchema,
+    summary: z.strictObject({ value_field: ModuleFieldKeySchema, unit_field: ModuleFieldKeySchema }).optional(),
   }),
   z.strictObject({
     ...moduleSavedViewCommonShape,
@@ -1395,6 +1590,7 @@ export const ModuleRelationReplaceRequestSchema = z.strictObject({
 
 export const ModuleRecordQueryRequestSchema = z.strictObject({
   module_id: ModuleIdSchema,
+  today: z.iso.date().describe('Calendar day in the caller timezone; required when using date_relative filters').optional(),
   collection_key: ModuleKeySchema,
   search: z.string().trim().min(1).max(500).optional(),
   filters: z.array(ModuleQueryFilterSchema).max(16).default([]),
@@ -1404,6 +1600,42 @@ export const ModuleRecordQueryRequestSchema = z.strictObject({
 });
 
 export const ModuleRecordGetRequestSchema = z.strictObject({ record_id: OpaqueIdSchema });
+export const ModuleRecordIncomingRequestSchema = z.strictObject({
+  record_id: OpaqueIdSchema, collection_key: ModuleKeySchema, field_key: ModuleFieldKeySchema,
+  date_field: ModuleFieldKeySchema.optional(), limit: PageLimitSchema, cursor: CursorSchema.optional(),
+});
+export const ModuleRecordNextTasksRequestSchema = z.strictObject({
+  record_ids: z.array(OpaqueIdSchema).min(1).max(100)
+    .refine((ids) => new Set(ids).size === ids.length, 'Record IDs must be unique'),
+});
+export const ModuleRecordSummaryRequestSchema = ModuleRecordQueryRequestSchema.omit({
+  sort: true, limit: true, cursor: true,
+}).extend({
+  value_field: ModuleFieldKeySchema,
+  group_field: ModuleFieldKeySchema,
+  unit_field: ModuleFieldKeySchema.optional(),
+});
+export type ModuleRecordSummaryRequest = z.infer<typeof ModuleRecordSummaryRequestSchema>;
+export const ModuleRecordSummaryResponseSchema = z.object({ groups: z.array(z.object({
+  group: z.string().nullable(), unit: z.string().nullable(),
+  record_count: z.string().regex(/^\d+$/), valued_count: z.string().regex(/^\d+$/),
+  total: z.string().nullable(),
+})) });
+
+export const ModuleImportPreviewRequestSchema = z.strictObject({
+  module_id: ModuleIdSchema,
+  collection_key: ModuleKeySchema,
+  match_field: ModuleFieldKeySchema,
+  expected_manifest_digest: ModuleManifestDigestSchema,
+  rows: z.array(ModuleRecordDataSchema).min(1).max(100),
+});
+export const ModuleImportCommitRequestSchema = ModuleImportPreviewRequestSchema.extend({
+  expected_preview_digest: ModuleManifestDigestSchema,
+  idempotency_key: ModuleIdempotencyKeySchema,
+});
+export type ModuleImportPreviewRequest = z.infer<typeof ModuleImportPreviewRequestSchema>;
+export type ModuleImportCommitRequest = z.infer<typeof ModuleImportCommitRequestSchema>;
+
 export const ModuleRecordCreateRequestSchema = z.strictObject({
   module_id: ModuleIdSchema,
   collection_key: ModuleKeySchema,
@@ -1452,13 +1684,77 @@ export const ModuleRecordArchiveRequestSchema = z.strictObject({
   idempotency_key: ModuleIdempotencyKeySchema.optional(),
 });
 
+export const ModuleMergeHistoryRequestSchema = z.strictObject({ offset: z.coerce.number().int().min(0).max(100000).default(0) });
+
+export const ModuleMergePreviewRequestSchema = z.strictObject({
+  source_record_id: OpaqueIdSchema,
+  target_record_id: OpaqueIdSchema,
+  expected_manifest_digest: ModuleManifestDigestSchema,
+  field_choices: z.record(ModuleFieldKeySchema, z.enum(['source', 'target'])).default({}),
+  relation_choices: z.record(ModuleFieldKeySchema, z.enum(['source', 'target'])).default({}),
+});
+export const ModuleMergeCommitRequestSchema = ModuleMergePreviewRequestSchema.extend({
+  expected_preview_digest: ModuleManifestDigestSchema,
+  idempotency_key: ModuleIdempotencyKeySchema,
+});
+export type ModuleMergePreviewRequest = z.infer<typeof ModuleMergePreviewRequestSchema>;
+
+export const ModuleDuplicateListRequestSchema = z.strictObject({
+  collection_key: ModuleKeySchema,
+  match_field: ModuleFieldKeySchema,
+  search: z.string().trim().max(240).default(''),
+  offset: z.coerce.number().int().min(0).max(100000).default(0),
+  limit: z.coerce.number().int().min(1).max(25).default(10),
+  match_value: z.string().max(10000).optional(),
+  record_offset: z.coerce.number().int().min(0).max(100000).default(0),
+});
+
+export const ModuleRecordRestoreRequestSchema = ModuleRecordArchiveRequestSchema.extend({ idempotency_key: ModuleIdempotencyKeySchema });
+export type ModuleRecordRestoreRequest = z.infer<typeof ModuleRecordRestoreRequestSchema>;
+export const ModuleArchiveListRequestSchema = z.strictObject({
+  collection_key: ModuleKeySchema,
+  search: z.string().trim().max(240).default(''),
+  offset: z.coerce.number().int().min(0).max(100000).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+export const ModuleRecordTaskWriteRequestSchema = z.strictObject({
+  resource_id: ModuleRecordResourceIdSchema,
+  task_identifier: z.string().trim().min(1).max(128)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/, 'Invalid task identifier'),
+  idempotency_key: ModuleIdempotencyKeySchema,
+});
+
+export const ModuleRecordBulkCreateRequestSchema = z.strictObject({
+  module_id: ModuleIdSchema,
+  collection_key: ModuleKeySchema,
+  expected_manifest_digest: ModuleManifestDigestSchema,
+  rows: z.array(z.strictObject({ data: ModuleRecordDataSchema })).min(1).max(100),
+  idempotency_key: ModuleIdempotencyKeySchema,
+  // Legacy native CSV proposals may carry display/provenance labels. They
+  // remain optional compatibility metadata, never authority for MCP callers.
+  module_name: z.string().trim().min(1).max(160).optional(),
+  collection_name: z.string().trim().min(1).max(160).optional(),
+  source_file_name: z.string().trim().min(1).max(255).optional(),
+});
+
 export const MODULE_OPERATION_REQUEST_SCHEMAS = Object.freeze({
   module_list: ModuleListRequestSchema,
   module_schema_get: ModuleSchemaGetRequestSchema,
   module_record_search: ModuleRecordSearchRequestSchema,
   module_record_query: ModuleRecordQueryRequestSchema,
   module_record_get: ModuleRecordGetRequestSchema,
+  module_record_incoming: ModuleRecordIncomingRequestSchema,
+  module_record_latest_related: ModuleRecordGetRequestSchema,
+  module_record_task_links: z.strictObject({
+    resource_id: ModuleRecordResourceIdSchema,
+    offset: z.number().int().min(0).max(100000).default(0),
+    limit: z.number().int().min(1).max(100).default(25),
+  }),
   module_record_create: ModuleRecordCreateRequestSchema,
+  module_record_bulk_create: ModuleRecordBulkCreateRequestSchema,
+  module_record_task_link: ModuleRecordTaskWriteRequestSchema,
+  module_record_task_unlink: ModuleRecordTaskWriteRequestSchema,
   module_record_update: ModuleRecordUpdateRequestSchema,
   module_record_archive: ModuleRecordArchiveRequestSchema,
 });
@@ -1511,6 +1807,15 @@ export const ModuleRecordReferenceSchema = z.strictObject({
   id: z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN),
   collection_key: ModuleKeySchema,
   label: z.string().max(MODULE_LIMITS.search_title_chars),
+  subtitle: z.string().max(MODULE_LIMITS.search_subtitle_chars).optional(),
+});
+
+export const ModuleRelatedLatestResponseSchema = z.strictObject({
+  summaries: z.array(z.strictObject({
+    key: ModuleKeySchema, label: ModuleDisplayNameSchema, description: ModuleDescriptionSchema.optional(),
+    date_type: z.enum(['date', 'datetime']),
+    latest: z.strictObject({ record: ModuleRecordReferenceSchema, date: z.union([z.iso.date(), z.iso.datetime({ offset: true })]) }).nullable(),
+  })).max(4),
 });
 
 export const ModuleRelationGroupSchema = z.strictObject({
@@ -1635,7 +1940,37 @@ export const MODULE_OPERATION_RESULT_SCHEMAS = Object.freeze({
     next_cursor: CursorSchema.nullable(),
   }),
   module_record_get: z.strictObject({ record: ModuleRecordSchema }),
+  module_record_incoming: z.strictObject({ items: z.array(ModuleRecordSchema), next_cursor: CursorSchema.nullable() }),
+  module_record_latest_related: ModuleRelatedLatestResponseSchema,
+  module_record_task_links: z.strictObject({
+    resource_id: ModuleRecordResourceIdSchema,
+    tasks: z.array(z.strictObject({
+      edge_id: z.string(), task_id: z.string(), title: z.string(), identifier: z.string().nullable(),
+      status: z.string(), priority: z.string(), due_date: z.string().nullable(),
+      assignee_id: z.string().nullable(), assignee_name: z.string().nullable(),
+      project_id: z.string(), project_name: z.string(), url: z.string().startsWith('/'), created_at: IsoTimestampSchema,
+    })).max(100),
+    count: z.number().int().min(0).max(100),
+    next_offset: z.number().int().nonnegative().nullable(),
+  }),
   module_record_create: ModuleMutationResultSchema,
+  module_record_bulk_create: z.strictObject({
+    module_id: ModuleIdSchema,
+    collection_key: ModuleKeySchema,
+    status: z.enum(['completed', 'partial_failed']),
+    requested: z.number().int().min(1).max(100),
+    created: z.number().int().min(0).max(100),
+    replayed: z.number().int().min(0).max(100),
+    failed: z.number().int().min(0).max(1),
+    failed_index: z.number().int().min(0).max(99).nullable(),
+    resource_ids: z.array(ModuleRecordResourceIdSchema).max(100),
+  }),
+  module_record_task_link: z.strictObject({
+    resource_id: ModuleRecordResourceIdSchema, task_id: OpaqueIdSchema, edge_id: OpaqueIdSchema, created: z.boolean(),
+  }),
+  module_record_task_unlink: z.strictObject({
+    resource_id: ModuleRecordResourceIdSchema, task_id: OpaqueIdSchema, removed: z.boolean(),
+  }),
   module_record_update: ModuleMutationResultSchema,
   module_record_archive: ModuleMutationResultSchema,
 });
@@ -1660,6 +1995,7 @@ export type ModuleRecordUpdateRequest = Omit<
   relations?: z.infer<typeof ModuleRelationPatchSchema>;
 };
 export type ModuleRecordArchiveRequest = z.infer<typeof ModuleRecordArchiveRequestSchema>;
+export type ModuleRecordBulkCreateRequest = z.infer<typeof ModuleRecordBulkCreateRequestSchema>;
 export type ModuleRecord = z.infer<typeof ModuleRecordSchema>;
 export type ModuleSummary = z.infer<typeof ModuleSummarySchema>;
 export type ModuleSearchHit = z.infer<typeof ModuleSearchHitSchema>;

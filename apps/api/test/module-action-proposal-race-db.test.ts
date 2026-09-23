@@ -14,19 +14,10 @@ import {
   installBundledModule,
   updateModuleInstallation,
 } from '../src/lib/module-service.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-
-function isSafeTestDatabase(value: string | undefined): value is string {
-  if (!value) return false;
-  try {
-    return /(?:test|ci|acceptance)/i.test(new URL(value).pathname);
-  } catch {
-    return false;
-  }
-}
-
-const canRun = isSafeTestDatabase(TEST_DATABASE_URL);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 const ciRequiresDatabase = /^(?:1|true)$/i.test(process.env.CI ?? '');
 const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const ORG_ID = `module-proposal-race-org-${suffix}`;
@@ -295,7 +286,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL,
-      'CI must provide a DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+      'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
     );
     await assertLifecycleChangeWins({ label: 'disable', lifecycleChange: { enabled: false } });
   },
@@ -307,7 +298,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL,
-      'CI must provide a DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+      'CI must provide matching DEFT_TEST_DATABASE_URL and runtime DATABASE_URL for a disposable PostgreSQL database',
     );
     await assertLifecycleChangeWins({ label: 'write-revoke', lifecycleChange: { agent_access: 'read' } });
   },

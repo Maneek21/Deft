@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import { alias } from 'drizzle-orm/pg-core';
 import {
   and,
+  ilike,
+  DrizzleQueryError,
   asc,
   desc,
   eq,
@@ -19,6 +22,10 @@ import {
   moduleMutationReceipts,
   moduleRecordRelations,
   moduleRecords,
+  moduleRecordMerges,
+  crossReferences,
+  tasks,
+  projects,
   moduleSavedViews,
   moduleVersions,
   orgMembers,
@@ -29,6 +36,19 @@ import {
 import {
   MODULE_LIMITS,
   ModuleActorSchema,
+  ModuleRecordRestoreRequestSchema,
+  ModuleArchiveListRequestSchema,
+  ModuleDuplicateListRequestSchema,
+  ModuleMergePreviewRequestSchema,
+  ModuleMergeHistoryRequestSchema,
+  ModuleMergeCommitRequestSchema,
+  type ModuleMergePreviewRequest,
+  ModuleImportPreviewRequestSchema,
+  ModuleImportCommitRequestSchema,
+  validateModuleRecordData,
+  type ModuleImportPreviewRequest,
+  ModuleRecordSummaryRequestSchema,
+  ModuleRelatedLatestResponseSchema,
   ModuleFieldKeySchema,
   ModuleManifestDigestSchema,
   ModuleMutationResultSchema,
@@ -41,6 +61,7 @@ import {
   parseSupportedDeftModuleManifest as parseDeftModuleManifest,
   parseModuleRecordResourceId,
   parseModuleRecordData,
+  projectModuleRecordDisplayTitle,
   projectModuleRecordSearch,
   validateModuleFieldValue,
   type DeftModuleManifest as DeftModuleManifestV1,
@@ -52,6 +73,7 @@ import {
   type ModuleRecordData,
   type ModuleRecordSearchRequest,
   type ModuleRecordQueryRequest,
+  type ModuleRecordSummaryRequest,
   type ModuleRecordUpdateRequest,
   type ModuleSearchHit,
   type ModuleSavedView,
@@ -74,6 +96,8 @@ import { db } from './db.js';
 import { getIO } from '../socket.js';
 import { getBundledModule, listBundledModules } from './bundled-modules.js';
 import { ModuleError } from './module-errors.js';
+import { planModuleRecordMerge } from './module-merge-plan.js';
+import { visibleTaskCondition } from './task-visibility.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
 import {
   markWorkIntentConvertedForAction,
@@ -119,6 +143,7 @@ export type ModuleInstallationView = {
   id: string;
   slug: string;
   module_id: string;
+  owning_app_installation_id: string | null;
   source: string;
   enabled: boolean;
   agent_access: 'none' | 'read' | 'write';
@@ -454,11 +479,13 @@ function compareSemver(left: string, right: string): number {
 function toInstallationView(
   row: InstallationVersionRow,
   manifest: DeftModuleManifestV1,
+  owningAppInstallationId: string | null,
 ): ModuleInstallationView {
   return {
     id: row.installation.id,
     slug: row.installation.slug,
     module_id: row.installation.module_id,
+    owning_app_installation_id: owningAppInstallationId,
     source: row.installation.source,
     enabled: row.installation.is_enabled,
     agent_access: row.installation.agent_access,
@@ -468,6 +495,25 @@ function toInstallationView(
     created_at: toIso(row.installation.created_at),
     updated_at: toIso(row.installation.updated_at),
   };
+}
+
+async function owningAppsByModuleInstallation(
+  executor: Pick<typeof db, 'select'>,
+  orgId: string,
+  installationIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (installationIds.length === 0) return new Map();
+  const bindings = await executor.select({
+    module_installation_id: appModuleBindings.module_installation_id,
+    app_installation_id: appModuleBindings.app_installation_id,
+  }).from(appModuleBindings).where(and(
+    eq(appModuleBindings.org_id, orgId),
+    inArray(appModuleBindings.module_installation_id, [...installationIds]),
+  ));
+  return new Map(bindings.map((binding) => [
+    binding.module_installation_id,
+    binding.app_installation_id,
+  ]));
 }
 
 /**
@@ -484,7 +530,12 @@ export async function requireModuleInstallationWriteAccessWithExecutor(
 ): Promise<ModuleInstallationView> {
   const actor = validatedActor(actorValue);
   const row = await findInstallation(executor, actor, identifier, 'write', { lock: true });
-  return toInstallationView(row, await verifyManifest(row.version));
+  const owners = await owningAppsByModuleInstallation(executor, actor.org_id, [row.installation.id]);
+  return toInstallationView(
+    row,
+    await verifyManifest(row.version),
+    owners.get(row.installation.id) ?? null,
+  );
 }
 
 function recordDigest(data: ModuleRecordData): string {
@@ -669,7 +720,7 @@ async function acquireMutationKeyLock(
   await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
 }
 
-async function acquireModuleInstallLocks(
+export async function acquireModuleInstallLocks(
   executor: DbExecutor,
   orgId: string,
   moduleId: string,
@@ -1419,7 +1470,16 @@ export async function listModuleInstallations(
     .where(and(...conditions))
     .orderBy(asc(moduleInstallations.slug));
 
-  return Promise.all(rows.map(async (row) => toInstallationView(row, await verifyManifest(row.version))));
+  const owners = await owningAppsByModuleInstallation(
+    db,
+    actor.org_id,
+    rows.map((row) => row.installation.id),
+  );
+  return Promise.all(rows.map(async (row) => toInstallationView(
+    row,
+    await verifyManifest(row.version),
+    owners.get(row.installation.id) ?? null,
+  )));
 }
 
 export async function listModuleSummaries(actorValue: ModuleActor): Promise<ModuleSummary[]> {
@@ -1526,7 +1586,12 @@ export async function getModuleInstallation(
 ): Promise<ModuleInstallationView> {
   const actor = validatedActor(actorValue);
   const row = await findInstallation(db, actor, identifier, 'read', options);
-  return toInstallationView(row, await verifyManifest(row.version));
+  const owners = await owningAppsByModuleInstallation(db, actor.org_id, [row.installation.id]);
+  return toInstallationView(
+    row,
+    await verifyManifest(row.version),
+    owners.get(row.installation.id) ?? null,
+  );
 }
 
 /**
@@ -2053,7 +2118,7 @@ export async function installModuleFromManifest(
     installModuleFromManifestWithExecutor(tx, actorValue, manifestValue, options));
   created.postCommit.emit();
   await created.postCommit.invalidate();
-  return toInstallationView(created.row, created.manifest);
+  return toInstallationView(created.row, created.manifest, null);
 }
 
 export async function installBundledModule(
@@ -2408,7 +2473,7 @@ export async function upgradeModuleInstallationToManifest(
     version: updated.version.version,
   });
   await invalidateModuleCatalogCaches(actor.org_id);
-  return toInstallationView(updated, manifest);
+  return toInstallationView(updated, manifest, null);
 }
 
 export async function updateBundledModule(
@@ -2489,7 +2554,13 @@ export async function updateModuleInstallation(
           : 'Module write access was revoked before this action was reviewed',
       )
       : [];
-    return { installation, version: row.version, expiredActions };
+    const owners = await owningAppsByModuleInstallation(tx, actor.org_id, [installation.id]);
+    return {
+      installation,
+      version: row.version,
+      expiredActions,
+      owningAppInstallationId: owners.get(installation.id) ?? null,
+    };
   });
 
   const manifest = await verifyManifest(updated.version);
@@ -2535,7 +2606,7 @@ export async function updateModuleInstallation(
       }),
     ]));
   }
-  return toInstallationView(updated, manifest);
+  return toInstallationView(updated, manifest, updated.owningAppInstallationId);
 }
 
 /**
@@ -2649,15 +2720,16 @@ export async function preflightModuleMutationWithExecutor(
   );
 }
 
-export async function createModuleRecord(
+/** Native create inside a caller-owned transaction; caller emits only after commit. */
+async function createModuleRecordWithExecutor(
+  tx: ModuleDbExecutor,
   actorValue: ModuleActor,
   input: ModuleRecordCreateRequest,
-): Promise<{ record: ModuleRecord | null; replayed: boolean; mutation: ModuleMutationResult }> {
+  inputDigest = moduleMutationInputDigest('create', input as Record<string, unknown>),
+): Promise<{ record: ModuleRecord | null; mutation: ModuleMutationResult }> {
   const actor = validatedActor(actorValue);
   const identity = actorMetadata(actor);
-  const inputDigest = moduleMutationInputDigest('create', input as Record<string, unknown>);
 
-  const outcome = await db.transaction(async (tx) => {
     await acquireMutationKeyLock(tx, actor, 'create', input.idempotency_key);
     const replay = await findMutationReplay(
       tx,
@@ -2756,7 +2828,14 @@ export async function createModuleRecord(
       record,
       mutation: toModuleMutationResult(record, { replayed: false, changedFields }),
     };
-  });
+}
+
+export async function createModuleRecord(
+  actorValue: ModuleActor,
+  input: ModuleRecordCreateRequest,
+): Promise<{ record: ModuleRecord | null; replayed: boolean; mutation: ModuleMutationResult }> {
+  const actor = validatedActor(actorValue);
+  const outcome = await db.transaction((tx) => createModuleRecordWithExecutor(tx, actor, input));
 
   if (outcome.record) {
     emitRecordChange(actor.org_id, {
@@ -3356,12 +3435,17 @@ export async function resolveModuleRelationEndpointWithExecutor(
   if (!record) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
   return {
     ref,
-    installation: toInstallationView(row, manifest),
+    installation: toInstallationView(
+      row,
+      manifest,
+      (await owningAppsByModuleInstallation(executor, actor.org_id, [row.installation.id]))
+        .get(row.installation.id) ?? null,
+    ),
     record: {
       id: record.id,
       collection_key: record.collection_key,
       revision: record.revision,
-      label: record.search_title || record.id,
+      label: record.search_title || projectModuleRecordDisplayTitle(manifest, record.collection_key, record.data) || record.id,
       updated_at: record.updated_at,
     },
   };
@@ -3425,6 +3509,15 @@ function assertModuleFilterCompatibility(
 ): void {
   if (field.type === 'relation' || field.type === 'resource_ref') {
     moduleValidationError('Reference fields must be queried through the relation endpoint');
+  }
+  if (filter.operator === 'date_relative') {
+    if (field.type !== 'date') moduleValidationError('date_relative requires a date field');
+    if (typeof filter.value !== 'string' || !['past', 'today', 'next_7_days'].includes(filter.value)) moduleValidationError('Invalid relative date period');
+    return;
+  }
+  if (filter.operator === 'is_empty') {
+    if (typeof filter.value !== 'boolean') moduleValidationError('is_empty requires a boolean value');
+    return;
   }
   if (filter.operator === 'eq' || filter.operator === 'neq') {
     assertValidModuleFilterValue(field, filter.value, filter.operator);
@@ -3530,14 +3623,31 @@ function literalModuleIlike(expression: SQLWrapper, value: string): SQL {
   return sql`${expression} ILIKE ${`%${escapeModuleLikeLiteral(value)}%`} ESCAPE '\\'`;
 }
 
-function moduleQuerySearchCondition(value: string): SQL {
+function moduleQuerySearchCondition(value: string, collection?: DeftModuleManifestV1['collections'][number]): SQL {
   const titleContains = literalModuleIlike(moduleRecords.search_title, value);
   const subtitleContains = literalModuleIlike(moduleRecords.search_subtitle, value);
   const tsQuery = sql`websearch_to_tsquery('simple'::regconfig, ${value})`;
+  const relations = collection?.fields.flatMap((field) => field.type === 'relation' ? [{ key: field.key, targetCollection: field.target_collection }] : []) ?? [];
+  const target = alias(moduleRecords, 'search_relation_target');
+  const edge = alias(moduleRecordRelations, 'search_relation_edge');
+  const relatedTitle = relations.length ? sql`EXISTS (${db.select({ id: target.id }).from(edge).innerJoin(target, and(
+    eq(target.id, edge.target_record_id),
+    eq(target.org_id, edge.org_id),
+    eq(target.installation_id, edge.installation_id),
+    eq(target.is_deleted, false),
+  )).where(and(
+    eq(edge.org_id, moduleRecords.org_id),
+    eq(edge.installation_id, moduleRecords.installation_id),
+    eq(edge.source_record_id, moduleRecords.id),
+    eq(edge.is_deleted, false),
+    or(...relations.map((field) => and(eq(edge.field_key, field.key), eq(target.collection_key, field.targetCollection)))),
+    literalModuleIlike(target.search_title, value),
+  ))})` : undefined;
   return or(
     sql`${moduleRecords.search_vector} @@ ${tsQuery}`,
     titleContains,
     subtitleContains,
+    relatedTitle,
   )!;
 }
 
@@ -3545,10 +3655,24 @@ function moduleFilterCondition(
   manifest: DeftModuleManifestV1,
   collectionKey: string,
   filter: ModuleRecordQueryRequest['filters'][number],
+  today?: string,
 ): SQL {
   const field = fieldFor(manifest, collectionKey, filter.field);
   assertModuleFilterCompatibility(field, filter);
   const valueExpression = jsonValue(field.key);
+  if (filter.operator === 'date_relative') {
+    if (!today) moduleValidationError('Relative date filters require an explicit calendar day');
+    assertValidModuleFilterValue(field, today, filter.operator);
+    const date = typedModuleFieldExpression(field);
+    const anchor = sql`${today}::date`;
+    if (filter.value === 'past') return sql`${date} < ${anchor}`;
+    if (filter.value === 'today') return sql`${date} = ${anchor}`;
+    return sql`(${date} >= ${anchor} AND ${date} < ${anchor} + 7)`;
+  }
+  if (filter.operator === 'is_empty') {
+    const empty = sql`(${valueExpression} IS NULL OR ${valueExpression} IN ('null'::jsonb, '""'::jsonb, '[]'::jsonb))`;
+    return filter.value ? empty : sql`NOT ${empty}`;
+  }
 
   if (filter.operator === 'eq' || filter.operator === 'neq') {
     const comparison = isJsonArrayModuleField(field)
@@ -3623,6 +3747,11 @@ function validateSavedViewConfig(
 
   if (config.type === 'board') {
     const field = fieldByKey.get(config.group_by);
+    if (config.summary && (field?.type !== 'single_select'
+      || fieldByKey.get(config.summary.value_field)?.type !== 'number'
+      || fieldByKey.get(config.summary.unit_field)?.type !== 'single_select')) {
+      moduleValidationError('Summary requires a number value and single-select group and unit fields');
+    }
     if (!field || !['single_select', 'member', 'tags'].includes(field.type)) {
       moduleValidationError('Board group_by must reference a select, member, or tags field');
     }
@@ -3643,6 +3772,41 @@ export const _moduleQueryCompilerForTest = Object.freeze({
   sortExpression: moduleSortExpression,
 });
 
+export async function summarizeModuleRecords(actorValue: ModuleActor, inputValue: ModuleRecordSummaryRequest) {
+  const input = ModuleRecordSummaryRequestSchema.parse(inputValue);
+  const actor = validatedActor(actorValue);
+  const installation = await findInstallation(db, actor, { moduleId: input.module_id }, 'read');
+  const manifest = await verifyManifest(installation.version);
+  const valueField = fieldFor(manifest, input.collection_key, input.value_field);
+  const groupField = fieldFor(manifest, input.collection_key, input.group_field);
+  const unitField = input.unit_field ? fieldFor(manifest, input.collection_key, input.unit_field) : undefined;
+  if (valueField.type !== 'number' || groupField.type !== 'single_select' || (unitField && unitField.type !== 'single_select')) {
+    throw new ModuleError('Summaries require a number value and single-select group/unit fields', 'MODULE_VALIDATION_ERROR', 400);
+  }
+  const group = jsonText(groupField.key);
+  const unit = unitField ? jsonText(unitField.key) : sql`NULL::text`;
+  const amount = sql`(${jsonText(valueField.key)})::numeric`;
+  const rows = await db.select({
+    group: sql<string | null>`${group}`,
+    unit: sql<string | null>`${unit}`,
+    record_count: sql<string>`count(*)::text`,
+    valued_count: sql<string>`count(${amount})::text`,
+    total: sql<string | null>`sum(${amount})::text`,
+  }).from(moduleRecords).where(and(
+    eq(moduleRecords.org_id, actor.org_id),
+    eq(moduleRecords.installation_id, installation.installation.id),
+    eq(moduleRecords.collection_key, input.collection_key),
+    eq(moduleRecords.is_deleted, false),
+    ...(input.search ? [moduleQuerySearchCondition(input.search, collectionFor(manifest, input.collection_key))] : []),
+    ...input.filters.map((filter) => moduleFilterCondition(manifest, input.collection_key, filter, input.today)),
+  )).groupBy(sql`1`, sql`2`).orderBy(sql`1`, sql`2`).limit(1001);
+  if (rows.length > 1000) throw new ModuleError('Too many summary groups; narrow the filters', 'MODULE_VALIDATION_ERROR', 400);
+  return {
+    manifest_digest: installation.version.manifest_digest,
+    groups: rows.map((row) => ({ ...row, total: unitField && row.unit === null ? null : row.total })),
+  };
+}
+
 export async function queryModuleRecords(
   actorValue: ModuleActor,
   input: ModuleRecordQueryRequest,
@@ -3658,8 +3822,8 @@ export async function queryModuleRecords(
     eq(moduleRecords.installation_id, installation.installation.id),
     eq(moduleRecords.collection_key, input.collection_key),
     eq(moduleRecords.is_deleted, false),
-    ...(input.search ? [moduleQuerySearchCondition(input.search)] : []),
-    ...input.filters.map((filter) => moduleFilterCondition(manifest, input.collection_key, filter)),
+    ...(input.search ? [moduleQuerySearchCondition(input.search, collectionFor(manifest, input.collection_key))] : []),
+    ...input.filters.map((filter) => moduleFilterCondition(manifest, input.collection_key, filter, input.today)),
   ];
   const sortExpression = moduleSortExpression(manifest, input.collection_key, input.sort);
   const sortDirection = input.sort?.direction ?? 'desc';
@@ -3763,6 +3927,14 @@ export async function listModuleSavedViews(
   return rows.map((row) => toSavedView(row, installation.installation.module_id));
 }
 
+function isSavedViewNameConflict(error: unknown): boolean {
+  const databaseError = error instanceof DrizzleQueryError ? error.cause : error;
+  return typeof databaseError === 'object' && databaseError !== null
+    && 'code' in databaseError && databaseError.code === '23505'
+    && 'constraint' in databaseError
+    && databaseError.constraint === 'module_saved_views_active_name_unique';
+}
+
 export async function createModuleSavedView(
   actorValue: ModuleActor,
   slug: string,
@@ -3801,7 +3973,7 @@ export async function createModuleSavedView(
       return toSavedView(row, installation.installation.module_id);
     });
   } catch (error) {
-    if ((error as { code?: string }).code === '23505') {
+    if (isSavedViewNameConflict(error)) {
       throw new ModuleError(
         'A saved view with this name already exists in the collection',
         'MODULE_SAVED_VIEW_CONFLICT',
@@ -3870,7 +4042,7 @@ export async function updateModuleSavedView(
       return toSavedView(row, installation.installation.module_id);
     });
   } catch (error) {
-    if ((error as { code?: string }).code === '23505') {
+    if (isSavedViewNameConflict(error)) {
       throw new ModuleError(
         'A saved view with this name already exists in the collection',
         'MODULE_SAVED_VIEW_CONFLICT',
@@ -3933,11 +4105,12 @@ async function moduleRecordForRelation(
   return record;
 }
 
-function referenceFor(row: RecordRow): ModuleRecordReference {
+function referenceFor(row: RecordRow, manifest: DeftModuleManifestV1): ModuleRecordReference {
   return {
     id: row.id,
     collection_key: row.collection_key,
-    label: row.search_title || row.id,
+    label: row.search_title || projectModuleRecordDisplayTitle(manifest, row.collection_key, row.data) || row.id,
+    ...(row.search_subtitle ? { subtitle: row.search_subtitle } : {}),
   };
 }
 
@@ -4023,7 +4196,7 @@ async function resolveModuleRecordFields(
           .filter((target): target is RecordRow => (
             target !== undefined && target.collection_key === field.target_collection
           ))
-          .map(referenceFor),
+          .map((target) => referenceFor(target, manifest)),
       }));
     const members: ModuleMemberGroup[] = fields
       .filter((field): field is Extract<ModuleField, { type: 'member' }> => field.type === 'member')
@@ -4066,7 +4239,7 @@ export async function listModuleRecordReferences(
     .where(and(...conditions))
     .orderBy(asc(moduleRecords.search_title), asc(moduleRecords.id))
     .limit(ids ? Math.min(ids.length, 100) : 100);
-  return rows.map(referenceFor);
+  return rows.map((row) => referenceFor(row, manifest));
 }
 
 export async function getModuleRecordRelations(
@@ -4115,8 +4288,102 @@ export async function getModuleRecordRelations(
       .filter((edge) => edge.field_key === field.key)
       .map((edge) => targetById.get(edge.target_record_id))
       .filter((record): record is RecordRow => record !== undefined)
-      .map(referenceFor),
+      .map((record) => referenceFor(record, manifest)),
   }));
+}
+
+/** Latest qualifying direct relation, read from live records rather than a denormalized timestamp. */
+export async function getModuleRelatedLatest(actorValue: ModuleActor, recordId: string, expectedInstallationId: string) {
+  const actor = validatedActor(actorValue);
+  const target = await moduleRecordForRelation(db, actor, recordId, expectedInstallationId);
+  const installation = await findInstallation(db, actor, { installationId: target.installation_id }, 'read');
+  const manifest = await verifyManifest(installation.version);
+  const definitions = collectionFor(manifest, target.collection_key).latest_related ?? [];
+  const summaries = await Promise.all(definitions.map(async (definition) => {
+    const source = collectionFor(manifest, definition.source_collection);
+    const dateField = fieldFor(manifest, source.key, definition.date_field);
+    const date = typedModuleFieldExpression(dateField);
+    const [latest] = await db.select({ record: moduleRecords }).from(moduleRecordRelations)
+      .innerJoin(moduleRecords, and(
+        eq(moduleRecords.id, moduleRecordRelations.source_record_id),
+        eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, target.installation_id),
+        eq(moduleRecords.collection_key, source.key), eq(moduleRecords.is_deleted, false),
+      ))
+      .where(and(
+        eq(moduleRecordRelations.org_id, actor.org_id), eq(moduleRecordRelations.installation_id, target.installation_id),
+        eq(moduleRecordRelations.target_record_id, target.id), eq(moduleRecordRelations.field_key, definition.relation_field),
+        eq(moduleRecordRelations.is_deleted, false), sql`${date} <= now()`,
+        ...(definition.where ?? []).map((match) => moduleFilterCondition(manifest, source.key, { field: match.field, operator: 'in', value: match.values })),
+      ))
+      .orderBy(sql`${date} desc nulls last`, asc(moduleRecords.id)).limit(1);
+    return { key: definition.key, label: definition.label, ...(definition.description ? { description: definition.description } : {}), date_type: dateField.type,
+      latest: latest ? { record: referenceFor(latest.record, manifest), date: latest.record.data[dateField.key] } : null };
+  }));
+  return ModuleRelatedLatestResponseSchema.parse({ summaries });
+}
+
+/** Read the inverse of one declared same-Module relation, without scanning the client cache. */
+export async function listIncomingModuleRecords(
+  actorValue: ModuleActor,
+  recordId: string,
+  input: {
+    expectedInstallationId: string;
+    collection_key: string;
+    field_key: string;
+    date_field?: string;
+    limit?: number;
+    cursor?: string;
+  },
+): Promise<ModuleRecordPage> {
+  const actor = validatedActor(actorValue);
+  const target = await moduleRecordForRelation(db, actor, recordId, input.expectedInstallationId);
+  const installation = await findInstallation(db, actor, { installationId: target.installation_id }, 'read');
+  const manifest = await verifyManifest(installation.version);
+  const collection = collectionFor(manifest, input.collection_key);
+  const field = collection.fields.find((candidate) => candidate.key === input.field_key);
+  if (field?.type !== 'relation' || field.target_collection !== target.collection_key) {
+    throw new ModuleError('This field does not reference the requested collection', 'MODULE_VALIDATION_ERROR', 400);
+  }
+  const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
+  const offset = decodeCursor(input.cursor);
+  const dateField = input.date_field ? collection.fields.find((candidate) => candidate.key === input.date_field) : null;
+  if (input.date_field && (!dateField || !['date', 'datetime'].includes(dateField.type))) {
+    throw new ModuleError('History ordering requires a date or datetime field', 'MODULE_VALIDATION_ERROR', 400);
+  }
+  const ordering = dateField
+    ? [sql`${typedModuleFieldExpression(dateField)} desc nulls last`, asc(moduleRecords.id)]
+    : [asc(moduleRecords.search_title), asc(moduleRecords.id)];
+  const rows = await db
+    .select({ record: moduleRecords, version: moduleVersions })
+    .from(moduleRecordRelations)
+    .innerJoin(moduleRecords, and(
+      eq(moduleRecords.id, moduleRecordRelations.source_record_id),
+      eq(moduleRecords.org_id, moduleRecordRelations.org_id),
+      eq(moduleRecords.installation_id, moduleRecordRelations.installation_id),
+    ))
+    .innerJoin(moduleVersions, and(
+      eq(moduleVersions.id, moduleRecords.validated_version_id),
+      eq(moduleVersions.org_id, moduleRecords.org_id),
+      eq(moduleVersions.installation_id, moduleRecords.installation_id),
+    ))
+    .where(and(
+      eq(moduleRecordRelations.org_id, actor.org_id),
+      eq(moduleRecordRelations.installation_id, target.installation_id),
+      eq(moduleRecordRelations.target_record_id, target.id),
+      eq(moduleRecordRelations.field_key, field.key),
+      eq(moduleRecordRelations.is_deleted, false),
+      eq(moduleRecords.collection_key, collection.key),
+      eq(moduleRecords.is_deleted, false),
+    ))
+    .orderBy(...ordering)
+    .limit(limit + 1)
+    .offset(offset);
+  const selected = rows.slice(0, limit);
+  await Promise.all([...new Map(selected.map((row) => [row.version.id, row.version])).values()].map(verifyManifest));
+  const records = await resolveModuleRecordFields(db, actor, selected.map((row) => (
+    toRecord(row.record, installation.installation, row.version)
+  )), manifest);
+  return { records, next_cursor: rows.length > limit ? encodeCursor(offset + limit) : null };
 }
 
 export async function replaceModuleRecordRelations(
@@ -4233,7 +4500,7 @@ export async function searchModuleRecords(
       module_name: manifest.name,
       collection_key: collection.key,
       collection_name: collection.name,
-      title: row.record.search_title,
+      title: row.record.search_title || projectModuleRecordDisplayTitle(manifest, row.record.collection_key, row.record.data) || row.record.id,
       subtitle: row.record.search_subtitle,
       snippet: snippet || null,
       url: `/modules/${encodeURIComponent(row.installation.slug)}/${encodeURIComponent(collection.key)}/${encodeURIComponent(row.record.id)}`,
@@ -4246,4 +4513,370 @@ export async function searchModuleRecords(
     items,
     next_cursor: hasMore ? encodeCursor(offset + limit) : null,
   };
+}
+
+
+type ImportMatch = { id: string; label: string; revision: number; archived: boolean };
+type ImportRow = { index: number; data: ModuleRecordData; state: 'new' | 'existing' | 'duplicate_in_file' | 'invalid'; issues: string[]; matches: ImportMatch[] };
+
+function importCreateInput(input: ModuleImportPreviewRequest, index: number, batchKey: string): ModuleRecordCreateRequest {
+  return { module_id: input.module_id, collection_key: input.collection_key, data: input.rows[index]!, relations: {},
+    expected_manifest_digest: input.expected_manifest_digest,
+    idempotency_key: `import-${createHash('sha256').update(batchKey).digest('hex')}-${index}` };
+}
+function importRowDigest(input: ModuleImportPreviewRequest, index: number): string {
+  return moduleValueDigest({ import: input, row: index });
+}
+
+async function moduleImportPreviewWithExecutor(executor: ModuleDbExecutor, actor: ModuleActor,
+  input: ModuleImportPreviewRequest, ignoredIds: ReadonlySet<string> = new Set(), lock = false) {
+  if (actor.kind !== 'human') throw new ModuleError('Import requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  const installation = await findInstallation(executor, actor, { moduleId: input.module_id }, 'write', { lock });
+  assertExpectedManifest(installation.version, input.expected_manifest_digest);
+  const manifest = await verifyManifest(installation.version);
+  const collection = collectionFor(manifest, input.collection_key);
+  const matchField = collection.fields.find((field) => field.key === input.match_field);
+  if (!matchField || !['text', 'email', 'phone'].includes(matchField.type)) {
+    throw new ModuleError('Choose a text or email field for duplicate matching', 'MODULE_VALIDATION_ERROR', 400);
+  }
+  const rows: ImportRow[] = input.rows.map((raw, index) => {
+    const result = validateModuleRecordData(manifest, collection.key, raw);
+    const issues = result.success ? [] : result.issues.map((issue) => `${issue.field ?? 'Row'}: ${issue.message}`);
+    for (const field of collection.fields) {
+      if (raw[field.key] !== undefined && ['relation', 'resource_ref', 'member'].includes(field.type)) issues.push(`${field.label}: link or assign this field after importing`);
+    }
+    const data = result.success ? result.data : raw;
+    const key = data[input.match_field];
+    if (typeof key !== 'string' || !key.trim()) issues.push(`${matchField.label}: a value is required for duplicate matching`);
+    return { index, data, issues, state: issues.length ? 'invalid' : 'new', matches: [] };
+  });
+  const keys = [...new Set(rows.filter((row) => row.state !== 'invalid').map((row) => String(row.data[input.match_field]).trim().toLowerCase()))];
+  const keyExpression = sql<string>`lower(btrim(${moduleRecords.data} ->> ${input.match_field}))`;
+  const matches = keys.length ? await executor.select({ id: moduleRecords.id, label: moduleRecords.search_title,
+    data: moduleRecords.data, revision: moduleRecords.revision, archived: moduleRecords.is_deleted, key: keyExpression }).from(moduleRecords).where(and(
+      eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installation.installation.id),
+      eq(moduleRecords.collection_key, collection.key), inArray(keyExpression, keys),
+    )).orderBy(asc(moduleRecords.id)).limit(1001) : [];
+  if (matches.length > 1000) throw new ModuleError('Too many matching records; choose a more specific match field or a smaller batch', 'MODULE_VALIDATION_ERROR', 400);
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (row.state === 'invalid') continue;
+    const key = String(row.data[input.match_field]).trim().toLowerCase();
+    row.matches = matches.filter((match) => match.key === key && !ignoredIds.has(match.id)).map(({ key: _key, label, data, ...match }) => ({
+      ...match,
+      label: label || projectModuleRecordDisplayTitle(manifest, collection.key, data) || match.id,
+    }));
+    row.state = row.matches.length ? 'existing' : seen.has(key) ? 'duplicate_in_file' : 'new';
+    seen.add(key);
+  }
+  const preview = { rows, new_count: rows.filter((row) => row.state === 'new').length,
+    skipped_count: rows.filter((row) => row.state === 'existing' || row.state === 'duplicate_in_file').length,
+    invalid_count: rows.filter((row) => row.state === 'invalid').length };
+  return { ...preview, preview_digest: moduleValueDigest({ installation_id: installation.installation.id, input, rows }) };
+}
+
+export async function previewModuleImport(actorValue: ModuleActor, inputValue: unknown) {
+  const actor = validatedActor(actorValue);
+  return moduleImportPreviewWithExecutor(db, actor, ModuleImportPreviewRequestSchema.parse(inputValue));
+}
+
+export async function commitModuleImport(actorValue: ModuleActor, inputValue: unknown) {
+  const actor = validatedActor(actorValue);
+  const request = ModuleImportCommitRequestSchema.parse(inputValue);
+  const { expected_preview_digest, idempotency_key, ...input } = request;
+  const committed = await db.transaction(async (tx) => {
+    // Keep native mutation-key -> installation lock order, including concurrent retries.
+    for (let index = 0; index < input.rows.length; index++) {
+      await acquireMutationKeyLock(tx, actor, 'create', importCreateInput(input, index, idempotency_key).idempotency_key);
+    }
+    // Same serialization point as native create/update/archive; no import-only race window.
+    await findInstallation(tx, actor, { moduleId: input.module_id }, 'write', { lock: true });
+    const recovered = new Map<number, ModuleMutationResult>();
+    for (let index = 0; index < input.rows.length; index++) {
+      const createInput = importCreateInput(input, index, idempotency_key);
+      const replay = await findMutationReplay(tx, actor, 'create', createInput.idempotency_key, importRowDigest(input, index));
+      if (replay) recovered.set(index, replay);
+    }
+    const preview = await moduleImportPreviewWithExecutor(tx, actor, input, new Set([...recovered.values()].map((item) => item.record_id)));
+    if (preview.preview_digest !== expected_preview_digest) throw new ModuleError('Import matches changed. Review a fresh preview before importing.', 'MODULE_REVISION_CONFLICT', 409);
+    if (preview.invalid_count) throw new ModuleError('Repair invalid rows before importing', 'MODULE_VALIDATION_ERROR', 400);
+    const results: Array<{ index: number; record_id: string; replayed: boolean }> = [];
+    const records: ModuleRecord[] = [];
+    for (const row of preview.rows) {
+      if (row.state !== 'new') continue;
+      const replay = recovered.get(row.index);
+      if (replay) { results.push({ index: row.index, record_id: replay.record_id, replayed: true }); continue; }
+      const outcome = await createModuleRecordWithExecutor(tx, actor, importCreateInput(input, row.index, idempotency_key), importRowDigest(input, row.index));
+      results.push({ index: row.index, record_id: outcome.mutation.record_id, replayed: outcome.mutation.replayed });
+      if (outcome.record) records.push(outcome.record);
+    }
+    return { results, records, skipped_count: preview.skipped_count };
+  });
+  for (const record of committed.records) emitRecordChange(actor.org_id, { change: 'created', installation_id: record.installation_id,
+    module_id: record.module_id, record_id: record.id, collection_key: record.collection_key, revision: record.revision });
+  return { results: committed.results, skipped_count: committed.skipped_count };
+}
+
+
+export async function listArchivedModuleRecords(actorValue: ModuleActor, installationId: string, inputValue: unknown) {
+  const actor = validatedActor(actorValue);
+  if (actor.kind !== 'human') throw new ModuleError('Archive access requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  const input = ModuleArchiveListRequestSchema.parse(inputValue);
+  const installation = await findInstallation(db, actor, { installationId }, 'write');
+  const manifest = await verifyManifest(installation.version);
+  collectionFor(manifest, input.collection_key);
+  const rows = await db.select().from(moduleRecords).where(and(
+    eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId),
+    eq(moduleRecords.collection_key, input.collection_key), eq(moduleRecords.is_deleted, true),
+    ...(input.search ? [ilike(moduleRecords.search_title, `%${escapeModuleLikeLiteral(input.search)}%`)] : []),
+  )).orderBy(desc(moduleRecords.deleted_at), desc(moduleRecords.id)).offset(input.offset).limit(input.limit + 1);
+  return { records: rows.slice(0, input.limit).map((row) => ({ id: row.id, collection_key: row.collection_key,
+    label: row.search_title || projectModuleRecordDisplayTitle(manifest, row.collection_key, row.data) || row.id,
+    subtitle: row.search_subtitle, data: row.data,
+    revision: row.revision, archived_at: row.deleted_at?.toISOString() ?? null })),
+    next_offset: rows.length > input.limit ? input.offset + input.limit : null };
+}
+
+export async function restoreModuleRecord(actorValue: ModuleActor, installationId: string, inputValue: unknown) {
+  const actor = validatedActor(actorValue);
+  if (actor.kind !== 'human') throw new ModuleError('Restore requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  const input = ModuleRecordRestoreRequestSchema.parse(inputValue);
+  const identity = actorMetadata(actor);
+  const inputDigest = moduleValueDigest({ operation: 'restore', installation_id: installationId, input });
+  const outcome = await db.transaction(async (tx) => {
+    await acquireMutationKeyLock(tx, actor, 'update', input.idempotency_key);
+    const replay = await findMutationReplay(tx, actor, 'update', input.idempotency_key, inputDigest, installationId);
+    if (replay) return { record: null, mutation: replay };
+    const installation = await findInstallation(tx, actor, { installationId }, 'write', { lock: true });
+    assertExpectedManifest(installation.version, input.expected_manifest_digest);
+    const manifest = await verifyManifest(installation.version);
+    const [current] = await tx.select().from(moduleRecords).where(and(eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.installation_id, installationId), eq(moduleRecords.id, input.record_id))).limit(1).for('update');
+    if (!current) throw new ModuleError('Archived record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+    if (current.revision !== input.expected_revision || !current.is_deleted) {
+      throw new ModuleError('This archive entry changed. Refresh the archive before restoring.', 'MODULE_REVISION_CONFLICT', 409);
+    }
+    // Validate visibility under the current manifest without changing historical data/defaults.
+    parseRecordData(manifest, current.collection_key, current.data);
+    const [validated] = await tx.select().from(moduleVersions).where(and(eq(moduleVersions.org_id, actor.org_id),
+      eq(moduleVersions.installation_id, installationId), eq(moduleVersions.id, current.validated_version_id))).limit(1);
+    if (!validated) throw new Error('Archived record validated version is missing');
+    await verifyManifest(validated);
+    const [next] = await tx.update(moduleRecords).set({ is_deleted: false, deleted_at: null,
+      deleted_by_actor_type: null, deleted_by_actor_id: null, updated_by_actor_type: identity.type,
+      updated_by_actor_id: identity.id, revision: sql`${moduleRecords.revision} + 1`,
+    }).where(and(eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId),
+      eq(moduleRecords.id, current.id), eq(moduleRecords.revision, input.expected_revision), eq(moduleRecords.is_deleted, true))).returning();
+    if (!next) throw new ModuleError('This archive entry changed. Refresh and try again.', 'MODULE_REVISION_CONFLICT', 409);
+    const record = toRecord(next, installation.installation, validated);
+    await insertAudit(tx, actor, { action: 'module_record.restore', entityType: 'module_record', entityId: record.resource_id,
+      before: { archived: true, revision: current.revision }, after: { archived: false, revision: next.revision },
+      metadata: { data_preserved: true, relations_preserved: true, active_manifest_digest: installation.version.manifest_digest } });
+    await insertMutationReceipt(tx, actor, { operation: 'update', idempotencyKey: input.idempotency_key,
+      inputDigest, record, changedFields: [] });
+    return { record, mutation: toModuleMutationResult(record, { replayed: false, changedFields: [] }) };
+  });
+  if (outcome.record) emitRecordChange(actor.org_id, { change: 'updated', installation_id: installationId,
+    module_id: outcome.record.module_id, record_id: outcome.record.id, collection_key: outcome.record.collection_key,
+    revision: outcome.record.revision });
+  return { ...outcome, replayed: outcome.mutation.replayed };
+}
+
+
+export async function listModuleDuplicateCandidates(actorValue: ModuleActor, installationId: string, inputValue: unknown) {
+  const actor = validatedActor(actorValue);
+  if (actor.kind !== 'human') throw new ModuleError('Duplicate review requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  const input = ModuleDuplicateListRequestSchema.parse(inputValue);
+  const installation = await findInstallation(db, actor, { installationId }, 'write');
+  const manifest = await verifyManifest(installation.version);
+  const collection = collectionFor(manifest, input.collection_key);
+  const field = collection.fields.find((item) => item.key === input.match_field);
+  if (!field || !['text', 'email', 'phone'].includes(field.type)) {
+    throw new ModuleError('Choose a text, email or phone field for duplicate review', 'MODULE_VALIDATION_ERROR', 400);
+  }
+  const key = sql<string>`lower(btrim(${moduleRecords.data} ->> ${field.key}))`;
+  const conditions = [eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId),
+    eq(moduleRecords.collection_key, collection.key), eq(moduleRecords.is_deleted, false),
+    sql`jsonb_typeof(${moduleRecords.data} -> ${field.key}) = 'string'`, sql`${key} <> ''`,
+    ...(input.search ? [ilike(key, `%${escapeModuleLikeLiteral(input.search)}%`)] : []),
+    ...(input.match_value !== undefined ? [eq(key, input.match_value)] : []),
+  ];
+  // One snapshot keeps group counts and their record pages consistent during concurrent edits.
+  return db.transaction(async (tx) => {
+    const grouped = await tx.select({ value: key, count: sql<number>`count(*)::int` }).from(moduleRecords)
+      .where(and(...conditions)).groupBy(sql`1`).having(sql`count(*) > 1`).orderBy(sql`1 asc`)
+      .offset(input.match_value === undefined ? input.offset : 0).limit(input.limit + 1);
+    const groups = [];
+    for (const group of grouped.slice(0, input.limit)) {
+      const recordOffset = input.match_value === undefined ? 0 : input.record_offset;
+      const rows = await tx.select().from(moduleRecords).where(and(...conditions, eq(key, group.value)))
+        .orderBy(asc(moduleRecords.id)).offset(recordOffset).limit(11);
+      groups.push({ value: group.value, count: group.count,
+        records: rows.slice(0, 10).map((row) => ({ id: row.id,
+          label: row.search_title || projectModuleRecordDisplayTitle(manifest, row.collection_key, row.data) || row.id,
+          subtitle: row.search_subtitle, revision: row.revision, data: row.data })),
+        record_offset: recordOffset, next_record_offset: rows.length > 10 ? recordOffset + 10 : null });
+    }
+    return { groups, next_offset: grouped.length > input.limit ? input.offset + input.limit : null };
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
+}
+
+
+async function mergeTaskEdges(executor: DbExecutor, actor: ModuleActor, ids: string[]) {
+  const refs = ids.map(formatModuleRecordResourceId);
+  const edges = await executor.select().from(crossReferences).where(and(eq(crossReferences.org_id, actor.org_id),
+    or(and(eq(crossReferences.source_type, 'module_record'), inArray(crossReferences.source_id, refs)),
+      and(eq(crossReferences.target_type, 'module_record'), inArray(crossReferences.target_id, refs))))).orderBy(asc(crossReferences.id)).limit(201);
+  if (edges.length > 200 || edges.some((edge) => edge.source_type !== 'module_record' || edge.target_type !== 'task')) {
+    throw new ModuleError('These records have references that require separate review before merging', 'MODULE_VALIDATION_ERROR', 400);
+  }
+  const taskIds = [...new Set(edges.map((edge) => edge.target_id))].sort();
+  if (taskIds.length > 100) throw new ModuleError('Merged record would exceed the task-link limit', 'MODULE_VALIDATION_ERROR', 400);
+  return { edges, taskIds };
+}
+
+async function authorizeMergeTasks(executor: DbExecutor, actor: ModuleActor, taskIds: string[], lock: boolean) {
+  for (const taskId of taskIds) {
+    const query = executor.select({ id: tasks.id }).from(tasks).innerJoin(projects, and(eq(projects.id, tasks.project_id), eq(projects.org_id, actor.org_id)))
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, actor.org_id), eq(tasks.is_deleted, false), eq(projects.is_deleted, false), visibleTaskCondition(actor.actor_id))).limit(1);
+    const rows = lock ? await query.for('update') : await query;
+    if (!rows.length) throw new ModuleError('Merge unavailable: a linked task is inaccessible. Ask a teammate with access to review the records.', 'MODULE_ACCESS_DENIED', 403);
+  }
+}
+
+async function moduleMergeSnapshot(executor: DbExecutor, actor: ModuleActor, installationId: string, input: ModuleMergePreviewRequest, lock = false, lockedTaskIds?: Set<string>) {
+  if (actor.kind !== 'human') throw new ModuleError('Merge requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  const installation = await findInstallation(executor, actor, { installationId }, 'write', { lock });
+  assertExpectedManifest(installation.version, input.expected_manifest_digest);
+  const manifest = await verifyManifest(installation.version);
+  const ids = [input.source_record_id, input.target_record_id];
+  if (ids[0] === ids[1]) throw new ModuleError('Choose two different records', 'MODULE_VALIDATION_ERROR', 400);
+  const query = executor.select().from(moduleRecords).where(and(eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId),
+    inArray(moduleRecords.id, ids), eq(moduleRecords.is_deleted, false))).orderBy(asc(moduleRecords.id));
+  const records = lock ? await query.for('update') : await query;
+  const source = records.find((row) => row.id === input.source_record_id), target = records.find((row) => row.id === input.target_record_id);
+  if (!source || !target) throw new ModuleError('Merge records not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  if (source.collection_key !== target.collection_key) throw new ModuleError('Merge records must belong to the same collection', 'MODULE_VALIDATION_ERROR', 400);
+  const collection = collectionFor(manifest, source.collection_key);
+  // Cross-provider relations have their own versioned authority; do not silently move or hide them.
+  const externalTargets = await executor.select({ id: resourceRelationEdges.id }).from(resourceRelationEdges).where(and(
+    eq(resourceRelationEdges.org_id, actor.org_id), eq(resourceRelationEdges.target_provider_kind, 'module'),
+    eq(resourceRelationEdges.target_provider_instance_id, installationId), inArray(resourceRelationEdges.target_resource_id, ids), eq(resourceRelationEdges.is_deleted, false))).limit(1);
+  const externalSources = await executor.select({ id: resourceRelationSets.id }).from(resourceRelationSets)
+    .innerJoin(resourceRelationEdges, and(eq(resourceRelationEdges.org_id, actor.org_id), eq(resourceRelationEdges.relation_set_id, resourceRelationSets.id), eq(resourceRelationEdges.is_deleted, false)))
+    .where(and(eq(resourceRelationSets.org_id, actor.org_id), eq(resourceRelationSets.source_provider_kind, 'module'),
+      eq(resourceRelationSets.source_provider_instance_id, installationId), inArray(resourceRelationSets.source_resource_id, ids))).limit(1);
+  if (externalTargets.length || externalSources.length) throw new ModuleError('Review and reassign connected resource references before merging these records', 'MODULE_VALIDATION_ERROR', 400);
+  const edges = await executor.select().from(moduleRecordRelations).where(and(eq(moduleRecordRelations.org_id, actor.org_id),
+    eq(moduleRecordRelations.installation_id, installationId), eq(moduleRecordRelations.is_deleted, false),
+    or(inArray(moduleRecordRelations.source_record_id, ids), inArray(moduleRecordRelations.target_record_id, ids)))).orderBy(asc(moduleRecordRelations.id)).limit(501);
+  if (edges.length > 500) throw new ModuleError('Too many linked records for one merge; resolve links in smaller groups first', 'MODULE_VALIDATION_ERROR', 400);
+  const taskContext = await mergeTaskEdges(executor, actor, ids);
+  if (lockedTaskIds && taskContext.taskIds.some((id) => !lockedTaskIds.has(id))) throw new ModuleError('Linked tasks changed. Review the merge again.', 'MODULE_REVISION_CONFLICT', 409);
+  await authorizeMergeTasks(executor, actor, taskContext.taskIds, false);
+  const plan = planModuleRecordMerge({ id: source.id, data: source.data as ModuleRecordData }, { id: target.id, data: target.data as ModuleRecordData }, collection.fields, edges, input);
+  const data = parseRecordData(manifest, collection.key, plan.data);
+  await assertMemberFieldsValid(executor, actor.org_id, manifest, collection.key, data);
+  // Include archived endpoints so retained relationships remain recoverable, without making them live.
+  const relatedIds = [...new Set(edges.flatMap((edge) => [edge.source_record_id, edge.target_record_id]))];
+  const related = relatedIds.length ? await executor.select().from(moduleRecords).where(and(eq(moduleRecords.org_id, actor.org_id),
+    eq(moduleRecords.installation_id, installationId), inArray(moduleRecords.id, relatedIds))).orderBy(asc(moduleRecords.id)) : [];
+  const byId = new Map([...related, source, target].map((row) => [row.id, row]));
+  for (const edge of edges) {
+    const from = byId.get(edge.source_record_id), to = byId.get(edge.target_record_id);
+    const field = from && collectionFor(manifest, from.collection_key).fields.find((item) => item.key === edge.field_key);
+    if (!from || !to || field?.type !== 'relation' || field.target_collection !== to.collection_key) {
+      throw new ModuleError('A retained link is incompatible with the current manifest. Resolve it before merging.', 'MODULE_VALIDATION_ERROR', 400);
+    }
+  }
+  const preview = {
+    source: { ...referenceFor(source, manifest), data: source.data, revision: source.revision },
+    target: { ...referenceFor(target, manifest), data: target.data, revision: target.revision },
+    conflicts: plan.conflicts, ready: plan.ready, merged_data: data,
+    related_records: related.map((record) => referenceFor(record, manifest)),
+    relations: Object.entries(plan.relations).map(([field_key, targets]) => ({ field_key, records: targets.map((id) => ({ ...referenceFor(byId.get(id)!, manifest), archived: byId.get(id)!.is_deleted })) })),
+    incoming_record_count: plan.affected_record_ids.filter((id) => id !== target.id).length, task_count: taskContext.taskIds.length,
+    preview_digest: moduleValueDigest({ installationId, input, records, edges, related, task_edges: taskContext.edges, data, plan }),
+  };
+  return { installation, manifest, source, target, edges, taskContext, plan, data, preview };
+}
+
+export async function previewModuleMerge(actorValue: ModuleActor, installationId: string, inputValue: unknown) {
+  const actor = validatedActor(actorValue), input = ModuleMergePreviewRequestSchema.parse(inputValue);
+  return db.transaction(async (tx) => (await moduleMergeSnapshot(tx, actor, installationId, input)).preview,
+    { isolationLevel: 'repeatable read', accessMode: 'read only' });
+}
+
+export async function commitModuleMerge(actorValue: ModuleActor, installationId: string, inputValue: unknown) {
+  const actor = validatedActor(actorValue);
+  if (actor.kind !== 'human') throw new ModuleError('Merge requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  const { expected_preview_digest, idempotency_key, ...input } = ModuleMergeCommitRequestSchema.parse(inputValue);
+  const digest = moduleValueDigest({ operation: 'merge', installationId, input, expected_preview_digest });
+  const identity = actorMetadata(actor);
+  const outcome = await db.transaction(async (tx) => {
+    await acquireMutationKeyLock(tx, actor, 'update', idempotency_key);
+    const replay = await findMutationReplay(tx, actor, 'update', idempotency_key, digest, installationId);
+    if (replay) return { mutation: replay, changed: [] as RecordRow[] };
+    // Reject unauthorized installation access before looking up any linked work; take locks later.
+    await findInstallation(tx, actor, { installationId }, 'write');
+    // Native task-link mutations lock task/project before installation. Never invert that order.
+    const initialTasks = await mergeTaskEdges(tx, actor, [input.source_record_id, input.target_record_id]);
+    await authorizeMergeTasks(tx, actor, initialTasks.taskIds, true);
+    const snapshot = await moduleMergeSnapshot(tx, actor, installationId, input, true, new Set(initialTasks.taskIds));
+    if (snapshot.preview.preview_digest !== expected_preview_digest) throw new ModuleError('Records or links changed. Review a fresh merge preview.', 'MODULE_REVISION_CONFLICT', 409);
+    if (!snapshot.plan.ready) throw new ModuleError('Choose the retained value for every conflict before merging', 'MODULE_VALIDATION_ERROR', 400);
+    const { source, target, plan, data, installation } = snapshot;
+    const [history] = await tx.insert(moduleRecordMerges).values({ org_id: actor.org_id, installation_id: installationId,
+      source_record_id: source.id, target_record_id: target.id, source_revision: source.revision, target_revision: target.revision,
+      source_data: source.data as Record<string, unknown>, target_data: target.data as Record<string, unknown>,
+      link_snapshot: { relations: snapshot.edges, task_edges: snapshot.taskContext.edges }, choices: input, created_by: actor.actor_id }).returning({ id: moduleRecordMerges.id });
+    const now = new Date();
+    if (plan.remove_edge_ids.length) await tx.update(moduleRecordRelations).set({ is_deleted: true, deleted_at: now,
+      deleted_by_actor_type: identity.type, deleted_by_actor_id: identity.id, updated_by_actor_type: identity.type, updated_by_actor_id: identity.id })
+      .where(and(eq(moduleRecordRelations.org_id, actor.org_id), eq(moduleRecordRelations.installation_id, installationId), inArray(moduleRecordRelations.id, plan.remove_edge_ids)));
+    for (const edge of plan.add_edges) await tx.insert(moduleRecordRelations).values({ ...edge, org_id: actor.org_id, installation_id: installationId,
+      created_by_actor_type: identity.type, created_by_actor_id: identity.id, updated_by_actor_type: identity.type, updated_by_actor_id: identity.id });
+    for (const edge of plan.reposition_edges) await tx.update(moduleRecordRelations).set({ position: edge.position, updated_by_actor_type: identity.type, updated_by_actor_id: identity.id })
+      .where(and(eq(moduleRecordRelations.org_id, actor.org_id), eq(moduleRecordRelations.installation_id, installationId), eq(moduleRecordRelations.id, edge.id)));
+    for (const edge of snapshot.taskContext.edges.filter((edge) => edge.source_id === formatModuleRecordResourceId(source.id))) {
+      await tx.insert(crossReferences).values({ org_id: actor.org_id, source_type: 'module_record', source_id: formatModuleRecordResourceId(target.id),
+        target_type: 'task', target_id: edge.target_id, context: edge.context, created_by: actor.actor_id }).onConflictDoNothing();
+    }
+    const projection = projectModuleRecordSearch(snapshot.manifest, target.collection_key, data);
+    const [survivor] = await tx.update(moduleRecords).set({ data, validated_version_id: installation.version.id,
+      search_title: projection?.title ?? '', search_subtitle: projection?.subtitle ?? null, search_text: projection?.text ?? '',
+      revision: sql`${moduleRecords.revision} + 1`, updated_by_actor_type: identity.type, updated_by_actor_id: identity.id })
+      .where(and(eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId), eq(moduleRecords.id, target.id))).returning();
+    const [absorbed] = await tx.update(moduleRecords).set({ is_deleted: true, deleted_at: now, deleted_by_actor_type: identity.type,
+      deleted_by_actor_id: identity.id, revision: sql`${moduleRecords.revision} + 1`, updated_by_actor_type: identity.type, updated_by_actor_id: identity.id })
+      .where(and(eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId), eq(moduleRecords.id, source.id))).returning();
+    const incomingIds = plan.affected_record_ids.filter((id) => id !== target.id && id !== source.id);
+    const incoming = incomingIds.length ? await tx.update(moduleRecords).set({ revision: sql`${moduleRecords.revision} + 1`, updated_by_actor_type: identity.type, updated_by_actor_id: identity.id })
+      .where(and(eq(moduleRecords.org_id, actor.org_id), eq(moduleRecords.installation_id, installationId), inArray(moduleRecords.id, incomingIds))).returning() : [];
+    const record = toRecord(survivor!, installation.installation, installation.version);
+    await insertAudit(tx, actor, { action: 'module_record.merge', entityType: 'module_record', entityId: record.resource_id,
+      before: { revision: target.revision }, after: { revision: record.revision }, metadata: { merge_id: history!.id, source_record_id: source.id,
+        changed_fields: Object.keys(data), incoming_record_count: incoming.length, task_count: snapshot.taskContext.taskIds.length } });
+    await insertAudit(tx, actor, { action: 'module_record.archive', entityType: 'module_record', entityId: formatModuleRecordResourceId(source.id),
+      before: { archived: false, revision: source.revision }, after: { archived: true, revision: absorbed!.revision }, metadata: { merge_id: history!.id, target_record_id: target.id } });
+    await insertMutationReceipt(tx, actor, { operation: 'update', idempotencyKey: idempotency_key, inputDigest: digest, record, changedFields: Object.keys(data) });
+    return { mutation: toModuleMutationResult(record, { replayed: false, changedFields: Object.keys(data) }), changed: [survivor!, absorbed!, ...incoming] };
+  });
+  for (const record of outcome.changed) emitRecordChange(actor.org_id, { change: record.is_deleted ? 'archived' : 'updated', installation_id: installationId,
+    module_id: outcome.mutation.module_id, record_id: record.id, collection_key: record.collection_key, revision: record.revision });
+  return { mutation: outcome.mutation, replayed: outcome.mutation.replayed };
+}
+
+export async function listModuleMergeHistory(actorValue: ModuleActor, installationId: string, recordId: string, inputValue: unknown = {}) {
+  const input = ModuleMergeHistoryRequestSchema.parse(inputValue);
+  const actor = validatedActor(actorValue);
+  if (actor.kind !== 'human') throw new ModuleError('Merge history requires a workspace member', 'MODULE_ACCESS_DENIED', 403);
+  await findInstallation(db, actor, { installationId }, 'write');
+  const rows = await db.select({ id: moduleRecordMerges.id, source_record_id: moduleRecordMerges.source_record_id,
+    target_record_id: moduleRecordMerges.target_record_id, source_data: moduleRecordMerges.source_data,
+    target_data: moduleRecordMerges.target_data, created_at: moduleRecordMerges.created_at }).from(moduleRecordMerges).where(and(eq(moduleRecordMerges.org_id, actor.org_id),
+      eq(moduleRecordMerges.installation_id, installationId), or(eq(moduleRecordMerges.source_record_id, recordId), eq(moduleRecordMerges.target_record_id, recordId))))
+      .orderBy(desc(moduleRecordMerges.created_at), desc(moduleRecordMerges.id)).offset(input.offset).limit(26);
+  // Task context and IDs deliberately stay out of this response; live task endpoints enforce current visibility.
+  return { merges: rows.slice(0, 25), next_offset: rows.length > 25 ? input.offset + 25 : null };
 }

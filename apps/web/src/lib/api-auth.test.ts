@@ -146,6 +146,124 @@ test('a protected resource still refreshes the session and retries once', async 
   assert.equal(browser.location.href, '/tasks');
 });
 
+test('a protected request with only a refresh token starts once under the refreshed same session', async (t) => {
+  const browser = installBrowserGlobals(t, '/tasks');
+  const token = (jti: string) => {
+    const encoded = btoa(JSON.stringify({ id: 'user', org_id: 'org', sid: 'session', jti })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `header.${encoded}.signature`;
+  };
+  const storedRefresh = token('stored-refresh');
+  const freshAccess = token('fresh-access');
+  const freshRefresh = token('fresh-refresh');
+  const originalFetch = globalThis.fetch;
+  const resourceAuthorizations: Array<string | null> = [];
+  let refreshCalls = 0;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      refreshCalls += 1;
+      return new Response(JSON.stringify({ accessToken: freshAccess, refreshToken: freshRefresh }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    resourceAuthorizations.push(new Headers(init?.headers).get('Authorization'));
+    return new Response(JSON.stringify({ tasks: [] }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  api.clearTokens();
+  browser.local.setItem('deft-refresh-token', storedRefresh);
+  const response = await api.get('/api/tasks');
+
+  assert.equal(response.status, 200);
+  assert.equal(refreshCalls, 1);
+  assert.deepEqual(resourceAuthorizations, [`Bearer ${freshAccess}`]);
+  assert.equal(browser.local.getItem('deft-access-token'), freshAccess);
+  assert.equal(browser.local.getItem('deft-refresh-token'), freshRefresh);
+});
+
+test('a login replacement during proactive refresh prevents the generic request from starting under the new session', async (t) => {
+  const browser = installBrowserGlobals(t, '/tasks');
+  const token = (claims: Record<string, string>) => {
+    const encoded = btoa(JSON.stringify(claims)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `header.${encoded}.signature`;
+  };
+  const oldRefresh = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session', jti: 'refresh' });
+  const oldRotatedAccess = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session', jti: 'rotated-access' });
+  const oldRotatedRefresh = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session', jti: 'rotated-refresh' });
+  const newAccess = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session', jti: 'access' });
+  const newRefresh = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session', jti: 'refresh' });
+  const originalFetch = globalThis.fetch;
+  let releaseRefresh!: (response: Response) => void;
+  let refreshCalls = 0;
+  const resourceAuthorizations: Array<string | null> = [];
+  globalThis.fetch = ((input, init) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      refreshCalls += 1;
+      return new Promise<Response>(resolve => { releaseRefresh = resolve; });
+    }
+    resourceAuthorizations.push(new Headers(init?.headers).get('Authorization'));
+    return Promise.resolve(new Response(JSON.stringify({ created: true }), { status: 200 }));
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  api.clearTokens();
+  browser.local.setItem('deft-refresh-token', oldRefresh);
+  const pending = api.post('/api/tasks', { title: 'must stay with the initiating session' });
+  assert.equal(refreshCalls, 1);
+  api.setTokens(newAccess, newRefresh);
+  releaseRefresh(new Response(JSON.stringify({ accessToken: oldRotatedAccess, refreshToken: oldRotatedRefresh }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+
+  assert.equal((await pending).status, 401);
+  assert.deepEqual(resourceAuthorizations, [], 'the old request must not begin under the replacement session');
+  assert.equal(browser.local.getItem('deft-access-token'), newAccess);
+  assert.equal(browser.local.getItem('deft-refresh-token'), newRefresh);
+});
+
+test('a login replacement during proactive refresh prevents an upload from starting under the new session', async (t) => {
+  const browser = installBrowserGlobals(t, '/notes');
+  const token = (claims: Record<string, string>) => {
+    const encoded = btoa(JSON.stringify(claims)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `header.${encoded}.signature`;
+  };
+  const oldRefresh = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session', jti: 'refresh' });
+  const oldRotatedAccess = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session', jti: 'rotated-access' });
+  const oldRotatedRefresh = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session', jti: 'rotated-refresh' });
+  const newAccess = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session', jti: 'access' });
+  const newRefresh = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session', jti: 'refresh' });
+  const originalFetch = globalThis.fetch;
+  let releaseRefresh!: (response: Response) => void;
+  let refreshCalls = 0;
+  const uploadAuthorizations: Array<string | null> = [];
+  globalThis.fetch = ((input, init) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      refreshCalls += 1;
+      return new Promise<Response>(resolve => { releaseRefresh = resolve; });
+    }
+    uploadAuthorizations.push(new Headers(init?.headers).get('Authorization'));
+    return Promise.resolve(new Response(JSON.stringify({ uploaded: true }), { status: 200 }));
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  api.clearTokens();
+  browser.local.setItem('deft-refresh-token', oldRefresh);
+  const pending = api.upload('/api/upload', new File(['old-session-private-data'], 'private.txt'));
+  assert.equal(refreshCalls, 1);
+  api.setTokens(newAccess, newRefresh);
+  releaseRefresh(new Response(JSON.stringify({ accessToken: oldRotatedAccess, refreshToken: oldRotatedRefresh }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+
+  assert.equal((await pending).status, 401);
+  assert.deepEqual(uploadAuthorizations, [], 'the old upload must not begin under the replacement session');
+  assert.equal(browser.local.getItem('deft-access-token'), newAccess);
+  assert.equal(browser.local.getItem('deft-refresh-token'), newRefresh);
+});
+
 test('post-login destinations allow local workspace routes and reject auth loops or unsafe URLs', () => {
   assert.equal(
     safePostLoginDestination('/tasks?task=OPS-42#activity'),
@@ -287,6 +405,121 @@ test('a late 401 from an old session cannot refresh, replay, or clear a newer lo
 
   assert.equal((await pending).status, 401);
   assert.equal(calls, 1);
+  assert.equal(browser.local.getItem('deft-access-token'), newAccess);
+  assert.equal(browser.local.getItem('deft-refresh-token'), newRefresh);
+});
+
+test('a late upload 401 from an old session cannot refresh or replay the file as a newer login', async (t) => {
+  const browser = installBrowserGlobals(t, '/notes');
+  const token = (claims: Record<string, string>) => {
+    const encoded = btoa(JSON.stringify(claims)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `header.${encoded}.signature`;
+  };
+  const oldAccess = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session' });
+  const oldRefresh = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session' });
+  const newAccess = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session' });
+  const newRefresh = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session' });
+  const originalFetch = globalThis.fetch;
+  let release!: (response: Response) => void;
+  let uploadCalls = 0;
+  let refreshCalls = 0;
+  globalThis.fetch = ((input) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      refreshCalls += 1;
+      return Promise.resolve(new Response(JSON.stringify({ accessToken: newAccess, refreshToken: newRefresh }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+    uploadCalls += 1;
+    if (uploadCalls === 1) return new Promise<Response>(resolve => { release = resolve; });
+    return Promise.resolve(new Response(JSON.stringify({ uploaded: true }), { status: 200 }));
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  api.setTokens(oldAccess, oldRefresh);
+  const pending = api.upload('/api/upload', new File(['old-session-private-data'], 'private.txt'));
+  api.setTokens(newAccess, newRefresh);
+  release(new Response(null, { status: 401 }));
+
+  assert.equal((await pending).status, 401);
+  assert.equal(uploadCalls, 1, 'the old upload must not replay under the replacement session');
+  assert.equal(refreshCalls, 0, 'the old upload must not rotate the replacement session');
+  assert.equal(browser.local.getItem('deft-access-token'), newAccess);
+  assert.equal(browser.local.getItem('deft-refresh-token'), newRefresh);
+});
+
+test('a same-session upload 401 refreshes and retries the original FormData once', async (t) => {
+  const browser = installBrowserGlobals(t, '/notes');
+  const token = (jti: string) => {
+    const encoded = btoa(JSON.stringify({ id: 'user', org_id: 'org', sid: 'session', jti })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `header.${encoded}.signature`;
+  };
+  const staleAccess = token('stale-access');
+  const storedRefresh = token('stored-refresh');
+  const freshAccess = token('fresh-access');
+  const freshRefresh = token('fresh-refresh');
+  const originalFetch = globalThis.fetch;
+  const uploadAuthorizations: Array<string | null> = [];
+  const uploadBodies: Array<BodyInit | null | undefined> = [];
+  let uploadCalls = 0;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      return new Response(JSON.stringify({ accessToken: freshAccess, refreshToken: freshRefresh }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    uploadCalls += 1;
+    uploadAuthorizations.push(new Headers(init?.headers).get('Authorization'));
+    uploadBodies.push(init?.body);
+    return new Response(null, { status: uploadCalls === 1 ? 401 : 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  api.setTokens(staleAccess, storedRefresh);
+  const response = await api.upload('/api/upload', new File(['same-session-data'], 'same.txt'));
+
+  assert.equal(response.status, 200);
+  assert.equal(uploadCalls, 2);
+  assert.deepEqual(uploadAuthorizations, [`Bearer ${staleAccess}`, `Bearer ${freshAccess}`]);
+  assert.equal(uploadBodies[0], uploadBodies[1], 'the one permitted retry reuses the original FormData');
+  assert.equal(browser.local.getItem('deft-access-token'), freshAccess);
+  assert.equal(browser.local.getItem('deft-refresh-token'), freshRefresh);
+});
+
+test('a late successful upload from an old session does not refresh, retry, or change a newer login', async (t) => {
+  const browser = installBrowserGlobals(t, '/notes');
+  const token = (claims: Record<string, string>) => {
+    const encoded = btoa(JSON.stringify(claims)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `header.${encoded}.signature`;
+  };
+  const oldAccess = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session' });
+  const oldRefresh = token({ id: 'old-user', org_id: 'old-org', sid: 'old-session' });
+  const newAccess = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session' });
+  const newRefresh = token({ id: 'new-user', org_id: 'new-org', sid: 'new-session' });
+  const originalFetch = globalThis.fetch;
+  let release!: (response: Response) => void;
+  let uploadCalls = 0;
+  let refreshCalls = 0;
+  globalThis.fetch = ((input) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      refreshCalls += 1;
+      return Promise.resolve(new Response(null, { status: 500 }));
+    }
+    uploadCalls += 1;
+    return new Promise<Response>(resolve => { release = resolve; });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  api.setTokens(oldAccess, oldRefresh);
+  const pending = api.upload('/api/upload', new File(['old-session-private-data'], 'private.txt'));
+  api.setTokens(newAccess, newRefresh);
+  release(new Response(JSON.stringify({ uploaded: true }), { status: 200 }));
+
+  assert.equal((await pending).status, 200, 'a completed old-session effect retains its original server result');
+  assert.equal(uploadCalls, 1);
+  assert.equal(refreshCalls, 0);
   assert.equal(browser.local.getItem('deft-access-token'), newAccess);
   assert.equal(browser.local.getItem('deft-refresh-token'), newRefresh);
 });

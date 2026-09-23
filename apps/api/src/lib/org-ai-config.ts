@@ -29,17 +29,12 @@ import { db } from './db.js';
 import { orgs } from '@deft/db/schema';
 import { encrypt, decrypt } from './encryption.js';
 import { env } from './env.js';
+import type { ModelRoute } from '@deft/shared';
 
 export type LLMProvider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
 export type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
 
-export type ModelRoute = {
-  provider: LLMProvider;
-  model: string;
-  baseUrl?: string;
-  /** OpenAI reasoning models (gpt-5*, o1/o3/o4) only: minimal | low | medium | high. */
-  reasoning_effort?: string;
-};
+export type { ModelRoute } from '@deft/shared';
 
 export type OrgAIConfigStored = {
   api_keys?: Partial<Record<LLMProvider, string>>; // values are encrypted

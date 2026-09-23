@@ -8,7 +8,7 @@ import { moduleCollectionHref } from './modules';
 
 export type ModuleQueryFilter = {
   field: string;
-  operator: 'eq' | 'neq' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'in';
+  operator: 'eq' | 'neq' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'is_empty' | 'date_relative';
   value: string | number | boolean | string[];
 };
 
@@ -25,7 +25,7 @@ type ModuleSavedViewConfigBase = {
 
 export type ModuleSavedViewConfig =
   | (ModuleSavedViewConfigBase & { type: 'table' })
-  | (ModuleSavedViewConfigBase & { type: 'board'; group_by: string })
+  | (ModuleSavedViewConfigBase & { type: 'board'; group_by: string; summary?: { value_field: string; unit_field: string } })
   | (ModuleSavedViewConfigBase & {
       type: 'timeline';
       start_field: string;
@@ -66,7 +66,7 @@ function normalizeFilter(value: unknown): ModuleQueryFilter | null {
   if (
     !field
     || !operator
-    || !['eq', 'neq', 'contains', 'gt', 'gte', 'lt', 'lte', 'in'].includes(operator)
+    || !['eq', 'neq', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_empty', 'date_relative'].includes(operator)
     || !(
       typeof filterValue === 'string'
       || typeof filterValue === 'number'
@@ -103,7 +103,10 @@ function normalizeConfig(value: unknown): ModuleSavedViewConfig | null {
   if (type === 'table') return { ...common, type };
   if (type === 'board') {
     const groupBy = asString(row.group_by) ?? asString(row.groupBy);
-    return groupBy ? { ...common, type, group_by: groupBy } : null;
+    const summaryRow = asRecord(row.summary);
+    const valueField = asString(summaryRow.value_field);
+    const unitField = asString(summaryRow.unit_field);
+    return groupBy ? { ...common, type, group_by: groupBy, ...(valueField && unitField ? { summary: { value_field: valueField, unit_field: unitField } } : {}) } : null;
   }
   if (type === 'timeline') {
     const startField = asString(row.start_field) ?? asString(row.startField);
@@ -149,6 +152,9 @@ export function moduleFieldFilterToQuery(
   if (!filter?.fieldKey || !filter.value) return [];
   const field = collection.fields.find((candidate) => candidate.key === filter.fieldKey);
   if (!field) return [];
+  if (['__empty__', '__present__'].includes(filter.value) && !['relation', 'resource_ref'].includes(field.type)) {
+    return [{ field: field.key, operator: 'is_empty', value: filter.value === '__empty__' }];
+  }
   if (field.type === 'boolean') {
     if (filter.value !== 'true' && filter.value !== 'false') return [];
     return [{ field: field.key, operator: 'eq', value: filter.value === 'true' }];
@@ -164,9 +170,12 @@ export function moduleQueryFilterToFieldFilter(
   collection: ModuleCollection,
   filters: ModuleQueryFilter[],
 ): ModuleFieldFilter {
-  const filter = filters.length === 1 && filters[0]?.operator === 'eq' ? filters[0] : null;
+  const filter = filters.length === 1 && ['eq', 'is_empty'].includes(filters[0]?.operator ?? '') ? filters[0] : null;
   if (!filter) return null;
   const field = collection.fields.find((candidate) => candidate.key === filter.field);
+  if (field && filter.operator === 'is_empty' && typeof filter.value === 'boolean' && !['relation', 'resource_ref'].includes(field.type)) {
+    return { fieldKey: field.key, value: filter.value ? '__empty__' : '__present__' };
+  }
   if (!field || !['single_select', 'boolean'].includes(field.type)) return null;
   if (field.type === 'boolean' && typeof filter.value === 'boolean') {
     return { fieldKey: field.key, value: filter.value ? 'true' : 'false' };
@@ -185,9 +194,21 @@ export function moduleSavedViewToView(savedView: ModuleSavedView): ModuleView {
     type: config.type,
     fields: [...config.fields],
     groupBy: config.type === 'board' ? config.group_by : null,
+    ...(config.type === 'board' && config.summary ? { summary: { valueField: config.summary.value_field, unitField: config.summary.unit_field } } : {}),
     startField: config.type === 'timeline' ? config.start_field : null,
     endField: config.type === 'timeline' ? config.end_field ?? null : null,
   };
+}
+
+export function resolveModuleViewLayoutKey(activeView: ModuleView, candidates: ModuleView[]): string | null {
+  if (candidates.some((candidate) => candidate.key === activeView.key)) return activeView.key;
+  if (!activeView.key.startsWith('personal:')) return null;
+  const sameLayout = candidates.find((candidate) => candidate.type === activeView.type
+    && candidate.groupBy === activeView.groupBy
+    && candidate.startField === activeView.startField
+    && candidate.endField === activeView.endField
+    && candidate.fields.join('\0') === activeView.fields.join('\0'));
+  return sameLayout?.key ?? candidates.find((candidate) => candidate.type === activeView.type)?.key ?? null;
 }
 
 export function buildModuleSavedViewConfig(input: {
@@ -219,7 +240,7 @@ export function buildModuleSavedViewConfig(input: {
     const groupBy = requestedGroup && isBoardField(requestedGroup)
       ? requestedGroup.key
       : collection.fields.find(isBoardField)?.key;
-    if (groupBy) return { ...common, type: 'board', group_by: groupBy };
+    if (groupBy) return { ...common, type: 'board', group_by: groupBy, ...(view.summary ? { summary: { value_field: view.summary.valueField, unit_field: view.summary.unitField } } : {}) };
   }
   if (view.type === 'timeline') {
     const dateFields = collection.fields.filter(isDateField);

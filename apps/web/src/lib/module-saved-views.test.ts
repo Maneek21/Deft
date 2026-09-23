@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { normalizeModuleManifest } from './modules';
 import {
   buildModuleSavedViewConfig,
+  resolveModuleViewLayoutKey,
   moduleFieldFilterToQuery,
   modulePersonalViewHref,
   moduleQueryFilterToFieldFilter,
@@ -9,6 +12,20 @@ import {
   normalizeModuleSavedViewsResponse,
 } from './module-saved-views';
 import type { ModuleCollection } from './modules';
+
+test('saving and reopening the CRM pipeline preserves its currency summary', () => {
+  const manifest = normalizeModuleManifest(JSON.parse(readFileSync(new URL('../../../../modules/bundled/contacts/deft.module.json', import.meta.url), 'utf8')));
+  const deals = manifest.collections.find((candidate) => candidate.key === 'deals')!;
+  const pipeline = deals.views.find((candidate) => candidate.key === 'pipeline')!;
+  const config = buildModuleSavedViewConfig({ collection: deals, view: pipeline, filters: [{ field: 'stage', operator: 'eq', value: 'lead' }] });
+  const saved = normalizeModuleSavedViewsResponse({ views: [{ id: 'saved', installation_id: 'install', module_id: 'com.deft.contacts', collection_key: 'deals', owner_user_id: 'owner', name: 'My leads', config }] })[0]!;
+  assert.deepEqual(moduleSavedViewToView(saved).summary, pipeline.summary);
+  assert.equal(resolveModuleViewLayoutKey(moduleSavedViewToView(saved), deals.views), 'pipeline');
+  assert.equal(resolveModuleViewLayoutKey(moduleSavedViewToView(saved), [
+    { ...pipeline, key: 'alternate-pipeline', fields: ['name', 'stage'] },
+    pipeline,
+  ]), 'pipeline');
+});
 
 const collection: ModuleCollection = {
   key: 'entries',
@@ -61,6 +78,8 @@ test('normalizes only complete personal saved-view envelopes', () => {
 });
 
 test('converts supported field controls to typed server filters', () => {
+  assert.deepEqual(moduleFieldFilterToQuery(collection, { fieldKey: 'owner', value: '__empty__' }), [{ field: 'owner', operator: 'is_empty', value: true }]);
+  assert.deepEqual(moduleQueryFilterToFieldFilter(collection, [{ field: 'owner', operator: 'is_empty', value: false }]), { fieldKey: 'owner', value: '__present__' });
   assert.deepEqual(moduleFieldFilterToQuery(collection, { fieldKey: 'active', value: 'false' }), [
     { field: 'active', operator: 'eq', value: false },
   ]);
@@ -108,4 +127,15 @@ test('builds canonical encoded personal-view URLs', () => {
     modulePersonalViewHref('example module', 'open/items', 'mine & active'),
     '/modules/example%20module/open%2Fitems?saved=mine%20%26%20active',
   );
+});
+
+test('saved closing-date presets preserve relative intent rather than a fixed calendar day', () => {
+  const manifest = normalizeModuleManifest(JSON.parse(readFileSync(new URL('../../../../modules/bundled/contacts/deft.module.json', import.meta.url), 'utf8')));
+  const deals = manifest.collections.find((candidate) => candidate.key === 'deals')!;
+  const pipeline = deals.views.find((candidate) => candidate.key === 'pipeline')!;
+  const preset = pipeline.quickFilters!.find((candidate) => candidate.key === 'closing_week')!;
+  const config = buildModuleSavedViewConfig({ collection: deals, view: pipeline, filters: preset.filters });
+  const saved = normalizeModuleSavedViewsResponse({ views: [{ id: 'relative', installation_id: 'install', module_id: 'com.deft.contacts', collection_key: 'deals', owner_user_id: 'owner', name: 'Closing soon', config }] })[0]!;
+  assert.deepEqual(saved.config.filters, preset.filters);
+  assert.equal(saved.config.filters[1]!.value, 'next_7_days');
 });

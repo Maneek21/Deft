@@ -592,7 +592,7 @@ export default function AgentSettingsPage() {
             return (
               <div
                 key={a.id}
-                className="flex items-center gap-3 px-3 py-2 rounded-lg text-[12px]"
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-3 rounded-lg text-[12px] sm:flex-nowrap sm:py-2"
                 style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
               >
                 <span
@@ -609,7 +609,7 @@ export default function AgentSettingsPage() {
                   {sourceLabel}
                 </span>
                 <span style={{ color: 'var(--foreground)' }}>{labels[a.action] || a.action}</span>
-                <span className="flex-1 truncate" style={{ color: 'var(--muted)' }}>
+                <span className="order-last w-full truncate sm:order-none sm:w-auto sm:flex-1" style={{ color: 'var(--muted)' }}>
                   {a.params?.title || a.params?.task_identifier || a.params?.space_name || ''}
                 </span>
                 <span
@@ -618,7 +618,7 @@ export default function AgentSettingsPage() {
                 >
                   {a.approval_status}
                 </span>
-                <span style={{ color: 'var(--muted)' }}>
+                <span className="whitespace-nowrap" style={{ color: 'var(--muted)' }}>
                   {new Date(a.created_at).toLocaleDateString('en-US', {
                     month: 'short',
                     day: 'numeric',
@@ -630,7 +630,7 @@ export default function AgentSettingsPage() {
                   <button
                     onClick={() => setReceiptActionId(a.id)}
                     data-testid={`view-receipt-${a.id}`}
-                    className="text-[10px] px-2 py-0.5 rounded"
+                    className="min-h-9 shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded sm:min-h-0"
                     style={{
                       background: 'var(--surface-container)',
                       color: 'var(--foreground-secondary)',

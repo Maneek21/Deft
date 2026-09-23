@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { ModelRouteSchema } from '@deft/shared';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { orgMembers } from '@deft/db/schema';
@@ -74,38 +75,10 @@ const updateSchema = z.object({
     .optional(),
   ai_models: z
     .object({
-      classify: z
-        .object({
-          provider: z.enum(['anthropic', 'openai', 'openrouter', 'ollama']),
-          model: z.string().min(1),
-          baseUrl: z.string().optional(),
-        })
-        .nullable()
-        .optional(),
-      summarize: z
-        .object({
-          provider: z.enum(['anthropic', 'openai', 'openrouter', 'ollama']),
-          model: z.string().min(1),
-          baseUrl: z.string().optional(),
-        })
-        .nullable()
-        .optional(),
-      reason: z
-        .object({
-          provider: z.enum(['anthropic', 'openai', 'openrouter', 'ollama']),
-          model: z.string().min(1),
-          baseUrl: z.string().optional(),
-        })
-        .nullable()
-        .optional(),
-      extract: z
-        .object({
-          provider: z.enum(['anthropic', 'openai', 'openrouter', 'ollama']),
-          model: z.string().min(1),
-          baseUrl: z.string().optional(),
-        })
-        .nullable()
-        .optional(),
+      classify: ModelRouteSchema.nullable().optional(),
+      summarize: ModelRouteSchema.nullable().optional(),
+      reason: ModelRouteSchema.nullable().optional(),
+      extract: ModelRouteSchema.nullable().optional(),
     })
     .optional(),
   ollama_url: z.string().nullable().optional(),

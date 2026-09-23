@@ -2,7 +2,7 @@
   "schema": "deft.app_platform.connected_proof_bundle.v1",
   "app_kit": {
     "package": "@deft/app-kit",
-    "version": "0.1.0-alpha.2",
+    "version": "0.1.0-alpha.3",
     "source_path": "packages/app-kit",
     "pack_command": "pnpm --dir packages/app-kit pack --pack-destination <output-directory> --json"
   },

@@ -10,6 +10,7 @@ export function AppRunInspector({ runId, onClose }: { runId: string | null; onCl
   const [bundle, setBundle] = useState<AppRunReceiptBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     if (!runId) {
@@ -38,18 +39,18 @@ export function AppRunInspector({ runId, onClose }: { runId: string | null; onCl
       }
     })();
     return () => controller.abort();
-  }, [runId]);
+  }, [runId, retry]);
 
   return <AppDialog
     open={runId !== null}
     onClose={onClose}
     title={bundle?.run.title ?? 'App Run receipts'}
-    description="Actor-authorized, tenant-scoped Run metadata and server-verified receipt proofs. Raw provider envelopes and output are not exposed here."
+    description="Review the approval and execution records for this action."
     width={620}
     footer={<div className="flex justify-end"><button type="button" className="deft-pill min-h-11" onClick={onClose}>Close</button></div>}
   >
     {loading && <div className="flex min-h-40 items-center justify-center"><Loader2 className="animate-spin" aria-label="Loading App Run receipts" /></div>}
-    {error && <div role="alert" className="flex items-start gap-2 rounded-xl p-3 text-xs" style={{ background: 'var(--danger-subtle)', color: 'var(--error)' }}><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" /><span>{error}</span></div>}
+    {error && <div role="alert" className="flex items-start gap-2 rounded-xl p-3 text-xs" style={{ background: 'var(--danger-subtle)', color: 'var(--error)' }}><AlertTriangle size={15} className="mt-0.5 flex-shrink-0" /><span>{error} <button type="button" className="min-h-11 underline" onClick={() => setRetry(value => value + 1)}>Retry receipts</button></span></div>}
     {bundle && <div className="space-y-4">
       <div className="flex items-start gap-2 rounded-xl p-3" style={{ background: bundle.run.state === 'succeeded' ? 'rgba(48,164,108,.10)' : 'var(--surface-container-high)' }}>
         {bundle.run.state === 'succeeded' ? <CheckCircle2 size={16} className="mt-0.5 flex-shrink-0" style={{ color: 'var(--status-green)' }} /> : <ReceiptText size={16} className="mt-0.5 flex-shrink-0" />}

@@ -11,7 +11,7 @@ import {
   prepareModuleArtifact,
   verifyDeftAppPackageJson,
   type DeftAppManifestV0Input,
-} from '../src/index.js';
+} from '../dist/index.js';
 
 const moduleManifest = {
   schema_version: '1',
@@ -19,7 +19,20 @@ const moduleManifest = {
   slug: 'contacts',
   version: '1.0.0',
   name: 'Contacts',
-  collections: [],
+  collections: [
+    {
+      key: 'contacts',
+      name: 'Contacts',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      views: [{ key: 'all', name: 'All contacts', type: 'table', fields: ['name'] }],
+    },
+    {
+      key: 'companies',
+      name: 'Companies',
+      fields: [{ key: 'name', label: 'Name', type: 'text', required: true }],
+      views: [{ key: 'pipeline', name: 'Pipeline', type: 'table', fields: ['name'] }],
+    },
+  ],
 };
 
 async function fixture() {
@@ -131,6 +144,22 @@ describe('App Protocol v0 contract', () => {
       buildDeftAppPackage({ manifest, artifacts: [artifact, artifact] }),
       /Duplicate package artifact path|exactly the artifacts/,
     );
+  });
+
+  test('rejects navigation views missing from or belonging to another collection', async () => {
+    const { artifact, manifest } = await fixture();
+    for (const view_key of ['missing', 'pipeline']) {
+      await assert.rejects(
+        buildDeftAppPackage({
+          manifest: {
+            ...manifest,
+            navigation: [{ ...manifest.navigation![0]!, view_key }],
+          },
+          artifacts: [artifact],
+        }),
+        new RegExp(`Navigation contacts references unknown view ${view_key} in collection contacts`),
+      );
+    }
   });
 
   test('rejects unsupported protocols, media types, malformed JSON, and integrity drift', async () => {

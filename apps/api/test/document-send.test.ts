@@ -446,7 +446,7 @@ test('Defty-created documents are authored by Defty rather than the human approv
   assert.equal(authorship.receipt_params.content, undefined);
 });
 
-test('rejecting a document scrubs draft content and creates neither file nor message', async () => {
+test('rejecting a document scrubs draft content, creates no file, and posts one confirmation message', async () => {
   const before = await withClient(async (client) => (await client.query<{ files: number; messages: number }>(
     `SELECT
        (SELECT count(*)::int FROM files WHERE org_id = $1) AS files,
@@ -475,6 +475,8 @@ test('rejecting a document scrubs draft content and creates neither file nor mes
     params: Record<string, unknown>;
     decision: string;
     receipt_params: Record<string, unknown>;
+    rejection_result_content: string | null;
+    rejection_result_metadata: Record<string, unknown> | null;
   }>(
     `SELECT
        (SELECT count(*)::int FROM files WHERE org_id = $1) AS files,
@@ -482,13 +484,26 @@ test('rejecting a document scrubs draft content and creates neither file nor mes
        (SELECT approval_status FROM agent_actions WHERE id = $2) AS status,
        (SELECT params FROM agent_actions WHERE id = $2) AS params,
        (SELECT decision FROM action_receipts WHERE action_id = $2 LIMIT 1) AS decision,
-       (SELECT action_params_json FROM action_receipts WHERE action_id = $2 LIMIT 1) AS receipt_params`,
+       (SELECT action_params_json FROM action_receipts WHERE action_id = $2 LIMIT 1) AS receipt_params,
+       (SELECT content FROM messages
+          WHERE org_id = $1
+            AND metadata->>'approval_rejection_result_for_action_id' = $2
+          LIMIT 1) AS rejection_result_content,
+       (SELECT metadata FROM messages
+          WHERE org_id = $1
+            AND metadata->>'approval_rejection_result_for_action_id' = $2
+          LIMIT 1) AS rejection_result_metadata`,
     [orgId, queued.action_id],
   )).rows[0]!);
   assert.equal(afterState.files, before.files);
-  assert.equal(afterState.messages, before.messages);
+  assert.equal(afterState.messages, before.messages + 1);
   assert.equal(afterState.status, 'rejected');
   assert.equal(afterState.params.content, undefined);
   assert.equal(afterState.receipt_params.content, undefined);
   assert.equal(afterState.decision, 'rejected');
+  assert.equal(afterState.rejection_result_content, '');
+  assert.equal(afterState.rejection_result_metadata?.kind, 'tool_result');
+  assert.equal(afterState.rejection_result_metadata?.hidden, true);
+  assert.match(JSON.stringify(afterState.rejection_result_metadata ?? {}), /The user rejected the document send action\./i);
+  assert.doesNotMatch(JSON.stringify(afterState.rejection_result_metadata ?? {}), /This draft must be discarded\.|rejected\.txt/i);
 });

@@ -167,6 +167,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.29-native-create-requests.sql',
       description: 'Persist scoped native create identities for safe explicit retries',
     },
+    {
+      version: '0.3.0-preview.30',
+      file: '0.3.0-preview.30-module-record-merges.sql',
+      description: 'Preserve tenant-bound original values and link provenance for reviewed Module record merges',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

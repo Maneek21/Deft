@@ -58,6 +58,7 @@ const connectedReviewSchema = z.strictObject({
 const connectedActivationSchema = connectedReviewSchema.extend({
   expected_review_digest: AppDigestSchema,
   accept_host_policy: z.boolean(),
+  accept_module_adoptions: z.boolean().optional(),
   allow_identical_carry_forward: z.boolean().optional(),
 });
 const healthSchema = z.strictObject({ refresh_provider_schemas: z.boolean().default(true) });

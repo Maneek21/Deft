@@ -1237,6 +1237,8 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
   const listBody = (await listRes.json()) as any;
   const tools = listBody.result.tools as Array<{ name: string }>;
   assert.ok(tools.length > 0, 'read catalog is not empty');
+  assert.equal(tools.some((tool) => tool.name === 'module_record_bulk_create'), false,
+    'bulk creation must not be advertised without write:modules');
 
   const minimalArgs: Record<string, Record<string, unknown>> = {
     search: { query: 'salsa tasting', limit: 5 },

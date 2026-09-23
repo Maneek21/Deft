@@ -4,9 +4,12 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { Loader2 } from 'lucide-react';
 import { AppDialog } from '@/components/overlay-primitives';
 import { useModuleMembers } from '@/hooks/use-modules';
+import { ModuleRelationInput } from './module-relation-input';
+import { initialModuleRelationValues, moduleFormRelationPatch } from '@/lib/module-form-relations';
 import {
   diffModuleRecordUpdate,
   getModuleCollectionFields,
+  getModuleCreatePrimaryFields,
   initialModuleRecordValues,
   moduleRecordPayload,
   validateModuleRecordValues,
@@ -14,33 +17,44 @@ import {
   type ModuleField,
   type ModuleMember,
   type ModuleRecord,
+  type ModuleRelationGroup,
 } from '@/lib/modules';
 
 export function ModuleRecordFormDialog({
   open,
   collection,
+  slug,
+  collections,
+  initialRelations = [],
+  initialData,
   record,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   collection: ModuleCollection;
+  slug: string;
+  collections: ModuleCollection[];
+  initialRelations?: ModuleRelationGroup[];
+  initialData?: Record<string, unknown>;
   record?: ModuleRecord | null;
   onClose: () => void;
-  onSubmit: (data: Record<string, unknown>, idempotencyKey: string, unsetFields: string[]) => Promise<void>;
+  onSubmit: (data: Record<string, unknown>, idempotencyKey: string, unsetFields: string[], relations: Record<string, string[]>) => Promise<void>;
 }) {
   const memberState = useModuleMembers(collection.fields.some((field) => field.type === 'member'));
   const initialValues = useMemo(
-    () => initialModuleRecordValues(collection, record),
-    [collection, record],
+    () => ({ ...initialModuleRecordValues(collection, record, initialData), ...initialModuleRelationValues(collection, record?.relations ?? initialRelations) }),
+    [collection, record, initialRelations, initialData],
   );
   const [values, setValues] = useState<Record<string, unknown>>(initialValues);
   const [changedFields, setChangedFields] = useState<Set<string>>(() => new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [optionalOpen, setOptionalOpen] = useState(false);
   const [idempotencyKey, setIdempotencyKey] = useState(createIntentKey);
   const wasOpenRef = useRef(false);
+  const submitErrorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
@@ -49,22 +63,38 @@ export function ModuleRecordFormDialog({
       setSubmitError(null);
       setChangedFields(new Set());
       setIdempotencyKey(createIntentKey());
+      setOptionalOpen(false);
     }
     wasOpenRef.current = open;
   }, [initialValues, open]);
 
+  useEffect(() => {
+    if (!submitError) return;
+    submitErrorRef.current?.focus();
+    submitErrorRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [submitError]);
+
   const fields = useMemo(() => {
     const configuredFields = getModuleCollectionFields(collection, 'form');
     const selected = (configuredFields.length > 0 ? configuredFields : collection.fields)
-      .filter((field) => field.type !== 'relation' && field.type !== 'resource_ref');
+      .filter((field) => field.type !== 'resource_ref');
     const required = collection.fields.filter((field) => (
-      field.type !== 'relation'
-      && field.type !== 'resource_ref'
+      field.type !== 'resource_ref'
       && field.required
       && !selected.some((candidate) => candidate.key === field.key)
     ));
     return [...selected, ...required];
   }, [collection]);
+
+  const visibleFields = useMemo(() => {
+    if (record) return fields;
+    const essentialKeys = new Set(getModuleCreatePrimaryFields(fields).map((field) => field.key));
+    if (collection.titleField) essentialKeys.add(collection.titleField);
+    for (const key of Object.keys(initialData ?? {})) essentialKeys.add(key);
+    for (const relation of initialRelations) essentialKeys.add(relation.fieldKey);
+    return fields.filter((field) => field.required || essentialKeys.has(field.key));
+  }, [collection.titleField, fields, initialData, initialRelations, record]);
+  const optionalFields = record ? [] : fields.filter((field) => !visibleFields.some((visible) => visible.key === field.key));
 
   const setValue = (key: string, value: unknown) => {
     setValues((current) => ({ ...current, [key]: value }));
@@ -81,12 +111,14 @@ export function ModuleRecordFormDialog({
     event.preventDefault();
     const validation = validateModuleRecordValues(collection, values);
     setErrors(validation);
+    if (optionalFields.some((field) => field.key in validation)) setOptionalOpen(true);
     if (Object.keys(validation).length > 0) return;
 
     const payload = moduleRecordPayload(collection, values);
+    const relations = moduleFormRelationPatch(collection, values, changedFields, Boolean(record));
     const update = record ? diffModuleRecordUpdate(record.data, payload, changedFields) : null;
     const outgoing = update?.patch ?? payload;
-    if (record && Object.keys(outgoing).length === 0 && update?.unsetFields.length === 0) {
+    if (record && Object.keys(outgoing).length === 0 && update?.unsetFields.length === 0 && Object.keys(relations).length === 0) {
       onClose();
       return;
     }
@@ -94,7 +126,7 @@ export function ModuleRecordFormDialog({
     setBusy(true);
     setSubmitError(null);
     try {
-      await onSubmit(outgoing, idempotencyKey, update?.unsetFields ?? []);
+      await onSubmit(outgoing, idempotencyKey, update?.unsetFields ?? [], relations);
       onClose();
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : 'Unable to save this record.');
@@ -109,7 +141,7 @@ export function ModuleRecordFormDialog({
       open={open}
       onClose={busy ? () => {} : onClose}
       title={title}
-      description={record ? `Update this ${collection.singularName.toLowerCase()}.` : `Add a ${collection.singularName.toLowerCase()} to ${collection.name}.`}
+      description={record ? `Update this ${collection.singularName.toLowerCase()}.` : `Create a new record in ${collection.name}.`}
       width={620}
       footer={
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -117,7 +149,7 @@ export function ModuleRecordFormDialog({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="min-h-11 rounded-lg px-4 text-[0.8125rem] font-medium disabled:opacity-50"
+            className="min-h-10 rounded-full px-4 text-[0.8125rem] font-medium disabled:opacity-50"
             style={{ color: 'var(--on-surface-variant)', background: 'var(--surface-container-low)' }}
           >
             Cancel
@@ -126,7 +158,7 @@ export function ModuleRecordFormDialog({
             type="submit"
             form="module-record-form"
             disabled={busy}
-            className="flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 text-[0.8125rem] font-medium text-white disabled:opacity-60"
+            className="flex min-h-10 items-center justify-center gap-2 rounded-full px-4 text-[0.8125rem] font-medium text-white disabled:opacity-60"
             style={{ background: 'var(--primary-container)' }}
           >
             {busy && <Loader2 size={14} className="animate-spin" />}
@@ -138,18 +170,22 @@ export function ModuleRecordFormDialog({
       <form id="module-record-form" className="space-y-4" onSubmit={handleSubmit}>
         {submitError && (
           <div
+            ref={submitErrorRef}
             role="alert"
+            tabIndex={-1}
             className="rounded-lg px-3 py-2 text-[0.8125rem]"
-            style={{ color: 'var(--error)', background: 'var(--danger-subtle)' }}
+            style={{ color: 'var(--on-surface)', background: 'var(--danger-subtle)' }}
           >
             {submitError}
           </div>
         )}
         {fields.length === 0 ? (
-          <div className="rounded-lg px-4 py-5 text-[0.8125rem]" style={{ background: 'var(--surface-container-low)', color: 'var(--outline)' }}>
+          <div className="rounded-lg px-4 py-5 text-[0.8125rem]" style={{ background: 'var(--surface-container-low)', color: 'var(--on-surface-variant)' }}>
             This collection has no editable fields.
           </div>
-        ) : fields.map((field) => (
+        ) : visibleFields.map((field) => field.type === 'relation' ? (
+          <ModuleRelationInput key={field.key} slug={slug} field={field} targetCollection={collections.find((candidate) => candidate.key === field.targetCollection)} value={values[field.key]} initial={record?.relations ?? initialRelations} error={errors[field.key]} disabled={busy} onChange={(ids) => setValue(field.key, ids)} />
+        ) : (
           <ModuleFieldInput
             key={field.key}
             field={field}
@@ -159,6 +195,32 @@ export function ModuleRecordFormDialog({
             onChange={(value) => setValue(field.key, value)}
           />
         ))}
+        {optionalFields.length > 0 && (
+          <details
+            open={optionalOpen}
+            onToggle={(event) => setOptionalOpen(event.currentTarget.open)}
+            className="rounded-xl border px-3 py-2"
+            style={{ borderColor: 'var(--outline-variant)' }}
+          >
+            <summary className="min-h-11 cursor-pointer py-2 text-[0.8125rem] font-medium" style={{ color: 'var(--on-surface)' }}>
+              More details <span className="ml-1 text-[0.6875rem] font-normal" style={{ color: 'var(--on-surface-variant)' }}>Optional</span>
+            </summary>
+            <div className="space-y-4 pb-2">
+              {optionalFields.map((field) => field.type === 'relation' ? (
+                <ModuleRelationInput key={field.key} slug={slug} field={field} targetCollection={collections.find((candidate) => candidate.key === field.targetCollection)} value={values[field.key]} initial={record?.relations ?? initialRelations} error={errors[field.key]} disabled={busy} onChange={(ids) => setValue(field.key, ids)} />
+              ) : (
+                <ModuleFieldInput
+                  key={field.key}
+                  field={field}
+                  value={values[field.key]}
+                  error={errors[field.key]}
+                  members={memberState.members}
+                  onChange={(value) => setValue(field.key, value)}
+                />
+              ))}
+            </div>
+          </details>
+        )}
       </form>
     </AppDialog>
   );
@@ -250,7 +312,7 @@ function ModuleFieldInput({
     control = (
       <div className="grid max-h-64 gap-2 overflow-y-auto rounded-lg p-2 sm:grid-cols-2" style={inputStyle}>
         {options.length === 0 ? (
-          <p className="px-2 py-1 text-[0.75rem] sm:col-span-2" style={{ color: 'var(--outline)' }}>
+          <p className="px-2 py-1 text-[0.75rem] sm:col-span-2" style={{ color: 'var(--on-surface-variant)' }}>
             {field.type === 'member' ? 'No workspace members are available.' : 'No options are configured.'}
           </p>
         ) : options.map((option) => {

@@ -1,0 +1,3 @@
+name,subject,body,status,audience_notes
+Northstar pilot invitation,Your two-week pilot,"Hello Avery, here is the proposed next step for our fictional pilot.",draft,Fictional draft. Link Avery Chen as recipient. Use only the sandbox connector.
+Customer check-in,Planning our next conversation,"Hello, this is a fictional customer check-in for the CRM demonstration.",draft,Choose contacts with the crm-demo tag. Nothing is sent by importing this file.

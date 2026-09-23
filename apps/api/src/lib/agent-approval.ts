@@ -145,6 +145,8 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   module_record_search: MODULE_OPERATION_DEFINITIONS.module_record_search.approval_tier,
   module_record_query: MODULE_OPERATION_DEFINITIONS.module_record_query.approval_tier,
   module_record_get: MODULE_OPERATION_DEFINITIONS.module_record_get.approval_tier,
+  module_record_incoming: MODULE_OPERATION_DEFINITIONS.module_record_incoming.approval_tier,
+  module_record_latest_related: MODULE_OPERATION_DEFINITIONS.module_record_latest_related.approval_tier,
   module_record_create: MODULE_OPERATION_DEFINITIONS.module_record_create.approval_tier,
   module_record_bulk_create: 'full',
   module_record_update: MODULE_OPERATION_DEFINITIONS.module_record_update.approval_tier,

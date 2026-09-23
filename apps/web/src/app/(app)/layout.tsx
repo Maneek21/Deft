@@ -494,7 +494,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }}
     >
       <AppHeaderProvider>
-        <div className="flex h-dvh" style={{ background: 'var(--background)' }}>
+        <div className="flex h-dvh overflow-hidden" style={{ background: 'var(--background)' }}>
           <Sidebar
             spaces={spaces}
             activeSpaceId={activeSpaceId}
@@ -503,9 +503,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             mobileOpen={mobileMenuOpen}
             setMobileOpen={setMobileMenuOpen}
           />
-          <main className="flex-1 overflow-hidden flex flex-col">
+          <main className="min-h-0 min-w-0 flex-1 overflow-hidden flex flex-col">
             <AppHeaderHost onMenuClick={() => setMobileMenuOpen(true)} />
-            <div className="flex-1 overflow-hidden">{children}</div>
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
           </main>
           <CommandPalette />
           <KeyboardShortcuts open={showShortcuts} onClose={() => setShowShortcuts(false)} />

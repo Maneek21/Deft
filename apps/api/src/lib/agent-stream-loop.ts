@@ -15,6 +15,11 @@ import { db } from './db.js';
 import { agentActions, messages, spaces } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
+import { agentToolFailure } from './agent-tool-result.js';
+import {
+  createModuleNextReadsResolver,
+  nativeAgentToolResult,
+} from './agent-module-next-reads.js';
 import {
   claimModuleAgentAction,
   claimModuleTaskLinkAgentAction,
@@ -72,6 +77,20 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let iterations = 0;
+  const moduleNextReads = createModuleNextReadsResolver({
+    availableToolNames: p.tools.map((tool) => tool.name),
+    executeRead: async (operation, input) => {
+      const read = await executeToolCall(
+        operation,
+        input,
+        p.orgId,
+        p.userId,
+        p.convoId,
+        p.agentEmployeeId,
+      );
+      return { result: read.result, sources: read.citations };
+    },
+  });
 
   while (iterations < MAX_ITERATIONS && totalTokensIn < MAX_INPUT_TOKENS) {
     iterations++;
@@ -144,6 +163,7 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
       metadata: {
         is_agent_reply: true,
         agent_blocks: persistedAssistantBlocks as any,
+        citations: allCitations.length > 0 ? [...allCitations] : null,
         hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
         tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
           ? (sanitizeAgentToolCallsForStorage(cumulativeToolCalls) as any)
@@ -337,13 +357,24 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
           const { result, citations } = await executeToolCall(
             tool.name, tool.input as any, p.orgId, p.userId, p.convoId, p.agentEmployeeId,
           );
-          allCitations.push(...citations);
           await p.write({ type: 'tool_result', tool: tool.name, count: Array.isArray(result) ? result.length : 1 });
-          toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result) });
+          const formatted = await nativeAgentToolResult({
+            resolver: moduleNextReads,
+            operation: tool.name,
+            input: tool.input,
+            result,
+            sources: citations,
+          });
+          allCitations.push(...formatted.sources);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: tool.id,
+            content: formatted.content,
+          });
         } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : 'Tool execution failed';
-          await p.write({ type: 'tool_result', tool: tool.name, error: errorMsg });
-          toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify({ error: errorMsg }), is_error: true });
+          const failure = agentToolFailure(err);
+          await p.write({ type: 'tool_result', tool: tool.name, error: failure.error });
+          toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(failure), is_error: true });
         }
       }
     }

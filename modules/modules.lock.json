@@ -4,11 +4,11 @@
     {
       "module_id": "com.deft.contacts",
       "slug": "contacts",
-      "version": "1.1.0",
-      "manifest_digest": "sha256:431d879dd511261346c2d38b1c6341f61eb7878ea4690ca836425b3a0c2c266d",
+      "version": "1.8.0",
+      "manifest_digest": "sha256:495075181043c6cb95ad4080ea894faa6c1b798b3eb2db97571d0b53ff0cbdaf",
       "manifest_path": "modules/bundled/contacts/deft.module.json",
       "source_repository": "https://github.com/Maneek21/deft-module-contacts",
-      "source_commit": "1fd6d812a28f106cad5b873460ba0f86e2e81235",
+      "source_commit": "8b59041f7ba9c0deb5266bed0dfcf917c2576f6a",
       "license": "AGPL-3.0-only"
     }
   ]

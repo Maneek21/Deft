@@ -30,10 +30,11 @@ const WRITE_SCOPES = [
 const COLLABORATE_SCOPES = [...READ_SCOPES, 'write:tasks', 'write:messages', 'write:wiki', 'write:modules'];
 const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES];
 const APP_SCOPES = ['read:apps', 'invoke:apps', 'read:app-runs'];
+const APP_WORK_SCOPES = ['read:modules', 'write:modules', 'read:tasks', 'write:tasks', ...APP_SCOPES];
 const AVAILABLE_SCOPES = [...ALL_SCOPES, ...APP_SCOPES];
 
 type ClientId = 'codex' | 'claude-code' | 'claude-desktop' | 'remote-web' | 'headless' | 'custom' | 'agent-employee';
-type AccessPreset = 'read' | 'work' | 'operate' | 'custom';
+type AccessPreset = 'read' | 'work' | 'apps' | 'operate' | 'custom';
 
 type ClientOption = {
   id: ClientId;
@@ -129,6 +130,12 @@ const PRESETS: Array<{ id: AccessPreset; title: string; detail: string; scopes: 
     scopes: COLLABORATE_SCOPES,
   },
   {
+    id: 'apps',
+    title: 'Work with installed Apps',
+    detail: 'Discover Apps such as CRM, manage records and linked tasks, run configured actions through their approval policies, and read execution results.',
+    scopes: APP_WORK_SCOPES,
+  },
+  {
     id: 'operate',
     title: 'Operate the workspace',
     detail: 'Adds calendar writes plus notes, inbox, approvals, projects, and agent operations for headless use.',
@@ -162,6 +169,7 @@ const READ_TEST_PROMPTS = [
   'List my open tasks, find blockers, and suggest the next action.',
   'Search wiki for launch blockers, then summarize what changed recently.',
   'Show me which Deft capabilities and tools this connection can use.',
+  'Discover the installed CRM, inspect its schema, and summarize records and follow-ups I can access. Do not change anything.',
 ];
 
 type RemoteReadiness = {
@@ -495,6 +503,7 @@ export default function McpAccessPage() {
   const selectedScopes = useMemo(() => {
     if (accessPreset === 'read') return READ_SCOPES;
     if (accessPreset === 'work') return COLLABORATE_SCOPES;
+    if (accessPreset === 'apps') return APP_WORK_SCOPES;
     if (accessPreset === 'operate') return ALL_SCOPES;
     return customScopes;
   }, [accessPreset, customScopes]);
@@ -640,7 +649,7 @@ export default function McpAccessPage() {
         title: 'Claude Code CLI',
         detail:
           'Run this in a terminal. Then use /mcp in Claude Code to verify the connection. Do not paste the token into a Claude chat.',
-        value: `claude mcp add --transport http --scope user deft "${endpointForConfig}" --header "Authorization: Bearer ${tokenForConfig}"`,
+        value: `claude mcp add --transport http --scope user --header "Authorization: Bearer ${tokenForConfig}" deft "${endpointForConfig}"`,
       };
     }
     return {
@@ -726,7 +735,9 @@ export default function McpAccessPage() {
     : grants.find((grant) => grant.id === selectedGrantId);
   const verificationUnavailable = loadFailures.includes(tokenSetupClient ? 'Personal tokens' : 'App authorizations');
   const promptScopes = verificationConnection?.scopes ?? selectedScopes;
-  const prompt = promptScopes.includes('read:messages')
+  const prompt = promptScopes.includes('read:modules') && promptScopes.includes('read:apps') && promptScopes.includes('read:tasks')
+    ? READ_TEST_PROMPTS[4]
+    : promptScopes.includes('read:messages')
     ? READ_TEST_PROMPTS[0]
     : promptScopes.includes('read:tasks')
       ? READ_TEST_PROMPTS[1]

@@ -243,7 +243,15 @@ docker compose run --rm doctor
 ```
 
 The doctor checks API health, web reachability, browser/API origin agreement,
-the Postgres schema, and the platform seed.
+the Postgres schema, database/host clock agreement, and the platform seed.
+
+Run the doctor on the API host so its clock check compares the systems that
+produce record timestamps. If database time differs by more than five seconds
+(allowing for request latency), synchronize the host and database/VM clocks
+before continuing. Creation and audit entries can use database time while
+updates and action runs use API time; clock drift can make an update appear
+earlier than creation. The doctor only checks time and never rewrites historical
+timestamps. Recheck after suspending or resuming a local VM.
 
 Then run the public connector smoke test:
 
@@ -378,6 +386,8 @@ headless after setup, not a UI-free product.
 
 ### AI client compatibility
 
+For a copyable CRM workflow, see the [CRM AI assistant guide](crm-ai-assistants.md).
+
 Deft exposes a streamable HTTP MCP endpoint at:
 
 ```text
@@ -404,10 +414,11 @@ token in Settings -> MCP Access and use it as a bearer token.
 | Generic MCP runtime | Compatible when it supports streamable HTTP plus OAuth or bearer headers. | Point the runtime at `/api/mcp/v1` and grant only the scopes needed for that workflow. |
 
 Start pilots with read-only scopes (`read:workspace`, `read:wiki`,
-`read:tasks`, `read:messages`, `read:calendar`). Add write scopes only when the
+`read:tasks`, `read:messages`, `read:calendar`, `read:modules`). Add write scopes only when the
 user expects that AI client to create or update Deft records under their own
 identity. The write scopes are `write:tasks`, `write:messages`, `write:wiki`,
-`write:calendar`, and `write:workspace`. The broad workspace scope covers notes,
+`write:calendar`, `write:workspace`, and `write:modules`. App workflows additionally
+use `read:apps`, `invoke:apps`, and `read:app-runs`. The broad workspace scope covers notes,
 inbox state, approvals, projects, saved views, and owner/admin-only agent state;
 it does not expose secrets or member administration.
 

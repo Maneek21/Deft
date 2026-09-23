@@ -457,6 +457,20 @@ export function getActionCompilerToolsForPrompt(promptContent: string, allowedAc
   return tools;
 }
 
+function hasExplicitOutcomeLabelForEveryTask(plain: string, taskCount: number): boolean {
+  const ordinalLabels = new Set<string>();
+  const ordinalAliases: Record<string, string> = {
+    first: '1', second: '2', third: '3', fourth: '4', fifth: '5',
+    sixth: '6', seventh: '7', eighth: '8', ninth: '9', tenth: '10',
+  };
+  const labelPattern = /\b(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+(?:task|todo|ticket)\s+(?:title\s*:|outcome\s+is\s*:)\s*(?=(?:["'‘“]\s*)?[\p{L}\p{N}])/giu;
+  for (const match of plain.matchAll(labelPattern)) {
+    const ordinal = match[1]!.toLowerCase();
+    ordinalLabels.add(ordinalAliases[ordinal] ?? ordinal.replace(/(?:st|nd|rd|th)$/i, ''));
+  }
+  return ordinalLabels.size >= taskCount;
+}
+
 export function validateCompiledIntentAlignment(
   promptContent: string,
   actions: ProposedAgentAction[],
@@ -489,7 +503,8 @@ export function validateCompiledIntentAlignment(
   if (taskActions.length > 0) {
     const suppliedOutcome = /\b(?:titled|called|named|name\s+(?:it|this))\b/i.test(plain)
       || /\b(?:task|todo|ticket)\s+(?:to|for|about)\s+\S/i.test(plain)
-      || /\b(?:need|needs|should|must)\s+to\s+\S/i.test(plain);
+      || /\b(?:need|needs|should|must)\s+to\s+\S/i.test(plain)
+      || hasExplicitOutcomeLabelForEveryTask(plain, taskActions.length);
     if (!suppliedOutcome) {
       return {
         blocked: true,

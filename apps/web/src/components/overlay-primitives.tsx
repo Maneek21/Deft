@@ -89,7 +89,12 @@ function useReturnFocus(open: boolean, anchorRef?: RefObject<HTMLElement | null>
     }
     if (!lastOpen.current) return;
     lastOpen.current = false;
-    requestAnimationFrame(() => anchorRef?.current?.focus?.());
+    requestAnimationFrame(() => {
+      // A menu can open a modal while closing. Its return-focus callback must
+      // not move focus back out of that newly opened dialog.
+      if (document.activeElement?.closest('[aria-modal="true"]')) return;
+      anchorRef?.current?.focus?.();
+    });
   }, [anchorRef, open]);
 }
 
@@ -143,6 +148,7 @@ export function AppDialog({
   width = 420,
   danger = false,
   initialFocusRef,
+  returnFocusRef,
 }: {
   open?: boolean;
   onClose: () => void;
@@ -153,6 +159,7 @@ export function AppDialog({
   width?: number;
   danger?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const mounted = useMounted();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -163,15 +170,26 @@ export function AppDialog({
   useOverlayDismiss({ open, onClose, refs: [panelRef], closeOnOutside: false });
 
   useEffect(() => {
-    if (!open) return;
-    requestAnimationFrame(() => {
+    if (!mounted || !open) return;
+    const opener = returnFocusRef?.current
+      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const panel = panelRef.current;
+    const focusFrame = requestAnimationFrame(() => {
       if (initialFocusRef?.current) {
         initialFocusRef.current.focus();
         return;
       }
       getFocusable(panelRef.current)[0]?.focus();
     });
-  }, [initialFocusRef, open]);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      // Closing or unmounting removes the focused dialog control. Restore the
+      // opener, but leave an intentional focus change elsewhere alone.
+      if (opener?.isConnected && (document.activeElement === document.body || panel?.contains(document.activeElement))) {
+        opener.focus();
+      }
+    };
+  }, [initialFocusRef, mounted, open, returnFocusRef]);
 
   if (!mounted || !open) return null;
 

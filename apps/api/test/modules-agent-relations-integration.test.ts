@@ -10,7 +10,7 @@ import {
 } from '@deft/shared/modules';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { closeDb } from '../src/lib/db.js';
-import { issueEmployeeToken, issuePersonalMcpToken } from '../src/lib/mcp-token.js';
+import { issuePersonalMcpToken, issueScopedEmployeeMcpToken } from '../src/lib/mcp-token.js';
 import {
   createModuleRecord,
   humanModuleActor,
@@ -271,7 +271,11 @@ test('generic relation writes share governed MCP/Defty/REST record semantics', {
       'invalid relation must roll back the record field insert atomically',
     );
 
-    const employeeToken = await issueEmployeeToken(orgId, employeeId);
+    const employeeToken = (await issueScopedEmployeeMcpToken({
+      orgId,
+      employeeId,
+      resourceScopes: ['write:modules'],
+    })).raw;
     const personalToken = (await issuePersonalMcpToken({
       orgId,
       userId: ownerId,

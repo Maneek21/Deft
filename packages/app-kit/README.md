@@ -6,10 +6,33 @@ validators, requested-authority projection helpers, developer-host
 compatibility helpers, frozen sandbox-email conformance vectors, and a
 non-executable bounded-automation simulator.
 
-Parsing or building an App proves package structure and artifact integrity only.
-Installation, authorization, effective grants, tenant isolation, dependency and
-connector selection, activation, execution, and full Module validation remain
-host responsibilities.
+Parsing or building an App proves package structure, artifact integrity, and
+static Module validity using the same pure semantic validator as the host.
+Installation compatibility, required setup, authorization, effective grants,
+tenant isolation, dependency and connector selection, activation, and execution
+remain host responsibilities.
+
+## Module validation
+
+`validateDeftModuleManifest` returns every static validation issue with the
+artifact path, field path, reason, and an actionable correction. The throwing
+`assertValidDeftModuleManifest` variant is also exported. `prepareModuleArtifact`,
+App builds, and package verification run this validation automatically.
+
+```ts
+import { validateDeftModuleManifest } from '@deft/app-kit';
+
+const result = validateDeftModuleManifest(moduleManifest, {
+  artifactPath: 'modules/equipment/deft.module.json',
+});
+if (!result.success) console.error(result.issues);
+```
+
+The published package contains a build-time copy of the authoritative pure
+contract from `@deft/shared`; it has no runtime workspace link or private host
+import. Static validity does not imply that a particular host supports the App,
+that required dependencies are installed, or that a caller has permission to
+install or operate it.
 
 ## Install the packed kit
 
@@ -26,10 +49,45 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.2.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.3.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
+
+This checkout contains the unreleased `0.1.0-alpha.3` contract. Use its exact
+packed artifact with a host advertising that version; published preview.15
+uses `0.1.0-alpha.2`. A version identifies a released contract: do not distribute
+changed contracts under an existing version. Preserve the supplied artifact and
+the consumer lockfile for reproducible installs instead of repacking a different
+checkout under the same package version.
+
+## Host presentation and access
+
+App navigation may select a declared collection and a `view_key` belonging to
+that collection. Deft owns the renderer and adds a **Linked tasks** workspace
+for native tasks linked to Module records. This host-provided navigation is
+available alongside authored navigation; it adds no CRM collection, task
+permission or automatic task creation. The older `workspace=follow-ups` URL
+remains a compatible link to this workspace.
+
+Module icons are bounded tokens, not URLs or markup. This host recognizes
+`book`, `briefcase`, `calendar`, `contact`, `contacts`, `database`, `folder`,
+`package`, `table`, `users`, and `boxes`. Other valid tokens intentionally use
+the generic boxes icon, allowing packages to remain compatible with hosts that
+do not recognize a token. Authors should use a listed token for predictable
+presentation on this host.
+
+Module records currently use workspace-level access. A member field named
+`owner` is ordinary business data and does not create record or field ACLs.
+Personal MCP connections act with their user's access and explicit scopes;
+the Module's `agent_access` policy controls Defty and agent employees. Linked
+native tasks retain their own visibility rules.
+
+Connected Apps currently request the closed `sandbox_email_send` interface.
+Operators select a compatible provider and grant authority in Deft. An author
+cannot introduce a new executable interface merely by naming an MCP tool.
+Supporting another capability requires a host contract implementation and
+conformance checks. Sandbox acceptance does not establish message delivery.
 
 ## Authoring loop
 

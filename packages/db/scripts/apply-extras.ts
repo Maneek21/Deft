@@ -162,6 +162,8 @@ async function main() {
       'module_record_relations_org_installation_fk',
       'module_record_relations_source_record_fk',
       'module_record_relations_target_record_fk',
+      'module_record_merges_source_fk',
+      'module_record_merges_target_fk',
       'module_saved_views_org_installation_fk',
       'module_saved_views_owner_member_fk',
       'app_installations_active_version_fk',

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import {
   buildDeftAppPackage,
+  digestAppManifest,
   prepareModuleArtifact,
 } from '@deft/app-kit';
 import { inspectAppPackageJson } from '../src/lib/app-service.js';
@@ -70,6 +71,7 @@ test('API inspection uses the public package contract and grants zero permission
   assert.equal(inspected.package_digest, built.digest);
   assert.deepEqual(inspected.permissions, []);
   assert.equal(inspected.manifest.navigation[0]?.collection_key, 'greetings');
+  assert.equal(inspected.manifest.navigation[0]?.view_key, 'all');
 });
 
 test('API inspection accepts public App Kit artifacts with omitted Module defaults', async () => {
@@ -82,6 +84,18 @@ test('API inspection rejects navigation that is not backed by an included Module
   const built = await helloPackage();
   const value = JSON.parse(built.json) as any;
   value.manifest.navigation[0].collection_key = 'missing';
+  value.manifest_digest = await digestAppManifest(value.manifest);
+  await assert.rejects(
+    () => inspectAppPackageJson(JSON.stringify(value)),
+    (error: unknown) => error instanceof AppError && error.code === 'APP_INVALID_PACKAGE',
+  );
+});
+
+test('API inspection rejects navigation that names an undeclared collection view', async () => {
+  const built = await helloPackage();
+  const value = JSON.parse(built.json) as any;
+  value.manifest.navigation[0].view_key = 'missing';
+  value.manifest_digest = await digestAppManifest(value.manifest);
   await assert.rejects(
     () => inspectAppPackageJson(JSON.stringify(value)),
     (error: unknown) => error instanceof AppError && error.code === 'APP_INVALID_PACKAGE',

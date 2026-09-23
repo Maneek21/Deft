@@ -637,6 +637,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     return (VALID_TABS as readonly string[]).includes(hash) ? hash : 'description';
   })();
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+  const activeTabRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeTab, loading]);
   const handleTabChange = useCallback((tab: TabKey) => {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
@@ -1204,6 +1208,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           .map((s) => ({ value: s.id, label: s.label, color: s.color }))
       : STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label, color: STATUS_COLORS[s.value] ?? 'var(--muted)' }));
   const currentStatusOption = resolvedStatusOptions.find((s) => s.value === task.status);
+  const selectableStatusOptions = resolvedStatusOptions.filter((option) =>
+    option.value === task.status || !resolvedConfig?.allowed_transitions
+    || (resolvedConfig.allowed_transitions[task.status] ?? []).includes(option.value));
   const assignedAgent = task.assignee_id
     ? agentEmployees.find((employee) => employee.user_id === task.assignee_id)
     : null;
@@ -1235,6 +1242,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             {isMobile && (
               <button
                 onClick={onClose}
+                aria-label="Back to tasks"
                 className="p-1 rounded-md mr-1"
                 style={{ color: 'var(--muted)' }}
               >
@@ -1267,6 +1275,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             <div className="relative">
               <button
                 onClick={() => setDetailMenuOpen(!detailMenuOpen)}
+                aria-label="Task options"
+                aria-expanded={detailMenuOpen}
                 className="p-1.5 rounded-md"
                 style={{ color: 'var(--muted)', transition: 'color 150ms' }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--foreground)')}
@@ -1304,6 +1314,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             </div>
             <button
               onClick={onClose}
+              aria-label="Close task"
               className="p-1.5 rounded-md"
               style={{ color: 'var(--muted)', transition: 'color 150ms' }}
               onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--foreground)')}
@@ -1389,7 +1400,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   className="absolute top-full left-0 mt-1 w-44 rounded-lg py-1 z-20"
                   style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
                 >
-                  {resolvedStatusOptions.map((opt) => (
+                  {selectableStatusOptions.map((opt) => (
                     <button
                       key={opt.value}
                       onClick={() => handleFieldUpdate('status', opt.value)}
@@ -1962,6 +1973,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             ] as { key: TabKey; label: string; badge?: number }[]).map((t) => (
               <button
                 key={t.key}
+                ref={activeTab === t.key ? activeTabRef : undefined}
+                aria-pressed={activeTab === t.key}
                 onClick={() => handleTabChange(t.key)}
                 className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium whitespace-nowrap"
                 style={{

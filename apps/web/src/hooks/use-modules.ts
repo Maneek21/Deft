@@ -3,8 +3,18 @@
 import { useEffect, useMemo } from 'react';
 import useSWR, { mutate as mutateSWR } from 'swr';
 import useSWRInfinite from 'swr/infinite';
+import { ModuleRelatedLatestResponseSchema } from '@deft/shared/modules';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { useAuth } from '@/lib/auth-context';
+import {
+  getActiveSessionCacheScope,
+  isActiveSessionCacheKey,
+  sessionSWRKey,
+  sessionSWRPath,
+} from '@/lib/session-cache';
+import { moduleSessionRequestPath } from '@/lib/module-session-cache';
+import { subscribeModulePageResume } from '@/lib/module-page-resume';
 import {
   normalizeBundledModulesResponse,
   normalizeInstalledModulesResponse,
@@ -30,6 +40,7 @@ import {
 } from '@/lib/module-saved-views';
 
 async function fetchModuleJson(path: string): Promise<unknown> {
+  path = sessionSWRPath(path);
   const response = await api.get(path);
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { error?: unknown };
@@ -39,7 +50,8 @@ async function fetchModuleJson(path: string): Promise<unknown> {
 }
 
 export function useInstalledModules(enabled = true) {
-  const swr = useSWR<unknown>(enabled ? '/api/modules' : null, fetchModuleJson, {
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, enabled ? '/api/modules' : null), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -54,7 +66,8 @@ export function useInstalledModules(enabled = true) {
 }
 
 export function useBundledModules() {
-  const swr = useSWR<unknown>('/api/modules/bundled', fetchModuleJson, {
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, '/api/modules/bundled'), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -63,8 +76,9 @@ export function useBundledModules() {
 }
 
 export function useModule(slug: string) {
+  const { sessionCacheScope } = useAuth();
   const key = slug ? `/api/modules/${encodeURIComponent(slug)}` : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -83,6 +97,7 @@ export function useModule(slug: string) {
 }
 
 export type ModuleRecordQueryOptions = {
+  today?: string;
   search?: string;
   filters?: ModuleQueryFilter[];
   sort?: ModuleQuerySort;
@@ -91,6 +106,7 @@ export type ModuleRecordQueryOptions = {
 const MODULE_QUERY_KEY_SEPARATOR = '::module-query::';
 
 async function fetchModuleQuery(key: string): Promise<unknown> {
+  key = sessionSWRPath(key);
   const separator = key.indexOf(MODULE_QUERY_KEY_SEPARATOR);
   if (separator < 0) throw new Error('Invalid module query cache key.');
   const path = key.slice(0, separator);
@@ -108,9 +124,11 @@ export function useModuleRecords(
   collectionKey: string,
   query?: ModuleRecordQueryOptions,
 ) {
+  const { sessionCacheScope } = useAuth();
   const queryJson = query === undefined ? null : JSON.stringify({
     ...(query.search?.trim() ? { search: query.search.trim() } : {}),
     filters: query.filters ?? [],
+    ...(query.today ? { today: query.today } : {}),
     ...(query.sort ? { sort: query.sort } : {}),
   });
   const getKey = (pageIndex: number, previous: unknown) => {
@@ -125,18 +143,27 @@ export function useModuleRecords(
         ...(previousPage?.nextCursor ? { cursor: previousPage.nextCursor } : {}),
       };
       const path = `/api/modules/${encodeURIComponent(slug)}/records/query`;
-      return `${path}${MODULE_QUERY_KEY_SEPARATOR}${encodeURIComponent(JSON.stringify(input))}`;
+      return sessionSWRKey(sessionCacheScope, `${path}${MODULE_QUERY_KEY_SEPARATOR}${encodeURIComponent(JSON.stringify(input))}`);
     }
     if (pageIndex > 0) {
-      return `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50&cursor=${encodeURIComponent(previousPage!.nextCursor!)}`;
+      return sessionSWRKey(sessionCacheScope, `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50&cursor=${encodeURIComponent(previousPage!.nextCursor!)}`);
     }
-    return `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50`;
+    return sessionSWRKey(sessionCacheScope, `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50`);
   };
   const swr = useSWRInfinite<unknown>(getKey, queryJson === null ? fetchModuleJson : fetchModuleQuery, {
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
-    revalidateFirstPage: true,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    revalidateOnMount: true,
+    revalidateFirstPage: false,
   });
+  useEffect(
+    () => subscribeModulePageResume(sessionCacheScope, () => swr.mutate(), window, document),
+    [sessionCacheScope, swr.mutate],
+  );
+  useEffect(
+    () => registerModuleInfiniteCacheRevalidator(sessionCacheScope, slug, () => swr.mutate()),
+    [sessionCacheScope, slug, swr.mutate],
+  );
   const pages = useMemo(() => (swr.data ?? []).map(normalizeModuleRecordPage), [swr.data]);
   const records = useMemo<ModuleRecord[]>(() => {
     const seen = new Set<string>();
@@ -157,10 +184,11 @@ export function useModuleRecords(
 }
 
 export function useModuleSavedViews(slug: string, collectionKey: string, enabled = true) {
+  const { sessionCacheScope } = useAuth();
   const key = slug && collectionKey && enabled
     ? `/api/modules/${encodeURIComponent(slug)}/saved-views?collection_key=${encodeURIComponent(collectionKey)}`
     : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -171,11 +199,38 @@ export function useModuleSavedViews(slug: string, collectionKey: string, enabled
   return { ...swr, views };
 }
 
+export function useIncomingModuleRecords(slug: string, recordId: string, collectionKey: string, fieldKey: string, dateField?: string) {
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWRInfinite<unknown>((pageIndex, previous) => {
+    if (!slug || !recordId) return null;
+    const cursor = pageIndex > 0 ? normalizeModuleRecordPage(previous).nextCursor : null;
+    if (pageIndex > 0 && !cursor) return null;
+    const query = new URLSearchParams({ collection_key: collectionKey, field_key: fieldKey, limit: '10' });
+    if (dateField) query.set('date_field', dateField);
+    if (cursor) query.set('cursor', cursor);
+    return sessionSWRKey(sessionCacheScope, `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/incoming-relations?${query}`);
+  }, fetchModuleJson, { revalidateOnFocus: true, revalidateOnReconnect: true });
+  useEffect(
+    () => registerModuleInfiniteCacheRevalidator(sessionCacheScope, slug, () => swr.mutate()),
+    [sessionCacheScope, slug, swr.mutate],
+  );
+  const pages = (swr.data ?? []).map(normalizeModuleRecordPage);
+  const records = [...new Map(pages.flatMap((page) => page.records).map((record) => [record.id, record])).values()];
+  return {
+    ...swr,
+    records,
+    nextCursor: pages.at(-1)?.nextCursor ?? null,
+    loadMore: () => swr.setSize((size) => size + 1),
+    isLoadingMore: swr.isValidating && (swr.data?.length ?? 0) < swr.size,
+  };
+}
+
 export function useModuleRecord(slug: string, collectionKey: string, recordId: string) {
+  const { sessionCacheScope } = useAuth();
   const key = slug && collectionKey && recordId
     ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}?collection_key=${encodeURIComponent(collectionKey)}`
     : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -184,10 +239,11 @@ export function useModuleRecord(slug: string, collectionKey: string, recordId: s
 }
 
 export function useModuleRelations(slug: string, recordId: string, enabled = true) {
+  const { sessionCacheScope } = useAuth();
   const key = slug && recordId && enabled
     ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/relations`
     : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -201,10 +257,11 @@ export function useResourceRelation(
   fieldKey: string,
   enabled = true,
 ) {
+  const { sessionCacheScope } = useAuth();
   const key = slug && recordId && fieldKey && enabled
     ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/resource-relations/${encodeURIComponent(fieldKey)}`
     : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -222,11 +279,12 @@ export function useResourceRelationOptions(
   query: string,
   enabled = true,
 ) {
+  const { sessionCacheScope } = useAuth();
   const suffix = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
   const key = slug && recordId && fieldKey && enabled
     ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/resource-relations/${encodeURIComponent(fieldKey)}/options${suffix}`
     : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: false,
     revalidateOnReconnect: true,
   });
@@ -238,10 +296,11 @@ export function useResourceRelationOptions(
 }
 
 export function useModuleRecordActivity(recordId: string, enabled = true) {
+  const { sessionCacheScope } = useAuth();
   const key = recordId && enabled
     ? `/api/audit?entity_type=module_record&entity_id=${encodeURIComponent(recordId)}&limit=30`
     : null;
-  const swr = useSWR<unknown>(key, fetchModuleJson, {
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, key), fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -250,7 +309,8 @@ export function useModuleRecordActivity(recordId: string, enabled = true) {
 }
 
 export function useModuleMembers(enabled = true) {
-  const swr = useSWR<unknown>(enabled ? '/api/members' : null, fetchModuleJson, {
+  const { sessionCacheScope } = useAuth();
+  const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, enabled ? '/api/members' : null), fetchModuleJson, {
     revalidateOnFocus: false,
     revalidateOnReconnect: true,
   });
@@ -258,9 +318,29 @@ export function useModuleMembers(enabled = true) {
   return { ...swr, members };
 }
 
-function isModuleCacheKey(key: unknown, slug?: string): boolean {
-  if (typeof key !== 'string') return false;
-  const normalizedKey = key.startsWith('$inf$') ? key.slice('$inf$'.length) : key;
+export function moduleRelatedLatestCacheKey(
+  sessionCacheScope: string | null,
+  slug: string,
+  recordId: string,
+): string | null {
+  const path = slug && recordId
+    ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/latest-related`
+    : null;
+  return sessionSWRKey(sessionCacheScope, path);
+}
+
+export function useModuleRelatedLatest(slug: string, recordId: string) {
+  const { sessionCacheScope } = useAuth();
+  return useSWR(moduleRelatedLatestCacheKey(sessionCacheScope, slug, recordId), async (key) => {
+    const response = await api.get(sessionSWRPath(key));
+    if (!response.ok) throw new Error('Unable to load related summaries.');
+    return ModuleRelatedLatestResponseSchema.parse(await response.json());
+  }, { refreshInterval: 30000, revalidateOnFocus: true, revalidateOnReconnect: true });
+}
+
+export function isModuleCacheKey(key: unknown, slug?: string): boolean {
+  if (!isActiveSessionCacheKey(key) || typeof key !== 'string') return false;
+  const normalizedKey = moduleSessionRequestPath(key);
   if (!normalizedKey.startsWith('/api/modules')) return false;
   if (!slug) return true;
   return normalizedKey === '/api/modules'
@@ -268,15 +348,73 @@ function isModuleCacheKey(key: unknown, slug?: string): boolean {
     || normalizedKey.startsWith(`/api/modules/${encodeURIComponent(slug)}`);
 }
 
+export function isModuleTaskCacheKey(key: unknown, slug?: string): boolean {
+  return isModuleCacheKey(key, slug) && typeof key === 'string'
+    && /\/(?:task-queue|records\/next-tasks)(?:\?|$)|\/records\/[^/?]+\/tasks(?:\?|$)/u.test(moduleSessionRequestPath(key));
+}
+
+type ModuleInfiniteCacheRevalidator = Readonly<{
+  sessionCacheScope: string;
+  slug: string;
+  taskCache: boolean;
+  revalidate: () => Promise<unknown>;
+}>;
+
+const moduleInfiniteCacheRevalidators = new Set<ModuleInfiniteCacheRevalidator>();
+
+export function registerModuleInfiniteCacheRevalidator(
+  sessionCacheScope: string | null,
+  slug: string,
+  revalidate: () => Promise<unknown>,
+  options: { taskCache?: boolean } = {},
+): () => void {
+  if (!sessionCacheScope || !slug) return () => undefined;
+  const entry = { sessionCacheScope, slug, taskCache: options.taskCache === true, revalidate };
+  moduleInfiniteCacheRevalidators.add(entry);
+  return () => moduleInfiniteCacheRevalidators.delete(entry);
+}
+
+function refreshModuleInfiniteCaches(slug?: string, taskCachesOnly = false): Promise<unknown[]> {
+  const sessionCacheScope = getActiveSessionCacheScope();
+  if (!sessionCacheScope) return Promise.resolve([]);
+  return Promise.all([...moduleInfiniteCacheRevalidators]
+    .filter((entry) => entry.sessionCacheScope === sessionCacheScope
+      && (!slug || entry.slug === slug)
+      && (!taskCachesOnly || entry.taskCache))
+    .map((entry) => entry.revalidate()));
+}
+
+export function invalidateModuleTaskRealtimeCaches(
+  sessionCacheScope: string,
+  slug?: string,
+): Promise<unknown> {
+  if (getActiveSessionCacheScope() !== sessionCacheScope) return Promise.resolve();
+  return Promise.all([
+    mutateSWR((key) => isModuleTaskCacheKey(key, slug)),
+    refreshModuleInfiniteCaches(slug, true),
+  ]);
+}
+
+export function invalidateModuleRealtimeCaches(
+  sessionCacheScope: string,
+  slug: string | undefined,
+  event?: { slug?: string; module_slug?: string },
+): Promise<unknown> {
+  if (getActiveSessionCacheScope() !== sessionCacheScope) return Promise.resolve();
+  const eventSlug = event?.slug ?? event?.module_slug;
+  if (slug && eventSlug && eventSlug !== slug) return Promise.resolve();
+  return refreshModuleCaches(slug);
+}
+
 export function useModuleRealtime(slug?: string) {
+  const { sessionCacheScope } = useAuth();
   useEffect(() => {
+    if (!sessionCacheScope || getActiveSessionCacheScope() !== sessionCacheScope) return;
     const token = window.localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
     const invalidate = (event?: { slug?: string; module_slug?: string }) => {
-      const eventSlug = event?.slug ?? event?.module_slug;
-      if (slug && eventSlug && eventSlug !== slug) return;
-      void mutateSWR((key) => isModuleCacheKey(key, slug));
+      void invalidateModuleRealtimeCaches(sessionCacheScope, slug, event);
     };
     const events = [
       'module:changed',
@@ -288,13 +426,22 @@ export function useModuleRealtime(slug?: string) {
       'module:record_updated',
       'module:record_deleted',
     ] as const;
+    const invalidateTasks = () => {
+      void invalidateModuleTaskRealtimeCaches(sessionCacheScope, slug);
+    };
+    const taskEvents = ['task:created', 'task:updated', 'task:bulk_updated', 'task:deleted'] as const;
+    taskEvents.forEach((event) => socket.on(event, invalidateTasks));
     events.forEach((event) => socket.on(event, invalidate));
     return () => {
       events.forEach((event) => socket.off(event, invalidate));
+      taskEvents.forEach((event) => socket.off(event, invalidateTasks));
     };
-  }, [slug]);
+  }, [sessionCacheScope, slug]);
 }
 
 export function refreshModuleCaches(slug?: string) {
-  return mutateSWR((key) => isModuleCacheKey(key, slug));
+  return Promise.all([
+    mutateSWR((key) => isModuleCacheKey(key, slug)),
+    refreshModuleInfiniteCaches(slug),
+  ]);
 }

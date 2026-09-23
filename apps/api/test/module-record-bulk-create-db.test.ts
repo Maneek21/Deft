@@ -12,19 +12,10 @@ import {
   installBundledModule,
   updateModuleInstallation,
 } from '../src/lib/module-service.js';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-
-function isSafeTestDatabase(value: string | undefined): value is string {
-  if (!value) return false;
-  try {
-    return /(?:test|ci|acceptance)/i.test(new URL(value).pathname);
-  } catch {
-    return false;
-  }
-}
-
-const canRun = isSafeTestDatabase(TEST_DATABASE_URL);
+const TEST_DATABASE_URL = safeTestDatabaseUrl();
+const canRun = Boolean(TEST_DATABASE_URL);
 const ciRequiresDatabase = /^(?:1|true)$/i.test(process.env.CI ?? '');
 
 after(async () => {

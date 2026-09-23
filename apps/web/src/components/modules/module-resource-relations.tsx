@@ -122,8 +122,8 @@ function ResourceReferenceField({
     <div className="p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[0.6875rem] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--outline)' }}>{field.label}</h3>
-          <p className="mt-0.5 truncate text-[0.625rem]" style={{ color: 'var(--outline)' }}>
+          <h3 className="text-[0.6875rem] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--on-surface-variant)' }}>{field.label}</h3>
+          <p className="mt-0.5 truncate text-[0.625rem]" style={{ color: 'var(--on-surface-variant)' }}>
             {field.multiple ? 'Multiple' : 'One'} · {humanizeIdentifier(field.targetResourceType ?? '')}
           </p>
         </div>
@@ -144,7 +144,7 @@ function ResourceReferenceField({
       </div>
 
       {relationState.isLoading ? (
-        <div className="mt-3 flex items-center gap-2 text-[0.75rem]" style={{ color: 'var(--outline)' }}>
+        <div className="mt-3 flex items-center gap-2 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
           <Loader2 size={14} className="animate-spin" /> Loading resources…
         </div>
       ) : relationState.error ? (
@@ -166,20 +166,20 @@ function ResourceReferenceField({
               <div
                 key={resourceRefKey(item.ref)}
                 className="flex min-h-10 items-center rounded-lg px-2.5 text-[0.75rem]"
-                style={{ background: 'var(--surface-container)', color: 'var(--outline)' }}
+                style={{ background: 'var(--surface-container)', color: 'var(--on-surface-variant)' }}
               >
                 Unavailable resource
               </div>
             ))}
           </div>
-        ) : <p className="mt-3 text-[0.75rem]" style={{ color: 'var(--outline)' }}>No connected resources.</p>
+        ) : <p className="mt-3 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>No connected resources.</p>
       ) : (
         <div className="mt-3">
           {selectedUnavailable.length > 0 && (
             <div className="mb-2 space-y-1 rounded-lg p-2" style={{ background: 'var(--surface-container)' }}>
               {selectedUnavailable.map((item) => (
                 <div key={resourceRefKey(item.ref)} className="flex min-h-9 items-center gap-2 px-1">
-                  <span className="min-w-0 flex-1 truncate text-[0.6875rem]" style={{ color: 'var(--outline)' }}>
+                  <span className="min-w-0 flex-1 truncate text-[0.6875rem]" style={{ color: 'var(--on-surface-variant)' }}>
                     Unavailable resource
                   </span>
                   <button
@@ -207,13 +207,13 @@ function ResourceReferenceField({
           </label>
           <div className="mt-2 max-h-56 space-y-1 overflow-y-auto rounded-lg p-1" style={{ background: 'var(--surface-container)' }}>
             {optionsState.isLoading ? (
-              <div className="flex min-h-20 items-center justify-center gap-2 text-[0.75rem]" style={{ color: 'var(--outline)' }}>
+              <div className="flex min-h-20 items-center justify-center gap-2 text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>
                 <Loader2 size={14} className="animate-spin" /> Loading options…
               </div>
             ) : optionsState.error ? (
               <p className="px-3 py-4 text-center text-[0.75rem]" style={{ color: 'var(--error)' }}>Options could not be loaded.</p>
             ) : optionsState.options.length === 0 ? (
-              <p className="px-3 py-4 text-center text-[0.75rem]" style={{ color: 'var(--outline)' }}>No resources available.</p>
+              <p className="px-3 py-4 text-center text-[0.75rem]" style={{ color: 'var(--on-surface-variant)' }}>No resources available.</p>
             ) : optionsState.options.map((option) => {
               const checked = selected.some((candidate) => resourceRefKey(candidate) === resourceRefKey(option.ref));
               return (

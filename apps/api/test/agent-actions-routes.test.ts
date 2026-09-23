@@ -13,9 +13,10 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { Hono } from 'hono';
+import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
+const DATABASE_URL = safeTestDatabaseUrl();
+if (!DATABASE_URL) throw new Error('Agent action route tests require a safe test database');
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 
 const EMP_ID = 'test-actions-routes-emp';
@@ -1168,6 +1169,316 @@ test('approval confirmation is authored by the proposing agent, not the human re
     assert.equal(confirmation.rows[0].user_id, SHADOW_USER_ID);
     assert.equal(confirmation.rows[0].requested_by_user_id, APPROVER_USER_ID);
   });
+});
+
+test('the final rejected decision posts one settled-group confirmation', async () => {
+  const insertGroup = (label: string, action = 'task_create') => withClient(async (c) => {
+    const message = await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, '{}'::jsonb)
+       RETURNING id`,
+      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID, `Please review ${label}.`],
+    );
+    const actions = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, conversation_id, message_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES
+        (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'mention', $6, $7::jsonb, 'quick', 'pending'),
+        (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'mention', $6, $8::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        EMP_ID,
+        VISIBLE_SPACE_ID,
+        message.rows[0].id,
+        action,
+        JSON.stringify({
+          title: `${label} first`, project_id: TEST_PROJECT_ID,
+          resolved_project_id: TEST_PROJECT_ID, project_name: 'Actions Routes Test Project', priority: 'p2',
+        }),
+        JSON.stringify({
+          title: `${label} second`, project_id: TEST_PROJECT_ID,
+          resolved_project_id: TEST_PROJECT_ID, project_name: 'Actions Routes Test Project', priority: 'p2',
+        }),
+      ],
+    );
+    return {
+      messageId: message.rows[0].id as string,
+      actionIds: actions.rows.map((row) => row.id as string),
+    };
+  });
+  const confirmationFor = (messageId: string) => withClient(async (c) => c.query(
+    `SELECT content, user_id, metadata
+       FROM messages
+      WHERE org_id = $1
+        AND metadata->>'approval_confirmation_for_message_id' = $2`,
+    [ORG_ID, messageId],
+  ));
+
+  const rejected = await insertGroup(`all-rejected-${Date.now()}`);
+  assert.equal((await app().request(`/api/agent/actions/${rejected.actionIds[0]}/reject`, {
+    method: 'POST', body: JSON.stringify({ reason: 'skip first' }),
+  })).status, 200);
+  assert.equal((await confirmationFor(rejected.messageId)).rowCount, 0);
+  assert.equal((await app().request(`/api/agent/actions/${rejected.actionIds[1]}/reject`, {
+    method: 'POST', body: JSON.stringify({ reason: 'skip second' }),
+  })).status, 200);
+  const rejectedConfirmation = await confirmationFor(rejected.messageId);
+  assert.equal(rejectedConfirmation.rowCount, 1);
+  assert.match(rejectedConfirmation.rows[0].content, /rejected 2 proposed actions/i);
+  assert.equal(rejectedConfirmation.rows[0].user_id, SHADOW_USER_ID);
+  assert.deepEqual(
+    [...rejectedConfirmation.rows[0].metadata.rejected_action_ids].sort(),
+    [...rejected.actionIds].sort(),
+  );
+
+  const legacyRejected = await insertGroup(`legacy-all-rejected-${Date.now()}`, 'create_task');
+  for (const actionId of legacyRejected.actionIds) {
+    assert.equal((await app().request(`/api/agent/actions/${actionId}/reject`, {
+      method: 'POST', body: JSON.stringify({ reason: 'skip legacy action' }),
+    })).status, 200);
+  }
+  const legacyConfirmation = await confirmationFor(legacyRejected.messageId);
+  assert.equal(legacyConfirmation.rowCount, 1);
+  assert.match(legacyConfirmation.rows[0].content, /rejected 2 proposed actions/i);
+  assert.deepEqual(
+    [...legacyConfirmation.rows[0].metadata.rejected_action_ids].sort(),
+    [...legacyRejected.actionIds].sort(),
+  );
+
+  const concurrent = await insertGroup(`concurrent-all-rejected-${Date.now()}`);
+  const concurrentResponses = await Promise.all(concurrent.actionIds.map((actionId) => app().request(
+    `/api/agent/actions/${actionId}/reject`,
+    { method: 'POST', body: JSON.stringify({ reason: 'concurrent rejection' }) },
+  )));
+  assert.deepEqual(concurrentResponses.map((response) => response.status), [200, 200]);
+  assert.equal(
+    (await confirmationFor(concurrent.messageId)).rowCount,
+    1,
+    'concurrent final decisions must converge on one group confirmation',
+  );
+
+  const mixedLabel = `mixed-${Date.now()}`;
+  const mixed = await insertGroup(mixedLabel);
+  assert.equal((await app().request(`/api/agent/actions/${mixed.actionIds[0]}/approve`, {
+    method: 'POST', body: JSON.stringify({}),
+  })).status, 200);
+  assert.equal((await confirmationFor(mixed.messageId)).rowCount, 0);
+  assert.equal((await app().request(`/api/agent/actions/${mixed.actionIds[1]}/reject`, {
+    method: 'POST', body: JSON.stringify({ reason: 'skip second' }),
+  })).status, 200);
+  const mixedConfirmation = await confirmationFor(mixed.messageId);
+  assert.equal(mixedConfirmation.rowCount, 1);
+  assert.match(mixedConfirmation.rows[0].content, /Created /);
+  assert.match(mixedConfirmation.rows[0].content, /rejected 1 proposed action/i);
+  assert.match(mixedConfirmation.rows[0].content, new RegExp(`${mixedLabel} second`));
+  assert.deepEqual(
+    mixedConfirmation.rows[0].metadata.confirmed_action_ids,
+    [mixed.actionIds[0]],
+  );
+  assert.deepEqual(
+    mixedConfirmation.rows[0].metadata.rejected_action_ids,
+    [mixed.actionIds[1]],
+  );
+  assert.equal((await app().request(`/api/agent/actions/${mixed.actionIds[1]}/reject`, {
+    method: 'POST', body: JSON.stringify({ reason: 'repeat rejection' }),
+  })).status, 200);
+  const mixedRejectionContext = await withClient(async (c) => c.query<{
+    user_id: string;
+    metadata: Record<string, any>;
+  }>(
+    `SELECT user_id, metadata
+       FROM messages
+      WHERE org_id = $1
+        AND space_id = $2
+        AND metadata->>'approval_rejection_result_for_action_id' = $3`,
+    [ORG_ID, VISIBLE_SPACE_ID, mixed.actionIds[1]],
+  ));
+  assert.equal(
+    mixedRejectionContext.rowCount,
+    1,
+    'a compiler action without a tool-use id still needs an exact user rejection in continuation history',
+  );
+  assert.equal(mixedRejectionContext.rows[0].user_id, APPROVER_USER_ID);
+  assert.deepEqual(
+    mixedRejectionContext.rows[0].metadata.agent_blocks.map((block: { type: string }) => block.type),
+    ['text'],
+    'tool-less compiler actions must not invent an orphan tool result',
+  );
+  assert.match(
+    mixedRejectionContext.rows[0].metadata.agent_blocks[0].text,
+    new RegExp(`user rejected the task create \\"${mixedLabel} second\\" action`, 'i'),
+  );
+  assert.match(
+    mixedRejectionContext.rows[0].metadata.agent_blocks[0].text,
+    /new explicit user request/i,
+  );
+
+});
+
+test('rejected tool action records one exact continuation result', async () => {
+  const toolUseId = `reject-tool-${Date.now()}`;
+  const actionId = await withClient(async (c) => {
+    const message = await c.query<{ id: string }>(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, '', $4::jsonb)
+       RETURNING id`,
+      [ORG_ID, VISIBLE_SPACE_ID, SHADOW_USER_ID, JSON.stringify({
+        hidden: true,
+        agent_blocks: [{
+          type: 'tool_use',
+          id: toolUseId,
+          name: 'create_task',
+          input: { title: 'Rejected continuation task' },
+        }],
+      })],
+    );
+    const action = await c.query<{ id: string }>(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, conversation_id, message_id, tool_use_id,
+         source, action, params, approval_tier, approval_status)
+       VALUES
+        (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6,
+         'mention', 'create_task', $7::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        EMP_ID,
+        VISIBLE_SPACE_ID,
+        message.rows[0].id,
+        toolUseId,
+        JSON.stringify({
+          title: 'Rejected continuation task',
+          project_name: '',
+          assignee_name: '',
+        }),
+      ],
+    );
+    return action.rows[0].id;
+  });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await app().request(`/api/agent/actions/${actionId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Do not create this task' }),
+    });
+    assert.equal(response.status, 200);
+  }
+
+  const resultMessages = await withClient(async (c) => c.query<{ metadata: Record<string, any> }>(
+    `SELECT metadata
+       FROM messages
+      WHERE org_id = $1
+        AND space_id = $2
+        AND metadata->>'approval_rejection_result_for_action_id' = $3`,
+    [ORG_ID, VISIBLE_SPACE_ID, actionId],
+  ));
+  assert.equal(resultMessages.rowCount, 1);
+  const [block, rejectionContext] = resultMessages.rows[0].metadata.agent_blocks;
+  assert.equal(block.type, 'tool_result');
+  assert.equal(block.tool_use_id, toolUseId);
+  assert.equal(block.is_error, true);
+  assert.deepEqual(JSON.parse(block.content), {
+    status: 'rejected',
+    action: 'create_task',
+    retry_requires_explicit_user_request: true,
+  });
+  assert.equal(rejectionContext.type, 'text');
+  assert.match(rejectionContext.text, /user rejected the create task "Rejected continuation task" action/i);
+  assert.match(rejectionContext.text, /new explicit user request/i);
+});
+
+test('rejection waits for an executing approved sibling before confirming the group once', async () => {
+  const label = `mixed-in-flight-${Date.now()}`;
+  const group = await withClient(async (c) => {
+    const message = await c.query<{ id: string }>(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, '{}'::jsonb)
+       RETURNING id`,
+      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID, `Please review ${label}.`],
+    );
+    const actions = await c.query<{ id: string }>(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, conversation_id, message_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES
+        (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'mention', 'task_create', $6::jsonb, 'quick', 'pending'),
+        (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'mention', 'task_create', $7::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        EMP_ID,
+        VISIBLE_SPACE_ID,
+        message.rows[0].id,
+        JSON.stringify({
+          title: `${label} execute`, project_id: TEST_PROJECT_ID,
+          resolved_project_id: TEST_PROJECT_ID, project_name: 'Actions Routes Test Project', priority: 'p2',
+        }),
+        JSON.stringify({
+          title: `${label} reject`, project_id: TEST_PROJECT_ID,
+          resolved_project_id: TEST_PROJECT_ID, project_name: 'Actions Routes Test Project', priority: 'p2',
+        }),
+      ],
+    );
+    return { messageId: message.rows[0].id, actionIds: actions.rows.map((row) => row.id) };
+  });
+  const confirmationFor = () => withClient(async (c) => c.query<{ metadata: Record<string, unknown> }>(
+    `SELECT metadata FROM messages
+      WHERE org_id = $1
+        AND metadata->>'approval_confirmation_for_message_id' = $2`,
+    [ORG_ID, group.messageId],
+  ));
+
+  const projectLock = new pg.Client({ connectionString: DATABASE_URL });
+  await projectLock.connect();
+  await projectLock.query('BEGIN');
+  await projectLock.query('SELECT id FROM projects WHERE id = $1 FOR UPDATE', [TEST_PROJECT_ID]);
+  const approvalRequest = app().request(`/api/agent/actions/${group.actionIds[0]}/approve`, {
+    method: 'POST', body: JSON.stringify({}),
+  });
+  let executing = false;
+  let rejectionStatus = -1;
+  let confirmationCountWhileExecuting = -1;
+  try {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const action = await withClient(async (c) => c.query<{ approval_status: string; executed_at: Date | null }>(
+        'SELECT approval_status, executed_at FROM agent_actions WHERE id = $1',
+        [group.actionIds[0]],
+      ));
+      if (action.rows[0]?.approval_status === 'approved' && action.rows[0]?.executed_at === null) {
+        executing = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (executing) {
+      rejectionStatus = (await app().request(`/api/agent/actions/${group.actionIds[1]}/reject`, {
+        method: 'POST', body: JSON.stringify({ reason: 'skip while sibling executes' }),
+      })).status;
+      confirmationCountWhileExecuting = (await confirmationFor()).rowCount ?? 0;
+    }
+  } finally {
+    await projectLock.query('COMMIT').catch(() => projectLock.query('ROLLBACK'));
+    await projectLock.end();
+  }
+
+  const approvalResponse = await approvalRequest;
+  const finalConfirmation = await confirmationFor();
+  assert.equal(executing, true, 'approval route must reach its approved, executing claim');
+  assert.equal(rejectionStatus, 200);
+  assert.equal(
+    confirmationCountWhileExecuting,
+    0,
+    'a rejected sibling must not confirm the group while an approved action is still executing',
+  );
+  assert.equal(approvalResponse.status, 200);
+  assert.equal(finalConfirmation.rowCount, 1);
+  assert.deepEqual(finalConfirmation.rows[0].metadata.confirmed_action_ids, [group.actionIds[0]]);
+  assert.deepEqual(finalConfirmation.rows[0].metadata.rejected_action_ids, [group.actionIds[1]]);
 });
 
 test('POST approve task_create repairs stale project counter before insert', async () => {

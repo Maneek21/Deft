@@ -62,6 +62,120 @@ export type ApprovalCardPresentation = {
   chips: Array<{ label: string; icon?: ApprovalChipIconName }>;
 };
 
+const APP_RUN_STATES = new Set([
+  'pending',
+  'pending_approval',
+  'running',
+  'waiting_external',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'expired',
+  'unknown_outcome',
+]);
+
+export type AppRunReference = {
+  runId: string;
+  runState: string | null;
+};
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/**
+ * The action row's host-written run_id is authoritative. A returned safe
+ * result can refine its state only when it names that same run.
+ */
+export function getAppRunReference(
+  params: Record<string, unknown>,
+  result: unknown,
+): AppRunReference | null {
+  const runId = params.run_id;
+  if (typeof runId !== 'string' || !runId.trim()) return null;
+  const outer = objectValue(result);
+  const candidates = [outer, objectValue(outer?.result), params];
+  for (const candidate of candidates) {
+    if (candidate?.run_id !== runId) continue;
+    const runState = candidate?.run_state;
+    return {
+      runId,
+      runState: typeof runState === 'string' && APP_RUN_STATES.has(runState) ? runState : null,
+    };
+  }
+  return { runId, runState: null };
+}
+
+export function getAppRunApprovalCompletionLabel(runState: string | null): string {
+  if (runState === null) return 'App action approved — outcome unavailable';
+  if (runState === 'succeeded') return 'App action completed';
+  if (runState === 'failed') return 'App action failed after approval';
+  if (runState === 'cancelled') return 'App action cancelled after approval';
+  if (runState === 'expired') return 'App action expired after approval';
+  if (runState === 'unknown_outcome') return 'App action outcome is unknown';
+  return 'App action approved — delivery pending';
+}
+
+export function getAppRunInspectorLabel(approvalStatus: string, runState: string | null): string {
+  if (approvalStatus === 'pending') return 'Inspect pending App Run';
+  if (approvalStatus === 'rejected') return 'Inspect rejected App Run';
+  if (runState === 'succeeded' || runState === 'failed' || runState === 'cancelled'
+    || runState === 'expired' || runState === 'unknown_outcome') {
+    return 'Inspect outcome and receipts';
+  }
+  return 'Inspect App Run receipts';
+}
+
+export type TaskLinkReview = {
+  record: { label: string; href: string };
+  task: { identifier: string; title: string; project_name: string; href: string };
+};
+
+function safeReviewHref(value: unknown, kind: 'record' | 'task'): string | null {
+  if (typeof value !== 'string' || value.length > 2_048 || !value.startsWith('/') || value.startsWith('//')) return null;
+  try {
+    const url = new URL(value, 'https://deft.invalid');
+    if (url.origin !== 'https://deft.invalid' || url.hash) return null;
+    if (kind === 'record') {
+      const match = /^\/modules\/([^/]+)\/([^/]+)\/([^/]+)$/u.exec(url.pathname);
+      if (!match || url.search) return null;
+      const decoded = match.slice(1).map((part) => decodeURIComponent(part!));
+      if (decoded.some((part) => !part || part.includes('/') || part.includes('\\'))) return null;
+    } else {
+      const task = url.searchParams.get('task');
+      if (url.pathname !== '/tasks' || !task || task.length > 128 || url.searchParams.getAll('task').length !== 1) return null;
+      if ([...url.searchParams.keys()].some((key) => key !== 'task')) return null;
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function reviewText(value: unknown, maximum: number): string | null {
+  const text = cleanText(value);
+  return text && text.length <= maximum ? text : null;
+}
+
+export function normalizeTaskLinkReview(value: unknown): TaskLinkReview | null {
+  const body = objectValue(value);
+  const record = objectValue(body?.record);
+  const task = objectValue(body?.task);
+  const recordLabel = reviewText(record?.label, 300);
+  const recordHref = safeReviewHref(record?.href, 'record');
+  const taskIdentifier = reviewText(task?.identifier, 128);
+  const taskTitle = reviewText(task?.title, 500);
+  const projectName = reviewText(task?.project_name, 200);
+  const taskHref = safeReviewHref(task?.href, 'task');
+  if (!recordLabel || !recordHref || !taskIdentifier || !taskTitle || !projectName || !taskHref) return null;
+  return {
+    record: { label: recordLabel, href: recordHref },
+    task: { identifier: taskIdentifier, title: taskTitle, project_name: projectName, href: taskHref },
+  };
+}
+
 const INTERNAL_APPROVAL_PARAM_KEYS = new Set([
   'idempotency_key',
   'expected_manifest_digest',
@@ -82,7 +196,7 @@ export function getSafeGenericParams(params: Record<string, unknown>) {
   return Object.entries(params).filter(([key, value]) => {
     if (value === undefined || value === null || value === '') return false;
     if (INTERNAL_APPROVAL_PARAM_KEYS.has(key)) return false;
-    if (key.startsWith('proposal_') || key.startsWith('debug_')) return false;
+    if (key.startsWith('proposal_') || key.startsWith('debug_') || key.startsWith('__deft_')) return false;
     if (key.endsWith('_id') || key.endsWith('_ids')) return false;
     return true;
   });
@@ -319,6 +433,7 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     const preview = params.safe_preview && typeof params.safe_preview === 'object' && !Array.isArray(params.safe_preview)
       ? params.safe_preview as Record<string, unknown>
       : {};
+    const isSandboxEmail = capability === 'send_email';
     const resourceRefs = Array.isArray(preview.resource_refs) ? preview.resource_refs : [];
     for (const candidate of resourceRefs) {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
@@ -332,13 +447,15 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       eyebrow: 'Connected App action',
       headline: 'An App prepared a governed action',
       title: previewTitle || capability || 'Run App action',
-      summary: previewSummary ? truncateApprovalText(previewSummary, 150) : 'Review the safe preview before Deft releases this action to the selected provider.',
+      summary: isSandboxEmail
+        ? 'Sandbox only. Review the exact recipient and message before approving; no external message will be delivered.'
+        : previewSummary ? truncateApprovalText(previewSummary, 150) : 'Review the safe preview before Deft releases this action to the selected provider.',
       approveLabel: 'Approve App action',
       doneLabel: 'App action approved',
-      sourceLabel: provider ? `Provider: ${provider}` : 'Source: Connected App',
+      sourceLabel: isSandboxEmail ? 'Provider: Deft email sandbox' : provider ? `Provider: ${provider}` : 'Source: Connected App',
       detailsLabel: 'Safe App preview',
       emptyDetails: 'Provider input remains sealed. Deft revalidates App, grant, connector, and resource authority before execution.',
-      badge: 'Governed Run',
+      badge: isSandboxEmail ? 'Sandbox' : 'App action',
       badgeTone: 'caution',
       chips,
     };
@@ -495,9 +612,11 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
   }
 
   if (kind === 'module') {
-    const proposerName = action.proposer === 'employee' && action.employee_name
-      ? action.employee_name
-      : 'Defty';
+    const proposerName = action.proposer === 'user'
+      ? 'A workspace member'
+      : action.proposer === 'employee' && action.employee_name
+        ? action.employee_name
+        : 'Defty';
     const moduleName = getNestedStringParam(params, [
       'module_name',
       'module.name',
@@ -521,6 +640,7 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     ]);
     const isCreate = action.action === 'module_record_create';
     const isBulkCreate = action.action === 'module_record_bulk_create';
+    const isBulkRetry = isBulkCreate && typeof params.__deft_bulk_retry_of_action_id === 'string';
     const isArchive = action.action === 'module_record_archive';
     const operation = isBulkCreate ? 'import' : isCreate ? 'create' : isArchive ? 'archive' : 'update';
     const rowCount = Array.isArray(params.rows)
@@ -533,23 +653,56 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     return {
       kind,
       icon: 'module',
-      eyebrow: isBulkCreate ? 'Module import draft' : isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
+      eyebrow: isBulkRetry ? 'Module import retry' : isBulkCreate ? 'Module import draft' : isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
       headline: `${proposerName} proposed a module ${operation}`,
       title: isBulkCreate
         ? `Import ${rowCount || ''} ${collectionName || 'module'} record${rowCount === 1 ? '' : 's'}`.replace(/\s+/g, ' ').trim()
         : recordTitle || `${operation[0].toUpperCase()}${operation.slice(1)} ${collectionName || 'record'}`,
-      summary: content
+      summary: isBulkRetry
+        ? `Review this ${rowCount}-row batch again. Records already created will be reused; remaining records will be created after approval.`
+        : content
         ? truncateApprovalText(content, 150)
         : isBulkCreate
           ? `Review ${rowCount} validated row${rowCount === 1 ? '' : 's'}${sourceFileName ? ` from ${sourceFileName}` : ''} before import.`
           : `Review this ${collectionName || 'module'} record change before it is applied.`,
-      approveLabel: isBulkCreate ? 'Approve import' : isCreate ? 'Approve create' : isArchive ? 'Approve archive' : 'Approve update',
+      approveLabel: isBulkRetry ? 'Approve retry' : isBulkCreate ? 'Approve import' : isCreate ? 'Approve create' : isArchive ? 'Approve archive' : 'Approve update',
       doneLabel: isBulkCreate ? 'Records imported' : isCreate ? 'Record created' : isArchive ? 'Record archived' : 'Record updated',
       sourceLabel: age ? `Source: ${proposerName} - ${age}` : `Source: ${proposerName}`,
       detailsLabel: isBulkCreate ? 'Import details' : 'Record details',
       emptyDetails: 'The module manifest validates this change before it is applied.',
       badge: isArchive ? 'Archive' : moduleName || undefined,
       badgeTone: isArchive ? 'danger' : 'neutral',
+      chips,
+    };
+  }
+
+  if (action.action === 'module_record_task_link' || action.action === 'module_record_task_unlink') {
+    const resourceId = getStringParam(params, ['resource_id']);
+    const taskIdentifier = getStringParam(params, ['task_identifier', 'task_id']);
+    const resourceLabel = resourceId.startsWith('module_record:')
+      ? `Module record ${resourceId.slice('module_record:'.length, 'module_record:'.length + 8)}`
+      : resourceId || 'selected module record';
+    const unlink = action.action === 'module_record_task_unlink';
+    pushChip(chips, resourceLabel, 'book');
+    pushChip(chips, taskIdentifier || 'selected task', 'task');
+    return {
+      kind: 'module',
+      icon: 'module',
+      eyebrow: unlink ? 'Module task unlink' : 'Module task link',
+      headline: unlink ? 'A module record will be unlinked from a task' : 'A module record will be linked to a task',
+      title: unlink
+        ? `Unlink ${resourceLabel} from ${taskIdentifier || 'selected task'}`
+        : `Link ${resourceLabel} to ${taskIdentifier || 'selected task'}`,
+      summary: unlink
+        ? 'Review the record and task before removing their link. Neither resource will be deleted.'
+        : 'Review the record and task before creating their link.',
+      approveLabel: unlink ? 'Approve unlink' : 'Approve link',
+      doneLabel: unlink ? 'Record unlinked' : 'Record linked',
+      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      detailsLabel: 'Task link details',
+      emptyDetails: 'The record and task are checked for workspace access before this link changes.',
+      badge: 'Task link',
+      badgeTone: 'neutral',
       chips,
     };
   }

@@ -18,7 +18,7 @@ import {
   prepareModuleArtifact,
   verifyDeftAppPackageJson,
   type DeftAppManifestV1Input,
-} from '../src/index.js';
+} from '../dist/index.js';
 
 const campaignModule = {
   schema_version: '2',
@@ -433,4 +433,48 @@ describe('App Protocol v1 authoring contract', () => {
       /selected relation does not target the declared resource requirement/,
     );
   });
+});
+
+
+test('an included direct relation uses the same canonical Module without an artificial App dependency', async () => {
+  const original = await fixture();
+  const directModule = {
+    ...campaignModule,
+    schema_version: '1',
+    collections: [
+      { ...campaignModule.collections[0], fields: [
+        { key: 'subject', label: 'Subject', type: 'text' },
+        { key: 'body', label: 'Body', type: 'long_text' },
+        { key: 'contacts', label: 'Contacts', type: 'relation', target_collection: 'contacts', multiple: true },
+      ] },
+      { key: 'contacts', name: 'Contacts', fields: [{ key: 'email', label: 'Email', type: 'email' }] },
+    ],
+  };
+  const artifact = await prepareModuleArtifact({ path: original.artifact.path, manifest: directModule });
+  const manifest: DeftAppManifestV1Input = {
+    ...original.manifest,
+    dependencies: [],
+    modules: [{ ...original.manifest.modules![0]!, manifest_digest: artifact.digest }],
+    resource_requirements: original.manifest.resource_requirements.map((requirement) => ({
+      ...requirement,
+      source: { kind: 'included_module', module_id: directModule.id, version: directModule.version },
+    })),
+  };
+  const built = await buildDeftAppPackage({ manifest, artifacts: [artifact] });
+  await verifyDeftAppPackageJson(built.json);
+  const wrongTarget = { ...directModule, collections: directModule.collections.map((collection) => ({
+    ...collection, fields: collection.fields.map((field) => field.type === 'relation'
+      ? { ...field, target_collection: 'campaigns' } : field),
+  })) };
+  const wrongArtifact = await prepareModuleArtifact({ path: artifact.path, manifest: wrongTarget });
+  await assert.rejects(buildDeftAppPackage({
+    manifest: { ...manifest, modules: [{ ...manifest.modules![0]!, manifest_digest: wrongArtifact.digest }] },
+    artifacts: [wrongArtifact],
+  }), /selected relation does not target/);
+  await assert.rejects(buildDeftAppPackage({
+    manifest: { ...manifest, dependencies: original.manifest.dependencies,
+      resource_requirements: manifest.resource_requirements.map((requirement, index) => index === 1
+        ? original.manifest.resource_requirements[index]! : requirement) },
+    artifacts: [artifact],
+  }), /selected relation does not target/);
 });

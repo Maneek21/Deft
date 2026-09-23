@@ -51,6 +51,7 @@ function legacyContactsManifest(includeRemovedField = false): DeftModuleManifest
     name: 'Contacts Directory',
     collections: [{
       ...contacts,
+      latest_related: undefined,
       fields,
       views: contacts.views
         ?.filter((view) => view.type === 'table' || view.type === 'form' || view.type === 'detail')
@@ -136,12 +137,13 @@ test('generic upgrade preserves data and unlocks relations plus personal saved v
       source: 'bundled',
       expected_active_manifest_digest: old.digest,
     });
-    assert.equal(upgraded.manifest.version, '1.1.0');
+    assert.equal(upgraded.manifest.version, latest.version);
     assert.deepEqual(upgraded.manifest.collections.map((collection) => collection.key), [
       'contacts',
       'companies',
       'deals',
       'activities',
+      'outreach',
     ]);
     const preserved = await getModuleRecord(owner, legacyContact.record.id);
     assert.equal(preserved.revision, 1);

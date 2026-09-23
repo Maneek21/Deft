@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } fro
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
+import { moduleRecordReturnHrefFromTask } from '@/lib/module-list-context';
 import { getSocket } from '@/lib/socket';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -140,6 +141,20 @@ export default function TasksPage() {
     const str = qs.toString();
     router.replace(`/tasks${str ? '?' + str : ''}`);
   }, [searchParams, router]);
+
+  const closeTaskDetail = useCallback(() => {
+    const moduleReturnHref = moduleRecordReturnHrefFromTask(searchParams);
+    if (moduleReturnHref) {
+      router.push(moduleReturnHref, { scroll: false });
+      return;
+    }
+    setSelectedTask(null);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('task');
+    params.delete('module_return');
+    const query = params.toString();
+    router.push(query ? `/tasks?${query}` : '/tasks', { scroll: false });
+  }, [router, searchParams]);
 
   useEffect(() => {
     if (requestedView === 'list') setQuery({ view: 'table' });
@@ -641,13 +656,13 @@ export default function TasksPage() {
           return;
         }
         if (selectedTask) {
-          setSelectedTask(null);
+          closeTaskDetail();
         }
       }
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [selectedTask, selectionMode, selectedTaskIds]);
+  }, [closeTaskDetail, selectedTask, selectionMode, selectedTaskIds]);
 
   // On mount: if URL has ?task=DEFT-5 or ?task=<task-id>, find and open that task.
   // If the task belongs to a different project, switch to that project first.
@@ -1450,12 +1465,7 @@ export default function TasksPage() {
         <TaskDetail
           taskId={selectedTask.id}
           projectPrefix={isMyTasksView ? selectedTask.project_prefix : selectedProject?.prefix || ''}
-          onClose={() => {
-            setSelectedTask(null);
-            const params = new URLSearchParams(searchParams.toString());
-            params.delete('task');
-            router.push('/tasks?' + params.toString(), { scroll: false });
-          }}
+          onClose={closeTaskDetail}
           onUpdated={handleTaskUpdated}
           onDuplicate={handleDuplicate}
           onDelete={handleDeleteTask}

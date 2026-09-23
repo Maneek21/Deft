@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import pg from 'pg';
+import { assessDatabaseClock } from './selfhost-clock.js';
 
 const { Client } = pg;
 
@@ -180,6 +181,25 @@ async function checkPlatformSeed(): Promise<Check> {
   }
 }
 
+async function checkDatabaseClock(): Promise<Check> {
+  const client = new Client({ connectionString: resolveDatabaseUrl(), connectionTimeoutMillis: 8_000 });
+  try {
+    await client.connect();
+    const startedAtMs = Date.now();
+    const result = await client.query({
+      text: 'select extract(epoch from clock_timestamp()) * 1000 as database_time_ms',
+      query_timeout: 8_000,
+    });
+    return assessDatabaseClock({ startedAtMs, finishedAtMs: Date.now(),
+      databaseTimeMs: Number(result.rows[0]?.database_time_ms) });
+  } catch {
+    return { name: 'Database clock', ok: false,
+      detail: 'Unable to sample database time. Check the database connection, then rerun the doctor on the API host.' };
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 async function checkUrlAgreement(): Promise<Check> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || '';
@@ -221,6 +241,7 @@ async function main() {
     await checkWeb(),
     await checkCors(),
     await checkDb(),
+    await checkDatabaseClock(),
     await checkPlatformSeed(),
   ];
 

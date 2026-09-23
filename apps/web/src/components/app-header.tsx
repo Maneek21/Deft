@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, ReactNode } from 'react';
+import { useState, useRef, useEffect, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, Bell, Menu, Moon } from 'lucide-react';
 import { NotificationPanel } from './notification-panel';
@@ -23,9 +23,10 @@ export function AppHeader({
   const { count: unreadNotifCount } = useInboxCount();
   const bellRef = useRef<HTMLButtonElement>(null);
 
-  let placeholder = 'Search workspace... ⌘K';
-  if (pathname.startsWith('/chat')) placeholder = 'Search messages... ⌘K';
-  if (pathname.startsWith('/tasks')) placeholder = 'Search tasks... ⌘K';
+  const [shortcut, setShortcut] = useState('Ctrl K');
+  useEffect(() => { setShortcut(/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'); }, []);
+  const searchLabel = pathname.startsWith('/chat') ? 'Search messages' : pathname.startsWith('/tasks') ? 'Search tasks' : 'Search workspace';
+  const placeholder = `${searchLabel}… ${shortcut}`;
 
   const handleSearchClick = () => {
     document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
@@ -61,7 +62,7 @@ export function AppHeader({
       {/* Search — full bar on desktop, icon-only on mobile */}
       <button
         onClick={handleSearchClick}
-        aria-label={placeholder.replace('... ⌘K', '')}
+        aria-label={searchLabel}
         title={placeholder}
         className="hidden md:flex items-center gap-2 px-3 h-8 rounded-full cursor-pointer"
         style={{ background: 'var(--surface-container-low)', minWidth: '200px' }}
@@ -71,7 +72,7 @@ export function AppHeader({
       </button>
       <button
         onClick={handleSearchClick}
-        aria-label={placeholder.replace('... ⌘K', '')}
+        aria-label={searchLabel}
         title={placeholder}
         className="deft-icon-button md:hidden cursor-pointer"
         style={{ color: 'var(--outline)' }}
