@@ -130,7 +130,7 @@ test('browser evidence follows the responsive Apps title contract', () => {
 });
 
 test('evidence uploads even on failure and disposable resources are always removed', () => {
-  assert.match(workflow, /actions\/upload-artifact@v4/);
+  assert.match(workflow, /actions\/upload-artifact@v7\b/);
   assert.match(workflow, /if:\s*always\(\)/);
   assert.match(workflow, /app-platform-phase5-certification/);
   assert.match(orchestrator, /trap cleanup EXIT/);
