@@ -27,7 +27,7 @@ jobs:
     needs: release-scope
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -60,6 +60,8 @@ jobs:
           src/lib/api-retry.test.ts
           src/lib/api-auth.test.ts
           src/lib/editor-attribute-security.test.ts
+          src/lib/chat-links.test.ts
+          src/lib/agent-citations.test.ts
           src/lib/native-create-intent.test.ts
           src/lib/time.test.ts
           src/lib/calendar-event-form.test.ts
@@ -101,7 +103,7 @@ jobs:
       ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -156,7 +158,7 @@ jobs:
       ANTHROPIC_API_KEY: sk-ant-ci-hermes-gate-dummy-not-real
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -221,7 +223,7 @@ jobs:
       (needs.release-scope.outputs.release_scope == 'core' || needs.hermes-release-gate.result == 'success')
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -255,7 +257,7 @@ jobs:
       BASELINE_IMAGE: ghcr.io/maneek21/deft:0.2.0-preview.1
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -378,7 +380,7 @@ jobs:
     needs: typecheck
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7

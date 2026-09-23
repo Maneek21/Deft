@@ -62,7 +62,7 @@ jobs:
             echo "EVIDENCE_DIR=$RUNNER_TEMP/deft-phase6-evidence"
           } >> "$GITHUB_ENV"
 
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
 
