@@ -1,0 +1,43 @@
+name: Artifact Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  round-trip:
+    name: Artifact upload and download
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create representative evidence and archive
+        shell: bash
+        run: |
+          mkdir -p fixture/dist/hermes-integration
+          printf '%s\n' '{"fixture":true}' > fixture/dist/hermes-employee-release-gate.json
+          printf '%s\n' 'artifact contract fixture' > fixture/dist/hermes-integration/bundle.txt
+          tar -czf fixture/dist/bundle.tar.gz -C fixture/dist/hermes-integration bundle.txt
+          cd fixture
+          sha256sum dist/hermes-employee-release-gate.json dist/hermes-integration/bundle.txt dist/bundle.tar.gz > SHA256SUMS
+      - name: Upload named evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-contract
+          path: fixture/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Download named evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: artifact-contract
+          path: restored/
+      - name: Verify paths and exact bytes
+        shell: bash
+        run: |
+          cd restored
+          sha256sum -c SHA256SUMS
+          tar -xOf dist/bundle.tar.gz bundle.txt | cmp - dist/hermes-integration/bundle.txt
