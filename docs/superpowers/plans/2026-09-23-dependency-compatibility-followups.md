@@ -13,11 +13,19 @@ See [the compatibility decision](2026-09-23-zod-contract-compatibility.md) for
 the options, trust boundaries, rollback and validation. Future updates must
 pass the committed diagnostics, package and packed-consumer regression tests.
 
-## ESLint 10: PR #322 remains draft
+## ESLint 10: compatibility adapter in PR #339
 
-The existing React plugin crashes loading `react/display-name` with
-`contextOrFilename.getFilename is not a function`. Keep the update deferred
-until the Next/React plugin and configuration stack supports ESLint 10.
-Upgrade compatible pieces together, retaining enabled rules, and require
-full web lint, typecheck, build and CI. See the failing run:
-https://github.com/Maneek21/Deft/actions/runs/35465294161.
+The React plugin crashes loading `react/display-name` with
+`contextOrFilename.getFilename is not a function`; this was reproduced on
+ESLint 10.11.0 after the original #322 was superseded by #339.
+
+Use the official `@eslint/compat` adapter around the imported Next configs to
+restore removed rule-context APIs. Keep all existing rules and severities.
+The lint command first checks that React display-name and JSX-key, hooks,
+Next script, and TypeScript unused-variable rules still report violations,
+and that a valid typed component passes. Full lint, typecheck, build and
+required CI remain merge gates.
+
+Remove the adapter and its dependency once the upstream plugin stack supports
+ESLint 10 directly and the same regression check passes without the adapter.
+No production dependency or application behavior changes are required.
