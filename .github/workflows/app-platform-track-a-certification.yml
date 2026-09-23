@@ -67,7 +67,7 @@ jobs:
             echo "DEFT_APP_PLATFORM_AUTOMATION_BROWSER_FIXTURE=$RUNNER_TEMP/deft-track-a-evidence/safe/track-a-browser-fixture.json"
           } >> "$GITHUB_ENV"
 
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 11.10.0
 
