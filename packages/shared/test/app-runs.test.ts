@@ -11,6 +11,8 @@ import {
   AppRunAttemptStateSchema,
   AppRunStateSchema,
   AppRunOriginSchema,
+  AppRunPolicySnapshotSchema,
+  AppRunReviewScopeSchema,
   isAppRunAttemptStateTransitionAllowed,
   classifyAppRunCrashRecovery,
   isAppRunStateTransitionAllowed,
@@ -294,12 +296,54 @@ describe('App Run contract', () => {
       facts: { result_status: 'retained' },
       occurred_at: '2026-08-30T00:00:01.000Z',
     };
-    assert.equal(parseAppRunReceiptEnvelope(receipt).receipt_kind, 'attempt_terminal');
+    const parsedReceipt = parseAppRunReceiptEnvelope(receipt);
+    assert.equal(parsedReceipt.receipt_kind, 'attempt_terminal');
+    assert.equal(JSON.stringify(parsedReceipt), JSON.stringify(receipt),
+      'existing receipt bytes retain their canonical field order and values');
     assert.throws(() => parseAppRunReceiptEnvelope({ ...receipt, attempt_id: undefined }));
     assert.throws(() => parseAppRunReceiptEnvelope({
       ...receipt,
       facts: { output: { recipient: 'person@example.com' } },
     }), /secret-bearing/);
+  });
+
+  test('accepts only the fixed reviewed resource-sync policy in receipts', () => {
+    const syncPolicy = {
+      risk_class: 'internal_write',
+      review_requirement: 'policy',
+      review_scope: 'reviewed_resource_sync',
+      retry_class: 'unsafe_or_unknown',
+    } as const;
+    const syncReceipt = {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.receipt,
+      receipt_id: 'receipt-sync-1',
+      receipt_kind: 'attempt_terminal',
+      org_id: 'org-1',
+      run_id: 'run-sync-1',
+      attempt_id: 'attempt-sync-1',
+      run_state: 'succeeded',
+      operation: {
+        provider: { org_id: 'org-1', provider_kind: 'app_runtime', provider_instance_id: 'registration-1' },
+        operation_name: 'sync_message',
+      },
+      policy: syncPolicy,
+      input_fingerprint: { key_version: 'fp-v1', fingerprint: `hmac-sha256:${'a'.repeat(64)}` },
+      facts: { applied_sequence: 1, upserts: 2 },
+      occurred_at: '2026-09-24T00:00:00.000Z',
+    };
+    assert.deepEqual(parseAppRunReceiptEnvelope(syncReceipt), syncReceipt);
+    for (const policy of [
+      { ...syncPolicy, risk_class: 'external_write' },
+      { ...syncPolicy, review_requirement: 'always' },
+      { ...syncPolicy, retry_class: 'safe' },
+      { ...syncPolicy, review_scope: 'reviewed_resource_sync', extra_authority: true },
+    ]) {
+      assert.throws(() => parseAppRunReceiptEnvelope({ ...syncReceipt, policy }));
+    }
+    assert.equal(AppRunReviewScopeSchema.safeParse(syncPolicy.review_scope).success, false);
+    assert.equal(AppRunPolicySnapshotSchema.safeParse(syncPolicy).success, false);
+    assert.throws(() => parseAppRunSubmission(submission({ policy: syncPolicy })),
+      'receipt-only policy must not authorize generic Run submission');
   });
 
   test('uses fixed retention ceilings independent of later permission changes', () => {

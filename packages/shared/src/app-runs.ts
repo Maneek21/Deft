@@ -309,6 +309,19 @@ export const AppRunPolicySnapshotSchema = z.object({
 }).strict();
 export type AppRunPolicySnapshot = z.infer<typeof AppRunPolicySnapshotSchema>;
 
+// Resource sync is a host-created Run. Its fixed policy may appear in a
+// signed receipt, but it must never enter the generic submission contract.
+export const AppRunReceiptPolicySnapshotSchema = z.union([
+  AppRunPolicySnapshotSchema,
+  z.object({
+    risk_class: z.literal('internal_write'),
+    review_requirement: z.literal('policy'),
+    review_scope: z.literal('reviewed_resource_sync'),
+    retry_class: z.literal('unsafe_or_unknown'),
+  }).strict(),
+]);
+export type AppRunReceiptPolicySnapshot = z.infer<typeof AppRunReceiptPolicySnapshotSchema>;
+
 export const AppRunAuthorityRefSchema = z.object({
   authority_kind: z.enum([
     'membership',
@@ -447,7 +460,7 @@ export const AppRunReceiptEnvelopeSchema = z.object({
   run_state: AppRunStateSchema,
   actor: AppRunActorSchema.optional(),
   operation: CapabilityProviderOperationIdentitySchema,
-  policy: AppRunPolicySnapshotSchema,
+  policy: AppRunReceiptPolicySnapshotSchema,
   input_fingerprint: z.object({
     key_version: ExactIdentitySchema,
     fingerprint: z.string().regex(/^hmac-sha256:[a-f0-9]{64}$/),
