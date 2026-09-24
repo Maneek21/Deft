@@ -521,6 +521,11 @@ can supply its own AI independently of Deft's provider configuration.
 | `OPENAI_API_KEY` | No | Optional AI provider/embedding/transcription fallback | none |
 | `OPENROUTER_API_KEY` | No | Optional AI provider fallback | none |
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
+| `TRANSCRIPTION_PROVIDER` | No | Voice-clip transcription: `local`, `openai`, or `deepgram`; an org-level choice in Settings → AI wins | `local` |
+| `WHISPER_URL` | No | Whisper service for the `local` provider | `http://localhost:9000` |
+| `TRANSCRIPTION_OPENAI_BASE_URL` | No | OpenAI-compatible base URL (including `/v1`) for the `openai` provider, such as LiteLLM, Groq, or a self-hosted gateway | `https://api.openai.com/v1` |
+| `TRANSCRIPTION_OPENAI_MODEL` | No | Transcription model sent to that endpoint | `whisper-1` |
+| `TRANSCRIPTION_OPENAI_API_KEY` | No | Key for that endpoint; empty falls back to `OPENAI_API_KEY`, and a keyless custom endpoint is called without one | `OPENAI_API_KEY` |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
 
