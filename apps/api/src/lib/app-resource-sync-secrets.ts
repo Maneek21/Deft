@@ -92,9 +92,18 @@ export class AppResourceSyncSecretService {
   locatorCandidates(providerResourceId: string, rawContext: AppResourceSyncLocatorContext,
     requiredKeyVersions: readonly string[]): readonly AppResourceSyncFingerprint[] {
     const value = [locatorContext.parse(rawContext), providerId.parse(providerResourceId)];
-    const keyIds = this.keys.keyIds('fingerprint');
-    if (requiredKeyVersions.some((id) => !keyIds.includes(id))) throw new AppRunKeyVersionUnavailableError();
+    const keyIds = this.assertLocatorKeyVersionsAvailable(requiredKeyVersions);
     return Object.freeze(keyIds.map((id) => this.fingerprint('locator', value, id)));
+  }
+
+  /** A page with zero items still cannot advance a cursor when any retained
+   * projection's locator key is absent. Call under the checkpoint lock. */
+  assertLocatorKeyVersionsAvailable(requiredKeyVersions: readonly string[]): readonly string[] {
+    const keyIds = this.keys.keyIds('fingerprint');
+    if (requiredKeyVersions.some((id) => !keyIds.includes(id))) {
+      throw new AppRunKeyVersionUnavailableError();
+    }
+    return keyIds;
   }
 
   cursorFingerprint(value: string | null,
