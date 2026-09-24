@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { z } from 'zod';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
   appSyncCheckpoints, auditLog, orgMembers,
@@ -24,6 +25,7 @@ import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS,
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Human = Extract<ModuleActor, { kind: 'human' }>;
+const Id = z.string().uuid();
 const stale = () => new AppError('Private resource sync authority changed', 'APP_STALE', 409);
 const denied = () => new AppError('Private resource sync access denied', 'APP_ACCESS_DENIED', 403);
 const conflict = () => new AppError('Private resource sync already has current consent', 'APP_STATE_CONFLICT', 409);
@@ -173,6 +175,7 @@ export class AppResourceSyncManagement {
 
   async issueOperatorSession(actor: ModuleActor, bindingId: string) {
     operator(actor);
+    bindingId = Id.parse(bindingId);
     const sessionId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = hashAppResourceSyncToken(token);
@@ -209,6 +212,7 @@ export class AppResourceSyncManagement {
   /** The private owner can end consent without retaining a live App grant. */
   async revokeConsent(actor: ModuleActor, bindingId: string) {
     reviewer(actor);
+    bindingId = Id.parse(bindingId);
     return db.transaction(async (tx) => {
       const [locator] = await tx.select({ owner_user_id: appResourceBindings.owner_user_id,
         installation_id: appResourceBindings.app_installation_id,
@@ -261,6 +265,7 @@ export class AppResourceSyncManagement {
   /** Emergency operator registration revoke. A registration is per consent. */
   async revokeRegistration(actor: ModuleActor, registrationId: string) {
     reviewer(actor);
+    registrationId = Id.parse(registrationId);
     return db.transaction(async (tx) => {
       const [locator] = await tx.select({ installation_id: appRuntimeRegistrations.app_installation_id,
         operator_user_id: appRuntimeRegistrations.operator_user_id })
@@ -317,6 +322,7 @@ export class AppResourceSyncManagement {
 
   async revokeOperatorSession(actor: ModuleActor, sessionId: string) {
     operator(actor);
+    sessionId = Id.parse(sessionId);
     return db.transaction(async (tx) => {
       const [locator] = await tx.select({ audience: appRuntimeSessions.audience,
         operator_user_id: appRuntimeSessions.operator_user_id,
