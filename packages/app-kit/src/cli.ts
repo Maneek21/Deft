@@ -15,6 +15,10 @@ import {
   diffDeftAppRequestedAuthority,
   parseDeftAppManifest,
   prepareModuleArtifact,
+  prepareDeftExperienceArtifact,
+  DEFT_EXPERIENCE_BUNDLE_VERSION,
+  DEFT_EXPERIENCE_BRIDGE_VERSION,
+  DEFT_EXPERIENCE_RENDERER_VERSION,
   simulateDeftAppAutomation,
   type DeftAppAutomationSimulationInput,
   type DeftAppManifestInput,
@@ -46,7 +50,7 @@ async function assertRegularUnslinkedFile(relativePath: string): Promise<string>
   return current;
 }
 
-type AppTemplate = 'declarative' | 'connected' | 'connected-automation' | 'runtime';
+type AppTemplate = 'declarative' | 'connected' | 'connected-automation' | 'runtime' | 'installed';
 
 function parseInitTemplate(): AppTemplate {
   const args = process.argv.slice(4);
@@ -54,9 +58,9 @@ function parseInitTemplate(): AppTemplate {
   if (
     args.length !== 2
     || args[0] !== '--template'
-    || (args[1] !== 'declarative' && args[1] !== 'connected' && args[1] !== 'connected-automation' && args[1] !== 'runtime')
+    || (args[1] !== 'declarative' && args[1] !== 'connected' && args[1] !== 'connected-automation' && args[1] !== 'runtime' && args[1] !== 'installed')
   ) {
-    throw new Error('Usage: deft app init [--template declarative|connected|connected-automation|runtime]');
+    throw new Error('Usage: deft app init [--template declarative|connected|connected-automation|runtime|installed]');
   }
   return args[1];
 }
@@ -275,12 +279,50 @@ async function initializeConnected(automation: boolean): Promise<void> {
 }
 
 async function initialize(template: AppTemplate): Promise<void> {
-  if (template === 'runtime') {
+  if (template === 'runtime' || template === 'installed') {
     if (await exists(resolve(cwd, 'deft.app.json'))) throw new Error('deft.app.json already exists');
+    let included: DeftAppManifestV0Input | undefined;
+    let installed: Record<string, unknown> = {};
+    if (template === 'installed') {
+      await initializeDeclarative();
+      included = JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as DeftAppManifestV0Input;
+      const bundle = { schema_version: DEFT_EXPERIENCE_BUNDLE_VERSION, entry_view: 'main', resource_keys: [],
+        action_keys: ['create_shipping_label'],
+        worker_source: `self.onmessage = ({data}) => {
+  if (data.kind !== 'start' || !data.port) return;
+  const port = data.port; let sequence = 0; let shipment = ''; let status = 'Enter a shipment identifier.';
+  const send = (message) => port.postMessage({version:'deft.experience_bridge.v1',session_id:data.session_id,sequence:++sequence,...message});
+  const render = () => send({kind:'view',view:{root:{kind:'stack',id:'main',title:'Shipping Label',children:[
+    {kind:'text',id:'help',text:'Create a label for a shipment. You will review and approve the request before it runs.'},
+    {kind:'input',id:'shipment',label:'Shipment identifier',value:shipment},
+    {kind:'button',id:'create',label:'Create shipping label'}, {kind:'text',id:'status',text:status}]}}});
+  port.onmessage = ({data:message}) => {
+    if (message.version !== 'deft.experience_bridge.v1' || message.session_id !== data.session_id) return;
+    if (message.kind === 'ui_event' && message.event?.kind === 'input' && message.event.node_id === 'shipment') shipment=String(message.event.value).slice(0,120);
+    if (message.kind === 'ui_event' && message.event?.kind === 'click' && message.event.node_id === 'create') {
+      if (!shipment) {status='Enter a shipment identifier.'; render(); return;}
+      send({kind:'request',request_id:'request_'+(sequence+1),operation:'action',key:'create_shipping_label',input:{shipment_id:shipment}});
+      status='Submitting for review…'; render();
+    }
+    if (message.kind === 'response') { status=message.ok ? 'Submitted. Open approvals to review the exact input.' : 'Request unavailable. Check the App configuration and try again.'; render(); }
+  };
+  render();
+};` };
+      const artifact = await prepareDeftExperienceArtifact('experiences/main.json', bundle);
+      await mkdir(resolve(cwd, 'experiences'), { recursive: true });
+      await writeFile(resolve(cwd, artifact.path), artifact.content, 'utf8');
+      installed = { experiences: [{ key: 'main', label: 'Shipping Label', artifact_path: artifact.path,
+        artifact_digest: artifact.digest, bridge_version: DEFT_EXPERIENCE_BRIDGE_VERSION,
+        renderer_version: DEFT_EXPERIENCE_RENDERER_VERSION }],
+        public_actions: [{ key: 'claim_label', action_key: 'create_shipping_label',
+          module_id: included.modules[0]!.module_id, collection_key: 'greetings',
+          input_mapping: { shipment_id: 'claim.resource_id' } }] };
+      await writeFile(resolve(cwd, 'AGENTS.md'), '# Installed Runtime App\n\nUse the version-matched public App Kit. Keep author Worker code in the Experience bundle and all credentials outside the App. Runtime bindings and public endpoints require host review; every external action requires approval.\n');
+    }
     await writeJson(resolve(cwd, 'deft.app.json'), {
-      schema_version: '3', id: 'community.example.shipping', version: '1.0.0',
-      name: 'Shipping Label', license: 'AGPL-3.0-only', compatibility: { app_protocol: '3' },
-      modules: [], navigation: [],
+      schema_version: template === 'installed' ? '4' : '3', id: 'community.example.shipping', version: '1.0.0',
+      name: 'Shipping Label', license: 'AGPL-3.0-only', compatibility: { app_protocol: template === 'installed' ? '4' : '3' },
+      modules: included?.modules ?? [], navigation: included?.navigation ?? [], ...installed,
       runtime_requirements: [{ key: 'carrier', protocol_version: 'deft.app_runtime_channel.v1' }],
       private_capabilities: [{ key: 'create_shipping_label', version: '1',
         input_schema: { type: 'object', properties: { shipment_id: { type: 'string', maxLength: 120 } }, required: ['shipment_id'], additionalProperties: false },
@@ -300,7 +342,7 @@ async function initialize(template: AppTemplate): Promise<void> {
 
 async function buildProject(writeOutput: boolean) {
   const source = JSON.parse(await readFile(resolve(cwd, 'deft.app.json'), 'utf8')) as DeftAppManifestInput;
-  const artifacts = [];
+  const artifacts: Parameters<typeof buildDeftAppPackage>[0]['artifacts'] = [];
   const modules = [];
   for (const reference of source.modules ?? []) {
     const raw = JSON.parse(await readFile(await assertRegularUnslinkedFile(reference.manifest_path), 'utf8')) as unknown;
@@ -308,7 +350,13 @@ async function buildProject(writeOutput: boolean) {
     artifacts.push(artifact);
     modules.push({ ...reference, manifest_digest: artifact.digest });
   }
-  const manifest = parseDeftAppManifest({ ...source, modules });
+  const experiences = source.schema_version === '4' ? await Promise.all(source.experiences.map(async (reference) => {
+    const raw = JSON.parse(await readFile(await assertRegularUnslinkedFile(reference.artifact_path), 'utf8')) as unknown;
+    const artifact = await prepareDeftExperienceArtifact(reference.artifact_path, raw);
+    artifacts.push(artifact);
+    return { ...reference, artifact_digest: artifact.digest };
+  })) : undefined;
+  const manifest = parseDeftAppManifest({ ...source, modules, ...(experiences ? { experiences } : {}) });
   const built = await buildDeftAppPackage({ manifest, artifacts });
   if (writeOutput) {
     await mkdir(resolve(cwd, '.deft'), { recursive: true });

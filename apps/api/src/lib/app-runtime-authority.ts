@@ -57,13 +57,41 @@ export async function runtimeRunMatchesAuthority(
     || run.review_requirement !== authority.review_requirement
     || run.retry_class !== authority.retry_class
     || run.retention_class !== authority.retention_class
-    || run.initiating_actor_type !== 'human'
-    || run.execution_actor_type !== 'human'
-    || run.initiating_actor_id !== run.execution_actor_id) return null;
+    || run.execution_actor_type !== 'human') return null;
   const snapshot = AppRunAuthorizationSnapshotSchema.safeParse(run.authorization_snapshot);
-  if (!snapshot.success || snapshot.data.authenticated_subject.actor_type !== 'human'
-    || snapshot.data.authenticated_subject.user_id !== run.initiating_actor_id) return null;
+  if (!snapshot.success) return null;
   try {
+    if (run.initiating_actor_type === 'app_public') {
+      if (!run.origin_public_endpoint_id || !run.origin_public_ingress_id
+        || run.initiating_actor_id !== run.origin_public_ingress_id
+        || snapshot.data.authenticated_subject.actor_type !== 'app_public'
+        || snapshot.data.authenticated_subject.endpoint_id !== run.origin_public_endpoint_id
+        || snapshot.data.authenticated_subject.ingress_id !== run.origin_public_ingress_id) return null;
+      const current = await runtimeLiveAuthorizer.captureReviewedPublicRuntimeInTransaction(tx, {
+        org_id: orgId, endpoint_id: run.origin_public_endpoint_id,
+        ingress_id: run.origin_public_ingress_id,
+      });
+      const matches = current.registration.id === authority.pin.runtime_registration_id
+        && current.registration.runtime_epoch === authority.pin.runtime_epoch
+        && current.endpoint.approver_user_id === run.execution_actor_id
+        && current.binding.id === run.origin_runtime_binding_id
+        && current.binding.provider_instance_id === run.provider_instance_id
+        && current.binding.provider_snapshot_id === run.provider_snapshot_id
+        && current.binding.operation_name === run.operation_name
+        && current.binding.risk_class === run.risk_class
+        && current.binding.review_requirement === run.review_requirement
+        && current.binding.retry_class === run.retry_class
+        && current.binding.retention_class === run.retention_class
+        && current.action.host_policy.review_scope === run.review_scope
+        && canonicalCapabilityJson(snapshot.data.authority_refs)
+          === canonicalCapabilityJson(current.authorization_snapshot.authority_refs);
+      return matches ? current.action : null;
+    }
+    if (run.initiating_actor_type !== 'human'
+      || run.initiating_actor_id !== run.execution_actor_id
+      || run.origin_public_endpoint_id !== null || run.origin_public_ingress_id !== null
+      || snapshot.data.authenticated_subject.actor_type !== 'human'
+      || snapshot.data.authenticated_subject.user_id !== run.initiating_actor_id) return null;
     const current = await runtimeLiveAuthorizer.captureReviewedRuntimeInTransaction(tx, {
       org_id: orgId, user_id: run.initiating_actor_id,
       runtime_binding_id: authority.pin.runtime_binding_id,
@@ -108,12 +136,20 @@ export async function loadLiveRuntimeAuthority(
   let prelockedRunActorId: string | undefined;
   if (runId) {
     const [runLocator] = await tx.select({ actor_type: appRuns.initiating_actor_type,
-      actor_id: appRuns.initiating_actor_id }).from(appRuns).where(and(
-        eq(appRuns.org_id, orgId), eq(appRuns.id, runId),
-      )).limit(1);
-    if (!runLocator || runLocator.actor_type !== 'human') return null;
+      actor_id: appRuns.initiating_actor_id,
+      execution_actor_type: appRuns.execution_actor_type,
+      execution_actor_id: appRuns.execution_actor_id,
+      origin_public_endpoint_id: appRuns.origin_public_endpoint_id,
+      origin_public_ingress_id: appRuns.origin_public_ingress_id }).from(appRuns).where(and(
+      eq(appRuns.org_id, orgId), eq(appRuns.id, runId),
+    )).limit(1);
+    if (!runLocator || (runLocator.actor_type !== 'human' && runLocator.actor_type !== 'app_public')) return null;
+    if (runLocator.actor_type === 'app_public' && (runLocator.execution_actor_type !== 'human'
+      || !runLocator.origin_public_endpoint_id || !runLocator.origin_public_ingress_id
+      || runLocator.actor_id !== runLocator.origin_public_ingress_id)) return null;
     prelockedRunActorId = runLocator.actor_id;
-    memberIds.push(runLocator.actor_id);
+    memberIds.push(runLocator.actor_type === 'human'
+      ? runLocator.actor_id : runLocator.execution_actor_id);
   }
   memberIds.push(locator.operator_user_id);
   for (const userId of [...new Set(memberIds)].sort()) {

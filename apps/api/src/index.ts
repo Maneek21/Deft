@@ -77,6 +77,10 @@ import { appRuntimeChannelRoutes } from './routes/app-runtime-channel.js';
 import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
 import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
+import { appExperienceRoutes } from './routes/app-experiences.js';
+import { createAppPublicRoutes } from './routes/app-public.js';
+import { AppPublicClaimService } from './lib/app-public-service.js';
+import { appPublicManagementRoutes } from './routes/app-public-management.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -193,6 +197,9 @@ if (APPS_ENABLED) {
   app.use('/api/app-runtime/channel/*', authLimiter);
   app.route('/api/app-runtime/channel', appRuntimeChannelRoutes);
 }
+if (APPS_ENABLED && process.env.DEFT_APP_PUBLIC_INGRESS_ENABLED === 'true') {
+  app.route('/api/public/apps', createAppPublicRoutes(new AppPublicClaimService({ enabled: true })));
+}
 app.use('/api/*', authMiddleware);
 app.use('/api/*', defaultLimiter);
 app.use('/api/agent/*', agentLimiter);
@@ -254,9 +261,11 @@ app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
 if (APPS_ENABLED) {
+  app.route('/api/apps/public', appPublicManagementRoutes);
   app.route('/api/apps/runtime', appRuntimeManagementRoutes);
   app.route('/api/app-runtime-review', appRuntimeReviewRoutes);
   app.route('/api/app-runtime-actions', appRuntimeActionRoutes);
+  app.route('/api/app-experiences', appExperienceRoutes);
   app.route('/api/apps', appRoutes);
   app.route('/api/app-actions', appActionRoutes);
   app.route('/api/app-runs', appRunRoutes);

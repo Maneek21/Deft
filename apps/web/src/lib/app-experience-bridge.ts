@@ -25,7 +25,8 @@ export type ExperienceIntent = Readonly<{
 export type ExperienceBroker = Readonly<{
   isLive(pin: ExperiencePin): boolean | Promise<boolean>;
   resource?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
-  action?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
+  action?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal,
+    requestId: string) => Promise<unknown>;
   runStatus?: (pin: ExperiencePin, input: unknown, signal: AbortSignal) => Promise<unknown>;
   runCancel?: (pin: ExperiencePin, input: unknown, signal: AbortSignal) => Promise<unknown>;
   navigate?: (pin: ExperiencePin, key: string, signal: AbortSignal) => Promise<unknown>;
@@ -160,6 +161,8 @@ export function createExperienceBridge(input: Readonly<{
   let active = true;
   let sequence = 0;
   let pending = 0;
+  let queuedUiEvents = 0;
+  let uiTail = Promise.resolve();
   let windowStart = now();
   let inWindow = 0;
   const revoke = () => {
@@ -212,7 +215,8 @@ export function createExperienceBridge(input: Readonly<{
         if (!await input.broker.isLive(pin) || !active) { revoke(); return; }
         let output: unknown;
         if (operation === 'resource') output = await input.broker.resource?.(pin, key as string, value.input, controller.signal);
-        else if (operation === 'action') output = await input.broker.action?.(pin, key as string, value.input, controller.signal);
+        else if (operation === 'action') output = await input.broker.action?.(
+          pin, key as string, value.input, controller.signal, requestId);
         else if (operation === 'run_status') output = await input.broker.runStatus?.(pin, value.input, controller.signal);
         else if (operation === 'run_cancel') output = await input.broker.runCancel?.(pin, value.input, controller.signal);
         else if (operation === 'navigate') output = await input.broker.navigate?.(pin, key as string, controller.signal);
@@ -233,15 +237,21 @@ export function createExperienceBridge(input: Readonly<{
       } finally { pending -= 1; }
     })();
   };
-  const sendUiEvent = async (uiEvent: unknown): Promise<boolean> => {
-    if (!active || !boundedJson(uiEvent)) return false;
-    try {
-      if (!await input.broker.isLive(pin)) { revoke(); return false; }
-    } catch { revoke(); return false; }
-    if (!active) return false;
-    send({ version: 'deft.experience_bridge.v1', kind: 'ui_event',
-      session_id: pin.session_id, event: uiEvent });
-    return true;
+  const sendUiEvent = (uiEvent: unknown): Promise<boolean> => {
+    if (!active || !boundedJson(uiEvent) || queuedUiEvents >= MAX_PENDING) return Promise.resolve(false);
+    queuedUiEvents += 1;
+    const task = uiTail.then(async () => {
+      if (!active) return false;
+      try {
+        if (!await input.broker.isLive(pin)) { revoke(); return false; }
+      } catch { revoke(); return false; }
+      if (!active) return false;
+      send({ version: 'deft.experience_bridge.v1', kind: 'ui_event',
+        session_id: pin.session_id, event: uiEvent });
+      return true;
+    });
+    uiTail = task.then(() => { queuedUiEvents -= 1; }, () => { queuedUiEvents -= 1; });
+    return task;
   };
   return Object.freeze({ revoke, sendUiEvent, get active() { return active; } });
 }

@@ -139,3 +139,24 @@ test('UI events are dropped when the live pin is revoked', async () => {
   assert.equal(port.sent.length, 1);
   assert.equal(bridge.active, false);
 });
+
+test('input change reaches the Worker before a rapid submit click', async () => {
+  const port = new FakePort();
+  let releaseFirst!: () => void;
+  const firstLive = new Promise<boolean>((resolve) => { releaseFirst = () => resolve(true); });
+  let checks = 0;
+  const bridge = createExperienceBridge({
+    port, pin, resourceKeys: [], actionKeys: [],
+    broker: { isLive: () => ++checks === 1 ? firstLive : true },
+    onView: () => undefined,
+  });
+  const changed = bridge.sendUiEvent({ kind: 'input', node_id: 'shipment', value: 'parcel-1' });
+  const clicked = bridge.sendUiEvent({ kind: 'click', node_id: 'submit' });
+  await delay();
+  assert.equal(port.sent.length, 0);
+  releaseFirst();
+  assert.equal(await changed, true);
+  assert.equal(await clicked, true);
+  assert.deepEqual((port.sent as Array<{event: {kind: string}}>).map((item) => item.event.kind),
+    ['input', 'click']);
+});

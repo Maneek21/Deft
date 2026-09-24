@@ -6,7 +6,7 @@ const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = target === process.env.DATABASE_URL && target !== undefined
   && new URL(target).hostname === '127.0.0.1'
   && new URL(target).port === '55435'
-  && /^\/gate_g_phase5_test_c03_(?:review|root)(?:_v[0-9]+)?$/.test(new URL(target).pathname);
+  && /^\/gate_g_phase5_test_c03(?:b)?_(?:review|root)(?:_v[0-9]+)?$/.test(new URL(target).pathname);
 
 test('v3 review is tenant- and epoch-bound and reactivation requires a fresh grant', { skip: !safe }, async () => {
   const [{ db, closeDb }, schema, kit, appService, reviewService, management,

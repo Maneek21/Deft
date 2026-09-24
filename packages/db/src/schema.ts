@@ -675,7 +675,7 @@ export const appRuns = pgTable('app_runs', {
   contract_version: text('contract_version').$type<'deft.app_run.v1'>().notNull(),
   origin_kind: text('origin_kind').$type<'core' | 'legacy_connector' | 'app'>().notNull(),
   initiating_actor_type: text('initiating_actor_type')
-    .$type<'human' | 'agent_employee' | 'system' | 'automation'>()
+    .$type<'human' | 'agent_employee' | 'system' | 'automation' | 'app_public'>()
     .notNull(),
   initiating_actor_id: text('initiating_actor_id').notNull(),
   execution_actor_type: text('execution_actor_type')
@@ -690,6 +690,8 @@ export const appRuns = pgTable('app_runs', {
   origin_app_version_id: text('origin_app_version_id'),
   origin_app_binding_key: text('origin_app_binding_key'),
   origin_runtime_binding_id: text('origin_runtime_binding_id'),
+  origin_public_endpoint_id: text('origin_public_endpoint_id'),
+  origin_public_ingress_id: text('origin_public_ingress_id'),
   origin_app_grant_snapshot_id: text('origin_app_grant_snapshot_id'),
   origin_app_automation_definition_id: text('origin_app_automation_definition_id'),
   origin_app_automation_fire_id: text('origin_app_automation_fire_id'),
@@ -829,6 +831,11 @@ export const appRuns = pgTable('app_runs', {
     name: 'app_runs_automation_definition_fk',
   }).onDelete('restrict'),
   foreignKey({
+    columns: [t.org_id, t.origin_public_endpoint_id, t.origin_public_ingress_id],
+    foreignColumns: [appPublicIngress.org_id, appPublicIngress.endpoint_id, appPublicIngress.id],
+    name: 'app_runs_public_ingress_fk',
+  }).onDelete('restrict'),
+  foreignKey({
     columns: [
       t.org_id,
       t.origin_app_automation_definition_id,
@@ -850,6 +857,9 @@ export const appRuns = pgTable('app_runs', {
   uniqueIndex('app_runs_automation_fire_unique')
     .on(t.org_id, t.origin_app_automation_definition_id, t.origin_app_automation_fire_id)
     .where(sql`${t.origin_app_automation_fire_id} IS NOT NULL`),
+  uniqueIndex('app_runs_public_ingress_unique')
+    .on(t.org_id, t.origin_public_endpoint_id, t.origin_public_ingress_id)
+    .where(sql`${t.origin_public_ingress_id} IS NOT NULL`),
   index('app_runs_idempotency_lookup_idx').on(
     t.org_id,
     t.initiating_actor_type,
@@ -883,6 +893,8 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.provider_kind} = 'mcp'
       AND ${t.origin_app_binding_key} IS NOT NULL
       AND ${t.origin_runtime_binding_id} IS NULL
+      AND ${t.origin_public_endpoint_id} IS NULL
+      AND ${t.origin_public_ingress_id} IS NULL
       AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
       AND ${t.risk_class} = 'external_write'
       AND ${t.review_requirement} = 'always'
@@ -894,6 +906,7 @@ export const appRuns = pgTable('app_runs', {
           AND ${t.origin_app_automation_definition_id} IS NULL
           AND ${t.origin_app_automation_fire_id} IS NULL
           AND ${t.initiating_actor_type} <> 'automation'
+          AND ${t.initiating_actor_type} <> 'app_public'
           AND ${t.execution_actor_type} <> 'automation'
         ) OR (
           ${t.review_scope} = 'approved_automation_definition'
@@ -914,8 +927,18 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.origin_runtime_binding_id} IS NOT NULL
       AND ${t.origin_app_automation_definition_id} IS NULL
       AND ${t.origin_app_automation_fire_id} IS NULL
-      AND ${t.initiating_actor_type} <> 'automation'
-      AND ${t.execution_actor_type} <> 'automation'
+      AND (
+        (${t.initiating_actor_type} = 'app_public'
+          AND ${t.execution_actor_type} = 'human'
+          AND ${t.initiating_actor_id} = ${t.origin_public_ingress_id}
+          AND ${t.origin_public_endpoint_id} IS NOT NULL
+          AND ${t.origin_public_ingress_id} IS NOT NULL)
+        OR (${t.initiating_actor_type} <> 'automation'
+          AND ${t.initiating_actor_type} <> 'app_public'
+          AND ${t.execution_actor_type} <> 'automation'
+          AND ${t.origin_public_endpoint_id} IS NULL
+          AND ${t.origin_public_ingress_id} IS NULL)
+      )
       AND ${t.review_scope} = 'per_invocation'
     ) OR (
       ${t.origin_kind} <> 'app'
@@ -927,7 +950,10 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.origin_app_grant_snapshot_id} IS NULL
       AND ${t.origin_app_automation_definition_id} IS NULL
       AND ${t.origin_app_automation_fire_id} IS NULL
+      AND ${t.origin_public_endpoint_id} IS NULL
+      AND ${t.origin_public_ingress_id} IS NULL
       AND ${t.initiating_actor_type} <> 'automation'
+      AND ${t.initiating_actor_type} <> 'app_public'
       AND ${t.execution_actor_type} <> 'automation'
     )
   `),
@@ -938,7 +964,7 @@ export const appRuns = pgTable('app_runs', {
     )
   `),
   check('app_runs_actor_type_check', sql`
-    ${t.initiating_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
+    ${t.initiating_actor_type} IN ('human', 'agent_employee', 'system', 'automation', 'app_public')
     AND ${t.execution_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
   `),
   check('app_runs_provider_kind_check', sql`${t.provider_kind} IN ('mcp', 'app_runtime')`),
@@ -1171,7 +1197,7 @@ export const appRunEvents = pgTable('app_run_events', {
   )`),
   check('app_run_events_actor_shape_check', sql`
     (${t.actor_type} IS NULL AND ${t.actor_id} IS NULL)
-    OR (${t.actor_type} IN ('human', 'agent_employee', 'system', 'automation') AND ${t.actor_id} IS NOT NULL)
+    OR (${t.actor_type} IN ('human', 'agent_employee', 'system', 'automation', 'app_public') AND ${t.actor_id} IS NOT NULL)
   `),
   check('app_run_events_payload_check', sql`jsonb_typeof(${t.payload}) = 'object' AND octet_length(${t.payload}::text) <= 32768`),
 ]);
@@ -1685,7 +1711,7 @@ export const appVersions = pgTable('app_versions', {
   uniqueIndex('app_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
-  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3')`),
+  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4')`),
   check('app_versions_connected_request_check', sql`
     ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
   `),
@@ -4667,6 +4693,48 @@ export const webSessions = pgTable('web_sessions', {
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [index('web_sessions_user_org_idx').on(t.user_id, t.org_id)]);
 
+// A host-issued, short-lived proof that a human may render one reviewed App
+// experience. The token itself is never stored here.
+export const appExperienceSessions = pgTable('app_experience_sessions', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull(),
+  web_session_id: text('web_session_id').notNull(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
+  experience_key: text('experience_key').notNull(),
+  artifact_digest: text('artifact_digest').notNull(),
+  lifecycle_epoch: integer('lifecycle_epoch').notNull(),
+  grant_epoch: integer('grant_epoch').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_experience_sessions_member_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.web_session_id], foreignColumns: [webSessions.id],
+    name: 'app_experience_sessions_web_session_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
+    name: 'app_experience_sessions_version_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id,
+    t.grant_snapshot_id, t.grant_snapshot_kind],
+    foreignColumns: [appGrantSnapshots.org_id, appGrantSnapshots.app_installation_id,
+      appGrantSnapshots.app_version_id, appGrantSnapshots.id, appGrantSnapshots.snapshot_kind],
+    name: 'app_experience_sessions_grant_fk' }).onDelete('restrict'),
+  index('app_experience_sessions_web_app_idx').on(t.org_id, t.web_session_id,
+    t.app_installation_id, t.expires_at),
+  index('app_experience_sessions_expires_idx').on(t.expires_at),
+  check('app_experience_sessions_key_check', sql`${t.experience_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
+  check('app_experience_sessions_digest_check', sql`${t.artifact_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_experience_sessions_epoch_check', sql`${t.lifecycle_epoch} >= 0 AND ${t.grant_epoch} >= 0`),
+  check('app_experience_sessions_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
+  check('app_experience_sessions_expiry_check', sql`${t.expires_at} > ${t.created_at}`),
+]);
+
 // ═══ REVOKED TOKENS ═══
 // Server-side refresh token revocation (Option B — stateless JWTs, hash-based blacklist).
 // Logout inserts the sha256 hash; /refresh rejects any token whose hash is present.
@@ -4693,6 +4761,11 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   installation_grant_epoch: integer('installation_grant_epoch').notNull(),
   module_installation_id: text('module_installation_id').notNull(),
   collection_key: text('collection_key').notNull(),
+  public_action_key: text('public_action_key'),
+  runtime_binding_id: text('runtime_binding_id'),
+  approver_user_id: text('approver_user_id'),
+  input_mapping: jsonb('input_mapping').$type<Record<string, 'claim.resource_id' | 'claim.claim_id'> | null>(),
+  mapping_digest: text('mapping_digest'),
   state: text('state').$type<'disabled' | 'enabled'>().default('disabled').notNull(),
   endpoint_epoch: integer('endpoint_epoch').default(1).notNull(),
   review_digest: text('review_digest').notNull(),
@@ -4718,6 +4791,12 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
     foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
     name: 'app_public_endpoints_module_fk',
   }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.runtime_binding_id],
+    foreignColumns: [appRuntimeBindings.org_id, appRuntimeBindings.id],
+    name: 'app_public_endpoints_runtime_binding_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.approver_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_public_endpoints_approver_fk' }).onDelete('restrict'),
   unique('app_public_endpoints_org_id_unique').on(t.org_id, t.id),
   uniqueIndex('app_public_endpoints_slug_digest_unique').on(t.slug_digest),
   index('app_public_endpoints_org_installation_idx').on(t.org_id, t.app_installation_id, t.state),
@@ -4729,6 +4808,15 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   check('app_public_endpoints_collection_check', sql`${t.collection_key} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('app_public_endpoints_label_check', sql`octet_length(${t.public_label}) BETWEEN 1 AND 200`),
   check('app_public_endpoints_body_limit_check', sql`${t.max_body_bytes} BETWEEN 128 AND 8192`),
+  check('app_public_endpoints_action_shape_check', sql`
+    (${t.public_action_key} IS NULL AND ${t.runtime_binding_id} IS NULL
+      AND ${t.approver_user_id} IS NULL AND ${t.input_mapping} IS NULL AND ${t.mapping_digest} IS NULL)
+    OR (${t.public_action_key} IS NOT NULL AND ${t.public_action_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+      AND ${t.runtime_binding_id} IS NOT NULL AND ${t.approver_user_id} IS NOT NULL
+      AND ${t.input_mapping} IS NOT NULL AND jsonb_typeof(${t.input_mapping}) = 'object'
+      AND octet_length(${t.input_mapping}::text) <= 4096
+      AND ${t.mapping_digest} IS NOT NULL AND ${t.mapping_digest} ~ '^sha256:[a-f0-9]{64}$')
+  `),
 ]);
 
 // A receipt is retained even for a losing claim. No raw request body, cookie,
@@ -4741,7 +4829,7 @@ export const appPublicIngress = pgTable('app_public_ingress', {
   request_key_digest: text('request_key_digest').notNull(),
   input_digest: text('input_digest').notNull(),
   state: text('state').$type<'processing' | 'confirmed' | 'conflict'>().notNull(),
-  follow_up_state: text('follow_up_state').$type<'pending' | 'unsupported'>().default('pending').notNull(),
+  follow_up_state: text('follow_up_state').$type<'pending' | 'unsupported' | 'run_created'>().default('pending').notNull(),
   follow_up_code: text('follow_up_code').$type<'APP_HANDLER_UNAVAILABLE' | 'ENDPOINT_REVOKED'>(),
   handled_at: timestamp('handled_at'),
   created_at: timestamp('created_at').defaultNow().notNull(),
@@ -4760,7 +4848,9 @@ export const appPublicIngress = pgTable('app_public_ingress', {
   check('app_public_ingress_state_check', sql`${t.state} IN ('processing', 'confirmed', 'conflict')`),
   check('app_public_ingress_follow_up_check', sql`(${t.follow_up_state} = 'pending' AND ${t.follow_up_code} IS NULL AND ${t.handled_at} IS NULL)
     OR (${t.follow_up_state} = 'unsupported' AND ${t.follow_up_code} IS NOT NULL
-      AND ${t.follow_up_code} IN ('APP_HANDLER_UNAVAILABLE', 'ENDPOINT_REVOKED') AND ${t.handled_at} IS NOT NULL)`),
+      AND ${t.follow_up_code} IN ('APP_HANDLER_UNAVAILABLE', 'ENDPOINT_REVOKED') AND ${t.handled_at} IS NOT NULL)
+    OR (${t.follow_up_state} = 'run_created' AND ${t.follow_up_code} IS NULL
+      AND ${t.handled_at} IS NOT NULL)`),
 ]);
 
 // The uniqueness key omits endpoint identity: two public endpoints cannot

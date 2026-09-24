@@ -67,6 +67,7 @@ export function appRunActorId(actor: AppRunActor): string {
     case 'agent_employee': return actor.agent_employee_id;
     case 'system': return actor.system_id;
     case 'automation': return actor.automation_id;
+    case 'app_public': return actor.ingress_id;
   }
 }
 
@@ -145,6 +146,8 @@ export class PostgresAppRunRepository {
       origin_app_binding_key: appRuns.origin_app_binding_key,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
       origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
+      origin_public_endpoint_id: appRuns.origin_public_endpoint_id,
+      origin_public_ingress_id: appRuns.origin_public_ingress_id,
       origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
       origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
       risk_class: appRuns.risk_class,
@@ -180,6 +183,8 @@ export class PostgresAppRunRepository {
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
     origin_runtime_binding_id: string | null;
+    origin_public_endpoint_id: string | null;
+    origin_public_ingress_id: string | null;
     origin_app_grant_snapshot_id: string | null;
     origin_app_automation_definition_id: string | null;
     origin_app_automation_fire_id: string | null;
@@ -198,6 +203,8 @@ export class PostgresAppRunRepository {
       origin_app_version_id: appRuns.origin_app_version_id,
       origin_app_binding_key: appRuns.origin_app_binding_key,
       origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
+      origin_public_endpoint_id: appRuns.origin_public_endpoint_id,
+      origin_public_ingress_id: appRuns.origin_public_ingress_id,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
       origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
       origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
@@ -320,6 +327,7 @@ export class PostgresAppRunRepository {
   ): Promise<AppRunSafeView> {
     const initiating = actorColumns(input.submission.initiating_actor);
     const execution = actorColumns(input.submission.execution_actor);
+    if (execution.type === 'app_public') throw new Error('APP_RUN_ACCESS_DENIED');
     const [run] = await tx.insert(appRuns).values({
       id: input.id,
       org_id: input.submission.org_id,
@@ -348,6 +356,12 @@ export class PostgresAppRunRepository {
         && typeof input.submission.origin.runtime_binding_id === 'string'
         ? input.submission.origin.runtime_binding_id
         : null,
+      origin_public_endpoint_id: input.submission.origin.origin_kind === 'app'
+        && 'public_endpoint_id' in input.submission.origin
+        ? input.submission.origin.public_endpoint_id : null,
+      origin_public_ingress_id: input.submission.origin.origin_kind === 'app'
+        && 'public_ingress_id' in input.submission.origin
+        ? input.submission.origin.public_ingress_id : null,
       origin_app_grant_snapshot_id: input.submission.origin.origin_kind === 'app'
         ? input.submission.origin.grant_snapshot_id
         : null,

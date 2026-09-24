@@ -53,6 +53,14 @@ async function approvalOwnerUserId(
   if (submission.initiating_actor.actor_type === 'human') {
     return submission.initiating_actor.user_id;
   }
+  if (submission.initiating_actor.actor_type === 'app_public'
+    && submission.execution_actor.actor_type === 'human'
+    && submission.origin.origin_kind === 'app'
+    && 'public_endpoint_id' in submission.origin
+    && submission.origin.public_endpoint_id === submission.initiating_actor.endpoint_id
+    && submission.origin.public_ingress_id === submission.initiating_actor.ingress_id) {
+    return submission.execution_actor.user_id;
+  }
   if (submission.initiating_actor.actor_type === 'agent_employee') {
     const [employee] = await tx.select({ user_id: agentEmployees.user_id })
       .from(agentEmployees)
@@ -117,6 +125,9 @@ export class PostgresAppRunApprovalResolver {
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      if (run.initiating_actor_type === 'app_public' && action.user_id !== approverUserId) {
+        return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      }
 
       if (run.execution_release_kind === 'approved') {
         await this.#markApproved(tx, action.id, approverUserId, run);
@@ -213,6 +224,9 @@ export class PostgresAppRunApprovalResolver {
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      if (run.initiating_actor_type === 'app_public' && action.user_id !== rejecterUserId) {
+        return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      }
 
       if (run.execution_release_kind === 'approved') {
         await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run);

@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { AppPublicError, AppPublicClaimService, appPublicClaimService } from '../lib/app-public-service.js';
 import { appPublicLimits } from '../middleware/app-public-limits.js';
 
-// Deliberately unmounted until the public gateway review and limits are wired.
-// This route never reads workspace cookies, bearer headers or c.get('user').
+// The gateway mounts only with an explicit host opt-in and applies limits
+// before body parsing. This route never reads cookies, bearer headers or user.
 const HARD_BODY_LIMIT = 8192;
 const READ_DEADLINE_MS = 10_000;
 

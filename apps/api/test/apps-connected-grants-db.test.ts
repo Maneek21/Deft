@@ -1,7 +1,7 @@
 import './fixtures/app-run-enabled-env.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -611,6 +611,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   const providerRoot = resolve(import.meta.dirname, '..', '..', '..', 'examples', 'app-platform-sandbox-email-provider');
   const providerOutboxRoot = await mkdtemp(resolve(tmpdir(), 'deft-track-a-outbox-'));
   const providerOutbox = resolve(providerOutboxRoot, 'effects.jsonl');
+  const providerEffectCheckpoint = resolve(providerOutboxRoot, 'after-effect.json');
   const providerEnvironment = {
     selfHosted: process.env.DEFT_SELF_HOSTED,
     unsafeStdio: process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO,
@@ -623,7 +624,9 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     else process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = providerEnvironment.unsafeStdio;
     if (providerEnvironment.allowlist === undefined) delete process.env.MCP_STDIO_ALLOWED_COMMANDS;
     else process.env.MCP_STDIO_ALLOWED_COMMANDS = providerEnvironment.allowlist;
-    await rm(providerOutboxRoot, { recursive: true, force: true });
+    if (!process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE) {
+      await rm(providerOutboxRoot, { recursive: true, force: true });
+    }
   });
   process.env.DEFT_SELF_HOSTED = 'true';
   process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = 'true';
@@ -695,7 +698,9 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     server_url: null,
     transport: 'stdio',
     stdio_command: process.execPath,
-    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', providerOutbox],
+    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', providerOutbox,
+      ...(process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE
+        ? ['--pause-after-effect-file', providerEffectCheckpoint] : [])],
     auth_type: 'none',
     is_active: true,
     created_by: userId,
@@ -861,7 +866,9 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     }, { now: () => new Date(scheduledAt.getTime() + 60_000) })
   );
 
-  const primary = await createDefinition(1);
+  const primary = process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE
+    ? await createDefinition(1, 100, approvedAt, 3 * 24 * 60 * 60)
+    : await createDefinition(1);
   const definition = primary.definition;
   assert.equal(definition.state, 'active');
   assert.equal(definition.interface_identity, actionBinding.interface_identity);
@@ -870,6 +877,19 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal((definition.authorization_vector as any).organization_id, orgId);
   assert.equal((definition.authorization_vector as any).approver.user_id, userId);
   assert.equal((definition.authorization_vector as any).relation.revision, relation.revision);
+  if (process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE) {
+    await writeFile(process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE, JSON.stringify({
+      org_id: orgId, owner_user_id: userId,
+      app_installation_id: staged.id, definition_id: definition.id,
+      connection_id: connectionId,
+      definition_epoch: definition.definition_epoch,
+      scheduled_at: primary.scheduledAt.toISOString(),
+      provider_outbox: providerOutbox,
+      provider_effect_checkpoint: providerEffectCheckpoint,
+    }), { flag: 'wx' });
+    await (await import('@deft/mcp')).mcpClientManager.disconnect(connectionId);
+    return;
+  }
 
   const newerDefinitions = await Promise.all(Array.from({ length: 100 }, async (_value, index) => {
     const createdAt = new Date(approvedAt.getTime() + index + 1);

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   AppInstallationAuthoritySchema,
@@ -39,7 +39,7 @@ export type PublicClaimInput = z.infer<typeof PublicClaimInputSchema>;
 export type PublicClaimResult = Readonly<{
   claim_id: string;
   claim_state: 'confirmed';
-  follow_up_state: 'pending' | 'unsupported';
+  follow_up_state: 'pending' | 'unsupported' | 'run_created';
   replayed: boolean;
 }>;
 
@@ -70,8 +70,10 @@ const hash = (value: string) => `sha256:${createHash('sha256').update(value).dig
 export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   'id' | 'org_id' | 'slug_digest' | 'app_installation_id' | 'app_version_id' | 'grant_snapshot_id'
   | 'installation_lifecycle_epoch' | 'installation_grant_epoch' | 'module_installation_id'
-  | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>): string {
-  return hash(JSON.stringify({
+  | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>
+  & Partial<Pick<Endpoint, 'public_action_key' | 'runtime_binding_id' | 'approver_user_id'
+    | 'input_mapping' | 'mapping_digest'>>): string {
+  const core = {
     review_version: 'deft.app_public_review.v1',
     endpoint_id: endpoint.id,
     org_id: endpoint.org_id,
@@ -86,6 +88,15 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
     endpoint_epoch: endpoint.endpoint_epoch,
     public_label: endpoint.public_label,
     max_body_bytes: endpoint.max_body_bytes,
+  };
+  if (!endpoint.public_action_key) return hash(JSON.stringify(core));
+  return hash(JSON.stringify({ ...core,
+    review_version: 'deft.app_public_review.v2',
+    public_action_key: endpoint.public_action_key,
+    runtime_binding_id: endpoint.runtime_binding_id,
+    approver_user_id: endpoint.approver_user_id,
+    input_mapping: endpoint.input_mapping,
+    mapping_digest: endpoint.mapping_digest,
   }));
 }
 
@@ -253,6 +264,11 @@ export class AppPublicClaimService {
     let outcome: PublicClaimResult | 'conflict';
     try {
       outcome = await db.transaction(async (tx) => {
+        // Anonymous work never waits indefinitely for a lock or a statement.
+        // These settings are transaction-local and cannot leak to pooled users.
+        await tx.execute(sql`SET LOCAL statement_timeout = 5000`);
+        await tx.execute(sql`SET LOCAL lock_timeout = 1000`);
+        await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
         const { endpoint, principal, app } = await resolveEndpoint(tx, slug);
         await assertLiveAuthority(tx, endpoint, principal, app);
         const input = parseBody(rawBody, endpoint.max_body_bytes);

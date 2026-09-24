@@ -11,7 +11,7 @@ import { runtimeV3PackageJson } from './fixtures/runtime-v3-package.js';
 const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = target === process.env.DATABASE_URL && target !== undefined
   && new URL(target).hostname === '127.0.0.1' && new URL(target).port === '55435'
-  && /^\/gate_g_phase5_test_c03_(?:public|root)(?:_v[0-9]+)?$/.test(new URL(target).pathname);
+  && /^\/gate_g_phase5_test_c03(?:b)?_(?:public|root)(?:_v[0-9]+)?$/.test(new URL(target).pathname);
 
 test('authenticated HTTP pairing, packed install, reviews, action and Runtime receipt', { skip: !safe }, async () => {
   process.env.DEFT_APPS_ENABLED = 'true';

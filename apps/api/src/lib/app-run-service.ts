@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { sql } from 'drizzle-orm';
 import {
   APP_RUN_DEFAULT_ATTEMPT_LIMIT,
   APP_RUN_CONTRACT_VERSIONS,
@@ -62,6 +63,7 @@ import type {
 import { APP_RUN_APP_AUTHORITY_KINDS } from './app-run-prepared-input.js';
 import type {
   AppRunPreparedAppVerification,
+  PostgresAppRunLiveAuthorization,
 } from './app-run-live-authorization.js';
 import { bindAppAutomationFireRunWithExecutor } from './app-automation-repository.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
@@ -97,6 +99,8 @@ export type ReviewedRuntimeCapture = Readonly<{
   installation_lifecycle_epoch: number;
   installation_grant_epoch: number;
 }>;
+export type ReviewedPublicRuntimeCapture = Awaited<ReturnType<
+  PostgresAppRunLiveAuthorization['captureReviewedPublicRuntimeInTransaction']>>;
 
 export type AppRunTrustedContext = Readonly<{
   org_id: string;
@@ -125,6 +129,9 @@ export interface AppRunPreparedAppAuthorizer {
   captureReviewedRuntimeInTransaction?(tx: AppRunTransaction, input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
   }>): Promise<ReviewedRuntimeCapture>;
+  captureReviewedPublicRuntimeInTransaction?(tx: AppRunTransaction, input: Readonly<{
+    org_id: string; endpoint_id: string; ingress_id: string;
+  }>): Promise<ReviewedPublicRuntimeCapture>;
 }
 
 function sameActor(left: AppRunActor, right: AppRunActor): boolean {
@@ -282,6 +289,8 @@ export function appRunReplayAuthorityMatches(
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
     origin_runtime_binding_id?: string | null;
+    origin_public_endpoint_id?: string | null;
+    origin_public_ingress_id?: string | null;
     origin_app_grant_snapshot_id: string | null;
     origin_app_automation_definition_id?: string | null;
     origin_app_automation_fire_id?: string | null;
@@ -297,11 +306,17 @@ export function appRunReplayAuthorityMatches(
   const actionBindingKey = 'binding_key' in submission.origin
     ? submission.origin.binding_key
     : null;
+  const publicEndpointId = 'public_endpoint_id' in submission.origin
+    ? submission.origin.public_endpoint_id : null;
+  const publicIngressId = 'public_ingress_id' in submission.origin
+    ? submission.origin.public_ingress_id : null;
   if (
     replay.origin_app_installation_id !== submission.origin.installation_id
     || replay.origin_app_version_id !== submission.origin.app_version_id
     || replay.origin_app_binding_key !== actionBindingKey
     || (replay.origin_runtime_binding_id ?? null) !== runtimeBindingId
+    || (replay.origin_public_endpoint_id ?? null) !== publicEndpointId
+    || (replay.origin_public_ingress_id ?? null) !== publicIngressId
     || replay.origin_app_grant_snapshot_id !== submission.origin.grant_snapshot_id
   ) return false;
   if (trustedAppVector?.schema_version === 'deft.app_action_authority.v2') {
@@ -339,6 +354,17 @@ export class AppRunService {
     private readonly appOriginEnabled: () => boolean = () => false,
     private readonly appAutomationsEnabled: () => boolean = () => false,
   ) {}
+
+  /** The public worker calls this only after its ingress/Run transaction
+   * commits; duplicate queue delivery may repair a missed projection. */
+  async projectPendingApproval(orgId: string, runId: string): Promise<void> {
+    try {
+      await this.attention.projectApprovalRequested(orgId, runId);
+    } catch (error) {
+      console.warn('[app-runs] approval Attention projection failed:',
+        error instanceof Error ? error.message : 'unknown error');
+    }
+  }
 
   async submit(context: AppRunTrustedContext, rawSubmission: unknown): Promise<AppRunSafeView> {
     return this.#submit(context, rawSubmission, null);
@@ -428,6 +454,7 @@ export class AppRunService {
   async submitReviewedRuntime(
     caller: ReviewedRuntimeCaller,
     request: ReviewedRuntimeInvoke,
+    hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunSafeView> {
     if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
       || !this.appLiveAuthorization?.captureReviewedRuntimeForPreparation
@@ -503,7 +530,77 @@ export class AppRunService {
       }),
     };
     return this.#submit({ org_id: caller.org_id, initiating_actor: actor,
-      execution_actor: actor }, submission, null, undefined, undefined, capture);
+      execution_actor: actor }, submission, null, undefined, undefined, capture,
+      undefined, undefined, hostAdmission);
+  }
+
+  /** Only the validated public-ingress worker calls this inside the ingress
+   * transaction. No caller-supplied actor, action, policy, or input is used. */
+  async submitReviewedPublicRuntimeInTransaction(tx: AppRunTransaction, identity: Readonly<{
+    org_id: string; endpoint_id: string; ingress_id: string;
+  }>): Promise<AppRunSafeView> {
+    if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
+      || !this.appLiveAuthorization?.captureReviewedPublicRuntimeInTransaction) {
+      throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    }
+    // Serialize duplicate queue deliveries before any share lock is taken on
+    // the ingress. Otherwise two readers can deadlock when the winner upgrades
+    // its ingress lock after the Run insert while the loser waits on #submit.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+      ${`app-public-ingress:${identity.org_id}:${identity.ingress_id}`}, 0))`);
+    let capture: ReviewedPublicRuntimeCapture;
+    try {
+      capture = await this.appLiveAuthorization.captureReviewedPublicRuntimeInTransaction(tx, identity);
+    } catch {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const { binding, endpoint, ingress, claim } = capture;
+    if (binding.risk_class !== 'external_write' || binding.review_requirement !== 'always'
+      || binding.retry_class !== 'unsafe_or_unknown' || binding.retention_class !== 'standard'
+      || capture.action.host_policy.review_scope !== 'per_invocation'
+      || endpoint.approver_user_id === null || endpoint.id !== identity.endpoint_id
+      || ingress.id !== identity.ingress_id || claim.ingress_id !== ingress.id) {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const initiator: AppRunActor = { actor_type: 'app_public', endpoint_id: endpoint.id,
+      ingress_id: ingress.id };
+    const executor: AppRunActor = { actor_type: 'human', user_id: endpoint.approver_user_id };
+    const submission = {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      org_id: identity.org_id,
+      initiating_actor: initiator,
+      execution_actor: executor,
+      origin: { origin_kind: 'app' as const,
+        installation_id: binding.app_installation_id,
+        app_version_id: binding.app_version_id,
+        grant_snapshot_id: binding.grant_snapshot_id,
+        runtime_binding_id: binding.id,
+        public_endpoint_id: endpoint.id,
+        public_ingress_id: ingress.id },
+      operation: { provider: { org_id: identity.org_id,
+        provider_kind: 'app_runtime' as const,
+        provider_instance_id: binding.provider_instance_id },
+      operation_name: binding.operation_name },
+      provider_snapshot_digest: capture.provider_snapshot_digest,
+      policy: { risk_class: binding.risk_class, review_requirement: binding.review_requirement,
+        review_scope: 'per_invocation' as const, retry_class: binding.retry_class },
+      retention_class: binding.retention_class,
+      idempotency_key: `app-public-ingress:${ingress.id}`,
+      input: capture.public_input,
+      authorization_snapshot: capture.authorization_snapshot,
+      safe_preview: AppRunSafePreviewSchema.parse({
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        title: capture.action.action_key,
+        summary: 'Public claim awaiting one human approval.',
+        resource_refs: [{ resource_kind: claim.resource_type, resource_id: claim.resource_id }],
+        fields: { provider_kind: 'app_runtime', app_installation_id: binding.app_installation_id,
+          runtime_binding_id: binding.id, public_endpoint_id: endpoint.id,
+          public_claim_id: claim.id },
+      }),
+    };
+    return this.#submit({ org_id: identity.org_id, initiating_actor: initiator,
+      execution_actor: executor }, submission, null, undefined, undefined, undefined,
+      capture, tx);
   }
 
   /** Transient approval review: disclose exact retained input only to the
@@ -516,6 +613,9 @@ export class AppRunService {
     }
     return this.repository.transaction(async (tx) => {
       const locator = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+      if (locator?.initiating_actor_type === 'app_public') {
+        return this.#reviewPublicRuntimeInput(tx, caller, runId, locator);
+      }
       if (!locator || locator.initiating_actor_type !== 'human'
         || locator.initiating_actor_id !== caller.user_id
         || locator.org_id !== caller.org_id
@@ -596,6 +696,82 @@ export class AppRunService {
     });
   }
 
+  async #reviewPublicRuntimeInput(tx: AppRunTransaction, caller: ReviewedRuntimeCaller,
+    runId: string, locator: NonNullable<Awaited<ReturnType<PostgresAppRunRepository['findRuntimeReviewPin']>>>) {
+    if (!this.appLiveAuthorization?.captureReviewedPublicRuntimeInTransaction
+      || locator.execution_actor_type !== 'human'
+      || locator.execution_actor_id !== caller.user_id
+      || locator.origin_kind !== 'app' || locator.provider_kind !== 'app_runtime'
+      || !locator.origin_public_endpoint_id || !locator.origin_public_ingress_id
+      || locator.initiating_actor_id !== locator.origin_public_ingress_id) {
+      throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    }
+    const locked = await this.repository.lockRun(tx, caller.org_id, runId);
+    const pin = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+    if (!locked || !pin || pin.state !== 'pending_approval'
+      || pin.input_expires_at <= this.now()
+      || pin.origin_public_endpoint_id !== locator.origin_public_endpoint_id
+      || pin.origin_public_ingress_id !== locator.origin_public_ingress_id
+      || pin.execution_actor_type !== 'human' || pin.execution_actor_id !== caller.user_id) {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    let current: ReviewedPublicRuntimeCapture;
+    try {
+      current = await this.appLiveAuthorization.captureReviewedPublicRuntimeInTransaction(tx, {
+        org_id: caller.org_id, endpoint_id: locator.origin_public_endpoint_id,
+        ingress_id: locator.origin_public_ingress_id,
+      });
+    } catch {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    let authorityMatches = false;
+    try {
+      authorityMatches = canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot))
+        === canonicalAuthorization(current.authorization_snapshot);
+    } catch { /* Invalid retained authority cannot disclose input. */ }
+    if (pin.input_expires_at <= this.now() || pin.state !== 'pending_approval'
+      || pin.initiating_actor_type !== 'app_public'
+      || pin.initiating_actor_id !== current.ingress.id
+      || pin.execution_actor_id !== current.endpoint.approver_user_id
+      || pin.origin_runtime_binding_id !== current.binding.id
+      || pin.origin_app_installation_id !== current.binding.app_installation_id
+      || pin.origin_app_version_id !== current.binding.app_version_id
+      || pin.origin_app_grant_snapshot_id !== current.binding.grant_snapshot_id
+      || pin.provider_instance_id !== current.binding.provider_instance_id
+      || pin.provider_snapshot_id !== current.binding.provider_snapshot_id
+      || pin.operation_name !== current.binding.operation_name
+      || pin.risk_class !== current.binding.risk_class
+      || pin.review_requirement !== current.binding.review_requirement
+      || pin.review_scope !== current.action.host_policy.review_scope
+      || pin.retry_class !== current.binding.retry_class
+      || pin.retention_class !== current.binding.retention_class
+      || !authorityMatches
+      || !await this.repository.hasPendingRuntimeApproval(tx, caller.org_id, runId, caller.user_id)) {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    let reviewedInput: Record<string, string | number | boolean>;
+    try {
+      const retained = await this.secretRepository.readInput(caller.org_id, runId, tx);
+      reviewedInput = parseRuntimeObjectInput(RuntimeObjectSchema.parse(current.action.input_schema), retained);
+      if (canonicalCapabilityJson(reviewedInput) !== canonicalCapabilityJson(current.public_input)) {
+        throw new Error('Public input differs from canonical claim');
+      }
+    } catch {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    return Object.freeze({ run_id: runId, action_key: current.action.action_key,
+      app_installation_id: current.binding.app_installation_id,
+      app_version_id: current.binding.app_version_id,
+      grant_snapshot_id: current.binding.grant_snapshot_id,
+      runtime_binding_id: current.binding.id,
+      contract_digest: current.action.contract_digest,
+      policy: Object.freeze({ risk_class: current.binding.risk_class,
+        review_requirement: current.binding.review_requirement,
+        review_scope: current.action.host_policy.review_scope,
+        retry_class: current.binding.retry_class }),
+      input: reviewedInput });
+  }
+
   async submitChild(
     context: AppRunTrustedContext,
     parentRunId: string,
@@ -614,6 +790,9 @@ export class AppRunService {
     trustedAppVector?: AppRunPreparedAppVerification['authority_vector'],
     automationClaimToken?: string,
     trustedRuntimeCapture?: ReviewedRuntimeCapture,
+    trustedPublicCapture?: ReviewedPublicRuntimeCapture,
+    existingTx?: AppRunTransaction,
+    hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -626,15 +805,21 @@ export class AppRunService {
       || !sameActor(context.initiating_actor, submission.initiating_actor)
       || !sameActor(context.execution_actor, submission.execution_actor)
       || !sameActor(context.initiating_actor, submission.authorization_snapshot.authenticated_subject)
-      || (submission.origin.origin_kind === 'app' && !trustedAppVector && !trustedRuntimeCapture)
+      || (submission.origin.origin_kind === 'app' && !trustedAppVector && !trustedRuntimeCapture && !trustedPublicCapture)
       || (submission.origin.origin_kind !== 'app'
-        && (trustedAppVector !== undefined || trustedRuntimeCapture !== undefined))
-      || (trustedAppVector !== undefined && trustedRuntimeCapture !== undefined)
+        && (trustedAppVector !== undefined || trustedRuntimeCapture !== undefined || trustedPublicCapture !== undefined))
+      || [trustedAppVector, trustedRuntimeCapture, trustedPublicCapture].filter(Boolean).length > 1
       || (submission.origin.origin_kind === 'app' && 'runtime_binding_id' in submission.origin
-        && !trustedRuntimeCapture)
+        && !trustedRuntimeCapture && !trustedPublicCapture)
       || (submission.origin.origin_kind === 'app' && 'binding_key' in submission.origin
         && !trustedAppVector)
-      || (!trustedAppVector && !trustedRuntimeCapture && submission.authorization_snapshot.authority_refs.some(
+      || (submission.origin.origin_kind === 'app' && 'public_endpoint_id' in submission.origin
+        && !trustedPublicCapture)
+      || (trustedPublicCapture !== undefined && (submission.origin.origin_kind !== 'app'
+        || !('public_endpoint_id' in submission.origin)
+        || submission.initiating_actor.actor_type !== 'app_public'
+        || submission.execution_actor.actor_type !== 'human'))
+      || (!trustedAppVector && !trustedRuntimeCapture && !trustedPublicCapture && submission.authorization_snapshot.authority_refs.some(
         (ref) => APP_AUTHORITY_KINDS.has(ref.authority_kind),
       ))
       || (submission.origin.origin_kind === 'legacy_connector'
@@ -655,8 +840,9 @@ export class AppRunService {
     const resultExpiresAt = retentionDeadline(submission.retention_class, now);
     const idempotencyExpiresAt = idempotencyDeadline(submission.retention_class, now);
 
-    const submitted = await this.repository.transaction(async (tx) => {
+    const submitInTransaction = async (tx: AppRunTransaction) => {
       await this.repository.acquireSubmissionLock(tx, lock);
+      if (hostAdmission) await hostAdmission(tx);
       if (trustedAppVector) {
         if (!this.appLiveAuthorization) throw new AppRunError('APP_RUN_ACCESS_DENIED');
         let live: AppRunAuthorizationSnapshot;
@@ -718,6 +904,44 @@ export class AppRunService {
           throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
         }
       }
+      if (trustedPublicCapture) {
+        if (!this.appLiveAuthorization?.captureReviewedPublicRuntimeInTransaction
+          || submission.origin.origin_kind !== 'app'
+          || !('public_endpoint_id' in submission.origin)
+          || !('public_ingress_id' in submission.origin)
+          || !('runtime_binding_id' in submission.origin)
+          || submission.initiating_actor.actor_type !== 'app_public'
+          || submission.execution_actor.actor_type !== 'human') {
+          throw new AppRunError('APP_RUN_ACCESS_DENIED');
+        }
+        let live: ReviewedPublicRuntimeCapture;
+        try {
+          live = await this.appLiveAuthorization.captureReviewedPublicRuntimeInTransaction(tx, {
+            org_id: submission.org_id,
+            endpoint_id: submission.origin.public_endpoint_id,
+            ingress_id: submission.origin.public_ingress_id,
+          });
+        } catch {
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        }
+        const binding = live.binding;
+        const matchingInput = canonicalCapabilityJson(live.public_input)
+          === canonicalCapabilityJson(submission.input);
+        if (canonicalAuthorization(live.authorization_snapshot)
+          !== canonicalAuthorization(submission.authorization_snapshot)
+          || runtimeCaptureIdentity(live) !== runtimeCaptureIdentity(trustedPublicCapture)
+          || live.endpoint.approver_user_id !== submission.execution_actor.user_id
+          || live.endpoint.id !== submission.initiating_actor.endpoint_id
+          || live.ingress.id !== submission.initiating_actor.ingress_id
+          || binding.id !== submission.origin.runtime_binding_id
+          || binding.app_installation_id !== submission.origin.installation_id
+          || binding.app_version_id !== submission.origin.app_version_id
+          || binding.grant_snapshot_id !== submission.origin.grant_snapshot_id
+          || binding.provider_instance_id !== submission.operation.provider.provider_instance_id
+          || binding.operation_name !== submission.operation.operation_name
+          || live.provider_snapshot_digest !== submission.provider_snapshot_digest
+          || !matchingInput) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
       const replay = await this.repository.findReplay(
         tx,
         submission,
@@ -743,6 +967,8 @@ export class AppRunService {
           origin_app_version_id: _appVersion,
           origin_app_binding_key: _binding,
           origin_runtime_binding_id: _runtimeBinding,
+          origin_public_endpoint_id: _publicEndpoint,
+          origin_public_ingress_id: _publicIngress,
           origin_app_grant_snapshot_id: _grant,
           origin_app_automation_definition_id: _automationDefinition,
           origin_app_automation_fire_id: _automationFire,
@@ -837,8 +1063,10 @@ export class AppRunService {
         await this.attemptScheduler.scheduleInTransaction(tx, run, now);
       }
       return run;
-    });
-    if (submitted.state === 'pending_approval') {
+    };
+    const submitted = existingTx ? await submitInTransaction(existingTx)
+      : await this.repository.transaction(submitInTransaction);
+    if (!existingTx && submitted.state === 'pending_approval') {
       try {
         await this.attention.projectApprovalRequested(submitted.org_id, submitted.id);
       } catch (error) {

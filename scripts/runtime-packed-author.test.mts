@@ -35,5 +35,16 @@ test('outside author consumes packed Runtime Kit without workspace imports and b
   await writeFile(join(project, 'verify.mjs'), "import {verifyDeftAppPackageJson,parseRuntimeObjectInput,createAppRuntimeClient} from '@deft/app-kit'; import {readFile} from 'node:fs/promises'; if(typeof createAppRuntimeClient!=='function') throw Error('runtime transport export'); const p=await verifyDeftAppPackageJson(await readFile('.deft/app.deftapp.json','utf8')); if(p.package.manifest.schema_version!=='3') throw Error('protocol'); parseRuntimeObjectInput(p.package.manifest.private_capabilities[0].input_schema,{shipment_id:'synthetic-1'}); console.log(p.digest);\n");
   assert.match(run(['verify.mjs'], project), /sha256:[a-f0-9]{64}/);
   if (process.env.DEFT_RUNTIME_AUTHOR_PACKAGE) await writeFile(process.env.DEFT_RUNTIME_AUTHOR_PACKAGE, artifact);
+  const installedProject = join(project, 'installed-app');
+  await mkdir(installedProject);
+  run([cli, 'app', 'init', '--template', 'installed'], installedProject);
+  run([cli, 'app', 'check'], installedProject);
+  run([cli, 'app', 'build'], installedProject);
+  const installedArtifact = await readFile(join(installedProject, '.deft/app.deftapp.json'), 'utf8');
+  run([cli, 'app', 'build'], installedProject);
+  assert.equal(await readFile(join(installedProject, '.deft/app.deftapp.json'), 'utf8'), installedArtifact);
+  await writeFile(join(installedProject, 'verify.mjs'), "import {verifyDeftAppPackageJson} from '@deft/app-kit'; import {readFile} from 'node:fs/promises'; const p=await verifyDeftAppPackageJson(await readFile('.deft/app.deftapp.json','utf8')); if(p.package.manifest.schema_version!=='4'||p.package.artifacts.length!==2||p.package.manifest.public_actions.length!==1||p.package.manifest.experiences.length!==1) throw Error('installed contract'); console.log(p.digest);\n");
+  assert.match(run(['verify.mjs'], installedProject), /sha256:[a-f0-9]{64}/);
+  if (process.env.DEFT_INSTALLED_AUTHOR_PACKAGE) await writeFile(process.env.DEFT_INSTALLED_AUTHOR_PACKAGE, installedArtifact);
   console.log(`Independent author artifact: ${join(project, '.deft/app.deftapp.json')}`);
 });

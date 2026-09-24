@@ -3,6 +3,7 @@ import type { AppRunSafeView } from './app-run-repository.js';
 import { getAppRunRuntime } from './app-run-runtime.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
 import { AppRunError } from './app-run-errors.js';
+import type { AppRunTransaction } from './app-run-repository.js';
 
 export const ReviewedRuntimeInvokeSchema = z.strictObject({
   runtime_binding_id: z.string().uuid(),
@@ -11,15 +12,17 @@ export const ReviewedRuntimeInvokeSchema = z.strictObject({
 });
 export type ReviewedRuntimeInvoke = z.infer<typeof ReviewedRuntimeInvokeSchema>;
 export type ReviewedRuntimeCaller = Readonly<{ org_id: string; user_id: string }>;
+export type ReviewedRuntimeHostAdmission = (tx: AppRunTransaction) => Promise<void>;
 
 export interface ReviewedRuntimeRunPort {
-  submitReviewedRuntime(caller: ReviewedRuntimeCaller, request: ReviewedRuntimeInvoke): Promise<AppRunSafeView>;
+  submitReviewedRuntime(caller: ReviewedRuntimeCaller, request: ReviewedRuntimeInvoke,
+    hostAdmission?: ReviewedRuntimeHostAdmission): Promise<AppRunSafeView>;
   reviewRuntimeInput(caller: ReviewedRuntimeCaller, runId: string): Promise<unknown>;
 }
 
 const lazyRuns: ReviewedRuntimeRunPort = {
-  async submitReviewedRuntime(caller, request) {
-    return (await getAppRunRuntime()).service.submitReviewedRuntime(caller, request);
+  async submitReviewedRuntime(caller, request, hostAdmission) {
+    return (await getAppRunRuntime()).service.submitReviewedRuntime(caller, request, hostAdmission);
   },
   async reviewRuntimeInput(caller, runId) {
     return (await getAppRunRuntime()).service.reviewRuntimeInput(caller, runId);
@@ -36,6 +39,15 @@ export class AppRuntimeActionService {
     if (!appRuntimeChannelEnabled()) throw new AppRunError('APP_RUNS_DISABLED');
     const request = ReviewedRuntimeInvokeSchema.parse(raw);
     return this.runs.submitReviewedRuntime(caller, request);
+  }
+
+  /** Only an in-process host broker may supply this guard. HTTP request data
+   * cannot construct callbacks or bypass the normal Runtime authority capture. */
+  invokeFromExperience(caller: ReviewedRuntimeCaller, raw: unknown,
+    hostAdmission: ReviewedRuntimeHostAdmission): Promise<AppRunSafeView> {
+    if (!appRuntimeChannelEnabled()) throw new AppRunError('APP_RUNS_DISABLED');
+    const request = ReviewedRuntimeInvokeSchema.parse(raw);
+    return this.runs.submitReviewedRuntime(caller, request, hostAdmission);
   }
 
   review(caller: ReviewedRuntimeCaller, runId: string): Promise<unknown> {

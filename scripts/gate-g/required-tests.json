@@ -6,6 +6,14 @@
       "description": "All current App Kit baseline and candidate Runtime/Experience leaf cases; offline packed consumers use pinned cached dependencies.",
       "cases": [
         {
+          "name": "installed v4 combines exact Module, Experience and public mapping without granting authority",
+          "file": "packages/app-kit/test/installed-authoring.test.ts"
+        },
+        {
+          "name": "installed v4 rejects orphan artifacts, undeclared actions and invalid canonical claim mappings",
+          "file": "packages/app-kit/test/installed-authoring.test.ts"
+        },
+        {
           "name": "builds and verifies byte-identical deterministic packages",
           "file": "packages/app-kit/test/app-kit.test.ts"
         },
@@ -617,6 +625,38 @@
       ],
       "id": "runtime-author-journey",
       "description": "Reviewed v3 lifecycle, actual packed Runtime Kit, authenticated HTTP review and separate SDK worker with signed receipt on the assigned disposable PostgreSQL database."
+    },
+    {
+      "id": "installed-author-journey",
+      "description": "Protocol v4 atomic Module activation, human web-session Experience submission, and packed public claim through approval to a separate Runtime effect on the assigned disposable PostgreSQL database.",
+      "cases": [
+        {
+          "name": "anonymous public route mounts only when Apps and explicit ingress opt-in are both enabled",
+          "file": "apps/api/test/app-public-route-flags.test.ts"
+        },
+        {
+          "name": "v4 activation rolls back earlier included Modules when a later Module conflicts",
+          "file": "apps/api/test/app-installed-review-db.test.ts"
+        },
+        {
+          "name": "installed Experience session pins human web SID, App, grant and bounded active count",
+          "file": "apps/api/test/app-experience-db.test.ts"
+        },
+        {
+          "name": "packed v4 public claim creates a distinct principal Run, approved Runtime effect and signed receipt",
+          "file": "apps/api/test/app-public-runtime-http-db.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "automation-process-restore",
+      "description": "Production automation scanner, queues and workers across real process kills, durable provider ledger and restored database/keyrings; uses its own guarded source/restore profile.",
+      "cases": [
+        {
+          "name": "Track A production automation survives process kills and DB/keyring restore",
+          "file": "apps/api/test/track-a-restore-process-db.test.ts"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

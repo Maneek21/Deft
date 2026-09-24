@@ -75,12 +75,30 @@ export type AppManifestV2 = Omit<AppManifestV1, 'schema_version' | 'compatibilit
   }>;
 };
 
-export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2;
+export type AppRuntimeManifestV3 = AppManifestBase & {
+  schema_version: '3'; compatibility: { app_protocol: '3' };
+  runtime_requirements: unknown[]; private_capabilities: unknown[]; runtime_actions: unknown[];
+};
+
+export type AppExperienceReference = {
+  key: string; label: string; artifact_path: string; artifact_digest: string;
+  bridge_version: 'deft.experience_bridge.v1';
+  renderer_version: 'deft.trusted_renderer.v1';
+};
+
+export type AppInstalledManifestV4 = Omit<AppRuntimeManifestV3, 'schema_version' | 'compatibility'> & {
+  schema_version: '4'; compatibility: { app_protocol: '4' };
+  experiences: AppExperienceReference[]; public_actions: unknown[];
+};
+
+export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
+  | AppRuntimeManifestV3 | AppInstalledManifestV4;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
-export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1' | 'deft.app.package.v2';
+export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1'
+  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4';
 
 export function isConnectedAppManifest(manifest: AppManifest): manifest is ConnectedAppManifest {
-  return manifest.compatibility.app_protocol !== '0';
+  return manifest.compatibility.app_protocol === '1' || manifest.compatibility.app_protocol === '2';
 }
 
 /** Protocol v0 has no connected controls in its manifest, but an installed
@@ -396,7 +414,9 @@ function stringValue(value: unknown, label: string): string {
 function packageFormat(value: unknown): AppPackageFormat {
   if (value !== 'deft.app.package.v0'
     && value !== 'deft.app.package.v1'
-    && value !== 'deft.app.package.v2') {
+    && value !== 'deft.app.package.v2'
+    && value !== 'deft.app.package.v3'
+    && value !== 'deft.app.package.v4') {
     throw new Error('Invalid App package format.');
   }
   return value;
@@ -489,7 +509,8 @@ function normalizeManifest(value: unknown): AppManifest {
   const row = object(value, 'App manifest');
   const compatibility = object(row.compatibility, 'App compatibility');
   const protocol = compatibility.app_protocol;
-  if (protocol !== '0' && protocol !== '1' && protocol !== '2') throw new Error('Unsupported App protocol.');
+  if (protocol !== '0' && protocol !== '1' && protocol !== '2'
+    && protocol !== '3' && protocol !== '4') throw new Error('Unsupported App protocol.');
   if (row.schema_version !== protocol) throw new Error('App manifest protocol and schema do not match.');
   const base: AppManifestBase = {
     id: stringValue(row.id, 'App identity'),
@@ -516,6 +537,29 @@ function normalizeManifest(value: unknown): AppManifest {
     } : {}),
   };
   if (protocol === '0') return { ...base, schema_version: '0', compatibility: { app_protocol: '0' } };
+  if (protocol === '3' || protocol === '4') {
+    const runtime = {
+      ...base,
+      runtime_requirements: recordArray(row.runtime_requirements, 'Runtime requirements'),
+      private_capabilities: recordArray(row.private_capabilities, 'private capabilities'),
+      runtime_actions: recordArray(row.runtime_actions, 'Runtime actions'),
+    };
+    if (protocol === '3') return { ...runtime, schema_version: '3', compatibility: { app_protocol: '3' } };
+    return { ...runtime, schema_version: '4', compatibility: { app_protocol: '4' },
+      experiences: recordArray(row.experiences, 'App Experiences').map((item) => {
+        if (item.bridge_version !== 'deft.experience_bridge.v1'
+          || item.renderer_version !== 'deft.trusted_renderer.v1') {
+          throw new Error('Unsupported App Experience bridge or renderer.');
+        }
+        return { key: stringValue(item.key, 'Experience key'),
+          label: stringValue(item.label, 'Experience label'),
+          artifact_path: stringValue(item.artifact_path, 'Experience path'),
+          artifact_digest: stringValue(item.artifact_digest, 'Experience digest'),
+          bridge_version: item.bridge_version, renderer_version: item.renderer_version };
+      }),
+      public_actions: recordArray(row.public_actions, 'public actions'),
+    };
+  }
   const connected = {
     ...base,
     dependencies: recordArray(row.dependencies ?? [], 'App dependencies').map((entry) => ({

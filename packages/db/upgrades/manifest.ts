@@ -187,6 +187,21 @@ export const upgradeManifest = {
       file: '0.3.0-preview.33-app-runtime-authoring.sql',
       description: 'Permit explicitly reviewed Runtime App protocol v3 with effective grant coherence',
     },
+    {
+      version: '0.3.0-preview.34',
+      file: '0.3.0-preview.34-app-installed-authoring.sql',
+      description: 'Permit additive installed Runtime App protocol v4 with effective grant coherence',
+    },
+    {
+      version: '0.3.0-preview.35',
+      file: '0.3.0-preview.35-app-public-runtime.sql',
+      description: 'Bind reviewed public ingress principals to one governed Runtime Run',
+    },
+    {
+      version: '0.3.0-preview.36',
+      file: '0.3.0-preview.36-app-experience-sessions.sql',
+      description: 'Pin installed Experience sessions to authenticated web and App authority',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

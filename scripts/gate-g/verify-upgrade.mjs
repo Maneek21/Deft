@@ -28,7 +28,7 @@ function stable(value) {
 await client.connect();
 try {
   if (mode === 'schema') {
-    const selected = ['app_installations', 'app_versions', 'app_grant_snapshots', 'app_runs', 'app_run_attempts', 'capability_provider_snapshots'];
+    const selected = ['app_installations', 'app_versions', 'app_grant_snapshots', 'app_runs', 'app_run_attempts', 'app_run_events', 'app_experience_sessions', 'capability_provider_snapshots'];
     const discovered = await client.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND (tablename LIKE 'app_runtime_%' OR tablename LIKE 'app_public_%' OR tablename='app_canonical_claims') ORDER BY tablename");
     selected.push(...discovered.rows.map((row) => row.tablename));
     const columns = await client.query("SELECT table_name,column_name,data_type,is_nullable,column_default FROM information_schema.columns WHERE table_schema='public' AND table_name=ANY($1) ORDER BY table_name,column_name", [selected]);

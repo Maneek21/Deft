@@ -186,6 +186,8 @@ export const AppRunActorSchema = z.discriminatedUnion('actor_type', [
     user_id: ExactIdentitySchema.optional(),
   }).strict(),
   z.object({ actor_type: z.literal('system'), system_id: ExactIdentitySchema }).strict(),
+  z.object({ actor_type: z.literal('app_public'), endpoint_id: ExactIdentitySchema,
+    ingress_id: ExactIdentitySchema }).strict(),
   z.object({
     actor_type: z.literal('automation'),
     automation_id: ExactIdentitySchema,
@@ -213,6 +215,15 @@ export const AppRunOriginSchema = z.union([
     app_version_id: ExactIdentitySchema,
     runtime_binding_id: ExactIdentitySchema,
     grant_snapshot_id: ExactIdentitySchema,
+  }).strict(),
+  z.object({
+    origin_kind: z.literal('app'),
+    installation_id: ExactIdentitySchema,
+    app_version_id: ExactIdentitySchema,
+    runtime_binding_id: ExactIdentitySchema,
+    grant_snapshot_id: ExactIdentitySchema,
+    public_endpoint_id: ExactIdentitySchema,
+    public_ingress_id: ExactIdentitySchema,
   }).strict(),
 ]);
 export type AppRunOrigin = z.infer<typeof AppRunOriginSchema>;
@@ -315,6 +326,9 @@ export const AppRunAuthorityRefSchema = z.object({
     'app_binding',
     'app_runtime_registration',
     'app_runtime_binding',
+    'app_public_endpoint',
+    'app_public_ingress',
+    'app_public_claim',
     'app_dependency',
     'app_automation_request',
     'app_automation_definition',
