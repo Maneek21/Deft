@@ -83,6 +83,8 @@ test('reviewed v2 Run claims and atomically settles page, output and signed rece
       claim_token: claim.claim_token, sequence: claim.sequence };
     const started = await channel.start(attemptBase);
     assert.ok(started);
+    assert.equal(await channel.start(attemptBase), null,
+      'a started unsafe sync attempt never releases the cursor/input twice');
     assert.deepEqual(started.input, { schema_version: 'deft.app_sync_request.v1',
       cursor: null, max_items: 100 });
     assert.equal(started.descriptor_digest, claim.descriptor_digest);
@@ -354,5 +356,20 @@ test('reviewed v2 Run claims and atomically settles page, output and signed rece
     assert.equal((await db.select().from(schema.appResourceProjections)
       .where(drizzle.eq(schema.appResourceProjections.resource_binding_id,
         expiredAfterStart.owned.binding_id))).length, 0);
+
+    const claimedNoEffect = await newClaim();
+    assert.ok(await channel.start(claimedNoEffect.attempt));
+    assert.deepEqual(await channel.complete({ ...claimedNoEffect.attempt,
+      status: 'not_attempted', error_code: 'APP_RUN_PROVIDER_UNAVAILABLE' }),
+    { run_id: claimedNoEffect.claim.run_id,
+      attempt_id: claimedNoEffect.claim.attempt_id,
+      sequence: claimedNoEffect.claim.sequence });
+    const [noEffectRun] = await db.select().from(schema.appRuns)
+      .where(drizzle.eq(schema.appRuns.id, claimedNoEffect.claim.run_id));
+    assert.equal(noEffectRun?.state, 'unknown_outcome',
+      'the provider cannot prove no effect after host input release');
+    assert.equal((await db.select().from(schema.appRunAttempts)
+      .where(drizzle.eq(schema.appRunAttempts.run_id,
+        claimedNoEffect.claim.run_id))).length, 1);
   } finally { keys.destroy(); await closeDb(); }
 });

@@ -574,7 +574,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || run.cancel_requested_at || run.input_expires_at <= now
         || authority.binding.consent_expires_at! <= now
         || authority.session.expires_at <= now) return false;
-      if (result.status === 'indeterminate') {
+      if (result.status === 'indeterminate' || result.status === 'not_attempted') {
+        // The host crossed provider_call_started before releasing the input.
+        // A provider assertion that it did not call the source cannot prove
+        // that no external effect occurred.
         await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
         return true;
       }
@@ -626,14 +629,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         receiptFacts = { resource_binding_id: authority.binding.id,
           checkpoint_id: intent.checkpoint_id, page_digest: applied.page_digest,
           cursor_sequence: applied.applied_sequence };
-      } else if (result.status === 'returned') {
+      } else {
         outcome = AppRunSafeOutcomeSchema.parse({ success: false,
           provider_call_attempted: true, result_status: 'unavailable',
           error_code: 'APP_RUN_PROVIDER_ERROR' });
-      } else {
-        outcome = AppRunSafeOutcomeSchema.parse({ success: false,
-          provider_call_attempted: false, result_status: 'unavailable',
-          error_code: result.error_code });
       }
       const finalClock = this.now();
       if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
@@ -693,7 +692,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || checkpoint.cursor_sequence !== intent.expected_cursor_sequence
         || checkpoint.cursor_hmac_key_version !== intent.expected_cursor_hmac_key_version
         || checkpoint.cursor_hmac !== intent.expected_cursor_hmac
-        || !attempt || !['claimed', 'provider_call_started'].includes(attempt.state)
+        || !attempt || attempt.state !== 'claimed'
         || attempt.claim_token !== input.claim_token
         || attempt.runtime_session_id !== authority.session.id
         || attempt.resource_binding_id !== authority.binding.id
@@ -710,27 +709,24 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       try { request = parseSyncRequest(rawInput); }
       catch { return null; }
       if (request.max_items > authority.binding.max_records_per_page) return null;
-      if (attempt.state === 'claimed') {
-        const [started] = await tx.update(appRunAttempts).set({ state: 'provider_call_started',
-          provider_call_started_at: now, updated_at: now }).where(and(
-          eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, attempt.id),
-          eq(appRunAttempts.claim_token, input.claim_token),
-          eq(appRunAttempts.state, 'claimed'),
-        )).returning({ id: appRunAttempts.id });
-        if (!started) return null;
-        if (run.state === 'pending') run = await this.repository.transition(tx, {
-          run, state: 'running', now,
-        });
-        await this.repository.appendEvent(tx, { id: crypto.randomUUID(),
-          org_id: input.org_id, run_id: run.id, event_type: 'provider_call_started',
-          payload: { attempt_id: attempt.id }, now });
-      }
+      const [started] = await tx.update(appRunAttempts).set({ state: 'provider_call_started',
+        provider_call_started_at: now, updated_at: now }).where(and(
+        eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, attempt.id),
+        eq(appRunAttempts.claim_token, input.claim_token),
+        eq(appRunAttempts.state, 'claimed'),
+      )).returning({ id: appRunAttempts.id });
+      if (!started) return null;
+      if (run.state === 'pending') run = await this.repository.transition(tx, {
+        run, state: 'running', now,
+      });
+      await this.repository.appendEvent(tx, { id: crypto.randomUUID(),
+        org_id: input.org_id, run_id: run.id, event_type: 'provider_call_started',
+        payload: { attempt_id: attempt.id }, now });
       const checkedAt = this.now();
       if (attempt.lease_expires_at <= checkedAt || run.input_expires_at <= checkedAt
         || authority.binding.consent_expires_at! <= checkedAt
         || authority.session.expires_at <= checkedAt) {
-        if (attempt.state === 'claimed') throw new Error('APP_RESOURCE_SYNC_START_EXPIRED');
-        return null;
+        throw new Error('APP_RESOURCE_SYNC_START_EXPIRED');
       }
       return Object.freeze({ schema_version: APP_RESOURCE_SYNC_CHANNEL_VERSION,
         audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
