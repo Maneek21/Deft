@@ -15,6 +15,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./experimental/resource-sync": {
+      "types": "./dist/experimental/resource-sync.d.ts",
+      "import": "./dist/experimental/resource-sync.js"
     }
   },
   "bin": {

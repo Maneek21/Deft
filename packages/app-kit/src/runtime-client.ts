@@ -66,7 +66,8 @@ export function createAppRuntimeClient(options: AppRuntimeClientOptions) {
   }
 
   async function post<T>(operation: 'claim' | 'start' | 'heartbeat' | 'result', body: Record<string, unknown>): Promise<T> {
-    const url = new URL(`${base.pathname.replace(/\/$/, '')}/${operation}`, base);
+    const url = new URL(base);
+    url.pathname = `${base.pathname.replace(/\/$/, '')}/${operation}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {

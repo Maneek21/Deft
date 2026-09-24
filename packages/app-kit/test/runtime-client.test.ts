@@ -9,6 +9,24 @@ const claim = {
   sequence: 1, operation_name: 'send_notice', lease_expires_at: new Date().toISOString(),
 };
 
+test('Runtime client preserves the configured origin when its path starts with two slashes', async () => {
+  let calls = 0;
+  const client = createAppRuntimeClient({
+    channel_url: 'https://trusted.example//other.example/runtime', credential,
+    fetch: async (target, init) => {
+      calls += 1;
+      const url = new URL(String(target));
+      assert.equal(url.origin, 'https://trusted.example');
+      assert.equal(url.pathname, '//other.example/runtime/claim');
+      assert.equal((init?.headers as Record<string, string>).authorization,
+        `AppRuntime ${credential.session_token}`);
+      return Response.json({ claim: null });
+    },
+  });
+  assert.equal(await client.claim(), null);
+  assert.equal(calls, 1);
+});
+
 test('Runtime client scopes the bearer to the channel and never retries an effect', async () => {
   const calls: Array<{ path: string; body: Record<string, unknown>; credentials: RequestCredentials | undefined }> = [];
   const fetcher: typeof fetch = async (url, init) => {

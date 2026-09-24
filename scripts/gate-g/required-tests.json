@@ -679,6 +679,19 @@
         { "file": "apps/api/test/native-directory-projections-db.test.ts", "name": "native person and team displays follow live directory and private-team visibility" },
         { "file": "apps/api/test/native-resource-service-db.test.ts", "name": "native resource web resolver binds current session and owner without widening v1 or Runtime access" }
       ]
+    },
+    {
+      "id": "resource-sync-contract-foundation",
+      "description": "Candidate v2 host/Kit parser agreement and encrypted sync owner primitives; no database sync, live authority, or resource execution claim.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-contract.test.ts", "name": "API and Kit use the same closed v2 claim and result request schemas" },
+        { "file": "apps/api/test/app-resource-sync-contract.test.ts", "name": "API success parses page against host-reviewed descriptor and starting request" },
+        { "file": "apps/api/test/app-resource-sync-contract.test.ts", "name": "closed failure and indeterminate outcomes never carry a page" },
+        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync encrypted records reject tenant, binding, checkpoint, generation and record substitution" },
+        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync cursor authentication includes sequence and enforces raw UTF-8 and JSON ceilings" },
+        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync secrets and fingerprints are domain separated from existing Run data" },
+        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync retained-key rotation preserves locator discovery and refuses missing prior key versions" }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
