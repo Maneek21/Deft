@@ -690,6 +690,7 @@ export const appRuns = pgTable('app_runs', {
   origin_app_version_id: text('origin_app_version_id'),
   origin_app_binding_key: text('origin_app_binding_key'),
   origin_runtime_binding_id: text('origin_runtime_binding_id'),
+  origin_resource_binding_id: text('origin_resource_binding_id'),
   origin_public_endpoint_id: text('origin_public_endpoint_id'),
   origin_public_ingress_id: text('origin_public_ingress_id'),
   origin_app_grant_snapshot_id: text('origin_app_grant_snapshot_id'),
@@ -711,7 +712,7 @@ export const appRuns = pgTable('app_runs', {
     .notNull(),
   review_requirement: text('review_requirement').$type<'policy' | 'always'>().notNull(),
   review_scope: text('review_scope')
-    .$type<'per_invocation' | 'immutable_batch' | 'approved_automation_definition' | 'forbidden_in_automation'>()
+    .$type<'per_invocation' | 'immutable_batch' | 'approved_automation_definition' | 'forbidden_in_automation' | 'reviewed_resource_sync'>()
     .notNull(),
   retry_class: text('retry_class').$type<'safe' | 'idempotent_with_key' | 'unsafe_or_unknown'>().notNull(),
   retention_class: text('retention_class').$type<'ephemeral' | 'standard' | 'extended'>().notNull(),
@@ -746,6 +747,11 @@ export const appRuns = pgTable('app_runs', {
   ...timestamps(),
 }, (t) => [
   unique('app_runs_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_runs_resource_attempt_identity_unique').on(t.org_id, t.id, t.origin_resource_binding_id),
+  unique('app_runs_sync_intent_identity_unique').on(t.org_id, t.id,
+    t.origin_app_installation_id, t.origin_app_version_id,
+    t.origin_app_grant_snapshot_id, t.origin_resource_binding_id,
+    t.provider_snapshot_id),
   foreignKey({
     columns: [t.org_id, t.provider_snapshot_id],
     foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.id],
@@ -826,6 +832,20 @@ export const appRuns = pgTable('app_runs', {
     name: 'app_runs_runtime_binding_fk',
   }).onDelete('restrict'),
   foreignKey({
+    columns: [t.org_id, t.origin_app_installation_id, t.origin_app_version_id,
+      t.origin_app_grant_snapshot_id, t.origin_resource_binding_id, t.provider_kind,
+      t.provider_instance_id, t.operation_name, t.provider_snapshot_id,
+      t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class],
+    foreignColumns: [appResourceBindings.org_id, appResourceBindings.app_installation_id,
+      appResourceBindings.app_version_id, appResourceBindings.grant_snapshot_id,
+      appResourceBindings.id, appResourceBindings.provider_kind,
+      appResourceBindings.provider_instance_id, appResourceBindings.operation_name,
+      appResourceBindings.provider_snapshot_id, appResourceBindings.risk_class,
+      appResourceBindings.review_requirement, appResourceBindings.review_scope,
+      appResourceBindings.retry_class, appResourceBindings.retention_class],
+    name: 'app_runs_resource_binding_fk',
+  }).onDelete('restrict'),
+  foreignKey({
     columns: [t.org_id, t.origin_app_automation_definition_id],
     foreignColumns: [appAutomationDefinitions.org_id, appAutomationDefinitions.id],
     name: 'app_runs_automation_definition_fk',
@@ -893,6 +913,7 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.provider_kind} = 'mcp'
       AND ${t.origin_app_binding_key} IS NOT NULL
       AND ${t.origin_runtime_binding_id} IS NULL
+      AND ${t.origin_resource_binding_id} IS NULL
       AND ${t.origin_public_endpoint_id} IS NULL
       AND ${t.origin_public_ingress_id} IS NULL
       AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
@@ -925,6 +946,7 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
       AND ${t.origin_app_binding_key} IS NULL
       AND ${t.origin_runtime_binding_id} IS NOT NULL
+      AND ${t.origin_resource_binding_id} IS NULL
       AND ${t.origin_app_automation_definition_id} IS NULL
       AND ${t.origin_app_automation_fire_id} IS NULL
       AND (
@@ -941,12 +963,35 @@ export const appRuns = pgTable('app_runs', {
       )
       AND ${t.review_scope} = 'per_invocation'
     ) OR (
+      ${t.origin_kind} = 'app'
+      AND ${t.provider_kind} = 'app_runtime'
+      AND ${t.origin_app_installation_id} IS NOT NULL
+      AND ${t.origin_app_version_id} IS NOT NULL
+      AND ${t.origin_app_grant_snapshot_id} IS NOT NULL
+      AND ${t.origin_resource_binding_id} IS NOT NULL
+      AND ${t.origin_runtime_binding_id} IS NULL
+      AND ${t.origin_app_binding_key} IS NULL
+      AND ${t.origin_public_endpoint_id} IS NULL
+      AND ${t.origin_public_ingress_id} IS NULL
+      AND ${t.origin_app_automation_definition_id} IS NULL
+      AND ${t.origin_app_automation_fire_id} IS NULL
+      AND ${t.initiating_actor_type} = 'system'
+      AND ${t.execution_actor_type} = 'system'
+      AND ${t.initiating_actor_id} = ${t.origin_resource_binding_id}
+      AND ${t.execution_actor_id} = ${t.origin_resource_binding_id}
+      AND ${t.risk_class} = 'internal_write'
+      AND ${t.review_requirement} = 'policy'
+      AND ${t.review_scope} = 'reviewed_resource_sync'
+      AND ${t.retry_class} = 'unsafe_or_unknown'
+      AND ${t.retention_class} = 'standard'
+    ) OR (
       ${t.origin_kind} <> 'app'
       AND ${t.provider_kind} = 'mcp'
       AND ${t.origin_app_installation_id} IS NULL
       AND ${t.origin_app_version_id} IS NULL
       AND ${t.origin_app_binding_key} IS NULL
       AND ${t.origin_runtime_binding_id} IS NULL
+      AND ${t.origin_resource_binding_id} IS NULL
       AND ${t.origin_app_grant_snapshot_id} IS NULL
       AND ${t.origin_app_automation_definition_id} IS NULL
       AND ${t.origin_app_automation_fire_id} IS NULL
@@ -974,7 +1019,7 @@ export const appRuns = pgTable('app_runs', {
   )`),
   check('app_runs_risk_check', sql`${t.risk_class} IN ('read', 'internal_write', 'external_write', 'destructive', 'privileged')`),
   check('app_runs_review_requirement_check', sql`${t.review_requirement} IN ('policy', 'always')`),
-  check('app_runs_review_scope_check', sql`${t.review_scope} IN ('per_invocation', 'immutable_batch', 'approved_automation_definition', 'forbidden_in_automation')`),
+  check('app_runs_review_scope_check', sql`${t.review_scope} IN ('per_invocation', 'immutable_batch', 'approved_automation_definition', 'forbidden_in_automation', 'reviewed_resource_sync')`),
   check('app_runs_retry_class_check', sql`${t.retry_class} IN ('safe', 'idempotent_with_key', 'unsafe_or_unknown')`),
   check('app_runs_retention_class_check', sql`${t.retention_class} IN ('ephemeral', 'standard', 'extended')`),
   check('app_runs_fingerprint_check', sql`
@@ -1054,6 +1099,7 @@ export const appRunAttempts = pgTable('app_run_attempts', {
   provider_idempotency_key_version: text('provider_idempotency_key_version'),
   provider_idempotency_fingerprint: text('provider_idempotency_fingerprint'),
   runtime_binding_id: text('runtime_binding_id'),
+  resource_binding_id: text('resource_binding_id'),
   runtime_session_id: text('runtime_session_id'),
   runtime_session_epoch: integer('runtime_session_epoch'),
   runtime_epoch: integer('runtime_epoch'),
@@ -1075,6 +1121,19 @@ export const appRunAttempts = pgTable('app_run_attempts', {
       appRuntimeSessions.id, appRuntimeSessions.session_epoch,
       appRuntimeSessions.runtime_epoch],
     name: 'app_run_attempts_runtime_session_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.resource_binding_id, t.runtime_session_id,
+      t.runtime_session_epoch, t.runtime_epoch],
+    foreignColumns: [appRuntimeSessions.org_id, appRuntimeSessions.resource_binding_id,
+      appRuntimeSessions.id, appRuntimeSessions.session_epoch,
+      appRuntimeSessions.runtime_epoch],
+    name: 'app_run_attempts_resource_session_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.run_id, t.resource_binding_id],
+    foreignColumns: [appRuns.org_id, appRuns.id, appRuns.origin_resource_binding_id],
+    name: 'app_run_attempts_resource_run_fk',
   }).onDelete('restrict'),
   unique('app_run_attempts_org_run_id_unique').on(t.org_id, t.run_id, t.id),
   uniqueIndex('app_run_attempts_number_unique').on(t.org_id, t.run_id, t.attempt_number),
@@ -1108,10 +1167,17 @@ export const appRunAttempts = pgTable('app_run_attempts', {
     OR (jsonb_typeof(${t.safe_outcome}) = 'object' AND octet_length(${t.safe_outcome}::text) <= 32768)
   `),
   check('app_run_attempts_runtime_shape_check', sql`
-    (${t.runtime_binding_id} IS NULL AND ${t.runtime_session_id} IS NULL
+    (${t.runtime_binding_id} IS NULL AND ${t.resource_binding_id} IS NULL
+      AND ${t.runtime_session_id} IS NULL
       AND ${t.runtime_session_epoch} IS NULL AND ${t.runtime_epoch} IS NULL
       AND ${t.runtime_sequence} IS NULL AND ${t.runtime_result_hmac} IS NULL)
-    OR (${t.runtime_binding_id} IS NOT NULL AND ${t.runtime_session_id} IS NOT NULL
+    OR (${t.runtime_binding_id} IS NOT NULL AND ${t.resource_binding_id} IS NULL
+      AND ${t.runtime_session_id} IS NOT NULL
+      AND ${t.runtime_session_epoch} IS NOT NULL AND ${t.runtime_session_epoch} >= 0
+      AND ${t.runtime_epoch} IS NOT NULL AND ${t.runtime_epoch} >= 0
+      AND ${t.runtime_sequence} IS NOT NULL AND ${t.runtime_sequence} >= 1)
+    OR (${t.runtime_binding_id} IS NULL AND ${t.resource_binding_id} IS NOT NULL
+      AND ${t.runtime_session_id} IS NOT NULL
       AND ${t.runtime_session_epoch} IS NOT NULL AND ${t.runtime_session_epoch} >= 0
       AND ${t.runtime_epoch} IS NOT NULL AND ${t.runtime_epoch} >= 0
       AND ${t.runtime_sequence} IS NOT NULL AND ${t.runtime_sequence} >= 1)
@@ -2142,8 +2208,11 @@ export const appRuntimeRegistrations = pgTable('app_runtime_registrations', {
   unique('app_runtime_registrations_org_id_id_unique').on(t.org_id, t.id),
   unique('app_runtime_registrations_ancestry_unique').on(t.org_id, t.app_installation_id,
     t.app_version_id, t.grant_snapshot_id, t.id),
+  unique('app_runtime_registrations_contract_ancestry_unique').on(t.org_id,
+    t.app_installation_id, t.app_version_id, t.grant_snapshot_id, t.id, t.contract_version),
   check('app_runtime_registrations_state_check', sql`${t.state} IN ('disabled','active','revoked')`),
   check('app_runtime_registrations_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
+  check('app_runtime_registrations_contract_check', sql`${t.contract_version} IN ('deft.app_runtime_channel.v1', 'deft.app_runtime_channel.v2')`),
   check('app_runtime_registrations_epoch_check', sql`${t.runtime_epoch} >= 0`),
   check('app_runtime_registrations_review_check', sql`
     (${t.state} = 'disabled' AND ${t.reviewed_at} IS NULL AND ${t.reviewed_by_user_id} IS NULL)
@@ -2158,6 +2227,8 @@ export const appRuntimeBindings = pgTable('app_runtime_bindings', {
   app_version_id: text('app_version_id').notNull(),
   grant_snapshot_id: text('grant_snapshot_id').notNull(),
   runtime_registration_id: text('runtime_registration_id').notNull(),
+  registration_contract_version: text('registration_contract_version')
+    .$type<'deft.app_runtime_channel.v1'>().default('deft.app_runtime_channel.v1').notNull(),
   action_key: text('action_key').notNull(),
   interface_identity: text('interface_identity').notNull(),
   provider_kind: text('provider_kind').$type<'app_runtime'>().default('app_runtime').notNull(),
@@ -2174,10 +2245,11 @@ export const appRuntimeBindings = pgTable('app_runtime_bindings', {
   ...timestamps(),
 }, (t) => [
   foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id,
-    t.grant_snapshot_id, t.runtime_registration_id],
+    t.grant_snapshot_id, t.runtime_registration_id, t.registration_contract_version],
     foreignColumns: [appRuntimeRegistrations.org_id, appRuntimeRegistrations.app_installation_id,
       appRuntimeRegistrations.app_version_id, appRuntimeRegistrations.grant_snapshot_id,
-      appRuntimeRegistrations.id], name: 'app_runtime_bindings_registration_fk' }).onDelete('restrict'),
+      appRuntimeRegistrations.id, appRuntimeRegistrations.contract_version],
+    name: 'app_runtime_bindings_registration_fk' }).onDelete('restrict'),
   foreignKey({ columns: [t.org_id, t.provider_kind, t.provider_instance_id, t.provider_snapshot_id],
     foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.provider_kind,
       capabilityProviderSnapshots.provider_instance_id, capabilityProviderSnapshots.id],
@@ -2189,6 +2261,7 @@ export const appRuntimeBindings = pgTable('app_runtime_bindings', {
     t.risk_class, t.review_requirement, t.retry_class, t.retention_class),
   unique('app_runtime_bindings_registration_identity_unique').on(t.org_id, t.runtime_registration_id, t.id),
   check('app_runtime_bindings_kind_check', sql`${t.provider_kind} = 'app_runtime'`),
+  check('app_runtime_bindings_registration_contract_check', sql`${t.registration_contract_version} = 'deft.app_runtime_channel.v1'`),
   check('app_runtime_bindings_identity_check', sql`
     ${t.provider_instance_id} = ${t.runtime_registration_id}
     AND ${t.action_key} ~ '^[a-z][a-z0-9_]{0,47}$'
@@ -2203,14 +2276,128 @@ export const appRuntimeBindings = pgTable('app_runtime_bindings', {
   `),
 ]);
 
+// Host-reviewed resource sync authority is distinct from v1 action bindings.
+// Cursor state and provider records live in separate tables below.
+export const appResourceBindings = pgTable('app_resource_bindings', {
+  ...id(),
+  ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
+  runtime_registration_id: text('runtime_registration_id').notNull(),
+  registration_contract_version: text('registration_contract_version')
+    .$type<'deft.app_runtime_channel.v2'>().default('deft.app_runtime_channel.v2').notNull(),
+  provider_kind: text('provider_kind').$type<'app_runtime'>().default('app_runtime').notNull(),
+  provider_instance_id: text('provider_instance_id').notNull(),
+  provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  resource_key: text('resource_key').notNull(),
+  resource_family: text('resource_family').notNull(),
+  operation_name: text('operation_name').notNull(),
+  interface_identity: text('interface_identity').notNull(),
+  reviewed_descriptor: jsonb('reviewed_descriptor').$type<Record<string, unknown>>().notNull(),
+  descriptor_digest: text('descriptor_digest').notNull(),
+  owner_user_id: text('owner_user_id').notNull(),
+  owner_scope: text('owner_scope').$type<'private_user'>().default('private_user').notNull(),
+  risk_class: text('risk_class').$type<'internal_write'>().default('internal_write').notNull(),
+  review_requirement: text('review_requirement').$type<'policy'>().default('policy').notNull(),
+  review_scope: text('review_scope').$type<'reviewed_resource_sync'>().default('reviewed_resource_sync').notNull(),
+  retry_class: text('retry_class').$type<'unsafe_or_unknown'>().default('unsafe_or_unknown').notNull(),
+  retention_class: text('retention_class').$type<'standard'>().default('standard').notNull(),
+  max_records_per_page: integer('max_records_per_page').notNull(),
+  max_page_bytes: integer('max_page_bytes').notNull(),
+  max_retained_records: integer('max_retained_records').notNull(),
+  max_retained_bytes: integer('max_retained_bytes').notNull(),
+  min_interval_seconds: integer('min_interval_seconds').notNull(),
+  consent_expires_at: timestamp('consent_expires_at'),
+  state: text('state').$type<'disabled' | 'active' | 'revoked'>().default('disabled').notNull(),
+  reviewed_by_user_id: text('reviewed_by_user_id'),
+  reviewed_at: timestamp('reviewed_at'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id,
+    t.grant_snapshot_id, t.grant_snapshot_kind],
+    foreignColumns: [appGrantSnapshots.org_id, appGrantSnapshots.app_installation_id,
+      appGrantSnapshots.app_version_id, appGrantSnapshots.id, appGrantSnapshots.snapshot_kind],
+    name: 'app_resource_bindings_grant_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id,
+    t.grant_snapshot_id, t.runtime_registration_id, t.registration_contract_version],
+    foreignColumns: [appRuntimeRegistrations.org_id, appRuntimeRegistrations.app_installation_id,
+      appRuntimeRegistrations.app_version_id, appRuntimeRegistrations.grant_snapshot_id,
+      appRuntimeRegistrations.id, appRuntimeRegistrations.contract_version],
+    name: 'app_resource_bindings_registration_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.provider_kind, t.provider_instance_id, t.provider_snapshot_id],
+    foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.provider_kind,
+      capabilityProviderSnapshots.provider_instance_id, capabilityProviderSnapshots.id],
+    name: 'app_resource_bindings_provider_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.owner_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_resource_bindings_owner_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.reviewed_by_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_resource_bindings_reviewer_fk' }).onDelete('restrict'),
+  unique('app_resource_bindings_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_resource_bindings_registration_identity_unique').on(t.org_id, t.runtime_registration_id, t.id),
+  unique('app_resource_bindings_owner_identity_unique').on(t.org_id, t.id, t.owner_user_id),
+  unique('app_resource_bindings_descriptor_identity_unique').on(t.org_id, t.id,
+    t.owner_user_id, t.descriptor_digest),
+  unique('app_resource_bindings_run_identity_unique').on(t.org_id, t.app_installation_id,
+    t.app_version_id, t.grant_snapshot_id, t.id, t.provider_kind,
+    t.provider_instance_id, t.operation_name, t.provider_snapshot_id,
+    t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class),
+  index('app_resource_bindings_owner_idx').on(t.org_id, t.owner_user_id, t.state),
+  check('app_resource_bindings_identity_check', sql`
+    ${t.grant_snapshot_kind} = 'effective'
+    AND ${t.registration_contract_version} = 'deft.app_runtime_channel.v2'
+    AND ${t.provider_kind} = 'app_runtime'
+    AND ${t.provider_instance_id} = ${t.runtime_registration_id}
+    AND ${t.owner_scope} = 'private_user'
+    AND ${t.resource_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.resource_family} ~ '^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$'
+    AND octet_length(${t.resource_family}) <= 64
+    AND ${t.operation_name} = 'sync_' || ${t.resource_key}
+    AND ${t.interface_identity} = 'deft.resource_sync.v2:' || lower(${t.org_id}) || ':' ||
+      lower(${t.app_installation_id}) || ':' || ${t.resource_key}
+    AND ${t.descriptor_digest} ~ '^sha256:[a-f0-9]{64}$'
+  `),
+  check('app_resource_bindings_descriptor_check', sql`
+    jsonb_typeof(${t.reviewed_descriptor}) = 'object'
+    AND coalesce(jsonb_typeof(${t.reviewed_descriptor}->'schema_version'), '') = 'string'
+    AND coalesce(${t.reviewed_descriptor}->>'schema_version', '') = 'deft.app_sync_descriptor.v1'
+    AND octet_length(${t.reviewed_descriptor}::text) <= 65536
+  `),
+  check('app_resource_bindings_policy_check', sql`
+    ${t.risk_class} = 'internal_write' AND ${t.review_requirement} = 'policy'
+    AND ${t.review_scope} = 'reviewed_resource_sync'
+    AND ${t.retry_class} = 'unsafe_or_unknown' AND ${t.retention_class} = 'standard'
+  `),
+  check('app_resource_bindings_limits_check', sql`
+    ${t.max_records_per_page} BETWEEN 1 AND 100
+    AND ${t.max_page_bytes} BETWEEN 1 AND 524288
+    AND ${t.max_retained_records} BETWEEN 1 AND 100000
+    AND ${t.max_retained_bytes} BETWEEN 1 AND 1073741824
+    AND ${t.min_interval_seconds} BETWEEN 60 AND 86400
+  `),
+  check('app_resource_bindings_review_check', sql`
+    (${t.state} = 'disabled' AND ${t.reviewed_by_user_id} IS NULL
+      AND ${t.reviewed_at} IS NULL AND ${t.consent_expires_at} IS NULL)
+    OR (${t.state} IN ('active','revoked') AND ${t.reviewed_by_user_id} IS NOT NULL
+      AND ${t.reviewed_by_user_id} = ${t.owner_user_id}
+      AND ${t.reviewed_at} IS NOT NULL AND ${t.consent_expires_at} IS NOT NULL
+      AND ${t.consent_expires_at} > ${t.reviewed_at}
+      AND ${t.consent_expires_at} <= ${t.reviewed_at} + interval '90 days')
+  `),
+]);
+
 export const appRuntimeSessions = pgTable('app_runtime_sessions', {
   ...id(),
   ...orgId(),
   runtime_registration_id: text('runtime_registration_id').notNull(),
-  runtime_binding_id: text('runtime_binding_id').notNull(),
+  runtime_binding_id: text('runtime_binding_id'),
+  resource_binding_id: text('resource_binding_id'),
   operator_user_id: text('operator_user_id').notNull(),
   token_hash: text('token_hash').notNull(),
-  audience: text('audience').$type<'app_runtime'>().default('app_runtime').notNull(),
+  audience: text('audience').$type<'app_runtime' | 'app_resource_sync'>().default('app_runtime').notNull(),
   session_epoch: integer('session_epoch').default(0).notNull(),
   runtime_epoch: integer('runtime_epoch').notNull(),
   lifecycle_epoch: integer('lifecycle_epoch').notNull(),
@@ -2223,13 +2410,23 @@ export const appRuntimeSessions = pgTable('app_runtime_sessions', {
   foreignKey({ columns: [t.org_id, t.runtime_registration_id, t.runtime_binding_id],
     foreignColumns: [appRuntimeBindings.org_id, appRuntimeBindings.runtime_registration_id,
       appRuntimeBindings.id], name: 'app_runtime_sessions_binding_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.runtime_registration_id, t.resource_binding_id],
+    foreignColumns: [appResourceBindings.org_id, appResourceBindings.runtime_registration_id,
+      appResourceBindings.id], name: 'app_runtime_sessions_resource_binding_fk' }).onDelete('restrict'),
   foreignKey({ columns: [t.org_id, t.operator_user_id],
     foreignColumns: [orgMembers.org_id, orgMembers.user_id],
     name: 'app_runtime_sessions_operator_fk' }).onDelete('restrict'),
   unique('app_runtime_sessions_attempt_identity_unique').on(t.org_id, t.runtime_binding_id,
     t.id, t.session_epoch, t.runtime_epoch),
+  unique('app_runtime_sessions_resource_attempt_identity_unique').on(t.org_id, t.resource_binding_id,
+    t.id, t.session_epoch, t.runtime_epoch),
   unique('app_runtime_sessions_token_hash_unique').on(t.token_hash),
-  check('app_runtime_sessions_audience_check', sql`${t.audience} = 'app_runtime'`),
+  check('app_runtime_sessions_audience_check', sql`
+    (${t.audience} = 'app_runtime' AND ${t.runtime_binding_id} IS NOT NULL
+      AND ${t.resource_binding_id} IS NULL)
+    OR (${t.audience} = 'app_resource_sync' AND ${t.runtime_binding_id} IS NULL
+      AND ${t.resource_binding_id} IS NOT NULL)
+  `),
   check('app_runtime_sessions_epoch_check', sql`${t.session_epoch} >= 0 AND ${t.runtime_epoch} >= 0 AND ${t.lifecycle_epoch} >= 0 AND ${t.grant_epoch} >= 0 AND ${t.next_sequence} >= 1`),
   check('app_runtime_sessions_token_check', sql`${t.token_hash} ~ '^sha256:[a-f0-9]{64}$'`),
 ]);
@@ -2239,6 +2436,206 @@ export const appRuntimeSessions = pgTable('app_runtime_sessions', {
 // Only their lifecycle state and epoch may change after creation. Fires are a
 // durable identity/claim ledger for the later scheduler cutover; this package
 // does not enqueue or execute them.
+export const appSyncCheckpoints = pgTable('app_sync_checkpoints', {
+  ...id(),
+  ...orgId(),
+  resource_binding_id: text('resource_binding_id').notNull(),
+  generation: integer('generation').default(1).notNull(),
+  state: text('state').$type<'active' | 'paused'>().default('active').notNull(),
+  cursor_sequence: integer('cursor_sequence').default(0).notNull(),
+  cursor_hmac_key_version: text('cursor_hmac_key_version').notNull(),
+  cursor_hmac: text('cursor_hmac').notNull(),
+  cursor_state: text('cursor_state').$type<'empty' | 'value'>().default('empty').notNull(),
+  cursor_envelope_version: text('cursor_envelope_version'),
+  cursor_algorithm: text('cursor_algorithm'),
+  cursor_key_version: text('cursor_key_version'),
+  cursor_nonce_b64: text('cursor_nonce_b64'),
+  cursor_ciphertext_b64: text('cursor_ciphertext_b64'),
+  cursor_auth_tag_b64: text('cursor_auth_tag_b64'),
+  cursor_bytes: integer('cursor_bytes').default(0).notNull(),
+  retained_record_count: integer('retained_record_count').default(0).notNull(),
+  retained_bytes: integer('retained_bytes').default(0).notNull(),
+  last_applied_run_id: text('last_applied_run_id'),
+  last_applied_page_digest: text('last_applied_page_digest'),
+  last_applied_at: timestamp('last_applied_at'),
+  last_checked_at: timestamp('last_checked_at'),
+  fresh_until: timestamp('fresh_until'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.resource_binding_id],
+    foreignColumns: [appResourceBindings.org_id, appResourceBindings.id],
+    name: 'app_sync_checkpoints_binding_fk' }).onDelete('restrict'),
+  // The reverse last-applied-intent FK is installed by preview.37/apply-extras;
+  // declaring both directions here creates a Drizzle TypeScript initialization cycle.
+  unique('app_sync_checkpoints_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_sync_checkpoints_binding_unique').on(t.org_id, t.resource_binding_id),
+  unique('app_sync_checkpoints_intent_identity_unique').on(t.org_id, t.id, t.resource_binding_id),
+  index('app_sync_checkpoints_freshness_idx').on(t.org_id, t.state, t.fresh_until),
+  check('app_sync_checkpoints_state_check', sql`${t.state} IN ('active','paused')`),
+  check('app_sync_checkpoints_counters_check', sql`
+    ${t.generation} >= 1 AND ${t.cursor_sequence} >= 0
+    AND ${t.retained_record_count} BETWEEN 0 AND 100000
+    AND ${t.retained_bytes} BETWEEN 0 AND 1073741824
+    AND ${t.cursor_bytes} BETWEEN 0 AND 16384
+  `),
+  check('app_sync_checkpoints_hmac_check', sql`
+    ${t.cursor_hmac_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.cursor_hmac} ~ '^hmac-sha256:[a-f0-9]{64}$'
+  `),
+  check('app_sync_checkpoints_cursor_envelope_check', sql`
+    (${t.cursor_state} = 'empty' AND ${t.cursor_bytes} = 0
+      AND ${t.cursor_envelope_version} IS NULL AND ${t.cursor_algorithm} IS NULL
+      AND ${t.cursor_key_version} IS NULL AND ${t.cursor_nonce_b64} IS NULL
+      AND ${t.cursor_ciphertext_b64} IS NULL AND ${t.cursor_auth_tag_b64} IS NULL)
+    OR (${t.cursor_state} = 'value' AND ${t.cursor_bytes} BETWEEN 1 AND 16384
+      AND ${t.cursor_envelope_version} IS NOT NULL AND ${t.cursor_algorithm} IS NOT NULL
+      AND ${t.cursor_key_version} IS NOT NULL AND ${t.cursor_nonce_b64} IS NOT NULL
+      AND ${t.cursor_ciphertext_b64} IS NOT NULL AND ${t.cursor_auth_tag_b64} IS NOT NULL
+      AND ${t.cursor_envelope_version} = 'deft.secret.v1'
+      AND ${t.cursor_algorithm} = 'aes-256-gcm'
+      AND ${t.cursor_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+      AND ${t.cursor_nonce_b64} ~ '^[A-Za-z0-9+/]{16}$'
+      AND ${t.cursor_auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'
+      AND ${t.cursor_ciphertext_b64} ~ '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$'
+      AND octet_length(decode(${t.cursor_ciphertext_b64}, 'base64')) = ${t.cursor_bytes})
+  `),
+  check('app_sync_checkpoints_application_check', sql`
+    (${t.cursor_sequence} = 0 AND ${t.last_applied_run_id} IS NULL
+      AND ${t.last_applied_page_digest} IS NULL AND ${t.last_applied_at} IS NULL)
+    OR (${t.cursor_sequence} > 0 AND ${t.last_applied_run_id} IS NOT NULL
+      AND ${t.last_applied_page_digest} IS NOT NULL
+      AND ${t.last_applied_page_digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND ${t.last_applied_at} IS NOT NULL)
+  `),
+]);
+
+export const appSyncIntents = pgTable('app_sync_intents', {
+  ...id(),
+  ...orgId(),
+  run_id: text('run_id').notNull(),
+  resource_binding_id: text('resource_binding_id').notNull(),
+  checkpoint_id: text('checkpoint_id').notNull(),
+  app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  owner_user_id: text('owner_user_id').notNull(),
+  descriptor_digest: text('descriptor_digest').notNull(),
+  generation: integer('generation').notNull(),
+  expected_cursor_sequence: integer('expected_cursor_sequence').notNull(),
+  expected_cursor_hmac_key_version: text('expected_cursor_hmac_key_version').notNull(),
+  expected_cursor_hmac: text('expected_cursor_hmac').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.run_id, t.app_installation_id,
+    t.app_version_id, t.grant_snapshot_id, t.resource_binding_id, t.provider_snapshot_id],
+    foreignColumns: [appRuns.org_id, appRuns.id, appRuns.origin_app_installation_id,
+      appRuns.origin_app_version_id, appRuns.origin_app_grant_snapshot_id,
+      appRuns.origin_resource_binding_id, appRuns.provider_snapshot_id],
+    name: 'app_sync_intents_run_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.checkpoint_id, t.resource_binding_id],
+    foreignColumns: [appSyncCheckpoints.org_id, appSyncCheckpoints.id,
+      appSyncCheckpoints.resource_binding_id],
+    name: 'app_sync_intents_checkpoint_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.resource_binding_id, t.owner_user_id],
+    foreignColumns: [appResourceBindings.org_id, appResourceBindings.id,
+      appResourceBindings.owner_user_id],
+    name: 'app_sync_intents_owner_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.resource_binding_id, t.owner_user_id,
+    t.descriptor_digest],
+    foreignColumns: [appResourceBindings.org_id, appResourceBindings.id,
+      appResourceBindings.owner_user_id, appResourceBindings.descriptor_digest],
+    name: 'app_sync_intents_descriptor_fk' }).onDelete('restrict'),
+  unique('app_sync_intents_org_run_unique').on(t.org_id, t.run_id),
+  unique('app_sync_intents_checkpoint_run_unique').on(t.org_id, t.run_id,
+    t.resource_binding_id, t.checkpoint_id),
+  index('app_sync_intents_binding_idx').on(t.org_id, t.resource_binding_id, t.created_at),
+  check('app_sync_intents_start_check', sql`
+    ${t.generation} >= 1 AND ${t.expected_cursor_sequence} >= 0
+    AND ${t.expected_cursor_hmac_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.expected_cursor_hmac} ~ '^hmac-sha256:[a-f0-9]{64}$'
+    AND ${t.descriptor_digest} ~ '^sha256:[a-f0-9]{64}$'
+  `),
+]);
+
+export const appResourceProjections = pgTable('app_resource_projections', {
+  ...id(),
+  ...orgId(),
+  resource_binding_id: text('resource_binding_id').notNull(),
+  checkpoint_id: text('checkpoint_id').notNull(),
+  generation: integer('generation').notNull(),
+  resource_id_hmac_key_version: text('resource_id_hmac_key_version').notNull(),
+  resource_id_hmac: text('resource_id_hmac').notNull(),
+  provider_id_envelope_version: text('provider_id_envelope_version').notNull(),
+  provider_id_algorithm: text('provider_id_algorithm').$type<'aes-256-gcm'>().notNull(),
+  provider_id_key_version: text('provider_id_key_version').notNull(),
+  provider_id_nonce_b64: text('provider_id_nonce_b64').notNull(),
+  provider_id_ciphertext_b64: text('provider_id_ciphertext_b64').notNull(),
+  provider_id_auth_tag_b64: text('provider_id_auth_tag_b64').notNull(),
+  provider_id_bytes: integer('provider_id_bytes').notNull(),
+  body_envelope_version: text('body_envelope_version'),
+  body_algorithm: text('body_algorithm').$type<'aes-256-gcm'>(),
+  body_key_version: text('body_key_version'),
+  body_nonce_b64: text('body_nonce_b64'),
+  body_ciphertext_b64: text('body_ciphertext_b64'),
+  body_auth_tag_b64: text('body_auth_tag_b64'),
+  body_bytes: integer('body_bytes').default(0).notNull(),
+  state: text('state').$type<'live' | 'tombstone'>().notNull(),
+  applied_sequence: integer('applied_sequence').notNull(),
+  first_seen_at: timestamp('first_seen_at').notNull(),
+  last_seen_at: timestamp('last_seen_at').notNull(),
+  source_updated_at: timestamp('source_updated_at'),
+  fresh_until: timestamp('fresh_until'),
+  tombstoned_at: timestamp('tombstoned_at'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.checkpoint_id, t.resource_binding_id],
+    foreignColumns: [appSyncCheckpoints.org_id, appSyncCheckpoints.id,
+      appSyncCheckpoints.resource_binding_id],
+    name: 'app_resource_projections_checkpoint_fk' }).onDelete('restrict'),
+  unique('app_resource_projections_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_resource_projections_locator_unique').on(t.org_id, t.checkpoint_id,
+    t.resource_id_hmac_key_version, t.resource_id_hmac),
+  index('app_resource_projections_binding_state_idx').on(t.org_id, t.resource_binding_id,
+    t.state, t.fresh_until),
+  check('app_resource_projections_lineage_check', sql`
+    ${t.generation} >= 1 AND ${t.applied_sequence} >= 1
+    AND ${t.first_seen_at} <= ${t.last_seen_at}
+    AND ${t.resource_id_hmac_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.resource_id_hmac} ~ '^hmac-sha256:[a-f0-9]{64}$'
+  `),
+  check('app_resource_projections_provider_envelope_check', sql`
+    ${t.provider_id_envelope_version} = 'deft.secret.v1'
+    AND ${t.provider_id_algorithm} = 'aes-256-gcm'
+    AND ${t.provider_id_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.provider_id_nonce_b64} ~ '^[A-Za-z0-9+/]{16}$'
+    AND ${t.provider_id_auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'
+    AND ${t.provider_id_ciphertext_b64} ~ '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$'
+    AND ${t.provider_id_bytes} BETWEEN 1 AND 512
+    AND octet_length(decode(${t.provider_id_ciphertext_b64}, 'base64')) = ${t.provider_id_bytes}
+  `),
+  check('app_resource_projections_body_check', sql`
+    (${t.state} = 'tombstone' AND ${t.tombstoned_at} IS NOT NULL
+      AND ${t.body_bytes} = 0 AND ${t.body_envelope_version} IS NULL
+      AND ${t.body_algorithm} IS NULL AND ${t.body_key_version} IS NULL
+      AND ${t.body_nonce_b64} IS NULL AND ${t.body_ciphertext_b64} IS NULL
+      AND ${t.body_auth_tag_b64} IS NULL)
+    OR (${t.state} = 'live' AND ${t.tombstoned_at} IS NULL
+      AND ${t.body_envelope_version} IS NOT NULL AND ${t.body_algorithm} IS NOT NULL
+      AND ${t.body_key_version} IS NOT NULL AND ${t.body_nonce_b64} IS NOT NULL
+      AND ${t.body_ciphertext_b64} IS NOT NULL AND ${t.body_auth_tag_b64} IS NOT NULL
+      AND ${t.body_envelope_version} = 'deft.secret.v1'
+      AND ${t.body_algorithm} = 'aes-256-gcm'
+      AND ${t.body_key_version} = ${t.provider_id_key_version}
+      AND ${t.body_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+      AND ${t.body_nonce_b64} ~ '^[A-Za-z0-9+/]{16}$'
+      AND ${t.body_auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'
+      AND ${t.body_ciphertext_b64} ~ '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$'
+      AND ${t.body_bytes} BETWEEN 1 AND 524288
+      AND octet_length(decode(${t.body_ciphertext_b64}, 'base64')) = ${t.body_bytes})
+  `),
+]);
+
 export const appAutomationDefinitions = pgTable('app_automation_definitions', {
   ...id(),
   ...orgId(),

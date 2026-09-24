@@ -202,6 +202,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.36-app-experience-sessions.sql',
       description: 'Pin installed Experience sessions to authenticated web and App authority',
     },
+    {
+      version: '0.3.0-preview.37',
+      file: '0.3.0-preview.37-app-resource-sync.sql',
+      description: 'Add dormant host-reviewed resource sync bindings, sessions, intent and encrypted projections',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 
