@@ -59,6 +59,8 @@ import {
   executeAppActionOperation,
 } from './app-action-operations.js';
 import { buildNativeAppActionActor } from './agent-app-action-actor.js';
+import { resolveNativeWikiReader, readNativeWiki, searchNativeWiki } from './native-wiki-owner.js';
+import { liveHumanCalendarEventCondition, liveEmployeeCalendarEventCondition } from './calendar-event-visibility.js';
 
 type Citation = { type: string; id: string; title: string; url?: string };
 
@@ -583,7 +585,9 @@ export async function executeToolCall(
         eq(events.event_type, 'calendar_event'),
         gte(events.timestamp, dayStart),
         lt(events.timestamp, dayEnd),
-        eq(events.org_id, orgId),
+        agentEmployeeId
+          ? liveEmployeeCalendarEventCondition(orgId, agentEmployeeId)
+          : liveHumanCalendarEventCondition(orgId, _userId),
       ];
 
       if (params.query) {
@@ -2051,132 +2055,41 @@ export async function executeToolCall(
     // ─── Wiki Tools ───
 
     case 'wiki_search': {
-      // Block 0.6 — semantic wiki search. Routes through retrieveContext
-      // which runs hybrid FTS (search_vector @@ plainto_tsquery) + pgvector
-      // cosine (embedding <=> queryVector) weighted 0.4 / 0.6 * confidence.
-      // Falls back to FTS-only when OPENAI_API_KEY is missing or the
-      // pgvector <=> operator is unavailable.
-      const { query, type: pageType, scope: pageScope, limit: maxResults = 5 } = params;
-      const { retrieveContext } = await import('./retrieve-context.js');
-      const hits = await retrieveContext({
-        query,
-        org_id: orgId,
-        types: ['wiki'],
-        limit: Math.min(maxResults, 10),
-      });
-
-      // Fetch the full wiki_pages row + linked pages for each hit so the
-      // tool output keeps the shape callers expect (title/slug/summary/
-      // type/scope/confidence/updated_at + linked_pages[]).
-      const hitIds = hits.map((h) => h.source_id);
-      const pages =
-        hitIds.length > 0
-          ? await db
-              .select({
-                id: wikiPages.id,
-                title: wikiPages.title,
-                slug: wikiPages.slug,
-                summary: wikiPages.summary,
-                type: wikiPages.type,
-                scope: wikiPages.scope,
-                confidence: wikiPages.confidence,
-                updated_at: wikiPages.updated_at,
-              })
-              .from(wikiPages)
-              .where(
-                and(
-                  eq(wikiPages.org_id, orgId),
-                  eq(wikiPages.is_deleted, false),
-                  inArray(wikiPages.id, hitIds),
-                  ...(pageType ? [eq(wikiPages.type, pageType)] : []),
-                  ...(pageScope ? [eq(wikiPages.scope, pageScope)] : []),
-                ),
-              )
-          : [];
-
-      // Preserve retrieveContext's ranking order.
-      const byId = new Map(pages.map((p) => [p.id, p]));
-      const ordered = hitIds
-        .map((id) => byId.get(id))
-        .filter((p): p is NonNullable<typeof p> => Boolean(p));
-
-      const enriched = await Promise.all(
-        ordered.map(async (page) => {
-          const links = await db
-            .select({ title: wikiPages.title, slug: wikiPages.slug })
-            .from(wikiLinks)
-            .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
-            .where(eq(wikiLinks.source_page_id, page.id))
-            .limit(5);
-          return { ...page, linked_pages: links };
-        }),
-      );
-
-      const citations: Citation[] = ordered.map((p) => ({
+      const reader = await resolveNativeWikiReader({ orgId, userId: _userId,
+        agentEmployeeId });
+      const pages = reader ? await searchNativeWiki(reader, params) : [];
+      const citations: Citation[] = pages.map((p) => ({
         type: 'wiki',
         id: p.id,
         title: p.title,
       }));
-
-      return { result: { pages: enriched, count: enriched.length }, citations };
+      return { result: { pages, count: pages.length }, citations };
     }
 
     case 'wiki_read': {
       const { slug } = params;
-
-      const [page] = await db.select()
-        .from(wikiPages)
-        .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
-        .limit(1);
-
-      if (!page) {
+      const reader = await resolveNativeWikiReader({ orgId, userId: _userId,
+        agentEmployeeId });
+      const read = reader && typeof slug === 'string' ? await readNativeWiki(reader, slug) : null;
+      if (!read) {
         return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
       }
-
-      // Get linked pages
-      const linkedPages = await db.select({
-        slug: wikiPages.slug,
-        title: wikiPages.title,
-        type: wikiPages.type,
-        summary: wikiPages.summary,
-      })
-        .from(wikiLinks)
-        .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
-        .where(eq(wikiLinks.source_page_id, page.id));
-
-      // Get backlinks
-      const backlinks = await db.select({
-        slug: wikiPages.slug,
-        title: wikiPages.title,
-        type: wikiPages.type,
-      })
-        .from(wikiLinks)
-        .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
-        .where(eq(wikiLinks.target_page_id, page.id));
-
-      // Get citations
-      const citations = await db.select()
-        .from(wikiCitations)
-        .where(eq(wikiCitations.page_id, page.id))
-        .orderBy(desc(wikiCitations.created_at))
-        .limit(10);
-
       return {
         result: {
-          title: page.title,
-          slug: page.slug,
-          type: page.type,
-          scope: page.scope,
-          content: page.content,
-          summary: page.summary,
-          confidence: page.confidence,
-          version: page.version,
-          updated_at: page.updated_at,
-          linked_pages: linkedPages,
-          backlinks,
-          citations,
+          title: read.page.title,
+          slug: read.page.slug,
+          type: read.page.type,
+          scope: read.page.scope,
+          content: read.page.content,
+          summary: read.page.summary,
+          confidence: read.page.confidence,
+          version: read.page.version,
+          updated_at: read.page.updated_at,
+          linked_pages: read.linked_pages,
+          backlinks: read.backlinks,
+          citations: read.citations,
         },
-        citations: [{ type: 'wiki', id: page.id, title: page.title }],
+        citations: [{ type: 'wiki', id: read.page.id, title: read.page.title }],
       };
     }
 

@@ -657,6 +657,18 @@
           "file": "apps/api/test/track-a-restore-process-db.test.ts"
         }
       ]
+    },
+    {
+      "id": "native-owner-foundation",
+      "description": "Disposable PostgreSQL privacy regressions plus real employee MCP bearer calls; every selected native owner case must execute.",
+      "cases": [
+        { "file": "apps/api/test/native-wiki-owner-db.test.ts", "name": "native wiki owner uses current human/employee authority for pages, links and citations" },
+        { "file": "apps/api/test/calendar-event-visibility-db.test.ts", "name": "calendar events enforce live owner custody for human, employee MCP and native agent reads" },
+        { "file": "apps/api/test/mcp-events.test.ts", "name": "1. events_query returns only live employee-owned rows in the caller org" },
+        { "file": "apps/api/test/mcp-events.test.ts", "name": "2. events_query filters by type (event_type)" },
+        { "file": "apps/api/test/mcp-events.test.ts", "name": "3. events_query filters by since/until time range" },
+        { "file": "apps/api/test/mcp-events.test.ts", "name": "4. events_query ignores model-authored caller_employee_slug and uses the bearer identity" }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
