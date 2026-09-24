@@ -10,6 +10,10 @@ import { AppRunAuthorizationSnapshotSchema, AppRuntimeSessionAuthoritySchema,
 import { db } from './db.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { APP_RUNTIME_CHANNEL_VERSION, APP_RUNTIME_SESSION_MS } from './app-runtime-contract.js';
+import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
+import type { ReviewedRuntimeAction } from './app-runtime-review.js';
+
+const runtimeLiveAuthorizer = new PostgresAppRunLiveAuthorization();
 
 export function hashAppRuntimeToken(token: string): string {
   return `sha256:${createHash('sha256').update('deft.app_runtime.session.v1\0').update(token).digest('hex')}`;
@@ -26,6 +30,7 @@ export type LiveRuntimeAuthority = Readonly<{
   review_requirement: typeof appRuntimeBindings.$inferSelect['review_requirement'];
   retry_class: typeof appRuntimeBindings.$inferSelect['retry_class'];
   retention_class: typeof appRuntimeBindings.$inferSelect['retention_class'];
+  prelocked_run_actor_id?: string;
 }>;
 
 /** This private candidate slice accepts a human-origin Run fixture only. A
@@ -33,11 +38,13 @@ export type LiveRuntimeAuthority = Readonly<{
  * vector; no existing v0-v2 entrance can assert this binding. */
 export async function runtimeRunMatchesAuthority(
   tx: AppRunTransaction, orgId: string, runId: string, authority: LiveRuntimeAuthority,
-): Promise<boolean> {
+): Promise<ReviewedRuntimeAction | null> {
   const [run] = await tx.select().from(appRuns).where(and(
     eq(appRuns.org_id, orgId), eq(appRuns.id, runId),
   )).limit(1);
   if (!run || run.origin_kind !== 'app' || run.provider_kind !== 'app_runtime'
+    || (authority.prelocked_run_actor_id !== undefined
+      && run.initiating_actor_id !== authority.prelocked_run_actor_id)
     || run.origin_app_installation_id !== authority.pin.app_installation_id
     || run.origin_app_version_id !== authority.pin.app_version_id
     || run.origin_app_grant_snapshot_id !== authority.grant_snapshot_id
@@ -52,26 +59,29 @@ export async function runtimeRunMatchesAuthority(
     || run.retention_class !== authority.retention_class
     || run.initiating_actor_type !== 'human'
     || run.execution_actor_type !== 'human'
-    || run.initiating_actor_id !== run.execution_actor_id) return false;
+    || run.initiating_actor_id !== run.execution_actor_id) return null;
   const snapshot = AppRunAuthorizationSnapshotSchema.safeParse(run.authorization_snapshot);
   if (!snapshot.success || snapshot.data.authenticated_subject.actor_type !== 'human'
-    || snapshot.data.authenticated_subject.user_id !== run.initiating_actor_id) return false;
-  await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${orgId}
-    AND user_id = ${run.initiating_actor_id} FOR SHARE`);
-  const [member] = await tx.select({
-    id: orgMembers.id, is_active: orgMembers.is_active,
-    app_run_authorization_version: orgMembers.app_run_authorization_version,
-  }).from(orgMembers).where(and(
-    eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, run.initiating_actor_id),
-  )).limit(1);
-  if (!member?.is_active) return false;
-  const membershipVersion = `sha256:${createHash('sha256')
-    .update('deft.app_run.authority.v1\0membership\0')
-    .update(canonicalCapabilityJson({ id: member.id,
-      authority_version: member.app_run_authorization_version }))
-    .digest('hex')}`;
-  return snapshot.data.authority_refs.some((ref) => ref.authority_kind === 'membership'
-    && ref.authority_id === run.initiating_actor_id && ref.version === membershipVersion);
+    || snapshot.data.authenticated_subject.user_id !== run.initiating_actor_id) return null;
+  try {
+    const current = await runtimeLiveAuthorizer.captureReviewedRuntimeInTransaction(tx, {
+      org_id: orgId, user_id: run.initiating_actor_id,
+      runtime_binding_id: authority.pin.runtime_binding_id,
+    });
+    const matches = current.registration.id === authority.pin.runtime_registration_id
+      && current.registration.runtime_epoch === authority.pin.runtime_epoch
+      && current.binding.provider_instance_id === run.provider_instance_id
+      && current.binding.provider_snapshot_id === run.provider_snapshot_id
+      && current.binding.operation_name === run.operation_name
+      && current.binding.risk_class === run.risk_class
+      && current.binding.review_requirement === run.review_requirement
+      && current.binding.retry_class === run.retry_class
+      && current.binding.retention_class === run.retention_class
+      && current.action.host_policy.review_scope === run.review_scope
+      && canonicalCapabilityJson(snapshot.data.authority_refs)
+        === canonicalCapabilityJson(current.authorization_snapshot.authority_refs);
+    return matches ? current.action : null;
+  } catch { return null; }
 }
 
 /** Every channel operation rereads live host authority under row locks.
@@ -83,6 +93,7 @@ export async function loadLiveRuntimeAuthority(
   sessionId: string,
   tokenHash: string,
   now: () => Date,
+  runId?: string,
 ): Promise<LiveRuntimeAuthority | null> {
   // Locate without trusting the row, then lock in the same order as App
   // lifecycle transitions: installation -> registration -> binding -> session.
@@ -91,6 +102,24 @@ export async function loadLiveRuntimeAuthority(
     eq(appRuntimeSessions.token_hash, tokenHash),
   )).limit(1);
   if (!locator) return null;
+  // Match App lifecycle's membership -> installation lock order. A Run
+  // locator is untrusted; its exact actor identity is reread at the boundary.
+  const memberIds: string[] = [];
+  let prelockedRunActorId: string | undefined;
+  if (runId) {
+    const [runLocator] = await tx.select({ actor_type: appRuns.initiating_actor_type,
+      actor_id: appRuns.initiating_actor_id }).from(appRuns).where(and(
+        eq(appRuns.org_id, orgId), eq(appRuns.id, runId),
+      )).limit(1);
+    if (!runLocator || runLocator.actor_type !== 'human') return null;
+    prelockedRunActorId = runLocator.actor_id;
+    memberIds.push(runLocator.actor_id);
+  }
+  memberIds.push(locator.operator_user_id);
+  for (const userId of [...new Set(memberIds)].sort()) {
+    await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${orgId}
+      AND user_id = ${userId} FOR SHARE`);
+  }
   const [registrationLocator] = await tx.select({
     app_installation_id: appRuntimeRegistrations.app_installation_id,
   }).from(appRuntimeRegistrations).where(and(
@@ -113,7 +142,8 @@ export async function loadLiveRuntimeAuthority(
   const checkedAt = now();
   if (!session || session.audience !== 'app_runtime' || session.revoked_at
     || session.expires_at <= checkedAt || session.runtime_registration_id !== locator.runtime_registration_id
-    || session.runtime_binding_id !== locator.runtime_binding_id) return null;
+    || session.runtime_binding_id !== locator.runtime_binding_id
+    || session.operator_user_id !== locator.operator_user_id) return null;
   const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(
     eq(appRuntimeRegistrations.org_id, orgId),
     eq(appRuntimeRegistrations.id, session.runtime_registration_id),
@@ -142,8 +172,6 @@ export async function loadLiveRuntimeAuthority(
     || installation.grant_epoch !== session.grant_epoch) return null;
   await tx.execute(sql`SELECT id FROM app_versions WHERE org_id = ${orgId}
     AND id = ${registration.app_version_id} FOR SHARE`);
-  await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${orgId}
-    AND user_id = ${session.operator_user_id} FOR SHARE`);
   const [version] = await tx.select({ state: appVersions.state }).from(appVersions).where(and(
       eq(appVersions.org_id, orgId), eq(appVersions.id, registration.app_version_id),
       eq(appVersions.installation_id, registration.app_installation_id),
@@ -181,6 +209,7 @@ export async function loadLiveRuntimeAuthority(
     review_requirement: binding.review_requirement,
     retry_class: binding.retry_class,
     retention_class: binding.retention_class,
+    ...(prelockedRunActorId ? { prelocked_run_actor_id: prelockedRunActorId } : {}),
   });
 }
 
@@ -204,6 +233,8 @@ export async function issueAppRuntimeSession(input: Readonly<{
       eq(appRuntimeRegistrations.org_id, input.org_id), eq(appRuntimeRegistrations.id, binding.runtime_registration_id),
     )).limit(1);
     if (!registration || registration.operator_user_id !== input.operator_user_id) return false;
+    await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
+      AND user_id = ${input.operator_user_id} FOR SHARE`);
     await tx.execute(sql`SELECT id FROM app_installations WHERE org_id = ${input.org_id}
       AND id = ${registration.app_installation_id} FOR SHARE`);
     await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${input.org_id}

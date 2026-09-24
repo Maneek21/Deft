@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { ReceiptViewer } from './receipt-viewer';
 import { AppRunInspector } from './apps/app-run-inspector';
+import { RuntimeAppInputReview, type RuntimeReviewIdentity } from './runtime-app-input-review';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
@@ -500,11 +501,22 @@ export function AgentActionCard({
   const [messageReview, setMessageReview] = useState<{ actionId: string; to: string; subject: string; body_text: string } | null>(null);
   const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [runtimeReviewed, setRuntimeReviewed] = useState<(RuntimeReviewIdentity & { actionId: string }) | null>(null);
   // Only the supported App-origin email contract has this message presenter.
   // Other governed operations keep their existing review flow.
   const needsMessageReview = action.action === 'app_run_invoke'
     && action.params.capability_label === 'send_email'
     && typeof action.params.safe_preview?.fields?.app_id === 'string';
+  const needsRuntimeReview = action.action === 'app_run_invoke'
+    && action.params.safe_preview?.fields?.provider_kind === 'app_runtime';
+  const runtimeRunId = typeof action.params.run_id === 'string' ? action.params.run_id : null;
+  const runtimeBindingId = typeof action.params.safe_preview?.fields?.runtime_binding_id === 'string'
+    ? action.params.safe_preview.fields.runtime_binding_id : null;
+  const runtimeReviewReady = needsRuntimeReview && runtimeReviewed?.actionId === action.id
+    && runtimeReviewed.runId === runtimeRunId && runtimeReviewed.bindingId === runtimeBindingId;
+  const onRuntimeReviewed = useCallback((identity: RuntimeReviewIdentity | null) => {
+    setRuntimeReviewed(identity ? { actionId: action.id, ...identity } : null);
+  }, [action.id]);
   const reviewedMessage = messageReview?.actionId === action.id ? messageReview : null;
   const needsTaskLinkReview = action.action === 'module_record_task_link' || action.action === 'module_record_task_unlink';
   const reviewedTaskLink = taskLinkReview?.actionId === action.id ? taskLinkReview : null;
@@ -650,6 +662,10 @@ export function AgentActionCard({
       <button type="button" onClick={loadTaskLinkReview} disabled={reviewLoading || isBusy} className="mt-2 min-h-9 rounded-md border px-3 py-1 text-xs disabled:opacity-60" style={{ borderColor: 'var(--border)' }}>{reviewLoading ? 'Loading targets…' : reviewedTaskLink ? 'Refresh target review' : 'Review link targets'}</button>
     </section>
   ) : null;
+  const runtimeReviewPanel = needsRuntimeReview ? (
+    <RuntimeAppInputReview runId={runtimeRunId} bindingId={runtimeBindingId}
+      busy={isBusy} onReviewed={onRuntimeReviewed} />
+  ) : null;
 
   const appRunInspectorButton = isAppRunAction && appRunReference ? (
     <button
@@ -670,7 +686,9 @@ export function AgentActionCard({
   ) : null;
 
   async function handleApprove() {
-    if (isBusy || (needsMessageReview && !reviewedMessage) || (needsTaskLinkReview && !reviewedTaskLink)) return;
+    if (isBusy || (needsMessageReview && !reviewedMessage)
+      || (needsTaskLinkReview && !reviewedTaskLink)
+      || (needsRuntimeReview && !runtimeReviewReady)) return;
     setLocalError(null);
     setLocalStatus('approving');
     try {
@@ -1025,12 +1043,14 @@ export function AgentActionCard({
           )}
         </div>
 
-        {messageReviewPanel}{taskLinkReviewPanel}
+        {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleApprove}
-            disabled={isBusy || (needsMessageReview && !reviewedMessage) || (needsTaskLinkReview && !reviewedTaskLink)}
+            disabled={isBusy || (needsMessageReview && !reviewedMessage)
+              || (needsTaskLinkReview && !reviewedTaskLink)
+              || (needsRuntimeReview && !runtimeReviewReady)}
             className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm disabled:opacity-60"
             style={{ background: 'var(--primary-container)' }}
           >
@@ -1172,7 +1192,7 @@ export function AgentActionCard({
         </div>
       )}
 
-      {!needsMessageReview && !needsTaskLinkReview && <>
+      {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview && <>
       <div
         className="mt-3 rounded-md px-3 py-2 min-w-0"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
@@ -1245,7 +1265,8 @@ export function AgentActionCard({
       )}
 
       <div className="text-[12px] mt-2 space-y-1" style={{ color: 'var(--foreground-secondary)' }}>
-        {!needsMessageReview && !needsTaskLinkReview && !(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
+        {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview
+          && !(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
         {captureLabel && (
           <p style={{ color: 'var(--muted)' }}>
             {captureLabel}
@@ -1279,11 +1300,13 @@ export function AgentActionCard({
         )}
       </div>
 
-      {messageReviewPanel}{taskLinkReviewPanel}
+      {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
         <button
           onClick={handleApprove}
-          disabled={isBusy || (needsMessageReview && !reviewedMessage) || (needsTaskLinkReview && !reviewedTaskLink)}
+          disabled={isBusy || (needsMessageReview && !reviewedMessage)
+            || (needsTaskLinkReview && !reviewedTaskLink)
+            || (needsRuntimeReview && !runtimeReviewReady)}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"
           style={{ background: 'var(--status-green)' }}
         >

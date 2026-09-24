@@ -122,6 +122,12 @@ export const APP_RUN_LEGACY_MCP_CUTOVER_ENABLED =
   process.env.DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED === 'true';
 export const APP_RUN_APP_ORIGIN_ENABLED =
   process.env.DEFT_APP_RUN_APP_ORIGIN_ENABLED === 'true';
+// Keep the channel's combined rollout decision beside the Run flags. The
+// independent channel switch may be disabled without reopening Run composition.
+export function isAppRuntimeChannelEnabled(): boolean {
+  return APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
+    && process.env.DEFT_APP_RUNTIME_CHANNEL_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';

@@ -125,7 +125,7 @@ describe('App Protocol v2 bounded automation request contract', () => {
     assert.deepEqual(getDeftAppManifestJsonSchema('2'), schema);
     assert.deepEqual(getDeftAppManifestJsonSchema('1'), getDeftAppManifestV1JsonSchema());
     assert.deepEqual(getDeftAppManifestJsonSchema('0'), getDeftAppManifestV0JsonSchema());
-    assert.throws(() => getDeftAppManifestJsonSchema('3'), /schema v3 is not supported/);
+    assert.throws(() => getDeftAppManifestJsonSchema('4'), /schema v4 is not supported/);
   });
 
   test('accepts only one bounded daily trigger declaration over a resolved action', async () => {

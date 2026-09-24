@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { appRunAttempts, appRuntimeSessions } from '@deft/db/schema';
+import { parseRuntimeObjectInput } from '@deft/app-kit';
 import {
   APP_RUN_CONTRACT_VERSIONS,
   AppRunRetainedProviderResultSchema,
@@ -209,7 +210,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       || !claimed.attempt.runtime_sequence || !claimed.attempt.runtime_binding_id
       || claimed.attempt.runtime_session_epoch === null || claimed.attempt.runtime_epoch === null) return null;
     const authority = await this.repository.transaction((tx) => loadLiveRuntimeAuthority(
-      tx, input.org_id, input.session_id, input.token_hash, this.now));
+      tx, input.org_id, input.session_id, input.token_hash, this.now, input.run_id));
     if (!authority) return null;
     return Object.freeze({
       schema_version: APP_RUNTIME_CHANNEL_VERSION,
@@ -239,11 +240,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       { session_id: input.session_id, token_hash: input.token_hash });
     if (!boundary) return null;
     const exactInput = await this.repository.transaction(async (tx) => {
-      const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
-        input.session_id, input.token_hash, this.now);
-      if (!authority) return null;
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
-      if (!run || run.state !== 'running' || run.cancel_requested_at
+      if (!run || run.provider_kind !== 'app_runtime') return null;
+      const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
+        input.session_id, input.token_hash, this.now, input.run_id);
+      if (!authority) return null;
+      if (run.state !== 'running' || run.cancel_requested_at
         || !run.execution_released_at || run.input_expires_at <= this.now()
         || !await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority)) return null;
       await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
@@ -289,11 +291,11 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       fingerprintValue).map((candidate) => candidate.fingerprint));
     const now = this.now();
     const completed = await this.repository.transaction(async (tx) => {
-      const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
-        result.session_id, input.token_hash, this.now);
-      if (!authority) return false;
       const run = await this.repository.lockRun(tx, input.org_id, result.run_id);
       if (!run || run.provider_kind !== 'app_runtime') return false;
+      const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
+        result.session_id, input.token_hash, this.now, result.run_id);
+      if (!authority) return false;
       await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
         AND id = ${result.attempt_id} FOR UPDATE`);
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
@@ -305,11 +307,21 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || attempt.runtime_sequence !== result.sequence) return false;
       if (!authority || authority.pin.runtime_binding_id !== attempt.runtime_binding_id
         || authority.pin.runtime_epoch !== attempt.runtime_epoch
-        || authority.pin.session_epoch !== attempt.runtime_session_epoch
-        || !await runtimeRunMatchesAuthority(tx, input.org_id, result.run_id, authority)) return false;
+        || authority.pin.session_epoch !== attempt.runtime_session_epoch) return false;
+      const reviewedAction = await runtimeRunMatchesAuthority(tx, input.org_id, result.run_id, authority);
+      if (!reviewedAction) return false;
       if (attempt.runtime_result_hmac) return replayDigests.has(attempt.runtime_result_hmac);
       if (attempt.state !== 'provider_call_started' || !attempt.lease_expires_at
         || attempt.lease_expires_at <= this.now()) return false;
+      if (result.status === 'returned') {
+        try { parseRuntimeObjectInput(reviewedAction.output_schema, result.output); }
+        catch {
+          // The provider may already have made the external effect. Invalid
+          // output cannot be signed as success and must not trigger a retry.
+          await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+          return true;
+        }
+      }
       if (result.status === 'indeterminate') {
         await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
         return true;
@@ -345,12 +357,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     token_hash: string; claim_token: string; sequence: number;
   }>): Promise<ClaimedAttempt | null> {
     return this.repository.transaction(async (tx) => {
-      const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
-        input.session_id, input.token_hash, this.now);
-      if (!authority) return null;
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.provider_kind !== 'app_runtime') return null;
-      if (!authority || !await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority)) return null;
+      const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
+        input.session_id, input.token_hash, this.now, input.run_id);
+      if (!authority) return null;
+      if (!await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority)) return null;
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
         eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.run_id, input.run_id),
         eq(appRunAttempts.id, input.attempt_id),
@@ -404,11 +416,11 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     )).limit(1);
     if (!identity) return false;
     return this.repository.transaction(async (tx) => {
-      const authority = runtime ? await loadLiveRuntimeAuthority(tx, orgId,
-        runtime.session_id, runtime.token_hash, this.now) : null;
-      if (runtime && !authority) return false;
       const run = await this.repository.lockRun(tx, orgId, identity.run_id);
       if (!run || (runtime ? run.provider_kind !== 'app_runtime' : run.provider_kind !== 'mcp')) return false;
+      const authority = runtime ? await loadLiveRuntimeAuthority(tx, orgId,
+        runtime.session_id, runtime.token_hash, this.now, identity.run_id) : null;
+      if (runtime && !authority) return false;
       if (runtime && (!authority || runtime.run_id !== run.id
         || !await runtimeRunMatchesAuthority(tx, orgId, run.id, authority))) return false;
       await tx.execute(sql`SELECT id FROM app_run_attempts
@@ -523,18 +535,15 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   ): Promise<ClaimedAttempt | null> {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
-      const runtimeAuthority = runtime ? await loadLiveRuntimeAuthority(
-        tx, orgId, runtime.session_id, runtime.token_hash, this.now) : null;
-      if (runtime && !runtimeAuthority) return null;
       let run = await this.repository.lockRun(tx, orgId, runId);
+      if (!run || (runtime ? run.provider_kind !== 'app_runtime'
+        : run.provider_kind !== 'mcp')) return null;
+      const runtimeAuthority = runtime ? await loadLiveRuntimeAuthority(
+        tx, orgId, runtime.session_id, runtime.token_hash, this.now, runId) : null;
+      if (runtime && (!runtimeAuthority
+        || !await runtimeRunMatchesAuthority(tx, orgId, runId, runtimeAuthority))) return null;
       if (
-        !run
-        || (runtime ? (
-          run.provider_kind !== 'app_runtime'
-          || !runtimeAuthority
-          || !await runtimeRunMatchesAuthority(tx, orgId, runId, runtimeAuthority)
-        ) : run.provider_kind !== 'mcp')
-        || !run.execution_released_at
+        !run.execution_released_at
         || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)
         || (!runtime && !await this.executionAuthorizer.authorizeExecution({
           org_id: orgId, run, tx, stage: 'claim', now,
@@ -636,16 +645,15 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   }> | null> {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
-      const authority = runtime ? await loadLiveRuntimeAuthority(tx, claimed.run.org_id,
-        runtime.session_id, runtime.token_hash, this.now) : null;
-      if (runtime && !authority) return null;
       let run = await this.repository.lockRun(tx, claimed.run.org_id, claimed.run.id);
+      if (!run || (runtime ? run.provider_kind !== 'app_runtime'
+        : run.provider_kind !== 'mcp')) return null;
+      const authority = runtime ? await loadLiveRuntimeAuthority(tx, claimed.run.org_id,
+        runtime.session_id, runtime.token_hash, this.now, claimed.run.id) : null;
+      if (runtime && (!authority
+        || !await runtimeRunMatchesAuthority(tx, run.org_id, run.id, authority))) return null;
       if (
-        !run
-        || (runtime ? (run.provider_kind !== 'app_runtime' || !authority
-          || !await runtimeRunMatchesAuthority(tx, run.org_id, run.id, authority))
-          : run.provider_kind !== 'mcp')
-        || !run.execution_released_at
+        !run.execution_released_at
         || run.state === 'cancelled'
         || (runtime && (run.cancel_requested_at || run.input_expires_at <= this.now()))
         || (!runtime && !await this.executionAuthorizer.authorizeExecution({

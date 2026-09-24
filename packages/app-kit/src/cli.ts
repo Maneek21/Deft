@@ -46,7 +46,7 @@ async function assertRegularUnslinkedFile(relativePath: string): Promise<string>
   return current;
 }
 
-type AppTemplate = 'declarative' | 'connected' | 'connected-automation';
+type AppTemplate = 'declarative' | 'connected' | 'connected-automation' | 'runtime';
 
 function parseInitTemplate(): AppTemplate {
   const args = process.argv.slice(4);
@@ -54,9 +54,9 @@ function parseInitTemplate(): AppTemplate {
   if (
     args.length !== 2
     || args[0] !== '--template'
-    || (args[1] !== 'declarative' && args[1] !== 'connected' && args[1] !== 'connected-automation')
+    || (args[1] !== 'declarative' && args[1] !== 'connected' && args[1] !== 'connected-automation' && args[1] !== 'runtime')
   ) {
-    throw new Error('Usage: deft app init [--template declarative|connected|connected-automation]');
+    throw new Error('Usage: deft app init [--template declarative|connected|connected-automation|runtime]');
   }
   return args[1];
 }
@@ -275,6 +275,23 @@ async function initializeConnected(automation: boolean): Promise<void> {
 }
 
 async function initialize(template: AppTemplate): Promise<void> {
+  if (template === 'runtime') {
+    if (await exists(resolve(cwd, 'deft.app.json'))) throw new Error('deft.app.json already exists');
+    await writeJson(resolve(cwd, 'deft.app.json'), {
+      schema_version: '3', id: 'community.example.shipping', version: '1.0.0',
+      name: 'Shipping Label', license: 'AGPL-3.0-only', compatibility: { app_protocol: '3' },
+      modules: [], navigation: [],
+      runtime_requirements: [{ key: 'carrier', protocol_version: 'deft.app_runtime_channel.v1' }],
+      private_capabilities: [{ key: 'create_shipping_label', version: '1',
+        input_schema: { type: 'object', properties: { shipment_id: { type: 'string', maxLength: 120 } }, required: ['shipment_id'], additionalProperties: false },
+        output_schema: { type: 'object', properties: { label_id: { type: 'string', maxLength: 120 } }, required: ['label_id'], additionalProperties: false },
+      }],
+      runtime_actions: [{ key: 'create_shipping_label', label: 'Create shipping label', capability_key: 'create_shipping_label', runtime_requirement_key: 'carrier' }],
+    });
+    await writeFile(resolve(cwd, 'APP_BRIEF.md'), '# Shipping Label\n\nCandidate Runtime App. Build and stage with the public Kit. A workspace operator must review the App and separately register and bind the external Runtime. Every invocation requires approval. Never place provider credentials or commands in this package.\n');
+    console.log('Initialized candidate Runtime App; no provider authority granted.');
+    return;
+  }
   if (template === 'connected' || template === 'connected-automation') {
     return initializeConnected(template === 'connected-automation');
   }
@@ -463,6 +480,8 @@ async function main(): Promise<void> {
       console.log(`Valid App Protocol v0 package ${built.digest}; connected permissions: none`);
     } else if (protocol === '1') {
       console.log(`Valid App Protocol v1 connected package ${built.digest}; staging grants zero authority; review and activation are explicit; execution is rollout-gated`);
+    } else if (protocol === '3') {
+      console.log(`Valid App Protocol v3 Runtime package ${built.digest}; staging grants zero authority; App and Runtime binding reviews are required`);
     } else {
       console.log(`Valid App Protocol v2 automation-request package ${built.digest}; staging grants zero authority; automation requests are requested-only and non-executable; provider access: none`);
     }

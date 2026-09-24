@@ -194,7 +194,7 @@ export const AppRunActorSchema = z.discriminatedUnion('actor_type', [
 ]);
 export type AppRunActor = z.infer<typeof AppRunActorSchema>;
 
-export const AppRunOriginSchema = z.discriminatedUnion('origin_kind', [
+export const AppRunOriginSchema = z.union([
   z.object({ origin_kind: z.literal('core') }).strict(),
   z.object({
     origin_kind: z.literal('legacy_connector'),
@@ -205,6 +205,13 @@ export const AppRunOriginSchema = z.discriminatedUnion('origin_kind', [
     installation_id: ExactIdentitySchema,
     app_version_id: ExactIdentitySchema,
     binding_key: ExactIdentitySchema,
+    grant_snapshot_id: ExactIdentitySchema,
+  }).strict(),
+  z.object({
+    origin_kind: z.literal('app'),
+    installation_id: ExactIdentitySchema,
+    app_version_id: ExactIdentitySchema,
+    runtime_binding_id: ExactIdentitySchema,
     grant_snapshot_id: ExactIdentitySchema,
   }).strict(),
 ]);
@@ -306,6 +313,8 @@ export const AppRunAuthorityRefSchema = z.object({
     'app_version',
     'app_grant',
     'app_binding',
+    'app_runtime_registration',
+    'app_runtime_binding',
     'app_dependency',
     'app_automation_request',
     'app_automation_definition',

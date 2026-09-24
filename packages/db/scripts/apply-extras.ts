@@ -145,6 +145,7 @@ async function main() {
     for (const platformFile of [
       '0.3.0-preview.31-app-runtime-channel.sql',
       '0.3.0-preview.32-app-public-claims.sql',
+      '0.3.0-preview.33-app-runtime-authoring.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);

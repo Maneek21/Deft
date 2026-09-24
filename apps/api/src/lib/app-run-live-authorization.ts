@@ -29,6 +29,8 @@ import {
   appGrantSnapshots,
   appInstallations,
   appModuleBindings,
+  appRuntimeBindings,
+  appRuntimeRegistrations,
   appRuns,
   appVersions,
   capabilityProviderSnapshots,
@@ -68,6 +70,8 @@ import {
   type AppRunPreparedAuthorityVectorV2,
 } from './app-run-prepared-input.js';
 import { APP_AUTOMATION_POLICY_DIGEST, digestAppAutomationFireIdentity } from './app-automation-definition-service.js';
+import { loadReviewedRuntimeAction } from './app-runtime-review.js';
+import { APP_RUNTIME_CHANNEL_VERSION } from './app-runtime-contract.js';
 
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
 const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
@@ -113,6 +117,7 @@ type InternalRunAuthorization = Readonly<{
   origin_app_installation_id: string | null;
   origin_app_version_id: string | null;
   origin_app_binding_key: string | null;
+  origin_runtime_binding_id: string | null;
   origin_app_grant_snapshot_id: string | null;
   origin_app_automation_definition_id: string | null;
   origin_app_automation_fire_id: string | null;
@@ -263,6 +268,176 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     });
   }
 
+  /** Host-only v3 Runtime capture. The public App Kit cannot assert these
+   * pins: a reviewed binding and the live effective grant are required. */
+  async captureReviewedRuntimeForPreparation(input: Readonly<{
+    org_id: string; user_id: string; runtime_binding_id: string;
+  }>) {
+    return db.transaction((tx) => this.captureReviewedRuntimeInTransaction(tx, input));
+  }
+
+  async captureReviewedRuntimeInTransaction(tx: AppRunTransaction, input: Readonly<{
+    org_id: string; user_id: string; runtime_binding_id: string;
+  }>) {
+    const [locator] = await tx.select({
+      app_installation_id: appRuntimeBindings.app_installation_id,
+      app_version_id: appRuntimeBindings.app_version_id,
+      grant_snapshot_id: appRuntimeBindings.grant_snapshot_id,
+      runtime_registration_id: appRuntimeBindings.runtime_registration_id,
+      action_key: appRuntimeBindings.action_key,
+    }).from(appRuntimeBindings).where(and(
+      eq(appRuntimeBindings.org_id, input.org_id),
+      eq(appRuntimeBindings.id, input.runtime_binding_id),
+    )).limit(1);
+    if (!locator) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const [registrationLocator] = await tx.select({
+      operator_user_id: appRuntimeRegistrations.operator_user_id,
+    }).from(appRuntimeRegistrations).where(and(
+      eq(appRuntimeRegistrations.org_id, input.org_id),
+      eq(appRuntimeRegistrations.id, locator.runtime_registration_id),
+    )).limit(1);
+    if (!registrationLocator) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    for (const userId of [...new Set([input.user_id,
+      registrationLocator.operator_user_id])].sort()) {
+      await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
+        AND user_id = ${userId} FOR SHARE`);
+    }
+    const memberRef = await this.#membership(tx, input.org_id, input.user_id);
+    const [member] = await tx.select({ role: orgMembers.role,
+      is_active: orgMembers.is_active }).from(orgMembers).where(and(
+        eq(orgMembers.org_id, input.org_id), eq(orgMembers.user_id, input.user_id),
+      )).limit(1);
+    if (!member?.is_active || member.role === 'guest') throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const [operator] = await tx.select({ is_active: orgMembers.is_active,
+      role: orgMembers.role }).from(orgMembers).where(and(
+        eq(orgMembers.org_id, input.org_id),
+        eq(orgMembers.user_id, registrationLocator.operator_user_id),
+      )).limit(1);
+    if (!operator?.is_active || operator.role === 'guest') throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    await tx.execute(sql`SELECT id FROM app_installations WHERE org_id = ${input.org_id}
+      AND id = ${locator.app_installation_id} FOR SHARE`);
+    await tx.execute(sql`SELECT id FROM app_versions WHERE org_id = ${input.org_id}
+      AND id = ${locator.app_version_id} FOR SHARE`);
+    await tx.execute(sql`SELECT id FROM app_grant_snapshots WHERE org_id = ${input.org_id}
+      AND id = ${locator.grant_snapshot_id} FOR SHARE`);
+    await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${input.org_id}
+      AND id = ${locator.runtime_registration_id} FOR SHARE`);
+    await tx.execute(sql`SELECT id FROM app_runtime_bindings WHERE org_id = ${input.org_id}
+      AND id = ${input.runtime_binding_id} FOR SHARE`);
+    const reviewed = await loadReviewedRuntimeAction(tx, input.org_id,
+      locator.app_installation_id, locator.action_key);
+    const { installation, version, grant, action } = reviewed;
+    const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(
+      eq(appRuntimeRegistrations.org_id, input.org_id),
+      eq(appRuntimeRegistrations.id, locator.runtime_registration_id),
+    )).limit(1);
+    const [binding] = await tx.select().from(appRuntimeBindings).where(and(
+      eq(appRuntimeBindings.org_id, input.org_id),
+      eq(appRuntimeBindings.id, input.runtime_binding_id),
+    )).limit(1);
+    if (!registration || !binding || registration.state !== 'active'
+      || registration.contract_version !== APP_RUNTIME_CHANNEL_VERSION
+      || binding.state !== 'active'
+      || installation.state !== 'active' || version.state !== 'active'
+      || grant.snapshot_kind !== 'effective'
+      || installation.active_version_id !== version.id
+      || installation.active_grant_snapshot_id !== grant.id
+      || binding.app_installation_id !== installation.id
+      || binding.app_version_id !== version.id
+      || binding.grant_snapshot_id !== grant.id
+      || binding.runtime_registration_id !== registration.id
+      || registration.app_installation_id !== installation.id
+      || registration.app_version_id !== version.id
+      || registration.grant_snapshot_id !== grant.id
+      || registration.operator_user_id !== registrationLocator.operator_user_id
+      || binding.action_key !== action.action_key
+      || binding.operation_name !== action.operation_name
+      || binding.provider_kind !== 'app_runtime'
+      || binding.provider_instance_id !== registration.id
+      || binding.interface_identity !== `deft.runtime.v1:${input.org_id.toLowerCase()}:${installation.id.toLowerCase()}:${action.action_key}`
+      || binding.risk_class !== action.host_policy.risk_class
+      || binding.review_requirement !== action.host_policy.review_requirement
+      || binding.retry_class !== action.host_policy.retry_class
+      || binding.retention_class !== action.host_policy.retention_class
+      || action.host_policy.review_scope !== 'per_invocation'
+      || grant.snapshot_digest !== digestAppGrantValue(grant.canonical_snapshot)) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const [providerRow] = await tx.select().from(capabilityProviderSnapshots).where(and(
+      eq(capabilityProviderSnapshots.org_id, input.org_id),
+      eq(capabilityProviderSnapshots.id, binding.provider_snapshot_id),
+      eq(capabilityProviderSnapshots.provider_kind, 'app_runtime'),
+      eq(capabilityProviderSnapshots.provider_instance_id, registration.id),
+    )).limit(1);
+    if (!providerRow || providerRow.adapter_contract_version !== APP_RUNTIME_CHANNEL_VERSION) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const provider = CapabilityProviderDiscoverySnapshotSchema.parse(providerRow.safe_snapshot);
+    const operation = provider.operations.find((item) => item.identity.operation_name === binding.operation_name);
+    if (provider.snapshot_digest !== providerRow.snapshot_digest
+      || provider.provider.org_id !== input.org_id
+      || provider.provider.provider_kind !== 'app_runtime'
+      || provider.provider.provider_instance_id !== registration.id
+      || provider.operations.length !== 1 || !operation
+      || digestAppGrantValue(operation.input_schema) !== digestAppGrantValue(action.input_schema)
+      || digestAppGrantValue(operation.output_schema) !== digestAppGrantValue(action.output_schema)) {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const refs: AuthorityRef[] = [
+      memberRef,
+      { authority_kind: 'app_surface', authority_id: 'human:ui',
+        version: authorityVersion('app_surface', { surface: 'human:ui', provider_kind: 'app_runtime' }) },
+      { authority_kind: 'app_installation', authority_id: installation.id,
+        version: authorityVersion('app_installation', {
+          lifecycle_epoch: installation.lifecycle_epoch, grant_epoch: installation.grant_epoch,
+        }) },
+      { authority_kind: 'app_version', authority_id: version.id,
+        version: authorityVersion('app_version', {
+          manifest_digest: version.manifest_digest, package_digest: version.package_digest,
+        }) },
+      { authority_kind: 'app_grant', authority_id: grant.id,
+        version: authorityVersion('app_grant', { snapshot_digest: grant.snapshot_digest }) },
+      { authority_kind: 'app_runtime_registration', authority_id: registration.id,
+        version: authorityVersion('app_runtime_registration', {
+          app_version_id: registration.app_version_id,
+          grant_snapshot_id: registration.grant_snapshot_id,
+          contract_version: registration.contract_version,
+          operator_user_id: registration.operator_user_id,
+          runtime_epoch: registration.runtime_epoch,
+          state: registration.state,
+        }) },
+      { authority_kind: 'app_runtime_binding', authority_id: binding.id,
+        version: authorityVersion('app_runtime_binding', {
+          registration_id: registration.id,
+          action_key: binding.action_key,
+          contract_digest: action.contract_digest,
+          provider_snapshot_id: binding.provider_snapshot_id,
+          state: binding.state,
+        }) },
+      { authority_kind: 'provider_schema', authority_id: `${registration.id}:${binding.operation_name}`,
+        version: authorityVersion('provider_schema', {
+          snapshot_id: providerRow.id, snapshot_digest: providerRow.snapshot_digest,
+          schema_digest: operation.schema_digest,
+        }) },
+      { authority_kind: 'policy', authority_id: `${registration.id}:${binding.operation_name}`,
+        version: authorityVersion('policy', {
+          host_policy_version: 'deft.app_runtime.host_policy.v1',
+          policy: action.host_policy,
+        }) },
+    ];
+    const authorization_snapshot = AppRunAuthorizationSnapshotSchema.parse({
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      authenticated_subject: { actor_type: 'human', user_id: input.user_id },
+      authority_refs: refs.sort((a, b) => `${a.authority_kind}\0${a.authority_id}`
+        .localeCompare(`${b.authority_kind}\0${b.authority_id}`)),
+    });
+    return Object.freeze({ authorization_snapshot, binding, registration, action,
+      provider_snapshot_digest: providerRow.snapshot_digest,
+      review_contract_digest: action.contract_digest,
+      installation_lifecycle_epoch: installation.lifecycle_epoch,
+      installation_grant_epoch: installation.grant_epoch });
+  }
+
   /** Revalidate an exact MCP/OAuth token and its current scopes for actor-
    * scoped Run reads. This does not create or mutate Run authority. */
   async assertTokenScopes(input: AppRunTokenScopeAuthorization): Promise<AppRunReadAuthorityRef> {
@@ -285,6 +460,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     if (
       (prepared.schema_version !== 'deft.app_action_authority.v1' && !isAutomation)
       || submission.origin.origin_kind !== 'app'
+      || !('binding_key' in submission.origin)
       || submission.org_id !== submission.operation.provider.org_id
       || submission.origin.installation_id !== prepared.installation.id
       || submission.origin.app_version_id !== prepared.app_version.id
@@ -484,6 +660,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       origin_app_installation_id: appRuns.origin_app_installation_id,
       origin_app_version_id: appRuns.origin_app_version_id,
       origin_app_binding_key: appRuns.origin_app_binding_key,
+      origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
       origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
       origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
@@ -500,6 +677,35 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     run: AppRunSafeView,
     internal: InternalRunAuthorization,
   ): Promise<boolean> {
+    if (run.provider_kind === 'app_runtime') {
+      try {
+        if (run.origin_kind !== 'app' || run.initiating_actor_type !== 'human'
+          || run.execution_actor_type !== 'human'
+          || run.initiating_actor_id !== run.execution_actor_id
+          || !internal.origin_runtime_binding_id
+          || internal.origin_app_binding_key !== null
+          || internal.origin_app_automation_definition_id !== null
+          || internal.origin_app_automation_fire_id !== null) return false;
+        const current = await this.captureReviewedRuntimeInTransaction(tx, {
+          org_id: run.org_id, user_id: run.initiating_actor_id,
+          runtime_binding_id: internal.origin_runtime_binding_id,
+        });
+        return current.binding.provider_instance_id === run.provider_instance_id
+          && current.binding.provider_snapshot_id === internal.provider_snapshot_id
+          && current.binding.operation_name === run.operation_name
+          && current.binding.risk_class === run.risk_class
+          && current.binding.review_requirement === run.review_requirement
+          && current.binding.retry_class === run.retry_class
+          && current.binding.retention_class === run.retention_class
+          && current.action.host_policy.review_scope === run.review_scope
+          && internal.origin_app_installation_id === current.binding.app_installation_id
+          && internal.origin_app_version_id === current.binding.app_version_id
+          && internal.origin_app_grant_snapshot_id === current.binding.grant_snapshot_id
+          && sameAuthorityRefs(AppRunAuthorizationSnapshotSchema.parse(
+            internal.authorization_snapshot).authority_refs,
+            current.authorization_snapshot.authority_refs);
+      } catch { return false; }
+    }
     const stored = AppRunAuthorizationSnapshotSchema.parse(internal.authorization_snapshot);
     if (
       stored.authenticated_subject.actor_type !== run.initiating_actor_type

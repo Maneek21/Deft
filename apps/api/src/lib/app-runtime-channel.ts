@@ -1,7 +1,7 @@
 import { and, asc, eq, gt, isNotNull } from 'drizzle-orm';
 import { appRunAttempts, appRuns, appRuntimeSessions } from '@deft/db/schema';
 import { db } from './db.js';
-import { APP_RUN_APP_ORIGIN_ENABLED, APP_RUNS_ENABLED } from './env.js';
+import { isAppRuntimeChannelEnabled } from './env.js';
 import type { AppRunAttemptRunner } from './app-run-attempt-runner.js';
 import { hashAppRuntimeToken, issueAppRuntimeSession } from './app-runtime-authority.js';
 import {
@@ -12,8 +12,7 @@ import {
 /** Deliberately separate from employee/public App audiences. No route or App
  * Kit v0-v2 submission can activate it merely by installation. */
 export function appRuntimeChannelEnabled(): boolean {
-  return APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
-    && process.env.DEFT_APP_RUNTIME_CHANNEL_ENABLED === 'true';
+  return isAppRuntimeChannelEnabled();
 }
 
 export class AppRuntimeChannel {

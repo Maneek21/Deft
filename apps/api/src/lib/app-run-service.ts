@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
   APP_RUN_DEFAULT_ATTEMPT_LIMIT,
+  APP_RUN_CONTRACT_VERSIONS,
   APP_RUN_LIMITS,
   AppRunAuthorizationSnapshotSchema,
+  AppRunSafePreviewSchema,
   AppRunSafeOutcomeSchema,
   canonicalCapabilityJson,
   idempotencyDeadline,
@@ -16,7 +18,7 @@ import {
   type AppRunRiskClass,
   type AppRunSubmission,
 } from '@deft/shared';
-import { APP_AUTOMATION_POLICY_V1 } from '@deft/app-kit';
+import { APP_AUTOMATION_POLICY_V1, RuntimeObjectSchema, parseRuntimeObjectInput } from '@deft/app-kit';
 import {
   assertAppRunReferencedKeysAvailable,
   type AppRunKeyProvider,
@@ -62,6 +64,39 @@ import type {
   AppRunPreparedAppVerification,
 } from './app-run-live-authorization.js';
 import { bindAppAutomationFireRunWithExecutor } from './app-automation-repository.js';
+import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
+import type { ReviewedRuntimeInvoke, ReviewedRuntimeCaller } from './app-runtime-action-service.js';
+import type { AppRunTransaction } from './app-run-repository.js';
+
+export type ReviewedRuntimeCapture = Readonly<{
+  authorization_snapshot: AppRunAuthorizationSnapshot;
+  binding: Readonly<{
+    id: string;
+    org_id: string;
+    app_installation_id: string;
+    app_version_id: string;
+    grant_snapshot_id: string;
+    action_key: string;
+    provider_kind: 'app_runtime';
+    provider_instance_id: string;
+    provider_snapshot_id: string;
+    operation_name: string;
+    risk_class: AppRunRiskClass;
+    review_requirement: 'policy' | 'always';
+    retry_class: AppRunRetryClass;
+    retention_class: AppRunRetentionClass;
+  }>;
+  action: Readonly<{
+    action_key: string;
+    contract_digest: string;
+    input_schema: unknown;
+    host_policy: Readonly<{ review_scope: 'per_invocation' }>;
+  }>;
+  provider_snapshot_digest: string;
+  review_contract_digest: string;
+  installation_lifecycle_epoch: number;
+  installation_grant_epoch: number;
+}>;
 
 export type AppRunTrustedContext = Readonly<{
   org_id: string;
@@ -84,6 +119,12 @@ export interface AppRunPreparedAppAuthorizer {
     org_id: string;
     run: AppRunSafeView;
   }>): Promise<boolean>;
+  captureReviewedRuntimeForPreparation?(input: Readonly<{
+    org_id: string; user_id: string; runtime_binding_id: string;
+  }>): Promise<ReviewedRuntimeCapture>;
+  captureReviewedRuntimeInTransaction?(tx: AppRunTransaction, input: Readonly<{
+    org_id: string; user_id: string; runtime_binding_id: string;
+  }>): Promise<ReviewedRuntimeCapture>;
 }
 
 function sameActor(left: AppRunActor, right: AppRunActor): boolean {
@@ -98,6 +139,32 @@ function canonicalAuthorization(value: AppRunAuthorizationSnapshot): string {
       const rightKey = `${right.authority_kind}\0${right.authority_id}`;
       return leftKey.localeCompare(rightKey);
     }),
+  });
+}
+
+function runtimeCaptureIdentity(capture: ReviewedRuntimeCapture): string {
+  const binding = capture.binding;
+  return canonicalCapabilityJson({
+    binding: {
+      id: binding.id, org_id: binding.org_id,
+      app_installation_id: binding.app_installation_id,
+      app_version_id: binding.app_version_id,
+      grant_snapshot_id: binding.grant_snapshot_id,
+      action_key: binding.action_key,
+      provider_kind: binding.provider_kind,
+      provider_instance_id: binding.provider_instance_id,
+      provider_snapshot_id: binding.provider_snapshot_id,
+      operation_name: binding.operation_name,
+      risk_class: binding.risk_class,
+      review_requirement: binding.review_requirement,
+      retry_class: binding.retry_class,
+      retention_class: binding.retention_class,
+    },
+    action: capture.action,
+    provider_snapshot_digest: capture.provider_snapshot_digest,
+    review_contract_digest: capture.review_contract_digest,
+    installation_lifecycle_epoch: capture.installation_lifecycle_epoch,
+    installation_grant_epoch: capture.installation_grant_epoch,
   });
 }
 
@@ -214,6 +281,7 @@ export function appRunReplayAuthorityMatches(
     origin_app_installation_id: string | null;
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
+    origin_runtime_binding_id?: string | null;
     origin_app_grant_snapshot_id: string | null;
     origin_app_automation_definition_id?: string | null;
     origin_app_automation_fire_id?: string | null;
@@ -223,10 +291,17 @@ export function appRunReplayAuthorityMatches(
   trustedAppVector?: AppRunPreparedAppVerification['authority_vector'],
 ): boolean {
   if (submission.origin.origin_kind !== 'app') return true;
+  const runtimeBindingId = 'runtime_binding_id' in submission.origin
+    ? submission.origin.runtime_binding_id
+    : null;
+  const actionBindingKey = 'binding_key' in submission.origin
+    ? submission.origin.binding_key
+    : null;
   if (
     replay.origin_app_installation_id !== submission.origin.installation_id
     || replay.origin_app_version_id !== submission.origin.app_version_id
-    || replay.origin_app_binding_key !== submission.origin.binding_key
+    || replay.origin_app_binding_key !== actionBindingKey
+    || (replay.origin_runtime_binding_id ?? null) !== runtimeBindingId
     || replay.origin_app_grant_snapshot_id !== submission.origin.grant_snapshot_id
   ) return false;
   if (trustedAppVector?.schema_version === 'deft.app_action_authority.v2') {
@@ -348,6 +423,179 @@ export class AppRunService {
     }, null, vector, context.automation_claim_token);
   }
 
+  /** Host-only human intake for one reviewed Runtime binding. The request
+   * supplies no provider, policy, origin ancestry, approval or actor facts. */
+  async submitReviewedRuntime(
+    caller: ReviewedRuntimeCaller,
+    request: ReviewedRuntimeInvoke,
+  ): Promise<AppRunSafeView> {
+    if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
+      || !this.appLiveAuthorization?.captureReviewedRuntimeForPreparation
+      || !this.appLiveAuthorization.captureReviewedRuntimeInTransaction) {
+      throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    }
+    let capture: ReviewedRuntimeCapture;
+    try {
+      capture = await this.appLiveAuthorization.captureReviewedRuntimeForPreparation({
+        org_id: caller.org_id, user_id: caller.user_id,
+        runtime_binding_id: request.runtime_binding_id,
+      });
+    } catch {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const binding = capture.binding;
+    if (binding.id !== request.runtime_binding_id || binding.org_id !== caller.org_id
+      || binding.provider_kind !== 'app_runtime'
+      || binding.action_key !== capture.action.action_key
+      || binding.operation_name !== capture.action.action_key
+      || binding.risk_class !== 'external_write'
+      || binding.review_requirement !== 'always'
+      || binding.retry_class !== 'unsafe_or_unknown'
+      || binding.retention_class !== 'standard') {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    let input: Record<string, string | number | boolean>;
+    try {
+      input = parseRuntimeObjectInput(RuntimeObjectSchema.parse(capture.action.input_schema), request.input);
+    } catch {
+      throw new AppRunError('APP_RUN_INPUT_INVALID');
+    }
+    const actor: AppRunActor = { actor_type: 'human', user_id: caller.user_id };
+    const submission = {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+      org_id: caller.org_id,
+      initiating_actor: actor,
+      execution_actor: actor,
+      origin: {
+        origin_kind: 'app' as const,
+        installation_id: binding.app_installation_id,
+        app_version_id: binding.app_version_id,
+        grant_snapshot_id: binding.grant_snapshot_id,
+        runtime_binding_id: binding.id,
+      },
+      operation: {
+        provider: {
+          org_id: caller.org_id,
+          provider_kind: 'app_runtime' as const,
+          provider_instance_id: binding.provider_instance_id,
+        },
+        operation_name: binding.operation_name,
+      },
+      provider_snapshot_digest: capture.provider_snapshot_digest,
+      policy: {
+        risk_class: binding.risk_class,
+        review_requirement: binding.review_requirement,
+        review_scope: 'per_invocation' as const,
+        retry_class: binding.retry_class,
+      },
+      retention_class: binding.retention_class,
+      idempotency_key: request.idempotency_key,
+      input,
+      authorization_snapshot: capture.authorization_snapshot,
+      safe_preview: AppRunSafePreviewSchema.parse({
+        schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        title: binding.action_key,
+        summary: 'One reviewed Runtime action requiring human approval.',
+        resource_refs: [],
+        fields: { app_installation_id: binding.app_installation_id,
+          action_key: binding.action_key, runtime_binding_id: binding.id,
+          provider_kind: 'app_runtime' },
+      }),
+    };
+    return this.#submit({ org_id: caller.org_id, initiating_actor: actor,
+      execution_actor: actor }, submission, null, undefined, undefined, capture);
+  }
+
+  /** Transient approval review: disclose exact retained input only to the
+   * initiating human while the reviewed binding and pending approval remain
+   * live. Nothing plaintext is copied into a card, event, or receipt. */
+  async reviewRuntimeInput(caller: ReviewedRuntimeCaller, runId: string) {
+    if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
+      || !this.appLiveAuthorization?.captureReviewedRuntimeInTransaction) {
+      throw new AppRunError('APP_RUNS_DISABLED');
+    }
+    return this.repository.transaction(async (tx) => {
+      const locator = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+      if (!locator || locator.initiating_actor_type !== 'human'
+        || locator.initiating_actor_id !== caller.user_id
+        || locator.org_id !== caller.org_id
+        || locator.origin_kind !== 'app' || locator.provider_kind !== 'app_runtime'
+        || !locator.origin_runtime_binding_id) {
+        throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      }
+      // Match approval's Run-before-Runtime-authority order. A completed Run
+      // stops here so a channel call cannot hold authority while waiting on
+      // this review's Run lock. Manager revocation never takes the Run lock.
+      const locked = await this.repository.lockRun(tx, caller.org_id, runId);
+      const pin = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+      if (!locked || !pin || pin.state !== 'pending_approval'
+        || pin.initiating_actor_type !== 'human'
+        || pin.initiating_actor_id !== caller.user_id
+        || pin.origin_runtime_binding_id !== locator.origin_runtime_binding_id
+        || pin.input_expires_at <= this.now()) {
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
+      let current: ReviewedRuntimeCapture;
+      try {
+        current = await this.appLiveAuthorization!.captureReviewedRuntimeInTransaction!(tx, {
+          org_id: caller.org_id, user_id: caller.user_id,
+          runtime_binding_id: locator.origin_runtime_binding_id,
+        });
+      } catch {
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
+      let authorityMatches = false;
+      try {
+        authorityMatches = pin !== null && canonicalAuthorization(
+          AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot),
+        ) === canonicalAuthorization(current.authorization_snapshot);
+      } catch { /* Corrupt or obsolete authority never discloses input. */ }
+      if (!locked || !pin || pin.state !== 'pending_approval'
+        || pin.input_expires_at <= this.now()
+        || pin.origin_kind !== 'app' || pin.provider_kind !== 'app_runtime'
+        || pin.initiating_actor_type !== 'human' || pin.initiating_actor_id !== caller.user_id
+        || pin.execution_actor_type !== 'human' || pin.execution_actor_id !== caller.user_id
+        || pin.origin_runtime_binding_id !== locator.origin_runtime_binding_id
+        || pin.origin_app_installation_id !== current.binding.app_installation_id
+        || pin.origin_app_version_id !== current.binding.app_version_id
+        || pin.origin_app_grant_snapshot_id !== current.binding.grant_snapshot_id
+        || pin.origin_app_binding_key !== null
+        || pin.origin_app_automation_definition_id !== null
+        || pin.origin_app_automation_fire_id !== null
+        || pin.provider_instance_id !== current.binding.provider_instance_id
+        || pin.provider_snapshot_id !== current.binding.provider_snapshot_id
+        || pin.operation_name !== current.binding.operation_name
+        || pin.risk_class !== current.binding.risk_class
+        || pin.review_requirement !== current.binding.review_requirement
+        || pin.review_scope !== current.action.host_policy.review_scope
+        || pin.retry_class !== current.binding.retry_class
+        || pin.retention_class !== current.binding.retention_class
+        || !authorityMatches
+        || !await this.repository.hasPendingRuntimeApproval(tx, caller.org_id, runId, caller.user_id)) {
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
+      let input: Record<string, string | number | boolean>;
+      try {
+        const retained = await this.secretRepository.readInput(caller.org_id, runId, tx);
+        input = parseRuntimeObjectInput(RuntimeObjectSchema.parse(current.action.input_schema), retained);
+      } catch {
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
+      return Object.freeze({ run_id: runId,
+        action_key: current.action.action_key,
+        app_installation_id: current.binding.app_installation_id,
+        app_version_id: current.binding.app_version_id,
+        grant_snapshot_id: current.binding.grant_snapshot_id,
+        runtime_binding_id: current.binding.id,
+        contract_digest: current.action.contract_digest,
+        policy: Object.freeze({ risk_class: current.binding.risk_class,
+          review_requirement: current.binding.review_requirement,
+          review_scope: current.action.host_policy.review_scope,
+          retry_class: current.binding.retry_class }),
+        input });
+    });
+  }
+
   async submitChild(
     context: AppRunTrustedContext,
     parentRunId: string,
@@ -365,6 +613,7 @@ export class AppRunService {
     parentRunId: string | null,
     trustedAppVector?: AppRunPreparedAppVerification['authority_vector'],
     automationClaimToken?: string,
+    trustedRuntimeCapture?: ReviewedRuntimeCapture,
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -377,9 +626,15 @@ export class AppRunService {
       || !sameActor(context.initiating_actor, submission.initiating_actor)
       || !sameActor(context.execution_actor, submission.execution_actor)
       || !sameActor(context.initiating_actor, submission.authorization_snapshot.authenticated_subject)
-      || (submission.origin.origin_kind === 'app' && !trustedAppVector)
-      || (submission.origin.origin_kind !== 'app' && trustedAppVector !== undefined)
-      || (!trustedAppVector && submission.authorization_snapshot.authority_refs.some(
+      || (submission.origin.origin_kind === 'app' && !trustedAppVector && !trustedRuntimeCapture)
+      || (submission.origin.origin_kind !== 'app'
+        && (trustedAppVector !== undefined || trustedRuntimeCapture !== undefined))
+      || (trustedAppVector !== undefined && trustedRuntimeCapture !== undefined)
+      || (submission.origin.origin_kind === 'app' && 'runtime_binding_id' in submission.origin
+        && !trustedRuntimeCapture)
+      || (submission.origin.origin_kind === 'app' && 'binding_key' in submission.origin
+        && !trustedAppVector)
+      || (!trustedAppVector && !trustedRuntimeCapture && submission.authorization_snapshot.authority_refs.some(
         (ref) => APP_AUTHORITY_KINDS.has(ref.authority_kind),
       ))
       || (submission.origin.origin_kind === 'legacy_connector'
@@ -417,6 +672,52 @@ export class AppRunService {
           canonicalAuthorization(live) !== canonicalAuthorization(submission.authorization_snapshot)
         ) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       }
+      if (trustedRuntimeCapture) {
+        if (!this.appLiveAuthorization?.captureReviewedRuntimeInTransaction
+          || submission.origin.origin_kind !== 'app'
+          || !('runtime_binding_id' in submission.origin)
+          || submission.initiating_actor.actor_type !== 'human'
+          || submission.execution_actor.actor_type !== 'human') {
+          throw new AppRunError('APP_RUN_ACCESS_DENIED');
+        }
+        let live: ReviewedRuntimeCapture;
+        try {
+          live = await this.appLiveAuthorization.captureReviewedRuntimeInTransaction(tx, {
+            org_id: submission.org_id,
+            user_id: submission.initiating_actor.user_id,
+            runtime_binding_id: submission.origin.runtime_binding_id,
+          });
+        } catch {
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        }
+        const binding = live.binding;
+        let inputMatches = false;
+        try {
+          inputMatches = canonicalCapabilityJson(parseRuntimeObjectInput(
+            RuntimeObjectSchema.parse(live.action.input_schema), submission.input,
+          )) === canonicalCapabilityJson(submission.input);
+        } catch { /* A reviewed contract changed or the input is no longer valid. */ }
+        if (runtimeCaptureIdentity(live) !== runtimeCaptureIdentity(trustedRuntimeCapture)
+          || canonicalAuthorization(live.authorization_snapshot)
+            !== canonicalAuthorization(submission.authorization_snapshot)
+          || binding.id !== submission.origin.runtime_binding_id
+          || binding.org_id !== submission.org_id
+          || binding.app_installation_id !== submission.origin.installation_id
+          || binding.app_version_id !== submission.origin.app_version_id
+          || binding.grant_snapshot_id !== submission.origin.grant_snapshot_id
+          || binding.provider_kind !== submission.operation.provider.provider_kind
+          || binding.provider_instance_id !== submission.operation.provider.provider_instance_id
+          || binding.operation_name !== submission.operation.operation_name
+          || live.provider_snapshot_digest !== submission.provider_snapshot_digest
+          || binding.risk_class !== submission.policy.risk_class
+          || binding.review_requirement !== submission.policy.review_requirement
+          || live.action.host_policy.review_scope !== submission.policy.review_scope
+          || binding.retry_class !== submission.policy.retry_class
+          || binding.retention_class !== submission.retention_class
+          || !inputMatches) {
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        }
+      }
       const replay = await this.repository.findReplay(
         tx,
         submission,
@@ -441,6 +742,7 @@ export class AppRunService {
           origin_app_installation_id: _installation,
           origin_app_version_id: _appVersion,
           origin_app_binding_key: _binding,
+          origin_runtime_binding_id: _runtimeBinding,
           origin_app_grant_snapshot_id: _grant,
           origin_app_automation_definition_id: _automationDefinition,
           origin_app_automation_fire_id: _automationFire,

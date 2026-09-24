@@ -10,6 +10,7 @@ import {
   AppRunRetainedProviderResultSchema,
   AppRunAttemptStateSchema,
   AppRunStateSchema,
+  AppRunOriginSchema,
   isAppRunAttemptStateTransitionAllowed,
   classifyAppRunCrashRecovery,
   isAppRunStateTransitionAllowed,
@@ -21,6 +22,15 @@ import {
 } from '../src/app-runs';
 
 const digest = `sha256:${'a'.repeat(64)}`;
+
+test('Runtime origin is distinct from the legacy App action binding and rejects mixed authority', () => {
+  const base = { origin_kind: 'app', installation_id: 'app-1', app_version_id: 'version-1', grant_snapshot_id: 'grant-1' };
+  assert.equal(AppRunOriginSchema.safeParse({ ...base, runtime_binding_id: 'runtime-1' }).success, true);
+  assert.equal(AppRunOriginSchema.safeParse({ ...base, binding_key: 'send' }).success, true);
+  assert.equal(AppRunOriginSchema.safeParse({ ...base, runtime_binding_id: 'runtime-1', binding_key: 'send' }).success, false);
+  assert.equal(AppRunOriginSchema.safeParse(base).success, false);
+  assert.equal(AppRunOriginSchema.safeParse({ ...base, runtime_binding_id: 'runtime-1', org_id: 'foreign' }).success, false);
+});
 
 function submission(overrides: Record<string, unknown> = {}) {
   return {

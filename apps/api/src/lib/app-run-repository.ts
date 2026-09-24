@@ -1,5 +1,6 @@
 import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
+  agentActions,
   appActionBindings,
   appRunAttempts,
   appRunEvents,
@@ -123,6 +124,49 @@ export class PostgresAppRunRepository {
     return snapshot ?? null;
   }
 
+  /** Unlocked locator only: callers acquire current membership/App/binding
+   * locks before taking the Run row lock for transient input review. */
+  async findRuntimeReviewPin(tx: AppRunTransaction, orgId: string, runId: string) {
+    const [row] = await tx.select({
+      id: appRuns.id,
+      org_id: appRuns.org_id,
+      state: appRuns.state,
+      origin_kind: appRuns.origin_kind,
+      initiating_actor_type: appRuns.initiating_actor_type,
+      initiating_actor_id: appRuns.initiating_actor_id,
+      execution_actor_type: appRuns.execution_actor_type,
+      execution_actor_id: appRuns.execution_actor_id,
+      provider_kind: appRuns.provider_kind,
+      provider_instance_id: appRuns.provider_instance_id,
+      provider_snapshot_id: appRuns.provider_snapshot_id,
+      operation_name: appRuns.operation_name,
+      origin_app_installation_id: appRuns.origin_app_installation_id,
+      origin_app_version_id: appRuns.origin_app_version_id,
+      origin_app_binding_key: appRuns.origin_app_binding_key,
+      origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
+      origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
+      origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
+      origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
+      risk_class: appRuns.risk_class,
+      review_requirement: appRuns.review_requirement,
+      review_scope: appRuns.review_scope,
+      retry_class: appRuns.retry_class,
+      retention_class: appRuns.retention_class,
+      authorization_snapshot: appRuns.authorization_snapshot,
+      input_expires_at: appRuns.input_expires_at,
+    }).from(appRuns).where(and(eq(appRuns.org_id, orgId), eq(appRuns.id, runId))).limit(1);
+    return row ?? null;
+  }
+
+  async hasPendingRuntimeApproval(tx: AppRunTransaction, orgId: string, runId: string, userId: string) {
+    const [row] = await tx.select({ id: agentActions.id }).from(agentActions).where(and(
+      eq(agentActions.org_id, orgId), eq(agentActions.app_run_id, runId),
+      eq(agentActions.user_id, userId), eq(agentActions.source, 'app_run'),
+      eq(agentActions.action, 'app_run_invoke'), eq(agentActions.approval_status, 'pending'),
+    )).limit(1);
+    return Boolean(row);
+  }
+
   async findReplay(
     tx: AppRunTransaction,
     submission: AppRunSubmission,
@@ -135,6 +179,7 @@ export class PostgresAppRunRepository {
     origin_app_installation_id: string | null;
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
+    origin_runtime_binding_id: string | null;
     origin_app_grant_snapshot_id: string | null;
     origin_app_automation_definition_id: string | null;
     origin_app_automation_fire_id: string | null;
@@ -152,6 +197,7 @@ export class PostgresAppRunRepository {
       origin_app_installation_id: appRuns.origin_app_installation_id,
       origin_app_version_id: appRuns.origin_app_version_id,
       origin_app_binding_key: appRuns.origin_app_binding_key,
+      origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
       origin_app_automation_definition_id: appRuns.origin_app_automation_definition_id,
       origin_app_automation_fire_id: appRuns.origin_app_automation_fire_id,
@@ -294,7 +340,13 @@ export class PostgresAppRunRepository {
         ? input.submission.origin.app_version_id
         : null,
       origin_app_binding_key: input.submission.origin.origin_kind === 'app'
+        && 'binding_key' in input.submission.origin
         ? input.submission.origin.binding_key
+        : null,
+      origin_runtime_binding_id: input.submission.origin.origin_kind === 'app'
+        && 'runtime_binding_id' in input.submission.origin
+        && typeof input.submission.origin.runtime_binding_id === 'string'
+        ? input.submission.origin.runtime_binding_id
         : null,
       origin_app_grant_snapshot_id: input.submission.origin.origin_kind === 'app'
         ? input.submission.origin.grant_snapshot_id

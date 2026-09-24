@@ -489,7 +489,7 @@ export async function disableAppInstallation(
     const [updated] = await tx.update(appInstallations).set({
       state: 'disabled',
       lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
-      ...(isConnectedAppProtocolVersion(version.protocol_version) ? {
+      ...(version.protocol_version !== '0' ? {
         active_grant_snapshot_id: null,
         active_grant_snapshot_kind: null,
         grant_epoch: sql`${appInstallations.grant_epoch} + 1`,
@@ -503,7 +503,7 @@ export async function disableAppInstallation(
       state: 'disabled',
       lifecycle_epoch: updated.lifecycle_epoch,
       grant_epoch: updated.grant_epoch,
-      grant_revoked: isConnectedAppProtocolVersion(version.protocol_version),
+      grant_revoked: version.protocol_version !== '0',
       data_preserved: true,
     });
     return { installation: updated, version, bindings };
@@ -540,7 +540,7 @@ export async function enableAppInstallation(
       eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
     )).limit(1);
     if (!version) throw new Error('App enable active version returned no row');
-    if (isConnectedAppProtocolVersion(version.protocol_version)) {
+    if (version.protocol_version !== '0') {
       throw new AppError(
         'Connected Apps require a fresh review before re-enabling',
         'APP_REVIEW_REQUIRED',

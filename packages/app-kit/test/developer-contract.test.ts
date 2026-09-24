@@ -44,11 +44,12 @@ test('freezes one additive App Kit and protocol-flow compatibility contract', as
   assert.equal(DEFT_APP_KIT_VERSION, packageJson.version);
   assert.deepEqual(DEFT_APP_DEVELOPER_COMPATIBILITY, {
     schema: 'deft.app_developer.compatibility.v1',
-    app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1'] },
+    app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1'] },
     protocol_flows: {
       '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
       '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },
       '2': { package_format: 'deft.app.package.v2', install_mode: 'stage_only' },
+      '3': { package_format: 'deft.app.package.v3', install_mode: 'stage_only' },
     },
   });
   assert.equal(Object.isFrozen(DEFT_APP_DEVELOPER_COMPATIBILITY), true);
@@ -77,7 +78,7 @@ test('freezes one additive App Kit and protocol-flow compatibility contract', as
       ...DEFT_APP_DEVELOPER_COMPATIBILITY,
       app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.0'] },
     }, '1'),
-    /does not support @deft\/app-kit 0\.1\.0-alpha\.3/,
+    /does not support @deft\/app-kit 0\.1\.0-alpha\.4/,
   );
   assert.throws(
     () => parseDeftAppDeveloperCompatibility({
@@ -92,7 +93,7 @@ test('candidate Kit refuses a host advertising only the preceding authoring cont
   assert.throws(() => resolveDeftAppDeveloperProtocolFlow({
     ...DEFT_APP_DEVELOPER_COMPATIBILITY,
     app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.2', '0.1.0-alpha.1'] },
-  }, '1'), /does not support @deft\/app-kit 0\.1\.0-alpha\.3/);
+  }, '1'), /does not support @deft\/app-kit 0\.1\.0-alpha\.4/);
 });
 
 test('checks a connected package against only the public host and provider contracts', async () => {

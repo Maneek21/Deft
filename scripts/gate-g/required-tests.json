@@ -3,7 +3,7 @@
   "scope": "Package/unit baselines and explicitly selected database ancestry and legacy cutover-on profiles. This inventory is not the complete Gate G acceptance matrix.",
   "profiles": [
     {
-      "description": "All 63 current App Kit cases. Packed offline consumer tests require registry cache primed for the pinned Zod version.",
+      "description": "All current App Kit baseline and candidate Runtime/Experience leaf cases; offline packed consumers use pinned cached dependencies.",
       "cases": [
         {
           "name": "builds and verifies byte-identical deterministic packages",
@@ -256,12 +256,48 @@
         {
           "name": "developer compatibility keeps unknown-key diagnostics without accepting duplicate versions",
           "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "file": "packages/app-kit/test/runtime-authoring.test.ts",
+          "name": "Runtime candidate builds deterministically and requests no effective authority"
+        },
+        {
+          "file": "packages/app-kit/test/runtime-authoring.test.ts",
+          "name": "Runtime manifest rejects executable config, missing references, widened policy and tampering"
+        },
+        {
+          "file": "packages/app-kit/test/runtime-authoring.test.ts",
+          "name": "Runtime schema bounds inputs and rejects undeclared or executable schema features"
+        },
+        {
+          "file": "packages/app-kit/test/runtime-client.test.ts",
+          "name": "Runtime client scopes the bearer to the channel and never retries an effect"
+        },
+        {
+          "file": "packages/app-kit/test/runtime-client.test.ts",
+          "name": "Runtime client rejects unsafe endpoint credentials and server errors"
+        },
+        {
+          "file": "packages/app-kit/test/experience.test.ts",
+          "name": "canonical Experience artifact verifies its exact path, MIME, length and digest"
+        },
+        {
+          "file": "packages/app-kit/test/experience.test.ts",
+          "name": "Experience bundle rejects unknown fields, traversal, unsorted keys and oversized source"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK sequences views and requests and ignores foreign-session responses"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK closes pending calls without leaking reusable credentials"
         }
       ],
       "id": "app-kit"
     },
     {
-      "description": "51 focused unit/service contract cases; DATABASE_URL points to unreachable 127.0.0.1:1 so this is not DB acceptance.",
+      "description": "51 focused unit/service contract cases. Their execution alone is not database acceptance; DB journeys are inventoried separately.",
       "cases": [
         {
           "name": "automation review input is closed, bounded, and has no caller authority vector",
@@ -512,11 +548,11 @@
     },
     {
       "id": "platform-channel-foundation",
-      "description": "Eleven mandatory Runtime/public DB, HTTP, default-off, result-bound, and ingress admission cases. Use an explicit disposable DB; the Runtime test launches its own loopback HTTP host process. Synthetic host-reviewed intake remains a limitation.",
+      "description": "Runtime/public DB, separate-process HTTP, default-off, result-bound and ingress admission cases. Runtime intake uses reviewed v3 grants.",
       "cases": [
         {
           "file": "apps/api/test/app-runtime-channel-db.test.ts",
-          "name": "reviewed Runtime claim, start, known result and replay use the App Run ledger"
+          "name": "reviewed v3 Runtime channel preserves fencing, replay, revocation and unknown outcomes"
         },
         {
           "file": "apps/api/test/app-runtime-channel.test.ts",
@@ -559,6 +595,28 @@
           "name": "global concurrency cap spans different verified peers"
         }
       ]
+    },
+    {
+      "cases": [
+        {
+          "name": "v3 review is tenant- and epoch-bound and reactivation requires a fresh grant",
+          "file": "apps/api/test/app-runtime-review-db.test.ts"
+        },
+        {
+          "name": "packed Runtime Kit follows reviewed human Run, approval, claim, result, and signed receipt",
+          "file": "apps/api/test/app-runtime-actions-db.test.ts"
+        },
+        {
+          "name": "authenticated HTTP pairing, packed install, reviews, action and Runtime receipt",
+          "file": "apps/api/test/app-runtime-actions-http-db.test.ts"
+        },
+        {
+          "file": "apps/api/test/app-runtime-actions-db.test.ts",
+          "name": "pending input review does not hold App lock while waiting on approval-held Run"
+        }
+      ],
+      "id": "runtime-author-journey",
+      "description": "Reviewed v3 lifecycle, actual packed Runtime Kit, authenticated HTTP review and separate SDK worker with signed receipt on the assigned disposable PostgreSQL database."
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

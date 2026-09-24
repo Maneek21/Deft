@@ -28,14 +28,15 @@ function stable(value) {
 await client.connect();
 try {
   if (mode === 'schema') {
-    const selected = ['app_runs', 'app_run_attempts', 'capability_provider_snapshots'];
+    const selected = ['app_installations', 'app_versions', 'app_grant_snapshots', 'app_runs', 'app_run_attempts', 'capability_provider_snapshots'];
     const discovered = await client.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND (tablename LIKE 'app_runtime_%' OR tablename LIKE 'app_public_%' OR tablename='app_canonical_claims') ORDER BY tablename");
     selected.push(...discovered.rows.map((row) => row.tablename));
     const columns = await client.query("SELECT table_name,column_name,data_type,is_nullable,column_default FROM information_schema.columns WHERE table_schema='public' AND table_name=ANY($1) ORDER BY table_name,column_name", [selected]);
     const constraints = await client.query("SELECT c.relname AS table_name,k.conname AS name,pg_get_constraintdef(k.oid) AS definition FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=ANY($1) ORDER BY c.relname,k.conname", [selected]);
     const indexes = await client.query("SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename=ANY($1) ORDER BY tablename,indexname", [selected]);
     const triggers = await client.query("SELECT c.relname AS table_name,t.tgname AS name,pg_get_triggerdef(t.oid) AS definition,pg_get_functiondef(t.tgfoid) AS function FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=ANY($1) AND NOT t.tgisinternal ORDER BY c.relname,t.tgname", [selected]);
-    writeFileSync(path, JSON.stringify({ columns: columns.rows, constraints: constraints.rows, indexes: indexes.rows, triggers: triggers.rows }, null, 2));
+    const functions = await client.query("SELECT proname AS name,pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND proname=ANY($1) ORDER BY proname", [['assert_app_installation_grant_coherence', 'enforce_app_grant_snapshot_lineage']]);
+    writeFileSync(path, JSON.stringify({ columns: columns.rows, constraints: constraints.rows, indexes: indexes.rows, triggers: triggers.rows, functions: functions.rows }, null, 2));
     console.log(`Captured ${selected.length} table definitions`);
   } else {
     const previous = mode === 'compare' ? JSON.parse(readFileSync(path, 'utf8')) : null;

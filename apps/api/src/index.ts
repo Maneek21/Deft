@@ -73,6 +73,10 @@ import { appRoutes } from './routes/apps.js';
 import { appActionRoutes } from './routes/app-actions.js';
 import { appRunRoutes } from './routes/app-runs.js';
 import { appDeveloperRoutes } from './routes/app-developer.js';
+import { appRuntimeChannelRoutes } from './routes/app-runtime-channel.js';
+import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
+import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
+import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -184,6 +188,11 @@ if (APP_DEVELOPER_PAIRING_ENABLED) {
   app.use('/api/app-developer/*', authLimiter);
   app.route('/api/app-developer', appDeveloperRoutes);
 }
+// Runtime credentials have a separate audience; never accept browser cookies.
+if (APPS_ENABLED) {
+  app.use('/api/app-runtime/channel/*', authLimiter);
+  app.route('/api/app-runtime/channel', appRuntimeChannelRoutes);
+}
 app.use('/api/*', authMiddleware);
 app.use('/api/*', defaultLimiter);
 app.use('/api/agent/*', agentLimiter);
@@ -245,6 +254,9 @@ app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
 if (APPS_ENABLED) {
+  app.route('/api/apps/runtime', appRuntimeManagementRoutes);
+  app.route('/api/app-runtime-review', appRuntimeReviewRoutes);
+  app.route('/api/app-runtime-actions', appRuntimeActionRoutes);
   app.route('/api/apps', appRoutes);
   app.route('/api/app-actions', appActionRoutes);
   app.route('/api/app-runs', appRunRoutes);

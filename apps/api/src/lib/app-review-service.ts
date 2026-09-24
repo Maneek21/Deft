@@ -1477,7 +1477,8 @@ export async function getConnectedAppGrantManagement(
         },
       }));
 
-  const dependencyRequirements = requestedAuthority?.requirements.dependencies ?? [];
+  const dependencyRequirements = requestedAuthority && 'dependencies' in requestedAuthority.requirements
+    ? requestedAuthority.requirements.dependencies : [];
   const dependencyInstallations = dependencyRequirements.length === 0
     ? []
     : await db.select().from(appInstallations).where(and(
@@ -1514,7 +1515,8 @@ export async function getConnectedAppGrantManagement(
     };
   });
 
-  const connectorRequirements = requestedAuthority?.requirements.connectors ?? [];
+  const connectorRequirements = requestedAuthority && 'connectors' in requestedAuthority.requirements
+    ? requestedAuthority.requirements.connectors : [];
   const connections = connectorRequirements.length === 0
     ? []
     : await db.select({

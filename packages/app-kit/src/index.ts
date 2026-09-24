@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import { RuntimeAuthoringShape, RuntimeAuthoringSchema, RuntimeRequestedAuthoritySchema } from './runtime-authoring.js';
+export * from './runtime-authoring.js';
+export * from './runtime-client.js';
+export * from './experience.js';
+export * from './experience-sdk.js';
 import { abortOnUnknownContractKeys } from './module-contract/zod-compat.js';
 import {
   classifyAppAutomationOccurrence,
@@ -32,9 +37,12 @@ export const DEFT_APP_PACKAGE_FORMAT_V1 = 'deft.app.package.v1' as const;
 export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V2 = '2' as const;
 export const DEFT_APP_PROTOCOL_VERSION_V2 = '2' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V2 = 'deft.app.package.v2' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V3 = '3' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V3 = '3' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V3 = 'deft.app.package.v3' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
-export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.3' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.4' as const;
 export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
 export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
@@ -68,6 +76,7 @@ export const DeftAppDeveloperCompatibilitySchema = z.strictObject({
     '0': DeftAppDeveloperProtocolV0FlowSchema,
     '1': DeftAppDeveloperProtocolV1FlowSchema,
     '2': DeftAppDeveloperProtocolV2FlowSchema.optional(),
+    '3': z.strictObject({ package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V3), install_mode: z.literal('stage_only') }).optional(),
   }),
 }).superRefine((value, ctx) => {
   if (abortOnUnknownContractKeys(ctx)) return;
@@ -87,9 +96,10 @@ export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
   schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
   app_kit: Object.freeze({
     package: DEFT_APP_KIT_PACKAGE_NAME,
-    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.2', '0.1.0-alpha.1']),
+    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1']),
   }),
   protocol_flows: Object.freeze({
+    '3': Object.freeze({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, install_mode: 'stage_only' as const }),
     '0': Object.freeze({
       package_format: DEFT_APP_PACKAGE_FORMAT,
       install_mode: 'stage_and_activate' as const,
@@ -121,6 +131,7 @@ export function resolveDeftAppDeveloperProtocolFlow(
     protocol !== DEFT_APP_PROTOCOL_VERSION
     && protocol !== DEFT_APP_PROTOCOL_VERSION_V1
     && protocol !== DEFT_APP_PROTOCOL_VERSION_V2
+    && protocol !== DEFT_APP_PROTOCOL_VERSION_V3
   ) {
     throw new Error(`Host does not support App Protocol v${protocol}`);
   }
@@ -865,6 +876,15 @@ const V2_HANDLER_MATRIX = handlerMatrix({
 });
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
+  '3': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'runtime.private_actions'], handlerMatrix({
+      authoring: 'app-kit:v3', inspect: 'app-service:inspect-v3', stage: 'app-service:stage-v3',
+      review: 'app-runtime-review:v3', activate: 'app-runtime-review:v3',
+      route: 'app-runtime-actions:v3', invoke: 'app-runtime-actions:v3',
+    })),
+    private_interfaces: Object.freeze([]),
+  }),
   '0': Object.freeze({
     manifest_keys: Object.freeze([
       'schema_version', 'id', 'version', 'name', 'description', 'license',
@@ -979,15 +999,38 @@ export const DeftAppPackageV2Schema = z.strictObject({
   artifacts: z.array(DeftAppPackageArtifactV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
 });
 
+/** Runtime-only candidate. Other surfaces require their own validated contract. */
+export const DeftAppManifestV3Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('3'),
+  compatibility: z.strictObject({ app_protocol: z.literal('3') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(0),
+  navigation: z.array(DeftAppNavigationItemV0Schema).max(0).default([]),
+  ...RuntimeAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const result = RuntimeAuthoringSchema.safeParse({ runtime_requirements: manifest.runtime_requirements,
+    private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions });
+  if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+});
+export const DeftAppPackageV3Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V3), manifest: DeftAppManifestV3Schema,
+  manifest_digest: AppDigestSchema, artifacts: z.array(DeftAppPackageArtifactV0Schema).max(0),
+});
+export type DeftAppManifestV3 = z.infer<typeof DeftAppManifestV3Schema>;
+export type DeftAppManifestV3Input = z.input<typeof DeftAppManifestV3Schema>;
+export type DeftAppPackageV3 = z.infer<typeof DeftAppPackageV3Schema>;
+
 export const DeftAppManifestSchema = z.union([
   DeftAppManifestV0Schema,
   DeftAppManifestV1Schema,
   DeftAppManifestV2Schema,
+  DeftAppManifestV3Schema,
 ]);
 export const DeftAppPackageSchema = z.union([
   DeftAppPackageV0Schema,
   DeftAppPackageV1Schema,
   DeftAppPackageV2Schema,
+  DeftAppPackageV3Schema,
 ]);
 
 export type DeftAppManifestV0 = z.infer<typeof DeftAppManifestV0Schema>;
@@ -1099,11 +1142,11 @@ export type DeftAppRequestedAuthorityProjection =
 export type DeftAppRequestedAuthorityProjectionV2 =
   z.infer<typeof DeftAppRequestedAuthorityProjectionV2Schema>;
 export type DeftAppRequestedAuthorityProjectionAny =
-  DeftAppRequestedAuthorityProjection | DeftAppRequestedAuthorityProjectionV2;
+  DeftAppRequestedAuthorityProjection | DeftAppRequestedAuthorityProjectionV2 | z.infer<typeof RuntimeRequestedAuthoritySchema>;
 export type DeftAppRequestedAuthorityReport = z.infer<typeof DeftAppRequestedAuthorityReportSchema>;
 export type DeftAppRequestedAuthorityReportV2 = z.infer<typeof DeftAppRequestedAuthorityReportV2Schema>;
 export type DeftAppRequestedAuthorityReportAny =
-  DeftAppRequestedAuthorityReport | DeftAppRequestedAuthorityReportV2;
+  DeftAppRequestedAuthorityReport | DeftAppRequestedAuthorityReportV2 | { schema: 'deft.app.requested_authority.v3'; app: {id: string; version: string; protocol_version: '3'}; requested_authority: z.infer<typeof RuntimeRequestedAuthoritySchema> };
 
 const DeftAppRequestedAuthorityAtomSchema = z.enum([
   'dependencies',
@@ -1190,6 +1233,9 @@ export async function diffDeftAppRequestedAuthority(input: Readonly<{
   const priorDigest = prior === null ? null : await digest(prior);
   const atoms = DeftAppRequestedAuthorityAtomSchema.options;
   const requirement = (value: DeftAppRequestedAuthorityProjectionAny, atom: typeof atoms[number]) => {
+    if ('runtime_actions' in value.requirements) return atom === 'capabilities'
+      ? value.requirements.private_capabilities : atom === 'connectors'
+        ? value.requirements.runtime_requirements : atom === 'actions' ? value.requirements.runtime_actions : [];
     if (atom === 'automation_requests') {
       return 'automation_requests' in value.requirements ? value.requirements.automation_requests : [];
     }
@@ -1310,6 +1356,10 @@ export function projectDeftAppRequestedAuthority(
   value: DeftAppManifestInput | DeftAppManifest,
 ): DeftAppRequestedAuthorityProjectionAny {
   const manifest = parseDeftAppManifest(value);
+  if (manifest.schema_version === '3') return RuntimeRequestedAuthoritySchema.parse({
+    requirements: { runtime_requirements: manifest.runtime_requirements, private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions },
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
   const connected = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION
     ? null
     : manifest;
@@ -1362,6 +1412,11 @@ export function buildDeftAppRequestedAuthorityReport(
   value: DeftAppManifestInput | DeftAppManifest,
 ): DeftAppRequestedAuthorityReportAny {
   const manifest = parseDeftAppManifest(value);
+  if (manifest.schema_version === '3') return {
+    schema: 'deft.app.requested_authority.v3',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '3' },
+    requested_authority: RuntimeRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)),
+  };
   if (manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2) {
     return DeftAppRequestedAuthorityReportV2Schema.parse({
       schema: DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA_V2,
@@ -1469,7 +1524,9 @@ export function parseDeftAppManifest(value: unknown): DeftAppManifest {
   // v1 or v2 continues through the original direct v0 schema instead of a
   // union branch.
   const schemaVersion = recordWithString(value, 'schema_version');
-  const manifest = schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
+  const manifest = schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V3
+    ? DeftAppManifestV3Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
     ? DeftAppManifestV2Schema.parse(value)
     : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
       ? DeftAppManifestV1Schema.parse(value)
@@ -1530,6 +1587,8 @@ export function getDeftAppManifestV2JsonSchema(): Record<string, unknown> {
 }
 
 export function getDeftAppManifestJsonSchema(schemaVersion: string): Record<string, unknown> {
+  if (schemaVersion === '3') return { title: 'Deft Runtime App manifest v3',
+    ...z.toJSONSchema(DeftAppManifestV3Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
   if (schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2) {
     return getDeftAppManifestV2JsonSchema();
   }
@@ -1816,7 +1875,9 @@ export async function buildDeftAppPackage(input: {
     manifest_digest: await digestAppManifest(manifest),
     artifacts: [...input.artifacts].sort((left, right) => left.path.localeCompare(right.path)),
   };
-  const packageValue: DeftAppPackage = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
+  const packageValue: DeftAppPackage = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V3
+    ? DeftAppPackageV3Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
     ? DeftAppPackageV2Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V2, ...packageInput })
     : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
       ? DeftAppPackageV1Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V1, ...packageInput })
@@ -1840,7 +1901,9 @@ export async function verifyDeftAppPackageJson(
   // As with manifest parsing, direct dispatch keeps invalid-v0 issue shapes
   // stable while allowing the explicitly versioned v1 and v2 formats.
   const packageFormat = recordWithString(raw, 'package_format');
-  const packageValue = packageFormat === DEFT_APP_PACKAGE_FORMAT_V2
+  const packageValue = packageFormat === DEFT_APP_PACKAGE_FORMAT_V3
+    ? DeftAppPackageV3Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V2
     ? DeftAppPackageV2Schema.parse(raw)
     : packageFormat === DEFT_APP_PACKAGE_FORMAT_V1
       ? DeftAppPackageV1Schema.parse(raw)

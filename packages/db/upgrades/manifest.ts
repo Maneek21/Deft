@@ -182,6 +182,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.32-app-public-claims.sql',
       description: 'Add dormant public endpoints, retained ingress and canonical exclusive claims',
     },
+    {
+      version: '0.3.0-preview.33',
+      file: '0.3.0-preview.33-app-runtime-authoring.sql',
+      description: 'Permit explicitly reviewed Runtime App protocol v3 with effective grant coherence',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 
