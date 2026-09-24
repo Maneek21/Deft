@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import {
   buildDeftAppPackage, isDeftAppProtocolOperationSupported,
   parseRuntimeAppManifest, verifyDeftAppPackageJson,
 } from '@deft/app-kit';
 
-test('Protocol 5 authoring remains rejected before host inspection and staging access', async () => {
+test('Protocol 5 inspection accepts reviewed authoring while action routing remains unavailable', async () => {
   const artifact = await buildDeftAppPackage({ manifest: {
     schema_version: '5', id: 'community.example.private-inbox', version: '1.0.0',
     name: 'Private inbox', license: 'AGPL-3.0-only', compatibility: { app_protocol: '5' },
@@ -23,23 +22,20 @@ test('Protocol 5 authoring remains rejected before host inspection and staging a
   const verified = await verifyDeftAppPackageJson(artifact.json);
   assert.equal(verified.package.manifest.schema_version, '5');
   assert.equal(isDeftAppProtocolOperationSupported('5', 'authoring'), true);
-  assert.equal(isDeftAppProtocolOperationSupported('5', 'inspect'), false);
-  assert.equal(isDeftAppProtocolOperationSupported('5', 'stage'), false);
+  for (const operation of ['inspect', 'stage', 'review', 'activate'] as const) {
+    assert.equal(isDeftAppProtocolOperationSupported('5', operation), true);
+  }
+  assert.equal(isDeftAppProtocolOperationSupported('5', 'route'), false);
+  assert.equal(isDeftAppProtocolOperationSupported('5', 'invoke'), false);
   assert.throws(() => parseRuntimeAppManifest(verified.package.manifest),
     'the v1 Runtime manifest parser must not silently accept resource Apps');
 
-  const [{ inspectAppPackageJson, stageAppPackage }, { humanModuleActor }, { closeDb }] =
-    await Promise.all([import('../src/lib/app-service.js'),
-      import('../src/lib/module-service.js'), import('../src/lib/db.js')]);
-  const unsupported = (error: unknown) => {
-    assert.equal((error as { code: string }).code, 'APP_PROTOCOL_UNSUPPORTED');
-    assert.equal((error as { status: number }).status, 409);
-    return true;
-  };
+  const [{ inspectAppPackageJson }, { closeDb }] =
+    await Promise.all([import('../src/lib/app-service.js'), import('../src/lib/db.js')]);
   try {
-    await assert.rejects(inspectAppPackageJson(artifact.json), unsupported);
-    const owner = humanModuleActor({ orgId: randomUUID(), userId: randomUUID(),
-      role: 'owner', source: 'ui' });
-    await assert.rejects(stageAppPackage(owner, artifact.json), unsupported);
+    const inspected = await inspectAppPackageJson(artifact.json);
+    assert.equal(inspected.manifest.schema_version, '5');
+    assert.equal(inspected.package_digest, verified.digest);
+    assert.deepEqual(inspected.permissions, []);
   } finally { await closeDb(); }
 });

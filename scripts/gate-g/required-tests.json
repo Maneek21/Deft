@@ -715,6 +715,40 @@
       "cases": [
         { "file": "apps/api/test/app-resource-sync-key-references-db.test.ts", "name": "sync key inventory retains private projection and unresolved intent keys with tenant scope" }
       ]
+    },
+    {
+      "id": "resource-sync-page-store",
+      "description": "Unwired transactional encrypted page store: cursor fencing, retained keys, identity, concurrent writers and rollback on a dedicated synthetic database; no live v2 receipt settlement claim.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-store-db.test.ts", "name": "resource sync store encrypts one atomic page and fences stale or unsafe writes" }
+      ]
+    },
+    {
+      "id": "resource-reviewed-descriptor",
+      "description": "Current Protocol5 effective-grant reconstruction and stale/foreign denial; declaration review is not resource consent or execution.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-reviewed-descriptor-db.test.ts", "name": "reviewed resource reader reconstructs current v5 grants and rejects stale or foreign lineage" },
+        { "file": "apps/api/test/app-resource-authoring-host.test.ts", "name": "Protocol 5 inspection accepts reviewed authoring while action routing remains unavailable" }
+      ]
+    },
+    {
+      "id": "resource-app-review",
+      "description": "Protocol5 sync-only/mixed host review, Module rollback and authenticated HTTP scope/staleness; no resource consent or execution.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-authoring-review-db.test.ts", "name": "v5 sync-only and mixed stage/review/activation pin declaration without resource authority" },
+        { "file": "apps/api/test/app-resource-authoring-review-db.test.ts", "name": "v5 activation rolls back earlier included Module, grant and lifecycle on later Module conflict" },
+        { "file": "apps/api/test/app-resource-authoring-review-http-db.test.ts", "name": "authenticated HTTP v5 review and activation reject foreign and stale requests" }
+      ]
+    },
+    {
+      "id": "fresh-upgrade-ledger",
+      "description": "Explicit four-database synthetic profile proving current fresh history, advanced untracked rejection before mutation, interrupted fresh refusal and supported baseline adoption.",
+      "cases": [
+        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "fresh push records exact manifest history and the ordinary upgrader is a no-op" },
+        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "advanced ledgerless schema is rejected before migration-ledger DDL" },
+        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "partial interrupted initialization cannot be stamped as fresh" },
+        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "genuine untracked v0.2.0-preview.1 baseline remains adoptable" }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

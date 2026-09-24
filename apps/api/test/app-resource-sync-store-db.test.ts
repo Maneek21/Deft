@@ -9,7 +9,8 @@ const safeDatabase = (() => {
     const url = new URL(databaseUrl);
     return ['postgres:', 'postgresql:'].includes(url.protocol)
       && url.hostname === '127.0.0.1' && url.port === '55435'
-      && url.pathname === '/gate_g_phase5_test_s05_sync_store'
+      && ['/gate_g_phase5_test_s05_sync_store',
+        '/gate_g_phase5_test_s05_sync_store_root38'].includes(url.pathname)
       && url.search === '' && url.hash === '';
   } catch { return false; }
 })();
