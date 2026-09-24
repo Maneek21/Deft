@@ -43,7 +43,7 @@ export type AppAutomationDefinition = {
   budgets: { maxOrgRunsPerUtcDay: number; maxPendingOrgFires: number };
   nextFireAtUtc: string | null;
   eligibility: {
-    status: 'awaiting_delivery_check' | 'waiting' | 'delivery_disabled' | 'paused' | 'revoked' | 'expired';
+    status: 'awaiting_delivery_check' | 'waiting' | 'delivery_disabled' | 'blocked' | 'paused' | 'revoked' | 'expired';
     reason: string;
   };
   fireSummary: { pending: number; claimed: number; runCreated: number; skipped: number; deadLetter: number };
@@ -195,7 +195,7 @@ export function normalizeAppAutomationManagement(value: unknown): AppAutomationM
         eligibility: {
           status: (() => {
             const status = stringValue(eligibility.status, 'App automation eligibility status');
-            if (!['awaiting_delivery_check', 'waiting', 'delivery_disabled', 'paused', 'revoked', 'expired'].includes(status)) {
+            if (!['awaiting_delivery_check', 'waiting', 'delivery_disabled', 'blocked', 'paused', 'revoked', 'expired'].includes(status)) {
               throw new Error('Invalid App automation eligibility status.');
             }
             return status as AppAutomationDefinition['eligibility']['status'];

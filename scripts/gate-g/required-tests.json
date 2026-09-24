@@ -692,6 +692,15 @@
         { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync secrets and fingerprints are domain separated from existing Run data" },
         { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync retained-key rotation preserves locator discovery and refuses missing prior key versions" }
       ]
+    },
+    {
+      "id": "automation-operator-http",
+      "description": "A01 real owner-reviewed synthetic Apps: 107 definitions paginated with receipts, positive schedule time, and changed-resource/connector blocks. Browser evidence is recorded separately.",
+      "cases": [
+        { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 controlled clock keeps a future next fire for live waiting authority and suppresses stale authority" },
+        { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 operator HTTP pages 100+ governed definitions and exposes current results and receipts" },
+        { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 live reviewed definition has a next fire, then blocks changed resource and revoked connector authority" }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
