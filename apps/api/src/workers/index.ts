@@ -263,6 +263,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('../lib/app-run-worker-handler.js');
       return mod.handleAppRunAttempt;
     }
+    case 'app-public-ingress': {
+      const mod = await import('../lib/app-public-worker-handler.js');
+      return mod.handleAppPublicIngress;
+    }
     case 'certification-noop': {
       // Synthetic 60-person certification intentionally measures queue claim,
       // completion, and recovery without invoking a product side effect.

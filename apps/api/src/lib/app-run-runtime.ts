@@ -17,6 +17,7 @@ import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
 import { AppRunPreparedInputService } from './app-run-prepared-input.js';
 import { AppRunService } from './app-run-service.js';
+import { AppRuntimeChannel } from './app-runtime-channel.js';
 import {
   APP_AUTOMATIONS_ENABLED,
   APP_RUN_APP_ORIGIN_ENABLED,
@@ -31,6 +32,7 @@ export type AppRunRuntime = Readonly<{
   liveAuthorization: PostgresAppRunLiveAuthorization;
   service: AppRunService;
   attemptRunner: AppRunAttemptRunner;
+  runtimeChannel: AppRuntimeChannel;
   approvalResolver: PostgresAppRunApprovalResolver;
   receiptReader: PostgresAppRunReceiptReader;
   operations: AppRunOperationsService;
@@ -79,6 +81,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     () => APP_RUN_APP_ORIGIN_ENABLED,
     () => APP_AUTOMATIONS_ENABLED,
   );
+  const runtimeChannel = new AppRuntimeChannel(attemptRunner);
   const approvalResolver = new PostgresAppRunApprovalResolver(
     repository,
     liveAuthorization,
@@ -110,6 +113,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     liveAuthorization,
     service,
     attemptRunner,
+    runtimeChannel,
     approvalResolver,
     receiptReader,
     operations,

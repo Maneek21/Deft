@@ -140,6 +140,16 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
 
+    // These additive, dormant surfaces must follow the historical App Run
+    // reconciliations, which restore the predecessor's provider/ancestry checks.
+    for (const platformFile of [
+      '0.3.0-preview.31-app-runtime-channel.sql',
+      '0.3.0-preview.32-app-public-claims.sql',
+    ]) {
+      await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
+      console.log(`[apply-extras] reconciled ${platformFile}`);
+    }
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.

@@ -1,0 +1,565 @@
+{
+  "baseline": "1427f66f84d5cb5f5430c566897a17dda77fe5fc",
+  "scope": "Package/unit baselines and explicitly selected database ancestry and legacy cutover-on profiles. This inventory is not the complete Gate G acceptance matrix.",
+  "profiles": [
+    {
+      "description": "All 63 current App Kit cases. Packed offline consumer tests require registry cache primed for the pinned Zod version.",
+      "cases": [
+        {
+          "name": "builds and verifies byte-identical deterministic packages",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "exports a machine-readable strict authoring schema",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "rejects capability planes reserved for later protocol versions",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "rejects unsafe, ambiguous, and reserved artifact paths",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "rejects duplicate module identities, paths, and navigation keys",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "rejects navigation views missing from or belonging to another collection",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "rejects unsupported protocols, media types, malformed JSON, and integrity drift",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "preserves direct v0 rejection issues instead of wrapping them in a v1 union error",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "rejects module identity drift and orphan artifacts",
+          "file": "packages/app-kit/test/app-kit.test.ts"
+        },
+        {
+          "name": "external authoring loop initializes and builds deterministically without credentials",
+          "file": "packages/app-kit/test/cli.test.ts"
+        },
+        {
+          "name": "connected template emits a Module v2 dependency App and requested authority without a grant",
+          "file": "packages/app-kit/test/cli.test.ts"
+        },
+        {
+          "name": "external authoring loop checks and builds Protocol v1 deterministically without authority",
+          "file": "packages/app-kit/test/cli.test.ts"
+        },
+        {
+          "name": "Protocol v2 check, build, requested-authority, and doctor paths stay stage-only",
+          "file": "packages/app-kit/test/cli.test.ts"
+        },
+        {
+          "name": "connected-automation template emits deterministic v2 lock, diff, and simulation",
+          "file": "packages/app-kit/test/cli.test.ts"
+        },
+        {
+          "name": "freezes one additive App Kit and protocol-flow compatibility contract",
+          "file": "packages/app-kit/test/developer-contract.test.ts"
+        },
+        {
+          "name": "candidate Kit refuses a host advertising only the preceding authoring contracts",
+          "file": "packages/app-kit/test/developer-contract.test.ts"
+        },
+        {
+          "name": "checks a connected package against only the public host and provider contracts",
+          "file": "packages/app-kit/test/developer-contract.test.ts"
+        },
+        {
+          "name": "projects v0 as explicitly empty requested authority",
+          "file": "packages/app-kit/test/developer-contract.test.ts"
+        },
+        {
+          "name": "projects connected requested authority without host identity or effective grants",
+          "file": "packages/app-kit/test/developer-contract.test.ts"
+        },
+        {
+          "name": "publishes provider-independent sandbox email conformance vectors",
+          "file": "packages/app-kit/test/developer-contract.test.ts"
+        },
+        {
+          "name": "accepts the unrelated equipment fixture in Kit and host validation",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects bad relation target with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects invalid latest-related rule with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects invalid board summary reference with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects invalid field default with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects invalid search fields with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects invalid navigation target with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "rejects unsupported schema version with host parity and actionable location",
+          "file": "packages/app-kit/test/module-semantic-validation.test.ts"
+        },
+        {
+          "name": "packed App Kit builds Contacts, connected Campaigns, and scheduled Campaigns externally",
+          "file": "packages/app-kit/test/packed-external.test.ts"
+        },
+        {
+          "name": "the actual packed Kit validates Modules in a clean external directory",
+          "file": "packages/app-kit/test/packed-module-validation.test.ts"
+        },
+        {
+          "name": "builds and verifies deterministic connected packages",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "exports a strict schema and a single code-owned support registry",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "derives private interface identity only from host-owned lineage inputs",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "freezes the private sandbox email schema and host-owned policy floor",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "rejects policy injection, executable planes, arbitrary mapping, and ambiguous references",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "rejects included resource drift and false relation targets at package verification",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "an included direct relation uses the same canonical Module without an artificial App dependency",
+          "file": "packages/app-kit/test/protocol-v1.test.ts"
+        },
+        {
+          "name": "builds, verifies, and exports strict v2 packages through explicit dispatch",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "accepts only one bounded daily trigger declaration over a resolved action",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "rejects unresolved user input only when the automation request references that action",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "keeps requests non-executable, provider-free, and outside effective authority",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "publishes one frozen code-owned policy without changing the base interface policy",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "registers a complete v2 support matrix without widening v1 authoring",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "preserves frozen v0 and v1 package and requested-authority bytes",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "builds the independent scheduled Campaign upgrade and reports only its requested widening",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "uses exact public schedule and input contracts in the non-executable simulator",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "finds the next bounded real UTC occurrence without duplicating DST rules",
+          "file": "packages/app-kit/test/protocol-v2.test.ts"
+        },
+        {
+          "name": "hello-workspace-app: unknown keys preserve rejection issues at root",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "hello-workspace-app: unknown keys preserve rejection issues at modules.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "hello-workspace-app: unknown keys preserve rejection issues at navigation.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "connected-resource-campaigns-app: unknown keys preserve rejection issues at root",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "connected-resource-campaigns-app: unknown keys preserve rejection issues at modules.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "connected-resource-campaigns-app: unknown keys preserve rejection issues at navigation.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "scheduled-connected-resource-campaigns-app: unknown keys preserve rejection issues at root",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "scheduled-connected-resource-campaigns-app: unknown keys preserve rejection issues at modules.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "scheduled-connected-resource-campaigns-app: unknown keys preserve rejection issues at navigation.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "Module 1: unknown keys retain host/Kit parity at root",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "Module 1: unknown keys retain host/Kit parity at collections.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "Module 1: unknown keys retain host/Kit parity at collections.0.fields.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "Module 2: unknown keys retain host/Kit parity at root",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "Module 2: unknown keys retain host/Kit parity at collections.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "Module 2: unknown keys retain host/Kit parity at collections.0.fields.0",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        },
+        {
+          "name": "developer compatibility keeps unknown-key diagnostics without accepting duplicate versions",
+          "file": "packages/app-kit/test/validation-compatibility.test.ts"
+        }
+      ],
+      "id": "app-kit"
+    },
+    {
+      "description": "51 focused unit/service contract cases; DATABASE_URL points to unreachable 127.0.0.1:1 so this is not DB acceptance.",
+      "cases": [
+        {
+          "name": "automation review input is closed, bounded, and has no caller authority vector",
+          "file": "apps/api/test/app-automation-definition-service.test.ts"
+        },
+        {
+          "name": "automation policy digest comes from the one code-owned policy descriptor",
+          "file": "apps/api/test/app-automation-definition-service.test.ts"
+        },
+        {
+          "name": "fire identity is canonical, deterministic, and epoch-bound",
+          "file": "apps/api/test/app-automation-definition-service.test.ts"
+        },
+        {
+          "name": "disabled automation delivery defers without reading authority",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "pending delivery claims with the queue lease and invokes the exact fire",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "a live prior claim defers, while a run-created replay is a no-op",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "a pause or kill after preflight terminalizes only the exact claimed fire",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "a transient invocation failure releases the exact claim for bounded recovery",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "late first delivery becomes a misfire before preflight or claim",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "stale preflight terminalizes pending authority without consuming an attempt",
+          "file": "apps/api/test/app-automation-dispatch.test.ts"
+        },
+        {
+          "name": "management pagination reaches an old active schedule with equal timestamps and no duplicates",
+          "file": "apps/api/test/app-automation-management-pagination.test.ts"
+        },
+        {
+          "name": "management distinguishes known expiry and revocation from the delivery-time stale check",
+          "file": "apps/api/test/app-automation-management-pagination.test.ts"
+        },
+        {
+          "name": "management cursor rejects malformed and cross-installation pages",
+          "file": "apps/api/test/app-automation-management-pagination.test.ts"
+        },
+        {
+          "name": "scanner persists old misfires before enqueuing the one catch-up occurrence",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "resume boundary excludes the paused occurrence",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "eligible definitions page without starving later tenants",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "scanner recovers an expired domain claim even when its old queue row is gone",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "expired claims are reconciled even when their definition is no longer eligible",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "delivery delegates terminal queue recovery through one atomic port operation",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "daily wall-clock resolution is exact in a fixed-offset zone",
+          "file": "apps/api/test/app-automation-schedule.test.ts"
+        },
+        {
+          "name": "DST fold resolves once at the earlier matching UTC instant",
+          "file": "apps/api/test/app-automation-schedule.test.ts"
+        },
+        {
+          "name": "DST gap becomes one explicit skipped logical occurrence",
+          "file": "apps/api/test/app-automation-schedule.test.ts"
+        },
+        {
+          "name": "catch-up is bounded and resume excludes the current logical occurrence",
+          "file": "apps/api/test/app-automation-schedule.test.ts"
+        },
+        {
+          "name": "scanner date reconciliation is local, inclusive, and bounded",
+          "file": "apps/api/test/app-automation-schedule.test.ts"
+        },
+        {
+          "name": "only the App Run secret boundary handles ciphertext and signing material",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "App Run engine flag and key material stay confined to environment and Run composition",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "legacy MCP cutover flag has only the two intake-boundary consumers",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "App-origin Run intake flag defaults in env and is consumed only by Run composition",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "C5 selects one composed worker-owned attempt entrance through Capability Service",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "only the MCP adapter calls the low-level client and governed execution is pinned by provider id",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "Run submission has one repository writer behind the advisory-lock service",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "the App Run approval bridge has one safe compatibility writer and no executor",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "Run operations can repair projections but cannot call a provider",
+          "file": "apps/api/test/app-run-architecture.test.ts"
+        },
+        {
+          "name": "provider idempotency keys remain stable and satisfy the frozen interface",
+          "file": "apps/api/test/app-run-attempt-runner.test.ts"
+        },
+        {
+          "name": "App Run rollout accepts the three safe engine and legacy MCP intake states",
+          "file": "apps/api/test/app-run-rollout-config.test.ts"
+        },
+        {
+          "name": "App automation intake defaults off and requires the complete connected Run stack",
+          "file": "apps/api/test/app-run-rollout-config.test.ts"
+        },
+        {
+          "name": "legacy MCP intake values other than exact lowercase true fail closed",
+          "file": "apps/api/test/app-run-rollout-config.test.ts"
+        },
+        {
+          "name": "API startup rejects legacy MCP intake while the App Run engine is disabled",
+          "file": "apps/api/test/app-run-rollout-config.test.ts"
+        },
+        {
+          "name": "App-origin intake defaults off and cannot start without Apps and Runs",
+          "file": "apps/api/test/app-run-rollout-config.test.ts"
+        },
+        {
+          "name": "closed provider slots route host-bound context and have no dynamic register surface",
+          "file": "apps/api/test/resource-authorization.test.ts"
+        },
+        {
+          "name": "malformed and unsupported refs fail before any adapter call",
+          "file": "apps/api/test/resource-authorization.test.ts"
+        },
+        {
+          "name": "missing adapters and invalid host context fail closed",
+          "file": "apps/api/test/resource-authorization.test.ts"
+        },
+        {
+          "name": "adapter denial and unexpected failures disclose no projection or raw provider error",
+          "file": "apps/api/test/resource-authorization.test.ts"
+        },
+        {
+          "name": "safe projection validation rejects extra fields and ref substitution",
+          "file": "apps/api/test/resource-authorization.test.ts"
+        },
+        {
+          "name": "constructor rejects mismatched or dynamically named adapter slots",
+          "file": "apps/api/test/resource-authorization.test.ts"
+        },
+        {
+          "name": "Module adapter preserves owner identity and returns only the safe projection",
+          "file": "apps/api/test/resource-provider-adapters.test.ts"
+        },
+        {
+          "name": "Module adapter rejects host/actor mismatch and substituted provider identity",
+          "file": "apps/api/test/resource-provider-adapters.test.ts"
+        },
+        {
+          "name": "Module owner denials and lifecycle errors map without leaking owner messages",
+          "file": "apps/api/test/resource-provider-adapters.test.ts"
+        },
+        {
+          "name": "Task adapter delegates human visibility and emits a bounded safe projection",
+          "file": "apps/api/test/resource-provider-adapters.test.ts"
+        },
+        {
+          "name": "Task adapter re-reads employee project scope and fails closed",
+          "file": "apps/api/test/resource-provider-adapters.test.ts"
+        },
+        {
+          "name": "Module v1 relations project as ResourceRefs without changing source groups",
+          "file": "apps/api/test/resource-provider-adapters.test.ts"
+        }
+      ],
+      "id": "platform-unit"
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/capability-immediate-execution-db.test.ts",
+          "name": "flag-on immediate safe MCP calls preserve exact output with one governed attempt and no budget debit"
+        },
+        {
+          "file": "apps/api/test/capability-immediate-execution-db.test.ts",
+          "name": "flag-on post-effect output outside the retained contract is returned once without unsafe persistence or recall"
+        },
+        {
+          "file": "apps/api/test/capability-immediate-execution-db.test.ts",
+          "name": "flag-on result delivery rechecks live membership after the provider effect"
+        },
+        {
+          "file": "apps/api/test/capability-immediate-execution-db.test.ts",
+          "name": "flag-on approved MCP action retries converge on one Run, one attempt, one call, and one budget debit"
+        },
+        {
+          "file": "apps/api/test/capability-immediate-execution-db.test.ts",
+          "name": "flag-on reviewed MCP approval preserves legacy receipts and replays without another provider call"
+        },
+        {
+          "file": "apps/api/test/capability-immediate-execution-db.test.ts",
+          "name": "flag-on ambiguous MCP transport outcome becomes inspectable unknown and is never retried"
+        }
+      ],
+      "id": "legacy-mcp-cutover-on",
+      "description": "Engine and legacy MCP cutover enabled with synthetic isolated keyrings. Exact ^flag-on name selection excludes ten opposite-profile cases; all six selected cases must execute."
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-origin-run-cutover-db.test.ts",
+          "name": "App-origin rows require exact tenant-bound installation, version, effective grant, and binding ancestry"
+        }
+      ],
+      "id": "app-origin-ancestry",
+      "description": "Real disposable phase5-named PostgreSQL database; formerly name-gated ancestry case must execute."
+    },
+    {
+      "id": "platform-channel-foundation",
+      "description": "Eleven mandatory Runtime/public DB, HTTP, default-off, result-bound, and ingress admission cases. Use an explicit disposable DB; the Runtime test launches its own loopback HTTP host process. Synthetic host-reviewed intake remains a limitation.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-runtime-channel-db.test.ts",
+          "name": "reviewed Runtime claim, start, known result and replay use the App Run ledger"
+        },
+        {
+          "file": "apps/api/test/app-runtime-channel.test.ts",
+          "name": "disabled Runtime transport rejects before parsing a request body"
+        },
+        {
+          "file": "apps/api/test/app-runtime-channel.test.ts",
+          "name": "Runtime result refuses an oversized retained output before any DB write"
+        },
+        {
+          "file": "apps/api/test/app-public-service-db.test.ts",
+          "name": "reviewed public claims use canonical rows and one transaction for ingress and queue"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "forged forwarding headers cannot multiply socket-peer budget; rejection precedes route"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "unknown socket peer shares a fail-closed bucket regardless of forwarding headers"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "peer identity table is capped and overflow identities share one bucket"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "global budget holds across peer and slug rotation"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "in-flight slots reject before route and release after success or error"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "abort does not release capacity until downstream work settles"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "global concurrency cap spans different verified peers"
+        }
+      ]
+    }
+  ],
+  "schema_version": "deft.gate_g.test_inventory.v1"
+}

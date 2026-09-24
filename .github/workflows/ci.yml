@@ -41,6 +41,8 @@ jobs:
         run: pnpm module:verify
       - name: Test App Kit authoring contracts
         run: pnpm --filter @deft/app-kit test
+      - name: Test shared authority and resource contracts
+        run: pnpm --filter @deft/shared test
       - name: Verify release publishing contract
         run: pnpm test:release-workflow
       - name: Verify container process supervision

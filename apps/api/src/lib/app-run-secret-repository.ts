@@ -90,8 +90,8 @@ export class AppRunSecretRepository {
     });
   }
 
-  async readInput(orgId: string, runId: string): Promise<CapabilityJsonValue | null> {
-    const [row] = await db.select().from(appRunSecretPayloads).where(and(
+  async readInput(orgId: string, runId: string, tx: AppRunTransaction | typeof db = db): Promise<CapabilityJsonValue | null> {
+    const [row] = await tx.select().from(appRunSecretPayloads).where(and(
       eq(appRunSecretPayloads.org_id, orgId),
       eq(appRunSecretPayloads.run_id, runId),
       eq(appRunSecretPayloads.payload_kind, 'input'),

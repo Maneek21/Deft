@@ -172,6 +172,16 @@ export const upgradeManifest = {
       file: '0.3.0-preview.30-module-record-merges.sql',
       description: 'Preserve tenant-bound original values and link provenance for reviewed Module record merges',
     },
+    {
+      version: '0.3.0-preview.31',
+      file: '0.3.0-preview.31-app-runtime-channel.sql',
+      description: 'Add dormant reviewed Runtime ancestry, sessions and fenced Run attempts',
+    },
+    {
+      version: '0.3.0-preview.32',
+      file: '0.3.0-preview.32-app-public-claims.sql',
+      description: 'Add dormant public endpoints, retained ingress and canonical exclusive claims',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 
