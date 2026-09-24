@@ -20,10 +20,15 @@ import { AppRunSecretService } from './app-run-secrets.js';
 import { AppRunPreparedInputService } from './app-run-prepared-input.js';
 import { AppRunService } from './app-run-service.js';
 import { AppRuntimeChannel } from './app-runtime-channel.js';
+import { AppResourceSyncChannel } from './app-resource-sync-channel.js';
+import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
+import { AppResourceSyncStore } from './app-resource-sync-store.js';
+import { AppResourceSyncAdmissionService } from './app-resource-sync-admission.js';
 import {
   APP_AUTOMATIONS_ENABLED,
   APP_RUN_APP_ORIGIN_ENABLED,
   APP_RUNS_ENABLED,
+  isAppResourceSyncChannelEnabled,
 } from './env.js';
 
 export type AppRunRuntime = Readonly<{
@@ -35,6 +40,8 @@ export type AppRunRuntime = Readonly<{
   service: AppRunService;
   attemptRunner: AppRunAttemptRunner;
   runtimeChannel: AppRuntimeChannel;
+  resourceSyncChannel: AppResourceSyncChannel;
+  resourceSyncAdmission: AppResourceSyncAdmissionService;
   approvalResolver: PostgresAppRunApprovalResolver;
   receiptReader: PostgresAppRunReceiptReader;
   operations: AppRunOperationsService;
@@ -47,6 +54,8 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
   const secrets = new AppRunSecretService(keys);
   const repository = new PostgresAppRunRepository();
   const secretRepository = new AppRunSecretRepository(secrets);
+  const resourceSyncSecrets = new AppResourceSyncSecretService(keys);
+  const resourceSyncStore = new AppResourceSyncStore(resourceSyncSecrets, secretRepository);
   const inputPreparation = new AppRunPreparedInputService(secrets);
   const liveAuthorization = new PostgresAppRunLiveAuthorization(() => APP_AUTOMATIONS_ENABLED);
   const accessAuthorization = new PostgresAppRunAuthorizer();
@@ -66,6 +75,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     receipts,
     attention,
     postgresAppRunAttemptQueue,
+    resourceSyncStore,
   );
   const service = new AppRunService(
     repository,
@@ -84,6 +94,10 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     () => APP_AUTOMATIONS_ENABLED,
   );
   const runtimeChannel = new AppRuntimeChannel(attemptRunner);
+  const resourceSyncChannel = new AppResourceSyncChannel(attemptRunner);
+  const resourceSyncAdmission = new AppResourceSyncAdmissionService(repository,
+    secretRepository, secrets, resourceSyncSecrets, attemptRunner, clock,
+    isAppResourceSyncChannelEnabled);
   const approvalResolver = new PostgresAppRunApprovalResolver(
     repository,
     liveAuthorization,
@@ -119,6 +133,8 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     service,
     attemptRunner,
     runtimeChannel,
+    resourceSyncChannel,
+    resourceSyncAdmission,
     approvalResolver,
     receiptReader,
     operations,

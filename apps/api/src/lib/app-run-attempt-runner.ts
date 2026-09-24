@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
-import { appRunAttempts, appRuntimeSessions } from '@deft/db/schema';
+import { appRunAttempts, appRuns, appRuntimeSessions, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
 import { parseRuntimeObjectInput } from '@deft/app-kit';
+import { parseSyncRequest } from '@deft/app-kit/experimental/resource-sync';
 import {
   APP_RUN_CONTRACT_VERSIONS,
   AppRunRetainedProviderResultSchema,
@@ -13,6 +14,7 @@ import {
   type AppRunSafeOutcome,
 } from '@deft/shared';
 import { db } from './db.js';
+import { isAppResourceSyncChannelEnabled } from './env.js';
 import {
   denyAllAppRunExecutionAuthorizer,
   type AppRunExecutionAuthorizer,
@@ -36,6 +38,15 @@ import {
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import type { AppRunSecretService } from './app-run-secrets.js';
 import { loadLiveRuntimeAuthority, runtimeRunMatchesAuthority } from './app-runtime-authority.js';
+import {
+  loadLiveResourceSyncAuthority, loadLiveResourceSyncBindingAuthority,
+  type LiveResourceSyncAuthority, type LiveResourceSyncBindingAuthority,
+} from './app-resource-sync-authority.js';
+import { buildResourceSyncAuthorizationSnapshot } from './app-resource-sync-authorization.js';
+import { AppResourceSyncStore } from './app-resource-sync-store.js';
+import { parseAppResourceSyncResult, APP_RESOURCE_SYNC_AUDIENCE,
+  APP_RESOURCE_SYNC_CHANNEL_VERSION } from './app-resource-sync-contract.js';
+import type { ResourceSyncResultRequest } from '@deft/app-kit/experimental/resource-sync';
 import {
   APP_RUNTIME_CHANNEL_VERSION, type AppRuntimeClaimEnvelope,
   type AppRuntimeResultRequest, type AppRuntimeStartEnvelope,
@@ -84,7 +95,54 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     private readonly receiptWriter: AppRunReceiptWriter = noOpAppRunReceiptWriter,
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
     private readonly attemptQueue: AppRunAttemptQueue = noOpAppRunAttemptQueue,
+    private readonly resourceSyncStore: AppResourceSyncStore | null = null,
   ) {}
+
+  /** A v2 Run is host-created for one reviewed private binding. The live
+   * authority reader owns the mutable membership/App/consent locks; this
+   * comparison binds that authority to the immutable Run and intent. */
+  async #resourceSyncRunMatchesAuthority(
+    tx: AppRunTransaction, run: AppRunSafeView,
+    authority: LiveResourceSyncBindingAuthority,
+  ): Promise<typeof appSyncIntents.$inferSelect | null> {
+    const [stored] = await tx.select().from(appRuns).where(and(
+      eq(appRuns.org_id, run.org_id), eq(appRuns.id, run.id),
+    )).limit(1);
+    const { binding, registration, installation, version, grant, provider_snapshot } = authority;
+    if (!stored || stored.origin_kind !== 'app' || stored.provider_kind !== 'app_runtime'
+      || stored.origin_resource_binding_id !== binding.id
+      || stored.origin_runtime_binding_id !== null
+      || stored.initiating_actor_type !== 'system' || stored.execution_actor_type !== 'system'
+      || stored.initiating_actor_id !== binding.id || stored.execution_actor_id !== binding.id
+      || stored.origin_app_installation_id !== installation.id
+      || stored.origin_app_version_id !== version.id
+      || stored.origin_app_grant_snapshot_id !== grant.id
+      || stored.provider_instance_id !== registration.id
+      || stored.provider_snapshot_id !== provider_snapshot.id
+      || stored.operation_name !== binding.operation_name
+      || stored.risk_class !== binding.risk_class
+      || stored.review_requirement !== binding.review_requirement
+      || stored.review_scope !== binding.review_scope
+      || stored.retry_class !== binding.retry_class
+      || stored.retention_class !== binding.retention_class
+      || stored.review_scope !== 'reviewed_resource_sync'
+      || stored.retry_class !== 'unsafe_or_unknown') return null;
+    try {
+      if (canonicalCapabilityJson(stored.authorization_snapshot)
+        !== canonicalCapabilityJson(buildResourceSyncAuthorizationSnapshot(authority))) return null;
+    } catch { return null; }
+    const [intent] = await tx.select().from(appSyncIntents).where(and(
+      eq(appSyncIntents.org_id, run.org_id), eq(appSyncIntents.run_id, run.id),
+    )).limit(1);
+    if (!intent || intent.resource_binding_id !== binding.id
+      || intent.app_installation_id !== installation.id
+      || intent.app_version_id !== version.id
+      || intent.grant_snapshot_id !== grant.id
+      || intent.provider_snapshot_id !== provider_snapshot.id
+      || intent.owner_user_id !== binding.owner_user_id
+      || intent.descriptor_digest !== authority.descriptor_digest) return null;
+    return intent;
+  }
 
   async run(
     orgId: string,
@@ -193,7 +251,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     const now = this.now();
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
-      return run ? this.scheduleInTransaction(tx, run, now) : null;
+      if (!run) return null;
+      return run.review_scope === 'reviewed_resource_sync'
+        ? this.scheduleResourceSyncInTransaction(tx, run, now)
+        : this.scheduleInTransaction(tx, run, now);
     });
   }
 
@@ -278,6 +339,65 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     token_hash: string; claim_token: string; sequence: number;
   }>): Promise<boolean> {
     return this.renewLease(input.org_id, input.attempt_id, input.claim_token, input);
+  }
+
+  async heartbeatResourceSyncAttempt(input: Readonly<{
+    org_id: string; run_id: string; attempt_id: string; session_id: string;
+    token_hash: string; claim_token: string; sequence: number;
+  }>) {
+    if (!isAppResourceSyncChannelEnabled()) return null;
+    return this.repository.transaction(async (tx) => {
+      const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
+      if (!run || run.review_scope !== 'reviewed_resource_sync'
+        || run.provider_kind !== 'app_runtime') return null;
+      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+        session_id: input.session_id, token_hash: input.token_hash, clock: this.now });
+      if (!authority) return null;
+      const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
+      if (!intent) return null;
+      await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
+        AND id = ${input.attempt_id} FOR UPDATE`);
+      const [attempt] = await tx.select().from(appRunAttempts).where(and(
+        eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, input.attempt_id),
+        eq(appRunAttempts.run_id, input.run_id),
+      )).limit(1);
+      // Do not release a cursor already displaced by a prior page or host
+      // maintenance. This lock follows the attempt and precedes any effect.
+      await tx.execute(sql`SELECT id FROM app_sync_checkpoints WHERE org_id = ${input.org_id}
+        AND id = ${intent.checkpoint_id} FOR SHARE`);
+      const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
+        eq(appSyncCheckpoints.org_id, input.org_id),
+        eq(appSyncCheckpoints.id, intent.checkpoint_id),
+        eq(appSyncCheckpoints.resource_binding_id, authority.binding.id),
+      )).limit(1);
+      const now = this.now();
+      if (!checkpoint || checkpoint.state !== 'active'
+        || checkpoint.generation !== intent.generation
+        || checkpoint.cursor_sequence !== intent.expected_cursor_sequence
+        || checkpoint.cursor_hmac_key_version !== intent.expected_cursor_hmac_key_version
+        || checkpoint.cursor_hmac !== intent.expected_cursor_hmac) return null;
+      if (!attempt || !['claimed', 'provider_call_started'].includes(attempt.state)
+        || attempt.claim_token !== input.claim_token
+        || attempt.runtime_session_id !== authority.session.id
+        || attempt.resource_binding_id !== authority.binding.id
+        || attempt.runtime_session_epoch !== authority.session.session_epoch
+        || attempt.runtime_epoch !== authority.registration.runtime_epoch
+        || attempt.runtime_sequence !== input.sequence
+        || !attempt.lease_expires_at || attempt.lease_expires_at <= now
+        || run.cancel_requested_at || !run.execution_released_at
+        || !['pending', 'running'].includes(run.state)
+        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || authority.session.expires_at <= now) return null;
+      const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs(this.leaseMs));
+      const [renewed] = await tx.update(appRunAttempts).set({
+        lease_expires_at: leaseExpiresAt, updated_at: now,
+      }).where(and(eq(appRunAttempts.org_id, input.org_id),
+        eq(appRunAttempts.id, attempt.id),
+        eq(appRunAttempts.claim_token, input.claim_token))).returning({ id: appRunAttempts.id });
+      if (!renewed) return null;
+      return Object.freeze({ run_id: input.run_id, attempt_id: input.attempt_id,
+        sequence: input.sequence, lease_expires_at: leaseExpiresAt.toISOString() });
+    });
   }
 
   async completeRuntimeAttempt(input: Readonly<{
@@ -405,6 +525,317 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       return existing.id;
     }
     return (await this.#createAttempt(tx, run, now))?.id ?? null;
+  }
+
+  async completeResourceSyncAttempt(input: Readonly<{
+    org_id: string; token_hash: string; result: ResourceSyncResultRequest;
+  }>) {
+    const store = this.resourceSyncStore;
+    if (!isAppResourceSyncChannelEnabled() || !store) return null;
+    const result = input.result;
+    const fingerprintValue = `deft.app_resource_sync.result.v2:${createHash('sha256')
+      .update(canonicalCapabilityJson(result)).digest('hex')}`;
+    const fingerprintCandidates = this.secrets.fingerprintTextCandidates('idempotency', fingerprintValue);
+    const replayDigests = new Set(fingerprintCandidates.map((candidate) => candidate.fingerprint));
+    const accepted = await this.repository.transaction(async (tx) => {
+      const run = await this.repository.lockRun(tx, input.org_id, result.run_id);
+      if (!run || run.review_scope !== 'reviewed_resource_sync'
+        || run.provider_kind !== 'app_runtime') return false;
+      const [runKey] = await tx.select({ key_version: appRuns.idempotency_key_version })
+        .from(appRuns).where(and(eq(appRuns.org_id, input.org_id),
+          eq(appRuns.id, result.run_id))).limit(1);
+      const digest = fingerprintCandidates.find((candidate) =>
+        candidate.key_version === runKey?.key_version)?.fingerprint;
+      // Run idempotency retention already pins this purpose/key version.
+      if (!digest) return false;
+      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+        session_id: result.session_id, token_hash: input.token_hash, clock: this.now });
+      if (!authority) return false;
+      const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
+      if (!intent) return false;
+      await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
+        AND id = ${result.attempt_id} FOR UPDATE`);
+      const [attempt] = await tx.select().from(appRunAttempts).where(and(
+        eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, result.attempt_id),
+        eq(appRunAttempts.run_id, result.run_id),
+      )).limit(1);
+      if (!attempt || attempt.claim_token !== result.claim_token
+        || attempt.runtime_session_id !== authority.session.id
+        || attempt.resource_binding_id !== authority.binding.id
+        || attempt.runtime_session_epoch !== authority.session.session_epoch
+        || attempt.runtime_epoch !== authority.registration.runtime_epoch
+        || attempt.runtime_sequence !== result.sequence) return false;
+      // A committed callback is accepted byte-for-byte without revisiting the
+      // page store. Retained fingerprint keys permit a key rotation replay.
+      if (attempt.runtime_result_hmac) return replayDigests.has(attempt.runtime_result_hmac);
+      const now = this.now();
+      if (attempt.state !== 'provider_call_started' || !attempt.lease_expires_at
+        || attempt.lease_expires_at <= now || run.state !== 'running'
+        || run.cancel_requested_at || run.input_expires_at <= now
+        || authority.binding.consent_expires_at! <= now
+        || authority.session.expires_at <= now) return false;
+      if (result.status === 'indeterminate') {
+        await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+        return true;
+      }
+      let outcome: AppRunSafeOutcome;
+      let receiptFacts: Record<string, string | number | boolean> | undefined;
+      if (result.status === 'returned' && result.provider_succeeded) {
+        const rawInput = await this.secretRepository.readInput(input.org_id, run.id, tx);
+        let page: Extract<ResourceSyncResultRequest,
+          { status: 'returned'; provider_succeeded: true }>['page'];
+        try {
+          const parsed = parseAppResourceSyncResult(result, {
+            descriptor: authority.descriptor, starting_request: parseSyncRequest(rawInput),
+          });
+          if (parsed.status !== 'returned' || !parsed.provider_succeeded) return false;
+          page = parsed.page;
+        } catch {
+          // The provider may already have observed an external source effect.
+          // An invalid page is never signed as success or automatically retried.
+          await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+          return true;
+        }
+        if (run.result_expires_at <= now) {
+          await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+          return true;
+        }
+        const applied = await store.applyPageInTransaction(tx, {
+          org_id: input.org_id, run_id: run.id, attempt_id: attempt.id,
+          page, clock: this.now,
+        });
+        const finalClock = this.now();
+        if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
+          || authority.binding.consent_expires_at! <= finalClock
+          || run.input_expires_at <= finalClock || run.result_expires_at <= finalClock) {
+          // A page has already been written in this transaction. Returning
+          // false would commit it without output, terminal Run or receipt.
+          throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
+        }
+        const envelope = AppRunRetainedProviderResultSchema.parse({
+          schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+          provider_succeeded: true, output: page,
+        });
+        assertAppRunOutputWithinBudget(envelope);
+        await this.secretRepository.insertOutput(tx, {
+          org_id: input.org_id, run_id: run.id, attempt_id: attempt.id,
+          value: envelope, expires_at: run.result_expires_at,
+        });
+        outcome = AppRunSafeOutcomeSchema.parse({ success: true,
+          provider_call_attempted: true, result_status: 'retained' });
+        receiptFacts = { resource_binding_id: authority.binding.id,
+          checkpoint_id: intent.checkpoint_id, page_digest: applied.page_digest,
+          cursor_sequence: applied.applied_sequence };
+      } else if (result.status === 'returned') {
+        outcome = AppRunSafeOutcomeSchema.parse({ success: false,
+          provider_call_attempted: true, result_status: 'unavailable',
+          error_code: 'APP_RUN_PROVIDER_ERROR' });
+      } else {
+        outcome = AppRunSafeOutcomeSchema.parse({ success: false,
+          provider_call_attempted: false, result_status: 'unavailable',
+          error_code: result.error_code });
+      }
+      const finalClock = this.now();
+      if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
+        || authority.binding.consent_expires_at! <= finalClock
+        || run.input_expires_at <= finalClock) {
+        throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
+      }
+      await tx.update(appRunAttempts).set({ provider_call_finished_at: finalClock,
+        safe_outcome: outcome, runtime_result_hmac: digest, updated_at: finalClock,
+      }).where(and(eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, attempt.id)));
+      await this.#finalizeKnownInTransaction(tx, run, { ...attempt,
+        provider_call_finished_at: finalClock, safe_outcome: outcome }, finalClock, receiptFacts);
+      const committedAt = this.now();
+      if (attempt.lease_expires_at <= committedAt || authority.session.expires_at <= committedAt
+        || authority.binding.consent_expires_at! <= committedAt
+        || run.input_expires_at <= committedAt || run.result_expires_at <= committedAt) {
+        // Includes page, output and receipt writes: abort the whole transaction.
+        throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
+      }
+      return true;
+    });
+    if (!accepted) return null;
+    return Object.freeze({ run_id: result.run_id, attempt_id: result.attempt_id,
+      sequence: result.sequence });
+  }
+
+  async startResourceSyncAttempt(input: Readonly<{
+    org_id: string; run_id: string; attempt_id: string; session_id: string;
+    token_hash: string; claim_token: string; sequence: number;
+  }>) {
+    if (!isAppResourceSyncChannelEnabled()) return null;
+    return this.repository.transaction(async (tx) => {
+      let run = await this.repository.lockRun(tx, input.org_id, input.run_id);
+      if (!run || run.review_scope !== 'reviewed_resource_sync'
+        || run.provider_kind !== 'app_runtime') return null;
+      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+        session_id: input.session_id, token_hash: input.token_hash, clock: this.now });
+      if (!authority) return null;
+      const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
+      if (!intent) return null;
+      await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
+        AND id = ${input.attempt_id} FOR UPDATE`);
+      const [attempt] = await tx.select().from(appRunAttempts).where(and(
+        eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, input.attempt_id),
+        eq(appRunAttempts.run_id, input.run_id),
+      )).limit(1);
+      await tx.execute(sql`SELECT id FROM app_sync_checkpoints WHERE org_id = ${input.org_id}
+        AND id = ${intent.checkpoint_id} FOR SHARE`);
+      const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
+        eq(appSyncCheckpoints.org_id, input.org_id),
+        eq(appSyncCheckpoints.id, intent.checkpoint_id),
+        eq(appSyncCheckpoints.resource_binding_id, authority.binding.id),
+      )).limit(1);
+      const now = this.now();
+      if (!checkpoint || checkpoint.state !== 'active'
+        || checkpoint.generation !== intent.generation
+        || checkpoint.cursor_sequence !== intent.expected_cursor_sequence
+        || checkpoint.cursor_hmac_key_version !== intent.expected_cursor_hmac_key_version
+        || checkpoint.cursor_hmac !== intent.expected_cursor_hmac
+        || !attempt || !['claimed', 'provider_call_started'].includes(attempt.state)
+        || attempt.claim_token !== input.claim_token
+        || attempt.runtime_session_id !== authority.session.id
+        || attempt.resource_binding_id !== authority.binding.id
+        || attempt.runtime_session_epoch !== authority.session.session_epoch
+        || attempt.runtime_epoch !== authority.registration.runtime_epoch
+        || attempt.runtime_sequence !== input.sequence
+        || !attempt.lease_expires_at || attempt.lease_expires_at <= now
+        || !run.execution_released_at || run.cancel_requested_at
+        || !['pending', 'running'].includes(run.state)
+        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || authority.session.expires_at <= now) return null;
+      const rawInput = await this.secretRepository.readInput(input.org_id, run.id, tx);
+      let request: ReturnType<typeof parseSyncRequest>;
+      try { request = parseSyncRequest(rawInput); }
+      catch { return null; }
+      if (request.max_items > authority.binding.max_records_per_page) return null;
+      if (attempt.state === 'claimed') {
+        const [started] = await tx.update(appRunAttempts).set({ state: 'provider_call_started',
+          provider_call_started_at: now, updated_at: now }).where(and(
+          eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, attempt.id),
+          eq(appRunAttempts.claim_token, input.claim_token),
+          eq(appRunAttempts.state, 'claimed'),
+        )).returning({ id: appRunAttempts.id });
+        if (!started) return null;
+        if (run.state === 'pending') run = await this.repository.transition(tx, {
+          run, state: 'running', now,
+        });
+        await this.repository.appendEvent(tx, { id: crypto.randomUUID(),
+          org_id: input.org_id, run_id: run.id, event_type: 'provider_call_started',
+          payload: { attempt_id: attempt.id }, now });
+      }
+      const checkedAt = this.now();
+      if (attempt.lease_expires_at <= checkedAt || run.input_expires_at <= checkedAt
+        || authority.binding.consent_expires_at! <= checkedAt
+        || authority.session.expires_at <= checkedAt) {
+        if (attempt.state === 'claimed') throw new Error('APP_RESOURCE_SYNC_START_EXPIRED');
+        return null;
+      }
+      return Object.freeze({ schema_version: APP_RESOURCE_SYNC_CHANNEL_VERSION,
+        audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
+        resource_binding_id: authority.binding.id, run_id: run.id,
+        attempt_id: attempt.id, sequence: input.sequence,
+        lease_expires_at: attempt.lease_expires_at.toISOString(),
+        descriptor_digest: authority.descriptor_digest,
+        descriptor: authority.descriptor, input: request });
+    });
+  }
+
+  async claimResourceSyncAttempt(input: Readonly<{
+    org_id: string; run_id: string; attempt_id: string;
+    session_id: string; token_hash: string;
+  }>) {
+    if (!isAppResourceSyncChannelEnabled()) return null;
+    await this.recoverRun(input.org_id, input.run_id, input.attempt_id);
+    return this.repository.transaction(async (tx) => {
+      const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
+      if (!run || run.review_scope !== 'reviewed_resource_sync'
+        || run.provider_kind !== 'app_runtime') return null;
+      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+        session_id: input.session_id, token_hash: input.token_hash, clock: this.now });
+      if (!authority || !await this.#resourceSyncRunMatchesAuthority(tx, run, authority)) return null;
+      await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
+        AND id = ${input.attempt_id} FOR UPDATE`);
+      const [attempt] = await tx.select().from(appRunAttempts).where(and(
+        eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, input.attempt_id),
+        eq(appRunAttempts.run_id, run.id),
+      )).limit(1);
+      const now = this.now();
+      if (!run.execution_released_at || run.cancel_requested_at
+        || !['pending', 'running'].includes(run.state)
+        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || authority.session.expires_at <= now) return null;
+      if (!attempt || attempt.state !== 'pending') return null;
+      const [session] = await tx.update(appRuntimeSessions).set({
+        next_sequence: sql`${appRuntimeSessions.next_sequence} + 1`, updated_at: now,
+      }).where(and(eq(appRuntimeSessions.org_id, input.org_id),
+        eq(appRuntimeSessions.id, authority.session.id)))
+        .returning({ next_sequence: appRuntimeSessions.next_sequence });
+      if (!session) return null;
+      const sequence = session.next_sequence - 1;
+      const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs(this.leaseMs));
+      const [claimed] = await tx.update(appRunAttempts).set({
+        state: 'claimed', claim_owner: `app_resource_sync:${input.session_id}`,
+        claim_token: crypto.randomUUID(), resource_binding_id: authority.binding.id,
+        runtime_session_id: authority.session.id,
+        runtime_session_epoch: authority.session.session_epoch,
+        runtime_epoch: authority.registration.runtime_epoch,
+        runtime_sequence: sequence,
+        claimed_at: now, lease_expires_at: leaseExpiresAt, updated_at: now,
+      }).where(and(eq(appRunAttempts.org_id, input.org_id),
+        eq(appRunAttempts.id, attempt.id), eq(appRunAttempts.state, 'pending'))).returning();
+      if (!claimed?.claim_token) return null;
+      await this.repository.appendEvent(tx, { id: crypto.randomUUID(), org_id: input.org_id,
+        run_id: run.id, event_type: 'attempt_claimed',
+        payload: { attempt_id: claimed.id }, now });
+      return Object.freeze({ schema_version: APP_RESOURCE_SYNC_CHANNEL_VERSION,
+        audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
+        org_id: input.org_id, app_installation_id: authority.installation.id,
+        app_version_id: authority.version.id, grant_snapshot_id: authority.grant.id,
+        lifecycle_epoch: authority.installation.lifecycle_epoch,
+        grant_epoch: authority.installation.grant_epoch,
+        runtime_registration_id: authority.registration.id,
+        resource_binding_id: authority.binding.id,
+        runtime_epoch: authority.registration.runtime_epoch,
+        session_id: authority.session.id, session_epoch: authority.session.session_epoch,
+        run_id: run.id, attempt_id: claimed.id, attempt_number: claimed.attempt_number,
+        claim_token: claimed.claim_token, sequence,
+        lease_expires_at: leaseExpiresAt.toISOString(),
+        descriptor_digest: authority.descriptor_digest });
+    });
+  }
+
+  /** Admission owns a newly inserted, locked system Run and its immutable
+   * intent. This uses the existing attempt/event/queue rather than a second
+   * scheduler. It is safe to call again for the same still-live attempt. */
+  async scheduleResourceSyncInTransaction(
+    tx: AppRunTransaction, run: AppRunSafeView, _now = this.now(),
+  ): Promise<string | null> {
+    if (!isAppResourceSyncChannelEnabled()
+      || run.review_scope !== 'reviewed_resource_sync' || run.provider_kind !== 'app_runtime'
+      || run.origin_kind !== 'app' || run.initiating_actor_type !== 'system'
+      || run.execution_actor_type !== 'system' || !run.execution_released_at
+      || run.cancel_requested_at
+      || ['succeeded', 'failed', 'cancelled', 'expired', 'unknown_outcome'].includes(run.state)) return null;
+    const [stored] = await tx.select({ binding_id: appRuns.origin_resource_binding_id })
+      .from(appRuns).where(and(eq(appRuns.org_id, run.org_id), eq(appRuns.id, run.id))).limit(1);
+    if (!stored?.binding_id) return null;
+    const authority = await loadLiveResourceSyncBindingAuthority(tx, {
+      org_id: run.org_id, resource_binding_id: stored.binding_id, clock: this.now,
+    });
+    if (!authority || !await this.#resourceSyncRunMatchesAuthority(tx, run, authority)) return null;
+    const checkedAt = this.now();
+    if (run.input_expires_at <= checkedAt || authority.binding.consent_expires_at! <= checkedAt) return null;
+    const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
+      eq(appRunAttempts.org_id, run.org_id), eq(appRunAttempts.run_id, run.id),
+      inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
+    )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
+    if (existing) {
+      await this.attemptQueue.enqueue(tx, run.org_id, run.id, existing.id);
+      return existing.id;
+    }
+    return (await this.#createAttempt(tx, run, checkedAt))?.id ?? null;
   }
 
   async renewLease(orgId: string, attemptId: string, claimToken: string,
@@ -814,6 +1245,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     run: AppRunSafeView,
     attempt: typeof appRunAttempts.$inferSelect,
     now: Date,
+    extraReceiptFacts?: Readonly<Record<string, string | number | boolean>>,
   ): Promise<void> {
     const outcome = AppRunSafeOutcomeSchema.parse(attempt.safe_outcome);
     const attemptState = outcome.success ? 'succeeded' : 'failed';
@@ -830,7 +1262,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       run, state: outcome.success ? 'succeeded' : 'failed', safe_outcome: outcome,
       error_code: outcome.error_code, now,
     });
-    await this.#writeAttemptReceipt(tx, terminalRun, attempt.id, attemptState, now, outcome.error_code);
+    await this.#writeAttemptReceipt(tx, terminalRun, attempt.id, attemptState, now,
+      outcome.error_code, false, extraReceiptFacts);
   }
 
   async #settleBeforeCallFailure(claimed: ClaimedAttempt, code: 'APP_RUN_EXPIRED'): Promise<void> {
@@ -981,6 +1414,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     occurredAt: Date,
     errorCode?: string,
     retryScheduled = false,
+    extraFacts?: Readonly<Record<string, string | number | boolean>>,
   ): Promise<void> {
     await this.receiptWriter.write(tx, {
       receipt_key: `attempt-terminal:${attemptId}`,
@@ -991,6 +1425,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         attempt_state: attemptState,
         retry_scheduled: retryScheduled,
         ...(errorCode ? { error_code: errorCode } : {}),
+        ...extraFacts,
       },
       occurred_at: occurredAt,
     });

@@ -75,6 +75,8 @@ import { appActionRoutes } from './routes/app-actions.js';
 import { appRunRoutes } from './routes/app-runs.js';
 import { appDeveloperRoutes } from './routes/app-developer.js';
 import { appRuntimeChannelRoutes } from './routes/app-runtime-channel.js';
+import { appResourceSyncChannelRoutes } from './routes/app-resource-sync-channel.js';
+import { appResourceSyncLimits } from './middleware/app-resource-sync-limits.js';
 import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
 import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
@@ -197,6 +199,8 @@ if (APP_DEVELOPER_PAIRING_ENABLED) {
 if (APPS_ENABLED) {
   app.use('/api/app-runtime/channel/*', authLimiter);
   app.route('/api/app-runtime/channel', appRuntimeChannelRoutes);
+  app.use('/api/app-resource-sync/channel/*', appResourceSyncLimits);
+  app.route('/api/app-resource-sync/channel', appResourceSyncChannelRoutes);
 }
 if (APPS_ENABLED && process.env.DEFT_APP_PUBLIC_INGRESS_ENABLED === 'true') {
   app.route('/api/public/apps', createAppPublicRoutes(new AppPublicClaimService({ enabled: true })));

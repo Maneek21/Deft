@@ -128,6 +128,12 @@ export function isAppRuntimeChannelEnabled(): boolean {
   return APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
     && process.env.DEFT_APP_RUNTIME_CHANNEL_ENABLED === 'true';
 }
+// Candidate resource sync is a distinct credential audience and rollout.
+// Enabling v1 actions never enables v2 sync work.
+export function isAppResourceSyncChannelEnabled(): boolean {
+  return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
+    && process.env.DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';
