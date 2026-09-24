@@ -28,7 +28,7 @@ import {
   webSessions,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
-import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { visibleLiveMemberForOrg } from '../lib/member-visibility.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import { evictActiveHuddleParticipants } from '../socket.js';
 import { emitWebSessionRevocations } from '../lib/web-sessions.js';
@@ -55,23 +55,6 @@ function adminForbidden(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code }, err.status as 403);
   }
   return c.json({ error: 'Only admins can perform this action', code: 'FORBIDDEN' }, 403);
-}
-
-function visibleLiveMemberForOrg(orgIdRef: unknown) {
-  return sql`
-    (
-      ${users.kind} <> 'agent'
-      OR ${users.email} = ${DEFTY_EMAIL}
-      OR EXISTS (
-        SELECT 1
-        FROM ${agentEmployees}
-        WHERE ${agentEmployees.user_id} = ${users.id}
-          AND ${agentEmployees.org_id} = ${orgIdRef}
-          AND ${agentEmployees.is_active} = true
-          AND ${agentEmployees.is_deleted} = false
-      )
-    )
-  `;
 }
 
 // GET /api/members — list all members of current org

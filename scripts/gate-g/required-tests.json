@@ -669,6 +669,16 @@
         { "file": "apps/api/test/mcp-events.test.ts", "name": "3. events_query filters by since/until time range" },
         { "file": "apps/api/test/mcp-events.test.ts", "name": "4. events_query ignores model-authored caller_employee_slug and uses the bearer identity" }
       ]
+    },
+    {
+      "id": "native-resource-web",
+      "description": "Seven native display owner adapters plus live web-session v2 dispatch and real loopback HTTP feature-gate proof on synthetic PostgreSQL.",
+      "cases": [
+        { "file": "apps/api/test/native-content-projections-db.test.ts", "name": "native display projections keep exact owner, share, space, and tombstone boundaries" },
+        { "file": "apps/api/test/native-calendar-file-projections-db.test.ts", "name": "native Calendar and File display uses current event owner and attachment parent ACLs" },
+        { "file": "apps/api/test/native-directory-projections-db.test.ts", "name": "native person and team displays follow live directory and private-team visibility" },
+        { "file": "apps/api/test/native-resource-service-db.test.ts", "name": "native resource web resolver binds current session and owner without widening v1 or Runtime access" }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

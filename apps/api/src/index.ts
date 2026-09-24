@@ -69,6 +69,7 @@ import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
 import { moduleRoutes } from './routes/modules.js';
+import { resourceRoutes } from './routes/resources.js';
 import { appRoutes } from './routes/apps.js';
 import { appActionRoutes } from './routes/app-actions.js';
 import { appRunRoutes } from './routes/app-runs.js';
@@ -261,6 +262,7 @@ app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
 if (APPS_ENABLED) {
+  app.route('/api/resources', resourceRoutes);
   app.route('/api/apps/public', appPublicManagementRoutes);
   app.route('/api/apps/runtime', appRuntimeManagementRoutes);
   app.route('/api/app-runtime-review', appRuntimeReviewRoutes);
