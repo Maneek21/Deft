@@ -1777,7 +1777,7 @@ export const appVersions = pgTable('app_versions', {
   uniqueIndex('app_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
-  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4')`),
+  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4', '5')`),
   check('app_versions_connected_request_check', sql`
     ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
   `),

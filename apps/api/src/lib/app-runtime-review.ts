@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appModuleBindings, moduleInstallations, auditLog } from '@deft/db/schema';
-import { parseRuntimeAppManifest, RUNTIME_ACTION_HOST_POLICY, AppDigestSchema, type RuntimeAppManifest, type DeftAppPackage } from '@deft/app-kit';
+import { parseRuntimeAppManifest, parseResourceAppManifest, RUNTIME_ACTION_HOST_POLICY, AppDigestSchema,
+  type RuntimeAppManifest, type DeftAppManifestV5, type DeftAppPackage } from '@deft/app-kit';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
@@ -22,7 +23,7 @@ export const RuntimeAppActivateRequestSchema = RuntimeAppReviewRequestSchema.ext
   expected_review_digest: AppDigestSchema, accept_host_policy: z.literal(true),
 });
 
-export function runtimeActionDescriptors(manifest: RuntimeAppManifest) {
+export function runtimeActionDescriptors(manifest: Pick<RuntimeAppManifest, 'runtime_actions' | 'private_capabilities'>) {
   return manifest.runtime_actions.map((action) => {
     const capability = manifest.private_capabilities.find((item) => item.key === action.capability_key)!;
     const identity = { namespace: 'app_lineage' as const, key: capability.key, version: capability.version };
@@ -34,6 +35,23 @@ export function runtimeActionDescriptors(manifest: RuntimeAppManifest) {
   });
 }
 export type ReviewedRuntimeAction = ReturnType<typeof runtimeActionDescriptors>[number];
+
+/** Pure reviewed App authority. The descriptor hash is computed from the
+ * closed canonical authoring contract; this grants neither provider access nor
+ * owner consent and can be reconstructed by a future live v2 binding reader. */
+export function buildResourceAppReviewedAuthority(manifest: DeftAppManifestV5, pins: Readonly<{
+  lineage_key: string; package_digest: string; manifest_digest: string;
+}>) {
+  return {
+    schema: 'deft.app_runtime_grant.v2' as const,
+    ...pins,
+    runtime_actions: runtimeActionDescriptors(manifest),
+    sync_descriptors: manifest.sync_descriptors.map((descriptor) => ({
+      ...descriptor, descriptor_digest: digestAppGrantValue(descriptor),
+    })),
+    modules: manifest.modules, experiences: manifest.experiences, public_actions: manifest.public_actions,
+  };
+}
 
 async function reviewContext(tx: Executor, actor: ModuleActor, installationId: string,
   request: z.infer<typeof RuntimeAppReviewRequestSchema>) {
@@ -48,10 +66,11 @@ async function reviewContext(tx: Executor, actor: ModuleActor, installationId: s
     eq(appVersions.org_id, actor.org_id), eq(appVersions.installation_id, installationId),
     eq(appVersions.id, request.app_version_id),
   )).limit(1).for('share');
-  if (!version || !['3', '4'].includes(version.protocol_version) || !['staged', 'active'].includes(version.state)
+  if (!version || !['3', '4', '5'].includes(version.protocol_version) || !['staged', 'active'].includes(version.state)
     || version.package_digest !== request.expected_package_digest
     || (installation.active_version_id && installation.active_version_id !== version.id)) throw stale();
-  const manifest = parseRuntimeAppManifest(version.manifest);
+  const manifest = version.protocol_version === '5'
+    ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
   const [requested] = await tx.select().from(appGrantSnapshots).where(and(
     eq(appGrantSnapshots.org_id, actor.org_id), eq(appGrantSnapshots.app_installation_id, installationId),
     eq(appGrantSnapshots.app_version_id, version.id), eq(appGrantSnapshots.id, version.requested_grant_snapshot_id ?? ''),
@@ -63,10 +82,13 @@ async function reviewContext(tx: Executor, actor: ModuleActor, installationId: s
   if (!requested || requested.snapshot_digest !== request.expected_requested_snapshot_digest
     || requested.snapshot_digest !== expected.snapshot_digest
     || digestAppGrantValue(requested.canonical_snapshot) !== expected.snapshot_digest) throw stale();
-  const authority = { schema: 'deft.app_runtime_grant.v1' as const, lineage_key: installation.lineage_key,
-    package_digest: version.package_digest, manifest_digest: version.manifest_digest,
-    runtime_actions: runtimeActionDescriptors(manifest),
-    ...(manifest.schema_version === '4' ? { modules: manifest.modules, experiences: manifest.experiences, public_actions: manifest.public_actions } : {}) };
+  const authority = manifest.schema_version === '5'
+    ? buildResourceAppReviewedAuthority(manifest, { lineage_key: installation.lineage_key,
+      package_digest: version.package_digest, manifest_digest: version.manifest_digest })
+    : { schema: 'deft.app_runtime_grant.v1' as const, lineage_key: installation.lineage_key,
+      package_digest: version.package_digest, manifest_digest: version.manifest_digest,
+      runtime_actions: runtimeActionDescriptors(manifest),
+      ...(manifest.schema_version === '4' ? { modules: manifest.modules, experiences: manifest.experiences, public_actions: manifest.public_actions } : {}) };
   const review = { ...request, installation_id: installationId, organization_id: actor.org_id,
     authority, requested_snapshot_id: requested.id };
   return { installation, version, requested, authority, review: { ...review, review_digest: digestAppGrantValue(review) } };
@@ -83,8 +105,9 @@ export async function activateRuntimeApp(actor: ModuleActor, installationId: str
   const activated = await db.transaction(async (tx) => {
     const context = await reviewContext(tx, actor, installationId, request);
     if (context.review.review_digest !== expected_review_digest) throw stale();
-    const manifest = parseRuntimeAppManifest(context.version.manifest);
-    if (manifest.schema_version === '4') {
+    const manifest = context.version.protocol_version === '5'
+      ? parseResourceAppManifest(context.version.manifest) : parseRuntimeAppManifest(context.version.manifest);
+    if (manifest.schema_version === '4' || manifest.schema_version === '5') {
       if (context.version.state === 'staged') {
         const pkg = context.version.package as unknown as DeftAppPackage;
         for (const reference of [...manifest.modules].sort((a, b) => a.module_id.localeCompare(b.module_id))) {
@@ -113,7 +136,8 @@ export async function activateRuntimeApp(actor: ModuleActor, installationId: str
     const effectiveId = randomUUID();
     const now = new Date();
     const classification = { authority_state: 'effective', executable: false, provider_access: false,
-      runtime_binding_review_required: true };
+      runtime_binding_review_required: true,
+      ...(manifest.schema_version === '5' ? { resource_binding_consent_required: true } : {}) };
     const canonical = { ...context.authority, organization_id: actor.org_id,
       app_installation_id: installationId, app_version_id: context.version.id,
       requested_snapshot_id: context.requested.id, requested_snapshot_digest: context.requested.snapshot_digest,

@@ -34,7 +34,7 @@ async function withExperience(manifest: typeof base = base, resourceKeys: string
   return { manifest: { ...manifest, experiences: [reference] }, artifact };
 }
 
-test('v5 sync-only App and Experience package are deterministic, requested-only, and host unsupported', async () => {
+test('v5 sync-only App and Experience package are deterministic and only reviewable by the host', async () => {
   const { manifest, artifact } = await withExperience();
   const built = await buildDeftAppPackage({ manifest, artifacts: [artifact] });
   assert.equal(built.package.package_format, 'deft.app.package.v5');
@@ -43,7 +43,10 @@ test('v5 sync-only App and Experience package are deterministic, requested-only,
   assert.equal(parseResourceAppManifest(manifest).sync_descriptors[0]?.key, 'mail');
   assert.throws(() => parseRuntimeAppManifest(manifest));
   assert.equal(isDeftAppProtocolOperationSupported('5', 'authoring'), true);
-  for (const operation of ['inspect', 'stage', 'review', 'activate', 'route', 'invoke'] as const) {
+  for (const operation of ['inspect', 'stage', 'review', 'activate'] as const) {
+    assert.equal(isDeftAppProtocolOperationSupported('5', operation), true);
+  }
+  for (const operation of ['route', 'invoke'] as const) {
     assert.equal(isDeftAppProtocolOperationSupported('5', operation), false);
   }
   const report = buildDeftAppRequestedAuthorityReport(manifest);

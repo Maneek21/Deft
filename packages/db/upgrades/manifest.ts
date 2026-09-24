@@ -207,6 +207,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.37-app-resource-sync.sql',
       description: 'Add dormant host-reviewed resource sync bindings, sessions, intent and encrypted projections',
     },
+    {
+      version: '0.3.0-preview.38',
+      file: '0.3.0-preview.38-app-resource-authoring.sql',
+      description: 'Permit reviewed App Protocol v5 stage and activation with pinned resource descriptors',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

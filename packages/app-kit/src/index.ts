@@ -892,7 +892,10 @@ const V2_HANDLER_MATRIX = handlerMatrix({
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
   '5': Object.freeze({
     manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'sync_descriptors', 'experiences', 'public_actions']),
-    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({ authoring: 'app-kit:v5' })),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({
+      authoring: 'app-kit:v5', inspect: 'app-service:inspect-v5', stage: 'app-service:stage-v5',
+      review: 'app-runtime-review:v5', activate: 'app-runtime-review:v5',
+    })),
     private_interfaces: Object.freeze([]),
   }),
   '4': Object.freeze({
