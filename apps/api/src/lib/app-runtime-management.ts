@@ -253,17 +253,21 @@ export async function revokeRuntimeRegistration(actor: ModuleActor, registration
   manager(actor);
   return db.transaction(async (tx) => {
     await assertManager(tx, actor);
-    const [locator] = await tx.select({ installation_id: appRuntimeRegistrations.app_installation_id })
+    const [locator] = await tx.select({ installation_id: appRuntimeRegistrations.app_installation_id,
+      contract_version: appRuntimeRegistrations.contract_version })
       .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, actor.org_id),
         eq(appRuntimeRegistrations.id, Id.parse(registrationId)))).limit(1);
-    if (!locator) throw new AppError('App Runtime registration not found', 'APP_NOT_FOUND', 404);
+    if (!locator || locator.contract_version !== 'deft.app_runtime_channel.v1') {
+      throw new AppError('App Runtime registration not found', 'APP_NOT_FOUND', 404);
+    }
     await tx.execute(sql`SELECT id FROM app_installations WHERE org_id = ${actor.org_id}
       AND id = ${locator.installation_id} FOR UPDATE`);
     await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${actor.org_id}
       AND id = ${registrationId} FOR UPDATE`);
     const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(
       eq(appRuntimeRegistrations.org_id, actor.org_id), eq(appRuntimeRegistrations.id, registrationId))).limit(1);
-    if (!registration || registration.app_installation_id !== locator.installation_id) stale();
+    if (!registration || registration.contract_version !== 'deft.app_runtime_channel.v1'
+      || registration.app_installation_id !== locator.installation_id) stale();
     if (registration.state !== 'active') return { revoked: registration.state === 'revoked' };
     const now = new Date();
     await tx.update(appRuntimeRegistrations).set({ state: 'revoked',
@@ -290,10 +294,15 @@ export async function revokeRuntimeSession(actor: ModuleActor, sessionId: string
   return db.transaction(async (tx) => {
     const [locator] = await tx.select({ operator_user_id: appRuntimeSessions.operator_user_id,
       registration_id: appRuntimeSessions.runtime_registration_id,
-      binding_id: appRuntimeSessions.runtime_binding_id })
+      binding_id: appRuntimeSessions.runtime_binding_id,
+      audience: appRuntimeSessions.audience,
+      resource_binding_id: appRuntimeSessions.resource_binding_id })
       .from(appRuntimeSessions).where(and(eq(appRuntimeSessions.org_id, actor.org_id),
         eq(appRuntimeSessions.id, Id.parse(sessionId)))).limit(1);
-    if (!locator) throw new AppError('App Runtime session not found', 'APP_NOT_FOUND', 404);
+    if (!locator || locator.audience !== 'app_runtime' || !locator.binding_id
+      || locator.resource_binding_id !== null) {
+      throw new AppError('App Runtime session not found', 'APP_NOT_FOUND', 404);
+    }
     if (locator.operator_user_id !== actor.actor_id) await assertManager(tx, actor);
     else await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${actor.org_id}
       AND user_id = ${actor.actor_id} FOR UPDATE`);
@@ -311,7 +320,8 @@ export async function revokeRuntimeSession(actor: ModuleActor, sessionId: string
       AND id = ${sessionId} FOR UPDATE`);
     const [session] = await tx.select().from(appRuntimeSessions).where(and(
       eq(appRuntimeSessions.org_id, actor.org_id), eq(appRuntimeSessions.id, sessionId))).limit(1);
-    if (!session || session.operator_user_id !== locator.operator_user_id
+    if (!session || session.audience !== 'app_runtime' || session.resource_binding_id !== null
+      || session.operator_user_id !== locator.operator_user_id
       || session.runtime_binding_id !== locator.binding_id) stale();
     if (session.revoked_at) return { revoked: true };
     const now = new Date();

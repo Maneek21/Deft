@@ -2346,6 +2346,9 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     t.provider_instance_id, t.operation_name, t.provider_snapshot_id,
     t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class),
   index('app_resource_bindings_owner_idx').on(t.org_id, t.owner_user_id, t.state),
+  uniqueIndex('app_resource_bindings_one_current_consent_unique')
+    .on(t.org_id, t.app_installation_id, t.grant_snapshot_id, t.owner_user_id, t.resource_key)
+    .where(sql`${t.state} <> 'revoked'`),
   check('app_resource_bindings_identity_check', sql`
     ${t.grant_snapshot_kind} = 'effective'
     AND ${t.registration_contract_version} = 'deft.app_runtime_channel.v2'

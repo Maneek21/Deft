@@ -212,6 +212,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.38-app-resource-authoring.sql',
       description: 'Permit reviewed App Protocol v5 stage and activation with pinned resource descriptors',
     },
+    {
+      version: '0.3.0-preview.39',
+      file: '0.3.0-preview.39-app-resource-consent.sql',
+      description: 'Prevent duplicate current owner-private resource consent for one reviewed App grant',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 
