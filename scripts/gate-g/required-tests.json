@@ -757,6 +757,22 @@
       ]
     },
     {
+      "id": "resource-sync-channel",
+      "description": "Existing Run machinery settles encrypted pages, retained output and signed receipts atomically; exact replay, key rotation, expiry rollback, authority and unsafe retry boundaries.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-channel-db.test.ts", "name": "reviewed v2 Run claims and atomically settles page, output and signed receipt" },
+        { "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts", "name": "v2 resource channel fails closed before parsing a request" },
+        { "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts", "name": "v2 pre-auth limits ignore spoofed forwarding headers and cap concurrency" }
+      ]
+    },
+    {
+      "id": "resource-sync-http",
+      "description": "Outside-repository packed SDK over mounted HTTP: one encrypted page and signed receipt, exact result replay in a new provider process, and kill after fsynced source observation followed by honest unknown with no page or automatic redispatch.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-http-db.test.ts", "name": "v2 SDK over HTTP commits one private page and survives provider crash/replay" }
+      ]
+    },
+    {
       "id": "fresh-upgrade-ledger",
       "description": "Explicit four-database synthetic profile proving current fresh history, advanced untracked rejection before mutation, interrupted fresh refusal and supported baseline adoption.",
       "cases": [
