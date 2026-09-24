@@ -741,6 +741,22 @@
       ]
     },
     {
+      "id": "resource-sync-consent",
+      "description": "Reviewed private consent and audience-separated operator sessions with current owner/App/grant checks, bounded authority, actual lock waits and strict duplicate/foreign/spoofed input rejection.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-consent-db.test.ts", "name": "owner-reviewed v2 consent pins current App, provider and session authority" },
+        { "file": "apps/api/test/app-resource-sync-consent-db.test.ts", "name": "session issuance rechecks owner, deadlines and App ancestry after blocking locks" },
+        { "file": "apps/api/test/app-resource-sync-consent-db.test.ts", "name": "consent input cannot spoof a manager, stale pin, other tenant or second current binding" }
+      ]
+    },
+    {
+      "id": "resource-sync-admission",
+      "description": "Real reviewed private consent and host-only Run/input/intent/attempt/queue admission, concurrent dedupe, rollback, key rotation, metadata boundaries and expiry after a checkpoint lock wait.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-admission-db.test.ts", "name": "host sync admission atomically creates one due intent and refuses stale or repeated authority" }
+      ]
+    },
+    {
       "id": "fresh-upgrade-ledger",
       "description": "Explicit four-database synthetic profile proving current fresh history, advanced untracked rejection before mutation, interrupted fresh refusal and supported baseline adoption.",
       "cases": [

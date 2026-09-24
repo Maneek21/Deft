@@ -1,0 +1,168 @@
+import { randomUUID } from 'node:crypto';
+import { and, desc, eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { appRuns, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
+import { APP_RUN_CONTRACT_VERSIONS, APP_RUN_DEFAULT_ATTEMPT_LIMIT,
+  AppRunSafePreviewSchema,
+  idempotencyDeadline, retentionDeadline } from '@deft/shared';
+import { parseSyncRequest } from '@deft/app-kit/experimental/resource-sync';
+import { AppError } from './app-errors.js';
+import { loadLiveResourceSyncBindingAuthority } from './app-resource-sync-authority.js';
+import { buildResourceSyncAuthorizationSnapshot } from './app-resource-sync-authorization.js';
+import { APP_RESOURCE_SYNC_HOST_POLICY } from './app-resource-sync-policy.js';
+import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
+import { PostgresAppRunRepository, safeRunSelection,
+  type AppRunSafeView, type AppRunTransaction } from './app-run-repository.js';
+import { AppRunSecretRepository } from './app-run-secret-repository.js';
+import { AppRunSecretService } from './app-run-secrets.js';
+
+const HostTargetSchema = z.strictObject({ org_id: z.string().uuid(),
+  resource_binding_id: z.string().uuid() });
+const unavailable = () => new AppError('Resource sync authority unavailable', 'APP_ACCESS_DENIED', 403);
+
+export interface ResourceSyncAttemptScheduler {
+  scheduleResourceSyncInTransaction(tx: AppRunTransaction, run: AppRunSafeView,
+    now: Date): Promise<string | null>;
+}
+export type ResourceSyncAdmissionResult = Readonly<
+  | { state: 'created'; run_id: string; attempt_id: string }
+  | { state: 'existing'; run_id: string }
+  | { state: 'blocked'; reason: 'cursor_requires_recovery' }
+  | { state: 'not_due'; due_at: string }
+>;
+
+/** Host-only intake. No request route may forward caller-selected owner,
+ * cursor, policy, actor or descriptor into this service. It uses the existing
+ * Run and attempt ledger, and never invokes a provider itself. */
+export class AppResourceSyncAdmissionService {
+  constructor(
+    private readonly repository: PostgresAppRunRepository,
+    private readonly runInputs: AppRunSecretRepository,
+    private readonly runSecrets: AppRunSecretService,
+    private readonly syncSecrets: AppResourceSyncSecretService,
+    private readonly scheduler: ResourceSyncAttemptScheduler,
+    private readonly clock: () => Date = () => new Date(),
+    private readonly enabled: () => boolean = () => false,
+  ) {}
+
+  async admitDue(raw: unknown): Promise<ResourceSyncAdmissionResult> {
+    if (!this.enabled()) throw new AppError('Resource sync is disabled', 'APP_FEATURE_DISABLED', 503);
+    const target = HostTargetSchema.parse(raw);
+    return this.repository.transaction(async (tx) => {
+      // A new Run is not visible yet. Lock authority first, then checkpoint;
+      // never take an existing Run lock while holding these later locks.
+      const authority = await loadLiveResourceSyncBindingAuthority(tx, {
+        ...target, clock: this.clock,
+      });
+      if (!authority) throw unavailable();
+      const { binding, installation, version, grant, registration } = authority;
+      const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
+        eq(appSyncCheckpoints.org_id, target.org_id),
+        eq(appSyncCheckpoints.resource_binding_id, binding.id),
+      )).limit(1).for('update');
+      const now = this.clock();
+      if (!checkpoint || checkpoint.state !== 'active' || !Number.isFinite(now.getTime())
+        || !binding.consent_expires_at || binding.consent_expires_at <= now) throw unavailable();
+
+      // The checkpoint lock serializes host admission. Read existing Runs
+      // without locking them: completion holds Run before checkpoint, so
+      // reversing that order here would deadlock. Returned IDs confer no
+      // authority; the channel always rechecks current state and intent.
+      const prior = await tx.select({ run_id: appSyncIntents.run_id,
+        state: appRuns.state, expires_at: appRuns.input_expires_at })
+        .from(appSyncIntents).innerJoin(appRuns, and(eq(appRuns.org_id, appSyncIntents.org_id),
+          eq(appRuns.id, appSyncIntents.run_id))).where(and(
+          eq(appSyncIntents.org_id, target.org_id),
+          eq(appSyncIntents.resource_binding_id, binding.id),
+          eq(appSyncIntents.checkpoint_id, checkpoint.id),
+          eq(appSyncIntents.generation, checkpoint.generation),
+          eq(appSyncIntents.expected_cursor_sequence, checkpoint.cursor_sequence),
+        )).limit(2);
+      if (prior.length) {
+        const existing = prior[0]!;
+        if (prior.length !== 1 || existing.expires_at <= now
+          || !['pending', 'running', 'waiting_external'].includes(existing.state)) {
+          return Object.freeze({ state: 'blocked', reason: 'cursor_requires_recovery' });
+        }
+        return Object.freeze({ state: 'existing', run_id: existing.run_id });
+      }
+      const [latest] = await tx.select({ created_at: appSyncIntents.created_at })
+        .from(appSyncIntents).where(and(eq(appSyncIntents.org_id, target.org_id),
+          eq(appSyncIntents.resource_binding_id, binding.id)))
+        .orderBy(desc(appSyncIntents.created_at)).limit(1);
+      if (latest) {
+        const due = new Date(latest.created_at.getTime() + binding.min_interval_seconds * 1_000);
+        if (due > now) return Object.freeze({ state: 'not_due', due_at: due.toISOString() });
+      }
+
+      const cursorContext = { org_id: target.org_id, resource_binding_id: binding.id,
+        checkpoint_id: checkpoint.id, payload_kind: 'cursor' as const,
+        generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence };
+      const cursor = checkpoint.cursor_state === 'empty' ? null : this.syncSecrets.openJson({
+        schema_version: checkpoint.cursor_envelope_version,
+        algorithm: checkpoint.cursor_algorithm, key_version: checkpoint.cursor_key_version,
+        nonce_b64: checkpoint.cursor_nonce_b64, ciphertext_b64: checkpoint.cursor_ciphertext_b64,
+        auth_tag_b64: checkpoint.cursor_auth_tag_b64,
+      }, cursorContext);
+      if (cursor !== null && typeof cursor !== 'string') throw unavailable();
+      const fingerprint = this.syncSecrets.cursorFingerprint(cursor, cursorContext,
+        checkpoint.cursor_hmac_key_version);
+      if (fingerprint.fingerprint !== checkpoint.cursor_hmac) throw unavailable();
+      const request = parseSyncRequest({ schema_version: 'deft.app_sync_request.v1',
+        cursor, max_items: binding.max_records_per_page });
+      const idempotency = this.runSecrets.fingerprintJson('idempotency', {
+        domain: 'deft.app_resource_sync.admission.v1', org_id: target.org_id,
+        resource_binding_id: binding.id, checkpoint_id: checkpoint.id,
+        generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence,
+      });
+      const inputFingerprint = this.runSecrets.fingerprintJson('input', request);
+      const runId = randomUUID();
+      const inputExpiresAt = new Date(Math.min(retentionDeadline('standard', now).getTime(),
+        binding.consent_expires_at.getTime()));
+      const actor = { actor_type: 'system' as const, system_id: binding.id };
+      const authorization = buildResourceSyncAuthorizationSnapshot(authority);
+      const [run] = await tx.insert(appRuns).values({ id: runId, org_id: target.org_id,
+        contract_version: APP_RUN_CONTRACT_VERSIONS.run, origin_kind: 'app',
+        initiating_actor_type: 'system', initiating_actor_id: binding.id,
+        execution_actor_type: 'system', execution_actor_id: binding.id,
+        provider_kind: 'app_runtime', provider_instance_id: registration.id,
+        provider_snapshot_id: binding.provider_snapshot_id, operation_name: binding.operation_name,
+        origin_app_installation_id: installation.id, origin_app_version_id: version.id,
+        origin_app_grant_snapshot_id: grant.id, origin_resource_binding_id: binding.id,
+        state: 'pending', ...APP_RESOURCE_SYNC_HOST_POLICY,
+        idempotency_key_version: idempotency.key_version,
+        idempotency_fingerprint: idempotency.fingerprint,
+        input_fingerprint_key_version: inputFingerprint.key_version,
+        input_fingerprint: inputFingerprint.fingerprint, authorization_snapshot: authorization,
+        safe_preview: AppRunSafePreviewSchema.parse({ schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+          title: 'Sync private App resource', resource_refs: [] }),
+        root_run_id: runId, input_expires_at: inputExpiresAt,
+        result_expires_at: retentionDeadline('standard', now),
+        idempotency_expires_at: idempotencyDeadline('standard', now),
+        attempt_limit: APP_RUN_DEFAULT_ATTEMPT_LIMIT,
+        execution_release_kind: 'policy_satisfied', execution_released_at: now,
+        created_at: now, updated_at: now,
+      }).returning(safeRunSelection);
+      if (!run) throw unavailable();
+      await this.runInputs.insertInput(tx, { org_id: target.org_id, run_id: runId,
+        value: request, expires_at: inputExpiresAt });
+      await tx.insert(appSyncIntents).values({ id: randomUUID(), org_id: target.org_id,
+        run_id: runId, resource_binding_id: binding.id, checkpoint_id: checkpoint.id,
+        app_installation_id: installation.id, app_version_id: version.id,
+        grant_snapshot_id: grant.id, provider_snapshot_id: binding.provider_snapshot_id,
+        owner_user_id: binding.owner_user_id, descriptor_digest: authority.descriptor_digest,
+        generation: checkpoint.generation, expected_cursor_sequence: checkpoint.cursor_sequence,
+        expected_cursor_hmac_key_version: checkpoint.cursor_hmac_key_version,
+        expected_cursor_hmac: checkpoint.cursor_hmac, created_at: now });
+      await this.repository.appendEvent(tx, { id: randomUUID(), org_id: target.org_id,
+        run_id: runId, event_type: 'run_created', actor, now,
+        payload: { resource_binding_id: binding.id, checkpoint_id: checkpoint.id,
+          generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence } });
+      const attemptId = await this.scheduler.scheduleResourceSyncInTransaction(tx, run, now);
+      const completedAt = this.clock();
+      if (!attemptId || !Number.isFinite(completedAt.getTime())
+        || inputExpiresAt <= completedAt || binding.consent_expires_at <= completedAt) throw unavailable();
+      return Object.freeze({ state: 'created', run_id: runId, attempt_id: attemptId });
+    });
+  }
+}
