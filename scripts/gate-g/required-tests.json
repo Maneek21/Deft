@@ -701,6 +701,20 @@
         { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 operator HTTP pages 100+ governed definitions and exposes current results and receipts" },
         { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 live reviewed definition has a next fire, then blocks changed resource and revoked connector authority" }
       ]
+    },
+    {
+      "id": "resource-sync-schema-foundation",
+      "description": "Dormant preview37 SQL ancestry, immutable intent, checkpoint CAS and stored ciphertext capacity; synthetic envelopes do not establish live sync or cryptographic correctness.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-schema-db.test.ts", "name": "S04 v2 schema pins reviewed ancestry, intent CAS and encrypted capacity" }
+      ]
+    },
+    {
+      "id": "resource-sync-key-retention",
+      "description": "Retained projection and unresolved-intent key inventory, bootstrap failure on missing keys, and v2 session denial at existing v1 Runtime boundaries on a dedicated synthetic database.",
+      "cases": [
+        { "file": "apps/api/test/app-resource-sync-key-references-db.test.ts", "name": "sync key inventory retains private projection and unresolved intent keys with tenant scope" }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

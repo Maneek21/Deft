@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull } from 'drizzle-orm';
 import { appRunAttempts, appRuns, appRuntimeSessions } from '@deft/db/schema';
 import { db } from './db.js';
 import { isAppRuntimeChannelEnabled } from './env.js';
@@ -96,7 +96,10 @@ export class AppRuntimeChannel {
       token_hash: appRuntimeSessions.token_hash,
     }).from(appRuntimeSessions).where(and(
       eq(appRuntimeSessions.id, sessionId), eq(appRuntimeSessions.token_hash, tokenHash),
+      eq(appRuntimeSessions.audience, 'app_runtime'),
+      isNull(appRuntimeSessions.resource_binding_id),
     )).limit(1);
-    return session ?? null;
+    if (!session?.runtime_binding_id) return null;
+    return { ...session, runtime_binding_id: session.runtime_binding_id };
   }
 }

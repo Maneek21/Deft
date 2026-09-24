@@ -800,6 +800,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     run: AppRunSafeView,
     internal: InternalRunAuthorization,
   ): Promise<boolean> {
+    // Resource sync requires its own host-created intent and live consent.
+    // The existing action authorization paths cannot authorize that scope.
+    if (run.review_scope === 'reviewed_resource_sync') return false;
     if (run.provider_kind === 'app_runtime') {
       try {
         if (run.origin_kind !== 'app' || run.execution_actor_type !== 'human'
@@ -921,6 +924,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     callerSurface: z.infer<typeof AppRunCallerSurfaceSchema>,
     storedAppRefs: readonly AuthorityRef[],
   ): Promise<AppRunPreparedAuthorityVector> {
+    if (run.review_scope === 'reviewed_resource_sync') {
+      throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
     if (
       !internal.origin_app_installation_id
       || !internal.origin_app_version_id

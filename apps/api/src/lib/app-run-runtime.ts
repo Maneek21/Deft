@@ -3,7 +3,9 @@ import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from '.
 import { PostgresAppRunAttentionProjector } from './app-run-attention.js';
 import { PostgresAppRunAuthorizer } from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
-import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
+import { assertAppRunReferencedKeysAvailable, parseEnvironmentAppRunKeyrings,
+  type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
+import { listAppResourceSyncKeyReferences } from './app-resource-sync-key-references.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
   AppRunOperationsService,
@@ -100,6 +102,9 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
 
   try {
     await service.assertReferencedKeysAvailable();
+    // Resource projections survive individual Runs and revoked bindings.
+    // Inventory their keys once at bootstrap, outside the submission hot path.
+    assertAppRunReferencedKeysAvailable(keys, await listAppResourceSyncKeyReferences());
   } catch (error) {
     keys.destroy();
     throw error;

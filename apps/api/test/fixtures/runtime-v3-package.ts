@@ -10,7 +10,7 @@ export async function runtimeV3PackageJson(): Promise<string> {
   }
   const suffix = randomUUID().replace(/-/g, '');
   return (await buildDeftAppPackage({ manifest: {
-    schema_version: '3', id: `community.example.shipping.${suffix}`,
+    schema_version: '3', id: `community.example.shipping.app${suffix}`,
     version: '1.0.0', name: 'Shipping', license: 'AGPL-3.0-only',
     compatibility: { app_protocol: '3' }, modules: [], navigation: [],
     runtime_requirements: [{ key: 'carrier', protocol_version: 'deft.app_runtime_channel.v1' }],

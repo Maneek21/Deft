@@ -784,7 +784,8 @@ test('module fresh-install and supported-upgrade SQL stay identical and enforce 
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0081_modules_v1.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql, 'fresh installs and supported upgrades must create the same module schema');
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'),
+    'fresh installs and supported upgrades must create the same module schema');
   assert.match(
     applyExtrasSource,
     /'0081_modules_v1\.sql'/,
@@ -946,7 +947,7 @@ test('module relations/views fresh-install and supported-upgrade SQL stay identi
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0082_module_relations_views.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0082_module_relations_views\.sql'/);
   assert.match(
     upgradeSql,
@@ -1024,7 +1025,7 @@ test('Agent Channel lease schema converges across fresh installs and supported u
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0083_agent_channel_leases.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0083_agent_channel_leases\.sql'/);
   assert.match(upgradeSql, /claim_token text/i);
   assert.match(upgradeSql, /lease_expires_at timestamp/i);
@@ -1048,7 +1049,7 @@ test('wiki memory sync schema converges across fresh installs and supported upgr
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0084_wiki_memory_sync.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0084_wiki_memory_sync\.sql'/);
   assert.match(upgradeSql, /wiki_memory_sync_identity_unique/i);
   assert.match(upgradeSql, /content_digest/i);
@@ -1068,7 +1069,7 @@ test('runtime reconciliation outcome converges across fresh installs and support
     'utf8',
   );
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0085_agent_channel_runtime_reconciliation\.sql'/);
   assert.match(upgradeSql, /ADD COLUMN IF NOT EXISTS channel_event_id text/i);
   assert.match(upgradeSql, /agent_action_runtime_request_idx/i);
@@ -1086,7 +1087,7 @@ test('tenant-bound attachment links converge across fresh installs and supported
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0086_attachment_links.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0086_attachment_links\.sql'/);
   assert.match(upgradeSql, /INSERT INTO "message_attachments"/i);
   assert.match(upgradeSql, /INSERT INTO "task_attachments"/i);
@@ -1120,7 +1121,7 @@ test('bounded attachment processing converges across fresh installs and supporte
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0087_attachment_processing.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0087_attachment_processing\.sql'/);
   assert.match(upgradeSql, /CREATE TYPE "attachment_processing_status"/i);
   assert.match(upgradeSql, /CREATE TABLE IF NOT EXISTS "attachment_derivatives"/i);

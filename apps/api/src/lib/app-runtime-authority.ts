@@ -129,7 +129,8 @@ export async function loadLiveRuntimeAuthority(
     eq(appRuntimeSessions.org_id, orgId), eq(appRuntimeSessions.id, sessionId),
     eq(appRuntimeSessions.token_hash, tokenHash),
   )).limit(1);
-  if (!locator) return null;
+  if (!locator || locator.audience !== 'app_runtime'
+    || !locator.runtime_binding_id || locator.resource_binding_id !== null) return null;
   // Match App lifecycle's membership -> installation lock order. A Run
   // locator is untrusted; its exact actor identity is reread at the boundary.
   const memberIds: string[] = [];
@@ -177,6 +178,7 @@ export async function loadLiveRuntimeAuthority(
   )).limit(1);
   const checkedAt = now();
   if (!session || session.audience !== 'app_runtime' || session.revoked_at
+    || !session.runtime_binding_id || session.resource_binding_id !== null
     || session.expires_at <= checkedAt || session.runtime_registration_id !== locator.runtime_registration_id
     || session.runtime_binding_id !== locator.runtime_binding_id
     || session.operator_user_id !== locator.operator_user_id) return null;
