@@ -350,7 +350,7 @@ async function buildProject(writeOutput: boolean) {
     artifacts.push(artifact);
     modules.push({ ...reference, manifest_digest: artifact.digest });
   }
-  const experiences = source.schema_version === '4' ? await Promise.all(source.experiences.map(async (reference) => {
+  const experiences = source.schema_version === '4' || source.schema_version === '5' ? await Promise.all(source.experiences.map(async (reference) => {
     const raw = JSON.parse(await readFile(await assertRegularUnslinkedFile(reference.artifact_path), 'utf8')) as unknown;
     const artifact = await prepareDeftExperienceArtifact(reference.artifact_path, raw);
     artifacts.push(artifact);
@@ -530,6 +530,10 @@ async function main(): Promise<void> {
       console.log(`Valid App Protocol v1 connected package ${built.digest}; staging grants zero authority; review and activation are explicit; execution is rollout-gated`);
     } else if (protocol === '3') {
       console.log(`Valid App Protocol v3 Runtime package ${built.digest}; staging grants zero authority; App and Runtime binding reviews are required`);
+    } else if (protocol === '5') {
+      console.log(`Valid App Protocol v5 resource Runtime authoring package ${built.digest}; requested authority only; this host does not support installation yet`);
+    } else if (protocol === '4') {
+      console.log(`Valid App Protocol v4 installed Experience package ${built.digest}; staging grants zero authority; App and Runtime binding reviews are required`);
     } else {
       console.log(`Valid App Protocol v2 automation-request package ${built.digest}; staging grants zero authority; automation requests are requested-only and non-executable; provider access: none`);
     }

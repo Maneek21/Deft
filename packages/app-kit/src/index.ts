@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { RuntimeAuthoringShape, RuntimeAuthoringSchema, RuntimeRequestedAuthoritySchema } from './runtime-authoring.js';
 import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAuthoritySchema } from './installed-authoring.js';
+import { ResourceAuthoringShape, ResourceAuthoringSchema, ResourceRequestedAuthoritySchema } from './resource-authoring.js';
 import { DeftExperienceArtifactSchema, verifyDeftExperienceArtifact } from './experience.js';
 export * from './installed-authoring.js';
 export * from './runtime-authoring.js';
 export * from './runtime-client.js';
 export * from './experience.js';
 export * from './experience-sdk.js';
+export * from './resource-authoring.js';
 import { abortOnUnknownContractKeys } from './module-contract/zod-compat.js';
 import {
   classifyAppAutomationOccurrence,
@@ -46,6 +48,9 @@ export const DEFT_APP_PACKAGE_FORMAT_V3 = 'deft.app.package.v3' as const;
 export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V4 = '4' as const;
 export const DEFT_APP_PROTOCOL_VERSION_V4 = '4' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V4 = 'deft.app.package.v4' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V5 = '5' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V5 = '5' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V5 = 'deft.app.package.v5' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
 export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.5' as const;
@@ -885,6 +890,11 @@ const V2_HANDLER_MATRIX = handlerMatrix({
 });
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
+  '5': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'sync_descriptors', 'experiences', 'public_actions']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({ authoring: 'app-kit:v5' })),
+    private_interfaces: Object.freeze([]),
+  }),
   '4': Object.freeze({
     manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'experiences', 'public_actions']),
     atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'experiences.installed', 'public.claim_actions'], handlerMatrix({
@@ -1070,6 +1080,43 @@ export const DeftAppPackageV4Schema = z.strictObject({
 export type DeftAppManifestV4 = z.infer<typeof DeftAppManifestV4Schema>;
 export type DeftAppManifestV4Input = z.input<typeof DeftAppManifestV4Schema>;
 export type DeftAppPackageV4 = z.infer<typeof DeftAppPackageV4Schema>;
+export const DeftAppManifestV5Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('5'), compatibility: z.strictObject({ app_protocol: z.literal('5') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(APP_LIMITS.artifacts_per_app - 1),
+  navigation: z.array(DeftAppNavigationItemV0Schema).default([]),
+  ...ResourceAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const resource = ResourceAuthoringSchema.safeParse({ runtime_requirements: manifest.runtime_requirements,
+    private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions,
+    sync_descriptors: manifest.sync_descriptors, experiences: manifest.experiences, public_actions: manifest.public_actions });
+  if (!resource.success) for (const issue of resource.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  if (manifest.modules.length) {
+    const declarative = DeftAppManifestV0Schema.safeParse({ ...Object.fromEntries(
+      Object.keys(DeftAppManifestV0Schema.shape).map((key) => [key, manifest[key as keyof typeof manifest]])),
+      schema_version: '0', compatibility: { app_protocol: '0' } });
+    if (!declarative.success) for (const issue of declarative.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  } else if (manifest.navigation.length) ctx.addIssue({ code: 'custom', path: ['navigation'], message: 'Navigation requires included Modules' });
+  for (const [index, item] of manifest.public_actions.entries()) {
+    if (!manifest.modules.some((module) => module.module_id === item.module_id)) ctx.addIssue({ code: 'custom',
+      path: ['public_actions', index, 'module_id'], message: 'Public claims require an included Module' });
+  }
+  if (manifest.experiences.some((item) => manifest.modules.some((module) => module.manifest_path === item.artifact_path))) {
+    ctx.addIssue({ code: 'custom', path: ['experiences'], message: 'Artifact paths must be unique across surfaces' });
+  }
+});
+export const DeftAppPackageV5Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V5), manifest: DeftAppManifestV5Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.union([DeftAppPackageArtifactV0Schema, DeftExperienceArtifactSchema])).max(APP_LIMITS.artifacts_per_app),
+});
+export type DeftAppManifestV5 = z.infer<typeof DeftAppManifestV5Schema>;
+export type DeftAppManifestV5Input = z.input<typeof DeftAppManifestV5Schema>;
+export type DeftAppPackageV5 = z.infer<typeof DeftAppPackageV5Schema>;
+export function parseResourceAppManifest(value: unknown): DeftAppManifestV5 {
+  if (recordWithString(value, 'schema_version') !== '5') throw new TypeError('Resource App manifest must use Protocol v5');
+  return parseDeftAppManifest(value) as DeftAppManifestV5;
+}
 export type RuntimeAppManifest = DeftAppManifestV3 | DeftAppManifestV4;
 export function parseRuntimeAppManifest(value: unknown): RuntimeAppManifest {
   return recordWithString(value, 'schema_version') === '4'
@@ -1082,6 +1129,7 @@ export const DeftAppManifestSchema = z.union([
   DeftAppManifestV2Schema,
   DeftAppManifestV3Schema,
   DeftAppManifestV4Schema,
+  DeftAppManifestV5Schema,
 ]);
 export const DeftAppPackageSchema = z.union([
   DeftAppPackageV0Schema,
@@ -1089,6 +1137,7 @@ export const DeftAppPackageSchema = z.union([
   DeftAppPackageV2Schema,
   DeftAppPackageV3Schema,
   DeftAppPackageV4Schema,
+  DeftAppPackageV5Schema,
 ]);
 
 export type DeftAppManifestV0 = z.infer<typeof DeftAppManifestV0Schema>;
@@ -1193,6 +1242,11 @@ export const DeftAppRequestedAuthorityProjectionAnySchema = z.union([
 export const DeftAppRequestedAuthorityReportAnySchema = z.union([
   DeftAppRequestedAuthorityReportSchema,
   DeftAppRequestedAuthorityReportV2Schema,
+  z.strictObject({
+    schema: z.literal('deft.app.requested_authority.v5'),
+    app: z.strictObject({ id: AppIdSchema, version: AppSemverSchema, protocol_version: z.literal('5') }),
+    requested_authority: ResourceRequestedAuthoritySchema,
+  }),
 ]);
 
 export type DeftAppRequestedAuthorityProjection =
@@ -1200,11 +1254,11 @@ export type DeftAppRequestedAuthorityProjection =
 export type DeftAppRequestedAuthorityProjectionV2 =
   z.infer<typeof DeftAppRequestedAuthorityProjectionV2Schema>;
 export type DeftAppRequestedAuthorityProjectionAny =
-  DeftAppRequestedAuthorityProjection | DeftAppRequestedAuthorityProjectionV2 | z.infer<typeof RuntimeRequestedAuthoritySchema> | z.infer<typeof InstalledRequestedAuthoritySchema>;
+  DeftAppRequestedAuthorityProjection | DeftAppRequestedAuthorityProjectionV2 | z.infer<typeof RuntimeRequestedAuthoritySchema> | z.infer<typeof InstalledRequestedAuthoritySchema> | z.infer<typeof ResourceRequestedAuthoritySchema>;
 export type DeftAppRequestedAuthorityReport = z.infer<typeof DeftAppRequestedAuthorityReportSchema>;
 export type DeftAppRequestedAuthorityReportV2 = z.infer<typeof DeftAppRequestedAuthorityReportV2Schema>;
 export type DeftAppRequestedAuthorityReportAny =
-  DeftAppRequestedAuthorityReport | DeftAppRequestedAuthorityReportV2 | { schema: 'deft.app.requested_authority.v3'; app: {id: string; version: string; protocol_version: '3'}; requested_authority: z.infer<typeof RuntimeRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v4'; app: {id: string; version: string; protocol_version: '4'}; requested_authority: z.infer<typeof InstalledRequestedAuthoritySchema> };
+  DeftAppRequestedAuthorityReport | DeftAppRequestedAuthorityReportV2 | { schema: 'deft.app.requested_authority.v3'; app: {id: string; version: string; protocol_version: '3'}; requested_authority: z.infer<typeof RuntimeRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v4'; app: {id: string; version: string; protocol_version: '4'}; requested_authority: z.infer<typeof InstalledRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v5'; app: {id: string; version: string; protocol_version: '5'}; requested_authority: z.infer<typeof ResourceRequestedAuthoritySchema> };
 
 const DeftAppRequestedAuthorityAtomSchema = z.enum([
   'dependencies',
@@ -1215,6 +1269,7 @@ const DeftAppRequestedAuthorityAtomSchema = z.enum([
   'automation_requests',
   'experiences',
   'public_actions',
+  'sync_descriptors',
 ]);
 
 export const DeftAppRequestedAuthorityDiffSchema = z.strictObject({
@@ -1295,6 +1350,7 @@ export async function diffDeftAppRequestedAuthority(input: Readonly<{
   const requirement = (value: DeftAppRequestedAuthorityProjectionAny, atom: typeof atoms[number]) => {
     if (atom === 'experiences') return 'experiences' in value.requirements ? value.requirements.experiences : [];
     if (atom === 'public_actions') return 'public_actions' in value.requirements ? value.requirements.public_actions : [];
+    if (atom === 'sync_descriptors') return 'sync_descriptors' in value.requirements ? value.requirements.sync_descriptors : [];
     if ('runtime_actions' in value.requirements) return atom === 'capabilities'
       ? value.requirements.private_capabilities : atom === 'connectors'
         ? value.requirements.runtime_requirements : atom === 'actions' ? value.requirements.runtime_actions : [];
@@ -1418,6 +1474,12 @@ export function projectDeftAppRequestedAuthority(
   value: DeftAppManifestInput | DeftAppManifest,
 ): DeftAppRequestedAuthorityProjectionAny {
   const manifest = parseDeftAppManifest(value);
+  if (manifest.schema_version === '5') return ResourceRequestedAuthoritySchema.parse({
+    requirements: { runtime_requirements: manifest.runtime_requirements, private_capabilities: manifest.private_capabilities,
+      runtime_actions: manifest.runtime_actions, sync_descriptors: manifest.sync_descriptors,
+      experiences: manifest.experiences, public_actions: manifest.public_actions },
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
   if (manifest.schema_version === '4') return InstalledRequestedAuthoritySchema.parse({
     requirements: { runtime_requirements: manifest.runtime_requirements, private_capabilities: manifest.private_capabilities,
       runtime_actions: manifest.runtime_actions, experiences: manifest.experiences, public_actions: manifest.public_actions },
@@ -1479,6 +1541,11 @@ export function buildDeftAppRequestedAuthorityReport(
   value: DeftAppManifestInput | DeftAppManifest,
 ): DeftAppRequestedAuthorityReportAny {
   const manifest = parseDeftAppManifest(value);
+  if (manifest.schema_version === '5') return DeftAppRequestedAuthorityReportAnySchema.parse({
+    schema: 'deft.app.requested_authority.v5',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '5' },
+    requested_authority: ResourceRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)),
+  }) as DeftAppRequestedAuthorityReportAny;
   if (manifest.schema_version === '4') return {
     schema: 'deft.app.requested_authority.v4',
     app: { id: manifest.id, version: manifest.version, protocol_version: '4' },
@@ -1596,7 +1663,9 @@ export function parseDeftAppManifest(value: unknown): DeftAppManifest {
   // v1 or v2 continues through the original direct v0 schema instead of a
   // union branch.
   const schemaVersion = recordWithString(value, 'schema_version');
-  const manifest = schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V4
+  const manifest = schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V5
+    ? DeftAppManifestV5Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V4
     ? DeftAppManifestV4Schema.parse(value)
     : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V3
     ? DeftAppManifestV3Schema.parse(value)
@@ -1661,6 +1730,8 @@ export function getDeftAppManifestV2JsonSchema(): Record<string, unknown> {
 }
 
 export function getDeftAppManifestJsonSchema(schemaVersion: string): Record<string, unknown> {
+  if (schemaVersion === '5') return { title: 'Deft resource Runtime App manifest v5',
+    ...z.toJSONSchema(DeftAppManifestV5Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
   if (schemaVersion === '4') return { title: 'Deft installed Runtime App manifest v4',
     ...z.toJSONSchema(DeftAppManifestV4Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
   if (schemaVersion === '3') return { title: 'Deft Runtime App manifest v3',
@@ -1865,7 +1936,8 @@ async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
   if ((await digestAppManifest(packageValue.manifest)) !== packageValue.manifest_digest) {
     throw new Error('App manifest digest mismatch');
   }
-  const experiences = packageValue.manifest.schema_version === '4' ? packageValue.manifest.experiences : [];
+  const experiences = packageValue.manifest.schema_version === '4' || packageValue.manifest.schema_version === '5'
+    ? packageValue.manifest.experiences : [];
   if (artifacts.size !== packageValue.manifest.modules.length + experiences.length) {
     throw new Error('Package must contain exactly the artifacts declared by the app manifest');
   }
@@ -1890,15 +1962,21 @@ async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
     moduleManifests.set(identity.id, moduleManifest);
   }
   verifyNavigationBindings(packageValue.manifest, moduleManifests);
-  if (packageValue.manifest.schema_version === '4') {
+  if (packageValue.manifest.schema_version === '4' || packageValue.manifest.schema_version === '5') {
     const installedManifest = packageValue.manifest;
     for (const reference of experiences) {
       const bundle = await verifyDeftExperienceArtifact({ artifact_path: reference.artifact_path,
         artifact_digest: reference.artifact_digest, bridge_version: reference.bridge_version,
         renderer_version: reference.renderer_version }, artifacts.get(reference.artifact_path));
-      if (bundle.resource_keys.length || bundle.action_keys.some((key) =>
-        !installedManifest.runtime_actions.some((action) => action.key === key))) {
-        throw new Error('Experience must use only declared Runtime actions; resource bridge is not supported yet');
+      if (bundle.action_keys.some((key) => !installedManifest.runtime_actions.some((action) => action.key === key))) {
+        throw new Error('Experience must use only declared Runtime actions');
+      }
+      if (installedManifest.schema_version === '4' && bundle.resource_keys.length) {
+        throw new Error('Experience resource bridge is not supported by Protocol v4');
+      }
+      if (installedManifest.schema_version === '5' && (bundle.resource_keys.length > 8
+        || bundle.resource_keys.some((key) => !installedManifest.sync_descriptors.some((descriptor) => descriptor.key === key)))) {
+        throw new Error('Experience must use at most eight declared sync resource keys');
       }
     }
     for (const declaration of packageValue.manifest.public_actions) {
@@ -1971,7 +2049,9 @@ export async function buildDeftAppPackage(input: {
     manifest_digest: await digestAppManifest(manifest),
     artifacts: [...input.artifacts].sort((left, right) => left.path.localeCompare(right.path)),
   };
-  const packageValue: DeftAppPackage = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V4
+  const packageValue: DeftAppPackage = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V5
+    ? DeftAppPackageV5Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V5, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V4
     ? DeftAppPackageV4Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V4, ...packageInput })
     : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V3
     ? DeftAppPackageV3Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, ...packageInput })
@@ -1999,7 +2079,9 @@ export async function verifyDeftAppPackageJson(
   // As with manifest parsing, direct dispatch keeps invalid-v0 issue shapes
   // stable while allowing the explicitly versioned v1 and v2 formats.
   const packageFormat = recordWithString(raw, 'package_format');
-  const packageValue = packageFormat === DEFT_APP_PACKAGE_FORMAT_V4
+  const packageValue = packageFormat === DEFT_APP_PACKAGE_FORMAT_V5
+    ? DeftAppPackageV5Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V4
     ? DeftAppPackageV4Schema.parse(raw)
     : packageFormat === DEFT_APP_PACKAGE_FORMAT_V3
     ? DeftAppPackageV3Schema.parse(raw)
