@@ -11,13 +11,32 @@ import { upgradeManifest } from '../upgrades/manifest.ts';
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const upgradesDir = resolve(packageDir, 'upgrades');
 
-function assignedUrl(name: string) {
+const profile = process.env.DEFT_TEST_LEDGER_PROFILE === 'gate_g_c05';
+const assignedDatabases = {
+  DEFT_TEST_FRESH_DATABASE_URL: 'gate_g_phase5_test_c05_ledger_accept_fresh',
+  DEFT_TEST_UNTRACKED_DATABASE_URL: 'gate_g_phase5_test_c05_ledger_accept_untracked',
+  DEFT_TEST_PARTIAL_DATABASE_URL: 'gate_g_phase5_test_c05_ledger_accept_partial',
+  DEFT_TEST_BASELINE_DATABASE_URL: 'gate_g_phase5_test_c05_ledger_accept_baseline',
+} as const;
+
+function assignedUrl(name: keyof typeof assignedDatabases) {
+  if (!profile) return null;
   const value = process.env[name];
-  if (!value || value !== process.env.DATABASE_URL) return null;
+  if (!value) throw new Error(`Missing assigned synthetic URL ${name}`);
   const url = new URL(value);
-  if (!['127.0.0.1', 'localhost'].includes(url.hostname)
-    || !/(?:^|[_-])(test|ci)(?:$|[_-])/i.test(url.pathname.slice(1))) return null;
+  if (url.protocol !== 'postgresql:' || url.hostname !== '127.0.0.1'
+    || url.port !== '55435' || url.username !== 'gate_g_test'
+    || url.password || url.search || url.hash
+    || url.pathname !== `/${assignedDatabases[name]}`) {
+    throw new Error(`Wrong assigned synthetic URL for ${name}`);
+  }
   return value;
+}
+
+if (profile) {
+  const urls = (Object.keys(assignedDatabases) as Array<keyof typeof assignedDatabases>)
+    .map(assignedUrl);
+  assert.equal(new Set(urls).size, 4, 'Each ledger case needs its own disposable database');
 }
 
 async function command(url: string, args: readonly string[]) {
