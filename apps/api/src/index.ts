@@ -79,8 +79,9 @@ import { appResourceSyncChannelRoutes } from './routes/app-resource-sync-channel
 import { appResourceSyncLimits } from './middleware/app-resource-sync-limits.js';
 import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
 import { appResourceSyncManagementRoutes } from './routes/app-resource-sync-management.js';
+import { appResourceAccessRoutes } from './routes/app-resource-access.js';
 import { appResourcePrivateReadRoutes } from './routes/app-resource-private-read.js';
-import { appResourcePrivateReadLimits, appResourceSyncManagementLimits } from './middleware/app-resource-private-limits.js';
+import { appResourcePrivateReadLimits, appResourceSyncManagementLimits, createAppResourcePrivateReadLimits } from './middleware/app-resource-private-limits.js';
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
 import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
 import { appExperienceRoutes } from './routes/app-experiences.js';
@@ -210,6 +211,8 @@ if (APPS_ENABLED) {
   app.route('/api/app-resource-sync-management', appResourceSyncManagementRoutes);
   app.use('/api/app-resource-private/*', appResourcePrivateReadLimits);
   app.route('/api/app-resource-private', appResourcePrivateReadRoutes);
+  app.use('/api/app-resource-access/*', createAppResourcePrivateReadLimits());
+  app.route('/api/app-resource-access', appResourceAccessRoutes);
 }
 if (APPS_ENABLED && process.env.DEFT_APP_PUBLIC_INGRESS_ENABLED === 'true') {
   app.route('/api/public/apps', createAppPublicRoutes(new AppPublicClaimService({ enabled: true })));

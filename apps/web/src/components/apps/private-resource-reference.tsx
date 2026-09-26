@@ -7,6 +7,7 @@ import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
 import { PageHeader } from '@/components/page-header';
 import Link from 'next/link';
+import { APP_PRIVATE_SHARING_ENABLED } from '@/lib/feature-flags';
 
 type Identity = { registrationId: string; resourceType: string; projectionId: string };
 type Result = { ref: ResourceRefV2; label: string;
@@ -92,7 +93,7 @@ function PrivateResourceReferenceView({ registrationId, resourceType, projection
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6">
       {busy && <p role="status">Checking private access...</p>}
       {error && <p role="alert" className="break-words">{error}</p>}
-      {result && <><h2 className="mb-2 break-words text-lg font-semibold [overflow-wrap:anywhere]">{result.label}</h2><p className="mb-4 text-sm">Owner-only saved provider data. Provider freshness is unknown.</p><Link className="mb-4 inline-flex min-h-11 items-center underline" href={result.search_href}>Search saved App data</Link><dl className="space-y-4">{Object.entries(result.data).map(([key, value]) => <div key={key}>
+      {result && <><h2 className="mb-2 break-words text-lg font-semibold [overflow-wrap:anywhere]">{result.label}</h2><p className="mb-4 text-sm">Owner-only saved provider data. Provider freshness is unknown.</p><Link className="mb-4 inline-flex min-h-11 items-center underline" href={result.search_href}>Search saved App data</Link>{APP_PRIVATE_SHARING_ENABLED && <Link className="mb-4 ml-4 inline-flex min-h-11 items-center underline" href={`/app-resources/share/${registrationId}/${resourceType}/${projectionId}`}>Review human sharing</Link>}<dl className="space-y-4">{Object.entries(result.data).map(([key, value]) => <div key={key}>
         <dt className="break-words text-sm font-semibold">{key}</dt>
         <dd className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{String(value)}</dd>
       </div>)}</dl></>}
