@@ -31,8 +31,10 @@ export function createAppAutomationScanDatabase(connectionString: string) {
     async transaction<T>(
       run: (tx: AppAutomationScanTransaction) => Promise<T>,
       signal?: AbortSignal,
+      sliceDeadline?: number,
     ): Promise<T> {
-      const deadline = performance.now() + APP_AUTOMATION_SCAN_DB_LIMITS.operation_ms;
+      const deadline = Math.min(performance.now() + APP_AUTOMATION_SCAN_DB_LIMITS.operation_ms,
+        sliceDeadline ?? Infinity);
       const check = () => {
         signal?.throwIfAborted();
         if (performance.now() >= deadline) throw new Error('App automation database operation timed out');
@@ -46,6 +48,8 @@ export function createAppAutomationScanDatabase(connectionString: string) {
       });
       let broken = false;
       let settled = false;
+      let statementLimit: number = APP_AUTOMATION_SCAN_DB_LIMITS.statement_ms;
+      let lockLimit: number = APP_AUTOMATION_SCAN_DB_LIMITS.lock_ms;
       try {
         check();
         const guarded = new Proxy(client, {
@@ -61,10 +65,17 @@ export function createAppAutomationScanDatabase(connectionString: string) {
               check();
               if (text.toLowerCase() !== 'begin') {
                 const remaining = Math.max(1, Math.floor(deadline - performance.now()));
-                await client.query("SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", [
-                  String(Math.min(APP_AUTOMATION_SCAN_DB_LIMITS.statement_ms, remaining)),
-                  String(Math.min(APP_AUTOMATION_SCAN_DB_LIMITS.lock_ms, remaining)),
-                ]);
+                const statement = Math.min(APP_AUTOMATION_SCAN_DB_LIMITS.statement_ms, remaining);
+                const lock = Math.min(APP_AUTOMATION_SCAN_DB_LIMITS.lock_ms, remaining);
+                // Pool defaults already enforce these limits. Avoid a second
+                // round trip at every SQL boundary until the deadline actually
+                // requires a stricter transaction-local server limit.
+                if (statement < statementLimit || lock < lockLimit) {
+                  await client.query("SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", [
+                    String(statement), String(lock),
+                  ]);
+                  statementLimit = statement; lockLimit = lock;
+                }
                 check();
               }
               const result = await client.query(query, values);

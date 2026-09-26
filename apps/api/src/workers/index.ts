@@ -16,6 +16,7 @@ import {
 import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
 import { APP_AUTOMATIONS_ENABLED } from '../lib/env.js';
 import { APP_RESOURCE_SYNC_SCAN_JOB, ensureAppResourceSyncScan } from '../lib/app-resource-sync-scanner.js';
+import { APP_AUTOMATION_SCAN_CRON, ensureAppAutomationScan } from '../lib/app-automation-scan-progress.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -409,11 +410,14 @@ async function processDequeuedJob(
   job: DequeuedJob,
   overrides?: WorkerProcessOverrides,
 ): Promise<void> {
+  let settledOwned = false;
+  let succeeded = false;
   try {
     const handler = await (overrides?.resolveHandler ?? getHandler)(queueName, job.name);
     if (!handler) {
       const reason = `Unknown ${queueName} job: ${job.name}`;
       const settled = await failJob(job.id, job.lockToken, reason, { terminal: true });
+      settledOwned = settled;
       if (settled) console.error(`[worker] ${reason}; terminal-failed ${job.id.slice(0, 8)}`);
       return;
     }
@@ -436,6 +440,8 @@ async function processDequeuedJob(
       overrides,
     );
     const settled = await completeJob(job.id, job.lockToken);
+    settledOwned = settled;
+    succeeded = settled;
     if (settled) {
       console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
     } else {
@@ -454,8 +460,15 @@ async function processDequeuedJob(
     const settled = await failJob(job.id, job.lockToken, message, {
       terminal: err instanceof JobTimeoutError,
     });
+    settledOwned = settled;
     if (settled) console.error(`[worker] Job ${job.name} failed:`, message);
   } finally {
+    if (job.name === 'app-automation-scan' && job.cronKey === APP_AUTOMATION_SCAN_CRON) {
+      if (settledOwned) {
+        try { await ensureAppAutomationScan({ mode: succeeded ? 'success' : 'failure', completed_job_id: job.id }); }
+        catch { console.warn('[worker] Could not schedule next automation scan'); }
+      }
+    }
     if (job.name === APP_RESOURCE_SYNC_SCAN_JOB) {
       try { await ensureAppResourceSyncScan(); }
       catch { console.warn('[worker] Could not schedule next resource sync scan'); }
@@ -463,7 +476,7 @@ async function processDequeuedJob(
     // A terminally failed occurrence must not stop its recurring chain. If the
     // failure is retryable, the active-cron constraint leaves the retry as the
     // sole occurrence and this insert becomes a no-op.
-    const recurrence = job.name === 'app-automation-scan' && !APP_AUTOMATIONS_ENABLED
+    const recurrence = job.name === 'app-automation-scan' && (!APP_AUTOMATIONS_ENABLED || job.cronKey === APP_AUTOMATION_SCAN_CRON)
       ? null
       : overrides?.recurrence !== undefined
       ? overrides.recurrence
@@ -609,9 +622,10 @@ function trackBackground<T>(promise: Promise<T>): Promise<T> {
 
 async function reconcileRecurringJobs(): Promise<void> {
   await ensureAppResourceSyncScan();
+  await ensureAppAutomationScan({ mode: 'startup' });
   await Promise.all(Object.entries(CRON_KEYS)
     .filter(([jobName]) => jobName !== 'agent-heartbeat'
-      && (jobName !== 'app-automation-scan' || APP_AUTOMATIONS_ENABLED))
+      && jobName !== 'app-automation-scan')
     .map(([jobName, cronKey]) => ensureCronJob(
       QUEUE_NAMES.SCHEDULED_JOBS,
       jobName,

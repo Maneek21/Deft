@@ -69,7 +69,9 @@ import { AppRunService } from '../src/lib/app-run-service.js';
 import { listManagedAppAutomations } from '../src/lib/app-automation-management-service.js';
 import { closeDb, db } from '../src/lib/db.js';
 import { runAppAutomationFire, runAppAutomationScan } from '../src/lib/app-automation-runtime.js';
-import { completeJob, dequeueJob, QUEUE_NAMES } from '../src/lib/queues.js';
+import { completeJob, dequeueJob, ensureCronJob, QUEUE_NAMES } from '../src/lib/queues.js';
+import { APP_AUTOMATION_SCAN_CRON } from '../src/lib/app-automation-scan-progress.js';
+import { _processDequeuedJobForTest } from '../src/workers/index.js';
 import { handleAppRunAttempt } from '../src/lib/app-run-worker-handler.js';
 import { getAppRunRuntime, shutdownAppRunRuntime } from '../src/lib/app-run-runtime.js';
 import { ModuleError } from '../src/lib/module-errors.js';
@@ -1069,7 +1071,17 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     }));
     const scanStarted = performance.now();
     const scanAt = new Date(scheduleBase + 2 * 60_000);
-    await runAppAutomationScan(scanAt);
+    await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'app-automation-scan', APP_AUTOMATION_SCAN_CRON, {}, 0);
+    let workerSlices = 0;
+    for (; workerSlices < 8; workerSlices++) {
+      const scanJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, { jobName: 'app-automation-scan' });
+      if (!scanJob) break;
+      await _processDequeuedJobForTest(QUEUE_NAMES.SCHEDULED_JOBS, scanJob, {
+        resolveHandler: async () => async job => runAppAutomationScan(scanAt, job.signal,
+          { id: job.id, lockToken: job.lockToken! }),
+      });
+    }
+    assert.ok(workerSlices < 8, 'leased scanner completes the two-lane pass');
     const scanMs = performance.now() - scanStarted;
     const p95 = managementP95;
     assert.equal((await db.select({ value: count() }).from(appAutomationDefinitions).where(
@@ -1092,6 +1104,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     console.log('PREVIEW_CAPACITY_RESULT', JSON.stringify({
       total: 402,
       active: 202,
+      leased_worker_slices: workerSlices,
       management_query_p95_ms: p95,
       full_scan_ms: scanMs,
       org_b_persist_enqueue_ms_max: scanMs,
