@@ -232,6 +232,10 @@ export const upgradeManifest = {
       file: '0.3.0-preview.42-app-public-budgets.sql',
       description: 'Add reviewed public endpoint budgets and fresh canonical reservation charge instants',
     },
+    {
+      version: '0.3.0-preview.43', file: '0.3.0-preview.43-app-public-hmac.sql',
+      description: 'Add reviewed signed public ingress key versions and bounded durable nonce receipts',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

@@ -29,6 +29,8 @@ import { openPublicAvailabilityCursor, sealPublicAvailabilityCursor, publicClaim
   projectPublicAvailability, validatePublicAvailabilityPolicy, canClaimPublicAvailability, type PublicAvailabilityPolicy } from './app-public-availability.js';
 import { acquirePublicBudgetAdmission, publicEndpointBudget, reservePublicBudget,
   PublicBudgetExceededError, PUBLIC_APP_BUDGET_CEILINGS } from './app-public-budgets.js';
+import { publicAuthenticationPolicy, verifyPublicSignature, acceptPublicSignature, assertPublicSignatureFresh,
+  PublicSignatureInvalid, PublicSignatureReplay, PublicSignatureCapacity, type PublicSignedRequest } from './app-public-hmac.js';
 
 type PublicTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
@@ -56,16 +58,20 @@ export type AppPublicErrorCode =
   | 'PUBLIC_IDEMPOTENCY_CONFLICT'
   | 'PUBLIC_CLAIM_CONFLICT'
   | 'PUBLIC_BUDGET_EXCEEDED'
+  | 'PUBLIC_SIGNATURE_INVALID' | 'PUBLIC_SIGNATURE_REPLAY' | 'PUBLIC_RATE_LIMITED'
   | 'PUBLIC_UNAVAILABLE';
 
 export class AppPublicError extends Error {
-  constructor(readonly code: AppPublicErrorCode, readonly status: 400 | 404 | 409 | 413 | 429 | 503) {
+  constructor(readonly code: AppPublicErrorCode, readonly status: 400 | 401 | 404 | 409 | 413 | 429 | 503) {
     super(code === 'PUBLIC_NOT_FOUND' ? 'Public endpoint not found'
       : code === 'PUBLIC_INVALID_INPUT' ? 'Invalid public claim'
       : code === 'PUBLIC_PAYLOAD_TOO_LARGE' ? 'Public request is too large'
       : code === 'PUBLIC_IDEMPOTENCY_CONFLICT' ? 'Request key belongs to different input'
       : code === 'PUBLIC_CLAIM_CONFLICT' ? 'Resource is unavailable'
       : code === 'PUBLIC_BUDGET_EXCEEDED' ? 'Public reservation budget is exhausted'
+      : code === 'PUBLIC_SIGNATURE_INVALID' ? 'Invalid public signature'
+      : code === 'PUBLIC_SIGNATURE_REPLAY' ? 'Public signature has already been accepted'
+      : code === 'PUBLIC_RATE_LIMITED' ? 'Public request limit is exhausted'
       : 'Public claim is temporarily unavailable');
     this.name = 'AppPublicError';
   }
@@ -80,7 +86,8 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   | 'installation_lifecycle_epoch' | 'installation_grant_epoch' | 'module_installation_id'
   | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>
   & Partial<Pick<Endpoint, 'public_action_key' | 'runtime_binding_id' | 'approver_user_id'
-    | 'input_mapping' | 'mapping_digest' | 'availability_policy' | 'budget_policy'>>): string {
+    | 'input_mapping' | 'mapping_digest' | 'availability_policy' | 'budget_policy'
+    | 'authentication_policy' | 'hmac_key_id'>>): string {
   const core = {
     review_version: 'deft.app_public_review.v1',
     endpoint_id: endpoint.id,
@@ -99,7 +106,8 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   };
   if (!endpoint.public_action_key) return hash(JSON.stringify(core));
   return hash(JSON.stringify({ ...core,
-    review_version: endpoint.budget_policy ? 'deft.app_public_review.v4'
+    review_version: endpoint.authentication_policy ? 'deft.app_public_review.v5'
+      : endpoint.budget_policy ? 'deft.app_public_review.v4'
       : endpoint.availability_policy ? 'deft.app_public_review.v3' : 'deft.app_public_review.v2',
     public_action_key: endpoint.public_action_key,
     runtime_binding_id: endpoint.runtime_binding_id,
@@ -109,6 +117,8 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
     ...(endpoint.availability_policy ? { availability_policy: digestAppGrantValue(endpoint.availability_policy) } : {}),
     ...(endpoint.budget_policy ? { budget_policy: digestAppGrantValue(endpoint.budget_policy),
       host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS } : {}),
+    ...(endpoint.authentication_policy ? { authentication_policy: digestAppGrantValue(endpoint.authentication_policy),
+      hmac_key_id: endpoint.hmac_key_id } : {}),
   }));
 }
 
@@ -171,6 +181,8 @@ async function resolveEndpoint(tx: PublicTransaction, slug: string, admission = 
     throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
   }
   try { publicEndpointBudget(endpoint.budget_policy); }
+  catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
+  try { publicAuthenticationPolicy(endpoint); }
   catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
   return { endpoint, principal: principalFor(endpoint), app };
 }
@@ -377,7 +389,7 @@ export class AppPublicClaimService {
     }
   }
 
-  async claim(slug: string, rawBody: Uint8Array): Promise<PublicClaimResult> {
+  async claim(slug: string, rawBody: Uint8Array, signedRequest?: PublicSignedRequest): Promise<PublicClaimResult> {
     if (!this.isEnabled()) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
     if (rawBody.byteLength > MAX_PUBLIC_BODY_BYTES) throw new AppPublicError('PUBLIC_PAYLOAD_TOO_LARGE', 413);
     let outcome: PublicClaimResult | 'conflict';
@@ -390,6 +402,9 @@ export class AppPublicClaimService {
         await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
         const { endpoint, principal, app } = await resolveEndpoint(tx, slug, true);
         const policy = await assertLiveAuthority(tx, endpoint, principal, app);
+        const verified = endpoint.authentication_policy
+          ? await verifyPublicSignature(tx, (await (await import('./app-run-runtime.js')).getAppRunRuntime()).keys,
+            endpoint, slug, rawBody, signedRequest) : null;
         const input = parseBody(rawBody, endpoint.max_body_bytes);
         const ref = input.resource_ref;
         if (ref.provider.provider_instance_id !== endpoint.module_installation_id
@@ -412,7 +427,9 @@ export class AppPublicClaimService {
             eq(appPublicIngress.request_key_digest, keyDigest),
           )).limit(1);
           if (!receipt) throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
-          return outcomeFromReceipt(tx, receipt, fingerprint);
+          const prior = await outcomeFromReceipt(tx, receipt, fingerprint);
+          if (prior !== 'conflict') await acceptPublicSignature(tx, endpoint, verified);
+          return prior;
         }
         const deadlineData = policy ? sql<Record<string, unknown>>`jsonb_build_object(
           ${policy.claim_deadline_field}::text, ${moduleRecords.data}->${policy.claim_deadline_field}::text)`
@@ -425,6 +442,7 @@ export class AppPublicClaimService {
             eq(moduleRecords.collection_key, endpoint.collection_key),
             eq(moduleRecords.is_deleted, false),
           )).limit(1).for('share');
+        await assertPublicSignatureFresh(tx, verified);
         if (!record || record.revision !== input.expected_revision) {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
           return 'conflict';
@@ -437,6 +455,7 @@ export class AppPublicClaimService {
           resource_type: endpoint.collection_key, resource_id: record.id,
           claim_kind: 'exclusive',
         }).onConflictDoNothing().returning({ id: appCanonicalClaims.id });
+        await assertPublicSignatureFresh(tx, verified);
         if (!claimed) {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
           return 'conflict';
@@ -445,6 +464,7 @@ export class AppPublicClaimService {
         if (policy && !canClaimPublicAvailability(policy, record.data, reservedAt)) {
           throw new AppPublicError('PUBLIC_CLAIM_CONFLICT', 409);
         }
+        await acceptPublicSignature(tx, endpoint, verified);
         await (this.options.deliver ?? enqueueIngress)(tx, principal.org_id, endpoint.id, ingressId, endpoint.endpoint_epoch);
         await tx.update(appPublicIngress).set({ state: 'confirmed' }).where(eq(appPublicIngress.id, ingressId));
         return { claim_id: claimId, claim_state: 'confirmed', follow_up_state: 'pending', replayed: false };
@@ -452,6 +472,9 @@ export class AppPublicClaimService {
     } catch (error) {
       if (error instanceof AppPublicError) throw error;
       if (error instanceof PublicBudgetExceededError) throw new AppPublicError('PUBLIC_BUDGET_EXCEEDED', 429);
+      if (error instanceof PublicSignatureInvalid) throw new AppPublicError('PUBLIC_SIGNATURE_INVALID', 401);
+      if (error instanceof PublicSignatureReplay) throw new AppPublicError('PUBLIC_SIGNATURE_REPLAY', 409);
+      if (error instanceof PublicSignatureCapacity) throw new AppPublicError('PUBLIC_RATE_LIMITED', 429);
       throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
     }
     if (outcome === 'conflict') throw new AppPublicError('PUBLIC_CLAIM_CONFLICT', 409);

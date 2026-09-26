@@ -4,6 +4,7 @@ import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAu
 import { ResourceAuthoringShape, ResourceAuthoringSchema, ResourceRequestedAuthoritySchema } from './resource-authoring.js';
 import { DeftExperienceArtifactSchema, verifyDeftExperienceArtifact } from './experience.js';
 export * from './installed-authoring.js';
+export * from './public-hmac.js';
 export * from './runtime-authoring.js';
 export * from './runtime-client.js';
 export * from './experience.js';

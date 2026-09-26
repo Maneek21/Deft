@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { parseRuntimeAppManifest, PublicBudgetPolicySchema } from '@deft/app-kit';
-import { appModuleBindings, appPublicEndpoints, appVersions, moduleInstallations,
+import { parseRuntimeAppManifest, PublicBudgetPolicySchema, PublicHmacPolicySchema } from '@deft/app-kit';
+import { appModuleBindings, appPublicEndpoints, appPublicHmacKeys, appVersions, moduleInstallations,
   moduleVersions } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
@@ -14,6 +14,7 @@ import { publicEndpointReviewDigest } from './app-public-service.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
 import { validatePublicAvailabilityPolicy, type PublicAvailabilityPolicy } from './app-public-availability.js';
 import { publicEndpointBudget, PUBLIC_APP_BUDGET_CEILINGS } from './app-public-budgets.js';
+import { sealPublicHmacSecret, publicAuthenticationPolicy } from './app-public-hmac.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -24,6 +25,7 @@ export const StagePublicEndpointSchema = z.strictObject({
     .regex(/^[^\u0000-\u001f\u007f<>]+$/),
   max_body_bytes: z.number().int().min(128).max(8192),
   budget_policy: PublicBudgetPolicySchema.optional(),
+  authentication_policy: PublicHmacPolicySchema.optional(),
   expected_app_version_id: Id, expected_grant_snapshot_id: Id,
   expected_lifecycle_epoch: z.number().int().nonnegative(),
   expected_grant_epoch: z.number().int().positive(),
@@ -31,6 +33,9 @@ export const StagePublicEndpointSchema = z.strictObject({
 export const ActivatePublicEndpointSchema = z.strictObject({
   expected_review_digest: Digest, expected_endpoint_epoch: z.number().int().positive(),
   accept_host_policy: z.literal(true),
+});
+export const RotatePublicHmacKeySchema = z.strictObject({
+  expected_review_digest: Digest, expected_endpoint_epoch: z.number().int().positive(),
 });
 const stale = () => new AppError('Public endpoint authority changed', 'APP_STALE', 409);
 const hash = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -118,6 +123,17 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
       || runtime.installation_lifecycle_epoch !== input.expected_lifecycle_epoch
       || runtime.installation_grant_epoch !== input.expected_grant_epoch) throw stale();
     const now = new Date();
+    const signingSecret = input.authentication_policy ? randomBytes(32) : null;
+    const keyId = signingSecret ? randomUUID() : null;
+    let sealed: string | null = null;
+    let provisioning: { key_id: string; secret: string } | null = null;
+    if (signingSecret && keyId) {
+      try {
+        const { getAppRunRuntime } = await import('./app-run-runtime.js');
+        sealed = sealPublicHmacSecret((await getAppRunRuntime()).keys, actor.org_id, endpointId, keyId, signingSecret);
+        provisioning = { key_id: keyId, secret: signingSecret.toString('base64url') };
+      } finally { signingSecret.fill(0); }
+    }
     const fields = { id: endpointId, org_id: actor.org_id, slug_digest: slugDigest,
       app_installation_id: input.installation_id,
       app_version_id: runtime.binding.app_version_id,
@@ -133,14 +149,20 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
       mapping_digest: digestAppGrantValue(declaration.input_mapping),
       availability_policy: availabilityPolicy,
       budget_policy: input.budget_policy ?? null,
+      authentication_policy: input.authentication_policy ?? null, hmac_key_id: keyId,
       state: 'disabled' as const, endpoint_epoch: 1,
       public_label: input.public_label, max_body_bytes: input.max_body_bytes,
       reviewed_by_user_id: actor.actor_id, reviewed_at: now };
     const reviewDigest = publicEndpointReviewDigest(fields);
     await tx.insert(appPublicEndpoints).values({ ...fields, review_digest: reviewDigest });
+    if (keyId && sealed) await tx.insert(appPublicHmacKeys).values({ id: keyId, org_id: actor.org_id,
+      endpoint_id: endpointId, sealed_secret: sealed });
     return { endpoint_id: endpointId, slug, state: 'disabled' as const,
       review_digest: reviewDigest, endpoint_epoch: 1,
       budget_policy: input.budget_policy ?? null, host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS,
+      authentication_policy: input.authentication_policy ?? null, hmac_key_id: keyId,
+      ...(provisioning ? { signing_key: provisioning } : {}),
+      authentication_scope: input.authentication_policy ? 'claim_ingress_only' as const : null,
       app_version_id: runtime.binding.app_version_id,
       grant_snapshot_id: runtime.binding.grant_snapshot_id };
   });
@@ -181,6 +203,7 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
     if (digestAppGrantValue(endpoint.availability_policy ?? null)
       !== digestAppGrantValue(setup.availabilityPolicy)) throw stale();
     try { publicEndpointBudget(endpoint.budget_policy); } catch { throw stale(); }
+    try { publicAuthenticationPolicy(endpoint); } catch { throw stale(); }
     const epoch = endpoint.endpoint_epoch + 1;
     const reviewDigest = publicEndpointReviewDigest({ ...endpoint, endpoint_epoch: epoch });
     await tx.update(appPublicEndpoints).set({ state: 'enabled', endpoint_epoch: epoch,
@@ -188,7 +211,40 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
       reviewed_at: new Date() }).where(and(eq(appPublicEndpoints.org_id, actor.org_id),
       eq(appPublicEndpoints.id, endpointId)));
     return { endpoint_id: endpointId, state: 'enabled' as const,
-      endpoint_epoch: epoch, review_digest: reviewDigest };
+      endpoint_epoch: epoch, review_digest: reviewDigest, authentication_policy: endpoint.authentication_policy,
+      hmac_key_id: endpoint.hmac_key_id, authentication_scope: endpoint.authentication_policy ? 'claim_ingress_only' as const : null };
+  });
+}
+
+/** Rotation never changes signed policy or anonymously re-enables an endpoint. */
+export async function rotatePublicHmacKey(actor: ModuleActor, endpointId: string, raw: unknown) {
+  manager(actor);
+  if (!appRuntimeChannelEnabled()) throw new AppError('App Runtime unavailable', 'APP_FEATURE_DISABLED', 503);
+  const request = RotatePublicHmacKeySchema.parse(raw);
+  return db.transaction(async tx => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
+    const [locator] = await tx.select({ app_installation_id: appPublicEndpoints.app_installation_id })
+      .from(appPublicEndpoints).where(and(eq(appPublicEndpoints.org_id, actor.org_id), eq(appPublicEndpoints.id, endpointId))).limit(1);
+    if (!locator) throw stale();
+    await tx.execute(sql`SELECT id FROM app_installations WHERE org_id=${actor.org_id}
+      AND id=${locator.app_installation_id} FOR SHARE`);
+    const [endpoint] = await tx.select().from(appPublicEndpoints).where(and(eq(appPublicEndpoints.org_id, actor.org_id),
+      eq(appPublicEndpoints.id, endpointId))).limit(1).for('update');
+    if (!endpoint || endpoint.state !== 'disabled' || endpoint.endpoint_epoch !== request.expected_endpoint_epoch
+      || endpoint.review_digest !== request.expected_review_digest || endpoint.review_digest !== publicEndpointReviewDigest(endpoint)) throw stale();
+    try { if (!publicAuthenticationPolicy(endpoint)) throw stale(); } catch { throw stale(); }
+    const keyId = randomUUID(); const secret = randomBytes(32); let sealed: string; let plaintext: string;
+    try { const { getAppRunRuntime } = await import('./app-run-runtime.js');
+      sealed = sealPublicHmacSecret((await getAppRunRuntime()).keys, actor.org_id, endpointId, keyId, secret);
+      plaintext = secret.toString('base64url'); } finally { secret.fill(0); }
+    await tx.insert(appPublicHmacKeys).values({ id: keyId, org_id: actor.org_id, endpoint_id: endpointId, sealed_secret: sealed });
+    const epoch = endpoint.endpoint_epoch + 1;
+    const reviewDigest = publicEndpointReviewDigest({ ...endpoint, hmac_key_id: keyId, endpoint_epoch: epoch });
+    await tx.update(appPublicEndpoints).set({ hmac_key_id: keyId, endpoint_epoch: epoch, review_digest: reviewDigest,
+      reviewed_by_user_id: actor.actor_id, reviewed_at: new Date() }).where(and(eq(appPublicEndpoints.org_id, actor.org_id), eq(appPublicEndpoints.id, endpointId)));
+    return { endpoint_id: endpointId, state: 'disabled' as const, endpoint_epoch: epoch, review_digest: reviewDigest,
+      authentication_policy: endpoint.authentication_policy, hmac_key_id: keyId, authentication_scope: 'claim_ingress_only' as const,
+      signing_key: { key_id: keyId, secret: plaintext } };
   });
 }
 

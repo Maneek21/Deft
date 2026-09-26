@@ -6,7 +6,7 @@ import { AppError, isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { appRuntimeChannelEnabled } from '../lib/app-runtime-channel.js';
 import { activatePublicEndpoint, disablePublicEndpoint,
-  stagePublicEndpoint } from '../lib/app-public-management.js';
+  stagePublicEndpoint, rotatePublicHmacKey } from '../lib/app-public-management.js';
 
 export const appPublicManagementRoutes = new Hono();
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -84,5 +84,9 @@ appPublicManagementRoutes.post('/endpoints/:endpointId/activate', async (c) => {
 appPublicManagementRoutes.post('/endpoints/:endpointId/disable', async (c) => {
   try { return c.json(await disablePublicEndpoint(actor(c),
     Id.parse(c.req.param('endpointId')))); }
+  catch (error) { return failure(c, error); }
+});
+appPublicManagementRoutes.post('/endpoints/:endpointId/rotate-signing-key', async c => {
+  try { return c.json(await rotatePublicHmacKey(actor(c), Id.parse(c.req.param('endpointId')), await body(c))); }
   catch (error) { return failure(c, error); }
 });

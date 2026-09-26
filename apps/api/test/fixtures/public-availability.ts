@@ -12,6 +12,7 @@ import { humanModuleActor, getModuleInstallation, createModuleRecord } from '../
 
 export async function publicAvailabilityFixture(options: { availability?: boolean; deadlineField?: string;
   budgetPolicy?: { schema_version: 'deft.app_public_budget.v1'; max_pending: number; max_confirmed_per_utc_day: number };
+  authenticationPolicy?: { schema_version: 'deft.app_public_hmac.v1'; mode: 'hmac_sha256'; max_clock_skew_seconds: 300 };
   memberOperator?: boolean } = {}) {
   const suffix = randomUUID().replaceAll('-', '');
   const orgId = randomUUID(), ownerId = randomUUID();
@@ -76,7 +77,8 @@ export async function publicAvailabilityFixture(options: { availability?: boolea
     expected_grant_snapshot_id: grant.id, expected_lifecycle_epoch: active.installation.lifecycle_epoch,
     expected_grant_epoch: active.installation.grant_epoch,
     ...(options.budgetPolicy ? { budget_policy: options.budgetPolicy } : {}) };
-  const endpoint = await stagePublicEndpoint(owner, endpointInput);
+  const publicInput = { ...endpointInput, ...(options.authenticationPolicy ? { authentication_policy: options.authenticationPolicy } : {}) };
+  const endpoint = await stagePublicEndpoint(owner, publicInput);
   await activatePublicEndpoint(owner, endpoint.endpoint_id, { expected_review_digest: endpoint.review_digest,
     expected_endpoint_epoch: endpoint.endpoint_epoch, accept_host_policy: true });
   const module = await getModuleInstallation(owner, { moduleId });

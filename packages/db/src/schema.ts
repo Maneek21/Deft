@@ -5225,6 +5225,8 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   mapping_digest: text('mapping_digest'),
   availability_policy: jsonb('availability_policy').$type<Record<string, unknown> | null>(),
   budget_policy: jsonb('budget_policy').$type<Record<string, unknown> | null>(),
+  authentication_policy: jsonb('authentication_policy').$type<Record<string, unknown> | null>(),
+  hmac_key_id: text('hmac_key_id'),
   state: text('state').$type<'disabled' | 'enabled'>().default('disabled').notNull(),
   endpoint_epoch: integer('endpoint_epoch').default(1).notNull(),
   review_digest: text('review_digest').notNull(),
@@ -5310,6 +5312,27 @@ export const appPublicIngress = pgTable('app_public_ingress', {
       AND ${t.follow_up_code} IN ('APP_HANDLER_UNAVAILABLE', 'ENDPOINT_REVOKED') AND ${t.handled_at} IS NOT NULL)
     OR (${t.follow_up_state} = 'run_created' AND ${t.follow_up_code} IS NULL
       AND ${t.handled_at} IS NOT NULL)`),
+]);
+
+// Signing key versions are immutable and remain available for audit/restore.
+export const appPublicHmacKeys = pgTable('app_public_hmac_keys', {
+  ...id(), ...orgId(), endpoint_id: text('endpoint_id').notNull(),
+  sealed_secret: text('sealed_secret').notNull(), created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.endpoint_id], foreignColumns: [appPublicEndpoints.org_id, appPublicEndpoints.id],
+    name: 'app_public_hmac_keys_endpoint_fk' }).onDelete('restrict'),
+  unique('app_public_hmac_keys_identity_unique').on(t.org_id, t.endpoint_id, t.id),
+]);
+export const appPublicHmacNonces = pgTable('app_public_hmac_nonces', {
+  ...id(), ...orgId(), endpoint_id: text('endpoint_id').notNull(), key_id: text('key_id').notNull(),
+  nonce_digest: text('nonce_digest').notNull(), signed_at: timestamp('signed_at').notNull(),
+  accepted_at: timestamp('accepted_at').notNull(), expires_at: timestamp('expires_at').notNull(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.endpoint_id, t.key_id],
+    foreignColumns: [appPublicHmacKeys.org_id, appPublicHmacKeys.endpoint_id, appPublicHmacKeys.id],
+    name: 'app_public_hmac_nonces_key_fk' }).onDelete('restrict'),
+  unique('app_public_hmac_nonces_replay_unique').on(t.org_id, t.endpoint_id, t.key_id, t.nonce_digest),
+  index('app_public_hmac_nonces_expiry_idx').on(t.org_id, t.endpoint_id, t.expires_at),
 ]);
 
 // The uniqueness key omits endpoint identity: two public endpoints cannot

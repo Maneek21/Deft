@@ -70,7 +70,13 @@ export function createAppPublicRoutes(service: AppPublicClaimService = appPublic
       return c.json({ error: 'JSON body required', code: 'PUBLIC_INVALID_INPUT' }, 400);
     }
     const rawBody = await boundedBody(c.req.raw.body);
-    const result = await service.claim(c.req.param('slug'), rawBody);
+    const url = new URL(c.req.url);
+    const result = await service.claim(c.req.param('slug'), rawBody, {
+      method: c.req.method, pathname: url.pathname, search: url.search,
+      headers: Object.fromEntries(['epoch', 'key-id', 'timestamp', 'nonce', 'signature'].map(field => {
+        const name = `x-deft-public-${field}`; return [name, c.req.header(name)];
+      })),
+    });
     c.header('Cache-Control', 'no-store');
     return c.json({ result }, result.replayed ? 200 : 201);
   } catch (error) {
