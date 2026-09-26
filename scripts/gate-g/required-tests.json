@@ -300,6 +300,70 @@
         {
           "file": "packages/app-kit/test/experience-sdk.test.ts",
           "name": "SDK closes pending calls without leaking reusable credentials"
+        },
+        {
+          "file": "packages/app-kit/test/resource-app-v5-cli.test.ts",
+          "name": "v5 CLI packs external sync-only source deterministically and rejects unknown executable fields"
+        },
+        {
+          "file": "packages/app-kit/test/resource-app-v5.test.ts",
+          "name": "v5 sync-only App and Experience package are deterministic and only reviewable by the host"
+        },
+        {
+          "file": "packages/app-kit/test/resource-app-v5.test.ts",
+          "name": "v5 mixed Runtime actions reference only v1; sync descriptors reference only v2"
+        },
+        {
+          "file": "packages/app-kit/test/resource-app-v5.test.ts",
+          "name": "v5 rejects undeclared/oversized Experience resources and tampered package bytes"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "v2 SDK validates every reply and sends a sync-only bearer transcript"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "descriptor digest is canonical and start must match all claim correlation pins"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "SDK rejects wrong audience, malformed replies, replay substitution and invalid pages"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "transport guards URL, AbortSignal, deadline, response size and generic errors"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-packed.test.ts",
+          "name": "packed experimental sync subpath resolves from an offline external consumer"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "golden v1 page preserves only declared scalar data and stable canonical bytes"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "descriptor and request admit no authority, URL, owner, or executable envelope fields"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "descriptor requires a declared, required, bounded string label and closed scalar fields"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "cursor progression and UTF-8 byte bounds are exact"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "item count, duplicate IDs, exact resource identities and version fields are closed"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "canonical full-page 512 KiB ceiling accepts the boundary and rejects one byte more"
+        },
+        {
+          "file": "packages/app-kit/test/runtime-client.test.ts",
+          "name": "Runtime client preserves the configured origin when its path starts with two slashes"
         }
       ],
       "id": "app-kit"
@@ -428,7 +492,7 @@
           "file": "apps/api/test/app-run-architecture.test.ts"
         },
         {
-          "name": "Run submission has one repository writer behind the advisory-lock service",
+          "name": "Run submission is confined to the advisory-lock repository and checkpoint-locked host sync admission",
           "file": "apps/api/test/app-run-architecture.test.ts"
         },
         {
@@ -780,6 +844,226 @@
         { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "advanced ledgerless schema is rejected before migration-ledger DDL" },
         { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "partial interrupted initialization cannot be stamped as fresh" },
         { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "genuine untracked v0.2.0-preview.1 baseline remains adoptable" }
+      ]
+    },
+    {
+      "id": "resource-private-read",
+      "description": "Owner-private reader over real reviewed v5 Runtime settlement: all20 boundary subtests and parent required, including checkpoint/member/settlement/final-SID lock waits. Requires matching DATABASE_URL and DEFT_TEST_DATABASE_URL exactly postgresql://gate_g_test@127.0.0.1:55435/gate_g_20260926_private_read. No public, sharing, Experience or whole Gate G claim.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "owner receives bounded normalized records and stable host UUID refs with unknown freshness"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "keyset pagination returns every record exactly once and enforces a closed bounded input"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "foreign org, same-org nonowner, guessed row and cursor tampering disclose no private data"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "settled tombstone removes the body and label; changed checkpoint invalidates prior cursor"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies binding revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies registration revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies owner revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies operator revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies demoted revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies disabled revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies grant revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "live authority denies consent revocation or expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "missing encryption and cursor keys fail closed without fallback"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "consent expiring during decryption prevents the completed page from escaping"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "tampered ciphertext and authenticated descriptor-invalid plaintext fail the whole page"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "byte-capped keyset pages include every large record without silent skips"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "checkpoint lock wait rechecks consent after the actual database wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "revocation committed during an observed member lock wait denies the reader"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "actual page settlement committed during checkpoint lock wait invalidates the old cursor"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "final delivery guard lock wait cannot release a page after consent expires"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-db.test.ts",
+          "name": "owner-private reads of actual reviewed and settled v5 resources"
+        }
+      ]
+    },
+    {
+      "id": "resource-sync-scheduler",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "scheduler is default-off and requires exact scheduler and channel gates"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "twenty-binding pages converge concurrent jobs and preserve restart scan fairness"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "revoked expired disabled owner-lost and operator-lost bindings cannot admit and cannot starve healthy work"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "interrupted and terminally failed scan retains per-binding progress and isolates lock contention"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "lost queue lease and consent revoked after selection cannot admit work"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "admission deadline and cancellation roll back Run input intent attempt and queue together"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "settled cursors obey interval and post-start unknown work never automatically creates another Run"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "actual scheduled worker routes leased scan and shutdown gate stops recurrence"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-scanner-db.test.ts",
+          "name": "bounded host resource sync scheduling through the durable worker queue"
+        }
+      ],
+      "description": "Bounded host scheduling with durable queue cursor, real process restart, live revocation and unchanged-cursor uncertainty fencing. Requires matching DATABASE_URL and DEFT_TEST_DATABASE_URL on loopback55435/gate_g_20260926_scheduler and TZ=UTC; all nested cases and the parent must execute."
+    },
+    {
+      "id": "resource-sync-management-http",
+      "description": "Authenticated owner consent/operator sessions, bounded status, final SID/member/human-kind/deadline checks. All 7 cases required; matching loopback 55435 synthetic gate_g_20260926_management or gate_g_20260926_root database (optional _vN suffix).",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync management rejects disabled rollout and non-web credentials over HTTP"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync HTTP owner review activation, operator-only credential and strict request boundaries"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync HTTP current SID membership tenant and self-owner privacy with bounded pagination"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync HTTP revocation while waiting rolls back session issuance at final SID guard"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync HTTP status exposes generic Run metadata without private Run result authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync HTTP denies nonhuman accounts even with a valid web SID"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-management-http-db.test.ts",
+          "name": "private sync HTTP deadline checks run after final web SID waits"
+        }
+      ]
+    },
+    {
+      "id": "resource-private-read-http",
+      "description": "Actual settled private owner HTTP reads, cursor and credential denials, final SID/consent/participant-kind lock-wait fences. All6 cases required; matching loopback55435 synthetic gate_g_20260926_management or gate_g_20260926_root database (optional _vN suffix).",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-private-read-http.test.ts",
+          "name": "private read HTTP returns settled owner records with signed pagination and private response headers"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-http.test.ts",
+          "name": "private read HTTP denies disabled rollout non-web foreign actors and query/cursor tampering"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-http.test.ts",
+          "name": "private read HTTP discards decrypted records when exact web SID is revoked during a real authority lock wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-http.test.ts",
+          "name": "private read HTTP rechecks consent after the final web SID lock wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-http.test.ts",
+          "name": "private read HTTP rejects nonhuman owner and operator identity in current sync authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-read-http.test.ts",
+          "name": "private read HTTP rechecks participant kind after the final web SID lock wait"
+        }
+      ]
+    },
+    {
+      "id": "resource-sync-restore",
+      "description": "Actual process loss, pg_dump and copied host keyring/config restore. Requires matching loopback 55435 gate_g_20260926_restore_source URLs, TZ=UTC, a nonexistent DEFT_SYNC_RESTORE_TARGET_DATABASE matching gate_g_20260926_restore_target with optional underscore suffix of 1-16 lowercase alphanumerics, and fresh outside-repository DEFT_SYNC_RESTORE_ARTIFACT_DIR. Does not certify broader restore or S04/S07 matrices.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-sync-restore-db.test.ts",
+          "name": "private sync survives real process loss and DB plus keyring restore without unsafe replay"
+        }
+      ]
+    },
+    {
+      "id": "crm-compatibility",
+      "description": "Existing base-to-reviewed-connected CRM lifecycle preserves canonical records, relations and Task links; current CRM HTTP/agent owner boundaries. Requires matching explicitly disposable DATABASE_URL and DEFT_TEST_DATABASE_URL; synthetic loopback regression database only. Package v0-v2 golden bytes remain required in app-kit.",
+      "cases": [
+        {
+          "file": "apps/api/test/crm-public-lifecycle-db.test.ts",
+          "name": "CRM base installs records and links, then reviewed connected activation preserves them"
+        },
+        {
+          "file": "apps/api/test/module-crm-foundation-db.test.ts",
+          "name": "CRM routes atomically create relationships and page live inverse records within owner boundaries"
+        }
       ]
     }
   ],

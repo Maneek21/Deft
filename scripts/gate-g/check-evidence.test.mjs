@@ -56,3 +56,28 @@ test('checks actual Node reporter output, including a green runner with a skippe
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('a passing database parent cannot conceal an omitted or skipped required boundary subtest', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'deft-nested-evidence-check-'));
+  try {
+    const fixture = join(directory, 'database.test.mjs');
+    const reporter = new URL('./acceptance-reporter.mjs', import.meta.url).href;
+    const inventory = { id: 'database', cases: [
+      { file: fixture, name: 'database acceptance' },
+      { file: fixture, name: 'final delivery lock wait' },
+    ] };
+    for (const mode of ['executed', 'skipped', 'omitted']) {
+      const child = mode === 'omitted' ? ''
+        : `await t.test('final delivery lock wait', { skip: ${mode === 'skipped'} }, () => {});`;
+      writeFileSync(fixture, `import test from 'node:test'; test('database acceptance', async t => { ${child} });`);
+      const childEnv = { ...process.env };
+      delete childEnv.NODE_TEST_CONTEXT;
+      const result = spawnSync(process.execPath, ['--test', `--test-reporter=${reporter}`, fixture], {
+        encoding: 'utf8', env: childEnv, timeout: 30_000,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const events = result.stdout.trim().split(/\r?\n/).map(JSON.parse);
+      assert.equal(checkEvidence(inventory, events).passed, mode === 'executed');
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

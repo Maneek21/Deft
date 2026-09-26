@@ -5,7 +5,7 @@ These fixtures exercise proposed boundaries. They do not implement or certify th
 - `experiences/`: loopback browser egress and bounded interaction experiment.
 - `runtime/`: separate-process recovery experiment with independent synthetic host/provider ledgers.
 - `public/`: transaction/claim experiment on an explicitly assigned disposable PostgreSQL database.
-- `required-tests.json`: reviewed inventory of 74 App Kit and 51 focused platform unit tests, six explicitly selected legacy-MCP cutover-on cases, one database ancestry case, eleven Runtime/public foundation cases, four reviewed Runtime journey/concurrency cases, four installed-consumer cases, and one production automation process/restore case. This is not the complete Gate G matrix; remaining database, browser, recovery, and compound profiles require separate evidence.
+- `required-tests.json`: reviewed inventory including 90 App Kit and 51 focused platform unit tests, the selected legacy-MCP cutover-on and ancestry profiles, Runtime/public/installed journeys, and bounded private sync, owner-read, scheduler, authenticated HTTP, and CRM compatibility profiles. This is not the complete Gate G matrix; remaining database, browser, recovery, and compound profiles require separate evidence.
 - `verify-upgrade.mjs`: read-only retained-data fingerprints and schema snapshots for the assigned disposable PostgreSQL cluster. Capture a tracked predecessor before candidate upgrades, compare retained columns afterward, and compare candidate fresh/upgrade schemas separately.
 
 ## Capture and check test execution
@@ -28,3 +28,10 @@ node --test scripts/gate-g/check-evidence.test.mjs
 The checker requires every inventoried case exactly once, exact source paths rooted in the current checkout, no failures/skips/todos/cancellations, matching execution counts, and a final runner summary. Failed or truncated output fails closed. Additional executed tests must also pass. The JSONL reporter omits test stdout and error details; retain a separate console log for diagnosis.
 
 This checks execution completeness, not authenticity: JSONL is not a signed attestation. Record the source revision, fixture hashes/diff, runtime versions, command, environment profile and reviewer alongside evidence. A rerun or source change requires a new evidence record. Required cases must never be removed merely to make a gate green.
+
+The private-reader and scheduler inventories name their nested boundary cases as
+well as the parent test. A passing parent does not cover an omitted child. Use
+the exact synthetic database guards described by each profile and matching
+`DATABASE_URL`/`DEFT_TEST_DATABASE_URL`; a wrong target produces skipped tests and
+must fail evidence checking. The HTTP profiles are owner-private host surfaces;
+they do not certify an installed Experience broker, sharing, or public access.
