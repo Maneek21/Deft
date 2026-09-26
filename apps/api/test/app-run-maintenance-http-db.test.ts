@@ -139,9 +139,15 @@ function childProcess(databaseUrl=target,overrides:Record<string,string>={}) {
 }
 async function command(child:ChildProcess,message:any,expected:string) {
  if(message.mode==='provider'&&message.started){const directory=join(process.env.DEFT_TEST_EVIDENCE_DIR??join(tmpdir(),'deft-c12-maintenance'),'provider-ledgers');await mkdir(directory,{recursive:true});message={...message,ledgerPath:join(directory,`${randomUUID()}.jsonl`)};effectLedgers.set(child,message.ledgerPath);}
- return new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>{child.off('message',receive);reject(Error(`Child ${expected} timed out`));},20_000);
-  const receive=(value:any)=>{if(value?.failed||value?.[expected]){clearTimeout(timer);child.off('message',receive);value.failed?reject(Error(`Child operation failed: ${value.code??'unknown'}`)):resolve(value);}};
-  child.on('message',receive);child.send(message);
+ return new Promise<any>((resolve,reject)=>{
+  if(child.exitCode!==null||child.signalCode!==null||!child.connected){reject(Error(`Child ${expected} unavailable (exit ${child.exitCode??'none'}, signal ${child.signalCode??'none'})`));return;}
+  let done=false;const cleanup=()=>{clearTimeout(timer);child.off('message',receive);child.off('exit',exit);child.off('error',error);};
+  const fail=(reason:string)=>{if(done)return;done=true;cleanup();reject(Error(reason));};
+  const timer=setTimeout(()=>fail(`Child ${expected} timed out`),20_000);
+  const receive=(value:any)=>{if(!value?.failed&&!value?.[expected]||done)return;done=true;cleanup();value.failed?reject(Error(`Child operation failed: ${value.code??'unknown'}`)):resolve(value);};
+  const exit=(code:number|null,signal:string|null)=>fail(`Child ${expected} exited before response (exit ${code??'none'}, signal ${signal??'none'})`);
+  const error=()=>fail(`Child ${expected} launch or IPC failed`);
+  child.on('message',receive);child.on('exit',exit);child.on('error',error);child.send(message,sendError=>{if(sendError)error();});
  });
 }
 async function crash(child:ChildProcess){if(child.exitCode!==null)return;await new Promise<void>(resolve=>{child.once('exit',()=>resolve());child.kill('SIGKILL');});children.delete(child);}
@@ -258,6 +264,11 @@ test('maintenance bounds a dropped established PostgreSQL response and discards 
 test('production default-off maintenance does not parse malformed keyrings or initialize runtime',{skip:!safe,timeout:15_000},async()=>{
  const child=childProcess(target,{DEFT_APP_RUNS_ENABLED:'false',DEFT_APP_RUN_APP_ORIGIN_ENABLED:'false',DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED:'false',DEFT_APP_AUTOMATIONS_ENABLED:'false',DEFT_APP_RUN_KEYRINGS:'deliberately malformed'});
  try{await command(child,{mode:'maintenance',kind:'recovery'},'committed');}finally{await crash(child);}
+ // A guard rejection happens before any DB operation. Report its early exit
+ // promptly without exposing stderr, credentials or a misleading timeout.
+ const rejected=childProcess('postgresql://invalid@127.0.0.1:1/invalid');const started=Date.now();
+ try{await assert.rejects(command(rejected,{mode:'warm'},'warmed'),/exited before response|launch or IPC failed|unavailable/);assert.ok(Date.now()-started<10_000);}
+ finally{await crash(rejected);}
 });
 
 test('coincident recovery and retention retain bounded eventual service for both modes',{skip:!safe,timeout:30_000},async()=>{

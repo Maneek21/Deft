@@ -24,7 +24,6 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
-import { getAppRunRuntime } from './app-run-runtime.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { openPublicAvailabilityCursor, sealPublicAvailabilityCursor, publicClaimDeadline,
   projectPublicAvailability, validatePublicAvailabilityPolicy, canClaimPublicAvailability, type PublicAvailabilityPolicy } from './app-public-availability.js';
@@ -312,6 +311,7 @@ export class AppPublicClaimService {
         const policy = await assertLiveAuthority(tx, endpoint, principal, app);
         if (!policy) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
         let now = await freshPublicClock(tx);
+        const { getAppRunRuntime } = await import('./app-run-runtime.js');
         const keys = (await getAppRunRuntime()).keys;
         let after: string | undefined;
         if (cursorToken !== undefined) {
