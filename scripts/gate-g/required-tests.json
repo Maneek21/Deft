@@ -2365,6 +2365,62 @@
           "name": "CRM base installs records and links, then reviewed connected activation preserves them"
         }
       ]
+    },
+    {
+      "id": "private-owner-search",
+      "description": "Bounded exhaustive owner search, exact cursor/checkpoint/SID authority, native reference isolation and dropped established database response deadline. Requires guarded synthetic private-search database.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "owner search exhausts beyond100records without treating an empty first scan as complete"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "search cursor is purpose scoped to exactquery fields owner SID consent and coherent checkpoint"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "search final owner authority denies gate withdrawal after actual SID wait and settles lock timeout"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "search encrypted byte preflight advances contiguous rows without skips across1MiB"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "search aborted while waiting settles rollback and expired signedcursor never refreshes"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "search scope and snippets remain exactowner only across org agent credentials and retired SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-private-search-http.test.ts",
+          "name": "bounded exposure search factory closes a dropped established BEGIN response at deadline"
+        }
+      ]
+    },
+    {
+      "id": "experience-exposure-bounded-database",
+      "description": "Affected immutable Experience exposure acceptance and final SID/expiry/abort boundaries after shared database factory deadline/discard changes. Includes parent harness plus three selected subcases; guarded exposure database required.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "explicit immutable Experience exposure over HTTP is separate from sync authority"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "readonly exact review, explicit acceptance and safe idempotency"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "gate withdrawal during final SID lock wait prevents delivery"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "caller expiry and abort after queued SID locks deny before decrypt"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
