@@ -182,3 +182,31 @@ test('setup HTTP rechecks SID expiry and human kind after a real final SID lock 
   }
 });
 
+test('setup discovery does not wait on a registration write or lock its binding first', { skip: !safe }, async () => {
+  const h = await harness();
+  let release = () => {};
+  let pending: ReturnType<typeof h.call> | undefined;
+  let blocker: Promise<void> | undefined;
+  try {
+    let acquired!: () => void;
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    blocker = h.db.transaction(async tx => {
+      await tx.execute(h.sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${h.org_id}
+        AND id = ${h.registration_id} FOR UPDATE`);
+      acquired(); await released;
+      // A registration-first writer must not encounter a binding lock acquired
+      // by discovery while discovery waits for this registration.
+      await tx.execute(h.sql`SELECT id FROM app_resource_bindings WHERE org_id = ${h.org_id}
+        AND id = ${h.binding_id} FOR UPDATE NOWAIT`);
+    });
+    await locked;
+    pending = h.call(`/setup?installation_id=${h.consent_request.installation_id}`);
+    const result = await Promise.race([pending, new Promise<null>(resolve => setTimeout(() => resolve(null), 1500))]);
+    release();
+    await blocker;
+    assert.ok(result, 'advisory setup discovery must not wait for registration writes');
+    assert.equal(result.status, 200);
+  } finally { release(); await blocker?.catch(() => {}); await pending?.catch(() => {}); await h.close(); }
+});
+

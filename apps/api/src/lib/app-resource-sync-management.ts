@@ -97,7 +97,9 @@ export class AppResourceSyncManagement {
           eq(appResourceBindings.grant_snapshot_id, grant.id),
           eq(appResourceBindings.owner_user_id, actor.actor_id),
           inArray(appResourceBindings.state, ['active', 'disabled'])))
-        .limit(8).for('share');
+        // Advisory locator only: registration/binding authority is rechecked by
+        // every operation. Joined rowmarks can lock binding before registration.
+        .limit(8);
       const descriptors = await Promise.all(reviewed.descriptors.map(async (descriptor) => ({
         resource_key: descriptor.key, resource_type: descriptor.resource_type,
         visibility: descriptor.requested_visibility,
