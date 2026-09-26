@@ -18,7 +18,7 @@ import { buildPhase5DependencyAppPackage, buildTrackAAutomatedConnectedAppPackag
 
 /** Synthetic local provider and real reviewed Protocol v2 authority. No persisted
  * authority rows are fabricated and no production lifecycle state is patched. */
-export async function createAutomationRenewalFixture() {
+export async function createAutomationRenewalFixture(options: { pauseAfterEffectFile?: string } = {}) {
   const outboxRoot = await mkdtemp(resolve(tmpdir(), 'deft-a02-renewal-'));
   const orgId = randomUUID();
   const userId = randomUUID();
@@ -42,7 +42,8 @@ export async function createAutomationRenewalFixture() {
   await db.insert(mcpConnections).values({
     id: connectionId, org_id: orgId, name: 'A02 synthetic mail', slug: `a02-mail-${randomUUID()}`,
     server_url: null, transport: 'stdio', stdio_command: process.execPath,
-    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', resolve(outboxRoot, 'effects.jsonl')],
+    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', resolve(outboxRoot, 'effects.jsonl'),
+      ...(options.pauseAfterEffectFile ? ['--pause-after-effect-file', options.pauseAfterEffectFile] : [])],
     auth_type: 'none', is_active: true, created_by: userId,
   });
   const capability = new CapabilityService();

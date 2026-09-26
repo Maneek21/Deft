@@ -116,13 +116,16 @@ const activeControllers = new Map<string, {
   controller: AbortController;
   jobs: number;
   settled: Promise<void>;
+  capacityReserved: boolean;
 }>();
+type TrackExecution = (settled: Promise<void>) => void;
 
 async function runClaimedWork<T>(
   jobs: DequeuedJob[],
   label: string,
   work: (signal: AbortSignal) => Promise<T>,
   overrides?: WorkerProcessOverrides,
+  trackExecution?: TrackExecution,
 ): Promise<T> {
   const timeoutMs = overrides?.timeoutMs ?? JOB_TIMEOUT_MS;
   const leaseMs = overrides?.leaseMs ?? JOB_LEASE_MS;
@@ -130,6 +133,7 @@ async function runClaimedWork<T>(
     ?? Math.max(1_000, Math.min(LEASE_RENEW_INTERVAL_MS, Math.floor(leaseMs / 3)));
   const executionId = crypto.randomUUID();
   const controller = new AbortController();
+  let renewalSettled: Promise<void> = Promise.resolve();
   // Keep tracking the underlying handler after Promise.race returns. Most
   // handlers are not cancellation-aware yet, so shutdown health must not call
   // an ignored AbortSignal "finished".
@@ -140,14 +144,15 @@ async function runClaimedWork<T>(
   ).finally(() => {
     activeControllers.delete(executionId);
   });
-  activeControllers.set(executionId, { controller, jobs: jobs.length, settled });
+  activeControllers.set(executionId, { controller, jobs: jobs.length, settled, capacityReserved: !!trackExecution });
+  trackExecution?.(settled.then(() => renewalSettled));
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let renewalInFlight = false;
   const renewal = setInterval(() => {
     if (renewalInFlight || controller.signal.aborted) return;
     renewalInFlight = true;
-    void Promise.all(jobs.map((job) => renewJobLease(job.id, job.lockToken, leaseMs)))
+    renewalSettled = Promise.all(jobs.map((job) => renewJobLease(job.id, job.lockToken, leaseMs)))
       .then((renewed) => {
         if (renewed.some((owned) => !owned) && !controller.signal.aborted) {
           controller.abort(new Error(`${label} lost its job lease`));
@@ -409,6 +414,7 @@ async function processDequeuedJob(
   queueName: string,
   job: DequeuedJob,
   overrides?: WorkerProcessOverrides,
+  trackExecution?: TrackExecution,
 ): Promise<void> {
   let settledOwned = false;
   let succeeded = false;
@@ -438,6 +444,7 @@ async function processDequeuedJob(
         await handler(runtimeJob);
       },
       overrides,
+      trackExecution,
     );
     const settled = await completeJob(job.id, job.lockToken);
     settledOwned = settled;
@@ -503,6 +510,7 @@ async function processAttentionProjectionGroup(
   queueName: string,
   jobs: DequeuedJob[],
   overrides?: WorkerProcessOverrides,
+  trackExecution?: TrackExecution,
 ): Promise<void> {
   const notificationIds = Array.from(new Set(jobs.flatMap((job) =>
     Array.isArray(job.data?.notificationIds) ? job.data.notificationIds : [],
@@ -540,6 +548,7 @@ async function processAttentionProjectionGroup(
         await handler(runtimeJob);
       },
       overrides,
+      trackExecution,
     );
     const settled = await Promise.all(jobs.map((job) => completeJob(job.id, job.lockToken)));
     const settledCount = settled.filter(Boolean).length;
@@ -553,21 +562,62 @@ async function processAttentionProjectionGroup(
   }
 }
 
+const reservedQueueSlots = new Map<QueueName, number>();
+const processingInFlight = new Set<Promise<void>>();
+
+function releaseQueueSlots(queueName: QueueName, count: number): void {
+  const remaining = (reservedQueueSlots.get(queueName) ?? 0) - count;
+  if (remaining > 0) reservedQueueSlots.set(queueName, remaining);
+  else reservedQueueSlots.delete(queueName);
+}
+
+function launchClaimedGroup(queueName: QueueName, jobs: DequeuedJob[], grouped: boolean,
+  overrides?: WorkerProcessOverrides): Promise<void> {
+  const executions: Promise<void>[] = [];
+  const track: TrackExecution = settled => { executions.push(settled); };
+  const processing = (grouped
+    ? processAttentionProjectionGroup(queueName, jobs, overrides, track)
+    : processDequeuedJob(queueName, jobs[0]!, overrides, track))
+    .catch(error => { console.warn(`[workers] ${queueName} settlement failed:`, error instanceof Error ? error.message : String(error)); });
+  // Timeout may settle a delivery before its handler cooperates. Capacity is
+  // retained until BOTH queue settlement and all underlying work settle.
+  const lifecycle = processing.then(async () => { await Promise.all(executions); }).finally(() => {
+    releaseQueueSlots(queueName, jobs.length);
+    processingInFlight.delete(lifecycle);
+    lastPollAt = new Date();
+  });
+  processingInFlight.add(lifecycle);
+  return processing;
+}
+
 async function pollQueueBatch(
   queueName: QueueName,
-  opts?: { claimWhenStopped?: boolean; processOverrides?: WorkerProcessOverrides },
+  opts?: { claimWhenStopped?: boolean; processOverrides?: WorkerProcessOverrides; backgroundDispatch?: boolean },
 ): Promise<void> {
   const jobs: DequeuedJob[] = [];
   const batchSize = queueName === QUEUE_NAMES.SCHEDULED_JOBS
     ? ATTENTION_PROJECTION_BATCH_SIZE
     : WORKER_BATCH_SIZE;
-  for (let i = 0; i < batchSize; i += 1) {
+  const free = batchSize - (reservedQueueSlots.get(queueName) ?? 0);
+  if (free <= 0) return; // Full capacity is not a heartbeat or a dequeue.
+  let claimError: unknown;
+  for (let i = 0; i < free; i += 1) {
     if (!workersRunning && !opts?.claimWhenStopped) break;
-    const job = await dequeueJob(queueName, { leaseMs: opts?.processOverrides?.leaseMs ?? JOB_LEASE_MS });
-    if (!job) break;
-    jobs.push(job);
+    if ((reservedQueueSlots.get(queueName) ?? 0) >= batchSize) break;
+    reservedQueueSlots.set(queueName, (reservedQueueSlots.get(queueName) ?? 0) + 1);
+    try {
+      const job = await dequeueJob(queueName, { leaseMs: opts?.processOverrides?.leaseMs ?? JOB_LEASE_MS });
+      if (!job) { releaseQueueSlots(queueName, 1); break; }
+      jobs.push(job);
+    } catch (error) {
+      releaseQueueSlots(queueName, 1); claimError = error; break;
+    }
   }
-  if (jobs.length === 0) return;
+  if (jobs.length === 0) {
+    if (claimError) throw claimError;
+    if (workersRunning || opts?.claimWhenStopped) lastPollAt = new Date();
+    return;
+  }
   const projectionGroups = new Map<string, DequeuedJob[]>();
   const ordinaryJobs: DequeuedJob[] = [];
   for (const job of jobs) {
@@ -580,11 +630,13 @@ async function pollQueueBatch(
     group.push(job);
     projectionGroups.set(orgId, group);
   }
-  await Promise.all([
-    ...ordinaryJobs.map((job) => processDequeuedJob(queueName, job, opts?.processOverrides)),
+  const processing = [
+    ...ordinaryJobs.map((job) => launchClaimedGroup(queueName, [job], false, opts?.processOverrides)),
     ...Array.from(projectionGroups.values()).map((group) =>
-      processAttentionProjectionGroup(queueName, group, opts?.processOverrides)),
-  ]);
+      launchClaimedGroup(queueName, group, true, opts?.processOverrides)),
+  ];
+  if (!opts?.backgroundDispatch) await Promise.all(processing);
+  if (claimError) throw claimError;
 }
 
 export async function _processDequeuedJobForTest(
@@ -599,7 +651,11 @@ export async function _pollQueueBatchForTest(
   queueName: QueueName,
   overrides?: WorkerProcessOverrides,
 ): Promise<void> {
-  await pollQueueBatch(queueName, { claimWhenStopped: true, processOverrides: overrides });
+  while (pollInFlight.has(queueName)) await pollInFlight.get(queueName);
+  const promise = pollQueueBatch(queueName, { claimWhenStopped: true, processOverrides: overrides })
+    .finally(() => { if (pollInFlight.get(queueName) === promise) pollInFlight.delete(queueName); });
+  pollInFlight.set(queueName, promise);
+  await promise;
 }
 
 // ─── Lifecycle ───
@@ -664,12 +720,7 @@ function dispatchPolls(): void {
   for (const queueName of Object.values(QUEUE_NAMES)) {
     if (pollInFlight.has(queueName)) continue;
     let promise!: Promise<void>;
-    promise = pollQueueBatch(queueName)
-      .then(() => {
-        // A heartbeat means a queue poll actually reached settlement. Do not
-        // refresh it merely because the timer fired while prior polls hang.
-        lastPollAt = new Date();
-      })
+    promise = pollQueueBatch(queueName, { backgroundDispatch: true })
       .catch((err) => {
         console.warn(`[workers] ${queueName} poll failed:`, (err as Error).message);
       })
@@ -692,8 +743,8 @@ export function getWorkerStatus(): WorkerStatus {
     running: workersRunning,
     startedAt: workerStartedAt?.toISOString() ?? null,
     lastPollAt: lastPollAt?.toISOString() ?? null,
-    inFlight: Array.from(activeControllers.values())
-      .reduce((total, active) => total + active.jobs, 0),
+    inFlight: Array.from(reservedQueueSlots.values()).reduce((total, count) => total + count, 0)
+      + Array.from(activeControllers.values()).reduce((total, active) => total + (active.capacityReserved ? 0 : active.jobs), 0),
   };
 }
 
@@ -779,7 +830,8 @@ export async function _startWorkersForTest(): Promise<void> {
 export async function stopWorkers(opts?: { timeoutMs?: number }): Promise<void> {
   if (stoppingPromise) return stoppingPromise;
   if (startingPromise) await startingPromise;
-  if (!workersRunning && !pollingInterval && !staleCleanupInterval && !retentionInterval) return;
+  if (!workersRunning && !pollingInterval && !staleCleanupInterval && !retentionInterval
+    && !pollInFlight.size && !processingInFlight.size && !activeControllers.size && !backgroundInFlight.size) return;
 
   const timeoutMs = Math.max(1, opts?.timeoutMs ?? WORKER_SHUTDOWN_TIMEOUT_MS);
   stoppingPromise = (async () => {
@@ -791,39 +843,28 @@ export async function stopWorkers(opts?: { timeoutMs?: number }): Promise<void> 
     staleCleanupInterval = null;
     retentionInterval = null;
 
-    const inFlight = Promise.allSettled([
-      ...pollInFlight.values(),
-      ...backgroundInFlight.values(),
-      ...Array.from(activeControllers.values(), (active) => active.settled),
-    ]);
-    let drainTimedOut = false;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const abortAfterMs = Math.max(1, Math.floor(timeoutMs * 0.8));
-    await Promise.race([
-      inFlight,
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(() => {
-          drainTimedOut = true;
-          resolve();
-        }, abortAfterMs);
-      }),
-    ]);
-    if (timeout) clearTimeout(timeout);
-
-    if (drainTimedOut) {
+    const started = performance.now();
+    const drainUntil = async (deadline: number, reason?: Error): Promise<boolean> => {
+      // A claim already awaiting SQL can add processing/controllers after
+      // shutdown starts. Re-snapshot until everything settles, not just once.
+      while (pollInFlight.size || processingInFlight.size || backgroundInFlight.size || activeControllers.size) {
+        if (reason) for (const { controller } of activeControllers.values()) controller.abort(reason);
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) return false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          Promise.allSettled([...pollInFlight.values(), ...processingInFlight.values(),
+            ...backgroundInFlight.values(), ...Array.from(activeControllers.values(), active => active.settled)]),
+          new Promise<void>(resolve => { timer = setTimeout(resolve, Math.min(20, remaining)); }),
+        ]);
+        if (timer) clearTimeout(timer);
+      }
+      return true;
+    };
+    if (!await drainUntil(started + Math.max(1, Math.floor(timeoutMs * 0.8)))) {
       const reason = new Error(`Worker shutdown exceeded ${timeoutMs}ms`);
-      for (const { controller } of activeControllers.values()) controller.abort(reason);
-      const postAbortMs = Math.max(1, timeoutMs - abortAfterMs);
-      let postAbortTimeout: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        inFlight,
-        new Promise<void>((resolve) => {
-          postAbortTimeout = setTimeout(resolve, postAbortMs);
-        }),
-      ]);
-      if (postAbortTimeout) clearTimeout(postAbortTimeout);
-      if (activeControllers.size > 0) {
-        console.warn(`[workers] Shutdown deadline reached with ${activeControllers.size} execution(s) still active`);
+      if (!await drainUntil(started + timeoutMs, reason)) {
+        console.warn(`[workers] Shutdown deadline reached with ${activeControllers.size} execution(s) and ${pollInFlight.size} claim poll(s) still active`);
       }
     }
     workerStartedAt = null;
