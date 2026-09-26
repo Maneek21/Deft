@@ -73,6 +73,9 @@ export function createAppPublicRoutes(service: AppPublicClaimService = appPublic
     const url = new URL(c.req.url);
     const result = await service.claim(c.req.param('slug'), rawBody, {
       method: c.req.method, pathname: url.pathname, search: url.search,
+      // @hono/node-server supplies the original IncomingMessage request target.
+      // URL parsing loses dot-segment aliases; forwarded headers are not proof.
+      raw_target: (c.env as { incoming?: { url?: string } } | undefined)?.incoming?.url,
       headers: Object.fromEntries(['epoch', 'key-id', 'timestamp', 'nonce', 'signature'].map(field => {
         const name = `x-deft-public-${field}`; return [name, c.req.header(name)];
       })),

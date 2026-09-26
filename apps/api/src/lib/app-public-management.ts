@@ -3,7 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { parseRuntimeAppManifest, PublicBudgetPolicySchema, PublicHmacPolicySchema } from '@deft/app-kit';
 import { appModuleBindings, appPublicEndpoints, appPublicHmacKeys, appVersions, moduleInstallations,
-  moduleVersions } from '@deft/db/schema';
+  moduleVersions, users } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
@@ -15,6 +15,7 @@ import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
 import { validatePublicAvailabilityPolicy, type PublicAvailabilityPolicy } from './app-public-availability.js';
 import { publicEndpointBudget, PUBLIC_APP_BUDGET_CEILINGS } from './app-public-budgets.js';
 import { sealPublicHmacSecret, publicAuthenticationPolicy } from './app-public-hmac.js';
+import type { PublicManagementGuard } from './app-public-web-authority.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -41,6 +42,14 @@ const stale = () => new AppError('Public endpoint authority changed', 'APP_STALE
 const hash = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const liveAuthorizer = new PostgresAppRunLiveAuthorization();
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function finalManager(tx: Tx, actor: ModuleActor, guard?: PublicManagementGuard) {
+  if (guard) await guard(tx);
+  const [human] = await tx.select({ kind: users.kind, is_agent: users.is_agent }).from(users).where(eq(users.id, actor.actor_id));
+  if (!human || human.kind !== 'human' || human.is_agent) {
+    throw new AppError('Public endpoint management access denied', 'APP_ACCESS_DENIED', 403);
+  }
+}
 
 function manager(actor: ModuleActor): void {
   if (actor.kind !== 'human' || (actor.role !== 'owner' && actor.role !== 'admin')
@@ -103,7 +112,7 @@ async function reviewedSetup(tx: Tx, input: Readonly<{
   return { runtime, declaration, moduleBinding, availabilityPolicy };
 }
 
-export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
+export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown, guard?: PublicManagementGuard) {
   manager(actor);
   if (!appRuntimeChannelEnabled()) throw new AppError('App Runtime unavailable', 'APP_FEATURE_DISABLED', 503);
   const input = StagePublicEndpointSchema.parse(raw);
@@ -154,6 +163,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
       public_label: input.public_label, max_body_bytes: input.max_body_bytes,
       reviewed_by_user_id: actor.actor_id, reviewed_at: now };
     const reviewDigest = publicEndpointReviewDigest(fields);
+    await finalManager(tx, actor, guard);
     await tx.insert(appPublicEndpoints).values({ ...fields, review_digest: reviewDigest });
     if (keyId && sealed) await tx.insert(appPublicHmacKeys).values({ id: keyId, org_id: actor.org_id,
       endpoint_id: endpointId, sealed_secret: sealed });
@@ -168,7 +178,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
   });
 }
 
-export async function activatePublicEndpoint(actor: ModuleActor, endpointId: string, raw: unknown) {
+export async function activatePublicEndpoint(actor: ModuleActor, endpointId: string, raw: unknown, guard?: PublicManagementGuard) {
   manager(actor);
   const request = ActivatePublicEndpointSchema.parse(raw);
   return db.transaction(async (tx) => {
@@ -206,6 +216,7 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
     try { publicAuthenticationPolicy(endpoint); } catch { throw stale(); }
     const epoch = endpoint.endpoint_epoch + 1;
     const reviewDigest = publicEndpointReviewDigest({ ...endpoint, endpoint_epoch: epoch });
+    await finalManager(tx, actor, guard);
     await tx.update(appPublicEndpoints).set({ state: 'enabled', endpoint_epoch: epoch,
       review_digest: reviewDigest, reviewed_by_user_id: actor.actor_id,
       reviewed_at: new Date() }).where(and(eq(appPublicEndpoints.org_id, actor.org_id),
@@ -217,7 +228,7 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
 }
 
 /** Rotation never changes signed policy or anonymously re-enables an endpoint. */
-export async function rotatePublicHmacKey(actor: ModuleActor, endpointId: string, raw: unknown) {
+export async function rotatePublicHmacKey(actor: ModuleActor, endpointId: string, raw: unknown, guard?: PublicManagementGuard) {
   manager(actor);
   if (!appRuntimeChannelEnabled()) throw new AppError('App Runtime unavailable', 'APP_FEATURE_DISABLED', 503);
   const request = RotatePublicHmacKeySchema.parse(raw);
@@ -237,6 +248,7 @@ export async function rotatePublicHmacKey(actor: ModuleActor, endpointId: string
     try { const { getAppRunRuntime } = await import('./app-run-runtime.js');
       sealed = sealPublicHmacSecret((await getAppRunRuntime()).keys, actor.org_id, endpointId, keyId, secret);
       plaintext = secret.toString('base64url'); } finally { secret.fill(0); }
+    await finalManager(tx, actor, guard);
     await tx.insert(appPublicHmacKeys).values({ id: keyId, org_id: actor.org_id, endpoint_id: endpointId, sealed_secret: sealed });
     const epoch = endpoint.endpoint_epoch + 1;
     const reviewDigest = publicEndpointReviewDigest({ ...endpoint, hmac_key_id: keyId, endpoint_epoch: epoch });
@@ -248,7 +260,7 @@ export async function rotatePublicHmacKey(actor: ModuleActor, endpointId: string
   });
 }
 
-export async function disablePublicEndpoint(actor: ModuleActor, endpointId: string) {
+export async function disablePublicEndpoint(actor: ModuleActor, endpointId: string, guard?: PublicManagementGuard) {
   manager(actor);
   return db.transaction(async (tx) => {
     await assertCurrentModuleManagerWithExecutor(tx, actor);
@@ -262,6 +274,7 @@ export async function disablePublicEndpoint(actor: ModuleActor, endpointId: stri
       eq(appPublicEndpoints.org_id, actor.org_id), eq(appPublicEndpoints.id, endpointId),
     )).limit(1).for('update');
     if (!endpoint) throw stale();
+    await finalManager(tx, actor, guard);
     if (endpoint.state === 'disabled') return { endpoint_id: endpointId,
       state: 'disabled' as const, endpoint_epoch: endpoint.endpoint_epoch };
     const epoch = endpoint.endpoint_epoch + 1;

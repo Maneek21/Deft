@@ -6,7 +6,7 @@ import type { db } from './db.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
-export type PublicSignedRequest = Readonly<{ method: string; pathname: string; search: string; headers: Record<string, string | undefined> }>;
+export type PublicSignedRequest = Readonly<{ method: string; pathname: string; search: string; raw_target?: string; headers: Record<string, string | undefined> }>;
 export class PublicSignatureInvalid extends Error {}
 export class PublicSignatureReplay extends Error {}
 export class PublicSignatureCapacity extends Error {}
@@ -58,7 +58,8 @@ export function publicAuthenticationPolicy(endpoint: Pick<Endpoint, 'authenticat
 export async function verifyPublicSignature(tx: Tx, keys: AppRunKeyProvider, endpoint: Endpoint,
   slug: string, body: Uint8Array, request?: PublicSignedRequest) {
   if (!publicAuthenticationPolicy(endpoint)) return null;
-  if (!request || request.method !== 'POST' || request.pathname !== publicHmacClaimPath(slug) || request.search) throw new PublicSignatureInvalid();
+  if (!request || request.method !== 'POST' || request.pathname !== publicHmacClaimPath(slug)
+    || request.raw_target !== publicHmacClaimPath(slug) || request.search) throw new PublicSignatureInvalid();
   const values = request.headers;
   const epoch = values['x-deft-public-epoch']; const keyId = values['x-deft-public-key-id'];
   const timestamp = values['x-deft-public-timestamp']; const nonce = values['x-deft-public-nonce'];

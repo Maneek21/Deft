@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import type { AuthUser } from '../middleware/auth.js';
-import { humanModuleActor } from '../lib/module-service.js';
+import { publicWebAuthority } from '../lib/app-public-web-authority.js';
 import { AppError, isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { appRuntimeChannelEnabled } from '../lib/app-runtime-channel.js';
@@ -13,11 +13,10 @@ const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const MAX_BODY_BYTES = 8192;
 const READ_DEADLINE_MS = 10_000;
 
-function actor(c: Context) {
+async function authority(c: Context) {
   const user = c.get('user') as AuthUser | undefined;
-  if (!user?.id || !user.org_id) throw new AppError('Authentication required', 'APP_ACCESS_DENIED', 403);
-  return humanModuleActor({ orgId: user.org_id, userId: user.id,
-    role: user.role ?? 'member', source: 'rest' });
+  if (!user?.id || !user.org_id || !user.sid) throw new AppError('Authentication required', 'APP_ACCESS_DENIED', 403);
+  return publicWebAuthority(c.req.header('authorization'), user);
 }
 
 async function body(c: Context): Promise<unknown> {
@@ -73,20 +72,20 @@ appPublicManagementRoutes.use('*', async (c, next) => {
   await next();
 });
 appPublicManagementRoutes.post('/endpoints/stage', async (c) => {
-  try { return c.json(await stagePublicEndpoint(actor(c), await body(c)), 201); }
+  try { const { actor, guard } = await authority(c); return c.json(await stagePublicEndpoint(actor, await body(c), guard), 201); }
   catch (error) { return failure(c, error); }
 });
 appPublicManagementRoutes.post('/endpoints/:endpointId/activate', async (c) => {
-  try { return c.json(await activatePublicEndpoint(actor(c),
-    Id.parse(c.req.param('endpointId')), await body(c))); }
+  try { const { actor, guard } = await authority(c); return c.json(await activatePublicEndpoint(actor,
+    Id.parse(c.req.param('endpointId')), await body(c), guard)); }
   catch (error) { return failure(c, error); }
 });
 appPublicManagementRoutes.post('/endpoints/:endpointId/disable', async (c) => {
-  try { return c.json(await disablePublicEndpoint(actor(c),
-    Id.parse(c.req.param('endpointId')))); }
+  try { const { actor, guard } = await authority(c); return c.json(await disablePublicEndpoint(actor,
+    Id.parse(c.req.param('endpointId')), guard)); }
   catch (error) { return failure(c, error); }
 });
 appPublicManagementRoutes.post('/endpoints/:endpointId/rotate-signing-key', async c => {
-  try { return c.json(await rotatePublicHmacKey(actor(c), Id.parse(c.req.param('endpointId')), await body(c))); }
+  try { const { actor, guard } = await authority(c); return c.json(await rotatePublicHmacKey(actor, Id.parse(c.req.param('endpointId')), await body(c), guard)); }
   catch (error) { return failure(c, error); }
 });
