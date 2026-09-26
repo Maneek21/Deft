@@ -1,6 +1,7 @@
 // Cron job scheduler — registers repeatable jobs in Postgres job_queue
 import { ensureCronJob, QUEUE_NAMES } from './queues.js';
 import { APP_AUTOMATIONS_ENABLED } from './env.js';
+import { ensureAppResourceSyncScan } from './app-resource-sync-scanner.js';
 
 export async function initScheduler(): Promise<void> {
   // Re-enqueue cron jobs on startup (idempotent — skips if already pending)
@@ -35,6 +36,7 @@ export async function initScheduler(): Promise<void> {
       'cron:app-automation-scan',
     );
   }
+  await ensureAppResourceSyncScan(0);
   console.log('[scheduler] Cron jobs registered');
 }
 

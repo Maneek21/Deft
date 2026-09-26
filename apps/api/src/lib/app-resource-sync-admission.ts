@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appRuns, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
 import { APP_RUN_CONTRACT_VERSIONS, APP_RUN_DEFAULT_ATTEMPT_LIMIT,
@@ -19,6 +19,15 @@ import { AppRunSecretService } from './app-run-secrets.js';
 const HostTargetSchema = z.strictObject({ org_id: z.string().uuid(),
   resource_binding_id: z.string().uuid() });
 const unavailable = () => new AppError('Resource sync authority unavailable', 'APP_ACCESS_DENIED', 403);
+
+const AdmissionLimitsSchema = z.strictObject({
+  lock_timeout_ms: z.number().int().min(1).max(5_000),
+  statement_timeout_ms: z.number().int().min(1).max(10_000),
+  deadline_at: z.date(),
+});
+export type ResourceSyncAdmissionLimits = z.infer<typeof AdmissionLimitsSchema> & {
+  signal?: AbortSignal;
+};
 
 export interface ResourceSyncAttemptScheduler {
   scheduleResourceSyncInTransaction(tx: AppRunTransaction, run: AppRunSafeView,
@@ -45,15 +54,29 @@ export class AppResourceSyncAdmissionService {
     private readonly enabled: () => boolean = () => false,
   ) {}
 
-  async admitDue(raw: unknown): Promise<ResourceSyncAdmissionResult> {
+  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits): Promise<ResourceSyncAdmissionResult> {
     if (!this.enabled()) throw new AppError('Resource sync is disabled', 'APP_FEATURE_DISABLED', 503);
     const target = HostTargetSchema.parse(raw);
+    const bounded = limits ? AdmissionLimitsSchema.parse({ lock_timeout_ms: limits.lock_timeout_ms,
+      statement_timeout_ms: limits.statement_timeout_ms, deadline_at: limits.deadline_at }) : undefined;
+    const assertWithinBudget = () => {
+      if (limits?.signal?.aborted || (bounded && bounded.deadline_at <= new Date())) {
+        throw new AppError('Resource sync admission budget expired', 'APP_ACCESS_DENIED', 403);
+      }
+    };
+    assertWithinBudget();
     return this.repository.transaction(async (tx) => {
+      if (bounded) {
+        await tx.execute(sql`SELECT set_config('lock_timeout', ${String(bounded.lock_timeout_ms)}, true),
+          set_config('statement_timeout', ${String(bounded.statement_timeout_ms)}, true)`);
+      }
+      assertWithinBudget();
       // A new Run is not visible yet. Lock authority first, then checkpoint;
       // never take an existing Run lock while holding these later locks.
       const authority = await loadLiveResourceSyncBindingAuthority(tx, {
         ...target, clock: this.clock,
       });
+      assertWithinBudget();
       if (!authority) throw unavailable();
       const { binding, installation, version, grant, registration } = authority;
       const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
@@ -61,6 +84,7 @@ export class AppResourceSyncAdmissionService {
         eq(appSyncCheckpoints.resource_binding_id, binding.id),
       )).limit(1).for('update');
       const now = this.clock();
+      assertWithinBudget();
       if (!checkpoint || checkpoint.state !== 'active' || !Number.isFinite(now.getTime())
         || !binding.consent_expires_at || binding.consent_expires_at <= now) throw unavailable();
 
@@ -160,6 +184,7 @@ export class AppResourceSyncAdmissionService {
           generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence } });
       const attemptId = await this.scheduler.scheduleResourceSyncInTransaction(tx, run, now);
       const completedAt = this.clock();
+      assertWithinBudget();
       if (!attemptId || !Number.isFinite(completedAt.getTime())
         || inputExpiresAt <= completedAt || binding.consent_expires_at <= completedAt) throw unavailable();
       return Object.freeze({ state: 'created', run_id: runId, attempt_id: attemptId });

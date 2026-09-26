@@ -134,6 +134,11 @@ export function isAppResourceSyncChannelEnabled(): boolean {
   return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
     && process.env.DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED === 'true';
 }
+// Unattended scheduling requires a separate explicit host opt-in.
+export function isAppResourceSyncSchedulerEnabled(): boolean {
+  return isAppResourceSyncChannelEnabled()
+    && process.env.DEFT_APP_RESOURCE_SYNC_SCHEDULER_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';

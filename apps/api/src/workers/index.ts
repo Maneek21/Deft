@@ -15,6 +15,7 @@ import {
 } from '../lib/queues.js';
 import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
 import { APP_AUTOMATIONS_ENABLED } from '../lib/env.js';
+import { APP_RESOURCE_SYNC_SCAN_JOB, ensureAppResourceSyncScan } from '../lib/app-resource-sync-scanner.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -279,6 +280,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
 
 async function getScheduledJobHandler(jobName: string): Promise<JobHandler | null> {
   switch (jobName) {
+    case 'app-resource-sync-scan': {
+      const mod = await import('./handlers/app-resource-sync-scan.js');
+      return mod.handleAppResourceSyncScan;
+    }
     case 'app-automation-scan': {
       const mod = await import('./handlers/app-automation-scan.js');
       return mod.handleAppAutomationScan;
@@ -416,6 +421,7 @@ async function processDequeuedJob(
           name: job.name,
           data: job.data,
           attempts: job.attempts,
+          lockToken: job.lockToken,
           leaseExpiresAt: job.lockExpiresAt,
           signal,
         };
@@ -444,6 +450,10 @@ async function processDequeuedJob(
     });
     if (settled) console.error(`[worker] Job ${job.name} failed:`, message);
   } finally {
+    if (job.name === APP_RESOURCE_SYNC_SCAN_JOB) {
+      try { await ensureAppResourceSyncScan(); }
+      catch { console.warn('[worker] Could not schedule next resource sync scan'); }
+    }
     // A terminally failed occurrence must not stop its recurring chain. If the
     // failure is retryable, the active-cron constraint leaves the retry as the
     // sole occurrence and this insert becomes a no-op.
@@ -592,6 +602,7 @@ function trackBackground<T>(promise: Promise<T>): Promise<T> {
 }
 
 async function reconcileRecurringJobs(): Promise<void> {
+  await ensureAppResourceSyncScan();
   await Promise.all(Object.entries(CRON_KEYS)
     .filter(([jobName]) => jobName !== 'agent-heartbeat'
       && (jobName !== 'app-automation-scan' || APP_AUTOMATIONS_ENABLED))

@@ -3,6 +3,8 @@ export type JobData = {
   name: string;
   data: Record<string, any>;
   attempts: number;
+  /** Fences durable scan progress to the currently owned queue delivery. */
+  lockToken?: string;
   /** Queue lease boundary for domain claims that must not outlive delivery. */
   leaseExpiresAt?: Date;
   /** Cooperative cancellation; handlers must explicitly pass it to abort-aware I/O. */
