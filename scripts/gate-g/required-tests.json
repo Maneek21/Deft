@@ -1923,6 +1923,68 @@
           "name": "governed v5 Experience action preserves exact session Run and approval identity"
         }
       ]
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-provider-fairness-db.test.ts",
+          "name": "A05 later healthy tenant reaches a verified receipt while one external provider is held and worker slots remain spare"
+        }
+      ],
+      "id": "a05-provider-fairness",
+      "description": "C10 actual periodic worker dispatcher with one held external provider and spare configured slots. Healthy tenant enqueue <=15s, management <=250ms, verified receipt before held provider release. Equal guarded c10_a05_provider loopback URLs required. Does not certify full-slot flood or universal provider fairness."
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/worker-slot-capacity-db.test.ts",
+          "name": "worker capacity retains five ignored-abort handlers and tops up only settled spare slots"
+        },
+        {
+          "file": "apps/api/test/worker-slot-capacity-db.test.ts",
+          "name": "scheduled attention grouping reserves all twenty-five claimed rows until the late grouped handler settles"
+        },
+        {
+          "file": "apps/api/test/worker-slot-capacity-db.test.ts",
+          "name": "worker shutdown sees a claim settling after shutdown starts and retains late capacity across restart"
+        },
+        {
+          "file": "apps/api/test/worker-slot-capacity-db.test.ts",
+          "name": "failed or empty queue claims release reservations without leaking concurrency capacity"
+        },
+        {
+          "file": "apps/api/test/worker-queue-reliability.test.ts",
+          "name": "unknown jobs terminal-fail instead of being silently completed or retried"
+        },
+        {
+          "file": "apps/api/test/worker-queue-reliability.test.ts",
+          "name": "timeout aborts the handler and late resolution cannot complete the terminal job"
+        },
+        {
+          "file": "apps/api/test/worker-queue-reliability.test.ts",
+          "name": "operational pauses preserve a durable occurrence without spending retry budget"
+        },
+        {
+          "file": "apps/api/test/worker-queue-reliability.test.ts",
+          "name": "a terminally failed recurring occurrence schedules one successor"
+        },
+        {
+          "file": "apps/api/test/worker-lifecycle.test.ts",
+          "name": "worker lifecycle start/stop is idempotent and bounded without dispatching work"
+        }
+      ],
+      "id": "worker-compatibility",
+      "description": "C10 bounded per-queue slot reservations including late ignored-abort handlers, grouped scheduled rows, in-flight claim/shutdown/restart, claim failure; includes existing queue reliability and lifecycle files. Equal guarded c10_worker_slots loopback URLs required."
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-postgres-midnight-db.test.ts",
+          "name": "A05 isolated PostgreSQL UTC midnight admits a fresh Run reservation while an old-day provider Run remains in flight"
+        }
+      ],
+      "id": "a05-postgres-midnight",
+      "description": "C10 actual100/101 persisted Run reservations and natural isolated PostgreSQL/JS midnight while an old provider Run remains in flight, followed by2effects/verifiedreceipts. Requires isolated55436 matching guarded database and private per-process clock shim/file. Never run against host/shared clock; missing clock environment must fail required evidence rather than satisfy via skips."
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
