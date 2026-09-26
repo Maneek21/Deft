@@ -2679,6 +2679,90 @@
           "name": "native exact input review rejects private extras malformed Calendar input and substituted cancellation references"
         }
       ]
+    },
+    {
+      "id": "file-download-authority",
+      "description": "Real delayed disk delivery, current typed parent/SID authority, staged-link fence and bounded storage lifecycle.",
+      "cases": [
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download rechecks Message parent after held real storage read without delivering withdrawn bytes"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download honors current Task watcher and assignee grants after storage waits"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download denies org membership withdrawal and stored SID expiry after storage waits"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download preserves staged uploader access and denies a newly linked inaccessible parent after storage waits"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download bounds bytes, rejects changed retained storage and preserves default FileStore reads"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download samples the verified JWT deadline after held storage delivery without changing a shared clock"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File download validates the entire typed Message and Task tenant parent chain"
+        },
+        {
+          "file": "apps/api/test/file-download-authority-db.test.ts",
+          "name": "File final staged custody fence blocks actual typed-link FK insertion through the last SID wait"
+        },
+        {
+          "file": "apps/api/test/file-store.test.ts",
+          "name": "local file store keeps bytes inside its root and supports the full lifecycle"
+        }
+      ]
+    },
+    {
+      "id": "file-download-compatibility",
+      "description": "Existing authenticated message attachments and native Calendar/File owner projection compatibility.",
+      "cases": [
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "processes uploaded text into a bounded derivative and serves detected bytes"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "persists but never serves an attachment blocked by safety policy"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "sweeps only expired uploads that remain unattached"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "claims an uploaded file atomically and returns canonical structured metadata"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "reads a typed-only attachment without requiring the legacy message column"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "rejects another uploader or another org file without persisting a message"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "prevents attachment reuse and rolls back the losing message"
+        },
+        {
+          "file": "apps/api/test/message-attachments.test.ts",
+          "name": "legacy markers claim by id but never trust marker metadata"
+        },
+        {
+          "file": "apps/api/test/native-calendar-file-projections-db.test.ts",
+          "name": "native Calendar and File display uses current event owner and attachment parent ACLs"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
