@@ -2264,6 +2264,107 @@
           "name": "private read HTTP rechecks participant kind after the final web SID lock wait"
         }
       ]
+    },
+    {
+      "cases": [
+        {
+          "name": "signed public claim HTTP authenticates original bytes and exact headers path epoch key while published availability remains public",
+          "file": "apps/api/test/app-public-hmac-db.test.ts"
+        },
+        {
+          "name": "signed nonce concurrency and fresh process replay deny while fresh nonce idempotency preserves one governed public Run",
+          "file": "apps/api/test/app-public-hmac-db.test.ts"
+        },
+        {
+          "name": "signed admission rechecks actual post-record-wait SQL time and rolls invalid body conflict and outbox failure back without nonce",
+          "file": "apps/api/test/app-public-hmac-db.test.ts"
+        },
+        {
+          "name": "signed key rotation requires disabled exact review retains immutable sealed identities and never downgrades to anonymous",
+          "file": "apps/api/test/app-public-hmac-db.test.ts"
+        },
+        {
+          "name": "signed nonce retention includes future timestamps bounds live replay growth and cleans at most100 expired receipts per acceptance",
+          "file": "apps/api/test/app-public-hmac-db.test.ts"
+        }
+      ],
+      "id": "public-hmac"
+    },
+    {
+      "cases": [
+        {
+          "name": "public HMAC v1 external signer frames original UTF8 bytes and every authority pin unambiguously",
+          "file": "packages/app-kit/test/public-hmac.test.ts"
+        },
+        {
+          "name": "public HMAC signer rejects noncanonical timestamp nonce key epoch and overlarge raw body",
+          "file": "packages/app-kit/test/public-hmac.test.ts"
+        }
+      ],
+      "id": "public-hmac-signer"
+    },
+    {
+      "id": "public-hmac-authority",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-hmac-authority-db.test.ts",
+          "name": "public signing key rotation denies initiating web session revocation after actual App lock wait"
+        },
+        {
+          "file": "apps/api/test/app-public-hmac-authority-db.test.ts",
+          "name": "signed public HTTP rejects raw dot and encoded-dot path aliases before normalized canonical path authentication"
+        },
+        {
+          "file": "apps/api/test/app-public-hmac-authority-db.test.ts",
+          "name": "public endpoint management denies human kind and agent flag withdrawal after real SID waits with no stage activation disable or rotation mutation"
+        },
+        {
+          "file": "apps/api/test/app-public-hmac-authority-db.test.ts",
+          "name": "current web manager can stage activate disable and rotate signed endpoint through ordinary HTTP while missing raw target proof fails closed"
+        }
+      ]
+    },
+    {
+      "id": "connected-reviewed-upgrade",
+      "description": "Explicit connected protocol1/2 supersede review, existing supported transitions, pending fire/Run handling, original artifact retention and CRM/Module compatibility. Matching guarded synthetic database required; UI proof separately attested.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "connected explicit supersede is strict, blocks legacy upgrade bypass and preserves prior pointers on rollback"
+        },
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "connected upgrade normal dispatcher terminalizes exact old pending and claimed fires without rebinding or creating Runs"
+        },
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "connected supersede denies old unstarted Run dispatch and normal retention expires it under retained original pins"
+        },
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "connected upgrade retains started ambiguous effect and signed unknown outcome under old pins without effect retry"
+        },
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "explicit connected supersede preserves supported protocol1 to protocol2 reviewed upgrade"
+        },
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "protocol1 upgrade requires explicit supersede and never rebinds a pending manual Run"
+        },
+        {
+          "file": "apps/api/test/app-connected-upgrade-http-db.test.ts",
+          "name": "connected upgrade final web SID fence denies revocation during a real App lock wait and rolls back"
+        },
+        {
+          "file": "apps/api/test/apps-connected-grants-db.test.ts",
+          "name": "reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, and rollback"
+        },
+        {
+          "file": "apps/api/test/crm-public-lifecycle-db.test.ts",
+          "name": "CRM base installs records and links, then reviewed connected activation preserves them"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
