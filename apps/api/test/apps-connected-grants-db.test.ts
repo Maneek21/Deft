@@ -106,6 +106,13 @@ import { databaseCompleteAppRunTestKeyringFixture } from './fixtures/app-run-tes
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
+// Capacity uses fixed organization IDs and global row-count assertions. Require
+// its explicitly assigned fresh synthetic database before any fixture writes.
+if (process.env.DEFT_PREVIEW_CAPACITY_PROOF === 'true'
+  && (DATABASE_URL !== process.env.DATABASE_URL
+    || !/^postgresql:\/\/gate_g_test@127\.0\.0\.1:55435\/gate_g_20260926_capacity_test(?:_v[0-9]+)?$/.test(DATABASE_URL ?? ''))) {
+  throw new Error('A05 capacity proof requires matching URLs for the assigned fresh synthetic capacity database');
+}
 if (!DATABASE_URL) throw new Error('Connected App grant DB tests require DEFT_TEST_DATABASE_URL');
 if (process.env.CI !== 'true' && !/(?:test|ci|acceptance|phase5)/i.test(new URL(DATABASE_URL).pathname)) {
   throw new Error('Connected App grant DB tests require an explicitly disposable database');
@@ -914,6 +921,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal(new Set(managedIds).size, managedIds.length, 'management cursor pages do not duplicate definitions');
 
   if (capacityMode) {
+    await t.test('A05 capacity mode pages 402 definitions across two organizations within frozen bounds', async () => {
     const currentDue = await Promise.all(Array.from({ length: 23 }, (_value, index) => (
       createDefinition(1, 100, new Date(approvedAt.getTime() + index + 1))
     )));
@@ -1087,6 +1095,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       org_b_persist_enqueue_ms_max: scanMs,
       org_b_fire_id: orgBJob.data.fire_id,
     }));
+    });
     return;
   }
 
