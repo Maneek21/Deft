@@ -1,3 +1,7 @@
+import { SyncDescriptorV2Schema, SyncRequestV2Schema, parseSyncPageV2, digestResourceSyncDescriptorV2,
+  canonicalAttachmentJson, type SyncPageV2 } from '@deft/app-kit';
+import { retainedAttachmentMetadataCapacity } from './app-attachment-capacity.js';
+import type { AppAttachmentPageLinker, AttachmentAppliedParent } from './app-attachment-page-linker.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -21,6 +25,7 @@ export class AppResourceSyncStore {
   constructor(
     private readonly secrets: AppResourceSyncSecretService,
     private readonly runInputs: AppRunSecretRepository,
+    private readonly attachmentMode?: { linker: AppAttachmentPageLinker },
   ) {}
 
   async applyPageInTransaction(tx: AppRunTransaction, input: Readonly<{
@@ -88,10 +93,12 @@ export class AppResourceSyncStore {
       || binding.retention_class !== run.retention_class) {
       throw new Error('APP_RESOURCE_SYNC_BINDING_MISMATCH');
     }
-    const descriptor = parseSyncDescriptor(binding.reviewed_descriptor);
+    const descriptor = this.attachmentMode ? SyncDescriptorV2Schema.parse(binding.reviewed_descriptor) : parseSyncDescriptor(binding.reviewed_descriptor);
+    if (binding.registration_contract_version !== (this.attachmentMode ? 'deft.app_runtime_channel.v3' : 'deft.app_runtime_channel.v2')) throw new Error('APP_RESOURCE_SYNC_BINDING_MISMATCH');
     if (descriptor.key !== binding.resource_key
       || descriptor.resource_type !== binding.resource_family
-      || await digestResourceSyncDescriptor(descriptor) !== binding.descriptor_digest) {
+      || await (this.attachmentMode ? digestResourceSyncDescriptorV2(SyncDescriptorV2Schema.parse(descriptor))
+        : digestResourceSyncDescriptor(parseSyncDescriptor(descriptor))) !== binding.descriptor_digest) {
       throw new Error('APP_RESOURCE_SYNC_DESCRIPTOR_MISMATCH');
     }
     await tx.execute(sql`SELECT id FROM app_sync_checkpoints WHERE org_id = ${input.org_id}
@@ -137,13 +144,13 @@ export class AppResourceSyncStore {
       throw new Error('APP_RESOURCE_SYNC_CURSOR_HMAC_MISMATCH');
     }
     const exactInput = await this.runInputs.readInput(input.org_id, run.id, tx);
-    const startingRequest = parseSyncRequest(exactInput);
+    const startingRequest = this.attachmentMode ? SyncRequestV2Schema.parse(exactInput) : parseSyncRequest(exactInput);
     if (startingRequest.cursor !== cursorValue
       || startingRequest.max_items > binding.max_records_per_page) {
       throw new Error('APP_RESOURCE_SYNC_RUN_INPUT_MISMATCH');
     }
-    const page = parseSyncPage(descriptor, startingRequest, input.page);
-    const pageJson = canonicalSyncPageJson(page);
+    const page = this.attachmentMode ? parseSyncPageV2(descriptor,startingRequest,input.page) : parseSyncPage(descriptor,startingRequest,input.page);
+    const pageJson = this.attachmentMode ? canonicalAttachmentJson(page) : canonicalSyncPageJson(page);
     if (Buffer.byteLength(pageJson, 'utf8') > binding.max_page_bytes) {
       throw new Error('APP_RESOURCE_SYNC_PAGE_TOO_LARGE');
     }
@@ -194,6 +201,7 @@ export class AppResourceSyncStore {
       }
       return row ?? null;
     }
+    const parents: AttachmentAppliedParent[] = [];
     const writeProjection = async (item: { id: string; revision: string;
       data?: Record<string, string | number | boolean> }, state: 'live' | 'tombstone') => {
       const prior = await candidatesFor(item.id, this.secrets);
@@ -255,11 +263,14 @@ export class AppResourceSyncStore {
           fresh_until: null,
         } as typeof appResourceProjections.$inferInsert);
       }
+      parents.push({ projection_id:projectionId,id:item.id,revision:item.revision,state,...(item.data ? {data:item.data} : {}) });
     };
     // Tombstones first let a replacement page reclaim body bytes before
     // upserts are capacity-accounted by database triggers.
     for (const item of page.tombstones) await writeProjection(item, 'tombstone');
     for (const item of page.upserts) await writeProjection(item, 'live');
+    if (this.attachmentMode) await this.attachmentMode.linker.link(tx, { org_id:input.org_id,run_id:run.id,attempt_id:attempt.id,
+      checkpoint_id:checkpoint.id,generation:checkpoint.generation,binding,page:page as SyncPageV2,parents,clock:input.clock });
     const [accounted] = await tx.select({ count: appSyncCheckpoints.retained_record_count,
       bytes: appSyncCheckpoints.retained_bytes }).from(appSyncCheckpoints).where(and(
       eq(appSyncCheckpoints.org_id, input.org_id), eq(appSyncCheckpoints.id, checkpoint.id),
@@ -272,6 +283,9 @@ export class AppResourceSyncStore {
     const nextCursorHmac = this.secrets.cursorFingerprint(page.next_cursor, nextCursorContext);
     const nextCursorEnvelope = page.next_cursor === null ? null
       : this.secrets.sealJson(page.next_cursor, nextCursorContext);
+    if(this.attachmentMode){const retained=await retainedAttachmentMetadataCapacity(tx,{org_id:input.org_id,resource_binding_id:binding.id,checkpoint_id:checkpoint.id});
+      if(accounted.bytes+(nextCursorEnvelope?ciphertextBytes(nextCursorEnvelope):0)+retained.bytes>binding.max_retained_bytes)
+        throw new Error('APP_ATTACHMENT_COMBINED_CAPACITY_EXCEEDED');}
     const [applied] = await tx.update(appSyncCheckpoints).set({
       cursor_sequence: nextSequence,
       cursor_hmac_key_version: nextCursorHmac.key_version,

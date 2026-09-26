@@ -70,6 +70,9 @@ export async function scanAppResourceSyncBindings(
     const bindings = await lockTx.select({ org_id: appResourceBindings.org_id,
       resource_binding_id: appResourceBindings.id }).from(appResourceBindings).where(and(
       eq(appResourceBindings.state, 'active'),
+      // Channel3 remains explicitly owner-admitted in its first slice; never
+      // forward a new binding into the default closed channel2 scanner.
+      eq(appResourceBindings.registration_contract_version,'deft.app_runtime_channel.v2'),
       cursor.after_binding_id ? gt(appResourceBindings.id, cursor.after_binding_id) : undefined,
     )).orderBy(asc(appResourceBindings.id)).limit(APP_RESOURCE_SYNC_SCAN_LIMIT + 1);
     const saveCursor = async (after: string | null) => {

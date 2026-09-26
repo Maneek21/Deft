@@ -155,6 +155,7 @@ export async function getAppRunRuntime(): Promise<AppRunRuntime> {
 export async function shutdownAppRunRuntime(): Promise<void> {
   const pending = runtimePromise;
   runtimePromise = null;
+  await (await import('./app-attachment-runtime.js')).shutdownAppAttachmentRuntime();
   await (await import('./app-native-execution-db.js')).closeNativeExecutionDatabase();
   if (!pending) return;
   try {

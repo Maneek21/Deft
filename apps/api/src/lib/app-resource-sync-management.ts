@@ -1,7 +1,16 @@
+import { digestResourceSyncDescriptorV2 } from '@deft/app-kit';
+import { assertAttachmentBrokerEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
+import { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-reviewed.js';
+import { loadLiveAttachmentSyncBindingAuthority, loadLiveAttachmentSyncAuthority } from './app-attachment-sync-authority.js';
+import { createAttachmentSyncDiscoverySnapshot } from './app-attachment-sync-discovery.js';
+import { attachmentSyncConsentReview } from './app-attachment-sync-consent.js';
+import { AppAttachmentConsentRequestSchema, AppAttachmentConsentActivationSchema,
+  hashAppAttachmentSessionToken, type AppAttachmentConsentRequest } from './app-attachment-policy.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { digestResourceSyncDescriptor } from '@deft/app-kit/experimental/resource-sync';
+import { SyncDescriptorV1Schema, digestResourceSyncDescriptor } from '@deft/app-kit/experimental/resource-sync';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
   appSyncCheckpoints, auditLog, orgMembers, users,
@@ -71,8 +80,36 @@ async function lockMembers(tx: Tx, orgId: string, userIds: readonly string[], mo
 
 export class AppResourceSyncManagement {
   readonly #secrets: AppResourceSyncSecretService;
-  constructor(keys: AppRunKeyProvider, private readonly clock: () => Date = () => new Date()) {
+  constructor(keys: AppRunKeyProvider, private readonly clock: () => Date = () => new Date(),
+    private readonly internalMode: 'resource_v2' | 'attachment_v3' = 'resource_v2') {
+    if (internalMode === 'attachment_v3') assertAttachmentBrokerEnabled();
     this.#secrets = new AppResourceSyncSecretService(keys);
+  }
+
+  /** Explicit new-route mode. Existing callers retain the closed channel2 path. */
+  #loadReviewed(tx: Tx, orgId: string, installationId: string, resourceKey?: string) {
+    return this.internalMode === 'attachment_v3'
+      ? loadReviewedAttachmentSyncDescriptor(tx, orgId, installationId, resourceKey)
+      : loadReviewedResourceSyncDescriptor(tx, orgId, installationId, resourceKey);
+  }
+  #loadBinding(tx: Tx, input: Parameters<typeof loadLiveResourceSyncBindingAuthority>[1]) {
+    return this.internalMode === 'attachment_v3'
+      ? loadLiveAttachmentSyncBindingAuthority(tx, input) : loadLiveResourceSyncBindingAuthority(tx, input);
+  }
+  #loadSession(tx: Tx, input: Parameters<typeof loadLiveResourceSyncAuthority>[1]) {
+    return this.internalMode === 'attachment_v3'
+      ? loadLiveAttachmentSyncAuthority(tx, input) : loadLiveResourceSyncAuthority(tx, input);
+  }
+  get #contract() { return this.internalMode === 'attachment_v3'
+    ? 'deft.app_runtime_channel.v3' as const : 'deft.app_runtime_channel.v2' as const; }
+  async #final(tx: Tx, ids: readonly string[], guard?: ResourceSyncManagementGuard, deadlines: readonly Date[] = []) {
+    if (this.internalMode !== 'attachment_v3') return;
+    // managementTransaction/setup already executed this exact guard. Preserve
+    // its conservative deadline without acquiring the SID or participants again.
+    const webGuard = guard as Partial<WebAuthorityGuard> | undefined;
+    const webExpiry = webGuard?.current_web_session_expires_at?.();
+    if (!await attachmentFinalAuthorityIsCurrent(tx, ids, { clock: this.clock,
+      expires_at: [...deadlines, ...(webExpiry ? [webExpiry] : [])] })) throw stale();
   }
 
   /** Discovery conveys no private read or Runtime authority. Explicit operator
@@ -80,7 +117,7 @@ export class AppResourceSyncManagement {
   async setupContext(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     const { installation_id, operator_user_id } = z.strictObject({ installation_id: Id,
-      operator_user_id: Id.optional() }).parse(value);
+      operator_user_id: this.internalMode === 'attachment_v3' ? Id : Id.optional() }).parse(value);
     const operatorId = operator_user_id ?? actor.actor_id;
     return db.transaction(async (tx) => {
       await lockMembers(tx, actor.org_id, [actor.actor_id, operatorId], 'UPDATE');
@@ -89,7 +126,7 @@ export class AppResourceSyncManagement {
         .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(
           eq(orgMembers.org_id, actor.org_id), eq(orgMembers.user_id, operatorId))).limit(1);
       if (!eligible?.active || eligible.role === 'guest' || eligible.kind !== 'human') throw denied();
-      const reviewed = await loadReviewedResourceSyncDescriptor(tx, actor.org_id, installation_id);
+      const reviewed = await this.#loadReviewed(tx, actor.org_id, installation_id);
       const { installation, version, grant } = reviewed;
       const bindings = await tx.select({ binding_id: appResourceBindings.id,
         resource_key: appResourceBindings.resource_key, state: appResourceBindings.state,
@@ -110,13 +147,18 @@ export class AppResourceSyncManagement {
       const descriptors = await Promise.all(reviewed.descriptors.map(async (descriptor) => ({
         resource_key: descriptor.key, resource_type: descriptor.resource_type,
         visibility: descriptor.requested_visibility,
-        descriptor_digest: await digestResourceSyncDescriptor(descriptor),
+        descriptor_digest: this.internalMode === 'attachment_v3'
+          ? await digestResourceSyncDescriptorV2(descriptor) : await digestResourceSyncDescriptor(SyncDescriptorV1Schema.parse(descriptor)),
+        ...(this.internalMode === 'attachment_v3' && 'attachments' in descriptor
+          ? { attachment_policy: descriptor.attachments } : {}),
       })));
       await guard?.(tx);
       if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, operatorId)) throw denied();
+      await this.#final(tx, [actor.actor_id, operatorId], guard);
       const now = this.clock();
       const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      return { schema_version: operator_user_id ? 'deft.app_resource_sync_setup.v2' as const : 'deft.app_resource_sync_setup.v1' as const,
+      return { schema_version: this.internalMode === 'attachment_v3' ? 'deft.app_attachment_setup.v1' as const
+        : operator_user_id ? 'deft.app_resource_sync_setup.v2' as const : 'deft.app_resource_sync_setup.v1' as const,
         org_id: actor.org_id, owner_user_id: actor.actor_id, operator_user_id: operatorId,
         installation_id: installation.id, app_version_id: version.id,
         host_policy: APP_RESOURCE_SYNC_HOST_POLICY,
@@ -137,7 +179,9 @@ export class AppResourceSyncManagement {
               min_interval_seconds: 300,
             },
           };
-          return { ...descriptor, consent_request,
+          return { ...descriptor, consent_request: this.internalMode === 'attachment_v3'
+            ? { ...consent_request, schema_version: 'deft.app_attachment_consent_request.v1' as const,
+              attachment_policy: descriptor.attachment_policy } : consent_request,
             existing_binding: binding ? { binding_id: binding.binding_id,
               ...(operator_user_id ? { operator_user_id: binding.operator_user_id } : {}),
               state: binding.state as 'active' | 'disabled',
@@ -152,7 +196,7 @@ export class AppResourceSyncManagement {
     });
   }
 
-  async #reviewContext(tx: Tx, actor: Human, input: AppResourceSyncConsentRequest,
+  async #reviewContext(tx: Tx, actor: Human, input: AppResourceSyncConsentRequest | AppAttachmentConsentRequest,
     activation: boolean) {
     await lockMembers(tx, actor.org_id, [actor.actor_id, input.operator_user_id], 'UPDATE');
     await assertManager(tx, actor);
@@ -163,7 +207,7 @@ export class AppResourceSyncManagement {
     if (!operatorMember?.is_active || operatorMember.role === 'guest' || operatorMember.kind !== 'human') throw denied();
     if (activation) await tx.execute(sql`SELECT id FROM app_installations
       WHERE org_id = ${actor.org_id} AND id = ${input.installation_id} FOR UPDATE`);
-    const reviewed = await loadReviewedResourceSyncDescriptor(tx, actor.org_id,
+    const reviewed = await this.#loadReviewed(tx, actor.org_id,
       input.installation_id, input.resource_key);
     const { installation, version, grant, descriptor, descriptor_digest } = reviewed;
     if (version.id !== input.expected_app_version_id
@@ -175,7 +219,7 @@ export class AppResourceSyncManagement {
     try { expiresAt = assertResourceSyncConsentWindow(input.consent_expires_at, this.clock()); }
     catch { throw activation ? stale() : new AppError('Invalid private sync consent window',
       'APP_ACTION_INVALID', 400); }
-    const review = Object.freeze({ schema_version: 'deft.app_resource_sync_consent_review.v1' as const,
+    const legacyReview = { schema_version: 'deft.app_resource_sync_consent_review.v1' as const,
       org_id: actor.org_id, owner_user_id: actor.actor_id,
       installation_id: installation.id, app_version_id: version.id,
       grant_snapshot_id: grant.id, grant_snapshot_digest: grant.snapshot_digest,
@@ -183,24 +227,33 @@ export class AppResourceSyncManagement {
       grant_epoch: installation.grant_epoch, operator_user_id: input.operator_user_id,
       resource_key: descriptor.key, descriptor_digest,
       consent_expires_at: expiresAt.toISOString(), limits: input.limits,
-      host_policy: APP_RESOURCE_SYNC_HOST_POLICY });
+      host_policy: APP_RESOURCE_SYNC_HOST_POLICY };
+    const review = this.internalMode === 'attachment_v3'
+      ? attachmentSyncConsentReview({ org_id: actor.org_id, owner_user_id: actor.actor_id,
+        operator_user_id: input.operator_user_id, reviewed: await loadReviewedAttachmentSyncDescriptor(tx,
+          actor.org_id, input.installation_id, input.resource_key), consent_expires_at: expiresAt,
+        limits: input.limits, attachment_policy: AppAttachmentConsentRequestSchema.shape.attachment_policy.parse('attachment_policy' in input ? input.attachment_policy : undefined) })
+      : legacyReview;
     return { ...reviewed, expiresAt,
       review: Object.freeze({ ...review, review_digest: digestAppGrantValue(review) }) };
   }
 
   async prepareConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
-    const input = AppResourceSyncConsentRequestSchema.parse(value);
+    const input = this.internalMode === 'attachment_v3'
+      ? AppAttachmentConsentRequestSchema.parse(value) : AppResourceSyncConsentRequestSchema.parse(value);
     return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false)).review,
       async (_result, tx) => {
         if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
+        await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at)]);
         assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
       });
   }
 
   async activateConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
-    const input = AppResourceSyncConsentActivationSchema.parse(value);
+    const input = this.internalMode === 'attachment_v3'
+      ? AppAttachmentConsentActivationSchema.parse(value) : AppResourceSyncConsentActivationSchema.parse(value);
     return managementTransaction(guard, async (tx) => {
       const { installation, version, grant, descriptor, descriptor_digest, expiresAt, review } =
         await this.#reviewContext(tx, actor, input, true);
@@ -218,24 +271,28 @@ export class AppResourceSyncManagement {
       const registrationId = randomUUID();
       const bindingId = randomUUID();
       const checkpointId = randomUUID();
-      const providerSnapshot = await createResourceSyncDiscoverySnapshot({
-        org_id: actor.org_id, registration_id: registrationId, descriptor, captured_at: now });
+      const providerSnapshot = this.internalMode === 'attachment_v3'
+        ? await createAttachmentSyncDiscoverySnapshot({ org_id: actor.org_id, registration_id: registrationId,
+          descriptor: (await loadReviewedAttachmentSyncDescriptor(tx, actor.org_id, installation.id, descriptor.key)).descriptor, captured_at: now })
+        : await createResourceSyncDiscoverySnapshot({ org_id: actor.org_id, registration_id: registrationId, descriptor: SyncDescriptorV1Schema.parse(descriptor), captured_at: now });
       await tx.insert(appRuntimeRegistrations).values({ id: registrationId, org_id: actor.org_id,
         app_installation_id: installation.id, app_version_id: version.id,
         grant_snapshot_id: grant.id, operator_user_id: input.operator_user_id,
-        contract_version: 'deft.app_runtime_channel.v2', state: 'disabled',
+        contract_version: this.#contract, state: 'disabled',
         created_at: now, updated_at: now });
       const providerSnapshotId = await persistCapabilityProviderSnapshotWithExecutor(tx, providerSnapshot);
       await tx.insert(appResourceBindings).values({ id: bindingId, org_id: actor.org_id,
         app_installation_id: installation.id, app_version_id: version.id,
         grant_snapshot_id: grant.id, runtime_registration_id: registrationId,
-        registration_contract_version: 'deft.app_runtime_channel.v2',
+        registration_contract_version: this.#contract,
         provider_kind: 'app_runtime', provider_instance_id: registrationId,
         provider_snapshot_id: providerSnapshotId,
         resource_key: descriptor.key, resource_family: descriptor.resource_type,
         operation_name: `sync_${descriptor.key}`,
-        interface_identity: `deft.resource_sync.v2:${actor.org_id.toLowerCase()}:${installation.id.toLowerCase()}:${descriptor.key}`,
+        interface_identity: `deft.resource_sync.${this.internalMode === 'attachment_v3' ? 'v3' : 'v2'}:${actor.org_id.toLowerCase()}:${installation.id.toLowerCase()}:${descriptor.key}`,
         reviewed_descriptor: descriptor, descriptor_digest,
+        ...(this.internalMode === 'attachment_v3' && 'attachment_policy' in review
+          ? { attachment_policy: review.attachment_policy, attachment_consent_digest: review.review_digest } : {}),
         owner_user_id: actor.actor_id, owner_scope: 'private_user',
         ...APP_RESOURCE_SYNC_HOST_POLICY,
         ...input.limits,
@@ -256,7 +313,7 @@ export class AppResourceSyncManagement {
         reviewed_by_user_id: actor.actor_id, reviewed_at: now,
         consent_expires_at: expiresAt, updated_at: now })
         .where(and(eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.id, bindingId)));
-      const live = await loadLiveResourceSyncBindingAuthority(tx, { org_id: actor.org_id,
+      const live = await this.#loadBinding(tx, { org_id: actor.org_id,
         resource_binding_id: bindingId, clock: this.clock });
       if (!live) throw stale();
       await tx.insert(auditLog).values({ org_id: actor.org_id, actor_type: 'human',
@@ -273,7 +330,8 @@ export class AppResourceSyncManagement {
         review_digest: review.review_digest });
     }, async (_result, tx) => {
       if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
-      assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
+      await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at)]);
+        assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
     });
   }
 
@@ -282,9 +340,10 @@ export class AppResourceSyncManagement {
     bindingId = Id.parse(bindingId);
     const sessionId = randomUUID();
     const token = randomBytes(32).toString('base64url');
-    const tokenHash = hashAppResourceSyncToken(token);
+    const tokenHash = this.internalMode === 'attachment_v3'
+      ? hashAppAttachmentSessionToken(token) : hashAppResourceSyncToken(token);
     const issued = await managementTransaction(guard, async (tx) => {
-      const live = await loadLiveResourceSyncBindingAuthority(tx, { org_id: actor.org_id,
+      const live = await this.#loadBinding(tx, { org_id: actor.org_id,
         resource_binding_id: bindingId, clock: this.clock });
       if (!live || live.registration.operator_user_id !== actor.actor_id) throw denied();
       const checkedAt = this.clock();
@@ -299,7 +358,7 @@ export class AppResourceSyncManagement {
         lifecycle_epoch: live.installation.lifecycle_epoch,
         grant_epoch: live.installation.grant_epoch, expires_at: expiresAt,
         created_at: checkedAt, updated_at: checkedAt });
-      if (!await loadLiveResourceSyncAuthority(tx, { org_id: actor.org_id,
+      if (!await this.#loadSession(tx, { org_id: actor.org_id,
         session_id: sessionId, token_hash: tokenHash, clock: this.clock })) throw stale();
       await tx.insert(auditLog).values({ org_id: actor.org_id, actor_type: 'human',
         actor_id: actor.actor_id, action: 'app.resource_sync_session_issue',
@@ -312,6 +371,7 @@ export class AppResourceSyncManagement {
         operatorUserId: live.registration.operator_user_id };
     }, async (result, tx) => {
       if (!await resourceSyncParticipantsAreHuman(tx, result.ownerUserId, result.operatorUserId)) throw denied();
+      await this.#final(tx, [result.ownerUserId, result.operatorUserId], guard, [result.expiresAt]);
       assertBeforeDeadline(result.expiresAt, this.clock);
     });
     return Object.freeze({ session_id: sessionId, session_token: token, expires_at: issued.expiresAt });
@@ -321,17 +381,20 @@ export class AppResourceSyncManagement {
   async revokeConsent(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     bindingId = Id.parse(bindingId);
+    let finalParticipants: string[] = [];
     return managementTransaction(guard, async (tx) => {
       const [locator] = await tx.select({ owner_user_id: appResourceBindings.owner_user_id,
         installation_id: appResourceBindings.app_installation_id,
         registration_id: appResourceBindings.runtime_registration_id })
         .from(appResourceBindings).where(and(eq(appResourceBindings.org_id, actor.org_id),
-          eq(appResourceBindings.id, bindingId))).limit(1);
+          eq(appResourceBindings.id, bindingId),
+          eq(appResourceBindings.registration_contract_version, this.#contract))).limit(1);
       if (!locator || locator.owner_user_id !== actor.actor_id) throw denied();
       const [registrationLocator] = await tx.select({ operator_user_id: appRuntimeRegistrations.operator_user_id })
         .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, actor.org_id),
           eq(appRuntimeRegistrations.id, locator.registration_id))).limit(1);
       if (!registrationLocator) throw stale();
+      finalParticipants = [actor.actor_id, registrationLocator.operator_user_id];
       await lockMembers(tx, actor.org_id, [actor.actor_id, registrationLocator.operator_user_id], 'UPDATE');
       await assertManager(tx, actor);
       await tx.execute(sql`SELECT id FROM app_installations WHERE org_id = ${actor.org_id}
@@ -367,25 +430,27 @@ export class AppResourceSyncManagement {
         before_state: { state: binding.state }, after_state: { state: 'revoked' },
         metadata: { source: actor.source } });
       return { revoked: true };
-    });
+    }, async (_result, tx) => this.#final(tx, finalParticipants, guard));
   }
 
   /** Emergency operator registration revoke. A registration is per consent. */
   async revokeRegistration(actor: ModuleActor, registrationId: string, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     registrationId = Id.parse(registrationId);
+    let finalParticipants: string[] = [];
     return managementTransaction(guard, async (tx) => {
       const [locator] = await tx.select({ installation_id: appRuntimeRegistrations.app_installation_id,
         operator_user_id: appRuntimeRegistrations.operator_user_id })
         .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, actor.org_id),
           eq(appRuntimeRegistrations.id, registrationId),
-          eq(appRuntimeRegistrations.contract_version, 'deft.app_runtime_channel.v2'))).limit(1);
+          eq(appRuntimeRegistrations.contract_version, this.#contract))).limit(1);
       if (!locator) throw denied();
       const [bindingLocator] = await tx.select({ id: appResourceBindings.id,
         owner_user_id: appResourceBindings.owner_user_id })
         .from(appResourceBindings).where(and(eq(appResourceBindings.org_id, actor.org_id),
           eq(appResourceBindings.runtime_registration_id, registrationId))).limit(1);
       if (!bindingLocator) throw stale();
+      finalParticipants = [actor.actor_id, locator.operator_user_id, bindingLocator.owner_user_id];
       await lockMembers(tx, actor.org_id,
         [actor.actor_id, locator.operator_user_id, bindingLocator.owner_user_id], 'UPDATE');
       await assertManager(tx, actor);
@@ -401,7 +466,7 @@ export class AppResourceSyncManagement {
       const [binding] = await tx.select().from(appResourceBindings).where(and(
         eq(appResourceBindings.org_id, actor.org_id),
         eq(appResourceBindings.id, bindingLocator.id))).limit(1);
-      if (!registration || !binding || registration.contract_version !== 'deft.app_runtime_channel.v2'
+      if (!registration || !binding || registration.contract_version !== this.#contract
         || registration.app_installation_id !== locator.installation_id
         || registration.operator_user_id !== locator.operator_user_id
         || binding.runtime_registration_id !== registration.id
@@ -425,12 +490,13 @@ export class AppResourceSyncManagement {
         after_state: { state: 'revoked', runtime_epoch: registration.runtime_epoch + 1 },
         metadata: { source: actor.source } });
       return { revoked: true };
-    });
+    }, async (_result, tx) => this.#final(tx, finalParticipants, guard));
   }
 
   async revokeOperatorSession(actor: ModuleActor, sessionId: string, guard?: ResourceSyncManagementGuard) {
     operator(actor);
     sessionId = Id.parse(sessionId);
+    let finalParticipants: string[] = [];
     return managementTransaction(guard, async (tx) => {
       const [locator] = await tx.select({ audience: appRuntimeSessions.audience,
         operator_user_id: appRuntimeSessions.operator_user_id,
@@ -445,8 +511,10 @@ export class AppResourceSyncManagement {
       const [bindingLocator] = await tx.select({ owner_user_id: appResourceBindings.owner_user_id,
         installation_id: appResourceBindings.app_installation_id })
         .from(appResourceBindings).where(and(eq(appResourceBindings.org_id, actor.org_id),
-          eq(appResourceBindings.id, locator.resource_binding_id))).limit(1);
+          eq(appResourceBindings.id, locator.resource_binding_id),
+          eq(appResourceBindings.registration_contract_version, this.#contract))).limit(1);
       if (!bindingLocator) throw stale();
+      finalParticipants = [actor.actor_id, bindingLocator.owner_user_id];
       await lockMembers(tx, actor.org_id, [actor.actor_id, bindingLocator.owner_user_id], 'SHARE');
       const [member] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role })
         .from(orgMembers).where(and(eq(orgMembers.org_id, actor.org_id),
@@ -476,6 +544,6 @@ export class AppResourceSyncManagement {
         before_state: { revoked: false }, after_state: { revoked: true },
         metadata: { source: actor.source } });
       return { revoked: true };
-    });
+    }, async (_result, tx) => this.#final(tx, finalParticipants, guard));
   }
 }

@@ -36,6 +36,8 @@ import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service
 import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
 import type { RuntimeAppReviewOptions } from './app-runtime-review.js';
 import { isAppNativeCalendarEnabled } from './env.js';
+import { assertAttachmentManifestAdmission, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
@@ -214,10 +216,14 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
 export async function stageAppPackage(
   actor: ModuleActor,
   packageJson: string,
-  options: { guard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void> } = {},
+  options: { guard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>; attachmentStage?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
+  if (inspected.manifest.schema_version === '7') {
+    if (options.attachmentStage !== true) throw new AppError('Attachment staging requires its reviewed host entry point', 'APP_PROTOCOL_UNSUPPORTED', 409);
+    assertAttachmentManifestAdmission(inspected.manifest);
+  }
   if (inspected.manifest.schema_version === '6' && !isAppNativeCalendarEnabled()) {
     throw new AppError('Native Calendar unavailable', 'APP_FEATURE_DISABLED', 503);
   }
@@ -285,6 +291,13 @@ export async function stageAppPackage(
       package_digest: version.package_digest,
       permissions: [],
     });
+    if (inspected.manifest.schema_version === '7') {
+      await options.guard?.(tx);
+      const expiry = (options.guard as Partial<WebAuthorityGuard> | undefined)?.current_web_session_expires_at?.();
+      if (!await attachmentFinalAuthorityIsCurrent(tx, [actor.actor_id], { expires_at: expiry ? [expiry] : [] })) {
+        throw new AppError('Current attachment manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+    }
     if (inspected.manifest.schema_version === '6') {
       if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) {
         throw new AppError('Current native manager authority required', 'APP_ACCESS_DENIED', 403);

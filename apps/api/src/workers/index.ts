@@ -14,7 +14,7 @@ import {
   type QueueName,
 } from '../lib/queues.js';
 import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
-import { APP_AUTOMATIONS_ENABLED, APP_RUNS_ENABLED } from '../lib/env.js';
+import { APP_AUTOMATIONS_ENABLED, APP_RUNS_ENABLED, isAppAttachmentBrokerEnabled } from '../lib/env.js';
 import { APP_RESOURCE_SYNC_SCAN_JOB, ensureAppResourceSyncScan } from '../lib/app-resource-sync-scanner.js';
 import { APP_AUTOMATION_SCAN_CRON, ensureAppAutomationScan } from '../lib/app-automation-scan-progress.js';
 import type { JobHandler } from './types.js';
@@ -712,6 +712,10 @@ async function runRetentionMaintenance(): Promise<void> {
     pruneFinishedJobs(JOB_RETENTION_MS),
     sweepExpiredStagedAttachments(),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('retention')) : Promise.resolve(),
+    isAppAttachmentBrokerEnabled()?import('../lib/app-attachment-cleanup.js').then(async mod=>{
+      const result=await mod.appAttachmentCleanup.run();
+      if(result.failed)console.warn(`[app-attachments] ${result.failed} retained stage(s) require purge retry`);
+    }):Promise.resolve(),
   ]);
   if (pruned > 0) console.log(`[workers] Pruned ${pruned} expired terminal job(s)`);
   if (attachments.deletedRows > 0) {
@@ -847,6 +851,9 @@ export async function stopWorkers(opts?: { timeoutMs?: number }): Promise<void> 
     workersRunning = false;
     if (APP_RUNS_ENABLED) {
       void trackBackground(import('../lib/app-run-maintenance.js').then(mod => mod.stopAppRunMaintenance()));
+      // A gate may have been withdrawn after a cleanup pass started. Stop the
+      // existing bounded pass even then; importing does not allocate its pool.
+      void trackBackground(import('../lib/app-attachment-cleanup.js').then(mod=>mod.appAttachmentCleanup.stop()));
     }
     if (pollingInterval) clearInterval(pollingInterval);
     if (staleCleanupInterval) clearInterval(staleCleanupInterval);

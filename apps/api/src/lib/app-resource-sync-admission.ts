@@ -1,3 +1,9 @@
+import { SyncRequestV2Schema } from '@deft/app-kit';
+import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
+import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
+import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
+import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -52,9 +58,10 @@ export class AppResourceSyncAdmissionService {
     private readonly scheduler: ResourceSyncAttemptScheduler,
     private readonly clock: () => Date = () => new Date(),
     private readonly enabled: () => boolean = () => false,
+    private readonly internalMode: 'resource_v2' | 'attachment_v3' = 'resource_v2',
   ) {}
 
-  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits): Promise<ResourceSyncAdmissionResult> {
+  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits, attachmentCaller?: { owner_user_id: string; guard: WebAuthorityGuard }): Promise<ResourceSyncAdmissionResult> {
     if (!this.enabled()) throw new AppError('Resource sync is disabled', 'APP_FEATURE_DISABLED', 503);
     const target = HostTargetSchema.parse(raw);
     const bounded = limits ? AdmissionLimitsSchema.parse({ lock_timeout_ms: limits.lock_timeout_ms,
@@ -73,11 +80,11 @@ export class AppResourceSyncAdmissionService {
       assertWithinBudget();
       // A new Run is not visible yet. Lock authority first, then checkpoint;
       // never take an existing Run lock while holding these later locks.
-      const authority = await loadLiveResourceSyncBindingAuthority(tx, {
-        ...target, clock: this.clock,
-      });
+      const authority = await (this.internalMode === 'attachment_v3'
+        ? loadLiveAttachmentSyncBindingAuthority : loadLiveResourceSyncBindingAuthority)(tx, { ...target, clock: this.clock });
       assertWithinBudget();
-      if (!authority) throw unavailable();
+      if (!authority || (attachmentCaller && (this.internalMode !== 'attachment_v3'
+        || authority.binding.owner_user_id !== attachmentCaller.owner_user_id))) throw unavailable();
       const { binding, installation, version, grant, registration } = authority;
       const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
         eq(appSyncCheckpoints.org_id, target.org_id),
@@ -87,6 +94,12 @@ export class AppResourceSyncAdmissionService {
       assertWithinBudget();
       if (!checkpoint || checkpoint.state !== 'active' || !Number.isFinite(now.getTime())
         || !binding.consent_expires_at || binding.consent_expires_at <= now) throw unavailable();
+      const consentExpiry = binding.consent_expires_at;
+      const finalAttachment = async (deadlines: readonly Date[] = []) => {
+        if (this.internalMode === 'attachment_v3' && !await attachmentFinalAuthorityIsCurrent(tx,
+          [binding.owner_user_id,registration.operator_user_id], { guard:attachmentCaller?.guard,
+            clock:this.clock,signal:limits?.signal,expires_at:[consentExpiry,...deadlines] })) throw unavailable();
+      };
 
       // The checkpoint lock serializes host admission. Read existing Runs
       // without locking them: completion holds Run before checkpoint, so
@@ -106,8 +119,10 @@ export class AppResourceSyncAdmissionService {
         const existing = prior[0]!;
         if (prior.length !== 1 || existing.expires_at <= now
           || !['pending', 'running', 'waiting_external'].includes(existing.state)) {
+          await finalAttachment();
           return Object.freeze({ state: 'blocked', reason: 'cursor_requires_recovery' });
         }
+        await finalAttachment([existing.expires_at]);
         return Object.freeze({ state: 'existing', run_id: existing.run_id });
       }
       const [latest] = await tx.select({ created_at: appSyncIntents.created_at })
@@ -116,7 +131,10 @@ export class AppResourceSyncAdmissionService {
         .orderBy(desc(appSyncIntents.created_at)).limit(1);
       if (latest) {
         const due = new Date(latest.created_at.getTime() + binding.min_interval_seconds * 1_000);
-        if (due > now) return Object.freeze({ state: 'not_due', due_at: due.toISOString() });
+        if (due > now) {
+          await finalAttachment();
+          return Object.freeze({ state: 'not_due', due_at: due.toISOString() });
+        }
       }
 
       const cursorContext = { org_id: target.org_id, resource_binding_id: binding.id,
@@ -132,10 +150,12 @@ export class AppResourceSyncAdmissionService {
       const fingerprint = this.syncSecrets.cursorFingerprint(cursor, cursorContext,
         checkpoint.cursor_hmac_key_version);
       if (fingerprint.fingerprint !== checkpoint.cursor_hmac) throw unavailable();
-      const request = parseSyncRequest({ schema_version: 'deft.app_sync_request.v1',
-        cursor, max_items: binding.max_records_per_page });
+      const request = this.internalMode === 'attachment_v3'
+        ? SyncRequestV2Schema.parse({ schema_version: 'deft.app_sync_request.v2', cursor, max_items: binding.max_records_per_page,
+          attachments: parseAttachmentConsentPolicy(binding.reviewed_descriptor.attachments,binding.attachment_policy) })
+        : parseSyncRequest({ schema_version: 'deft.app_sync_request.v1',cursor,max_items:binding.max_records_per_page });
       const idempotency = this.runSecrets.fingerprintJson('idempotency', {
-        domain: 'deft.app_resource_sync.admission.v1', org_id: target.org_id,
+        domain: this.internalMode === 'attachment_v3' ? 'deft.app_attachment_sync.admission.v1' : 'deft.app_resource_sync.admission.v1', org_id: target.org_id,
         resource_binding_id: binding.id, checkpoint_id: checkpoint.id,
         generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence,
       });
@@ -144,7 +164,9 @@ export class AppResourceSyncAdmissionService {
       const inputExpiresAt = new Date(Math.min(retentionDeadline('standard', now).getTime(),
         binding.consent_expires_at.getTime()));
       const actor = { actor_type: 'system' as const, system_id: binding.id };
-      const authorization = buildResourceSyncAuthorizationSnapshot(authority);
+      const authorization = this.internalMode === 'attachment_v3'
+        ? buildAttachmentSyncAuthorizationSnapshot(await loadLiveAttachmentSyncBindingAuthority(tx,{ ...target,clock:this.clock }).then(live => { if (!live) throw unavailable(); return live; }))
+        : buildResourceSyncAuthorizationSnapshot(authority);
       const [run] = await tx.insert(appRuns).values({ id: runId, org_id: target.org_id,
         contract_version: APP_RUN_CONTRACT_VERSIONS.run, origin_kind: 'app',
         initiating_actor_type: 'system', initiating_actor_id: binding.id,
@@ -187,6 +209,7 @@ export class AppResourceSyncAdmissionService {
       assertWithinBudget();
       if (!attemptId || !Number.isFinite(completedAt.getTime())
         || inputExpiresAt <= completedAt || binding.consent_expires_at <= completedAt) throw unavailable();
+      await finalAttachment([inputExpiresAt,run.result_expires_at]);
       return Object.freeze({ state: 'created', run_id: runId, attempt_id: attemptId });
     });
   }

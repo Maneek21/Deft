@@ -150,6 +150,12 @@ export function isAppV5RuntimeActionsEnabled(): boolean {
   return isAppRuntimeChannelEnabled()
     && process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED === 'true';
 }
+// Binary custody is an independent protocol7/channel3 opt-in. Legacy sync,
+// Runtime and Calendar flags never initialize this broker's keyring or storage.
+export function isAppAttachmentBrokerEnabled(): boolean {
+  return isAppResourceSyncChannelEnabled()
+    && process.env.DEFT_APP_ATTACHMENT_BROKER_ENABLED === 'true';
+}
 // Native Calendar uses its own host consent and atomic Run executor.
 export function isAppNativeCalendarEnabled(): boolean {
   return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED

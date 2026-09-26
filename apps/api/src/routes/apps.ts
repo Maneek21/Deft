@@ -42,7 +42,9 @@ import { AppRunError } from '../lib/app-run-errors.js';
 import { appHttpFailure } from './app-http-errors.js';
 import { appNativeRoutes } from './app-native.js';
 
+import { appAttachmentRoutes } from './app-attachments.js';
 export const appRoutes = new Hono();
+appRoutes.route('/blob',appAttachmentRoutes);
 appRoutes.route('/native', appNativeRoutes);
 
 const IdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);

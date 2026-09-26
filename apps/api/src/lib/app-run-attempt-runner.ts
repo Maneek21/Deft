@@ -1,3 +1,10 @@
+import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit';
+import { loadLiveAttachmentSyncAuthority, loadLiveAttachmentSyncBindingAuthority,
+  type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
+import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
+import { parseAttachmentSyncResult, type AttachmentSyncResultRequest } from './app-attachment-sync-contract.js';
+import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
+import { isAppAttachmentBrokerEnabled } from './env.js';
 import { nativeExecutionTransaction } from './app-native-execution-db.js';
 import { executeNativeCalendarInTransaction } from './app-native-calendar-executor.js';
 import { captureReviewedNativeInTransaction, captureReviewedPublicNativeInTransaction } from './app-native-run-authorization.js';
@@ -108,14 +115,31 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     private readonly attention: AppRunAttentionProjector = noOpAppRunAttentionProjector,
     private readonly attemptQueue: AppRunAttemptQueue = noOpAppRunAttemptQueue,
     private readonly resourceSyncStore: AppResourceSyncStore | null = null,
+    private readonly syncMode: 'resource_v2' | 'attachment_v3' = 'resource_v2',
   ) {}
+
+  get #syncVersion() { return this.syncMode === 'attachment_v3' ? APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 : APP_RESOURCE_SYNC_CHANNEL_VERSION; }
+  #syncEnabled() { return this.syncMode === 'attachment_v3' ? isAppAttachmentBrokerEnabled() : isAppResourceSyncChannelEnabled(); }
+  #loadSyncAuthority(tx: AppRunTransaction,input:Parameters<typeof loadLiveResourceSyncAuthority>[1]) {
+    return this.syncMode === 'attachment_v3' ? loadLiveAttachmentSyncAuthority(tx,input) : loadLiveResourceSyncAuthority(tx,input);
+  }
+  #loadSyncBinding(tx: AppRunTransaction,input:Parameters<typeof loadLiveResourceSyncBindingAuthority>[1]) {
+    return this.syncMode === 'attachment_v3' ? loadLiveAttachmentSyncBindingAuthority(tx,input) : loadLiveResourceSyncBindingAuthority(tx,input);
+  }
+  async #syncFinal(tx: AppRunTransaction,authority: Awaited<ReturnType<typeof loadLiveResourceSyncAuthority>> | Awaited<ReturnType<typeof loadLiveAttachmentSyncAuthority>> | LiveAttachmentSyncBindingAuthority | LiveResourceSyncBindingAuthority,
+    deadlines: readonly Date[]) {
+    if (this.syncMode !== 'attachment_v3') return;
+    if (!authority || !authority.binding.consent_expires_at || !await attachmentFinalAuthorityIsCurrent(tx,
+      [authority.binding.owner_user_id,authority.registration.operator_user_id],{clock:this.now,
+        expires_at:[...('session' in authority ? [authority.session.expires_at] : []),authority.binding.consent_expires_at,...deadlines]})) throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
+  }
 
   /** A v2 Run is host-created for one reviewed private binding. The live
    * authority reader owns the mutable membership/App/consent locks; this
    * comparison binds that authority to the immutable Run and intent. */
   async #resourceSyncRunMatchesAuthority(
     tx: AppRunTransaction, run: AppRunSafeView,
-    authority: LiveResourceSyncBindingAuthority,
+    authority: LiveResourceSyncBindingAuthority | LiveAttachmentSyncBindingAuthority,
   ): Promise<typeof appSyncIntents.$inferSelect | null> {
     const [stored] = await tx.select().from(appRuns).where(and(
       eq(appRuns.org_id, run.org_id), eq(appRuns.id, run.id),
@@ -141,7 +165,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       || stored.retry_class !== 'unsafe_or_unknown') return null;
     try {
       if (canonicalCapabilityJson(stored.authorization_snapshot)
-        !== canonicalCapabilityJson(buildResourceSyncAuthorizationSnapshot(authority))) return null;
+        !== canonicalCapabilityJson(this.syncMode === 'attachment_v3'
+          ? buildAttachmentSyncAuthorizationSnapshot(authority as LiveAttachmentSyncBindingAuthority) : buildResourceSyncAuthorizationSnapshot(authority))) return null;
     } catch { return null; }
     const [intent] = await tx.select().from(appSyncIntents).where(and(
       eq(appSyncIntents.org_id, run.org_id), eq(appSyncIntents.run_id, run.id),
@@ -364,12 +389,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     org_id: string; run_id: string; attempt_id: string; session_id: string;
     token_hash: string; claim_token: string; sequence: number;
   }>) {
-    if (!isAppResourceSyncChannelEnabled()) return null;
+    if (!this.#syncEnabled()) return null;
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.review_scope !== 'reviewed_resource_sync'
         || run.provider_kind !== 'app_runtime') return null;
-      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+      const authority = await this.#loadSyncAuthority(tx, { org_id: input.org_id,
         session_id: input.session_id, token_hash: input.token_hash, clock: this.now });
       if (!authority) return null;
       const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
@@ -414,6 +439,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         eq(appRunAttempts.id, attempt.id),
         eq(appRunAttempts.claim_token, input.claim_token))).returning({ id: appRunAttempts.id });
       if (!renewed) return null;
+      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
       return Object.freeze({ run_id: input.run_id, attempt_id: input.attempt_id,
         sequence: input.sequence, lease_expires_at: leaseExpiresAt.toISOString() });
     });
@@ -547,12 +573,13 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   }
 
   async completeResourceSyncAttempt(input: Readonly<{
-    org_id: string; token_hash: string; result: ResourceSyncResultRequest;
+    org_id: string; token_hash: string; result: ResourceSyncResultRequest | AttachmentSyncResultRequest;
   }>) {
     const store = this.resourceSyncStore;
-    if (!isAppResourceSyncChannelEnabled() || !store) return null;
+    if (!this.#syncEnabled() || !store) return null;
     const result = input.result;
-    const fingerprintValue = `deft.app_resource_sync.result.v2:${createHash('sha256')
+    if (result.schema_version !== this.#syncVersion) return null;
+    const fingerprintValue = `${this.syncMode === 'attachment_v3' ? 'deft.app_resource_sync.result.v3' : 'deft.app_resource_sync.result.v2'}:${createHash('sha256')
       .update(canonicalCapabilityJson(result)).digest('hex')}`;
     const fingerprintCandidates = this.secrets.fingerprintTextCandidates('idempotency', fingerprintValue);
     const replayDigests = new Set(fingerprintCandidates.map((candidate) => candidate.fingerprint));
@@ -567,7 +594,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         candidate.key_version === runKey?.key_version)?.fingerprint;
       // Run idempotency retention already pins this purpose/key version.
       if (!digest) return false;
-      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+      const authority = await this.#loadSyncAuthority(tx, { org_id: input.org_id,
         session_id: result.session_id, token_hash: input.token_hash, clock: this.now });
       if (!authority) return false;
       const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
@@ -586,7 +613,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || attempt.runtime_sequence !== result.sequence) return false;
       // A committed callback is accepted byte-for-byte without revisiting the
       // page store. Retained fingerprint keys permit a key rotation replay.
-      if (attempt.runtime_result_hmac) return replayDigests.has(attempt.runtime_result_hmac);
+      if (attempt.runtime_result_hmac) {
+        await this.#syncFinal(tx,authority,[run.result_expires_at]);
+        return replayDigests.has(attempt.runtime_result_hmac);
+      }
       const now = this.now();
       if (attempt.state !== 'provider_call_started' || !attempt.lease_expires_at
         || attempt.lease_expires_at <= now || run.state !== 'running'
@@ -598,28 +628,31 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         // A provider assertion that it did not call the source cannot prove
         // that no external effect occurred.
         await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+        await this.#syncFinal(tx,authority,[run.input_expires_at,attempt.lease_expires_at]);
         return true;
       }
       let outcome: AppRunSafeOutcome;
       let receiptFacts: Record<string, string | number | boolean> | undefined;
       if (result.status === 'returned' && result.provider_succeeded) {
         const rawInput = await this.secretRepository.readInput(input.org_id, run.id, tx);
-        let page: Extract<ResourceSyncResultRequest,
+        let page: Extract<ResourceSyncResultRequest | AttachmentSyncResultRequest,
           { status: 'returned'; provider_succeeded: true }>['page'];
         try {
-          const parsed = parseAppResourceSyncResult(result, {
-            descriptor: authority.descriptor, starting_request: parseSyncRequest(rawInput),
-          });
+          const parsed = this.syncMode === 'attachment_v3'
+            ? parseAttachmentSyncResult(result,{descriptor:authority.descriptor,starting_request:SyncRequestV2Schema.parse(rawInput)})
+            : parseAppResourceSyncResult(result,{descriptor:authority.descriptor as LiveResourceSyncBindingAuthority['descriptor'],starting_request:parseSyncRequest(rawInput)});
           if (parsed.status !== 'returned' || !parsed.provider_succeeded) return false;
           page = parsed.page;
         } catch {
           // The provider may already have observed an external source effect.
           // An invalid page is never signed as success or automatically retried.
           await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+          await this.#syncFinal(tx,authority,[run.input_expires_at,attempt.lease_expires_at]);
           return true;
         }
         if (run.result_expires_at <= now) {
           await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
+          await this.#syncFinal(tx,authority,[run.input_expires_at,attempt.lease_expires_at]);
           return true;
         }
         const applied = await store.applyPageInTransaction(tx, {
@@ -671,6 +704,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         // Includes page, output and receipt writes: abort the whole transaction.
         throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
       }
+      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,attempt.lease_expires_at]);
       return true;
     });
     if (!accepted) return null;
@@ -682,12 +716,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     org_id: string; run_id: string; attempt_id: string; session_id: string;
     token_hash: string; claim_token: string; sequence: number;
   }>) {
-    if (!isAppResourceSyncChannelEnabled()) return null;
+    if (!this.#syncEnabled()) return null;
     return this.repository.transaction(async (tx) => {
       let run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.review_scope !== 'reviewed_resource_sync'
         || run.provider_kind !== 'app_runtime') return null;
-      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+      const authority = await this.#loadSyncAuthority(tx, { org_id: input.org_id,
         session_id: input.session_id, token_hash: input.token_hash, clock: this.now });
       if (!authority) return null;
       const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
@@ -724,8 +758,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
         || authority.session.expires_at <= now) return null;
       const rawInput = await this.secretRepository.readInput(input.org_id, run.id, tx);
-      let request: ReturnType<typeof parseSyncRequest>;
-      try { request = parseSyncRequest(rawInput); }
+      let request: ReturnType<typeof parseSyncRequest> | ReturnType<typeof SyncRequestV2Schema.parse>;
+      try { request = this.syncMode === 'attachment_v3' ? SyncRequestV2Schema.parse(rawInput) : parseSyncRequest(rawInput); }
       catch { return null; }
       if (request.max_items > authority.binding.max_records_per_page) return null;
       const [started] = await tx.update(appRunAttempts).set({ state: 'provider_call_started',
@@ -747,7 +781,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || authority.session.expires_at <= checkedAt) {
         throw new Error('APP_RESOURCE_SYNC_START_EXPIRED');
       }
-      return Object.freeze({ schema_version: APP_RESOURCE_SYNC_CHANNEL_VERSION,
+      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,attempt.lease_expires_at!]);
+      return Object.freeze({ schema_version: this.#syncVersion,
         audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
         resource_binding_id: authority.binding.id, run_id: run.id,
         attempt_id: attempt.id, sequence: input.sequence,
@@ -761,13 +796,13 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     org_id: string; run_id: string; attempt_id: string;
     session_id: string; token_hash: string;
   }>) {
-    if (!isAppResourceSyncChannelEnabled()) return null;
+    if (!this.#syncEnabled()) return null;
     await this.recoverRun(input.org_id, input.run_id, input.attempt_id);
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.review_scope !== 'reviewed_resource_sync'
         || run.provider_kind !== 'app_runtime') return null;
-      const authority = await loadLiveResourceSyncAuthority(tx, { org_id: input.org_id,
+      const authority = await this.#loadSyncAuthority(tx, { org_id: input.org_id,
         session_id: input.session_id, token_hash: input.token_hash, clock: this.now });
       if (!authority || !await this.#resourceSyncRunMatchesAuthority(tx, run, authority)) return null;
       await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
@@ -804,7 +839,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       await this.repository.appendEvent(tx, { id: crypto.randomUUID(), org_id: input.org_id,
         run_id: run.id, event_type: 'attempt_claimed',
         payload: { attempt_id: claimed.id }, now });
-      return Object.freeze({ schema_version: APP_RESOURCE_SYNC_CHANNEL_VERSION,
+      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
+      return Object.freeze({ schema_version: this.#syncVersion,
         audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
         org_id: input.org_id, app_installation_id: authority.installation.id,
         app_version_id: authority.version.id, grant_snapshot_id: authority.grant.id,
@@ -827,7 +863,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   async scheduleResourceSyncInTransaction(
     tx: AppRunTransaction, run: AppRunSafeView, _now = this.now(),
   ): Promise<string | null> {
-    if (!isAppResourceSyncChannelEnabled()
+    if (!this.#syncEnabled()
       || run.review_scope !== 'reviewed_resource_sync' || run.provider_kind !== 'app_runtime'
       || run.origin_kind !== 'app' || run.initiating_actor_type !== 'system'
       || run.execution_actor_type !== 'system' || !run.execution_released_at
@@ -836,7 +872,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     const [stored] = await tx.select({ binding_id: appRuns.origin_resource_binding_id })
       .from(appRuns).where(and(eq(appRuns.org_id, run.org_id), eq(appRuns.id, run.id))).limit(1);
     if (!stored?.binding_id) return null;
-    const authority = await loadLiveResourceSyncBindingAuthority(tx, {
+    const authority = await this.#loadSyncBinding(tx, {
       org_id: run.org_id, resource_binding_id: stored.binding_id, clock: this.now,
     });
     if (!authority || !await this.#resourceSyncRunMatchesAuthority(tx, run, authority)) return null;
@@ -848,9 +884,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
     if (existing) {
       await this.attemptQueue.enqueue(tx, run.org_id, run.id, existing.id);
+      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at]);
       return existing.id;
     }
-    return (await this.#createAttempt(tx, run, checkedAt))?.id ?? null;
+    const created=await this.#createAttempt(tx,run,checkedAt);
+    await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at]);
+    return created?.id ?? null;
   }
 
   async renewLease(orgId: string, attemptId: string, claimToken: string,

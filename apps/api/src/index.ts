@@ -75,11 +75,13 @@ import { appActionRoutes } from './routes/app-actions.js';
 import { appRunRoutes } from './routes/app-runs.js';
 import { appDeveloperRoutes } from './routes/app-developer.js';
 import { appRuntimeChannelRoutes } from './routes/app-runtime-channel.js';
+import { appAttachmentSyncChannelRoutes } from './routes/app-attachment-sync-channel.js';
 import { appResourceSyncChannelRoutes } from './routes/app-resource-sync-channel.js';
 import { appResourceSyncLimits } from './middleware/app-resource-sync-limits.js';
 import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
 import { appResourceSyncManagementRoutes } from './routes/app-resource-sync-management.js';
 import { appResourceAccessRoutes } from './routes/app-resource-access.js';
+import { appAttachmentOwnerRoutes } from './routes/app-attachments.js';
 import { appResourcePrivateReadRoutes } from './routes/app-resource-private-read.js';
 import { appResourcePrivateReadLimits, appResourceSyncManagementLimits, createAppResourcePrivateReadLimits } from './middleware/app-resource-private-limits.js';
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
@@ -204,12 +206,16 @@ if (APPS_ENABLED) {
   app.use('/api/app-runtime/channel/*', authLimiter);
   app.route('/api/app-runtime/channel', appRuntimeChannelRoutes);
   app.use('/api/app-resource-sync/channel/*', appResourceSyncLimits);
+  app.use('/api/app-resource-sync-channel/v3/*',appResourceSyncLimits);
+  app.route('/api/app-resource-sync-channel/v3',appAttachmentSyncChannelRoutes);
   app.route('/api/app-resource-sync/channel', appResourceSyncChannelRoutes);
   // Owner controls and private reads verify a live web SID themselves. Employee
   // and Runtime credentials must never reach these human-only surfaces.
   app.use('/api/app-resource-sync-management/*', appResourceSyncManagementLimits);
   app.route('/api/app-resource-sync-management', appResourceSyncManagementRoutes);
   app.use('/api/app-resource-private/*', appResourcePrivateReadLimits);
+  app.use('/api/private-resources/*',appResourcePrivateReadLimits);
+  app.route('/api/private-resources',appAttachmentOwnerRoutes);
   app.route('/api/app-resource-private', appResourcePrivateReadRoutes);
   app.use('/api/app-resource-access/*', createAppResourcePrivateReadLimits());
   app.route('/api/app-resource-access', appResourceAccessRoutes);
