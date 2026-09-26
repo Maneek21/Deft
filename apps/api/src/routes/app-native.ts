@@ -12,6 +12,7 @@ import { AppRunError } from '../lib/app-run-errors.js';
 import { getAppRunRuntime } from '../lib/app-run-runtime.js';
 import { isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
+import { stageNativeAppUpgrade, getNativeUpgradeContext, prepareNativeUpgrade, activateNativeUpgrade } from '../lib/app-runtime-upgrade.js';
 
 export const appNativeRoutes = new Hono();
 function failure(c: Context, error: unknown) {
@@ -36,7 +37,7 @@ function query(c: Context) {
   if (Object.values(c.req.queries()).some(values => values.length !== 1)) throw new SyntaxError();
   return z.strictObject({ app_version_id: z.uuid() }).parse(c.req.query());
 }
-appNativeRoutes.use('*', bodyLimit({ maxSize: 8192 }));
+appNativeRoutes.use('*', (c, next) => bodyLimit({ maxSize: c.req.path.endsWith('/upgrade/stage') ? 1_048_576 : 8192 })(c, next));
 appNativeRoutes.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache');
   try { assertNativeCalendarEnabled(); await next(); } catch (error) { return failure(c, error); }
@@ -45,6 +46,24 @@ appNativeRoutes.get('/app/:installationId/context', async c => {
   try {
     const q = query(c), { actor, options } = await authority(c);
     return c.json(await getNativeAppReviewContext(actor, z.uuid().parse(c.req.param('installationId')), q.app_version_id, options));
+  } catch (error) { return failure(c, error); }
+});
+appNativeRoutes.post('/app/:installationId/upgrade/stage', async c => {
+  try {
+    const raw = await body(c), { actor, options } = await authority(c);
+    return c.json(await stageNativeAppUpgrade(actor, z.uuid().parse(c.req.param('installationId')), raw, options));
+  } catch (error) { return failure(c, error); }
+});
+appNativeRoutes.get('/app/:installationId/upgrade/context', async c => {
+  try {
+    const q = query(c), { actor, options } = await authority(c);
+    return c.json(await getNativeUpgradeContext(actor, z.uuid().parse(c.req.param('installationId')), q.app_version_id, options));
+  } catch (error) { return failure(c, error); }
+});
+for (const operation of ['review', 'activate'] as const) appNativeRoutes.post(`/app/:installationId/upgrade/${operation}`, async c => {
+  try {
+    const raw = await body(c), { actor, options } = await authority(c), id = z.uuid().parse(c.req.param('installationId'));
+    return c.json(operation === 'review' ? await prepareNativeUpgrade(actor, id, raw, options) : await activateNativeUpgrade(actor, id, raw, options));
   } catch (error) { return failure(c, error); }
 });
 for (const operation of ['review', 'activate'] as const) appNativeRoutes.post(`/app/:installationId/${operation}`, async c => {

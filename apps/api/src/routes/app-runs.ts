@@ -5,8 +5,7 @@ import { appActionService } from '../lib/app-action-service.js';
 import { humanModuleActor } from '../lib/module-service.js';
 import { listModuleAppRunHistory, listModuleAppRunOutcomes } from '../lib/module-app-run-history.js';
 import { appHttpFailure } from './app-http-errors.js';
-import { and, eq } from 'drizzle-orm';
-import { appRuns } from '@deft/db/schema';
+import { sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
@@ -48,11 +47,15 @@ appRunRoutes.post('/record-outcomes', async (c) => {
 });
 
 appRunRoutes.get('/:runId/result', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Pragma', 'no-cache');
   try {
     const runId = RunIdSchema.parse(c.req.param('runId'));
     const user = c.get('user') as AuthUser;
-    const [locator] = await db.select({ provider_kind: appRuns.provider_kind }).from(appRuns)
-      .where(and(eq(appRuns.org_id, user.org_id), eq(appRuns.id, runId))).limit(1);
+    // Keep this advisory discriminator independent of the full growing schema
+    // relation graph; the native reader revalidates the exact scoped Run.
+    const locator = (await db.execute(sql<{ provider_kind: string }>`SELECT provider_kind FROM app_runs
+      WHERE org_id=${user.org_id} AND id=${runId} LIMIT 1`)).rows[0];
     if (locator?.provider_kind === 'native') {
       const { assertNativeCalendarEnabled } = await import('../lib/app-native-authority.js');
       assertNativeCalendarEnabled();

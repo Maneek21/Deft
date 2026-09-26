@@ -301,14 +301,15 @@ export async function stageAppUpgrade(
   installationId: string,
   packageJson: string,
   expectedLifecycleEpoch: number,
-  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean } = {},
+  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean; nativeUpgrade?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
   assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
   const runtimeUpgrade = options.runtimeUpgrade === true
     && ['3', '4', '5'].includes(inspected.manifest.compatibility.app_protocol);
-  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol) && !runtimeUpgrade) {
+  const nativeUpgrade = options.nativeUpgrade === true && inspected.manifest.compatibility.app_protocol === '6';
+  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol) && !runtimeUpgrade && !nativeUpgrade) {
     throw new AppError('Connected App upgrades require App Protocol v1 or v2', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
@@ -338,7 +339,7 @@ export async function stageAppUpgrade(
       eq(appVersions.state, 'active'),
     )).limit(1).for('update');
     if (!activeVersion) throw new AppError('Active App version not found', 'APP_STATE_CONFLICT', 409);
-    if (runtimeUpgrade && (installation.state !== 'active'
+    if ((runtimeUpgrade || nativeUpgrade) && (installation.state !== 'active'
       || activeVersion.protocol_version !== inspected.manifest.compatibility.app_protocol)) {
       throw new AppError('Runtime upgrades require an active App using the same protocol', 'APP_PROTOCOL_UNSUPPORTED', 409);
     }
@@ -382,7 +383,11 @@ export async function stageAppUpgrade(
       version: version.version,
       package_digest: version.package_digest,
     });
-    await options.guard?.(tx);
+    if (nativeUpgrade) {
+      if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) {
+        throw new AppError('Current native manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+    } else await options.guard?.(tx);
     if (runtimeUpgrade) {
       const [human] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, actor.actor_id)).limit(1);
       if (human?.kind !== 'human') throw new AppError('Current human manager required', 'APP_ACCESS_DENIED', 403);

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import type { ServerType } from '@hono/node-server';
 const target = process.env.DATABASE_URL ?? '';
 const safe = /^postgresql:\/\/gate_g_test@127\.0\.0\.1:55435\/gate_g_20260926_c14_native_calendar_test(?:_v[0-9]+)?$/.test(target)
@@ -16,7 +18,7 @@ after(async () => {
   server?.closeAllConnections(); if (server) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
   if (safe) { await (await import('../src/lib/app-run-runtime.js')).shutdownAppRunRuntime(); await (await import('../src/lib/db.js')).closeDb(); }
 });
-async function fixture(options: { experience?: boolean } = {}) {
+async function fixture(options: { experience?: boolean; sync?: boolean } = {}) {
   const [{ db }, schema, orm, kit, web, { Hono }, { authMiddleware }, { appRoutes }, { agentRoutes }, { appRunRoutes }, { serve }] = await Promise.all([
     import('../src/lib/db.js'), import('@deft/db/schema'), import('drizzle-orm'), import('@deft/app-kit'), import('../src/lib/web-sessions.js'),
     import('hono'), import('../src/middleware/auth.js'), import('../src/routes/apps.js'), import('../src/routes/agent.js'),
@@ -27,6 +29,7 @@ async function fixture(options: { experience?: boolean } = {}) {
     app.route('/api/agent', agentRoutes); app.route('/api/app-runs', appRunRoutes);
     app.route('/api/app-experiences', (await import('../src/routes/app-experiences.js')).appExperienceRoutes);
     app.route('/api/resources', (await import('../src/routes/resources.js')).resourceRoutes);
+    app.route('/api/private-resources', (await import('../src/routes/app-resource-private-read.js')).appResourcePrivateReadRoutes);
     base = await new Promise<string>(resolve => { server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, info => resolve(`http://127.0.0.1:${info.port}`)); });
   }
   const org = randomUUID(), manager = randomUUID(), owner = randomUUID(), suffix = randomUUID().replaceAll('-', '');
@@ -39,14 +42,18 @@ async function fixture(options: { experience?: boolean } = {}) {
     const response = await fetch(`${base}${path}`, { method: value === undefined ? 'GET' : 'POST',
       headers: { Authorization: `Bearer ${token}`, ...(value === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
-    return { status: response.status, body: await response.json() as any };
+    return { status: response.status, body: await response.json() as any, cache: response.headers.get('cache-control') };
   };
   const artifact = options.experience ? await kit.prepareDeftExperienceArtifact('experiences/main.json', {
     schema_version: 'deft.experience_bundle.v1', worker_source: 'self.onmessage=()=>{};', entry_view: 'main', resource_keys: [], action_keys: ['create_event'],
   }) : undefined;
   const manifest = { schema_version: '6' as const, id: `community.example.native.a${suffix}`, version: '1.0.0', name: 'Native Calendar',
-    license: 'AGPL-3.0-only', compatibility: { app_protocol: '6' as const }, modules: [], navigation: [], runtime_requirements: [],
-    runtime_actions: [], sync_descriptors: [], experiences: artifact ? [{ key: 'main', label: 'Calendar', artifact_path: artifact.path,
+    license: 'AGPL-3.0-only', compatibility: { app_protocol: '6' as const }, modules: [], navigation: [],
+    runtime_requirements: options.sync ? [{ key: 'provider', protocol_version: 'deft.app_runtime_channel.v2' as const }] : [],
+    runtime_actions: [], sync_descriptors: options.sync ? [{ schema_version: 'deft.app_sync_descriptor.v1' as const, key: 'inbox',
+      runtime_requirement_key: 'provider', resource_type: 'email_message', requested_visibility: 'user_private' as const, label_field: 'subject',
+      record_schema: { type: 'object' as const, properties: { subject: { type: 'string' as const, maxLength: 200 } }, required: ['subject'], additionalProperties: false } }] : [],
+    experiences: artifact ? [{ key: 'main', label: 'Calendar', artifact_path: artifact.path,
       artifact_digest: artifact.digest, bridge_version: kit.DEFT_EXPERIENCE_BRIDGE_VERSION, renderer_version: kit.DEFT_EXPERIENCE_RENDERER_VERSION }] : [], public_actions: [],
     private_capabilities: ['create', 'cancel'].map(name => ({ key: `calendar_${name}`, version: '1',
       ...kit.NATIVE_CALENDAR_CONTRACTS[`calendar.events.${name}.v1` as keyof typeof kit.NATIVE_CALENDAR_CONTRACTS] })),
@@ -100,6 +107,182 @@ async function execute(h: Harness, runId: string) {
   return (await h.db.select().from(h.schema.appRuns).where(h.eq(h.schema.appRuns.id, runId)))[0]!;
 }
 
+async function workerProcess() {
+  const child = fork(fileURLToPath(new URL('./fixtures/native-calendar-worker-process.ts', import.meta.url)), [],
+    { execArgv: ['--import', 'tsx'], cwd: fileURLToPath(new URL('../', import.meta.url)), stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  const messages: string[] = []; let failure: string | undefined;
+  child.on('message', (message: { type: string; name?: string }) => {
+    if (message.type === 'failed') failure = `worker ${message.name ?? 'error'}`;
+    else messages.push(message.type);
+  });
+  child.on('exit', (code, signal) => { failure ??= `worker exited code=${code ?? 'none'} signal=${signal ?? 'none'}`; });
+  const wait = async (type: string) => {
+    for (let i = 0; i < 1000; i++) {
+      if (messages.includes(type)) return;
+      if (failure) assert.fail(failure);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail(`worker did not report ${type}`);
+  };
+  const stop = async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>(resolve => child.once('exit', () => resolve())); child.kill('SIGKILL'); await exited;
+  };
+  try { await wait('ready'); return { child, wait, stop }; } catch (error) { await stop(); throw error; }
+}
+
+test('native separate-process crash before commit leaves no effect and claimed recovery never replays it', { skip: !safe }, async () => {
+  const h = await fixture(), create = await h.consent(await h.stageBinding('create'));
+  const created = await run(h, create, input); await approve(h, created.id); await execute(h, created.id);
+  const output = (await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken)).body.value.output;
+  const cancel = await h.consent(await h.stageBinding('cancel')), child = await workerProcess();
+  const cancelled = await run(h, cancel, { create_run_id: created.id, event_ref: output.event_ref }); await approve(h, cancelled.id);
+  const { default: pg } = await import('pg'); const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+  const observer = new pg.Client({ connectionString: target }); await observer.connect();
+  try {
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM events WHERE org_id=$1 AND id=$2 FOR UPDATE', [h.org, output.event_ref.resource_id]);
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    child.child.send({ org_id: h.org, run_id: cancelled.id }); await child.wait('leased');
+    let waited = false;
+    for (let i = 0; i < 150; i++) {
+      const { rows: [row] } = await observer.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'separate native worker actually waited on the Calendar row'); await child.stop(); await blocker.query('COMMIT');
+    const [attempt] = await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, cancelled.id)); assert.ok(attempt);
+    assert.equal(attempt.state, 'claimed'); assert.equal(attempt.provider_call_started_at, null);
+    const runtime = await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime();
+    const runner = runtime.attemptRunner as unknown as { now: () => Date };
+    const clock = runner.now; runner.now = () => new Date(attempt.lease_expires_at!.getTime() + 1);
+    try { await runtime.attemptRunner.recoverRun(h.org, cancelled.id, attempt.id); } finally { runner.now = clock; }
+    const current = await runtime.repository.inspect(h.org, cancelled.id); assert.equal(current?.state, 'failed');
+    const [event] = await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.id, output.event_ref.resource_id));
+    assert.equal(event!.metadata.status, 'confirmed');
+    assert.equal((await h.db.select().from(h.schema.appRunSecretPayloads).where(h.and(h.eq(h.schema.appRunSecretPayloads.run_id, cancelled.id), h.eq(h.schema.appRunSecretPayloads.payload_kind, 'output')))).length, 0);
+    const receipts = await runtime.receiptReader.readVerified(h.org, cancelled.id);
+    assert.ok(receipts.some(receipt => receipt.receipt_kind === 'attempt_terminal' && receipt.run_state === 'failed'));
+    const recoveredEvents = await h.db.select().from(h.schema.appRunEvents).where(h.eq(h.schema.appRunEvents.run_id, cancelled.id));
+    assert.ok(recoveredEvents.some(event => event.payload.recovery_reason === 'native_unstarted_claim_expired' && event.payload.provider_call_attempted === false));
+    assert.ok(recoveredEvents.every(event => event.event_type !== 'provider_call_started'));
+    await runtime.attemptRunner.run(h.org, cancelled.id, attempt.id, 'redelivery');
+    assert.equal((await runtime.repository.inspect(h.org, cancelled.id))?.state, 'failed');
+    assert.equal((await runtime.receiptReader.readVerified(h.org, cancelled.id)).length, receipts.length);
+  } finally { await child.stop(); await blocker.query('ROLLBACK'); await blocker.end(); await observer.end(); }
+});
+
+test('native separate-process lost post-commit delivery recovers exact result and one effect without retry', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create')), child = await workerProcess();
+  const key = `lost-native-${randomUUID()}`, created = await run(h, binding, input, key); await approve(h, created.id);
+  try {
+    child.child.send({ org_id: h.org, run_id: created.id, hold_after_commit: true }); await child.wait('committed'); await child.stop();
+    const before = await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken); assert.equal(before.status, 200);
+    const [attempt] = await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, created.id)); assert.ok(attempt);
+    const runtime = await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime();
+    const receipts = await runtime.receiptReader.readVerified(h.org, created.id);
+    await runtime.attemptRunner.run(h.org, created.id, attempt.id, 'redelivery');
+    assert.equal((await run(h, binding, input, key)).id, created.id);
+    const recovered = await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken);
+    assert.equal(recovered.status, 200); assert.deepEqual(recovered.body, before.body);
+    assert.deepEqual(await runtime.receiptReader.readVerified(h.org, created.id), receipts);
+    assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
+    assert.equal((await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, created.id))).length, 1);
+  } finally { await child.stop(); }
+});
+
+test('native retained output is unavailable to generic Defty Run-result ingress and web responses are uncached', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create')), created = await run(h, binding, input);
+  await approve(h, created.id); await execute(h, created.id);
+  const { deftyModuleActor } = await import('../src/lib/module-service.js');
+  const { executeAppActionOperation } = await import('../src/lib/app-action-operations.js');
+  const caller = { actor: deftyModuleActor({ orgId: h.org, userId: h.owner, role: 'member' }) };
+  await assert.rejects(executeAppActionOperation(caller, 'app_run_get', { run_id: created.id, include_result: true }),
+    (error: any) => error.code === 'APP_RUN_ACCESS_DENIED');
+  const owner = await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken);
+  assert.equal(owner.status, 200); assert.equal(owner.cache, 'no-store');
+  const denied = await h.call(`/api/app-runs/${created.id}/result`);
+  assert.notEqual(denied.status, 200); assert.equal(denied.cache, 'no-store');
+});
+
+test('native real COMMIT acknowledgement loss returns transport uncertainty and redelivery retains one exact effect', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create')), created = await run(h, binding, input);
+  await approve(h, created.id);
+  const [attempt] = await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, created.id)); assert.ok(attempt);
+  const runtime = await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime();
+  const { default: pg } = await import('pg');
+  const prototype = pg.Client.prototype as unknown as { query: (...args: any[]) => any };
+  const original = prototype.query; let committed = false, armed = true;
+  prototype.query = function(this: { connectionParameters?: { application_name?: string } }, ...args: any[]) {
+    const command = typeof args[0] === 'string' ? args[0] : args[0]?.text;
+    const result = original.apply(this, args);
+    if (armed && this.connectionParameters?.application_name === 'deft-app-native-calendar' && command?.toLowerCase() === 'commit') {
+      armed = false;
+      // Only the delivery is lost: PostgreSQL's real COMMIT finishes first.
+      return Promise.resolve(result).then(() => { committed = true; throw new Error('synthetic native COMMIT acknowledgement lost'); });
+    }
+    return result;
+  };
+  try {
+    // The ORM may surface its failed cleanup on the discarded socket rather
+    // than the original lost acknowledgement. Either is transport uncertainty.
+    await assert.rejects(runtime.attemptRunner.run(h.org, created.id, attempt.id, 'commit-ack-loss'), (error: unknown) => error instanceof Error);
+    assert.ok(committed, 'real native database commit completed before the response was lost');
+  } finally { prototype.query = original; }
+  const before = await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken); assert.equal(before.status, 200);
+  const receipts = await runtime.receiptReader.readVerified(h.org, created.id);
+  assert.equal((await runtime.attemptRunner.run(h.org, created.id, attempt.id, 'redelivery')).state, 'succeeded');
+  const after = await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken);
+  assert.deepEqual(after.body, before.body); assert.deepEqual(await runtime.receiptReader.readVerified(h.org, created.id), receipts);
+  assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
+  assert.equal((await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, created.id))).length, 1);
+});
+
+test('native same6 widening upgrade drains old work, refreshes review, revokes old consent and recovers exact activation', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create')), old = await run(h, binding, input);
+  const manifest = { ...h.manifest, version: '1.1.0', native_actions: [...h.manifest.native_actions,
+    { key: 'create_second_event', label: 'Additional explicitly reviewed Calendar action', capability_key: 'calendar_create', operation: 'calendar.events.create.v1' }] };
+  const pkg = await h.kit.buildDeftAppPackage({ manifest, artifacts: [] });
+  const path = `/api/apps/native/app/${h.installed.id}/upgrade`;
+  const staged = await h.call(`${path}/stage`, { schema_version: 'deft.app_native_upgrade_stage.v1', package_json: pkg.json,
+    expected_lifecycle_epoch: h.activated.installation.lifecycle_epoch }); assert.equal(staged.status, 200, JSON.stringify(staged.body));
+  const targetId = staged.body.app_version_id;
+  const context = await h.call(`${path}/context?app_version_id=${targetId}`); assert.equal(context.status, 200, JSON.stringify(context.body));
+  const request = context.body.review_request;
+  const review = await h.call(`${path}/review`, request); assert.equal(review.status, 200, JSON.stringify(review.body));
+  assert.equal(review.body.blockers.old_work.pending_approval, 1); assert.equal(review.body.authority_carry_forward, false);
+  assert.equal(review.body.fresh_native_binding_consent_required, true);
+  assert.equal(review.body.target_authority.native_actions.length, 3);
+  const activation = { ...request, expected_review_digest: review.body.review_digest, accept_host_policy: true };
+  const blocked = await h.call(`${path}/activate`, activation); assert.equal(blocked.status, 409); assert.equal(blocked.body.code, 'APP_UPGRADE_BLOCKED');
+  const [prior] = await h.db.select().from(h.schema.appInstallations).where(h.eq(h.schema.appInstallations.id, h.installed.id));
+  assert.equal(prior!.active_version_id, h.installed.version_id); assert.equal(prior!.active_grant_snapshot_id, h.activated.grant_snapshot_id);
+  await approve(h, old.id); assert.equal((await execute(h, old.id)).state, 'succeeded');
+  const oldOutput = await h.call(`/api/app-runs/${old.id}/result`, undefined, h.ownerWeb.accessToken); assert.equal(oldOutput.status, 200);
+  assert.equal((await h.call(`${path}/activate`, activation)).status, 409, 'changed drain state requires refreshed explicit review');
+  const refreshed = await h.call(`${path}/review`, request); assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  assert.notEqual(refreshed.body.review_digest, review.body.review_digest); assert.deepEqual(refreshed.body.blockers.old_work, {});
+  const { resourceSyncWebAuthority } = await import('../src/lib/app-resource-sync-web-authority.js');
+  const { actor, guard } = await resourceSyncWebAuthority(`Bearer ${h.managerWeb.accessToken}`);
+  const { activateNativeUpgrade } = await import('../src/lib/app-runtime-upgrade.js');
+  const freshActivation = { ...request, expected_review_digest: refreshed.body.review_digest, accept_host_policy: true };
+  await assert.rejects(activateNativeUpgrade(actor, h.installed.id, freshActivation, { guard, testHooks: { failBeforePointerSwap: true } }));
+  const [rolledBack] = await h.db.select().from(h.schema.appInstallations).where(h.eq(h.schema.appInstallations.id, h.installed.id));
+  assert.equal(rolledBack!.active_version_id, h.installed.version_id); assert.equal(rolledBack!.active_grant_snapshot_id, h.activated.grant_snapshot_id);
+  const [liveConsent] = await h.db.select().from(h.schema.appNativeBindings).where(h.eq(h.schema.appNativeBindings.id, binding.binding_id));
+  assert.equal(liveConsent!.state, 'active');
+  const activated = await h.call(`${path}/activate`, freshActivation); assert.equal(activated.status, 200, JSON.stringify(activated.body));
+  const recovered = await h.call(`${path}/context?app_version_id=${targetId}`); assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+  assert.equal(recovered.body.review_request, null);
+  assert.deepEqual(recovered.body.current_activation, { grant_snapshot_id: activated.body.grant_snapshot_id, review_digest: refreshed.body.review_digest });
+  const [revoked] = await h.db.select().from(h.schema.appNativeBindings).where(h.eq(h.schema.appNativeBindings.id, binding.binding_id)); assert.equal(revoked!.state, 'revoked');
+  assert.equal((await h.db.select().from(h.schema.appNativeBindings).where(h.eq(h.schema.appNativeBindings.app_version_id, targetId))).length, 0);
+  assert.notEqual((await h.call(`/api/apps/native/bindings/${binding.binding_id}/invoke`, { expected_consent_digest: binding.consent_digest,
+    idempotency_key: `old-consent-${randomUUID()}`, input }, h.ownerWeb.accessToken)).status, 200);
+  const [retained] = await h.db.select().from(h.schema.appRuns).where(h.eq(h.schema.appRuns.id, old.id));
+  assert.equal(retained!.origin_app_version_id, h.installed.version_id); assert.equal(retained!.state, 'succeeded');
+  assert.equal((await h.db.select().from(h.schema.appRunSecretPayloads).where(h.and(h.eq(h.schema.appRunSecretPayloads.run_id, old.id), h.eq(h.schema.appRunSecretPayloads.payload_kind, 'output')))).length, 1);
+  assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
+});
+
 test('native Calendar two-human consent and normal owner approval create one retained signed event', { skip: !safe }, async () => {
   const h = await fixture(), proposal = await h.stageBinding('create');
   assert.equal((await h.call(`/api/apps/native/bindings/${proposal.binding_id}/context`)).status, 403);
@@ -143,6 +326,40 @@ test('native cancel owner kind withdrawal during actual Calendar row wait rolls 
     const outputPayloads = await h.db.select().from(h.schema.appRunSecretPayloads).where(h.and(h.eq(h.schema.appRunSecretPayloads.run_id, cancelled.id), h.eq(h.schema.appRunSecretPayloads.payload_kind, 'output')));
     assert.equal(outputPayloads.length, 0);
   } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
+});
+
+test('mixed protocol6 reviewed native and private sync planes remain independently usable', { skip: !safe }, async () => {
+  const h = await fixture({ sync: true }), native = await h.consent(await h.stageBinding('create'));
+  const runtime = await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime();
+  const { AppResourceSyncManagement } = await import('../src/lib/app-resource-sync-management.js');
+  const { humanModuleActor } = await import('../src/lib/module-service.js');
+  const owner = humanModuleActor({ orgId: h.org, userId: h.manager, role: 'owner', source: 'rest' });
+  const operator = humanModuleActor({ orgId: h.org, userId: h.owner, role: 'member', source: 'rest' });
+  const [grant] = await h.db.select().from(h.schema.appGrantSnapshots).where(h.eq(h.schema.appGrantSnapshots.id, h.activated.grant_snapshot_id)); assert.ok(grant);
+  const management = new AppResourceSyncManagement(runtime.keys, () => new Date());
+  const request = { installation_id: h.installed.id, resource_key: 'inbox', operator_user_id: h.owner,
+    expected_app_version_id: h.installed.version_id, expected_package_digest: h.installed.package_digest,
+    expected_grant_snapshot_digest: grant.snapshot_digest, expected_lifecycle_epoch: h.activated.installation.lifecycle_epoch,
+    expected_grant_epoch: h.activated.installation.grant_epoch, consent_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    limits: { max_records_per_page: 100, max_page_bytes: 524_288, max_retained_records: 100_000, max_retained_bytes: 1_073_741_824, min_interval_seconds: 60 } };
+  const review = await management.prepareConsent(owner, request);
+  const consent = await management.activateConsent(owner, { ...request, expected_review_digest: review.review_digest, accept_host_policy: true });
+  const credential = await management.issueOperatorSession(operator, consent.binding_id);
+  assert.equal((await runtime.resourceSyncAdmission.admitDue({ org_id: h.org, resource_binding_id: consent.binding_id })).state, 'created');
+  const identity = { schema_version: 'deft.app_runtime_channel.v2' as const, audience: 'app_resource_sync' as const,
+    session_id: credential.session_id, session_token: credential.session_token };
+  const claim = await runtime.resourceSyncChannel.claim({ ...identity, max_claims: 1 }); assert.ok(claim);
+  const attempt = { ...identity, run_id: claim.run_id, attempt_id: claim.attempt_id, claim_token: claim.claim_token, sequence: claim.sequence };
+  assert.ok(await runtime.resourceSyncChannel.start(attempt));
+  assert.ok(await runtime.resourceSyncChannel.complete({ ...attempt, status: 'returned', provider_succeeded: true,
+    page: { schema_version: 'deft.app_sync_page.v1', upserts: [{ id: 'provider-private', revision: 'r1', data: { subject: 'Mixed private saved record' } }],
+      tombstones: [], next_cursor: null, has_more: false } }));
+  const page = await h.call(`/api/private-resources/bindings/${consent.binding_id}/records?limit=10`);
+  assert.equal(page.status, 200, JSON.stringify(page.body)); assert.equal(page.body.items.length, 1);
+  assert.equal(page.body.items[0].data.subject, 'Mixed private saved record');
+  assert.notEqual((await h.call(`/api/private-resources/bindings/${consent.binding_id}/records?limit=10`, undefined, h.ownerWeb.accessToken)).status, 200);
+  const created = await run(h, native, input); await approve(h, created.id); assert.equal((await execute(h, created.id)).state, 'succeeded');
+  assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
 });
 
 test('native cancel exact retained create identity settles once and exact invocation replay returns the original Run', { skip: !safe }, async () => {

@@ -1372,8 +1372,9 @@ export class AppRunService {
     const run = await this.requiredRun(orgId, runId);
     await this.assertAuthorized('result', orgId, actor, run, requiredAuthorityRef);
     if (run.provider_kind === 'native') {
-      if (actor.actor_type !== 'human') throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      return this.resultReviewedNative({ org_id: orgId, user_id: actor.user_id }, runId);
+      // Generic action/agent callers can map to a human identity but have no
+      // exact live web SID. Native output uses the explicit guarded entry.
+      throw new AppRunError('APP_RUN_ACCESS_DENIED');
     }
     if (
       run.origin_kind === 'app'

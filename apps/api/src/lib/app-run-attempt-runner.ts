@@ -1416,6 +1416,16 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     now: Date,
     runtimeResultHmac?: string,
   ): Promise<void> {
+    const nativeUnstarted = run.provider_kind === 'native' && attempt.state === 'claimed'
+      && attempt.provider_call_started_at === null && run.execution_released_at !== null
+      && Boolean(attempt.lease_expires_at && attempt.lease_expires_at <= now)
+      && ['pending', 'pending_approval'].includes(run.state);
+    if (nativeUnstarted) {
+      // Native provider-start/effect/terminal writes rolled back together. The
+      // existing state graph needs a running bridge to terminalize this claim.
+      // started_at records recovery processing, never a provider effect.
+      run = await this.repository.transition(tx, { run, state: 'running', now, error_code: 'APP_RUN_PROVIDER_UNAVAILABLE' });
+    }
     const decision = classifyAppRunCrashRecovery({
       retry_class: run.retry_class,
       provider_call_started: attempt.state === 'provider_call_started',
@@ -1434,9 +1444,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     await this.repository.appendEvent(tx, {
       id: crypto.randomUUID(), org_id: run.org_id, run_id: run.id,
       event_type: 'attempt_terminal',
-      payload: { attempt_id: attempt.id, state: terminalAttemptState }, now,
+      payload: { attempt_id: attempt.id, state: terminalAttemptState,
+        ...(nativeUnstarted ? { recovery_reason: 'native_unstarted_claim_expired', provider_call_attempted: false } : {}) }, now,
     });
-    if (decision === 'create_retry_attempt'
+    if (!nativeUnstarted && decision === 'create_retry_attempt'
       && (run.provider_kind !== 'app_runtime' || attempt.state === 'claimed')
       && attempt.attempt_number < run.attempt_limit && run.input_expires_at > now) {
       await this.#createAttempt(tx, run, now);
