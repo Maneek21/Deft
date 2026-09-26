@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
-  appSyncCheckpoints, auditLog, orgMembers,
+  appSyncCheckpoints, auditLog, orgMembers, users,
 } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
@@ -49,6 +49,8 @@ function operator(actor: ModuleActor): asserts actor is Human {
 async function assertManager(tx: Tx, actor: Human) {
   try { await assertCurrentModuleManagerWithExecutor(tx, actor); }
   catch (error) { if (isModuleError(error)) throw denied(); throw error; }
+  const [user] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, actor.actor_id));
+  if (user?.kind !== 'human') throw denied();
 }
 async function lockMembers(tx: Tx, orgId: string, userIds: readonly string[], mode: 'SHARE' | 'UPDATE') {
   for (const userId of [...new Set(userIds)].sort()) {
@@ -69,10 +71,11 @@ export class AppResourceSyncManagement {
     activation: boolean) {
     await lockMembers(tx, actor.org_id, [actor.actor_id, input.operator_user_id], 'UPDATE');
     await assertManager(tx, actor);
-    const [operatorMember] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role })
-      .from(orgMembers).where(and(eq(orgMembers.org_id, actor.org_id),
+    const [operatorMember] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind })
+      .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id))
+      .where(and(eq(orgMembers.org_id, actor.org_id),
         eq(orgMembers.user_id, input.operator_user_id))).limit(1);
-    if (!operatorMember?.is_active || operatorMember.role === 'guest') throw denied();
+    if (!operatorMember?.is_active || operatorMember.role === 'guest' || operatorMember.kind !== 'human') throw denied();
     if (activation) await tx.execute(sql`SELECT id FROM app_installations
       WHERE org_id = ${actor.org_id} AND id = ${input.installation_id} FOR UPDATE`);
     const reviewed = await loadReviewedResourceSyncDescriptor(tx, actor.org_id,

@@ -243,3 +243,25 @@ test('private sync HTTP status exposes generic Run metadata without private Run 
     }
   } finally { await h.close(); }
 });
+
+test('private sync HTTP denies nonhuman accounts even with a valid web SID', { skip: !safe }, async () => {
+  const h = await harness();
+  try {
+    const validSession = await h.management.issueOperatorSession(h.operator_actor, h.binding_id);
+    await h.db.update(h.schema.users).set({ kind: 'agent' }).where(h.eq(h.schema.users.id, h.operator_user_id));
+    assert.equal((await h.call('/reviews/prepare', 'POST', h.consent_request)).status, 403, 'selected operator must be a stored human');
+    await assert.rejects(h.management.issueOperatorSession(h.operator_actor, h.binding_id));
+    const authority = await import('../src/lib/app-resource-sync-authority.js');
+    const { hashAppResourceSyncToken } = await import('../src/lib/app-resource-sync-policy.js');
+    assert.equal(await h.db.transaction(tx => authority.loadLiveResourceSyncAuthority(tx, {
+      org_id: h.org_id, session_id: validSession.session_id, token_hash: hashAppResourceSyncToken(validSession.session_token), clock: () => new Date() })), null);
+    const denied = await h.call(`/bindings/${h.binding_id}/sessions`, 'POST', undefined, h.operator.accessToken);
+    assert.equal(denied.status, 403);
+    assert.ok(!JSON.stringify(denied.body).includes('session_token'));
+    for (const kind of ['agent', 'system'] as const) {
+      await h.db.update(h.schema.users).set({ kind }).where(h.eq(h.schema.users.id, h.owner_user_id));
+      assert.equal((await h.call('/bindings')).status, 403);
+      assert.equal((await h.call(`/bindings/${h.binding_id}/revoke`, 'POST')).status, 403);
+    }
+  } finally { await h.close(); }
+});

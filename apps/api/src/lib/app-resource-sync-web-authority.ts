@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { webSessions, orgMembers } from '@deft/db/schema';
+import { webSessions, orgMembers, users } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
+import { db } from './db.js';
 import { verifyWebAccess } from './web-sessions.js';
 import { humanModuleActor } from './module-service.js';
 import { AppError } from './app-errors.js';
@@ -19,6 +20,8 @@ export async function resourceSyncWebAuthority(authorization: string | undefined
   let user: Awaited<ReturnType<typeof verifyWebAccess>>;
   try { user = await verifyWebAccess(match[1]!); }
   catch { throw new ResourceSyncWebAuthenticationError('Invalid or expired web session'); }
+  const [human] = await db.select({ kind: users.kind }).from(users).where(eq(users.id, user.id));
+  if (human?.kind !== 'human') throw new AppError('Private resource sync access denied', 'APP_ACCESS_DENIED', 403);
   const actor = humanModuleActor({ orgId: user.org_id, userId: user.id,
     role: user.role, source: 'rest' });
   const guard: ResourceSyncManagementGuard = async (tx) => {
@@ -36,6 +39,10 @@ export async function resourceSyncWebAuthority(authorization: string | undefined
       revoked_at: webSessions.revoked_at }).from(webSessions).where(and(
       eq(webSessions.id, user.sid), eq(webSessions.user_id, user.id),
       eq(webSessions.org_id, user.org_id))).for('share');
+    // Recheck stored identity after any SID wait, without adding the reverse
+    // users lock edge against password reset's users -> member -> SID order.
+    const [currentHuman] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, user.id));
+    if (currentHuman?.kind !== 'human') throw new AppError('Private resource sync access denied', 'APP_ACCESS_DENIED', 403);
     const now = Date.now();
     if (!session || session.revoked_at || session.expires_at.getTime() <= now || user.exp * 1000 <= now) {
       throw new ResourceSyncWebAuthenticationError('Invalid or expired web session');

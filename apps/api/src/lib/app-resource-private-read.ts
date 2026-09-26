@@ -7,7 +7,7 @@ import { AppRuntimeResourceRefV2Schema, canonicalCapabilityJson } from '@deft/sh
 import type { ResourceRefV2 } from '@deft/shared';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { PostgresAppRunRepository, type AppRunTransaction } from './app-run-repository.js';
-import { loadLiveResourceSyncBindingAuthority } from './app-resource-sync-authority.js';
+import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 
 export const APP_RESOURCE_PRIVATE_READ_LIMITS = Object.freeze({ items: 25, response_bytes: 1_048_576 });
@@ -138,6 +138,8 @@ export class AppResourcePrivateReadService {
       // Host session/Experience checks belong inside these authority locks and
       // before the last clock check: their own row locks may wait past consent.
       await this.deliveryGuard?.(tx);
+      if (!await resourceSyncParticipantsAreHuman(tx, authority.binding.owner_user_id,
+        authority.registration.operator_user_id)) throw unavailable();
       assertConsent();
       return result;
     });

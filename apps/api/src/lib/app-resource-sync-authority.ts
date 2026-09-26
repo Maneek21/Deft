@@ -1,7 +1,7 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
-  capabilityProviderSnapshots, orgMembers,
+  capabilityProviderSnapshots, orgMembers, users,
 } from '@deft/db/schema';
 import { parseSyncDescriptor, digestResourceSyncDescriptor } from '@deft/app-kit/experimental/resource-sync';
 import { CapabilityProviderDiscoverySnapshotSchema } from '@deft/shared';
@@ -28,6 +28,15 @@ export type LiveResourceSyncAuthority = Readonly<LiveResourceSyncBindingAuthorit
 type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; clock: () => Date }>;
 type SessionLocator = Readonly<{ org_id: string; session_id: string;
   token_hash: string; clock: () => Date }>;
+
+/** Participant kinds are read after waits without taking users locks after the
+ * established member/App locks. Callers supply IDs from locked authority rows. */
+export async function resourceSyncParticipantsAreHuman(tx: AppRunTransaction,
+  ownerUserId: string, operatorUserId: string): Promise<boolean> {
+  const ids = [...new Set([ownerUserId, operatorUserId])];
+  const rows = await tx.select({ id: users.id, kind: users.kind }).from(users).where(inArray(users.id, ids));
+  return ids.every(id => rows.some(row => row.id === id && row.kind === 'human'));
+}
 
 function currentTime(clock: () => Date): Date | null {
   const checked = clock();
@@ -73,14 +82,14 @@ export async function loadLiveResourceSyncBindingAuthority(tx: AppRunTransaction
     await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
       AND user_id = ${userId} FOR SHARE`);
   }
-  const [owner] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role })
-    .from(orgMembers).where(and(eq(orgMembers.org_id, input.org_id),
+  const [owner] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind })
+    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, input.org_id),
       eq(orgMembers.user_id, locator.owner_user_id))).limit(1);
-  const [operator] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role })
-    .from(orgMembers).where(and(eq(orgMembers.org_id, input.org_id),
+  const [operator] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind })
+    .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, input.org_id),
       eq(orgMembers.user_id, registrationLocator.operator_user_id))).limit(1);
-  if (!owner?.is_active || !['owner', 'admin'].includes(owner.role)
-    || !operator?.is_active || operator.role === 'guest') return null;
+  if (!owner?.is_active || owner.kind !== 'human' || !['owner', 'admin'].includes(owner.role)
+    || !operator?.is_active || operator.kind !== 'human' || operator.role === 'guest') return null;
   let reviewed: Reviewed;
   try { reviewed = await loadReviewedResourceSyncDescriptor(tx, input.org_id,
     locator.installation_id, locator.resource_key); }
@@ -135,6 +144,7 @@ export async function loadLiveResourceSyncBindingAuthority(tx: AppRunTransaction
   try { if (!await validProviderSnapshot(providerSnapshot, registration, binding,
     reviewed.descriptor)) return null; }
   catch { return null; }
+  if (!await resourceSyncParticipantsAreHuman(tx, binding.owner_user_id, registration.operator_user_id)) return null;
   const checkedAt = currentTime(input.clock);
   if (!checkedAt || binding.consent_expires_at <= checkedAt) return null;
   return Object.freeze({ ...reviewed, registration, binding, provider_snapshot: providerSnapshot,
@@ -163,6 +173,8 @@ export async function loadLiveResourceSyncAuthority(tx: AppRunTransaction,
   const [session] = await tx.select().from(appRuntimeSessions).where(and(
     eq(appRuntimeSessions.org_id, input.org_id), eq(appRuntimeSessions.id, input.session_id),
     eq(appRuntimeSessions.token_hash, input.token_hash))).limit(1);
+  if (!await resourceSyncParticipantsAreHuman(tx, bindingAuthority.binding.owner_user_id,
+    bindingAuthority.registration.operator_user_id)) return null;
   const checkedAt = currentTime(input.clock);
   if (!session || !checkedAt || session.audience !== 'app_resource_sync'
     || session.runtime_binding_id !== null
