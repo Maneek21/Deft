@@ -241,6 +241,7 @@ export const upgradeManifest = {
       description: 'Add separately consented host-native Calendar bindings and exact protocol 6 Run/public ancestry',
     },
     { version: '0.3.0-preview.45', file: '0.3.0-preview.45-app-resource-access.sql', description: 'Add dormant immutable exact-content human private App resource sharing' },
+    { version: '0.3.0-preview.46', file: '0.3.0-preview.46-app-public-control.sql', description: 'Add retained public controls and atomic pre-effect withdrawal identities' },
   ] satisfies UpgradeMigration[],
 } as const;
 

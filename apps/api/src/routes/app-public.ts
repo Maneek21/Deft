@@ -49,6 +49,22 @@ export function createAppPublicRoutes(service: AppPublicClaimService = appPublic
     await next();
   });
   routes.use('*', appPublicLimits);
+  for (const operation of ['status', 'cancel'] as const) routes.post(`/:slug/claims/:claimId/${operation}`, async c => {
+    try {
+      const canonical = `/api/public/apps/${c.req.param('slug')}/claims/${c.req.param('claimId')}/${operation}`;
+      const rawTarget = (c.env as { incoming?: { url?: string } } | undefined)?.incoming?.url;
+      if (rawTarget !== canonical || new URL(c.req.url).search !== ''
+        || !/^application\/json(?:\s*;|$)/i.test(c.req.header('content-type') ?? '')) {
+        throw new AppPublicError('PUBLIC_INVALID_INPUT', 400);
+      }
+      const result = await service.control(c.req.param('slug'), c.req.param('claimId'),
+        await boundedBody(c.req.raw.body), operation === 'cancel');
+      return c.json({ result });
+    } catch (error) {
+      if (error instanceof AppPublicError) return c.json({ error: error.message, code: error.code }, error.status);
+      return c.json({ error: 'Public control is temporarily unavailable', code: 'PUBLIC_UNAVAILABLE' }, 503);
+    }
+  });
   routes.get('/:slug/availability', async c => {
     try {
       const query = c.req.query();

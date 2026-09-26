@@ -32,24 +32,29 @@ import { acquirePublicBudgetAdmission, publicEndpointBudget, reservePublicBudget
 import { publicAuthenticationPolicy, verifyPublicSignature, acceptPublicSignature, assertPublicSignatureFresh,
   PublicSignatureInvalid, PublicSignatureReplay, PublicSignatureCapacity, type PublicSignedRequest } from './app-public-hmac.js';
 import { validatePublicNativeMapping } from './app-public-native-mapping.js';
+import { PublicControlSecretSchema, PublicCancellationPolicySchema, publicControlDigest } from './app-public-control-contract.js';
 
 type PublicTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
 type Ingress = typeof appPublicIngress.$inferSelect;
 type AppInstallation = typeof appInstallations.$inferSelect;
 
-export const PublicClaimInputSchema = z.strictObject({
+const PublicClaimFields = {
   resource_ref: ModuleResourceRefV1Schema,
   expected_revision: z.number().int().positive().max(2_147_483_647),
   idempotency_key: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/),
-});
+};
+export const PublicClaimInputSchema = z.union([z.strictObject(PublicClaimFields),
+  z.strictObject({ ...PublicClaimFields, schema_version: z.literal('deft.app_public_claim.v2'), control_secret: PublicControlSecretSchema })]);
 export type PublicClaimInput = z.infer<typeof PublicClaimInputSchema>;
 
 export type PublicClaimResult = Readonly<{
   claim_id: string;
-  claim_state: 'confirmed';
+  claim_state: 'confirmed' | 'released';
   follow_up_state: 'pending' | 'unsupported' | 'run_created';
   replayed: boolean;
+  schema_version?: 'deft.app_public_claim_result.v2';
+  control_expires_at?: string;
 }>;
 
 export type AppPublicErrorCode =
@@ -88,7 +93,7 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>
   & Partial<Pick<Endpoint, 'public_action_key' | 'runtime_binding_id' | 'approver_user_id'
     | 'input_mapping' | 'mapping_digest' | 'availability_policy' | 'budget_policy'
-    | 'authentication_policy' | 'hmac_key_id' | 'native_binding_id' | 'native_input_mapping'>>): string {
+    | 'authentication_policy' | 'hmac_key_id' | 'native_binding_id' | 'native_input_mapping' | 'cancellation_policy'>>): string {
   const core = {
     review_version: 'deft.app_public_review.v1',
     endpoint_id: endpoint.id,
@@ -107,7 +112,7 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   };
   if (!endpoint.public_action_key) return hash(JSON.stringify(core));
   if (endpoint.native_binding_id) return hash(JSON.stringify({ ...core,
-    review_version: 'deft.app_public_review.v6', public_action_key: endpoint.public_action_key,
+    review_version: endpoint.cancellation_policy ? 'deft.app_public_review.v7' : 'deft.app_public_review.v6', public_action_key: endpoint.public_action_key,
     binding_target: { schema_version: 'deft.app_public_binding_target.v2', kind: 'native',
       native_binding_id: endpoint.native_binding_id },
     approver_user_id: endpoint.approver_user_id, native_input_mapping: endpoint.native_input_mapping,
@@ -115,6 +120,8 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
     ...(endpoint.availability_policy ? { availability_policy: digestAppGrantValue(endpoint.availability_policy) } : {}),
     ...(endpoint.budget_policy ? { budget_policy: digestAppGrantValue(endpoint.budget_policy),
       host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS } : {}),
+    ...(endpoint.cancellation_policy ? { cancellation_policy: digestAppGrantValue(endpoint.cancellation_policy),
+      cancellation_scope: 'pre_effect_withdrawal_only', post_effect_cancellation: 'unavailable' } : {}),
     ...(endpoint.authentication_policy ? { authentication_policy: digestAppGrantValue(endpoint.authentication_policy),
       hmac_key_id: endpoint.hmac_key_id } : {}),
   }));
@@ -148,7 +155,8 @@ function parseBody(rawBody: Uint8Array, maxBodyBytes: number): PublicClaimInput 
 }
 
 function inputDigest(input: PublicClaimInput): string {
-  return hash(JSON.stringify({ resource_ref: input.resource_ref, expected_revision: input.expected_revision }));
+  return hash(JSON.stringify({ resource_ref: input.resource_ref, expected_revision: input.expected_revision,
+    ...('control_secret' in input ? { control_digest: hash(JSON.stringify(['deft.app_public_claim_control.v2', input.control_secret])) } : {}) }));
 }
 
 function principalFor(endpoint: Endpoint): AppPublicPrincipal {
@@ -337,13 +345,16 @@ async function outcomeFromReceipt(tx: PublicTransaction, receipt: Ingress, input
   if (receipt.input_digest !== inputFingerprint) throw new AppPublicError('PUBLIC_IDEMPOTENCY_CONFLICT', 409);
   if (receipt.state === 'conflict') return 'conflict';
   if (receipt.state !== 'confirmed') throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
-  const [claim] = await tx.select({ id: appCanonicalClaims.id }).from(appCanonicalClaims).where(and(
+  const [claim] = await tx.select().from(appCanonicalClaims).where(and(
     eq(appCanonicalClaims.org_id, receipt.org_id),
     eq(appCanonicalClaims.endpoint_id, receipt.endpoint_id),
     eq(appCanonicalClaims.ingress_id, receipt.id),
   )).limit(1);
   if (!claim) throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
-  return { claim_id: claim.id, claim_state: 'confirmed', follow_up_state: receipt.follow_up_state, replayed: true };
+  return { claim_id: claim.id, claim_state: claim.control_digest && claim.released_at ? 'released' : 'confirmed',
+    follow_up_state: receipt.follow_up_state, replayed: true,
+    ...(claim.control_expires_at ? { schema_version: 'deft.app_public_claim_result.v2' as const,
+      control_expires_at: claim.control_expires_at.toISOString() } : {}) };
 }
 
 async function enqueueIngress(tx: PublicTransaction, orgId: string, endpointId: string, ingressId: string, endpointEpoch: number) {
@@ -377,6 +388,11 @@ export class AppPublicClaimService {
   constructor(private readonly options: { enabled?: boolean; deliver?: Delivery } = {}) {}
 
   isEnabled(): boolean { return this.options.enabled === true; }
+
+  async control(slug: string, claimId: string, rawBody: Uint8Array, cancel = false) {
+    if (!this.isEnabled()) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+    return (await import('./app-public-control.js')).publicClaimControl(slug, claimId, rawBody, cancel);
+  }
 
   async availability(slug: string, cursorToken?: string) {
     if (!this.isEnabled()) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
@@ -473,6 +489,10 @@ export class AppPublicClaimService {
           ? await verifyPublicSignature(tx, (await (await import('./app-run-runtime.js')).getAppRunRuntime()).keys,
             endpoint, slug, rawBody, signedRequest) : null;
         const input = parseBody(rawBody, endpoint.max_body_bytes);
+        const cancellationPolicy = endpoint.cancellation_policy == null ? null : PublicCancellationPolicySchema.parse(endpoint.cancellation_policy);
+        if ('control_secret' in input && (!cancellationPolicy || !endpoint.native_binding_id)) {
+          throw new AppPublicError('PUBLIC_INVALID_INPUT', 400);
+        }
         const ref = input.resource_ref;
         if (ref.provider.provider_instance_id !== endpoint.module_installation_id
           || ref.resource_type !== endpoint.collection_key) {
@@ -532,6 +552,12 @@ export class AppPublicClaimService {
           return 'conflict';
         }
         const reservedAt = await reservePublicBudget(tx, endpoint, claimId);
+        const controlExpiresAt = 'control_secret' in input && cancellationPolicy
+          ? new Date(reservedAt.getTime() + cancellationPolicy.control_ttl_seconds * 1000) : null;
+        if (controlExpiresAt && 'control_secret' in input) await tx.update(appCanonicalClaims).set({
+          control_digest: publicControlDigest(principal.org_id, endpoint.id, claimId, input.control_secret),
+          control_expires_at: controlExpiresAt,
+        }).where(and(eq(appCanonicalClaims.org_id, principal.org_id), eq(appCanonicalClaims.id, claimId)));
         if (policy && !canClaimPublicAvailability(policy, record.data, reservedAt)) {
           throw new AppPublicError('PUBLIC_CLAIM_CONFLICT', 409);
         }
@@ -539,7 +565,9 @@ export class AppPublicClaimService {
         await (this.options.deliver ?? enqueueIngress)(tx, principal.org_id, endpoint.id, ingressId, endpoint.endpoint_epoch);
         await tx.update(appPublicIngress).set({ state: 'confirmed' }).where(eq(appPublicIngress.id, ingressId));
         await assertFinalNativeAuthority(tx, endpoint, native_participant_ids);
-        return { claim_id: claimId, claim_state: 'confirmed', follow_up_state: 'pending', replayed: false };
+        return { claim_id: claimId, claim_state: 'confirmed', follow_up_state: 'pending', replayed: false,
+          ...(controlExpiresAt ? { schema_version: 'deft.app_public_claim_result.v2' as const,
+            control_expires_at: controlExpiresAt.toISOString() } : {}) };
       });
     } catch (error) {
       if (error instanceof AppPublicError) throw error;

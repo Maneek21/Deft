@@ -41,6 +41,12 @@ export const handleAppPublicIngress: JobHandler = async (job) => {
     }
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
       ${`app-public-ingress:${payload.organization_id}:${payload.ingress_id}`}, 0))`);
+    // Customer withdrawal shares this mutex. It can fence an unadmitted
+    // historical ingress without reviving retired App/member authority.
+    const [retainedClaim] = await tx.select({ released_at: appCanonicalClaims.released_at }).from(appCanonicalClaims).where(and(
+      eq(appCanonicalClaims.org_id, payload.organization_id), eq(appCanonicalClaims.endpoint_id, payload.endpoint_id),
+      eq(appCanonicalClaims.ingress_id, payload.ingress_id))).limit(1);
+    if (retainedClaim?.released_at) return;
     const [actionLocator] = await tx.select({ public_action_key: appPublicEndpoints.public_action_key,
       native_binding_id: appPublicEndpoints.native_binding_id })
       .from(appPublicEndpoints).where(and(

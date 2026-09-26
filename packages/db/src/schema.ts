@@ -5314,6 +5314,8 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   mapping_digest: text('mapping_digest'),
   availability_policy: jsonb('availability_policy').$type<Record<string, unknown> | null>(),
   budget_policy: jsonb('budget_policy').$type<Record<string, unknown> | null>(),
+  cancellation_policy: jsonb('cancellation_policy').$type<Record<string, unknown> | null>(),
+  cancel_native_binding_id: text('cancel_native_binding_id').generatedAlwaysAs(sql`cancellation_policy->>'cancel_native_binding_id'`),
   authentication_policy: jsonb('authentication_policy').$type<Record<string, unknown> | null>(),
   hmac_key_id: text('hmac_key_id'),
   state: text('state').$type<'disabled' | 'enabled'>().default('disabled').notNull(),
@@ -5348,10 +5350,15 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
     foreignColumns: [appNativeBindings.org_id, appNativeBindings.app_installation_id, appNativeBindings.app_version_id,
       appNativeBindings.grant_snapshot_id, appNativeBindings.id, appNativeBindings.owner_user_id],
     name: 'app_public_endpoints_native_binding_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id, t.grant_snapshot_id, t.cancel_native_binding_id, t.approver_user_id],
+    foreignColumns: [appNativeBindings.org_id, appNativeBindings.app_installation_id, appNativeBindings.app_version_id,
+      appNativeBindings.grant_snapshot_id, appNativeBindings.id, appNativeBindings.owner_user_id],
+    name: 'app_public_endpoints_cancel_binding_fk' }).onDelete('restrict'),
   foreignKey({ columns: [t.org_id, t.approver_user_id],
     foreignColumns: [orgMembers.org_id, orgMembers.user_id],
     name: 'app_public_endpoints_approver_fk' }).onDelete('restrict'),
   unique('app_public_endpoints_org_id_unique').on(t.org_id, t.id),
+  unique('app_public_endpoints_app_id_unique').on(t.org_id, t.app_installation_id, t.id),
   uniqueIndex('app_public_endpoints_slug_digest_unique').on(t.slug_digest),
   index('app_public_endpoints_org_installation_idx').on(t.org_id, t.app_installation_id, t.state),
   check('app_public_endpoints_slug_digest_check', sql`${t.slug_digest} ~ '^sha256:[a-f0-9]{64}$'`),
@@ -5390,7 +5397,7 @@ export const appPublicIngress = pgTable('app_public_ingress', {
   input_digest: text('input_digest').notNull(),
   state: text('state').$type<'processing' | 'confirmed' | 'conflict'>().notNull(),
   follow_up_state: text('follow_up_state').$type<'pending' | 'unsupported' | 'run_created'>().default('pending').notNull(),
-  follow_up_code: text('follow_up_code').$type<'APP_HANDLER_UNAVAILABLE' | 'ENDPOINT_REVOKED'>(),
+  follow_up_code: text('follow_up_code').$type<'APP_HANDLER_UNAVAILABLE' | 'ENDPOINT_REVOKED' | 'PUBLIC_WITHDRAWN'>(),
   handled_at: timestamp('handled_at'),
   created_at: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
@@ -5408,7 +5415,7 @@ export const appPublicIngress = pgTable('app_public_ingress', {
   check('app_public_ingress_state_check', sql`${t.state} IN ('processing', 'confirmed', 'conflict')`),
   check('app_public_ingress_follow_up_check', sql`(${t.follow_up_state} = 'pending' AND ${t.follow_up_code} IS NULL AND ${t.handled_at} IS NULL)
     OR (${t.follow_up_state} = 'unsupported' AND ${t.follow_up_code} IS NOT NULL
-      AND ${t.follow_up_code} IN ('APP_HANDLER_UNAVAILABLE', 'ENDPOINT_REVOKED') AND ${t.handled_at} IS NOT NULL)
+      AND ${t.follow_up_code} IN ('APP_HANDLER_UNAVAILABLE', 'ENDPOINT_REVOKED', 'PUBLIC_WITHDRAWN') AND ${t.handled_at} IS NOT NULL)
     OR (${t.follow_up_state} = 'run_created' AND ${t.follow_up_code} IS NULL
       AND ${t.handled_at} IS NOT NULL)`),
 ]);
@@ -5451,6 +5458,8 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
   // Fresh PostgreSQL admission instant; historical NULL rows retain their
   // original created_at as an explicitly approximate budget-day fallback.
   budget_reserved_at: timestamp('budget_reserved_at'),
+  control_digest: text('control_digest'),
+  control_expires_at: timestamp('control_expires_at'),
   created_at: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   foreignKey({
@@ -5464,6 +5473,7 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
     name: 'app_canonical_claims_module_record_fk',
   }).onDelete('restrict'),
   unique('app_canonical_claims_org_id_unique').on(t.org_id, t.id),
+  unique('app_canonical_claims_endpoint_id_unique').on(t.org_id, t.endpoint_id, t.id),
   uniqueIndex('app_canonical_claims_ingress_unique').on(t.org_id, t.ingress_id),
   uniqueIndex('app_canonical_claims_active_resource_unique')
     .on(t.org_id, t.provider_kind, t.provider_instance_id, t.resource_id, t.claim_kind)
@@ -5474,6 +5484,34 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
   check('app_canonical_claims_resource_type_check', sql`${t.resource_type} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('app_canonical_claims_kind_check', sql`${t.claim_kind} = 'exclusive'`),
   check('app_canonical_claims_release_check', sql`${t.released_at} IS NULL OR ${t.released_at} >= ${t.created_at}`),
+  check('app_canonical_claims_control_check', sql`(${t.control_digest} IS NULL AND ${t.control_expires_at} IS NULL)
+    OR COALESCE((${t.control_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.control_expires_at} IS NOT NULL
+      AND ${t.budget_reserved_at} IS NOT NULL AND ${t.control_expires_at} > ${t.budget_reserved_at}
+      AND ${t.control_expires_at} <= ${t.budget_reserved_at} + interval '7 days'),false)`),
+]);
+
+export const appPublicCancellations = pgTable('app_public_cancellations', {
+  ...id(), ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(),
+  endpoint_id: text('endpoint_id').notNull(), claim_id: text('claim_id').notNull(),
+  original_run_id: text('original_run_id'), request_key_digest: text('request_key_digest').notNull(),
+  state: text('state').$type<'released_before_effect' | 'withdrawal_requested' | 'cancellation_unavailable'>().notNull(),
+  accepted_at: timestamp('accepted_at').notNull(), settled_at: timestamp('settled_at'),
+}, t => [
+  foreignKey({ columns: [t.org_id, t.endpoint_id, t.claim_id],
+    foreignColumns: [appCanonicalClaims.org_id, appCanonicalClaims.endpoint_id, appCanonicalClaims.id],
+    name: 'app_public_cancellations_claim_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.endpoint_id],
+    foreignColumns: [appPublicEndpoints.org_id, appPublicEndpoints.app_installation_id, appPublicEndpoints.id],
+    name: 'app_public_cancellations_endpoint_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.original_run_id], foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'app_public_cancellations_run_fk' }).onDelete('restrict'),
+  unique('app_public_cancellations_claim_unique').on(t.org_id, t.claim_id),
+  index('app_public_cancellations_app_accepted_idx').on(t.org_id, t.app_installation_id, t.accepted_at),
+  check('app_public_cancellations_key_check', sql`${t.request_key_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_public_cancellations_state_check', sql`${t.state} IN ('released_before_effect','withdrawal_requested','cancellation_unavailable')
+    AND ((${t.state} = 'withdrawal_requested' AND ${t.settled_at} IS NULL)
+      OR (${t.state} <> 'withdrawal_requested' AND ${t.settled_at} IS NOT NULL AND ${t.settled_at} >= ${t.accepted_at}))`),
 ]);
 // Explicit human-only exact-content App resource disclosure; no body copies.
 export const appResourceAccessGrants = pgTable('app_resource_access_grants', {

@@ -46,7 +46,9 @@ async function assertCounts(tx: Transaction, endpoint: Endpoint, ownClaimId: str
         JOIN app_public_endpoints e ON e.org_id = c.org_id AND e.id = c.endpoint_id
         WHERE c.org_id = ${endpoint.org_id} AND ${scope.filter}
           AND (i.state = 'confirmed' OR c.id = ${ownClaimId})
-          AND (c.id = ${ownClaimId} OR i.follow_up_state = 'pending'
+          AND (c.id = ${ownClaimId} OR (c.released_at IS NULL AND (i.follow_up_state = 'pending'
+            OR EXISTS (SELECT 1 FROM app_public_cancellations x WHERE x.org_id=c.org_id AND x.claim_id=c.id
+              AND x.state='withdrawal_requested')
             OR (i.follow_up_state = 'run_created' AND NOT EXISTS (
               SELECT 1 FROM app_runs r WHERE r.org_id = c.org_id AND r.origin_kind = 'app'
                 AND r.origin_app_installation_id = e.app_installation_id
@@ -61,7 +63,7 @@ async function assertCounts(tx: Transaction, endpoint: Endpoint, ownClaimId: str
                 AND r.initiating_actor_type = 'app_public' AND r.initiating_actor_id = i.id
                 AND r.execution_actor_type = 'human' AND r.execution_actor_id = e.approver_user_id
                 AND r.state IN (${sql.join(APP_RUN_TERMINAL_STATES.map(state => sql`${state}`), sql`, `)})
-            ))) LIMIT ${scope.limits.max_pending + 1}`);
+            ))))) LIMIT ${scope.limits.max_pending + 1}`);
       if (pending.rows.length > scope.limits.max_pending) throw new PublicBudgetExceededError();
     }
     const daily = await tx.execute(sql`SELECT c.id FROM app_canonical_claims c

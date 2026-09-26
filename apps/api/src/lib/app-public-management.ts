@@ -19,6 +19,7 @@ import { sealPublicHmacSecret, publicAuthenticationPolicy } from './app-public-h
 import type { PublicManagementGuard } from './app-public-web-authority.js';
 import { isAppNativeCalendarEnabled } from './env.js';
 import { validatePublicNativeMapping } from './app-public-native-mapping.js';
+import { PublicCancellationPolicySchema } from './app-public-control-contract.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -30,6 +31,7 @@ const StagePublicEndpointFields = {
   max_body_bytes: z.number().int().min(128).max(8192),
   budget_policy: PublicBudgetPolicySchema.optional(),
   authentication_policy: PublicHmacPolicySchema.optional(),
+  cancellation_policy: PublicCancellationPolicySchema.optional(),
   expected_app_version_id: Id, expected_grant_snapshot_id: Id,
   expected_lifecycle_epoch: z.number().int().nonnegative(),
   expected_grant_epoch: z.number().int().positive(),
@@ -60,12 +62,16 @@ function targetGate(native: boolean) {
   }
 }
 
-async function nativeParticipants(tx: Tx, actor: ModuleActor, nativeBindingId: string): Promise<string[]> {
-  const [locator] = await tx.select({ owner_user_id: appNativeBindings.owner_user_id,
+async function nativeParticipants(tx: Tx, actor: ModuleActor, nativeBindingIds: string | readonly string[]): Promise<string[]> {
+  const ids = typeof nativeBindingIds === 'string' ? [nativeBindingIds] : [...new Set(nativeBindingIds)];
+  const locators = await Promise.all(ids.map(async nativeBindingId => {
+    const [locator] = await tx.select({ owner_user_id: appNativeBindings.owner_user_id,
     stage_manager_user_id: appNativeBindings.stage_manager_user_id }).from(appNativeBindings).where(and(
     eq(appNativeBindings.org_id, actor.org_id), eq(appNativeBindings.id, nativeBindingId))).limit(1);
-  if (!locator) throw stale();
-  const participants = [...new Set([actor.actor_id, locator.owner_user_id, locator.stage_manager_user_id])].sort();
+    if (!locator) throw stale(); return locator;
+  }));
+  const participants = [...new Set([actor.actor_id, ...locators.flatMap(locator =>
+    [locator.owner_user_id, locator.stage_manager_user_id])])].sort();
   // The manager guard needs UPDATE, so take that mode in sorted order now.
   // Taking all SHARE then upgrading each caller could deadlock two managers.
   for (const userId of participants) {
@@ -75,6 +81,23 @@ async function nativeParticipants(tx: Tx, actor: ModuleActor, nativeBindingId: s
       WHERE org_id=${actor.org_id} AND user_id=${userId} FOR SHARE`);
   }
   return participants;
+}
+
+async function reviewedCancellation(tx: Tx, orgId: string, policy: unknown, createBindingId: string | null, participants: readonly string[]) {
+  if (policy == null) return;
+  const parsed = PublicCancellationPolicySchema.parse(policy);
+  if (!createBindingId) throw stale();
+  const { loadLiveNativeAuthority } = await import('./app-native-authority.js');
+  const create = await loadLiveNativeAuthority(tx, { org_id: orgId,
+    native_binding_id: createBindingId, prelocked_participant_ids: participants });
+  const cancellation = await loadLiveNativeAuthority(tx, { org_id: orgId,
+    native_binding_id: parsed.cancel_native_binding_id, prelocked_participant_ids: participants });
+  if (create.action.operation !== 'calendar.events.create.v1' || cancellation.action.operation !== 'calendar.events.cancel.v1'
+    || create.binding.app_installation_id !== cancellation.binding.app_installation_id
+    || create.binding.owner_user_id !== cancellation.binding.owner_user_id
+    || create.binding.app_version_id !== cancellation.binding.app_version_id
+    || create.binding.grant_snapshot_id !== cancellation.binding.grant_snapshot_id
+    || cancellation.binding.consent_digest !== parsed.expected_cancel_consent_digest) throw stale();
 }
 
 async function finalManager(tx: Tx, actor: ModuleActor, guard?: PublicManagementGuard, nativeTarget = false,
@@ -199,7 +222,9 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown, guar
   const slug = randomBytes(32).toString('base64url');
   const slugDigest = hash(slug);
   return db.transaction(async (tx) => {
-    const participants = target.kind === 'native' ? await nativeParticipants(tx, actor, target.native_binding_id) : [];
+    if (input.cancellation_policy && target.kind !== 'native') throw stale();
+    const participants = target.kind === 'native' ? await nativeParticipants(tx, actor, [target.native_binding_id,
+      ...(input.cancellation_policy ? [input.cancellation_policy.cancel_native_binding_id] : [])]) : [];
     await assertCurrentModuleManagerWithExecutor(tx, actor);
     const identity = {
       org_id: actor.org_id, installation_id: input.installation_id,
@@ -210,6 +235,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown, guar
       native_binding_id: target.native_binding_id, prelocked_participant_ids: participants })
       : await reviewedSetup(tx, { ...identity, runtime_binding_id: target.runtime_binding_id });
     const { runtime, declaration, moduleBinding, availabilityPolicy } = setup;
+    await reviewedCancellation(tx, actor.org_id, input.cancellation_policy, target.kind === 'native' ? target.native_binding_id : null, participants);
     if (runtime.binding.app_version_id !== input.expected_app_version_id
       || runtime.binding.grant_snapshot_id !== input.expected_grant_snapshot_id
       || runtime.installation_lifecycle_epoch !== input.expected_lifecycle_epoch
@@ -243,6 +269,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown, guar
       mapping_digest: digestAppGrantValue(declaration.input_mapping),
       availability_policy: availabilityPolicy,
       budget_policy: input.budget_policy ?? null,
+      cancellation_policy: input.cancellation_policy ?? null,
       authentication_policy: input.authentication_policy ?? null, hmac_key_id: keyId,
       state: 'disabled' as const, endpoint_epoch: 1,
       public_label: input.public_label, max_body_bytes: input.max_body_bytes,
@@ -256,6 +283,8 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown, guar
     return { endpoint_id: endpointId, slug, state: 'disabled' as const,
       review_digest: reviewDigest, endpoint_epoch: 1,
       budget_policy: input.budget_policy ?? null, host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS,
+      ...(input.cancellation_policy ? { cancellation_policy: input.cancellation_policy,
+        cancellation_scope: 'pre_effect_withdrawal_only' as const, post_effect_cancellation: 'unavailable' as const } : {}),
       authentication_policy: input.authentication_policy ?? null, hmac_key_id: keyId,
       ...(provisioning ? { signing_key: provisioning } : {}),
       authentication_scope: input.authentication_policy ? 'claim_ingress_only' as const : null,
@@ -277,13 +306,16 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
       public_action_key: appPublicEndpoints.public_action_key,
       runtime_binding_id: appPublicEndpoints.runtime_binding_id,
       native_binding_id: appPublicEndpoints.native_binding_id,
+      cancellation_policy: appPublicEndpoints.cancellation_policy,
       approver_user_id: appPublicEndpoints.approver_user_id,
     }).from(appPublicEndpoints).where(and(eq(appPublicEndpoints.org_id, actor.org_id),
       eq(appPublicEndpoints.id, endpointId))).limit(1);
     if (!locator?.public_action_key || !locator.approver_user_id
       || Boolean(locator.runtime_binding_id) === Boolean(locator.native_binding_id)) throw stale();
     targetGate(Boolean(locator.native_binding_id));
-    const participants = locator.native_binding_id ? await nativeParticipants(tx, actor, locator.native_binding_id) : [];
+    const cancellationPolicy = locator.cancellation_policy == null ? null : PublicCancellationPolicySchema.parse(locator.cancellation_policy);
+    const participants = locator.native_binding_id ? await nativeParticipants(tx, actor, [locator.native_binding_id,
+      ...(cancellationPolicy ? [cancellationPolicy.cancel_native_binding_id] : [])]) : [];
     await assertCurrentModuleManagerWithExecutor(tx, actor);
     const identity = { org_id: actor.org_id,
       installation_id: locator.app_installation_id,
@@ -314,6 +346,8 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
       !== digestAppGrantValue(setup.availabilityPolicy)) throw stale();
     try { publicEndpointBudget(endpoint.budget_policy); } catch { throw stale(); }
     try { publicAuthenticationPolicy(endpoint); } catch { throw stale(); }
+    if (digestAppGrantValue(endpoint.cancellation_policy ?? null) !== digestAppGrantValue(locator.cancellation_policy ?? null)) throw stale();
+    await reviewedCancellation(tx, actor.org_id, endpoint.cancellation_policy, endpoint.native_binding_id, participants);
     const epoch = endpoint.endpoint_epoch + 1;
     const reviewDigest = publicEndpointReviewDigest({ ...endpoint, endpoint_epoch: epoch });
     targetGate(setup.kind === 'native');
