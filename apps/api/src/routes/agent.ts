@@ -21,6 +21,7 @@ import { db } from '../lib/db.js';
 import {
   agentActions,
   appRuns,
+  appNativeBindings,
   agentActionApprovers,
   agentMemory,
   agentEmployees,
@@ -1729,19 +1730,29 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   if (isApprovalResolverAction(action.action)) {
     let nativeGuard: ((tx: AppRunTransaction) => Promise<void>) | undefined;
     if (action.app_run_id) {
-      const [run] = await db.select({ provider_kind: appRuns.provider_kind }).from(appRuns)
+      // Native proposal participant IDs are immutable. Approval authorization
+      // locks and revalidates this exact set before the final SID fence; carry
+      // its locator here so no membership lock is discovered after App.
+      const [run] = await db.select({ provider_kind: appRuns.provider_kind,
+        owner_user_id: appNativeBindings.owner_user_id, manager_user_id: appNativeBindings.stage_manager_user_id,
+        input_expires_at: appRuns.input_expires_at, result_expires_at: appRuns.result_expires_at }).from(appRuns)
+        .leftJoin(appNativeBindings, and(eq(appNativeBindings.org_id, appRuns.org_id),
+          eq(appNativeBindings.id, appRuns.origin_native_binding_id)))
         .where(and(eq(appRuns.org_id, user.org_id), eq(appRuns.id, action.app_run_id))).limit(1);
       if (run?.provider_kind === 'native') {
         try {
           const { assertNativeCalendarEnabled, nativeParticipantsAreHuman } = await import('../lib/app-native-authority.js');
           const { resourceSyncWebAuthority } = await import('../lib/app-resource-sync-web-authority.js');
           assertNativeCalendarEnabled();
-          if (!user.sid) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+          if (!user.sid || !run.owner_user_id || !run.manager_user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+          const participantIds = [run.owner_user_id, run.manager_user_id];
           const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
           nativeGuard = async tx => {
             await guard(tx);
             assertNativeCalendarEnabled();
-            if (!await nativeParticipantsAreHuman(tx, [user.id])) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+            const now = Date.now();
+            if (run.input_expires_at.getTime() <= now || run.result_expires_at.getTime() <= now
+              || !await nativeParticipantsAreHuman(tx, participantIds)) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
           };
         } catch (error) {
           if (error && typeof error === 'object' && 'status' in error && 'code' in error

@@ -136,5 +136,38 @@ test('native cancel owner kind withdrawal during actual Calendar row wait rolls 
     assert.equal((event!.metadata as any).status, 'confirmed');
     const terminal = await h.db.select().from(h.schema.appRunReceipts).where(h.and(h.eq(h.schema.appRunReceipts.run_id, cancelled.id), h.eq(h.schema.appRunReceipts.receipt_kind, 'attempt_terminal')));
     assert.equal(terminal.length, 0);
+    const outputPayloads = await h.db.select().from(h.schema.appRunSecretPayloads).where(h.and(h.eq(h.schema.appRunSecretPayloads.run_id, cancelled.id), h.eq(h.schema.appRunSecretPayloads.payload_kind, 'output')));
+    assert.equal(outputPayloads.length, 0);
+  } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
+});
+
+test('native approval manager kind withdrawal during final owner SID wait rolls back approval and scheduling', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create'));
+  const created = await run(h, binding, input);
+  const [action] = await h.db.select().from(h.schema.agentActions).where(h.eq(h.schema.agentActions.app_run_id, created.id));
+  assert.ok(action);
+  const [session] = await h.db.select().from(h.schema.webSessions).where(h.eq(h.schema.webSessions.user_id, h.owner));
+  assert.ok(session);
+  const { default: pg } = await import('pg'); const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+  const observer = new pg.Client({ connectionString: target }); await observer.connect();
+  let pending: ReturnType<Harness['call']> | undefined;
+  try {
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM web_sessions WHERE id=$1 FOR UPDATE', [session.id]);
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    pending = h.call(`/api/agent/actions/${action.id}/approve`, {}, h.ownerWeb.accessToken);
+    let waited = false;
+    for (let i = 0; i < 300; i++) {
+      const { rows: [row] } = await observer.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'real final owner SID row wait must be observed');
+    await observer.query('UPDATE users SET is_agent=true WHERE id=$1', [h.manager]); await blocker.query('COMMIT');
+    assert.notEqual((await pending).status, 200);
+    const [current] = await h.db.select().from(h.schema.appRuns).where(h.eq(h.schema.appRuns.id, created.id));
+    assert.equal(current!.state, 'pending_approval'); assert.equal(current!.execution_released_at, null);
+    const [approval] = await h.db.select().from(h.schema.agentActions).where(h.eq(h.schema.agentActions.id, action.id));
+    assert.equal(approval!.approval_status, 'pending');
+    assert.equal((await h.db.select().from(h.schema.appRunReceipts).where(h.eq(h.schema.appRunReceipts.run_id, created.id))).length, 0);
+    assert.equal((await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, created.id))).length, 0);
   } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
 });
