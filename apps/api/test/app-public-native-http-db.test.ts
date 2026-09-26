@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, test } from 'node:test';
 import { publicNativeHttpFixture } from './fixtures/public-native-http.js';
+import { createAppRuntimeClient } from '@deft/app-kit';
 
 const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = !!target && target === process.env.DATABASE_URL
@@ -147,6 +148,25 @@ test('mixed protocol 6 public Runtime target admits its unchanged string mapping
     assert.equal(run.origin_native_binding_id, null); assert.equal(run.state, 'pending_approval');
     const exact = (await f.call(`/api/app-runtime-actions/${run.id}/review`, undefined, 'owner')).review;
     assert.deepEqual(exact.input, { resource_id: record.id });
+    const [approval] = await f.db.select().from(f.schema.agentActions).where(and(
+      eq(f.schema.agentActions.org_id, f.orgId), eq(f.schema.agentActions.app_run_id, run.id)));
+    assert.ok(approval);
+    await f.call(`/api/agent/actions/${approval.id}/approve`, {}, 'owner');
+    const session = (await f.call(`/api/apps/runtime/bindings/${binding.binding_id}/sessions`, {}, 'owner')).session;
+    const operator = createAppRuntimeClient({ channel_url: `${f.base}/api/app-runtime/channel`,
+      credential: { session_id: session.session_id, session_token: session.session_token } });
+    const execution = await operator.claim();
+    assert.ok(execution); assert.equal(execution.run_id, run.id);
+    assert.deepEqual((await operator.start(execution)).input, { resource_id: record.id });
+    await operator.result(execution, { status: 'returned', provider_succeeded: true, output: { resource_id: record.id } });
+    assert.equal((await f.runtime.repository.inspect(f.orgId, run.id))?.state, 'succeeded');
+    assert.ok((await f.runtime.receiptReader.readVerified(f.orgId, run.id))
+      .some(receipt => receipt.receipt_kind === 'attempt_terminal' && receipt.verified));
+    const retained = await f.call(`/api/app-runs/${run.id}/result`, undefined, 'owner');
+    assert.deepEqual(retained.value.output, { resource_id: record.id });
+    assert.equal((await f.request(`/api/app-runs/${run.id}/result`, undefined, 'foreign')).response.status, 403);
+    assert.equal((await f.db.select().from(f.schema.appRuns).where(and(eq(f.schema.appRuns.org_id, f.orgId),
+      eq(f.schema.appRuns.origin_public_ingress_id, claim.ingress_id)))).length, 1);
   } finally { process.env.DEFT_APP_RUNTIME_CHANNEL_ENABLED = 'false'; process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED = 'false'; await f.close(); }
 });
 
