@@ -49,17 +49,38 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.3.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.5.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This checkout contains the unreleased `0.1.0-alpha.3` contract. Use its exact
+This checkout contains the unreleased `0.1.0-alpha.5` contract. Use its exact
 packed artifact with a host advertising that version; published preview.15
 uses `0.1.0-alpha.2`. A version identifies a released contract: do not distribute
 changed contracts under an existing version. Preserve the supplied artifact and
 the consumer lockfile for reproducible installs instead of repacking a different
 checkout under the same package version.
+
+## Browser Experience SDK
+
+Import the browser-only SDK into the Worker from its public leaf entry:
+
+```ts
+import { createDeftExperienceSdk } from '@deft/app-kit/experience';
+
+const sdk = createDeftExperienceSdk(port, sessionId);
+```
+
+Keep package construction, validation and `prepareDeftExperienceArtifact` in a
+Node build script importing `@deft/app-kit`. The root export remains supported,
+but bundling it into a Worker can retain the authoring validators and exceed the
+64 KiB artifact limit. The browser entry has no runtime imports, host credentials
+or direct workspace API access. Normal bundling needs no side-effect overrides
+or private `dist` imports. Install the bundler in the author project itself;
+building a Worker must not depend on a Deft checkout's `node_modules`.
+
+SDK availability does not grant resource or action authority. The host must
+support the declared protocols and separately authorize each operation.
 
 ## Host presentation and access
 

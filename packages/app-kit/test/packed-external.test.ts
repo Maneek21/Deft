@@ -71,6 +71,19 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
     assert.equal(installedText.includes(repositoryRoot), false);
     assert.doesNotMatch(installedText, /from\s+['"]@deft\/(?:db|shared|mcp|api|web)/);
 
+    // The Worker entry must resolve through the installed public export without
+    // importing the Node authoring/validation graph or a private dist path.
+    run(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { createDeftExperienceSdk } from '@deft/app-kit/experience';
+      const sent = [];
+      const sdk = createDeftExperienceSdk({ postMessage: value => sent.push(value), close() {}, onmessage: null }, 'packed-session');
+      sdk.render({ root: { kind: 'text', id: 'title', text: 'Portable Worker' } });
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].session_id, 'packed-session');
+      sdk.close();
+    `], consumer);
+
     const cli = resolve(installedRoot, 'dist', 'cli.js');
     const contacts = resolve(temporaryRoot, 'contacts');
     await cp(resolve(repositoryRoot, 'examples', 'resource-participation-contacts-app'), contacts, {

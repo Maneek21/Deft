@@ -16,6 +16,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./experience": {
+      "types": "./dist/experience-sdk.d.ts",
+      "import": "./dist/experience-sdk.js"
+    },
     "./experimental/resource-sync": {
       "types": "./dist/experimental/resource-sync.d.ts",
       "import": "./dist/experimental/resource-sync.js"
