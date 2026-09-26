@@ -33,5 +33,9 @@ The private-reader and scheduler inventories name their nested boundary cases as
 well as the parent test. A passing parent does not cover an omitted child. Use
 the exact synthetic database guards described by each profile and matching
 `DATABASE_URL`/`DEFT_TEST_DATABASE_URL`; a wrong target produces skipped tests and
-must fail evidence checking. The HTTP profiles are owner-private host surfaces;
-they do not certify an installed Experience broker, sharing, or public access.
+must fail evidence checking. The resource-sync and owner-reader HTTP profiles
+cover host surfaces; they do not certify an installed Experience broker, sharing,
+or public access. The separate `experience-exposure-http` profile covers explicit
+session-bound private-field consent and bounded delivery. Its focused cases still
+require independent packed Worker/browser evidence and the remaining authority
+matrix.

@@ -746,124 +746,244 @@
       "id": "native-owner-foundation",
       "description": "Disposable PostgreSQL privacy regressions plus real employee MCP bearer calls; every selected native owner case must execute.",
       "cases": [
-        { "file": "apps/api/test/native-wiki-owner-db.test.ts", "name": "native wiki owner uses current human/employee authority for pages, links and citations" },
-        { "file": "apps/api/test/calendar-event-visibility-db.test.ts", "name": "calendar events enforce live owner custody for human, employee MCP and native agent reads" },
-        { "file": "apps/api/test/mcp-events.test.ts", "name": "1. events_query returns only live employee-owned rows in the caller org" },
-        { "file": "apps/api/test/mcp-events.test.ts", "name": "2. events_query filters by type (event_type)" },
-        { "file": "apps/api/test/mcp-events.test.ts", "name": "3. events_query filters by since/until time range" },
-        { "file": "apps/api/test/mcp-events.test.ts", "name": "4. events_query ignores model-authored caller_employee_slug and uses the bearer identity" }
+        {
+          "file": "apps/api/test/native-wiki-owner-db.test.ts",
+          "name": "native wiki owner uses current human/employee authority for pages, links and citations"
+        },
+        {
+          "file": "apps/api/test/calendar-event-visibility-db.test.ts",
+          "name": "calendar events enforce live owner custody for human, employee MCP and native agent reads"
+        },
+        {
+          "file": "apps/api/test/mcp-events.test.ts",
+          "name": "1. events_query returns only live employee-owned rows in the caller org"
+        },
+        {
+          "file": "apps/api/test/mcp-events.test.ts",
+          "name": "2. events_query filters by type (event_type)"
+        },
+        {
+          "file": "apps/api/test/mcp-events.test.ts",
+          "name": "3. events_query filters by since/until time range"
+        },
+        {
+          "file": "apps/api/test/mcp-events.test.ts",
+          "name": "4. events_query ignores model-authored caller_employee_slug and uses the bearer identity"
+        }
       ]
     },
     {
       "id": "native-resource-web",
       "description": "Seven native display owner adapters plus live web-session v2 dispatch and real loopback HTTP feature-gate proof on synthetic PostgreSQL.",
       "cases": [
-        { "file": "apps/api/test/native-content-projections-db.test.ts", "name": "native display projections keep exact owner, share, space, and tombstone boundaries" },
-        { "file": "apps/api/test/native-calendar-file-projections-db.test.ts", "name": "native Calendar and File display uses current event owner and attachment parent ACLs" },
-        { "file": "apps/api/test/native-directory-projections-db.test.ts", "name": "native person and team displays follow live directory and private-team visibility" },
-        { "file": "apps/api/test/native-resource-service-db.test.ts", "name": "native resource web resolver binds current session and owner without widening v1 or Runtime access" }
+        {
+          "file": "apps/api/test/native-content-projections-db.test.ts",
+          "name": "native display projections keep exact owner, share, space, and tombstone boundaries"
+        },
+        {
+          "file": "apps/api/test/native-calendar-file-projections-db.test.ts",
+          "name": "native Calendar and File display uses current event owner and attachment parent ACLs"
+        },
+        {
+          "file": "apps/api/test/native-directory-projections-db.test.ts",
+          "name": "native person and team displays follow live directory and private-team visibility"
+        },
+        {
+          "file": "apps/api/test/native-resource-service-db.test.ts",
+          "name": "native resource web resolver binds current session and owner without widening v1 or Runtime access"
+        }
       ]
     },
     {
       "id": "resource-sync-contract-foundation",
       "description": "Candidate v2 host/Kit parser agreement and encrypted sync owner primitives; no database sync, live authority, or resource execution claim.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-contract.test.ts", "name": "API and Kit use the same closed v2 claim and result request schemas" },
-        { "file": "apps/api/test/app-resource-sync-contract.test.ts", "name": "API success parses page against host-reviewed descriptor and starting request" },
-        { "file": "apps/api/test/app-resource-sync-contract.test.ts", "name": "closed failure and indeterminate outcomes never carry a page" },
-        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync encrypted records reject tenant, binding, checkpoint, generation and record substitution" },
-        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync cursor authentication includes sequence and enforces raw UTF-8 and JSON ceilings" },
-        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync secrets and fingerprints are domain separated from existing Run data" },
-        { "file": "apps/api/test/app-resource-sync-secrets.test.ts", "name": "sync retained-key rotation preserves locator discovery and refuses missing prior key versions" }
+        {
+          "file": "apps/api/test/app-resource-sync-contract.test.ts",
+          "name": "API and Kit use the same closed v2 claim and result request schemas"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-contract.test.ts",
+          "name": "API success parses page against host-reviewed descriptor and starting request"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-contract.test.ts",
+          "name": "closed failure and indeterminate outcomes never carry a page"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-secrets.test.ts",
+          "name": "sync encrypted records reject tenant, binding, checkpoint, generation and record substitution"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-secrets.test.ts",
+          "name": "sync cursor authentication includes sequence and enforces raw UTF-8 and JSON ceilings"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-secrets.test.ts",
+          "name": "sync secrets and fingerprints are domain separated from existing Run data"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-secrets.test.ts",
+          "name": "sync retained-key rotation preserves locator discovery and refuses missing prior key versions"
+        }
       ]
     },
     {
       "id": "automation-operator-http",
       "description": "A01 real owner-reviewed synthetic Apps: 107 definitions paginated with receipts, positive schedule time, and changed-resource/connector blocks. Browser evidence is recorded separately.",
       "cases": [
-        { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 controlled clock keeps a future next fire for live waiting authority and suppresses stale authority" },
-        { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 operator HTTP pages 100+ governed definitions and exposes current results and receipts" },
-        { "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts", "name": "A01 live reviewed definition has a next fire, then blocks changed resource and revoked connector authority" }
+        {
+          "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts",
+          "name": "A01 controlled clock keeps a future next fire for live waiting authority and suppresses stale authority"
+        },
+        {
+          "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts",
+          "name": "A01 operator HTTP pages 100+ governed definitions and exposes current results and receipts"
+        },
+        {
+          "file": "apps/api/test/app-automation-operator-acceptance-db.test.ts",
+          "name": "A01 live reviewed definition has a next fire, then blocks changed resource and revoked connector authority"
+        }
       ]
     },
     {
       "id": "resource-sync-schema-foundation",
       "description": "Dormant preview37 SQL ancestry, immutable intent, checkpoint CAS and stored ciphertext capacity; synthetic envelopes do not establish live sync or cryptographic correctness.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-schema-db.test.ts", "name": "S04 v2 schema pins reviewed ancestry, intent CAS and encrypted capacity" }
+        {
+          "file": "apps/api/test/app-resource-sync-schema-db.test.ts",
+          "name": "S04 v2 schema pins reviewed ancestry, intent CAS and encrypted capacity"
+        }
       ]
     },
     {
       "id": "resource-sync-key-retention",
       "description": "Retained projection and unresolved-intent key inventory, bootstrap failure on missing keys, and v2 session denial at existing v1 Runtime boundaries on a dedicated synthetic database.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-key-references-db.test.ts", "name": "sync key inventory retains private projection and unresolved intent keys with tenant scope" }
+        {
+          "file": "apps/api/test/app-resource-sync-key-references-db.test.ts",
+          "name": "sync key inventory retains private projection and unresolved intent keys with tenant scope"
+        }
       ]
     },
     {
       "id": "resource-sync-page-store",
       "description": "Unwired transactional encrypted page store: cursor fencing, retained keys, identity, concurrent writers and rollback on a dedicated synthetic database; no live v2 receipt settlement claim.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-store-db.test.ts", "name": "resource sync store encrypts one atomic page and fences stale or unsafe writes" }
+        {
+          "file": "apps/api/test/app-resource-sync-store-db.test.ts",
+          "name": "resource sync store encrypts one atomic page and fences stale or unsafe writes"
+        }
       ]
     },
     {
       "id": "resource-reviewed-descriptor",
       "description": "Current Protocol5 effective-grant reconstruction and stale/foreign denial; declaration review is not resource consent or execution.",
       "cases": [
-        { "file": "apps/api/test/app-resource-reviewed-descriptor-db.test.ts", "name": "reviewed resource reader reconstructs current v5 grants and rejects stale or foreign lineage" },
-        { "file": "apps/api/test/app-resource-authoring-host.test.ts", "name": "Protocol 5 inspection accepts reviewed authoring while action routing remains unavailable" }
+        {
+          "file": "apps/api/test/app-resource-reviewed-descriptor-db.test.ts",
+          "name": "reviewed resource reader reconstructs current v5 grants and rejects stale or foreign lineage"
+        },
+        {
+          "file": "apps/api/test/app-resource-authoring-host.test.ts",
+          "name": "Protocol 5 inspection accepts reviewed authoring while action routing remains unavailable"
+        }
       ]
     },
     {
       "id": "resource-app-review",
       "description": "Protocol5 sync-only/mixed host review, Module rollback and authenticated HTTP scope/staleness; no resource consent or execution.",
       "cases": [
-        { "file": "apps/api/test/app-resource-authoring-review-db.test.ts", "name": "v5 sync-only and mixed stage/review/activation pin declaration without resource authority" },
-        { "file": "apps/api/test/app-resource-authoring-review-db.test.ts", "name": "v5 activation rolls back earlier included Module, grant and lifecycle on later Module conflict" },
-        { "file": "apps/api/test/app-resource-authoring-review-http-db.test.ts", "name": "authenticated HTTP v5 review and activation reject foreign and stale requests" }
+        {
+          "file": "apps/api/test/app-resource-authoring-review-db.test.ts",
+          "name": "v5 sync-only and mixed stage/review/activation pin declaration without resource authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-authoring-review-db.test.ts",
+          "name": "v5 activation rolls back earlier included Module, grant and lifecycle on later Module conflict"
+        },
+        {
+          "file": "apps/api/test/app-resource-authoring-review-http-db.test.ts",
+          "name": "authenticated HTTP v5 review and activation reject foreign and stale requests"
+        }
       ]
     },
     {
       "id": "resource-sync-consent",
       "description": "Reviewed private consent and audience-separated operator sessions with current owner/App/grant checks, bounded authority, actual lock waits and strict duplicate/foreign/spoofed input rejection.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-consent-db.test.ts", "name": "owner-reviewed v2 consent pins current App, provider and session authority" },
-        { "file": "apps/api/test/app-resource-sync-consent-db.test.ts", "name": "session issuance rechecks owner, deadlines and App ancestry after blocking locks" },
-        { "file": "apps/api/test/app-resource-sync-consent-db.test.ts", "name": "consent input cannot spoof a manager, stale pin, other tenant or second current binding" }
+        {
+          "file": "apps/api/test/app-resource-sync-consent-db.test.ts",
+          "name": "owner-reviewed v2 consent pins current App, provider and session authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-consent-db.test.ts",
+          "name": "session issuance rechecks owner, deadlines and App ancestry after blocking locks"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-consent-db.test.ts",
+          "name": "consent input cannot spoof a manager, stale pin, other tenant or second current binding"
+        }
       ]
     },
     {
       "id": "resource-sync-admission",
       "description": "Real reviewed private consent and host-only Run/input/intent/attempt/queue admission, concurrent dedupe, rollback, key rotation, metadata boundaries and expiry after a checkpoint lock wait.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-admission-db.test.ts", "name": "host sync admission atomically creates one due intent and refuses stale or repeated authority" }
+        {
+          "file": "apps/api/test/app-resource-sync-admission-db.test.ts",
+          "name": "host sync admission atomically creates one due intent and refuses stale or repeated authority"
+        }
       ]
     },
     {
       "id": "resource-sync-channel",
       "description": "Existing Run machinery settles encrypted pages, retained output and signed receipts atomically; exact replay, key rotation, expiry rollback, authority and unsafe retry boundaries.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-channel-db.test.ts", "name": "reviewed v2 Run claims and atomically settles page, output and signed receipt" },
-        { "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts", "name": "v2 resource channel fails closed before parsing a request" },
-        { "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts", "name": "v2 pre-auth limits ignore spoofed forwarding headers and cap concurrency" }
+        {
+          "file": "apps/api/test/app-resource-sync-channel-db.test.ts",
+          "name": "reviewed v2 Run claims and atomically settles page, output and signed receipt"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts",
+          "name": "v2 resource channel fails closed before parsing a request"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts",
+          "name": "v2 pre-auth limits ignore spoofed forwarding headers and cap concurrency"
+        }
       ]
     },
     {
       "id": "resource-sync-http",
       "description": "Outside-repository packed SDK over mounted HTTP: one encrypted page and signed receipt, exact result replay in a new provider process, and kill after fsynced source observation followed by honest unknown with no page or automatic redispatch.",
       "cases": [
-        { "file": "apps/api/test/app-resource-sync-http-db.test.ts", "name": "v2 SDK over HTTP commits one private page and survives provider crash/replay" }
+        {
+          "file": "apps/api/test/app-resource-sync-http-db.test.ts",
+          "name": "v2 SDK over HTTP commits one private page and survives provider crash/replay"
+        }
       ]
     },
     {
       "id": "fresh-upgrade-ledger",
       "description": "Explicit four-database synthetic profile proving current fresh history, advanced untracked rejection before mutation, interrupted fresh refusal and supported baseline adoption.",
       "cases": [
-        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "fresh push records exact manifest history and the ordinary upgrader is a no-op" },
-        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "advanced ledgerless schema is rejected before migration-ledger DDL" },
-        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "partial interrupted initialization cannot be stamped as fresh" },
-        { "file": "packages/db/scripts/upgrade-ledger-db.test.ts", "name": "genuine untracked v0.2.0-preview.1 baseline remains adoptable" }
+        {
+          "file": "packages/db/scripts/upgrade-ledger-db.test.ts",
+          "name": "fresh push records exact manifest history and the ordinary upgrader is a no-op"
+        },
+        {
+          "file": "packages/db/scripts/upgrade-ledger-db.test.ts",
+          "name": "advanced ledgerless schema is rejected before migration-ledger DDL"
+        },
+        {
+          "file": "packages/db/scripts/upgrade-ledger-db.test.ts",
+          "name": "partial interrupted initialization cannot be stamped as fresh"
+        },
+        {
+          "file": "packages/db/scripts/upgrade-ledger-db.test.ts",
+          "name": "genuine untracked v0.2.0-preview.1 baseline remains adoptable"
+        }
       ]
     },
     {
@@ -1453,6 +1573,226 @@
         {
           "file": "apps/api/test/app-automation-history-dst-db.test.ts",
           "name": "A05 leased scanner persists full 30-day history and reuses every fire and delivery identity after retention loss"
+        }
+      ]
+    },
+    {
+      "id": "automation-recovery-effects",
+      "description": "C09 real leased scanner/fire/attempt workers recover actual PostgreSQL COMMIT response loss at Fire, Run and receipt boundaries plus fire delivery/progress deletion. Independently recorded sandbox provider effect and verified receipt preserve one identity. This is response-loss injection; separate A03 and C09 catalog cases cover process kills. Dedicated equal gate_g_20260926_c09_a05_recovery_test[_vN] loopback URLs required. Whole A05 remains open.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-recovery-effects-db.test.ts",
+          "name": "A05 actual workers preserve one effect Run and verified receipt after fire and Run COMMIT response loss and queue deletion"
+        },
+        {
+          "file": "apps/api/test/app-automation-recovery-effects-db.test.ts",
+          "name": "A05 actual attempt worker replays a lost receipt COMMIT acknowledgement without a second provider effect or receipt"
+        }
+      ]
+    },
+    {
+      "id": "automation-recovery-catalog",
+      "description": "C09 real105expired-claim recovery beside106definitions, repeated catalog table-lock outages with retained hints and normal backoff, separate scanner process kills before/after fenced progress COMMIT, and persisted inclusive15minute/exclusivevalidity policy edges. Equal dedicated gate_g_20260926_c09_a05_catalog_test[_vN] loopback URLs required. Policy clocks are controlled; responsive fixture slice limits exclude network/ordinary queue settlement and do not replace frozen healthy capacity bounds. No provider effects or real PostgreSQL UTC-midnight rollover claimed by this profile. Whole A05 remains open.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-recovery-catalog-db.test.ts",
+          "name": "A05 real leased scanner interleaves 105 expired claims and 106 definitions across catalog pages with stable repair identities"
+        },
+        {
+          "file": "apps/api/test/app-automation-recovery-catalog-db.test.ts",
+          "name": "A05 repeated real catalog lock outages retain fire cursor while definitions progress then retry with backoff"
+        },
+        {
+          "file": "apps/api/test/app-automation-recovery-catalog-db.test.ts",
+          "name": "A05 scanner process kills before and after progress COMMIT resume full history with identical settled fire IDs"
+        },
+        {
+          "file": "apps/api/test/app-automation-recovery-catalog-db.test.ts",
+          "name": "A05 persisted 15-minute catch-up edge is inclusive and approved validity expiry is exclusive"
+        }
+      ]
+    },
+    {
+      "id": "resource-sync-operator-http",
+      "description": "C09 exact web bearer separate-human operator discovery, explicit setupv2 preserving implicitv1, own assignments/session metadata pagination, lost issuance recovery, explicit revoke/reassignment and owner-only private reads. Real finalSIDwait tests cover revoke/expiry/gate and otherparticipant kind changes. Equal guarded gate_g_20260926_c09_operator_test URLs required. This HTTP profile excludes browser/packedprovider proof and unattended production credentialcustody.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "eligible discovery is bounded current human-only and setup preserves v1 while v2 pins selected operator"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "separate operator discovers own assignment and lost issuance metadata then revokes without owner read authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "new operator surfaces reject foreign/purpose/query injection and eligibility loss invalidates consent"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "assignment and session pages stay bounded across Apps and exact filters never cross bindings"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator operators denies revoke after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator operators denies expiry after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator operators denies flag after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator assignments denies revoke after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator assignments denies expiry after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator assignments denies flag after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator sessions denies revoke after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator sessions denies expiry after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator sessions denies flag after a real final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator setup rejects participant kind change after actual final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator review rejects participant kind change after actual final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator activate rejects participant kind change after actual final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator assignments rejects participant kind change after actual final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-operator-http-db.test.ts",
+          "name": "operator sessions rejects participant kind change after actual final SID wait"
+        }
+      ]
+    },
+    {
+      "id": "experience-action-lock",
+      "description": "C09 exact held-operator membership contention between real v4 Experience action submission and Runtime management. Pre-fix real PostgreSQL40P01; fixed sorted participant/Runtime prelocks preserve one pending-approval Run and replay identity, while revoked registration or nonhuman caller denies. Equal guarded gate_g_20260926_c09_experience_action_lock_test[_vN] loopback URLs required. Separate from exposure resource acceptance and does not replace original v4 Experience compatibility.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-action-lock-db.test.ts",
+          "name": "v4 Experience action and Runtime management share sorted participant locks without deadlock and retain one approval identity"
+        },
+        {
+          "file": "apps/api/test/app-experience-action-lock-db.test.ts",
+          "name": "v4 Experience final action admission rejects revoked registration and substituted human without a Run or approval"
+        }
+      ]
+    },
+    {
+      "id": "experience-exposure-http",
+      "description": "C09 explicit resource-only App Experience consent behind a default-off gate. Real HTTP caller and PostgreSQL final SID waits; exact review/idempotency, bounded 10+2/list/detail, cursor scope, gate/expiry/abort, immutable snapshots and withdrawal/audit. Equal guarded gate_g_20260926_c09_exposure_test[_vN] loopback URLs required. This focused matrix does not certify all authority races or the entire installed-App browser journey.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "explicit immutable Experience exposure over HTTP is separate from sync authority"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "default-off and sync consent alone disclose no data"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "readonly exact review, explicit acceptance and safe idempotency"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "bounded list and detail expose only approved fields with opaque cursor"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "foreign SID, key, locator, input and cursor cannot nominate disclosure"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "gate withdrawal during final SID lock wait prevents delivery"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "caller expiry and abort after queued SID locks deny before decrypt"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "immutable snapshots, missing child and checkpoint changes fail closed"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "explicit withdrawal retires session; pruning preserves safe audit"
+        }
+      ]
+    },
+    {
+      "id": "experience-resource-bridge",
+      "description": "Full focused public SDK, host MessagePort bridge and local session/deadline unit files. Does not replace real Worker/browser or database acceptance.",
+      "cases": [
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK sequences views and requests and ignores foreign-session responses"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK closes pending calls without leaking reusable credentials"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "resource helpers bound locators and validate whole scalar replies"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "bounded rich view accepted; spoofed session and replay close the port"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "host stamps exact pin and drops late resource response after revocation"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "wrong action key, malformed payload and flood fail closed before callbacks"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "missing action callback fails closed and stale live authority drops result"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "UI events are dropped when the live pin is revoked"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "input change reaches the Worker before a rapid submit click"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "resource response bounds cover the entire envelope and withdrawal drops late data"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-session.test.ts",
+          "name": "delayed responses cannot outlive known session or exposure deadlines"
         }
       ]
     }
