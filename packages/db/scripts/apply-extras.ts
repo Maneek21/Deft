@@ -160,6 +160,7 @@ async function main() {
       '0.3.0-preview.45-app-resource-access.sql',
       '0.3.0-preview.46-app-public-control.sql',
       '0.3.0-preview.47-app-attachment-custody.sql',
+      '0.3.0-preview.48-app-public-cancellation.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);

@@ -2320,6 +2320,7 @@ export const appNativeBindings = pgTable('app_native_bindings', {
   installation_grant_epoch: integer('installation_grant_epoch').notNull(),
   package_digest: text('package_digest').notNull(), grant_snapshot_digest: text('grant_snapshot_digest').notNull(),
   target: jsonb('target').$type<Record<string, unknown>>().notNull(),
+  historical_create_policy: jsonb('historical_create_policy').$type<Record<string, unknown> | null>(),
   proposal_digest: text('proposal_digest').notNull(), consent_digest: text('consent_digest'),
   reviewed_contract_digest: text('reviewed_contract_digest').notNull(),
   risk_class: text('risk_class').$type<'internal_write'>().default('internal_write').notNull(),
@@ -2346,6 +2347,7 @@ export const appNativeBindings = pgTable('app_native_bindings', {
   unique('app_native_bindings_run_identity_unique').on(t.org_id, t.app_installation_id, t.app_version_id,
     t.grant_snapshot_id, t.id, t.provider_kind, t.provider_instance_id, t.operation_name, t.provider_snapshot_id,
     t.owner_user_id, t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class),
+  unique('app_native_bindings_public_cancel_owner_unique').on(t.org_id, t.app_installation_id, t.id, t.owner_user_id),
   uniqueIndex('app_native_bindings_current_action_unique').on(t.org_id, t.app_installation_id, t.app_version_id,
     t.grant_snapshot_id, t.action_key).where(sql`${t.state} <> 'revoked'`),
   check('app_native_bindings_identity_check', sql`${t.provider_kind} = 'native' AND ${t.grant_snapshot_kind} = 'effective'
@@ -5597,7 +5599,8 @@ export const appPublicCancellations = pgTable('app_public_cancellations', {
   app_installation_id: text('app_installation_id').notNull(),
   endpoint_id: text('endpoint_id').notNull(), claim_id: text('claim_id').notNull(),
   original_run_id: text('original_run_id'), request_key_digest: text('request_key_digest').notNull(),
-  state: text('state').$type<'released_before_effect' | 'withdrawal_requested' | 'cancellation_unavailable'>().notNull(),
+  state: text('state').$type<'released_before_effect' | 'withdrawal_requested' | 'cancellation_unavailable'
+    | 'cancel_run_pending' | 'cancelled' | 'cancel_failed' | 'unknown_outcome'>().notNull(),
   accepted_at: timestamp('accepted_at').notNull(), settled_at: timestamp('settled_at'),
 }, t => [
   foreignKey({ columns: [t.org_id, t.endpoint_id, t.claim_id],
@@ -5609,11 +5612,39 @@ export const appPublicCancellations = pgTable('app_public_cancellations', {
   foreignKey({ columns: [t.org_id, t.original_run_id], foreignColumns: [appRuns.org_id, appRuns.id],
     name: 'app_public_cancellations_run_fk' }).onDelete('restrict'),
   unique('app_public_cancellations_claim_unique').on(t.org_id, t.claim_id),
+  unique('app_public_cancellations_selection_identity_unique').on(t.org_id, t.app_installation_id, t.id, t.original_run_id),
   index('app_public_cancellations_app_accepted_idx').on(t.org_id, t.app_installation_id, t.accepted_at),
   check('app_public_cancellations_key_check', sql`${t.request_key_digest} ~ '^sha256:[a-f0-9]{64}$'`),
-  check('app_public_cancellations_state_check', sql`${t.state} IN ('released_before_effect','withdrawal_requested','cancellation_unavailable')
-    AND ((${t.state} = 'withdrawal_requested' AND ${t.settled_at} IS NULL)
-      OR (${t.state} <> 'withdrawal_requested' AND ${t.settled_at} IS NOT NULL AND ${t.settled_at} >= ${t.accepted_at}))`),
+  check('app_public_cancellations_state_check', sql`${t.state} IN ('released_before_effect','withdrawal_requested','cancellation_unavailable',
+    'cancel_run_pending','cancelled','cancel_failed','unknown_outcome')
+    AND ((${t.state} IN ('withdrawal_requested','cancel_run_pending','unknown_outcome') AND ${t.settled_at} IS NULL)
+      OR (${t.state} NOT IN ('withdrawal_requested','cancel_run_pending','unknown_outcome')
+        AND ${t.settled_at} IS NOT NULL AND ${t.settled_at} >= ${t.accepted_at}))`),
+]);
+
+export const appPublicCancellationSelections = pgTable('app_public_cancellation_selections', {
+  ...id(), ...orgId(), cancellation_id: text('cancellation_id').notNull(),
+  app_installation_id: text('app_installation_id').notNull(), original_run_id: text('original_run_id').notNull(),
+  owner_user_id: text('owner_user_id').notNull(), native_binding_id: text('native_binding_id').notNull(),
+  consent_digest: text('consent_digest').notNull(), selection_digest: text('selection_digest').notNull(),
+  historical_create_pin: jsonb('historical_create_pin').$type<Record<string, unknown>>().notNull(),
+  input_digest: text('input_digest').notNull(), original_output_digest: text('original_output_digest').notNull(),
+  cancel_run_id: text('cancel_run_id'), created_at: timestamp('created_at').notNull(),
+}, t => [
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.cancellation_id, t.original_run_id],
+    foreignColumns: [appPublicCancellations.org_id, appPublicCancellations.app_installation_id,
+      appPublicCancellations.id, appPublicCancellations.original_run_id],
+    name: 'app_public_cancellation_selections_request_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.native_binding_id, t.owner_user_id],
+    foreignColumns: [appNativeBindings.org_id, appNativeBindings.app_installation_id, appNativeBindings.id, appNativeBindings.owner_user_id],
+    name: 'app_public_cancellation_selections_binding_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.cancel_run_id], foreignColumns: [appRuns.org_id, appRuns.id],
+    name: 'app_public_cancellation_selections_run_fk' }).onDelete('restrict'),
+  unique('app_public_cancellation_selections_request_unique').on(t.org_id, t.cancellation_id),
+  unique('app_public_cancellation_selections_run_unique').on(t.org_id, t.cancel_run_id),
+  check('app_public_cancellation_selections_digests_check', sql`${t.consent_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.selection_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.input_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.original_output_digest} ~ '^sha256:[a-f0-9]{64}$'`),
 ]);
 // Explicit human-only exact-content App resource disclosure; no body copies.
 export const appResourceAccessGrants = pgTable('app_resource_access_grants', {
