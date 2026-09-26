@@ -10,7 +10,7 @@ import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { verifiedExperienceBundle, assertExperienceWeb, type ExperienceCaller } from './app-experience-service.js';
 import { experienceExposureDatabase, type ExperienceExposureTransaction } from './app-experience-exposure-db.js';
-import { isAppExperienceResourceExposureEnabled } from './env.js';
+import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled } from './env.js';
 import { EXPOSURE_VERSION, PAYLOAD_VERSION, EXPOSURE_LIMITS, ExposureSnapshotSchema, ExposureAcceptSchema,
   ExposureCursorSchema, ResourceRequestSchema, ExperienceExposureError, exposureUnavailable, exposureStale,
   exposureDigest, sealExposureToken, openExposureToken, exposurePayloadData, type ExposureSnapshot } from './app-experience-exposure-contract.js';
@@ -46,7 +46,7 @@ export class AppExperienceExposureService {
       eq(appVersions.id, locator.app_version_id), eq(appVersions.installation_id, locator.app_installation_id))).limit(1);
     if (!versionLocator) throw exposureUnavailable();
     const earlyBundle = await verifiedExperienceBundle(versionLocator, locator.experience_key);
-    if (versionLocator.protocol_version !== '5' || earlyBundle.bundle.action_keys.length || !earlyBundle.bundle.resource_keys.length) throw exposureUnavailable();
+    if (versionLocator.protocol_version !== '5' || !earlyBundle.bundle.resource_keys.length) throw exposureUnavailable();
     const bindingLocators = await tx.select().from(appResourceBindings).where(and(eq(appResourceBindings.org_id, caller.org_id),
       eq(appResourceBindings.app_installation_id, locator.app_installation_id), eq(appResourceBindings.app_version_id, locator.app_version_id),
       eq(appResourceBindings.grant_snapshot_id, locator.grant_snapshot_id), eq(appResourceBindings.owner_user_id, caller.user_id),
@@ -129,7 +129,8 @@ export class AppExperienceExposureService {
     const now = this.clock().getTime();
     if (!Number.isFinite(now) || context.session.expires_at.getTime() <= now || caller.access_expires_at! <= now
       || context.authorities.some(a => !a.binding.consent_expires_at || a.binding.consent_expires_at.getTime() <= now)) throw exposureUnavailable();
-    signal?.throwIfAborted();
+    this.enabled(caller, signal);
+    if (context.verified.bundle.action_keys.length && !isAppV5RuntimeActionsEnabled()) throw exposureUnavailable();
   }
 
   private snapshot(caller: ExperienceCaller, context: Context, preparedAt: Date, accessExpiry: Date): ExposureSnapshot {

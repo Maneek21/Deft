@@ -1795,6 +1795,134 @@
           "name": "delayed responses cannot outlive known session or exposure deadlines"
         }
       ]
+    },
+    {
+      "id": "v5-experience-exposure-matrix",
+      "description": "C10 real HTTP/PostgreSQL exposure authority races, immutable-pin rejection, supported reset/disable, whole Unicode envelope bounds and Node Worker transferred-port transport. Does not certify browser isolation or v5 upgrade; unsupported upgrade is an explicit remaining G08 requirement. Equal guarded c10_exposure_matrix loopback URLs required.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held owner membership inactive: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held owner membership guest: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held owner kind becomes agent after final SID wait: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held operator membership inactive: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held operator membership guest: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held operator kind becomes agent after final SID wait: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held App disable transition clears grant and advances epochs: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held registration revoked with a new runtime epoch: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held binding revoked: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held checkpoint paused: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held Experience revoked: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held Experience expires: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held Experience artifact pin substituted: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B05/S02 held exposure revoked under its row lock: deny current read and stale acceptance"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B03/B04 immutable version grant registration and binding pins reject DB tamper"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B05/S02 held binding consent expiry uses a private service clock and delivers no body"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B05/S02 held exposure expiry uses a private service clock and delivers no body"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/S02 cross-owner/org/App record and prepared review substitutions never deliver"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/S02 same-org same owner, distinct App record cursor and review substitutions deny"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/S02 same-org distinct private owner, same App record cursor and review substitutions deny"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "S04/S05 immutable checkpoint generation refuses an unsupported reset"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B05 supported password reset revokes accepted exposure and cannot move it to a new SID"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "G09 supported App disable invalidates accepted v5 exposure and preserves saved records"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04/B06/S01 maximal32-field Unicode payload is bounded as a whole envelope without partial data"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04 real Node Worker transferred-port transport: replayed sequence"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04 real Node Worker transferred-port transport: substituted session"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04 real Node Worker transferred-port transport: undeclared resource"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-matrix-http-db.test.ts",
+          "name": "B04 real Node Worker transferred-port transport: late response after port revoke"
+        }
+      ]
+    },
+    {
+      "id": "v5-experience-actions",
+      "description": "C10 governed mixed v5 action admission, approval/dispatch gates, session races, replay and real in-process Runtime protocol settlement. Independent provider effect and installed author proof are separate requirements. Equal guarded c10_actions loopback URLs required.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-v5-actions-db.test.ts",
+          "name": "governed v5 Experience action preserves exact session Run and approval identity"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
