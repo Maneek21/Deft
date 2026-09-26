@@ -313,7 +313,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             <p>Allowed reads: list saved record summaries; read one saved record{resource.allowed_operations.includes('search') ? '; search approved fields using literal queries with snippets' : ''}.</p><p className="break-words">Permitted fields: {resource.allowed_fields.join(', ')}.</p>
             {resource.allowed_operations.includes('search') && <p>Literal search examines the complete saved approved fields within the App’s reviewed limits. It delivers at most 240 characters per matching excerpt. Continue until the search is complete.</p>}
             <p>At most 10 {resource.allowed_operations.includes('search') ? 'summaries or search matches' : 'summaries'} per page; 32 scalar fields; 4096 characters per string; 60 KiB per response.</p></div>)}
-          <p>The recipient is the verified App author Worker for this exact session. Provider credentials and provider identifiers are excluded.</p>
+          <p>The recipient is the verified App author Worker for this exact session. Provider credentials and internal provider metadata are excluded. Approved fields may include identifiers declared by the App.</p>
           <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => void acceptExposure()}>Allow listed private fields</button>
             <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => { reviewGeneration.current += 1; setReview(null); }}>Cancel private access review</button></div></>
           : <><p>This App’s code cannot read your saved private resources until you approve the exact fields for this session.</p>
