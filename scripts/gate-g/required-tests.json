@@ -2763,6 +2763,105 @@
           "name": "native Calendar and File display uses current event owner and attachment parent ACLs"
         }
       ]
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-control-http-db.test.ts",
+          "name": "public claim v2 retains only a scoped control digest and exact lost-response replay while legacy omission remains unchanged"
+        },
+        {
+          "file": "apps/api/test/app-public-control-http-db.test.ts",
+          "name": "retained public control atomically withdraws an unadmitted claim across endpoint retirement and leased redelivery without refunding admission"
+        },
+        {
+          "file": "apps/api/test/app-public-control-http-db.test.ts",
+          "name": "customer withdrawal cancels only the exact unstarted owner-approval Run and releases one pending unit without a daily refund"
+        },
+        {
+          "file": "apps/api/test/app-public-control-http-db.test.ts",
+          "name": "a successful native Booking stays reserved and post-effect public cancellation is explicitly unavailable without a new owner Run"
+        },
+        {
+          "file": "apps/api/test/app-public-control-http-db.test.ts",
+          "name": "public control expiry is rechecked after a real endpoint lock wait and rolls back cancellation and claim release"
+        },
+        {
+          "file": "apps/api/test/app-public-control-budget-db.test.ts",
+          "name": "public cancellation daily hundred-operation boundary charges one canonical operation and preserves replay and status at quota"
+        },
+        {
+          "file": "apps/api/test/app-public-control-budget-db.test.ts",
+          "name": "public withdrawal takes the original Run before App locks and fences an already queued native attempt after a real Run wait"
+        },
+        {
+          "file": "apps/api/test/app-public-control-budget-db.test.ts",
+          "name": "public cancellation retained metadata cap rejects new identities without blocking retained status replay or deleting FK ancestry"
+        }
+      ],
+      "id": "public-control-first-slice"
+    },
+    {
+      "id": "human-private-sharing",
+      "description": "Explicit exact-content human grants, operations, bounded search/retention, and final review/cursor/authority deadline races.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Default off and closed human-only review; cancellation creates no authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Accept is idempotent; recipient gets only selected plain scalar and generic label; owner wrapper is not inherited"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Revocation still works after recipient removal and feature withdrawal, audit atomic, no decryption needed"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Human exact-record sharing requires explicit immutable consent and current recipient authority"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Accept rolls back authority when sharing gate is withdrawn during its final audit INSERT wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Private projection deletion remains forbidden and parent consent withdrawal denies links"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Read-only consent cannot gain search or citation; recipient inventory copies no private content"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Revoke rolls back when owner human identity changes during final audit write"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Sequence cutoff survives pruning newest metadata and excludes later accepts without skipping old hits"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Sharing SQL rejects missing unknown null and duplicate-operation snapshots and protects ordering metadata"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Exact recipient SID final wait denies a substituted human with zero private output"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Actual final audit wait cannot accept after immutable review expiry"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Search and inventory continuation deadlines survive an actual final SID wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Tenant-scoped active and retained admission bounds never block revoke; maintenance removes at most 100"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

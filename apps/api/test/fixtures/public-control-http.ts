@@ -50,4 +50,3 @@ export async function publicControlHttpFixture(ttl = 604800) {
   };
   return { ...f, endpoint, activation, policy, claim, status, cancel, retained, admit, path };
 }
-
