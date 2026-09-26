@@ -244,6 +244,7 @@ export const upgradeManifest = {
     { version: '0.3.0-preview.46', file: '0.3.0-preview.46-app-public-control.sql', description: 'Add retained public controls and atomic pre-effect withdrawal identities' },
     { version: '0.3.0-preview.47', file: '0.3.0-preview.47-app-attachment-custody.sql', description: 'Add dormant protocol7/channel3 encrypted owner-only attachment quarantine and checked parent custody' },
     { version: '0.3.0-preview.48', file: '0.3.0-preview.48-app-public-cancellation.sql', description: 'Add explicit current-owner public cancellation selection and bounded historical create consent' },
+    { version: '0.3.0-preview.49', file: '0.3.0-preview.49-app-private-mcp.sql', description: 'Add dormant independent exact-purpose first-class MCP private resource grants' },
   ] satisfies UpgradeMigration[],
 } as const;
 
