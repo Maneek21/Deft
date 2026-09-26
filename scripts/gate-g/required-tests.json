@@ -1173,6 +1173,270 @@
           "name": "CRM routes atomically create relationships and page live inverse records within owner boundaries"
         }
       ]
+    },
+    {
+      "id": "resource-sync-setup",
+      "description": "C08A self-owner/operator setup discovery, exact review pins, explicit expired consent revoke, lost activation locator recovery, current SID/human waits and safe joined-locator reads. Requires matching exact loopback gate_g_20260926_setup_test DATABASE_URL/DEFT_TEST_DATABASE_URL. Browser and packed provider journey are separate evidence; staged-App and separate-operator discovery remain unmet.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-sync-setup-http-db.test.ts",
+          "name": "setup HTTP publishes self consent pins, recovers activation loss and requires expired consent revocation"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-setup-http-db.test.ts",
+          "name": "setup HTTP denies non-manager/foreign identity and validates exact query under default-off"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-setup-http-db.test.ts",
+          "name": "setup HTTP rechecks SID expiry and human kind after a real final SID lock wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-setup-http-db.test.ts",
+          "name": "setup discovery does not wait on a registration write or lock its binding first"
+        }
+      ]
+    },
+    {
+      "id": "resource-runtime-canonical-display",
+      "description": "C08A closed app_runtime v2 canonical resolver over actual private settlement, exact bearer/SID and locator matching, uniform unavailable owner boundaries, tombstones and real SID/consent/operator race waits. Exact synthetic gate_g_20260926_resource_resolve_test URL guards apply. Safe display only; no Experience/body/search/share acceptance.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical resolver returns only the owner safe display from a settled private resource"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical private locator denies foreign and mismatched authority without distinguishing existence"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical private resolver fences durable tombstones and paused checkpoints"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical resolver rejects a different current SID and bearer purpose"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical resolver discards private display after actual SID lock wait: sid-revoked"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical resolver discards private display after actual SID lock wait: sid-expired"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical resolver discards private display after actual SID lock wait: consent-expired"
+        },
+        {
+          "file": "apps/api/test/app-resource-resolve-http.test.ts",
+          "name": "canonical resolver discards private display after actual SID lock wait: operator-nonhuman"
+        }
+      ]
+    },
+    {
+      "id": "automation-scan-bounded-database",
+      "description": "C08A scanner-scoped server SQL/acquisition limits, actual worker slot settlement, arbitrary abort reasons and fresh policy time after actual locks. Requires matching exact loopback gate_g_20260926_a05_limits_test URL guards. Cooperative operation budget is not a hard network/rollback wall deadline or whole-pass fairness guarantee. A05 remains open.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 worker ordinary Error abort settles a held catalog lock without subsequent scan work"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 claim recovery refreshes definition expiry after waiting for the exact fire lock"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 actual worker timeout and lease loss retain the scanner slot until SQL rollback settles"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 persistence refreshes expiry and catch-up policy after real pending-budget lock waits"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 scanner SQL timeout settles before reuse and does not change ordinary pool limits"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 scanner saturation bounds acquisition while unrelated database work progresses"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-limits-db.test.ts",
+          "name": "A05 ordinary Error abort rolls back in-flight SQL before releasing scanner slot"
+        },
+        {
+          "file": "apps/api/test/app-automation-scanner.test.ts",
+          "name": "scanner propagates worker signals with arbitrary reasons at every awaited item boundary"
+        }
+      ]
+    },
+    {
+      "id": "resource-app-web-activation",
+      "description": "C08B typed staged/disabled/active review context and exact human web-session admission. Sync-only v5 can activate with v2 alone; v3/v4 and mixed v5 retain v1 prerequisites. Real final-SID lock races roll back activation and Modules. Matching synthetic gate_g_20260926_v5_activation_test URLs required. Does not establish live v5 actions, separate operator discovery or Experience private-data authority.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "staged sync-only v5 activates over v2-only HTTP using typed current pins"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "runtime review discovery and activation enforce pins purpose tenant and default-off gates"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "disabled sync-only App requires fresh pins and explicit admin acceptance"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "v3 v4 and mixed v5 preserve v1 admission without acquiring v5 action support"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "concurrent accepts create one grant and lost response is recovered by exact current digest"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web context rejects revoke at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web context rejects expire at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web context rejects token at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web context rejects kind at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web context rejects flag at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web review rejects revoke at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web review rejects expire at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web review rejects token at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web review rejects kind at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web review rejects flag at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web activate rejects revoke at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web activate rejects expire at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web activate rejects token at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web activate rejects kind at final SID lock and activation rolls back modules"
+        },
+        {
+          "file": "apps/api/test/app-runtime-review-web-http.test.ts",
+          "name": "web activate rejects flag at final SID lock and activation rolls back modules"
+        }
+      ]
+    },
+    {
+      "id": "automation-scan-continuation",
+      "description": "C08 exact live-lease queue continuation, interleaved occurrence/recovery hints, pending queue-loss outcomes, expiry/catch-up enqueue rollback and bounded real claimed-worker progress beyond 100 locked early definitions. Requires exact matching gate_g_20260926_a05_continuation_test loopback URLs. COMMIT already admitted cannot be undone. Fixture wall observations exclude stalled ordinary worker lifecycle/network/dispatch. Whole A05 remains open.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 progress rejects a lease that expires during an unchanged queue row lock wait"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 progress rejects wrong queue name cron key and replaced lease token"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 partial success retains hints and advances a maintenance-created successor without failure spinning"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 simultaneous successor ensures and stale predecessor retain latest progress and recover retention loss"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 terminal unknown-handler settlement retains recurrence while stale owner cannot create successor"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 pending queue loss after definition expiry reaches an honest terminal outcome"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 delivery rearm rolls back when expiry passes during its queue row lock wait"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 initial enqueue and queue loss repair roll back across expiry catch-up and pause"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 cancellation after COMMIT admission reports the committed result without claiming rollback"
+        },
+        {
+          "file": "apps/api/test/app-automation-continuation-db.test.ts",
+          "name": "A05 leased worker reaches healthy tenant beyond100 locked definitions within four slices and60seconds"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-slice.test.ts",
+          "name": "A05 continuation interleaves more than100 recovery fires with single definition occurrence decisions"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-slice.test.ts",
+          "name": "A05 partial logical history resumes after settled progress and safely replays before progress"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-slice.test.ts",
+          "name": "A05 catalog failure preserves its cursor while another lane progresses then backs off without progress"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-slice.test.ts",
+          "name": "A05 failed occurrence advances the definition hint and stale partial epoch discards obsolete history"
+        },
+        {
+          "file": "apps/api/test/app-automation-scan-slice.test.ts",
+          "name": "A05 invalid version oversized cursor and invalid logical date restart bounded progress"
+        }
+      ]
+    },
+    {
+      "id": "automation-budget-boundaries",
+      "description": "C08 real concurrent 25th/26th pending admission, claimed-slot accounting, full-quota replay and tenant isolation; 98 governed Runs followed by concurrent 99th/100th/101st reservation, accepted Run replay and controlled UTC-midnight first next-day claim. Dedicated matching gate_g_20260926_a05_budget_test[_vN] loopback URLs required. Generic skips are not acceptance. PostgreSQL-clock Run rollover and provider effects remain unverified; whole A05 remains open.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-budget-boundaries-db.test.ts",
+          "name": "A05 concurrent 25th and 26th pending admission reserves one slot with full-quota replay and tenant isolation"
+        },
+        {
+          "file": "apps/api/test/app-automation-budget-boundaries-db.test.ts",
+          "name": "A05 concurrent 99th 100th 101st daily reservations and replay remain bounded across controlled UTC midnight"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
