@@ -5,7 +5,7 @@ These fixtures exercise proposed boundaries. They do not implement or certify th
 - `experiences/`: loopback browser egress and bounded interaction experiment.
 - `runtime/`: separate-process recovery experiment with independent synthetic host/provider ledgers.
 - `public/`: transaction/claim experiment on an explicitly assigned disposable PostgreSQL database.
-- `required-tests.json`: reviewed inventory including 90 App Kit and 51 focused platform unit tests, the selected legacy-MCP cutover-on and ancestry profiles, Runtime/public/installed journeys, and bounded private sync, owner-read, scheduler, authenticated HTTP, and CRM compatibility profiles. This is not the complete Gate G matrix; remaining database, browser, recovery, and compound profiles require separate evidence.
+- `required-tests.json`: reviewed inventory including 90 App Kit and 56 focused platform unit tests, the selected legacy-MCP cutover-on and ancestry profiles, Runtime/public/installed journeys, and bounded private sync, owner-read, scheduler, authenticated HTTP, and CRM compatibility profiles. This is not the complete Gate G matrix; remaining database, browser, recovery, and compound profiles require separate evidence.
 - `verify-upgrade.mjs`: read-only retained-data fingerprints and schema snapshots for the assigned disposable PostgreSQL cluster. Capture a tracked predecessor before candidate upgrades, compare retained columns afterward, and compare candidate fresh/upgrade schemas separately.
 
 ## Capture and check test execution

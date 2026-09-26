@@ -448,6 +448,26 @@
           "file": "apps/api/test/app-automation-scanner.test.ts"
         },
         {
+          "name": "scanner isolates recurring delivery failures and reaches later tenants across keyset pages",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "scanner isolates expired claim failures across pages before serving eligible definitions",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "scanner isolates malformed definitions and occurrence persistence or recovery errors without widening eligibility",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "scanner keeps catalog listing failures visible rather than advancing an unknown page",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
+          "name": "scanner propagates explicit cancellation from item work without starting later writes",
+          "file": "apps/api/test/app-automation-scanner.test.ts"
+        },
+        {
           "name": "daily wall-clock resolution is exact in a fixed-offset zone",
           "file": "apps/api/test/app-automation-schedule.test.ts"
         },
