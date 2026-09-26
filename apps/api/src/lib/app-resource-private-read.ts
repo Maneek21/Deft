@@ -9,6 +9,7 @@ import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { PostgresAppRunRepository, type AppRunTransaction } from './app-run-repository.js';
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
+import { isAppResourceSyncChannelEnabled } from './env.js';
 
 export const APP_RESOURCE_PRIVATE_READ_LIMITS = Object.freeze({ items: 25, response_bytes: 1_048_576 });
 const uuid = z.string().uuid().transform((value) => value.toLowerCase());
@@ -116,6 +117,15 @@ export class AppResourcePrivateReadService {
   /** Canonical host display only. Locators nominate authority; they never grant it. */
   async resolveOwnerPrivateDisplay(rawSubject: AppResourcePrivateReadSubject,
     rawRef: unknown): Promise<Readonly<{ label: string }>> {
+    const record = await this.getOwnerPrivateResourceByRef(rawSubject, rawRef);
+    return { label: record.label };
+  }
+
+  /** Same exact owner consent as the canonical private reader, for trusted host
+   * human navigation only. This never authorizes Worker, agent or share access. */
+  async getOwnerPrivateResourceByRef(rawSubject: AppResourcePrivateReadSubject,
+    rawRef: unknown): Promise<Readonly<{ ref: ResourceRefV2; label: string;
+      data: PrivateResourceRecord['data']; freshness: 'unknown'; consent_expires_at: string }>> {
     const subject = subjectSchema.safeParse(rawSubject);
     const ref = AppRuntimeResourceRefV2Schema.safeParse(rawRef);
     if (!subject.success) throw invalid();
@@ -142,8 +152,14 @@ export class AppResourcePrivateReadService {
         eq(appResourceProjections.id, ref.data.resource_id),
       )).limit(1);
       if (!row) throw unavailable();
-      // Do not export provider revision, arbitrary fields, cursor, or checkpoint.
-      return { label: this.#record(row, authority).label };
+      const record = this.#record(row, authority);
+      const result = { ref: record.ref, label: record.label, data: record.data,
+        freshness: 'unknown' as const,
+        consent_expires_at: authority.binding.consent_expires_at!.toISOString() };
+      if (Buffer.byteLength(JSON.stringify(result), 'utf8') > APP_RESOURCE_PRIVATE_READ_LIMITS.response_bytes) {
+        throw unavailable();
+      }
+      return result;
     });
   }
 
@@ -177,6 +193,7 @@ export class AppResourcePrivateReadService {
       if (!await resourceSyncParticipantsAreHuman(tx, authority.binding.owner_user_id,
         authority.registration.operator_user_id)) throw unavailable();
       assertConsent();
+      if (!isAppResourceSyncChannelEnabled()) throw unavailable();
       return result;
     });
   }

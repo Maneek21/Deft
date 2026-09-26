@@ -9,14 +9,15 @@ import { ResourceAuthorizationError } from './resource-authorization.js';
 
 /** Closed host adapter, never selected from App-supplied code or a provider URL. */
 export async function resolveAppRuntimeDisplay(caller: NativeResourceWebCaller, ref: ResourceRefV2,
-  authorization: string | undefined): Promise<Readonly<{ label: string }> | null> {
+  authorization: string | undefined): Promise<Readonly<{ label: string; href: string }> | null> {
   if (!isAppResourceSyncChannelEnabled()) return null;
   try {
     const { actor, guard } = await resourceSyncWebAuthority(authorization, caller);
     const runtime = await getAppRunRuntime();
     const reader = new AppResourcePrivateReadService(runtime.keys, () => new Date(), runtime.repository, guard);
-    return await reader.resolveOwnerPrivateDisplay({ kind: 'human', org_id: actor.org_id,
+    const display = await reader.resolveOwnerPrivateDisplay({ kind: 'human', org_id: actor.org_id,
       user_id: actor.actor_id }, ref);
+    return { ...display, href: `/app-resources/${encodeURIComponent(ref.provider.provider_instance_id)}/${encodeURIComponent(ref.resource_type)}/${encodeURIComponent(ref.resource_id)}` };
   } catch (error) {
     if (error instanceof AppResourcePrivateReadError && error.code === 'APP_RESOURCE_PRIVATE_UNAVAILABLE') return null;
     if (error instanceof ResourceSyncWebAuthenticationError || error instanceof AppError) {

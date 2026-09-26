@@ -81,6 +81,7 @@ export class NativeResourceService {
       return ResourceResolveResultV2Schema.parse({ ...base, state: 'available', resource: {
         schema_version: RESOURCE_V2_CONTRACT_VERSIONS.safe_projection, ref,
         label: safeLabel(display.label),
+        ...(display.href === undefined ? {} : { href: display.href }),
         ...(display.revision === undefined ? {} : { revision: display.revision }),
         ...(display.updated_at === undefined ? {} : { updated_at: display.updated_at }),
       } });

@@ -67,3 +67,18 @@ appResourcePrivateReadRoutes.get('/bindings/:bindingId/records/:projectionId', a
     }));
   } catch (error) { return failure(c, error); }
 });
+
+// The path carries only exact host-issued reference identity, never provider URLs.
+appResourcePrivateReadRoutes.get('/references/:registrationId/:resourceType/:projectionId', async (c) => {
+  try {
+    z.strictObject({}).parse(c.req.queries());
+    const registrationId = id.parse(c.req.param('registrationId'));
+    const projectionId = id.parse(c.req.param('projectionId'));
+    const { service, subject } = await reader(c);
+    return c.json(await service.getOwnerPrivateResourceByRef(subject, {
+      schema_version: 'deft.resource_ref.v2',
+      provider: { kind: 'app_runtime', provider_instance_id: registrationId },
+      resource_type: c.req.param('resourceType'), resource_id: projectionId,
+    }));
+  } catch (error) { return failure(c, error); }
+});

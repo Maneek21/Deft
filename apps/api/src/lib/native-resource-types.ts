@@ -10,6 +10,7 @@ export type NativeResourceSubject = Readonly<{
 /** Owner-authored display data only; no body, provider URL or storage handle. */
 export type NativeResourceDisplay = Readonly<{
   label: string;
+  href?: string;
   revision?: string;
   updated_at?: string;
 }>;
