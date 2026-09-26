@@ -7,10 +7,28 @@ import { getAppRunRuntime } from '../lib/app-run-runtime.js';
 import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { assertOwnedResourceSyncRegistration, inspectResourceSyncBinding,
   listResourceSyncBindings } from '../lib/app-resource-sync-status.js';
+import { listEligibleResourceSyncOperators, listAssignedResourceSyncBindings,
+  listOwnResourceSyncSessions } from '../lib/app-resource-sync-operator.js';
 
 const MAX_MANAGEMENT_BODY_BYTES = 16_384;
 const READ_DEADLINE_MS = 15_000;
 const Id = z.string().uuid();
+class ResourceSyncManagementDisabledError extends Error {
+  readonly code = 'APP_RESOURCE_SYNC_DISABLED';
+  readonly status = 503;
+}
+async function authority(authorization: string | undefined) {
+  const { actor, guard } = await resourceSyncWebAuthority(authorization);
+  return { actor, guard: async (tx: Parameters<typeof guard>[0]) => {
+    await guard(tx);
+    if (!appResourceSyncChannelEnabled()) throw new ResourceSyncManagementDisabledError('Private sync management unavailable');
+  } };
+}
+function query(c: Context) {
+  const entries = [...new URL(c.req.url).searchParams.entries()];
+  if (new Set(entries.map(([key]) => key)).size !== entries.length) throw new SyntaxError('Duplicate query');
+  return Object.fromEntries(entries);
+}
 async function body(c: Context, emptyOnly = false): Promise<unknown> {
   if (!emptyOnly && c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
     throw new AppError('JSON request required', 'APP_ACTION_INVALID', 400);
@@ -60,7 +78,8 @@ async function body(c: Context, emptyOnly = false): Promise<unknown> {
 }
 
 function failure(c: Context, error: unknown) {
-  if (error instanceof AppError || error instanceof ResourceSyncWebAuthenticationError) return c.json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof AppError || error instanceof ResourceSyncWebAuthenticationError
+    || error instanceof ResourceSyncManagementDisabledError) return c.json({ error: error.message, code: error.code }, error.status);
   if (error instanceof z.ZodError || error instanceof SyntaxError || error instanceof TypeError) {
     return c.json({ error: 'Invalid private sync management request', code: 'VALIDATION_ERROR' }, 400);
   }
@@ -80,24 +99,42 @@ export function createAppResourceSyncManagementRoutes(options: {
     }
     // Authenticate before parsing bodies or looking up Runtime keys. Each handler
     // authenticates again after body consumption and pins the final transaction SID.
-    try { await resourceSyncWebAuthority(c.req.header('authorization')); }
+    try { await authority(c.req.header('authorization')); }
     catch (error) { return failure(c, error); }
     await next();
   });
   routes.get('/setup', async (c) => {
     try {
-      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+      const { actor, guard } = await authority(c.req.header('authorization'));
       const entries = [...new URL(c.req.url).searchParams.entries()];
       if (new Set(entries.map(([key]) => key)).size !== entries.length) throw new SyntaxError('Duplicate query');
       return c.json({ setup: await (await options.management()).setupContext(actor,
         Object.fromEntries(entries), guard) });
     } catch (error) { return failure(c, error); }
   });
+  routes.get('/operators', async c => {
+    try {
+      const { actor, guard } = await authority(c.req.header('authorization'));
+      return c.json(await listEligibleResourceSyncOperators(actor, query(c), guard));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.get('/operator/assignments', async c => {
+    try {
+      const { actor, guard } = await authority(c.req.header('authorization'));
+      return c.json(await listAssignedResourceSyncBindings(actor, query(c), guard));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.get('/bindings/:bindingId/sessions', async c => {
+    try {
+      const { actor, guard } = await authority(c.req.header('authorization'));
+      return c.json(await listOwnResourceSyncSessions(actor, Id.parse(c.req.param('bindingId')), query(c), guard));
+    } catch (error) { return failure(c, error); }
+  });
   routes.post('/reviews/prepare', async (c) => {
     try {
       z.strictObject({}).parse(c.req.query());
       const input = await body(c);
-      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+      const { actor, guard } = await authority(c.req.header('authorization'));
       return c.json({ review: await (await options.management()).prepareConsent(actor, input, guard) });
     } catch (error) { return failure(c, error); }
   });
@@ -105,13 +142,13 @@ export function createAppResourceSyncManagementRoutes(options: {
     try {
       z.strictObject({}).parse(c.req.query());
       const input = await body(c);
-      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+      const { actor, guard } = await authority(c.req.header('authorization'));
       return c.json({ binding: await (await options.management()).activateConsent(actor, input, guard) }, 201);
     } catch (error) { return failure(c, error); }
   });
   routes.get('/bindings', async (c) => {
     try {
-      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+      const { actor, guard } = await authority(c.req.header('authorization'));
       const entries = [...new URL(c.req.url).searchParams.entries()];
       if (new Set(entries.map(([key]) => key)).size !== entries.length) throw new SyntaxError('Duplicate query');
       return c.json(await listResourceSyncBindings(actor, Object.fromEntries(entries), guard));
@@ -119,7 +156,7 @@ export function createAppResourceSyncManagementRoutes(options: {
   });
   routes.get('/bindings/:bindingId', async (c) => {
     try {
-      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+      const { actor, guard } = await authority(c.req.header('authorization'));
       z.strictObject({}).parse(c.req.query());
       return c.json(await inspectResourceSyncBinding(actor, Id.parse(c.req.param('bindingId')), guard));
     } catch (error) { return failure(c, error); }
@@ -128,7 +165,7 @@ export function createAppResourceSyncManagementRoutes(options: {
   async function operation(c: Context) {
     z.strictObject({}).parse(c.req.query());
     await body(c, true);
-    return resourceSyncWebAuthority(c.req.header('authorization'));
+    return authority(c.req.header('authorization'));
   }
   routes.post('/bindings/:bindingId/sessions', async (c) => {
     try {

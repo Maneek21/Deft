@@ -10,6 +10,7 @@ import { appApiError } from '@/lib/apps';
 import { useAuth } from '@/lib/auth-context';
 import { useApps } from '@/hooks/use-apps';
 import { PrivateResourceSetup } from './private-resource-setup';
+import { OperatorAssignments } from './operator-assignments';
 import styles from './private-resources.module.css';
 
 type Binding = { binding_id: string; installation_id: string; resource_key: string; state: string; consent_expires_at: string };
@@ -25,7 +26,8 @@ export function PrivateResourcesClient() {
   const { user, sessionCacheScope } = useAuth();
   useSetPageContext(<span className="text-sm font-semibold">Private App resources</span>, []);
   if (!sessionCacheScope || !user) return null;
-  if (user.role !== 'owner' && user.role !== 'admin') return <p className="p-6">Private App resource management is available to workspace owners and admins.</p>;
+  if (user.role === 'guest') return <p className="p-6">Private App resources require an active workspace membership.</p>;
+  if (user.role !== 'owner' && user.role !== 'admin') return <div key={sessionCacheScope} className={`${styles.workspace} flex h-full min-h-0 flex-1 flex-col overflow-hidden`}><PageHeader title="Private App resources" description="Your assigned provider connections." compact /><div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6"><OperatorAssignments /></div></div>;
   return <PrivateResourceWorkspace key={sessionCacheScope} />;
 }
 
@@ -119,6 +121,7 @@ function PrivateResourceWorkspace() {
       <div className="flex flex-wrap items-center gap-2"><Link className="deft-pill min-h-11" href="/settings/apps">← Apps</Link><button className="deft-pill min-h-11" disabled={busy} onClick={() => void loadBindings()}><RefreshCw size={14} /> Refresh connections</button></div>
       <p className="flex items-start gap-2 text-sm" style={{ color: 'var(--on-surface-variant)' }}><LockKeyhole size={16} className="mt-0.5 shrink-0" />Only resources you explicitly connected are shown here. Reading them does not share them with your workspace.</p>
       <PrivateResourceSetup key={setupGeneration} apps={apps} onChanged={() => void loadBindings()} />
+      <OperatorAssignments />
       {error && <p role="alert" className="rounded-lg border p-3 text-sm" style={{ color: 'var(--error)', borderColor: 'var(--ghost-border)' }}>{error}</p>}
       {busy && <div role="status" className="flex items-center gap-2 text-sm"><Loader2 size={16} className="animate-spin" /> Loading…</div>}
       {!busy && !error && bindings.length === 0 && <p className="rounded-xl border p-5 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>You have no private App connections. A connection appears here after you review and activate its consent.</p>}

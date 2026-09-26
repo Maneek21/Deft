@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 import { appApiError, type AppInstallation } from '@/lib/apps';
+import { useAuth } from '@/lib/auth-context';
 
 type Limits = { max_records_per_page: number; max_page_bytes: number; max_retained_records: number; max_retained_bytes: number; min_interval_seconds: number };
 type ConsentRequest = {
@@ -15,13 +16,14 @@ type ConsentRequest = {
 type Descriptor = {
   resource_key: string; resource_type: string; visibility: 'user_private'; descriptor_digest: string;
   consent_request: ConsentRequest;
-  existing_binding: null | { binding_id: string; state: 'active' | 'disabled'; consent_expires_at: string | null; requires_revoke: boolean; can_issue_session: boolean };
+  existing_binding: null | { binding_id: string; operator_user_id: string; state: 'active' | 'disabled'; consent_expires_at: string | null; requires_revoke: boolean; can_issue_session: boolean };
 };
 type Setup = {
   installation_id: string; descriptors: Descriptor[];
   host_limits: { max_consent_ms: number; session_ms: number; limits: Record<keyof Limits, { min: number; max: number }> };
 };
 type Review = { review_digest: string; consent_expires_at: string; limits: Limits };
+type Operator = { user_id: string; name: string };
 const management = '/api/app-resource-sync-management';
 const labels: Record<keyof Limits, string> = {
   max_records_per_page: 'Records per sync page', max_page_bytes: 'Bytes per sync page',
@@ -34,6 +36,12 @@ async function response<T>(value: Response): Promise<T> {
 }
 
 export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallation[]; onChanged: () => void }) {
+  const { user } = useAuth();
+  const [operatorId, setOperatorId] = useState(user?.id ?? '');
+  const [operators, setOperators] = useState<Operator[]>([]);
+  const [operatorAfter, setOperatorAfter] = useState<string | null>(null);
+  const [operatorsBusy, setOperatorsBusy] = useState(false);
+  const operatorGeneration = useRef(0);
   const [installation, setInstallation] = useState('');
   const [setup, setSetup] = useState<Setup | null>(null);
   const [resource, setResource] = useState('');
@@ -46,6 +54,19 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
   const generation = useRef(0);
   const eligible = apps.filter(app => app.state === 'active' && app.manifest.schema_version === '5' && app.manifest.sync_descriptors.length > 0);
   const descriptor = setup?.descriptors.find(item => item.resource_key === resource);
+  const operatorName = operators.find(item => item.user_id === operatorId)?.name ?? (operatorId === user?.id ? user.name : 'Selected operator');
+  const loadOperators = useCallback(async (after?: string) => {
+    const request = ++operatorGeneration.current;
+    setOperatorsBusy(true);
+    try {
+      const body = await response<{ operators: Operator[]; next_after: string | null }>(await api.get(`${management}/operators?limit=20${after ? `&after=${encodeURIComponent(after)}` : ''}`));
+      if (request !== operatorGeneration.current || document.hidden) return;
+      setOperators(previous => after ? [...previous, ...body.operators.filter(item => !previous.some(old => old.user_id === item.user_id))] : body.operators);
+      setOperatorAfter(body.next_after);
+    } catch (reason) { if (request === operatorGeneration.current) setError(reason instanceof Error ? reason.message : 'Unable to load operators.'); }
+    finally { if (request === operatorGeneration.current) setOperatorsBusy(false); }
+  }, []);
+  useEffect(() => { void loadOperators(); return () => { operatorGeneration.current += 1; }; }, [loadOperators]);
 
   useEffect(() => {
     const hide = () => {
@@ -70,13 +91,13 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
     return () => clearTimeout(timer);
   }, [review]);
 
-  const discover = async (id: string, message?: string) => {
+  const discover = async (id: string, message?: string, nominated = operatorId) => {
     const request = ++generation.current;
     setInstallation(id); setSetup(null); setDraft(null); setReview(null); setResource(''); setError(null); setNotice(message ?? null);
     if (!id) { setBusy(false); return; }
     setBusy(true);
     try {
-      const body = await response<{ setup: Setup }>(await api.get(`${management}/setup?installation_id=${encodeURIComponent(id)}`));
+      const body = await response<{ setup: Setup }>(await api.get(`${management}/setup?installation_id=${encodeURIComponent(id)}&operator_user_id=${encodeURIComponent(nominated)}`));
       if (request !== generation.current || document.hidden) return;
       setSetup(body.setup);
       setMaxConsent(new Date(Date.now() + body.setup.host_limits.max_consent_ms).toISOString());
@@ -106,7 +127,7 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
       await response(await api.post(`${management}/bindings/activate`, { ...draft, expected_review_digest: review.review_digest, accept_host_policy: true }));
       if (request !== generation.current || document.hidden) return;
       onChanged();
-      await discover(installation, 'Connection activated. Open operator setup to run its provider.');
+      await discover(installation, 'Connection activated. The assigned operator can find it in their private resource assignments.');
     } catch (reason) {
       if (request !== generation.current) return;
       // Activation can commit before its response is lost. Discover the current
@@ -128,7 +149,12 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
   };
   const fieldClass = 'min-h-11 w-full min-w-0 rounded-lg border bg-transparent px-3 py-2 text-sm';
   return <section aria-label="Connect a private resource" className="min-w-0 space-y-4 rounded-xl border p-4" style={{ borderColor: 'var(--ghost-border)', background: 'var(--surface-container-low)' }}>
-    <div><h2 className="font-semibold">Connect a private resource</h2><p className="mt-1 text-sm" style={{ color: 'var(--on-surface-variant)' }}>Choose an active App. You own this connection and run its provider using your own short-lived credential.</p></div>
+    <div><h2 className="font-semibold">Connect a private resource</h2><p className="mt-1 text-sm" style={{ color: 'var(--on-surface-variant)' }}>Choose an active App and a human to run its provider. Saved records stay private to you.</p></div>
+    <label className="block space-y-1 text-sm"><span>Assigned operator</span><select aria-label="Assigned operator" className={fieldClass} value={operatorId} disabled={busy || !!review || operatorsBusy} onChange={event => { const id = event.target.value; setOperatorId(id); if (installation) void discover(installation, undefined, id); }}>
+      {user && !operators.some(item => item.user_id === user.id) && <option value={user.id}>{user.name} (you)</option>}
+      {operators.map(item => <option key={item.user_id} value={item.user_id}>{item.name}{item.user_id === user?.id ? ' (you)' : ''}</option>)}
+    </select></label>
+    {operatorAfter && <button className="deft-pill min-h-11" disabled={operatorsBusy || busy || !!review} onClick={() => void loadOperators(operatorAfter)}>Load more operators</button>}
     <label className="block space-y-1 text-sm"><span>Active App</span><select aria-label="Active App" className={fieldClass} value={installation} disabled={busy} onChange={event => void discover(event.target.value)}><option value="">Choose an App</option>{eligible.map(app => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label>
     {eligible.length === 0 && <p className="text-sm">An App with reviewed private resources must be active before you can connect it.</p>}
     {busy && <p role="status" className="text-sm">Loading connection…</p>}
@@ -139,7 +165,7 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
       <label className="block space-y-1 text-sm"><span>Resource</span><select aria-label="Resource" className={fieldClass} value={resource} disabled={busy || !!review} onChange={event => { const next = setup.descriptors.find(item => item.resource_key === event.target.value); setResource(event.target.value); setDraft(next?.consent_request ?? null); setReview(null); setError(null); }}>{setup.descriptors.map(item => <option key={item.resource_key} value={item.resource_key}>{item.resource_key} · {item.resource_type}</option>)}</select></label>
       {descriptor.existing_binding ? <div className="space-y-3 text-sm">
         <p>{descriptor.existing_binding.requires_revoke ? 'This connection has expired or is disabled. Revoke it before reviewing new consent.' : 'You already have a connection for this resource.'}</p>
-        {descriptor.existing_binding.requires_revoke ? <><p>Revoking stops future syncs and reads. Previously delivered copies cannot be recalled.</p><button className="deft-pill min-h-11" disabled={busy} onClick={() => void revoke()}>Revoke previous connection</button></> : descriptor.existing_binding.can_issue_session ? <Link className="deft-pill min-h-11" href={`/settings/apps/private-resources/operator/${encodeURIComponent(descriptor.existing_binding.binding_id)}`}>Open operator setup</Link> : <p>The assigned operator must issue their own credential.</p>}
+        {descriptor.existing_binding.requires_revoke || descriptor.existing_binding.operator_user_id !== operatorId ? <><p>Revoke this connection before reviewing a replacement operator. Revoking stops future syncs and reads; previously delivered copies cannot be recalled.</p><button className="deft-pill min-h-11" disabled={busy} onClick={() => void revoke()}>Revoke previous connection</button></> : descriptor.existing_binding.can_issue_session ? <Link className="deft-pill min-h-11" href={`/settings/apps/private-resources/operator/${encodeURIComponent(descriptor.existing_binding.binding_id)}`}>Open operator setup</Link> : <p>The assigned operator must issue their own credential.</p>}
       </div> : <>
         <fieldset disabled={busy || !!review} className="grid min-w-0 gap-3 sm:grid-cols-2">
           <label className="space-y-1 text-sm"><span>Consent ends</span><input aria-label="Consent ends" type="datetime-local" className={fieldClass} value={localDateTime(draft.consent_expires_at)} max={localDateTime(maxConsent)} onChange={event => { const date = new Date(event.target.value); if (Number.isFinite(date.getTime())) setDraft({ ...draft, consent_expires_at: date.toISOString() }); }} /></label>
@@ -147,7 +173,8 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
         </fieldset>
         {review ? <div aria-label="Consent review" className="space-y-3 rounded-lg border p-3 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>
           <p>Allow this App’s provider to save <strong>{descriptor.resource_key}</strong> privately for you until <strong>{new Date(review.consent_expires_at).toLocaleString()}</strong>?</p>
-          <p>You are the owner and operator. The provider may save up to {review.limits.max_retained_records.toLocaleString()} records ({review.limits.max_retained_bytes.toLocaleString()} bytes), with at least {review.limits.min_interval_seconds} seconds between syncs. Each page allows {review.limits.max_records_per_page} records and {review.limits.max_page_bytes.toLocaleString()} bytes.</p>
+          <p>You own the saved records. <strong>{operatorName}</strong> will run the provider and can issue its temporary sync credential. This assignment does not let them read your saved records.</p>
+          <p>The provider may save up to {review.limits.max_retained_records.toLocaleString()} records ({review.limits.max_retained_bytes.toLocaleString()} bytes), with at least {review.limits.min_interval_seconds} seconds between syncs. Each page allows {review.limits.max_records_per_page} records and {review.limits.max_page_bytes.toLocaleString()} bytes.</p>
           <p>This grants reviewed private sync only. A separate operator credential lasts up to {Math.floor(setup.host_limits.session_ms / 60_000)} minutes and cannot outlast consent. You can revoke the connection at any time.</p>
           <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" disabled={busy} onClick={() => void activate()}>Accept and connect</button><button className="deft-pill min-h-11" disabled={busy} onClick={() => setReview(null)}>Cancel review</button></div>
         </div> : <button className="deft-pill min-h-11" disabled={busy} onClick={() => void prepare()}>Review consent</button>}

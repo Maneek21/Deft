@@ -75,13 +75,20 @@ export class AppResourceSyncManagement {
     this.#secrets = new AppResourceSyncSecretService(keys);
   }
 
-  /** Discovery conveys no private read or Runtime authority. The only operator
-   * offered by this initial setup surface is the current manager-owner. */
+  /** Discovery conveys no private read or Runtime authority. Explicit operator
+   * nomination uses v2; omitted nomination preserves the existing v1 projection. */
   async setupContext(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
-    const { installation_id } = z.strictObject({ installation_id: Id }).parse(value);
+    const { installation_id, operator_user_id } = z.strictObject({ installation_id: Id,
+      operator_user_id: Id.optional() }).parse(value);
+    const operatorId = operator_user_id ?? actor.actor_id;
     return db.transaction(async (tx) => {
+      await lockMembers(tx, actor.org_id, [actor.actor_id, operatorId], 'UPDATE');
       await assertManager(tx, actor);
+      const [eligible] = await tx.select({ active: orgMembers.is_active, role: orgMembers.role, kind: users.kind })
+        .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(
+          eq(orgMembers.org_id, actor.org_id), eq(orgMembers.user_id, operatorId))).limit(1);
+      if (!eligible?.active || eligible.role === 'guest' || eligible.kind !== 'human') throw denied();
       const reviewed = await loadReviewedResourceSyncDescriptor(tx, actor.org_id, installation_id);
       const { installation, version, grant } = reviewed;
       const bindings = await tx.select({ binding_id: appResourceBindings.id,
@@ -106,11 +113,11 @@ export class AppResourceSyncManagement {
         descriptor_digest: await digestResourceSyncDescriptor(descriptor),
       })));
       await guard?.(tx);
-      if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, actor.actor_id)) throw denied();
+      if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, operatorId)) throw denied();
       const now = this.clock();
       const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      return { schema_version: 'deft.app_resource_sync_setup.v1' as const,
-        org_id: actor.org_id, owner_user_id: actor.actor_id, operator_user_id: actor.actor_id,
+      return { schema_version: operator_user_id ? 'deft.app_resource_sync_setup.v2' as const : 'deft.app_resource_sync_setup.v1' as const,
+        org_id: actor.org_id, owner_user_id: actor.actor_id, operator_user_id: operatorId,
         installation_id: installation.id, app_version_id: version.id,
         host_policy: APP_RESOURCE_SYNC_HOST_POLICY,
         host_limits: { max_consent_ms: APP_RESOURCE_SYNC_MAX_CONSENT_MS,
@@ -119,7 +126,7 @@ export class AppResourceSyncManagement {
           const binding = bindings.find((item) => item.resource_key === descriptor.resource_key);
           const consent_request: AppResourceSyncConsentRequest = {
             installation_id: installation.id, resource_key: descriptor.resource_key,
-            operator_user_id: actor.actor_id, expected_app_version_id: version.id,
+            operator_user_id: operatorId, expected_app_version_id: version.id,
             expected_package_digest: version.package_digest,
             expected_grant_snapshot_digest: grant.snapshot_digest,
             expected_lifecycle_epoch: installation.lifecycle_epoch,
@@ -132,6 +139,7 @@ export class AppResourceSyncManagement {
           };
           return { ...descriptor, consent_request,
             existing_binding: binding ? { binding_id: binding.binding_id,
+              ...(operator_user_id ? { operator_user_id: binding.operator_user_id } : {}),
               state: binding.state as 'active' | 'disabled',
               consent_expires_at: binding.consent_expires_at?.toISOString() ?? null,
               can_issue_session: binding.operator_user_id === actor.actor_id
@@ -183,7 +191,11 @@ export class AppResourceSyncManagement {
   async prepareConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     const input = AppResourceSyncConsentRequestSchema.parse(value);
-    return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false)).review);
+    return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false)).review,
+      async (_result, tx) => {
+        if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
+        assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
+      });
   }
 
   async activateConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
