@@ -4,6 +4,7 @@ import * as schema from '@deft/db/schema';
 import { env } from './env.js';
 import { closeAppAutomationScanDatabase } from './app-automation-scan-db.js';
 import { closeExperienceExposureDatabase } from './app-experience-exposure-db.js';
+import { closePrivateSearchDatabase } from './app-resource-private-search-db.js';
 
 const { Pool } = pg;
 
@@ -45,5 +46,5 @@ export async function withDbAdvisoryLock<T>(
 
 /** Drain the shared PostgreSQL pool during process shutdown. */
 export async function closeDb(): Promise<void> {
-  await Promise.all([pool.end(), advisoryPool.end(), closeAppAutomationScanDatabase(), closeExperienceExposureDatabase()]);
+  await Promise.all([pool.end(), advisoryPool.end(), closeAppAutomationScanDatabase(), closeExperienceExposureDatabase(), closePrivateSearchDatabase()]);
 }

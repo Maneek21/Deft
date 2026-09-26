@@ -20,9 +20,11 @@ export type ExperienceExposureTransaction = Parameters<Parameters<ExposureDataba
 export function createExperienceExposureDatabase(connectionString: string) {
   const pool = new pg.Pool({
     connectionString,
+    pipeline: false,
     max: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.connections,
     connectionTimeoutMillis: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.acquisition_ms,
     statement_timeout: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.statement_ms,
+    query_timeout: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.statement_ms,
     lock_timeout: APP_EXPERIENCE_EXPOSURE_DB_LIMITS.lock_ms,
     application_name: 'deft-experience-exposure',
   });
@@ -48,6 +50,16 @@ export function createExperienceExposureDatabase(connectionString: string) {
       });
       let broken = false;
       let settled = false;
+      let discarded: Promise<void> | undefined;
+      // pg Client.end destroys an active non-pipelined query socket. Keep its
+      // checked-out pool slot until the query and socket have actually settled.
+      const discard = () => {
+        if (broken) return;
+        broken = true;
+        discarded = client.end().catch(() => undefined);
+      };
+      const timer = setTimeout(discard, Math.max(1, deadline - performance.now()));
+      signal?.addEventListener('abort', discard, { once: true });
       let statementLimit: number = APP_EXPERIENCE_EXPOSURE_DB_LIMITS.statement_ms;
       let lockLimit: number = APP_EXPERIENCE_EXPOSURE_DB_LIMITS.lock_ms;
       try {
@@ -59,8 +71,9 @@ export function createExperienceExposureDatabase(connectionString: string) {
               const text = typeof query === 'string' ? query : query.text;
               // Rollback must remain possible after abort/deadline/SQL errors.
               if (text.toLowerCase() === 'rollback') {
+                if (broken) throw new Error('Experience exposure database connection discarded');
                 try { const result = await client.query(query, values); settled = true; return result; }
-                catch (error) { broken = true; throw error; }
+                catch (error) { discard(); throw error; }
               }
               check();
               if (text.toLowerCase() !== 'begin') {
@@ -78,7 +91,9 @@ export function createExperienceExposureDatabase(connectionString: string) {
                 }
                 check();
               }
-              const result = await client.query(query, values);
+              let result;
+              try { result = await client.query(query, values); }
+              catch (error) { discard(); throw error; }
               if (text.toLowerCase() === 'commit') settled = true;
               // COMMIT has already settled and cannot be undone. All earlier
               // boundaries, including immediately before COMMIT, check abort.
@@ -89,15 +104,19 @@ export function createExperienceExposureDatabase(connectionString: string) {
         });
         return await drizzle(guarded, { schema }).transaction(run);
       } catch (error) {
+        if (!settled) discard();
         signal?.throwIfAborted();
         throw error;
       } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', discard);
         // BEGIN can succeed immediately before cancellation, outside Drizzle's
         // transaction callback. Cover that path as well before reusing the slot.
-        if (!settled) {
+        if (!settled && !broken) {
           try { await client.query('ROLLBACK'); }
-          catch { broken = true; }
+          catch { discard(); }
         }
+        await discarded;
         client.release(broken);
       }
     },

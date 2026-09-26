@@ -53,7 +53,7 @@ export async function resourceSyncWebAuthority(authorization: string | undefined
       throw new ResourceSyncWebAuthenticationError('Invalid or expired web session');
     }
   };
-  return { actor, guard };
+  return { actor, guard, web_session: { sid: user.sid, expires_at: user.exp * 1000 } };
 }
 
 export function assertResourceSyncManager(actor: ModuleActor) {

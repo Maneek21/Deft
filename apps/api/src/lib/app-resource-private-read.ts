@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appResourceBindings, appResourceProjections, appSyncCheckpoints } from '@deft/db/schema';
 import { parseSyncPage } from '@deft/app-kit/experimental/resource-sync';
@@ -10,6 +10,7 @@ import { PostgresAppRunRepository, type AppRunTransaction } from './app-run-repo
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { isAppResourceSyncChannelEnabled } from './env.js';
+import { openPrivateSearchCursor, privateSearchDigest, sealPrivateSearchCursor } from './app-resource-private-search-cursor.js';
 
 export const APP_RESOURCE_PRIVATE_READ_LIMITS = Object.freeze({ items: 25, response_bytes: 1_048_576 });
 const uuid = z.string().uuid().transform((value) => value.toLowerCase());
@@ -18,6 +19,15 @@ const pageSchema = z.strictObject({ resource_binding_id: uuid,
   limit: z.number().int().min(1).max(APP_RESOURCE_PRIVATE_READ_LIMITS.items).optional(),
   cursor: z.string().min(1).max(2_048).optional() });
 const oneSchema = z.strictObject({ resource_binding_id: uuid, projection_id: uuid });
+export const APP_RESOURCE_PRIVATE_SEARCH_LIMITS = Object.freeze({ scan_records: 100,
+  scan_bytes: 1_048_576, items: 25, response_bytes: 65_536, snippet_chars: 240, cursor_ms: 900_000 });
+const searchSchema = z.strictObject({ resource_binding_id: uuid, query: z.string().min(1).max(200)
+  .refine(value => value.trim().length > 0), field_keys: z.array(z.string().min(1).max(48)).min(1).max(32)
+  .refine(value => new Set(value).size === value.length), cursor: z.string().min(1).max(2048).optional() });
+export type PrivateSearchPage = Readonly<{ schema_version: 'deft.app_private_search_page.v1';
+  items: readonly Readonly<{ ref: ResourceRefV2; label: string; snippet: string; field_key: string; href: string }>[];
+  scan: Readonly<{ records_scanned: number; complete: boolean }>; next_cursor: string | null;
+  freshness: 'unknown'; consent_expires_at: string }>;
 const sequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const cursorSchema = z.strictObject({ version: z.literal(1), key_version: z.string().min(1).max(128),
   org_id: uuid, resource_binding_id: uuid, checkpoint_id: uuid,
@@ -54,6 +64,103 @@ export class AppResourcePrivateReadService {
     private readonly repository: Pick<PostgresAppRunRepository, 'transaction'> = new PostgresAppRunRepository(),
     private readonly deliveryGuard?: AppResourcePrivateReadDeliveryGuard) {
     this.#secrets = new AppResourceSyncSecretService(keys);
+  }
+
+  async ownerPrivateSearchScope(rawSubject: AppResourcePrivateReadSubject, bindingId: string) {
+    const subject = subjectSchema.safeParse(rawSubject);
+    const id = uuid.safeParse(bindingId);
+    if (!subject.success || !id.success) throw invalid();
+    return this.#read(subject.data, id.data, async (_tx, authority) => ({
+      field_keys: Object.keys(authority.descriptor.record_schema.properties).sort(),
+      label_field: authority.descriptor.label_field,
+      consent_expires_at: authority.binding.consent_expires_at!.toISOString(),
+    }));
+  }
+
+  /** Exhaustive across a coherent saved checkpoint via explicit continuation.
+   * The caller injects the bounded search transaction factory and verified SID. */
+  async searchOwnerPrivateResources(rawSubject: AppResourcePrivateReadSubject,
+    rawInput: z.input<typeof searchSchema>, webSessionId: string, signal?: AbortSignal,
+    deadline = performance.now() + 3000): Promise<PrivateSearchPage> {
+    const subject = subjectSchema.safeParse(rawSubject), input = searchSchema.safeParse(rawInput);
+    if (!subject.success || !input.success || !uuid.safeParse(webSessionId).success) throw invalid();
+    const fields = [...input.data.field_keys].sort();
+    const needle = input.data.query.toLowerCase();
+    let expires = 0;
+    const check = () => { signal?.throwIfAborted(); if (performance.now() >= deadline
+      || expires && this.clock().getTime() >= expires) throw unavailable(); };
+    const result = await this.#read(subject.data, input.data.resource_binding_id, async (tx, authority, checkpoint) => {
+      check();
+      if (fields.some(key => !Object.hasOwn(authority.descriptor.record_schema.properties, key))) throw invalid();
+      const b = authority.binding;
+      const identity_scope = privateSearchDigest({ org: subject.data.org_id, owner: subject.data.user_id,
+        sid: webSessionId, binding: b.id, registration: authority.registration.id, app: b.app_installation_id,
+        version: b.app_version_id, grant: b.grant_snapshot_id, lifecycle: authority.installation.lifecycle_epoch,
+        grant_epoch: authority.installation.grant_epoch, descriptor: b.descriptor_digest,
+        runtime_epoch: authority.registration.runtime_epoch, operator: authority.registration.operator_user_id,
+        registration_contract: authority.registration.contract_version, grant_kind: b.grant_snapshot_kind,
+        consent: b.consent_expires_at!.toISOString() });
+      const checkpoint_scope = privateSearchDigest({ id: checkpoint.id, generation: checkpoint.generation,
+        sequence: checkpoint.cursor_sequence });
+      const query_fields_scope = privateSearchDigest({ query: input.data.query, fields });
+      let cursor;
+      try { cursor = input.data.cursor ? openPrivateSearchCursor(this.keys, input.data.cursor) : null; }
+      catch { throw unavailable(); }
+      if (cursor && (cursor.identity_scope !== identity_scope || cursor.query_fields_scope !== query_fields_scope)) throw unavailable();
+      if (cursor && cursor.checkpoint_scope !== checkpoint_scope) throw new AppResourcePrivateReadError('APP_RESOURCE_PRIVATE_CURSOR_STALE', 409);
+      expires = cursor?.expires_at ?? Math.min(this.clock().getTime() + APP_RESOURCE_PRIVATE_SEARCH_LIMITS.cursor_ms,
+        b.consent_expires_at!.getTime());
+      check();
+      const locators = await tx.select({ id: appResourceProjections.id, bytes: appResourceProjections.body_bytes })
+        .from(appResourceProjections).where(and(...this.#scope(subject.data.org_id, b.id, checkpoint),
+          cursor ? gt(appResourceProjections.id, cursor.after) : undefined))
+        .orderBy(asc(appResourceProjections.id)).limit(APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_records + 1);
+      check();
+      let bytes = 0;
+      const selected: string[] = [];
+      for (const locator of locators.slice(0, APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_records)) {
+        if (locator.bytes > APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_bytes) throw unavailable();
+        if (bytes + locator.bytes > APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_bytes) break;
+        bytes += locator.bytes; selected.push(locator.id);
+      }
+      const rows = selected.length ? await tx.select().from(appResourceProjections).where(and(
+        ...this.#scope(subject.data.org_id, b.id, checkpoint), inArray(appResourceProjections.id, selected)))
+        .orderBy(asc(appResourceProjections.id)) : [];
+      if (rows.length !== selected.length) throw unavailable();
+      const items: PrivateSearchPage['items'][number][] = [];
+      let scanned = 0, after: string | null = null;
+      for (const row of rows) {
+        check();
+        const record = this.#record(row, authority);
+        let hit: PrivateSearchPage['items'][number] | undefined;
+        for (const key of fields) {
+          const value = record.data[key];
+          if (value === undefined) continue;
+          const text = String(value), at = text.toLowerCase().indexOf(needle);
+          if (at < 0) continue;
+          const start = Math.max(0, at - 60);
+          hit = { ref: record.ref, label: record.label,
+            snippet: text.slice(start, start + APP_RESOURCE_PRIVATE_SEARCH_LIMITS.snippet_chars), field_key: key,
+            href: `/app-resources/${encodeURIComponent(record.ref.provider.provider_instance_id)}/${encodeURIComponent(record.resource_type)}/${encodeURIComponent(record.projection_id)}` };
+          break;
+        }
+        if (hit && items.length >= APP_RESOURCE_PRIVATE_SEARCH_LIMITS.items) break;
+        if (hit) items.push(hit);
+        scanned++; after = row.id;
+        if (items.length === APP_RESOURCE_PRIVATE_SEARCH_LIMITS.items) break;
+      }
+      const complete = scanned === locators.length;
+      const next_cursor = !complete && after ? sealPrivateSearchCursor(this.keys, {
+        after, expires_at: expires, identity_scope, checkpoint_scope, query_fields_scope }) : null;
+      if (!complete && !next_cursor) throw unavailable();
+      const page: PrivateSearchPage = { schema_version: 'deft.app_private_search_page.v1', items,
+        scan: { records_scanned: scanned, complete }, next_cursor, freshness: 'unknown',
+        consent_expires_at: b.consent_expires_at!.toISOString() };
+      if (Buffer.byteLength(JSON.stringify(page), 'utf8') > APP_RESOURCE_PRIVATE_SEARCH_LIMITS.response_bytes) throw unavailable();
+      return page;
+    });
+    check();
+    return result;
   }
 
   async listOwnerPrivateResourcePage(rawSubject: AppResourcePrivateReadSubject,
@@ -125,7 +232,7 @@ export class AppResourcePrivateReadService {
    * human navigation only. This never authorizes Worker, agent or share access. */
   async getOwnerPrivateResourceByRef(rawSubject: AppResourcePrivateReadSubject,
     rawRef: unknown): Promise<Readonly<{ ref: ResourceRefV2; label: string;
-      data: PrivateResourceRecord['data']; freshness: 'unknown'; consent_expires_at: string }>> {
+      data: PrivateResourceRecord['data']; freshness: 'unknown'; consent_expires_at: string; search_href: string }>> {
     const subject = subjectSchema.safeParse(rawSubject);
     const ref = AppRuntimeResourceRefV2Schema.safeParse(rawRef);
     if (!subject.success) throw invalid();
@@ -155,6 +262,7 @@ export class AppResourcePrivateReadService {
       const record = this.#record(row, authority);
       const result = { ref: record.ref, label: record.label, data: record.data,
         freshness: 'unknown' as const,
+        search_href: `/app-resources/search/${authority.binding.id}`,
         consent_expires_at: authority.binding.consent_expires_at!.toISOString() };
       if (Buffer.byteLength(JSON.stringify(result), 'utf8') > APP_RESOURCE_PRIVATE_READ_LIMITS.response_bytes) {
         throw unavailable();

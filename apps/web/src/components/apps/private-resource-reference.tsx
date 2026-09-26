@@ -6,10 +6,11 @@ import { api, isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
 import { PageHeader } from '@/components/page-header';
+import Link from 'next/link';
 
 type Identity = { registrationId: string; resourceType: string; projectionId: string };
 type Result = { ref: ResourceRefV2; label: string;
-  data: Record<string, string | number | boolean>; freshness: 'unknown'; consent_expires_at: string };
+  data: Record<string, string | number | boolean>; freshness: 'unknown'; consent_expires_at: string; search_href: string };
 const unavailable = () => new Error('This private resource is unavailable.');
 function object(value: unknown, keys?: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw unavailable();
@@ -18,7 +19,7 @@ function object(value: unknown, keys?: readonly string[]): Record<string, unknow
   return row;
 }
 function normalizeResult(value: unknown): Result {
-  const row = object(value, ['ref', 'label', 'data', 'freshness', 'consent_expires_at']);
+  const row = object(value, ['ref', 'label', 'data', 'freshness', 'consent_expires_at', 'search_href']);
   const ref = object(row.ref, ['schema_version', 'provider', 'resource_type', 'resource_id']);
   const provider = object(ref.provider, ['kind', 'provider_instance_id']);
   const data = object(row.data);
@@ -26,6 +27,7 @@ function normalizeResult(value: unknown): Result {
     || typeof provider.provider_instance_id !== 'string' || typeof ref.resource_type !== 'string'
     || typeof ref.resource_id !== 'string' || typeof row.label !== 'string' || row.label.length > 200
     || row.freshness !== 'unknown' || typeof row.consent_expires_at !== 'string'
+    || typeof row.search_href !== 'string' || !/^\/app-resources\/search\/[a-f0-9-]{36}$/u.test(row.search_href)
     || !Number.isFinite(Date.parse(row.consent_expires_at))
     || !Object.values(data).every(value => typeof value === 'string' || typeof value === 'boolean'
       || (typeof value === 'number' && Number.isFinite(value)))
@@ -33,7 +35,7 @@ function normalizeResult(value: unknown): Result {
   return { ref: { schema_version: 'deft.resource_ref.v2', provider: { kind: 'app_runtime',
     provider_instance_id: provider.provider_instance_id }, resource_type: ref.resource_type,
     resource_id: ref.resource_id }, label: row.label,
-    data: data as Result['data'], freshness: 'unknown', consent_expires_at: row.consent_expires_at };
+    data: data as Result['data'], freshness: 'unknown', consent_expires_at: row.consent_expires_at, search_href: row.search_href };
 }
 
 /** Decrypted content remains local to this authenticated human page. */
@@ -90,7 +92,7 @@ function PrivateResourceReferenceView({ registrationId, resourceType, projection
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6">
       {busy && <p role="status">Checking private access...</p>}
       {error && <p role="alert" className="break-words">{error}</p>}
-      {result && <><h2 className="mb-2 break-words text-lg font-semibold [overflow-wrap:anywhere]">{result.label}</h2><p className="mb-4 text-sm">Owner-only saved provider data. Provider freshness is unknown.</p><dl className="space-y-4">{Object.entries(result.data).map(([key, value]) => <div key={key}>
+      {result && <><h2 className="mb-2 break-words text-lg font-semibold [overflow-wrap:anywhere]">{result.label}</h2><p className="mb-4 text-sm">Owner-only saved provider data. Provider freshness is unknown.</p><Link className="mb-4 inline-flex min-h-11 items-center underline" href={result.search_href}>Search saved App data</Link><dl className="space-y-4">{Object.entries(result.data).map(([key, value]) => <div key={key}>
         <dt className="break-words text-sm font-semibold">{key}</dt>
         <dd className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{String(value)}</dd>
       </div>)}</dl></>}

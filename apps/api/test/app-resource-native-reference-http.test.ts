@@ -125,7 +125,7 @@ test('native App reference resolves exact owner body and host href without widen
     const path = `/read/references/${item.ref.provider.provider_instance_id}/${item.ref.resource_type}/${item.ref.resource_id}`;
     const result = await h.call(path);
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body, { ref: item.ref, label: item.label, data: item.data, freshness: 'unknown', consent_expires_at: h.expires_at });
+    assert.deepEqual(result.body, { ref: item.ref, label: item.label, data: item.data, freshness: 'unknown', consent_expires_at: h.expires_at, search_href: `/app-resources/search/${h.binding_id}` });
     const { NativeResourceService } = await import('../src/lib/native-resource-service.js');
     const sid = JSON.parse(Buffer.from(h.owner.accessToken.split('.')[1]!, 'base64url').toString()).sid;
     const display = await new NativeResourceService().resolve({ org_id: h.org_id, user_id: h.owner_user_id, sid }, item.ref, `Bearer ${h.owner.accessToken}`);
