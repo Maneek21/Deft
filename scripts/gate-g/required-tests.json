@@ -2421,6 +2421,96 @@
           "name": "caller expiry and abort after queued SID locks deny before decrypt"
         }
       ]
+    },
+    {
+      "id": "experience-search-http",
+      "description": "Explicit artifact-v2 search consent, preserved v1 reads, closed resource/query/cursor identity, checkpoint and encrypted byte bounds, and final SID authority; 7 children plus parent. Guarded c14_experience_search database required.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "v1 artifact and v1 consent cannot acquire search through review-body negotiation or direct HTTP"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "v2 review explicitly includes declared search and retains unchanged v1 list/read requests"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "search cursor exhausts whole saved checkpoint without private scope metadata or substitution"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "search checkpoint cursor goes stale instead of silently skipping settled records"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "search byte preflight continues contiguous large records without whole corpus rejection"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "actual final SID wait denies withdrawn exposure gate before search delivery"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "withdrawal retires exact session and no delivered search cursor can revive it"
+        },
+        {
+          "file": "apps/api/test/app-experience-search-http-db.test.ts",
+          "name": "versioned Experience search requires exact artifact declaration and immutable host consent"
+        }
+      ]
+    },
+    {
+      "id": "experience-search-kit",
+      "description": "Public versioned bundle/SDK search contracts, canonical v1 compatibility and closed bounded replies; complete two focused Kit files.",
+      "cases": [
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK search uses closed request v2 and rejects private metadata or unselected fields in replies"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK sequences views and requests and ignores foreign-session responses"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "SDK closes pending calls without leaking reusable credentials"
+        },
+        {
+          "file": "packages/app-kit/test/experience-sdk.test.ts",
+          "name": "resource helpers bound locators and validate whole scalar replies"
+        },
+        {
+          "file": "packages/app-kit/test/experience.test.ts",
+          "name": "search requires explicit closed bundle v2 pinned by canonical artifact bytes"
+        },
+        {
+          "file": "packages/app-kit/test/experience.test.ts",
+          "name": "canonical Experience artifact verifies its exact path, MIME, length and digest"
+        },
+        {
+          "file": "packages/app-kit/test/experience.test.ts",
+          "name": "Experience bundle rejects unknown fields, traversal, unsorted keys and oversized source"
+        }
+      ]
+    },
+    {
+      "id": "experience-search-read-compat",
+      "description": "Existing explicit review/idempotency and bounded list/read payload compatibility after canonical decoder extraction; two children plus parent.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "readonly exact review, explicit acceptance and safe idempotency"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "bounded list and detail expose only approved fields with opaque cursor"
+        },
+        {
+          "file": "apps/api/test/app-experience-exposure-http-db.test.ts",
+          "name": "explicit immutable Experience exposure over HTTP is separate from sync authority"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
