@@ -8,6 +8,10 @@ import { appRuntimeChannelEnabled } from '../lib/app-runtime-channel.js';
 import { isAppNativeCalendarEnabled } from '../lib/env.js';
 import { activatePublicEndpoint, disablePublicEndpoint,
   stagePublicEndpoint, rotatePublicHmacKey } from '../lib/app-public-management.js';
+import { resourceSyncWebAuthority } from '../lib/app-resource-sync-web-authority.js';
+import { reviewPublicCancellationOwner, submitPublicCancellationOwner } from '../lib/app-public-cancellation-owner.js';
+import { AppRunError } from '../lib/app-run-errors.js';
+import { appHttpFailure } from './app-http-errors.js';
 
 export const appPublicManagementRoutes = new Hono();
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -89,4 +93,19 @@ appPublicManagementRoutes.post('/endpoints/:endpointId/disable', async (c) => {
 appPublicManagementRoutes.post('/endpoints/:endpointId/rotate-signing-key', async c => {
   try { const { actor, guard } = await authority(c); return c.json(await rotatePublicHmacKey(actor, Id.parse(c.req.param('endpointId')), await body(c), guard)); }
   catch (error) { return failure(c, error); }
+});
+for (const operation of ['review', 'submit'] as const) appPublicManagementRoutes.post(`/cancellations/:cancellationId/owner/${operation}`, async c => {
+  try {
+    if (new URL(c.req.url).search) throw new SyntaxError();
+    const user = c.get('user') as AuthUser | undefined;
+    if (!user?.sid) throw new AppError('Authentication required', 'APP_ACCESS_DENIED', 403);
+    const { actor, guard, web_session } = await resourceSyncWebAuthority(c.req.header('authorization'),
+      { org_id: user.org_id, user_id: user.id, sid: user.sid });
+    const id = z.uuid().parse(c.req.param('cancellationId')), input = await body(c), options = { guard, sid: web_session.sid };
+    return c.json(operation === 'review' ? await reviewPublicCancellationOwner(actor, id, input, options)
+      : await submitPublicCancellationOwner(actor, id, input, options));
+  } catch (error) {
+    if (error instanceof AppRunError) return appHttpFailure(c, error, 'App Run', 'app-runs');
+    return failure(c, error);
+  }
 });

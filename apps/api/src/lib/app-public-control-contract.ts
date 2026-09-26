@@ -25,4 +25,5 @@ export function publicControlMatches(expected: string | null, org: string, endpo
   return expected !== null && expected.length === actual.length
     && timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
 }
-export type PublicControlState = 'reserved' | 'released_before_effect' | 'withdrawal_requested' | 'cancellation_unavailable';
+export type PublicControlState = 'reserved' | 'released_before_effect' | 'withdrawal_requested' | 'cancellation_unavailable'
+  | 'cancel_run_pending' | 'cancelled' | 'cancel_failed' | 'unknown_outcome';

@@ -13,6 +13,7 @@ import { persistCapabilityProviderSnapshotWithExecutor } from './capability-prov
 import { digestAppGrantValue } from './app-grant-service.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
+import { validateHistoricalCreatePolicy } from './app-public-cancellation-ancestry.js';
 
 export type NativeManagementOptions = { guard?: (tx: AppRunTransaction) => Promise<void> };
 function human(actor: ModuleActor) {
@@ -43,13 +44,17 @@ export async function stageNativeBinding(actor: ModuleActor, raw: unknown, optio
     if (!action || action.operation !== input.target.operation_name || current.version.id !== input.expected_app_version_id
       || current.version.package_digest !== input.expected_package_digest || current.grant.snapshot_digest !== input.expected_grant_snapshot_digest
       || current.installation.lifecycle_epoch !== input.expected_lifecycle_epoch || current.installation.grant_epoch !== input.expected_grant_epoch) throw nativeStale();
+    if (input.historical_create_policy && action.operation !== 'calendar.events.cancel.v1') throw nativeStale();
+    await validateHistoricalCreatePolicy(tx, { org_id: actor.org_id, installation_id: current.installation.id,
+      owner_user_id: owner.member.user_id }, input.historical_create_policy);
     const [existing] = await tx.select().from(appNativeBindings).where(and(eq(appNativeBindings.org_id, actor.org_id),
       eq(appNativeBindings.app_installation_id, current.installation.id), eq(appNativeBindings.app_version_id, current.version.id),
       eq(appNativeBindings.grant_snapshot_id, current.grant.id), eq(appNativeBindings.action_key, action.key),
       inArray(appNativeBindings.state, ['staged', 'active']))).limit(1).for('share');
     if (existing) {
       if (existing.owner_user_id !== owner.member.user_id || existing.stage_manager_user_id !== proposer.member.user_id
-        || digestAppGrantValue(existing.target) !== digestAppGrantValue(input.target)) throw nativeStale();
+        || digestAppGrantValue(existing.target) !== digestAppGrantValue(input.target)
+        || digestAppGrantValue(existing.historical_create_policy ?? null) !== digestAppGrantValue(input.historical_create_policy ?? null)) throw nativeStale();
       const authority = await loadLiveNativeAuthority(tx, { org_id: actor.org_id, native_binding_id: existing.id,
         prelocked_participant_ids: participants, allow_staged: true });
       await finalGuard(tx, participants, options);
@@ -69,6 +74,7 @@ export async function stageNativeBinding(actor: ModuleActor, raw: unknown, optio
       installation_lifecycle_epoch: current.installation.lifecycle_epoch, installation_grant_epoch: current.installation.grant_epoch,
       package_digest: current.version.package_digest, grant_snapshot_digest: current.grant.snapshot_digest,
       target: input.target, proposal_digest: '', consent_digest: null, reviewed_contract_digest: action.contract_digest,
+      historical_create_policy: input.historical_create_policy ?? null,
       risk_class: 'internal_write', review_requirement: 'always', review_scope: 'per_invocation', retry_class: 'idempotent_with_key',
       retention_class: 'standard', state: 'staged', reviewed_at: null, created_at: now, updated_at: now,
     };

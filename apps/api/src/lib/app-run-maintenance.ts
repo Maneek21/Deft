@@ -56,10 +56,18 @@ export class AppRunMaintenance {
     const result = { state: 'completed' as AppRunMaintenanceResult['state'], inspected: 0, changed: 0, failed: 0 };
     const candidates = await transaction(async tx => {
       const rows = mode === 'recovery'
-        ? await tx.execute(sql`SELECT r.org_id, r.id AS run_id FROM app_runs r JOIN app_run_attempts a ON a.org_id=r.org_id AND a.run_id=r.id
+        ? await tx.execute(sql`SELECT candidates.org_id,candidates.run_id FROM (
+          SELECT r.org_id,r.id AS run_id FROM app_runs r JOIN app_run_attempts a ON a.org_id=r.org_id AND a.run_id=r.id
           WHERE a.state IN ('claimed','provider_call_started') AND a.lease_expires_at<=${cutoff}::timestamp
-          AND (${after?.org_id ?? null}::text IS NULL OR (r.org_id,r.id) > (${after?.org_id ?? null},${after?.run_id ?? null}))
-          GROUP BY r.org_id,r.id ORDER BY r.org_id,r.id LIMIT ${APP_RUN_MAINTENANCE_LIMITS.items}`)
+          UNION
+          SELECT r.org_id,r.id AS run_id FROM app_public_cancellation_selections s
+          JOIN app_public_cancellations c ON c.org_id=s.org_id AND c.id=s.cancellation_id
+          JOIN app_runs r ON r.org_id=s.org_id AND r.id=s.cancel_run_id
+          WHERE (c.state IN ('cancel_run_pending','unknown_outcome') AND r.state IN ('succeeded','failed','expired','cancelled'))
+            OR (c.state='cancel_run_pending' AND r.state='unknown_outcome')
+          ) candidates
+          WHERE (${after?.org_id ?? null}::text IS NULL OR (candidates.org_id,candidates.run_id) > (${after?.org_id ?? null},${after?.run_id ?? null}))
+          ORDER BY candidates.org_id,candidates.run_id LIMIT ${APP_RUN_MAINTENANCE_LIMITS.items}`)
         : await tx.execute(sql`SELECT p.org_id,p.run_id FROM app_run_secret_payloads p JOIN app_runs r ON r.org_id=p.org_id AND r.id=p.run_id
           WHERE p.expires_at<=${cutoff}::timestamp AND (${after?.org_id ?? null}::text IS NULL OR (p.org_id,p.run_id) > (${after?.org_id ?? null},${after?.run_id ?? null}))
           GROUP BY p.org_id,p.run_id ORDER BY p.org_id,p.run_id LIMIT ${APP_RUN_MAINTENANCE_LIMITS.items}`);
@@ -78,9 +86,11 @@ export class AppRunMaintenance {
         if (signal.aborted || performance.now() >= deadline) { result.state = 'stopped'; break; }
         this.cursor[mode] = candidate; result.inspected++;
         try {
-          result.changed += mode === 'recovery'
-            ? await runner.recoverRun(candidate.org_id, candidate.run_id, undefined, { transaction, onRecovered: enqueueRecoveredAppRunAttention })
-            : await payloads.purgeExpiredRunForMaintenance(candidate.org_id, candidate.run_id, now, transaction);
+          if (mode === 'recovery') {
+            result.changed += await runner.recoverRun(candidate.org_id, candidate.run_id, undefined, { transaction, onRecovered: enqueueRecoveredAppRunAttention });
+            const { reconcilePublicCancellationForRun } = await import('./app-public-cancellation-reconcile.js');
+            result.changed += await transaction(tx => reconcilePublicCancellationForRun(tx, candidate.org_id, candidate.run_id, secrets));
+          } else result.changed += await payloads.purgeExpiredRunForMaintenance(candidate.org_id, candidate.run_id, now, transaction);
         } catch {
           result.failed++;
           if (signal.aborted) { result.state = 'stopped'; break; }

@@ -818,7 +818,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
           || !internal.origin_native_binding_id || internal.origin_runtime_binding_id
           || internal.origin_app_binding_key || internal.origin_app_automation_definition_id
           || internal.origin_app_automation_fire_id) return false;
-        const current = run.initiating_actor_type === 'app_public'
+        let current = run.initiating_actor_type === 'app_public'
           && internal.origin_public_endpoint_id && internal.origin_public_ingress_id
           && run.initiating_actor_id === internal.origin_public_ingress_id
           ? await this.captureReviewedPublicNativeInTransaction(tx, { org_id: run.org_id,
@@ -828,6 +828,21 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
             ? await this.captureReviewedNativeInTransaction(tx, { org_id: run.org_id,
               user_id: run.execution_actor_id, native_binding_id: internal.origin_native_binding_id }) : null;
         if (!current) return false;
+        if (run.initiating_actor_type === 'human' && run.operation_name === 'calendar.events.cancel.v1') {
+          const { appPublicCancellationSelections } = await import('@deft/db/schema');
+          const [selection] = await tx.select({ cancellation_id: appPublicCancellationSelections.cancellation_id })
+            .from(appPublicCancellationSelections).where(and(eq(appPublicCancellationSelections.org_id, run.org_id),
+              eq(appPublicCancellationSelections.cancel_run_id, run.id))).limit(1);
+          if (selection) {
+            // Authorized use only: avoid the public-review/runtime startup cycle.
+            const runtime = await (await import('./app-run-runtime.js')).getAppRunRuntime();
+            const { AppRunSecretService } = await import('./app-run-secrets.js');
+            const { decoratePublicCancellationCapture } = await import('./app-public-cancellation-authority.js');
+            current = await decoratePublicCancellationCapture(tx, current,
+              { cancellation_id: selection.cancellation_id, run_id: run.id },
+              new AppRunSecretService(runtime.keys), runtime.secretRepository, new Date());
+          }
+        }
         const binding = current.binding;
         return binding.id === internal.origin_native_binding_id && binding.owner_user_id === run.execution_actor_id
           && binding.provider_instance_id === run.provider_instance_id && binding.operation_name === run.operation_name

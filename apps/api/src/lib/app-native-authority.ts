@@ -7,6 +7,7 @@ import { buildRequestedAppGrantProjection, digestAppGrantValue } from './app-gra
 import { buildNativeAppReviewedAuthority, NATIVE_APP_EFFECTIVE_CLASSIFICATION } from './app-native-grant.js';
 import { NativeCalendarTargetSchema, NativeOwnerReviewRequestSchema, parseNativeProviderSnapshot, nativeActionDescriptors } from './app-native-contract.js';
 import { isAppNativeCalendarEnabled } from './env.js';
+import { HistoricalCreatePolicySchema } from './app-public-cancellation-contract.js';
 
 export const nativeStale = () => new AppError('Native Calendar authority changed or is unavailable', 'APP_STALE', 409);
 export function assertNativeCalendarEnabled() {
@@ -71,7 +72,7 @@ export function nativeOwnerRequest(binding: typeof appNativeBindings.$inferSelec
     expected_lifecycle_epoch: binding.installation_lifecycle_epoch, expected_grant_epoch: binding.installation_grant_epoch });
 }
 export function nativeProposal(binding: typeof appNativeBindings.$inferSelect, snapshotDigest: string) {
-  return { schema_version: 'deft.app_native_proposal.v1', org_id: binding.org_id, binding_id: binding.id,
+  return { schema_version: binding.historical_create_policy ? 'deft.app_native_proposal.v2' : 'deft.app_native_proposal.v1', org_id: binding.org_id, binding_id: binding.id,
     installation_id: binding.app_installation_id, app_version_id: binding.app_version_id, grant_snapshot_id: binding.grant_snapshot_id,
     action_key: binding.action_key, target: NativeCalendarTargetSchema.parse(binding.target),
     stage_manager_user_id: binding.stage_manager_user_id, owner_user_id: binding.owner_user_id,
@@ -79,14 +80,17 @@ export function nativeProposal(binding: typeof appNativeBindings.$inferSelect, s
     installation_lifecycle_epoch: binding.installation_lifecycle_epoch, installation_grant_epoch: binding.installation_grant_epoch,
     package_digest: binding.package_digest, grant_snapshot_digest: binding.grant_snapshot_digest,
     provider_snapshot_id: binding.provider_snapshot_id, provider_snapshot_digest: snapshotDigest,
-    reviewed_contract_digest: binding.reviewed_contract_digest, host_policy: NATIVE_ACTION_HOST_POLICY };
+    reviewed_contract_digest: binding.reviewed_contract_digest, host_policy: NATIVE_ACTION_HOST_POLICY,
+    ...(binding.historical_create_policy ? { historical_create_policy: HistoricalCreatePolicySchema.parse(binding.historical_create_policy) } : {}) };
 }
 export function nativeOwnerReview(binding: typeof appNativeBindings.$inferSelect, snapshotDigest: string) {
-  const review = { schema_version: 'deft.app_native_owner_review.v1', request: nativeOwnerRequest(binding),
+  const review = { schema_version: binding.historical_create_policy ? 'deft.app_native_owner_review.v2' : 'deft.app_native_owner_review.v1', request: nativeOwnerRequest(binding),
     organization_id: binding.org_id, owner_user_id: binding.owner_user_id, stage_manager_user_id: binding.stage_manager_user_id,
     installation_id: binding.app_installation_id, action_key: binding.action_key,
     target: NativeCalendarTargetSchema.parse(binding.target), provider_snapshot_digest: snapshotDigest,
-    contract_digest: binding.reviewed_contract_digest, host_policy: NATIVE_ACTION_HOST_POLICY };
+    contract_digest: binding.reviewed_contract_digest, host_policy: NATIVE_ACTION_HOST_POLICY,
+    ...(binding.historical_create_policy ? { historical_create_policy: HistoricalCreatePolicySchema.parse(binding.historical_create_policy),
+      historical_scope: 'owner_selected_public_cancellation_only' as const } : {}) };
   return { ...review, review_digest: digestAppGrantValue(review) };
 }
 
@@ -123,6 +127,7 @@ export async function loadLiveNativeAuthority(tx: AppRunTransaction, input: {
     || binding.owner_authorization_version !== owner.member.app_run_authorization_version
     || binding.stage_manager_authorization_version !== manager.member.app_run_authorization_version) throw nativeStale();
   const action = nativeActionDescriptors(reviewed.manifest).find(item => item.key === binding.action_key);
+  if (binding.historical_create_policy && action?.operation !== 'calendar.events.cancel.v1') throw nativeStale();
   const target = NativeCalendarTargetSchema.parse(binding.target);
   if (!action || target.calendar_owner_user_id !== owner.member.user_id || target.operation_name !== action.operation
     || binding.operation_name !== action.operation || binding.reviewed_contract_digest !== action.contract_digest

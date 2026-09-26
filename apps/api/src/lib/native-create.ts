@@ -24,6 +24,7 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 const digest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
+export const nativeCreateRequestHash = digest;
 
 export const nativeCreateIdentity = (orgId: string, userId: string, operation: string, key: string) =>
   digest([orgId, userId, operation, key]);

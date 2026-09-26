@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AppDigestSchema, NATIVE_CALENDAR_CONTRACTS, NATIVE_ACTION_HOST_POLICY, type DeftAppManifestV6 } from '@deft/app-kit';
 import { AppRunNativeOperationIdentitySchema, CapabilityJsonObjectSchema } from '@deft/shared';
 import { digestAppGrantValue } from './app-grant-service.js';
+import { HistoricalCreatePolicySchema } from './app-public-cancellation-contract.js';
 
 export const APP_NATIVE_CALENDAR_ADAPTER = 'deft.native.calendar.v1' as const;
 export const NativeCalendarTargetSchema = z.strictObject({
@@ -16,6 +17,7 @@ const pins = {
 export const NativeBindingStageSchema = z.strictObject({
   schema_version: z.literal('deft.app_native_binding_stage.v1'), installation_id: z.uuid(),
   action_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/), target: NativeCalendarTargetSchema, ...pins,
+  historical_create_policy: HistoricalCreatePolicySchema.optional(),
 });
 export const NativeOwnerReviewRequestSchema = z.strictObject({
   schema_version: z.literal('deft.app_native_owner_review_request.v1'), binding_id: z.uuid(),

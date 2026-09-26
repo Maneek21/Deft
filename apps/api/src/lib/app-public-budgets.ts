@@ -48,7 +48,7 @@ async function assertCounts(tx: Transaction, endpoint: Endpoint, ownClaimId: str
           AND (i.state = 'confirmed' OR c.id = ${ownClaimId})
           AND (c.id = ${ownClaimId} OR (c.released_at IS NULL AND (i.follow_up_state = 'pending'
             OR EXISTS (SELECT 1 FROM app_public_cancellations x WHERE x.org_id=c.org_id AND x.claim_id=c.id
-              AND x.state='withdrawal_requested')
+              AND x.state IN ('withdrawal_requested','cancel_run_pending','unknown_outcome'))
             OR (i.follow_up_state = 'run_created' AND NOT EXISTS (
               SELECT 1 FROM app_runs r WHERE r.org_id = c.org_id AND r.origin_kind = 'app'
                 AND r.origin_app_installation_id = e.app_installation_id
@@ -75,6 +75,35 @@ async function assertCounts(tx: Transaction, endpoint: Endpoint, ownClaimId: str
         AND COALESCE(c.budget_reserved_at, c.created_at) < ${dayEnd}::timestamp
       LIMIT ${scope.limits.max_confirmed_per_utc_day + 1}`);
     if (daily.rows.length > scope.limits.max_confirmed_per_utc_day) throw new PublicBudgetExceededError();
+  }
+}
+
+/** A selected cancellation is another pending use of its existing claim,
+ * never a second booking charge or a reset of the booking's UTC day. */
+export async function assertPublicCancellationPendingCapacity(tx: Transaction, endpoint: Endpoint, claimId: string) {
+  for (const scope of [
+    { filter: sql`e.app_installation_id=${endpoint.app_installation_id}`, limit: PUBLIC_APP_BUDGET_CEILINGS.max_pending },
+    { filter: sql`e.id=${endpoint.id}`, limit: publicEndpointBudget(endpoint.budget_policy).max_pending },
+  ]) {
+    const rows = await tx.execute(sql`SELECT c.id FROM app_canonical_claims c
+      JOIN app_public_endpoints e ON e.org_id=c.org_id AND e.id=c.endpoint_id
+      JOIN app_public_ingress i ON i.org_id=c.org_id AND i.endpoint_id=c.endpoint_id AND i.id=c.ingress_id
+      WHERE c.org_id=${endpoint.org_id} AND ${scope.filter} AND c.released_at IS NULL
+      AND (c.id=${claimId} OR EXISTS (SELECT 1 FROM app_public_cancellations x
+        WHERE x.org_id=c.org_id AND x.claim_id=c.id AND x.state IN ('withdrawal_requested','cancel_run_pending','unknown_outcome'))
+        OR i.follow_up_state='pending' OR (i.follow_up_state='run_created' AND NOT EXISTS (
+          SELECT 1 FROM app_runs r WHERE r.org_id=c.org_id AND r.origin_kind='app'
+            AND r.origin_app_installation_id=e.app_installation_id AND r.origin_app_version_id=e.app_version_id
+            AND r.origin_app_grant_snapshot_id=e.grant_snapshot_id
+            AND ((e.native_binding_id IS NULL AND r.provider_kind='app_runtime' AND r.origin_runtime_binding_id=e.runtime_binding_id)
+              OR (e.native_binding_id IS NOT NULL AND e.runtime_binding_id IS NULL AND r.provider_kind='native'
+                AND r.origin_native_binding_id=e.native_binding_id AND r.origin_runtime_binding_id IS NULL))
+            AND r.origin_public_endpoint_id=e.id AND r.origin_public_ingress_id=i.id
+            AND r.initiating_actor_type='app_public' AND r.initiating_actor_id=i.id
+            AND r.execution_actor_type='human' AND r.execution_actor_id=e.approver_user_id
+            AND r.state IN (${sql.join(APP_RUN_TERMINAL_STATES.map(state => sql`${state}`), sql`, `)})
+        ))) LIMIT ${scope.limit + 1}`);
+    if (rows.rows.length > scope.limit) throw new PublicBudgetExceededError();
   }
 }
 

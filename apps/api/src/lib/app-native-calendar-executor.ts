@@ -1,7 +1,7 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { parseNativeCalendarInput, parseNativeCalendarResult } from '@deft/app-kit';
-import { AppRunRetainedProviderResultSchema, parseAppRunReceiptEnvelope } from '@deft/shared';
-import { appRunAttempts, appRunReceipts, appRuns, nativeCreateRequests } from '@deft/db/schema';
+import { AppRunRetainedProviderResultSchema, parseAppRunReceiptEnvelope, canonicalCapabilityJson } from '@deft/shared';
+import { appRunAttempts, appRunReceipts, appRuns, nativeCreateRequests, appPublicCancellationSelections } from '@deft/db/schema';
 import { createNativeCalendarEventInTransaction, cancelNativeCalendarEventInTransaction, loadNativeCalendarEventInTransaction } from './native-calendar.js';
 import { nativeCreateIdentity, nativeCreateWithExecutor } from './native-create.js';
 import { nativeStale } from './app-native-authority.js';
@@ -21,14 +21,21 @@ export async function executeNativeCalendarInTransaction(tx: AppRunTransaction, 
   const input = parseNativeCalendarInput(operation, options.input);
   if (operation === 'calendar.events.cancel.v1') {
     const cancellation = parseNativeCalendarInput('calendar.events.cancel.v1', input);
+    const [selection] = await tx.select({ cancellation_id: appPublicCancellationSelections.cancellation_id })
+      .from(appPublicCancellationSelections).where(and(eq(appPublicCancellationSelections.org_id, run.org_id),
+        eq(appPublicCancellationSelections.cancel_run_id, run.id))).limit(1);
+    const associated = selection ? await (await import('./app-public-cancellation-authority.js')).decoratePublicCancellationCapture(tx,
+      authority, { cancellation_id: selection.cancellation_id, run_id: run.id }, secrets, secretRepository, options.now()) : null;
+    if (associated && canonicalCapabilityJson(associated.public_cancellation.input) !== canonicalCapabilityJson(cancellation)) throw nativeStale();
     // Terminal create rows are immutable. Do not acquire an old Run lock after App.
     const [prior] = await tx.select().from(appRuns).where(and(eq(appRuns.org_id, run.org_id),
       eq(appRuns.id, cancellation.create_run_id))).limit(1);
     if (!prior || prior.state !== 'succeeded' || prior.origin_kind !== 'app' || prior.provider_kind !== 'native'
       || prior.operation_name !== 'calendar.events.create.v1' || prior.execution_actor_type !== 'human'
       || prior.execution_actor_id !== owner || prior.provider_instance_id !== run.provider_instance_id
-      || prior.origin_app_installation_id !== authority.installation.id || prior.origin_app_version_id !== authority.version.id
-      || prior.origin_app_grant_snapshot_id !== authority.grant.id || !prior.origin_native_binding_id
+      || prior.origin_app_installation_id !== authority.installation.id
+      || ((!associated) && (prior.origin_app_version_id !== authority.version.id || prior.origin_app_grant_snapshot_id !== authority.grant.id))
+      || !prior.origin_native_binding_id
       || prior.result_purged_at || prior.result_expires_at <= options.now()) throw nativeStale();
     const [attempt] = await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id, run.org_id),
       eq(appRunAttempts.run_id, prior.id), eq(appRunAttempts.state, 'succeeded'))).orderBy(desc(appRunAttempts.attempt_number)).limit(1);

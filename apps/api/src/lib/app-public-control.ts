@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appCanonicalClaims, appPublicCancellations, appPublicEndpoints, appPublicIngress,
-  appInstallations, appRuns, appRunAttempts } from '@deft/db/schema';
+  appInstallations, appRuns, appRunAttempts, appPublicCancellationSelections } from '@deft/db/schema';
 import { db } from './db.js';
 import { AppPublicError } from './app-public-service.js';
 import { acquirePublicBudgetAdmission } from './app-public-budgets.js';
@@ -49,6 +49,9 @@ export async function publicClaimControl(slug: string, claimId: string, raw: Uin
       if (!locator || !locator.endpoint.native_binding_id || !publicControlMatches(locator.claim.control_digest,
         locator.claim.org_id, locator.endpoint.id, claimId, input.control_secret)) throw absent();
       const org = locator.claim.org_id;
+      const [selected] = await tx.select({ id: appPublicCancellationSelections.id }).from(appPublicCancellationSelections).where(and(
+        eq(appPublicCancellationSelections.org_id, org), eq(appPublicCancellationSelections.cancellation_id,
+          sql`(SELECT id FROM app_public_cancellations WHERE org_id=${org} AND claim_id=${claimId})`))).limit(1);
       if (cancel) await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
         ${`app-public-ingress:${org}:${locator.claim.ingress_id}`}, 0))`);
       const runtime = cancel ? await (await import('./app-run-runtime.js')).getAppRunRuntime() : null;
@@ -57,7 +60,7 @@ export async function publicClaimControl(slug: string, claimId: string, raw: Uin
         eq(appRuns.origin_public_ingress_id, locator.claim.ingress_id))).limit(1) : [];
       const run = runLocator ? await runtime!.repository.lockRun(tx, org, runLocator.id) : null;
       const [runAncestry] = run ? await tx.select().from(appRuns).where(and(eq(appRuns.org_id, org), eq(appRuns.id, run.id))).limit(1) : [];
-      if (cancel) {
+      if (cancel || selected) {
         const [app] = await tx.select({ id: appInstallations.id }).from(appInstallations).where(and(
           eq(appInstallations.org_id, org), eq(appInstallations.id, locator.endpoint.app_installation_id))).limit(1).for('share');
         if (!app) throw absent();
@@ -73,10 +76,16 @@ export async function publicClaimControl(slug: string, claimId: string, raw: Uin
       // Take insert table locks before the charge clock. A held table must not
       // charge the pre-wait UTC day or admit an expired customer control.
       if (cancel) await tx.execute(sql`LOCK TABLE app_public_cancellations IN ROW EXCLUSIVE MODE`);
-      const [prior] = await tx.select().from(appPublicCancellations).where(and(eq(appPublicCancellations.org_id, org),
+      let [prior] = await tx.select().from(appPublicCancellations).where(and(eq(appPublicCancellations.org_id, org),
         eq(appPublicCancellations.claim_id, claim.id))).limit(1);
       const now = await clock(tx);
       if (!claim.control_expires_at || claim.control_expires_at <= now) throw absent();
+      if (selected && prior) {
+        await (await import('./app-public-cancellation-settlement.js')).settlePublicCancellation(tx, org, prior.id);
+        [prior] = await tx.select().from(appPublicCancellations).where(and(eq(appPublicCancellations.org_id, org),
+          eq(appPublicCancellations.id, prior.id))).limit(1);
+        if (claim.control_expires_at <= await clock(tx)) throw absent();
+      }
       const result = (state: PublicControlState, id: string | null, replayed: boolean) => ({
         schema_version: 'deft.app_public_control_result.v1' as const, claim_id: claim.id,
         cancellation_id: id, state, control_expires_at: claim.control_expires_at!.toISOString(), replayed,

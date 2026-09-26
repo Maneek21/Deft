@@ -3,7 +3,7 @@ import { isAppNativeCalendarEnabled } from './env.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 import type { ReviewedNativeCapture, ReviewedPublicNativeCapture } from './app-native-run-authorization.js';
 import { createHash } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   APP_RUN_DEFAULT_ATTEMPT_LIMIT,
   APP_RUN_CONTRACT_VERSIONS,
@@ -523,6 +523,36 @@ export class AppRunService {
       if (isAppError(error) && error.code === 'APP_ACCESS_DENIED') throw new AppRunError('APP_RUN_ACCESS_DENIED');
       throw error;
     }
+  }
+
+  /** Host-only retained request locator. Input, owner and provider are derived
+   * from the exact submitted selection and certified original create. */
+  async submitReviewedPublicCancellationInTransaction(tx: AppRunTransaction, identity: Readonly<{
+    org_id: string; cancellation_id: string; owner_user_id: string;
+  }>): Promise<AppRunSafeView> {
+    if (!this.appOriginEnabled() || !isAppNativeCalendarEnabled()
+      || !this.appLiveAuthorization?.captureReviewedNativeInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const { acquireRetainedCancellationMutex, decoratePublicCancellationCapture } = await import('./app-public-cancellation-authority.js');
+    const { appPublicCancellationSelections } = await import('@deft/db/schema');
+    await acquireRetainedCancellationMutex(tx, identity.org_id, identity.cancellation_id);
+    const [selection] = await tx.select().from(appPublicCancellationSelections).where(and(
+      eq(appPublicCancellationSelections.org_id, identity.org_id),
+      eq(appPublicCancellationSelections.cancellation_id, identity.cancellation_id))).limit(1);
+    if (!selection || selection.owner_user_id !== identity.owner_user_id || selection.cancel_run_id) {
+      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const native = await this.appLiveAuthorization.captureReviewedNativeInTransaction(tx, {
+      org_id: identity.org_id, user_id: identity.owner_user_id, native_binding_id: selection.native_binding_id });
+    const capture = await decoratePublicCancellationCapture(tx, native, { cancellation_id: identity.cancellation_id },
+      this.secrets, this.secretRepository, this.now());
+    const actor: AppRunActor = { actor_type: 'human', user_id: identity.owner_user_id };
+    const submission = this.#nativeSubmission(capture, actor, capture.public_cancellation.input,
+      `app-public-cancellation:${identity.cancellation_id}`);
+    const run = await this.#submit({ org_id: identity.org_id, initiating_actor: actor, execution_actor: actor },
+      submission, null, undefined, undefined, undefined, undefined, tx, undefined, capture);
+    if (!await nativeFinalAuthorityIsCurrent(tx, capture.participants, { clock: this.now,
+      expires_at: [run.input_expires_at, run.result_expires_at] })) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    return run;
   }
 
   #nativeSubmission(capture: ReviewedNativeCapture | ReviewedPublicNativeCapture, actor: AppRunActor,
@@ -1111,13 +1141,19 @@ export class AppRunService {
       if (trustedNativeCapture) {
         if (submission.origin.origin_kind !== 'app' || !('native_binding_id' in submission.origin)
           || submission.execution_actor.actor_type !== 'human') throw new AppRunError('APP_RUN_ACCESS_DENIED');
-        const live = 'endpoint' in trustedNativeCapture
+        let live = 'endpoint' in trustedNativeCapture
           ? await this.appLiveAuthorization!.captureReviewedPublicNativeInTransaction!(tx, {
             org_id: submission.org_id, endpoint_id: trustedNativeCapture.endpoint.id,
             ingress_id: trustedNativeCapture.ingress.id })
           : await this.appLiveAuthorization!.captureReviewedNativeInTransaction!(tx, {
             org_id: submission.org_id, user_id: submission.execution_actor.user_id,
             native_binding_id: submission.origin.native_binding_id });
+        if ('public_cancellation' in trustedNativeCapture) {
+          const { decoratePublicCancellationCapture } = await import('./app-public-cancellation-authority.js');
+          const locator = trustedNativeCapture.public_cancellation as { id: string };
+          live = await decoratePublicCancellationCapture(tx, live, { cancellation_id: locator.id },
+            this.secrets, this.secretRepository, this.now());
+        }
         const binding = live.binding;
         let validInput = false;
         try { validInput = canonicalCapabilityJson(parseNativeCalendarInput(live.action.operation, submission.input))
