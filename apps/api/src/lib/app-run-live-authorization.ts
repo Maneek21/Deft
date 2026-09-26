@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isAppV5RuntimeActionsEnabled } from './env.js';
 import type { z } from 'zod';
 import {
   APP_RUN_CONTRACT_VERSIONS,
@@ -443,6 +444,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       authority_refs: refs.sort((a, b) => `${a.authority_kind}\0${a.authority_id}`
         .localeCompare(`${b.authority_kind}\0${b.authority_id}`)),
     });
+    if (version.protocol_version === '5' && !isAppV5RuntimeActionsEnabled()) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     return Object.freeze({ authorization_snapshot, binding, registration, action,
       provider_snapshot_digest: providerRow.snapshot_digest,
       review_contract_digest: action.contract_digest,

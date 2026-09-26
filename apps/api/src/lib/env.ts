@@ -145,6 +145,11 @@ export function isAppExperienceResourceExposureEnabled(): boolean {
   return isAppResourceSyncChannelEnabled()
     && process.env.DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED === 'true';
 }
+// Protocol-v5 governed effects require a separate explicit host opt-in.
+export function isAppV5RuntimeActionsEnabled(): boolean {
+  return isAppRuntimeChannelEnabled()
+    && process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';

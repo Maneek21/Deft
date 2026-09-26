@@ -9,6 +9,7 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { assertCurrentModuleManagerWithExecutor, installModuleFromManifestWithExecutor, invalidateModuleCatalogCaches, type ModuleLifecyclePostCommit } from './module-service.js';
 import { APP_GRANT_SNAPSHOT_VERSION, buildRequestedAppGrantProjection, digestAppGrantValue } from './app-grant-service.js';
+import { isAppV5RuntimeActionsEnabled } from './env.js';
 
 type Executor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 const stale = () => new AppError('Runtime App authority changed or is unavailable', 'APP_STALE', 409);
@@ -250,16 +251,26 @@ export async function loadReviewedRuntimeAction(tx: Executor, orgId: string, ins
     || !installation.active_grant_snapshot_id || installation.active_grant_snapshot_kind !== 'effective') throw stale();
   const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, orgId),
     eq(appVersions.installation_id, installationId), eq(appVersions.id, installation.active_version_id),
-    eq(appVersions.state, 'active'), inArray(appVersions.protocol_version, ['3', '4']))).limit(1).for('share');
+    eq(appVersions.state, 'active'), inArray(appVersions.protocol_version, ['3', '4', '5']))).limit(1).for('share');
   const [grant] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, orgId),
     eq(appGrantSnapshots.app_installation_id, installationId), eq(appGrantSnapshots.id, installation.active_grant_snapshot_id),
     eq(appGrantSnapshots.snapshot_kind, 'effective'))).limit(1);
   if (!version || !grant || grant.app_version_id !== version.id
     || digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) throw stale();
-  const manifest = parseRuntimeAppManifest(version.manifest);
+  if (version.protocol_version === '5' && !isAppV5RuntimeActionsEnabled()) throw stale();
+  const manifest = version.protocol_version === '5'
+    ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
   const expected = runtimeActionDescriptors(manifest);
   const stored = grant.canonical_snapshot;
-  if (stored.schema !== 'deft.app_runtime_grant.v1' || stored.lineage_key !== installation.lineage_key
+  if (manifest.schema_version === '5') {
+    const authority = buildResourceAppReviewedAuthority(manifest, {
+      lineage_key: installation.lineage_key, package_digest: version.package_digest,
+      manifest_digest: version.manifest_digest });
+    const storedAuthority = Object.fromEntries(Object.keys(authority).map(key => [key, stored[key]]));
+    if (digestAppGrantValue(storedAuthority) !== digestAppGrantValue(authority)
+      || stored.organization_id !== orgId || stored.app_installation_id !== installationId
+      || stored.app_version_id !== version.id || stored.requested_snapshot_id !== version.requested_grant_snapshot_id) throw stale();
+  } else if (stored.schema !== 'deft.app_runtime_grant.v1' || stored.lineage_key !== installation.lineage_key
     || stored.package_digest !== version.package_digest || stored.manifest_digest !== version.manifest_digest
     || digestAppGrantValue(stored.runtime_actions) !== digestAppGrantValue(expected)) throw stale();
   if (manifest.schema_version === '4' && (digestAppGrantValue(stored.experiences) !== digestAppGrantValue(manifest.experiences)
@@ -267,5 +278,6 @@ export async function loadReviewedRuntimeAction(tx: Executor, orgId: string, ins
     || digestAppGrantValue(stored.modules) !== digestAppGrantValue(manifest.modules))) throw stale();
   const action = expected.find((item) => item.action_key === actionKey);
   if (!action) throw stale();
+  if (manifest.schema_version === '5' && !isAppV5RuntimeActionsEnabled()) throw stale();
   return { installation, version, grant, action };
 }

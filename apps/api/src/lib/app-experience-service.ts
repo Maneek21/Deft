@@ -9,7 +9,7 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { AppRuntimeActionService, appRuntimeActionService } from './app-runtime-action-service.js';
 import type { AppRunTransaction } from './app-run-repository.js';
-import { isAppExperienceResourceExposureEnabled } from './env.js';
+import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled } from './env.js';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
@@ -66,7 +66,7 @@ export async function verifiedExperienceBundle(version: typeof appVersions.$infe
     renderer_version: reference.renderer_version,
   }, artifact);
   if ((!resource && bundle.resource_keys.length !== 0)
-    || (resource && (bundle.action_keys.length !== 0 || manifest.schema_version !== '5'
+    || (resource && ((bundle.action_keys.length > 0 && !isAppV5RuntimeActionsEnabled()) || manifest.schema_version !== '5'
       || bundle.resource_keys.some(resourceKey => !manifest.sync_descriptors.some(d => d.key === resourceKey))))
     || bundle.action_keys.some((action) => !manifest.runtime_actions.some((item) => item.key === action))) {
     throw stale();
@@ -190,7 +190,7 @@ export class AppExperienceService {
       // The clock is read after every potentially blocking lock and digest.
       const checkedAt = new Date();
       if (web.expires_at <= checkedAt || lockedSession.expires_at <= checkedAt) throw stale();
-      return { session: lockedSession, bundle: verified.bundle };
+      return { session: lockedSession, bundle: verified.bundle, manifest: verified.manifest };
   }
 
   private async liveContext(caller: ExperienceCaller, sessionId: string) {
@@ -261,6 +261,8 @@ export class AppExperienceService {
         || bindingPin.grant_snapshot_id !== binding.grant_snapshot_id || bindingPin.action_key !== actionKey
         || bindingPin.state !== 'active') throw stale();
       const current = await this.lockedLiveContext(tx, caller, sessionId);
+      if (current.session.app_version_id === binding.app_version_id
+        && current.manifest.schema_version === '5' && !isAppV5RuntimeActionsEnabled()) throw stale();
       if (!current.bundle.action_keys.includes(actionKey)
         || current.session.app_version_id !== binding.app_version_id
         || current.session.grant_snapshot_id !== binding.grant_snapshot_id) throw stale();
