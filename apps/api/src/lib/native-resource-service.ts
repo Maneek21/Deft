@@ -10,6 +10,7 @@ import type { NativeResourceDisplay, NativeResourceSubject } from './native-reso
 import { resolveNativeMessageDisplay, resolveNativeWikiDisplay, resolveNativeNoteDisplay } from './native-content-projections.js';
 import { resolveNativeCalendarDisplay, resolveNativeFileDisplay } from './native-calendar-file-projections.js';
 import { resolveNativePersonDisplay, resolveNativeTeamDisplay } from './native-directory-projections.js';
+import { resolveAppRuntimeDisplay } from './app-runtime-resource-display.js';
 
 const callerSchema = z.strictObject({ org_id: ResourceHostOrganizationIdSchema,
   user_id: ResourceOpaqueIdSchema, sid: z.string().uuid() });
@@ -58,7 +59,8 @@ async function nativeDisplay(subject: NativeResourceSubject, ref: ResourceRefV2)
 
 /** Web reads do not confer an Experience grant or a Runtime viewer credential. */
 export class NativeResourceService {
-  async resolve(callerValue: NativeResourceWebCaller, refValue: unknown): Promise<ResourceResolveResultV2> {
+  async resolve(callerValue: NativeResourceWebCaller, refValue: unknown,
+    authorization?: string): Promise<ResourceResolveResultV2> {
     const caller = callerSchema.safeParse(callerValue);
     if (!caller.success) throw denied();
     const parsed = ResourceRefV2Schema.safeParse(refValue);
@@ -68,7 +70,9 @@ export class NativeResourceService {
     const ref = parsed.data;
     try {
       const subject = await liveSubject(caller.data);
-      const display = await nativeDisplay(subject, ref);
+      const display: NativeResourceDisplay | null = ref.provider.kind === 'app_runtime'
+        ? await resolveAppRuntimeDisplay(caller.data, ref, authorization)
+        : await nativeDisplay(subject, ref);
       const current = await liveSubject(caller.data);
       // A role change during a private-team read cannot retain the old role's result.
       if (current.role !== subject.role) throw denied();

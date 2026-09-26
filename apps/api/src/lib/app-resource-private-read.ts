@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { appResourceProjections, appSyncCheckpoints } from '@deft/db/schema';
+import { appResourceBindings, appResourceProjections, appSyncCheckpoints } from '@deft/db/schema';
 import { parseSyncPage } from '@deft/app-kit/experimental/resource-sync';
 import { AppRuntimeResourceRefV2Schema, canonicalCapabilityJson } from '@deft/shared';
 import type { ResourceRefV2 } from '@deft/shared';
@@ -113,9 +113,45 @@ export class AppResourcePrivateReadService {
     });
   }
 
-  async #read<T>(subject: AppResourcePrivateReadSubject, bindingId: string,
+  /** Canonical host display only. Locators nominate authority; they never grant it. */
+  async resolveOwnerPrivateDisplay(rawSubject: AppResourcePrivateReadSubject,
+    rawRef: unknown): Promise<Readonly<{ label: string }>> {
+    const subject = subjectSchema.safeParse(rawSubject);
+    const ref = AppRuntimeResourceRefV2Schema.safeParse(rawRef);
+    if (!subject.success) throw invalid();
+    if (!ref.success || !uuid.safeParse(ref.data.resource_id).success
+      || !uuid.safeParse(ref.data.provider.provider_instance_id).success) throw unavailable();
+    return this.#read(subject.data, async tx => {
+      const [locator] = await tx.select({ binding_id: appResourceBindings.id })
+        .from(appResourceProjections).innerJoin(appResourceBindings, and(
+          eq(appResourceBindings.org_id, appResourceProjections.org_id),
+          eq(appResourceBindings.id, appResourceProjections.resource_binding_id)))
+        .where(and(eq(appResourceProjections.org_id, subject.data.org_id),
+          eq(appResourceProjections.id, ref.data.resource_id),
+          eq(appResourceBindings.runtime_registration_id, ref.data.provider.provider_instance_id),
+          eq(appResourceBindings.resource_family, ref.data.resource_type),
+          eq(appResourceBindings.owner_user_id, subject.data.user_id))).limit(1);
+      if (!locator) throw unavailable();
+      return locator.binding_id;
+    }, async (tx, authority, checkpoint) => {
+      // Recheck the exact locator against locked, live authority after any wait.
+      if (authority.registration.id !== ref.data.provider.provider_instance_id.toLowerCase()
+        || authority.descriptor.resource_type !== ref.data.resource_type) throw unavailable();
+      const [row] = await tx.select().from(appResourceProjections).where(and(
+        ...this.#scope(subject.data.org_id, authority.binding.id, checkpoint),
+        eq(appResourceProjections.id, ref.data.resource_id),
+      )).limit(1);
+      if (!row) throw unavailable();
+      // Do not export provider revision, arbitrary fields, cursor, or checkpoint.
+      return { label: this.#record(row, authority).label };
+    });
+  }
+
+  async #read<T>(subject: AppResourcePrivateReadSubject,
+    bindingLocator: string | ((tx: AppRunTransaction) => Promise<string>),
     read: (tx: AppRunTransaction, authority: Authority, checkpoint: Checkpoint) => Promise<T>): Promise<T> {
     return this.repository.transaction(async (tx) => {
+      const bindingId = typeof bindingLocator === 'string' ? bindingLocator : await bindingLocator(tx);
       const authority = await loadLiveResourceSyncBindingAuthority(tx, {
         org_id: subject.org_id, resource_binding_id: bindingId, clock: this.clock,
       });

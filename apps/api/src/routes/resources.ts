@@ -27,7 +27,7 @@ resourceRoutes.get('/resolve', async (c) => {
   }
   try {
     return c.json(await nativeResourceService.resolve(
-      { org_id: user.org_id, user_id: user.id, sid: user.sid }, ref));
+      { org_id: user.org_id, user_id: user.id, sid: user.sid }, ref, c.req.header('authorization')));
   } catch (error) {
     if (error instanceof ResourceAuthorizationError) {
       return c.json({ error: error.message, code: error.code }, error.status);

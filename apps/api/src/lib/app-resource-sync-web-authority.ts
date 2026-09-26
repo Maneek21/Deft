@@ -14,12 +14,17 @@ export class ResourceSyncWebAuthenticationError extends Error {
 
 /** Only the exact web-access bearer purpose is accepted; context-injected human,
  * Employee, personal MCP, app developer and Runtime identities confer no authority. */
-export async function resourceSyncWebAuthority(authorization: string | undefined) {
+export async function resourceSyncWebAuthority(authorization: string | undefined,
+  expectedSession?: Readonly<{ org_id: string; user_id: string; sid: string }>) {
   const match = /^Bearer ([^\s]+)$/u.exec(authorization ?? '');
   if (!match) throw new ResourceSyncWebAuthenticationError('Web authentication required');
   let user: Awaited<ReturnType<typeof verifyWebAccess>>;
   try { user = await verifyWebAccess(match[1]!); }
   catch { throw new ResourceSyncWebAuthenticationError('Invalid or expired web session'); }
+  if (expectedSession && (user.org_id !== expectedSession.org_id
+    || user.id !== expectedSession.user_id || user.sid !== expectedSession.sid)) {
+    throw new ResourceSyncWebAuthenticationError('Invalid or expired web session');
+  }
   const [human] = await db.select({ kind: users.kind }).from(users).where(eq(users.id, user.id));
   if (human?.kind !== 'human') throw new AppError('Private resource sync access denied', 'APP_ACCESS_DENIED', 403);
   const actor = humanModuleActor({ orgId: user.org_id, userId: user.id,
