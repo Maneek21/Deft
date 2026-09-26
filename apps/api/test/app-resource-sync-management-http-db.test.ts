@@ -99,6 +99,19 @@ test('private sync HTTP owner review activation, operator-only credential and st
     const issued = await h.call(`/bindings/${h.binding_id}/sessions`, 'POST', undefined, h.operator.accessToken);
     assert.equal(issued.status, 201);
     assert.match(issued.body.session.session_token, /^[A-Za-z0-9_-]{40,}$/);
+    for (const path of ['/bindings', `/bindings/${h.binding_id}`]) {
+      const observed = await h.call(path);
+      assert.equal(observed.status, 200);
+      assert.ok(!JSON.stringify(observed.body).includes(issued.body.session.session_token));
+      assert.ok(!JSON.stringify(observed.body).includes('session_token'));
+    }
+    assert.equal((await h.call('/reviews/prepare', 'POST', { oversized: 'x'.repeat(16_384) })).status, 413);
+    for (const [contentType, raw] of [['application/json', '{'], ['text/plain', '{}']]) {
+      const malformed = await fetch(`${h.base}/reviews/prepare`, { method: 'POST',
+        headers: { Authorization: `Bearer ${h.owner.accessToken}`, 'Content-Type': contentType! }, body: raw });
+      assert.equal(malformed.status, 400);
+      assert.equal(malformed.headers.get('cache-control'), 'no-store');
+    }
     assert.equal((await h.call(`/sessions/${issued.body.session.session_id}/revoke`, 'POST')).status, 403);
     assert.equal((await h.call(`/sessions/${issued.body.session.session_id}/revoke`, 'POST', undefined, h.operator.accessToken)).status, 200);
     assert.equal((await h.call(`/bindings/${h.binding_id}/sessions`, 'POST', { owner_user_id: h.owner_user_id }, h.operator.accessToken)).status, 400);
