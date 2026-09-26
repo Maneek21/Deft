@@ -89,7 +89,8 @@ test('owner-private reads of actual reviewed and settled v5 resources', { skip: 
     }
     assert.fail('actual PostgreSQL lock wait was not observed');
   };
-  const markedReader = (marker: string, readClock = clock) => {
+  const markedReader = (marker: string, readClock = clock,
+    guard?: (tx: AppRunTransaction) => Promise<void>) => {
     class WaitingRepository extends repositories.PostgresAppRunRepository {
       override transaction<T>(work: (tx: AppRunTransaction) => Promise<T>): Promise<T> {
         return super.transaction(async (tx) => {
@@ -99,7 +100,7 @@ test('owner-private reads of actual reviewed and settled v5 resources', { skip: 
         });
       }
     }
-    return new readModule.AppResourcePrivateReadService(keys, readClock, new WaitingRepository());
+    return new readModule.AppResourcePrivateReadService(keys, readClock, new WaitingRepository(), guard);
   };
   try {
     const owned = await fixture.createReviewedResourceSyncFixture({ keys, clock });
@@ -346,6 +347,33 @@ test('owner-private reads of actual reviewed and settled v5 resources', { skip: 
       const current = await reader.listOwnerPrivateResourcePage(subject(changed), target(changed));
       assert.equal(current.items.length, 3);
       assert.equal(current.checkpoint.cursor_sequence, 2);
+    });
+    await t.test('final delivery guard lock wait cannot release a page after consent expires', async () => {
+      const changed = await fresh();
+      const sid = randomUUID();
+      await db.insert(schema.webSessions).values({ id: sid, org_id: changed.org_id,
+        user_id: changed.owner_user_id, refresh_token_hash: 'synthetic-private-read',
+        expires_at: new Date(checkedAt.getTime() + 86_400_000) });
+      let unlock!: () => void;
+      let ready!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const release = new Promise<void>((resolve) => { unlock = resolve; });
+      const holder = db.transaction(async (tx) => {
+        await tx.select().from(schema.webSessions).where(eq(schema.webSessions.id, sid)).for('update');
+        ready();
+        await release;
+      });
+      await locked;
+      let expired = false;
+      const marker = `read-final-guard-${randomUUID()}`;
+      const guarded = markedReader(marker,
+        () => new Date(checkedAt.getTime() + (expired ? 3_600_000 : 0)), async (tx) => {
+          await tx.select().from(schema.webSessions).where(eq(schema.webSessions.id, sid)).for('share');
+        });
+      const pending = assert.rejects(guarded.listOwnerPrivateResourcePage(subject(changed), target(changed)), unavailable);
+      try { await waitForLock(marker); expired = true; }
+      finally { unlock(); await holder; }
+      await pending;
     });
   } finally { keys.destroy(); await closeDb(); }
 });

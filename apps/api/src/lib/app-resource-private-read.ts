@@ -30,6 +30,7 @@ export type PrivateResourceCheckpoint = Readonly<{ generation: number; cursor_se
   last_applied_at: string | null; freshness: 'unknown' }>;
 export type PrivateResourcePage = Readonly<{ items: readonly PrivateResourceRecord[];
   next_cursor: string | null; checkpoint: PrivateResourceCheckpoint }>;
+export type AppResourcePrivateReadDeliveryGuard = (tx: AppRunTransaction) => Promise<void>;
 
 export class AppResourcePrivateReadError extends Error {
   constructor(readonly code: 'APP_RESOURCE_PRIVATE_UNAVAILABLE' | 'APP_RESOURCE_PRIVATE_CURSOR_STALE'
@@ -49,7 +50,8 @@ export class AppResourcePrivateReadService {
   readonly #secrets: AppResourceSyncSecretService;
   constructor(private readonly keys: AppRunKeyProvider,
     private readonly clock: () => Date = () => new Date(),
-    private readonly repository: Pick<PostgresAppRunRepository, 'transaction'> = new PostgresAppRunRepository()) {
+    private readonly repository: Pick<PostgresAppRunRepository, 'transaction'> = new PostgresAppRunRepository(),
+    private readonly deliveryGuard?: AppResourcePrivateReadDeliveryGuard) {
     this.#secrets = new AppResourceSyncSecretService(keys);
   }
 
@@ -133,6 +135,9 @@ export class AppResourcePrivateReadService {
       };
       assertConsent();
       const result = await read(tx, authority, checkpoint);
+      // Host session/Experience checks belong inside these authority locks and
+      // before the last clock check: their own row locks may wait past consent.
+      await this.deliveryGuard?.(tx);
       assertConsent();
       return result;
     });
@@ -160,10 +165,10 @@ export class AppResourcePrivateReadService {
       }, { org_id: row.org_id, resource_binding_id: row.resource_binding_id,
         checkpoint_id: row.checkpoint_id, payload_kind: 'projection', generation: row.generation,
         projection_id: row.id, slot: 'record' }));
-      const parsed = parseSyncPage(authority.descriptor, {
-        schema_version: 'deft.app_sync_request.v1', cursor: null, max_items: 1,
       // The ID is only a parser placeholder; never decrypt the provider ID.
       // Its minimum length cannot inflate a valid near-ceiling stored page.
+      const parsed = parseSyncPage(authority.descriptor, {
+        schema_version: 'deft.app_sync_request.v1', cursor: null, max_items: 1,
       }, { schema_version: 'deft.app_sync_page.v1', upserts: [{ id: 'x', ...body }],
         tombstones: [], next_cursor: null, has_more: false }).upserts[0]!;
       const label = (parsed.data[authority.descriptor.label_field] as string)
