@@ -26,10 +26,12 @@ import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS,
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type ResourceSyncManagementGuard = (tx: Tx) => Promise<void>;
 
-async function managementTransaction<T>(guard: ResourceSyncManagementGuard | undefined, operation: (tx: Tx) => Promise<T>): Promise<T> {
+async function managementTransaction<T>(guard: ResourceSyncManagementGuard | undefined,
+  operation: (tx: Tx) => Promise<T>, assertFinal?: (result: T) => void): Promise<T> {
   return db.transaction(async (tx) => {
     const result = await operation(tx);
     await guard?.(tx);
+    assertFinal?.(result);
     return result;
   });
 }
@@ -37,6 +39,10 @@ type Human = Extract<ModuleActor, { kind: 'human' }>;
 const Id = z.string().uuid();
 const stale = () => new AppError('Private resource sync authority changed', 'APP_STALE', 409);
 const denied = () => new AppError('Private resource sync access denied', 'APP_ACCESS_DENIED', 403);
+function assertBeforeDeadline(deadline: Date, clock: () => Date) {
+  const now = clock();
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime()) || deadline <= now) throw stale();
+}
 const conflict = () => new AppError('Private resource sync already has current consent', 'APP_STATE_CONFLICT', 409);
 
 function reviewer(actor: ModuleActor): asserts actor is Human {
@@ -182,7 +188,7 @@ export class AppResourceSyncManagement {
         checkpoint_id: checkpointId, app_version_id: version.id,
         grant_snapshot_id: grant.id, resource_key: descriptor.key,
         review_digest: review.review_digest });
-    });
+    }, () => assertBeforeDeadline(new Date(input.consent_expires_at), this.clock));
   }
 
   async issueOperatorSession(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
@@ -217,7 +223,7 @@ export class AppResourceSyncManagement {
           audience: 'app_resource_sync', expires_at: expiresAt.toISOString() },
         metadata: { source: actor.source } });
       return expiresAt;
-    });
+    }, (expiresAt) => assertBeforeDeadline(expiresAt, this.clock));
     return Object.freeze({ session_id: sessionId, session_token: token, expires_at: issued });
   }
 

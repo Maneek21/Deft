@@ -265,3 +265,60 @@ test('private sync HTTP denies nonhuman accounts even with a valid web SID', { s
     }
   } finally { await h.close(); }
 });
+
+test('private sync HTTP deadline checks run after final web SID waits', { skip: !safe }, async () => {
+  for (const operation of ['session', 'activation'] as const) {
+    const h = await harness();
+    let release = () => {};
+    try {
+      await h.management.revokeConsent(h.owner_actor, h.binding_id);
+      const request = { ...h.consent_request, consent_expires_at: new Date(Date.now() + 8000).toISOString() };
+      const review = await h.management.prepareConsent(h.owner_actor, request);
+      const activation = { ...request, expected_review_digest: review.review_digest, accept_host_policy: true };
+      const binding = operation === 'session' ? await h.management.activateConsent(h.owner_actor, activation) : null;
+      const auditAction = operation === 'session' ? 'app.resource_sync_session_issue' : 'app.resource_sync_consent_activate';
+      const before = await h.db.select().from(h.schema.auditLog).where(h.and(
+        h.eq(h.schema.auditLog.org_id, h.org_id), h.eq(h.schema.auditLog.action, auditAction)));
+      let acquired!: () => void;
+      const locked = new Promise<void>(resolve => { acquired = resolve; });
+      const released = new Promise<void>(resolve => { release = resolve; });
+      let blockerPid = 0;
+      const blocker = h.db.transaction(async tx => {
+        blockerPid = (await tx.execute(h.sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+        const userId = operation === 'session' ? h.operator_user_id : h.owner_user_id;
+        await tx.execute(h.sql`SELECT id FROM web_sessions WHERE org_id = ${h.org_id} AND user_id = ${userId} FOR UPDATE`);
+        acquired(); await released;
+      });
+      await locked;
+      const pending = binding
+        ? h.call(`/bindings/${binding.binding_id}/sessions`, 'POST', undefined, h.operator.accessToken)
+        : h.call('/bindings/activate', 'POST', activation);
+      let waited = false;
+      for (let i = 0; i < 250; i++) {
+        const result = await h.db.execute(h.sql<{ waiting: number }>`SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname=current_database() AND ${blockerPid} = ANY(pg_blocking_pids(pid))`);
+        if (result.rows[0]!.waiting > 0) { waited = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      assert.ok(waited, `${operation} waited on its exact web SID blocker`);
+      assert.ok(Date.now() < new Date(request.consent_expires_at).getTime());
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, new Date(request.consent_expires_at).getTime() - Date.now() + 20)));
+      release(); await blocker;
+      const denied = await pending;
+      assert.equal(denied.status, 409, `${operation} cannot report success after consent expires during final SID wait`);
+      assert.ok(!JSON.stringify(denied.body).includes('session_token'));
+      const after = await h.db.select().from(h.schema.auditLog).where(h.and(
+        h.eq(h.schema.auditLog.org_id, h.org_id), h.eq(h.schema.auditLog.action, auditAction)));
+      assert.equal(after.length, before.length, 'expired operation audit rolls back');
+      if (binding) {
+        const sessions = await h.db.select().from(h.schema.appRuntimeSessions)
+          .where(h.eq(h.schema.appRuntimeSessions.resource_binding_id, binding.binding_id));
+        assert.equal(sessions.length, 0);
+      } else {
+        const bindings = await h.db.select().from(h.schema.appResourceBindings).where(h.and(
+          h.eq(h.schema.appResourceBindings.org_id, h.org_id), h.eq(h.schema.appResourceBindings.state, 'active')));
+        assert.equal(bindings.length, 0);
+      }
+    } finally { release(); await h.close(); }
+  }
+});
