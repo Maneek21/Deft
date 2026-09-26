@@ -147,6 +147,42 @@ test('governed v5 Experience action preserves exact session Run and approval ide
       assert.equal(concurrent.filter((item) => item.status === 'fulfilled').length, 7,
         'one existing plus seven parallel sessions reach the cap of eight');
       assert.equal(concurrent.filter((item) => item.status === 'rejected').length, 2);
+      // Pause inside the caller-owned real Run transaction, after initial live
+      // authority/preparation, then make its exact final SID lock wait.
+      const { default: pg } = await import('pg');
+      const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+      let guardEntered!: () => void; let releaseGuard!: () => void;
+      const enteredGuard = new Promise<void>(resolve => { guardEntered = resolve; });
+      const heldGuard = new Promise<void>(resolve => { releaseGuard = resolve; });
+      const gateRuntime = new runtimeAction.AppRuntimeActionService({
+        async submitReviewedRuntime(actor, request, guard) {
+          return (await runRuntime.getAppRunRuntime()).service.submitReviewedRuntime(actor, request, async tx => {
+            guardEntered(); await heldGuard; assert.ok(guard); await guard(tx);
+          });
+        },
+        async reviewRuntimeInput(actor, runId) { return (await runRuntime.getAppRunRuntime()).service.reviewRuntimeInput(actor, runId); },
+      });
+      try {
+        const gateAction = new experience.AppExperienceService(gateRuntime).action(caller, first.pin.session_id,
+          'create_shipping_label', { request_id: 'request_6', input: { shipment_id: 'gate-withdrawal' } });
+        const deniedGate = assert.rejects(gateAction);
+        await enteredGuard; await blocker.query('BEGIN');
+        const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+        await blocker.query('SELECT id FROM web_sessions WHERE id=$1 FOR UPDATE', [sid]);
+        releaseGuard(); let waiting = false;
+        for (let i = 0; i < 100; i++) {
+          const observed = await blocker.query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS waiting', [pid.id]);
+          if (observed.rows[0].waiting) { waiting = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.equal(waiting, true, 'real Run guard reaches held SID');
+        process.env.DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED = 'false';
+        await blocker.query('COMMIT'); await deniedGate;
+        assert.equal((await db.select().from(schema.appRuns).where(eq(schema.appRuns.org_id, orgId))).length, 0);
+      } finally {
+        process.env.DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED = 'true';
+        releaseGuard(); await blocker.query('ROLLBACK'); await blocker.end();
+      }
       const invoked = await experience.appExperienceService.action(caller, first.pin.session_id,
         'create_shipping_label', { request_id: 'request_1', input: { shipment_id: 'shipment-1' } });
       assert.equal(invoked.run.state, 'pending_approval');

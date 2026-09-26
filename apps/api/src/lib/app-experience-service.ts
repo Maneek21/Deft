@@ -190,6 +190,8 @@ export class AppExperienceService {
       // The clock is read after every potentially blocking lock and digest.
       const checkedAt = new Date();
       if (web.expires_at <= checkedAt || lockedSession.expires_at <= checkedAt) throw stale();
+      if (version.protocol_version === '5' && (!isAppExperienceResourceExposureEnabled()
+        || (verified.bundle.action_keys.length > 0 && !isAppV5RuntimeActionsEnabled()))) throw stale();
       return { session: lockedSession, bundle: verified.bundle, manifest: verified.manifest };
   }
 
