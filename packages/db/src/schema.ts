@@ -1803,7 +1803,7 @@ export const appVersions = pgTable('app_versions', {
   uniqueIndex('app_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
-  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4', '5', '6')`),
+  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4', '5', '6', '7')`),
   check('app_versions_connected_request_check', sql`
     ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
   `),
@@ -2238,7 +2238,7 @@ export const appRuntimeRegistrations = pgTable('app_runtime_registrations', {
     t.app_installation_id, t.app_version_id, t.grant_snapshot_id, t.id, t.contract_version),
   check('app_runtime_registrations_state_check', sql`${t.state} IN ('disabled','active','revoked')`),
   check('app_runtime_registrations_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
-  check('app_runtime_registrations_contract_check', sql`${t.contract_version} IN ('deft.app_runtime_channel.v1', 'deft.app_runtime_channel.v2')`),
+  check('app_runtime_registrations_contract_check', sql`${t.contract_version} IN ('deft.app_runtime_channel.v1', 'deft.app_runtime_channel.v2', 'deft.app_runtime_channel.v3')`),
   check('app_runtime_registrations_epoch_check', sql`${t.runtime_epoch} >= 0`),
   check('app_runtime_registrations_review_check', sql`
     (${t.state} = 'disabled' AND ${t.reviewed_at} IS NULL AND ${t.reviewed_by_user_id} IS NULL)
@@ -2374,7 +2374,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
   grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
   runtime_registration_id: text('runtime_registration_id').notNull(),
   registration_contract_version: text('registration_contract_version')
-    .$type<'deft.app_runtime_channel.v2'>().default('deft.app_runtime_channel.v2').notNull(),
+    .$type<'deft.app_runtime_channel.v2' | 'deft.app_runtime_channel.v3'>().default('deft.app_runtime_channel.v2').notNull(),
   provider_kind: text('provider_kind').$type<'app_runtime'>().default('app_runtime').notNull(),
   provider_instance_id: text('provider_instance_id').notNull(),
   provider_snapshot_id: text('provider_snapshot_id').notNull(),
@@ -2384,6 +2384,8 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
   interface_identity: text('interface_identity').notNull(),
   reviewed_descriptor: jsonb('reviewed_descriptor').$type<Record<string, unknown>>().notNull(),
   descriptor_digest: text('descriptor_digest').notNull(),
+  attachment_policy: jsonb('attachment_policy').$type<Record<string, unknown>>(),
+  attachment_consent_digest: text('attachment_consent_digest'),
   owner_user_id: text('owner_user_id').notNull(),
   owner_scope: text('owner_scope').$type<'private_user'>().default('private_user').notNull(),
   risk_class: text('risk_class').$type<'internal_write'>().default('internal_write').notNull(),
@@ -2438,7 +2440,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     .where(sql`${t.state} <> 'revoked'`),
   check('app_resource_bindings_identity_check', sql`
     ${t.grant_snapshot_kind} = 'effective'
-    AND ${t.registration_contract_version} = 'deft.app_runtime_channel.v2'
+    AND ${t.registration_contract_version} IN ('deft.app_runtime_channel.v2', 'deft.app_runtime_channel.v3')
     AND ${t.provider_kind} = 'app_runtime'
     AND ${t.provider_instance_id} = ${t.runtime_registration_id}
     AND ${t.owner_scope} = 'private_user'
@@ -2446,15 +2448,56 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     AND ${t.resource_family} ~ '^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$'
     AND octet_length(${t.resource_family}) <= 64
     AND ${t.operation_name} = 'sync_' || ${t.resource_key}
-    AND ${t.interface_identity} = 'deft.resource_sync.v2:' || lower(${t.org_id}) || ':' ||
-      lower(${t.app_installation_id}) || ':' || ${t.resource_key}
+    AND ((${t.registration_contract_version} = 'deft.app_runtime_channel.v2'
+      AND ${t.interface_identity} = 'deft.resource_sync.v2:' || lower(${t.org_id}) || ':' || lower(${t.app_installation_id}) || ':' || ${t.resource_key})
+      OR (${t.registration_contract_version} = 'deft.app_runtime_channel.v3'
+      AND ${t.interface_identity} = 'deft.resource_sync.v3:' || lower(${t.org_id}) || ':' || lower(${t.app_installation_id}) || ':' || ${t.resource_key}))
     AND ${t.descriptor_digest} ~ '^sha256:[a-f0-9]{64}$'
   `),
   check('app_resource_bindings_descriptor_check', sql`
     jsonb_typeof(${t.reviewed_descriptor}) = 'object'
     AND coalesce(jsonb_typeof(${t.reviewed_descriptor}->'schema_version'), '') = 'string'
-    AND coalesce(${t.reviewed_descriptor}->>'schema_version', '') = 'deft.app_sync_descriptor.v1'
+    AND ((${t.registration_contract_version} = 'deft.app_runtime_channel.v2'
+      AND coalesce(${t.reviewed_descriptor}->>'schema_version', '') = 'deft.app_sync_descriptor.v1')
+      OR (${t.registration_contract_version} = 'deft.app_runtime_channel.v3'
+      AND coalesce(${t.reviewed_descriptor}->>'schema_version', '') = 'deft.app_sync_descriptor.v2'
+      AND jsonb_typeof(${t.reviewed_descriptor}->'attachments') = 'object'))
     AND octet_length(${t.reviewed_descriptor}::text) <= 65536
+  `),
+  check('app_resource_bindings_attachment_policy_check', sql`
+    (${t.registration_contract_version} = 'deft.app_runtime_channel.v2'
+      AND ${t.attachment_policy} IS NULL AND ${t.attachment_consent_digest} IS NULL)
+    OR (${t.registration_contract_version} = 'deft.app_runtime_channel.v3'
+      AND ${t.attachment_policy} IS NOT NULL AND ${t.attachment_consent_digest} IS NOT NULL
+      AND ${t.attachment_consent_digest} ~ '^sha256:[a-f0-9]{64}$'
+      AND coalesce((jsonb_typeof(${t.attachment_policy}) = 'object'
+      AND ${t.attachment_policy} ?& ARRAY['max_attachment_bytes','max_attachments_per_record','max_attachments_per_run','max_attachment_bytes_per_run','retention_days','allowed_media_types']
+      AND ${t.attachment_policy} - ARRAY['max_attachment_bytes','max_attachments_per_record','max_attachments_per_run','max_attachment_bytes_per_run','retention_days','allowed_media_types'] = '{}'::jsonb
+      AND jsonb_typeof(${t.attachment_policy}->'max_attachment_bytes') = 'number'
+      AND (${t.attachment_policy}->>'max_attachment_bytes')::numeric BETWEEN 1 AND 2097152
+      AND (${t.attachment_policy}->>'max_attachment_bytes')::numeric = trunc((${t.attachment_policy}->>'max_attachment_bytes')::numeric)
+      AND (${t.attachment_policy}->>'max_attachment_bytes')::numeric <= ((${t.reviewed_descriptor}->'attachments')->>'max_attachment_bytes')::numeric
+      AND jsonb_typeof(${t.attachment_policy}->'max_attachments_per_record') = 'number'
+      AND (${t.attachment_policy}->>'max_attachments_per_record')::numeric BETWEEN 1 AND 8
+      AND (${t.attachment_policy}->>'max_attachments_per_record')::numeric = trunc((${t.attachment_policy}->>'max_attachments_per_record')::numeric)
+      AND (${t.attachment_policy}->>'max_attachments_per_record')::numeric <= ((${t.reviewed_descriptor}->'attachments')->>'max_attachments_per_record')::numeric
+      AND jsonb_typeof(${t.attachment_policy}->'max_attachments_per_run') = 'number'
+      AND (${t.attachment_policy}->>'max_attachments_per_run')::numeric BETWEEN 1 AND 32
+      AND (${t.attachment_policy}->>'max_attachments_per_run')::numeric = trunc((${t.attachment_policy}->>'max_attachments_per_run')::numeric)
+      AND (${t.attachment_policy}->>'max_attachments_per_run')::numeric <= ((${t.reviewed_descriptor}->'attachments')->>'max_attachments_per_run')::numeric
+      AND jsonb_typeof(${t.attachment_policy}->'max_attachment_bytes_per_run') = 'number'
+      AND (${t.attachment_policy}->>'max_attachment_bytes_per_run')::numeric BETWEEN 1 AND 8388608
+      AND (${t.attachment_policy}->>'max_attachment_bytes_per_run')::numeric = trunc((${t.attachment_policy}->>'max_attachment_bytes_per_run')::numeric)
+      AND (${t.attachment_policy}->>'max_attachment_bytes_per_run')::numeric <= ((${t.reviewed_descriptor}->'attachments')->>'max_attachment_bytes_per_run')::numeric
+      AND jsonb_typeof(${t.attachment_policy}->'retention_days') = 'number'
+      AND (${t.attachment_policy}->>'retention_days')::numeric BETWEEN 1 AND 30
+      AND (${t.attachment_policy}->>'retention_days')::numeric = trunc((${t.attachment_policy}->>'retention_days')::numeric)
+      AND (${t.attachment_policy}->>'retention_days')::numeric <= ((${t.reviewed_descriptor}->'attachments')->>'retention_days')::numeric
+      AND jsonb_typeof((${t.attachment_policy}->'allowed_media_types')) = 'array'
+      AND jsonb_array_length((${t.attachment_policy}->'allowed_media_types')) BETWEEN 1 AND 7
+      AND (${t.attachment_policy}->'allowed_media_types') <@ '["text/plain","text/csv","application/json","image/png","image/jpeg","image/gif","image/webp"]'::jsonb
+      AND (${t.attachment_policy}->'allowed_media_types') <@ ((${t.reviewed_descriptor}->'attachments')->'allowed_media_types')
+      AND jsonb_array_length((${t.attachment_policy}->'allowed_media_types')) = (((${t.attachment_policy}->'allowed_media_types') @> '["text/plain"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["text/csv"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["application/json"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/png"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/jpeg"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/gif"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/webp"]'::jsonb)::integer)), false))
   `),
   check('app_resource_bindings_policy_check', sql`
     ${t.risk_class} = 'internal_write' AND ${t.review_requirement} = 'policy'
@@ -2684,6 +2727,7 @@ export const appResourceProjections = pgTable('app_resource_projections', {
       appSyncCheckpoints.resource_binding_id],
     name: 'app_resource_projections_checkpoint_fk' }).onDelete('restrict'),
   unique('app_resource_projections_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_resource_projections_attachment_identity_unique').on(t.org_id, t.id, t.checkpoint_id, t.resource_binding_id),
   unique('app_resource_projections_locator_unique').on(t.org_id, t.checkpoint_id,
     t.resource_id_hmac_key_version, t.resource_id_hmac),
   index('app_resource_projections_binding_state_idx').on(t.org_id, t.resource_binding_id,
@@ -2724,6 +2768,64 @@ export const appResourceProjections = pgTable('app_resource_projections', {
       AND ${t.body_bytes} BETWEEN 1 AND 524288
       AND octet_length(decode(${t.body_ciphertext_b64}, 'base64')) = ${t.body_bytes})
   `),
+]);
+
+/** Quarantine custody only. A stage ID never grants parent or binary access. */
+export const appAttachmentStages = pgTable('app_attachment_stages', {
+  ...id(), ...orgId(),
+  resource_binding_id: text('resource_binding_id').notNull(), checkpoint_id: text('checkpoint_id').notNull(),
+  generation: integer('generation').notNull(), run_id: text('run_id').notNull(), attempt_id: text('attempt_id').notNull(),
+  claim_token: text('claim_token').notNull(), reservation_sequence: integer('reservation_sequence').notNull(),
+  fingerprint_key_version: text('fingerprint_key_version').notNull(),
+  parent_locator_hmac: text('parent_locator_hmac').notNull(), parent_revision_hmac: text('parent_revision_hmac').notNull(),
+  attachment_key_hmac: text('attachment_key_hmac').notNull(), content_hmac: text('content_hmac'),
+  declared_size_bytes: integer('declared_size_bytes').notNull(),
+  metadata_envelope: jsonb('metadata_envelope').$type<Record<string, unknown>>(),
+  binary_key_version: text('binary_key_version'), binary_nonce_b64: text('binary_nonce_b64'), binary_auth_tag_b64: text('binary_auth_tag_b64'),
+  object_id: text('object_id'),
+  state: text('state').$type<'uploading' | 'ready' | 'blocked' | 'linked' | 'linked_blocked' | 'retired' | 'purged'>().default('uploading').notNull(),
+  stage_expires_at: timestamp('stage_expires_at').notNull(), linked_expires_at: timestamp('linked_expires_at'),
+  projection_id: text('projection_id'), parent_body_hmac: text('parent_body_hmac'), accepted_at: timestamp('accepted_at'),
+  retired_at: timestamp('retired_at'), purged_at: timestamp('purged_at'), ...timestamps(),
+}, t => [
+  unique('app_attachment_stages_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_attachment_stages_retry_unique').on(t.org_id, t.run_id, t.attempt_id, t.checkpoint_id, t.generation,
+    t.fingerprint_key_version, t.parent_locator_hmac, t.parent_revision_hmac, t.attachment_key_hmac),
+  foreignKey({ columns: [t.org_id, t.checkpoint_id, t.resource_binding_id],
+    foreignColumns: [appSyncCheckpoints.org_id, appSyncCheckpoints.id, appSyncCheckpoints.resource_binding_id],
+    name: 'app_attachment_stages_checkpoint_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.run_id, t.attempt_id],
+    foreignColumns: [appRunAttempts.org_id, appRunAttempts.run_id, appRunAttempts.id],
+    name: 'app_attachment_stages_attempt_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.projection_id, t.checkpoint_id, t.resource_binding_id],
+    foreignColumns: [appResourceProjections.org_id, appResourceProjections.id, appResourceProjections.checkpoint_id, appResourceProjections.resource_binding_id],
+    name: 'app_attachment_stages_projection_fk' }).onDelete('restrict'),
+  index('app_attachment_stages_cleanup_idx').on(t.state, t.stage_expires_at, t.id),
+  index('app_attachment_stages_parent_idx').on(t.org_id, t.resource_binding_id, t.projection_id, t.state),
+  check('app_attachment_stages_identity_check', sql`${t.generation} >= 1 AND ${t.reservation_sequence} >= 1
+    AND ${t.fingerprint_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    AND ${t.parent_locator_hmac} ~ '^[a-f0-9]{64}$' AND ${t.parent_revision_hmac} ~ '^[a-f0-9]{64}$'
+    AND ${t.attachment_key_hmac} ~ '^[a-f0-9]{64}$'
+    AND (${t.content_hmac} IS NULL OR ${t.content_hmac} ~ '^[a-f0-9]{64}$')
+    AND (${t.parent_body_hmac} IS NULL OR ${t.parent_body_hmac} ~ '^[a-f0-9]{64}$')
+    AND ${t.declared_size_bytes} BETWEEN 0 AND 2097152
+    AND ${t.stage_expires_at} > ${t.created_at} AND ${t.stage_expires_at} <= ${t.created_at} + interval '1 hour'`),
+  check('app_attachment_stages_metadata_check', sql`(${t.state} = 'purged' AND ${t.metadata_envelope} IS NULL)
+    OR (${t.state} <> 'purged' AND ${t.metadata_envelope} IS NOT NULL AND jsonb_typeof(${t.metadata_envelope}) = 'object'
+    AND octet_length(${t.metadata_envelope}::text) <= 16384)`),
+  check('app_attachment_stages_state_check', sql`${t.state} IN ('uploading','ready','blocked','linked','linked_blocked','retired','purged')
+    AND ((${t.state} IN ('linked','linked_blocked') AND ${t.projection_id} IS NOT NULL AND ${t.parent_body_hmac} IS NOT NULL
+      AND ${t.accepted_at} IS NOT NULL AND ${t.linked_expires_at} IS NOT NULL AND ${t.linked_expires_at} > ${t.accepted_at}
+      AND ${t.linked_expires_at} <= ${t.accepted_at} + interval '30 days') OR ${t.state} NOT IN ('linked','linked_blocked'))
+    AND (${t.state} NOT IN ('ready','blocked','linked','linked_blocked') OR ${t.content_hmac} IS NOT NULL)
+    AND (${t.state} NOT IN ('blocked','linked_blocked','purged') OR (${t.object_id} IS NULL AND ${t.binary_key_version} IS NULL
+      AND ${t.binary_nonce_b64} IS NULL AND ${t.binary_auth_tag_b64} IS NULL))
+    AND (${t.state} NOT IN ('ready','linked') OR (${t.object_id} IS NOT NULL AND ${t.binary_key_version} IS NOT NULL
+      AND ${t.binary_nonce_b64} IS NOT NULL AND ${t.binary_auth_tag_b64} IS NOT NULL
+      AND ${t.binary_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+      AND ${t.binary_nonce_b64} ~ '^[A-Za-z0-9+/]{16}$' AND ${t.binary_auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'))
+    AND (${t.state} <> 'retired' OR ${t.retired_at} IS NOT NULL)
+    AND (${t.state} <> 'purged' OR (${t.retired_at} IS NOT NULL AND ${t.purged_at} IS NOT NULL))`),
 ]);
 
 export const appAutomationDefinitions = pgTable('app_automation_definitions', {

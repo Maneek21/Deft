@@ -242,6 +242,7 @@ export const upgradeManifest = {
     },
     { version: '0.3.0-preview.45', file: '0.3.0-preview.45-app-resource-access.sql', description: 'Add dormant immutable exact-content human private App resource sharing' },
     { version: '0.3.0-preview.46', file: '0.3.0-preview.46-app-public-control.sql', description: 'Add retained public controls and atomic pre-effect withdrawal identities' },
+    { version: '0.3.0-preview.47', file: '0.3.0-preview.47-app-attachment-custody.sql', description: 'Add dormant protocol7/channel3 encrypted owner-only attachment quarantine and checked parent custody' },
   ] satisfies UpgradeMigration[],
 } as const;
 

@@ -159,6 +159,7 @@ async function main() {
       '0.3.0-preview.44-app-native-calendar.sql',
       '0.3.0-preview.45-app-resource-access.sql',
       '0.3.0-preview.46-app-public-control.sql',
+      '0.3.0-preview.47-app-attachment-custody.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);
@@ -174,6 +175,12 @@ async function main() {
     console.log('[apply-extras] ensured agent_employee_templates_org_slug_uniq');
 
     const requiredConstraints = [
+      'app_resource_bindings_attachment_policy_check',
+      'app_resource_projections_attachment_identity_unique',
+      'app_attachment_stages_org_id_id_unique', 'app_attachment_stages_retry_unique',
+      'app_attachment_stages_checkpoint_fk', 'app_attachment_stages_attempt_fk',
+      'app_attachment_stages_projection_fk', 'app_attachment_stages_identity_check',
+      'app_attachment_stages_metadata_check', 'app_attachment_stages_state_check',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -289,6 +296,7 @@ async function main() {
     console.log('[apply-extras] verified composite module foreign-key constraints');
 
     const requiredIndexes = [
+      'app_attachment_stages_cleanup_idx', 'app_attachment_stages_parent_idx',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -365,6 +373,8 @@ async function main() {
     console.log('[apply-extras] verified module_versions_immutable_fields_trigger');
 
     const requiredAppRunTriggers = [
+      'app_attachment_binding_policy_guard_trigger',
+      'app_attachment_stage_guard_trigger', 'app_attachment_stage_capacity_trigger',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
       'app_run_attempts_state_identity_trigger',
