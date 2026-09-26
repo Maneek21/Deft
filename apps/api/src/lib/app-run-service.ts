@@ -1,5 +1,6 @@
 import { parseNativeCalendarInput, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
 import { isAppNativeCalendarEnabled } from './env.js';
+import { nativeParticipantsAreHuman } from './app-native-authority.js';
 import type { ReviewedNativeCapture, ReviewedPublicNativeCapture } from './app-native-run-authorization.js';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
@@ -481,7 +482,11 @@ export class AppRunService {
       const run = await this.#submit({ org_id: caller.org_id, initiating_actor: actor, execution_actor: actor },
         submission, null, undefined, undefined, undefined, undefined, tx, undefined, capture);
       if (guard) await guard(tx);
-      if (!isAppNativeCalendarEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const currentHumans = await nativeParticipantsAreHuman(tx, capture.participants);
+      const finalNow = this.now();
+      if (!isAppNativeCalendarEnabled() || !currentHumans
+        || run.input_expires_at <= finalNow || run.result_expires_at <= finalNow)
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       return run;
     });
     if (submitted.state === 'pending_approval') await this.attention.projectApprovalRequested(submitted.org_id, submitted.id);

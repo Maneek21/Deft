@@ -77,9 +77,9 @@ async function fixture() {
 }
 type Harness = Awaited<ReturnType<typeof fixture>>;
 const input = { title: 'Literal <script> ☃ native event', start: '2026-10-10T10:00:00Z', end: '2026-10-10T11:00:00Z' };
-async function run(h: Harness, binding: any, value: unknown) {
+async function run(h: Harness, binding: any, value: unknown, idempotencyKey = `native-${randomUUID()}`) {
   const response = await h.call(`/api/apps/native/bindings/${binding.binding_id}/invoke`, {
-    expected_consent_digest: binding.consent_digest, idempotency_key: `native-${randomUUID()}`, input: value }, h.ownerWeb.accessToken);
+    expected_consent_digest: binding.consent_digest, idempotency_key: idempotencyKey, input: value }, h.ownerWeb.accessToken);
   assert.equal(response.status, 200, JSON.stringify(response.body)); return response.body;
 }
 async function approve(h: Harness, runId: string) {
@@ -141,6 +141,42 @@ test('native cancel owner kind withdrawal during actual Calendar row wait rolls 
   } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
 });
 
+test('native cancel exact retained create identity settles once and exact invocation replay returns the original Run', { skip: !safe }, async () => {
+  const h = await fixture(), createBinding = await h.consent(await h.stageBinding('create'));
+  const created = await run(h, createBinding, input); await approve(h, created.id); await execute(h, created.id);
+  const output = (await h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken)).body.value.output;
+  const cancelBinding = await h.consent(await h.stageBinding('cancel')), key = `native-cancel-${randomUUID()}`;
+  const value = { create_run_id: created.id, event_ref: output.event_ref };
+  const cancelled = await run(h, cancelBinding, value, key); await approve(h, cancelled.id);
+  assert.equal((await execute(h, cancelled.id)).state, 'succeeded');
+  const result = await h.call(`/api/app-runs/${cancelled.id}/result`, undefined, h.ownerWeb.accessToken);
+  assert.equal(result.status, 200); assert.equal(result.body.value.output.status, 'cancelled');
+  assert.deepEqual(result.body.value.output.event_ref, output.event_ref);
+  const replay = await run(h, cancelBinding, value, key); assert.equal(replay.id, cancelled.id);
+  const [event] = await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.id, output.event_ref.resource_id));
+  assert.equal((event!.metadata as any).status, 'canceled');
+  assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
+  const receipts = await (await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime()).receiptReader.readVerified(h.org, cancelled.id);
+  assert.equal(receipts.filter(row => row.receipt_kind === 'attempt_terminal' && row.run_state === 'succeeded').length, 1);
+});
+
+test('native cancel substituted unrelated create reference cannot mutate either event or sign terminal success', { skip: !safe }, async () => {
+  const h = await fixture(), createBinding = await h.consent(await h.stageBinding('create'));
+  const first = await run(h, createBinding, input), second = await run(h, createBinding, { ...input, title: 'Separate identity' });
+  await approve(h, first.id); await execute(h, first.id); await approve(h, second.id); await execute(h, second.id);
+  const firstOutput = (await h.call(`/api/app-runs/${first.id}/result`, undefined, h.ownerWeb.accessToken)).body.value.output;
+  const secondOutput = (await h.call(`/api/app-runs/${second.id}/result`, undefined, h.ownerWeb.accessToken)).body.value.output;
+  const binding = await h.consent(await h.stageBinding('cancel'));
+  const cancelled = await run(h, binding, { create_run_id: first.id, event_ref: secondOutput.event_ref }); await approve(h, cancelled.id);
+  assert.notEqual((await execute(h, cancelled.id)).state, 'succeeded');
+  for (const ref of [firstOutput.event_ref, secondOutput.event_ref]) {
+    const [event] = await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.id, ref.resource_id));
+    assert.equal((event!.metadata as any).status, 'confirmed');
+  }
+  assert.equal((await h.db.select().from(h.schema.appRunReceipts).where(h.and(h.eq(h.schema.appRunReceipts.run_id, cancelled.id), h.eq(h.schema.appRunReceipts.receipt_kind, 'attempt_terminal')))).length, 0);
+  assert.equal((await h.db.select().from(h.schema.appRunSecretPayloads).where(h.and(h.eq(h.schema.appRunSecretPayloads.run_id, cancelled.id), h.eq(h.schema.appRunSecretPayloads.payload_kind, 'output')))).length, 0);
+});
+
 test('native approval manager kind withdrawal during final owner SID wait rolls back approval and scheduling', { skip: !safe }, async () => {
   const h = await fixture(), binding = await h.consent(await h.stageBinding('create'));
   const created = await run(h, binding, input);
@@ -169,5 +205,28 @@ test('native approval manager kind withdrawal during final owner SID wait rolls 
     assert.equal(approval!.approval_status, 'pending');
     assert.equal((await h.db.select().from(h.schema.appRunReceipts).where(h.eq(h.schema.appRunReceipts.run_id, created.id))).length, 0);
     assert.equal((await h.db.select().from(h.schema.appRunAttempts).where(h.eq(h.schema.appRunAttempts.run_id, created.id))).length, 0);
+  } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
+});
+
+test('native invocation manager kind withdrawal during final owner SID wait commits no Run or approval', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create'));
+  const [session] = await h.db.select().from(h.schema.webSessions).where(h.eq(h.schema.webSessions.user_id, h.owner)); assert.ok(session);
+  const { default: pg } = await import('pg'); const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+  const observer = new pg.Client({ connectionString: target }); await observer.connect(); let pending: ReturnType<Harness['call']> | undefined;
+  try {
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM web_sessions WHERE id=$1 FOR UPDATE', [session.id]);
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    pending = h.call(`/api/apps/native/bindings/${binding.binding_id}/invoke`, {
+      expected_consent_digest: binding.consent_digest, idempotency_key: `held-sid-${randomUUID()}`, input }, h.ownerWeb.accessToken);
+    let waited = false;
+    for (let i = 0; i < 300; i++) {
+      const { rows: [row] } = await observer.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'real final invocation SID row wait must be observed');
+    await observer.query('UPDATE users SET is_agent=true WHERE id=$1', [h.manager]); await blocker.query('COMMIT');
+    assert.notEqual((await pending).status, 200);
+    assert.equal((await h.db.select().from(h.schema.appRuns).where(h.eq(h.schema.appRuns.org_id, h.org))).length, 0);
+    assert.equal((await h.db.select().from(h.schema.agentActions).where(h.eq(h.schema.agentActions.org_id, h.org))).length, 0);
   } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
 });
