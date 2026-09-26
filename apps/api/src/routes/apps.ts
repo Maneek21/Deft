@@ -17,10 +17,13 @@ import {
 } from '../lib/app-service.js';
 import {
   activateConnectedAppInstallation,
+  activateConnectedAppUpgrade,
   getConnectedAppGrantManagement,
   inspectConnectedAppHealth,
   prepareConnectedAppReview,
+  prepareConnectedAppUpgradeReview,
 } from '../lib/app-review-service.js';
+import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { createAppDeveloperPairing, revokeAppDeveloperPairing } from '../lib/app-developer-pairing.js';
@@ -61,6 +64,18 @@ const connectedActivationSchema = connectedReviewSchema.extend({
   accept_module_adoptions: z.boolean().optional(),
   allow_identical_carry_forward: z.boolean().optional(),
 });
+const connectedUpgradeReviewSchema = connectedReviewSchema.extend({
+  schema_version: z.literal('deft.connected_app_upgrade_request.v1'),
+  prior_app_version_id: IdSchema,
+  pending_work_policy: z.literal('supersede_pending_work'),
+});
+const connectedUpgradeActivationSchema = connectedUpgradeReviewSchema.extend({
+  expected_review_digest: AppDigestSchema,
+  expected_upgrade_review_digest: AppDigestSchema,
+  accept_host_policy: z.boolean(),
+  accept_module_adoptions: z.boolean().optional(),
+  allow_identical_carry_forward: z.boolean().optional(),
+});
 const healthSchema = z.strictObject({ refresh_provider_schemas: z.boolean().default(true) });
 const automationTransitionSchema = z.strictObject({
   expected_definition_epoch: z.number().int().min(1),
@@ -97,6 +112,9 @@ async function boundedPackageBody(c: Context): Promise<string> {
 }
 
 function failure(c: Context, error: unknown) {
+  if (error instanceof ResourceSyncWebAuthenticationError) {
+    return c.json({ error: error.message, code: error.code }, error.status);
+  }
   if (isAppError(error)) {
     return c.json({ error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) }, error.status);
   }
@@ -213,6 +231,29 @@ appRoutes.post('/:installationId/review/activate', async (c) => {
     return failure(c, error);
   }
 });
+
+for (const operation of ['review', 'activate'] as const) {
+  appRoutes.post(`/:installationId/upgrade/${operation}`, async c => {
+    try {
+      c.header('Cache-Control', 'no-store');
+      if (new URL(c.req.url).search || !/^application\/json(?:\s*;|$)/i.test(c.req.header('content-type') ?? '')) {
+        return c.json({ error: 'Invalid connected upgrade request', code: 'VALIDATION_ERROR' }, 400);
+      }
+      const user = c.get('user') as AuthUser | undefined;
+      if (!user?.sid) throw new ResourceSyncWebAuthenticationError('Web authentication required');
+      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'),
+        { org_id: user.org_id, user_id: user.id, sid: user.sid });
+      const id = IdSchema.parse(c.req.param('installationId'));
+      const raw: unknown = await c.req.json();
+      return c.json(operation === 'review'
+        ? await prepareConnectedAppUpgradeReview(actor, id, connectedUpgradeReviewSchema.parse(raw), undefined, { guard })
+        : await activateConnectedAppUpgrade(actor, id, connectedUpgradeActivationSchema.parse(raw), undefined, { guard }));
+    } catch (error) {
+      if (error instanceof SyntaxError) return c.json({ error: 'Invalid connected upgrade request', code: 'VALIDATION_ERROR' }, 400);
+      return failure(c, error);
+    }
+  });
+}
 
 appRoutes.get('/:installationId/grants', async (c) => {
   try {

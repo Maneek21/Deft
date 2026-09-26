@@ -65,6 +65,7 @@ import {
 } from './module-service.js';
 import { getIO } from '../socket.js';
 import { compareAppSemver } from './app-service.js';
+import { APPS_ENABLED } from './env.js';
 
 type ReviewExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -982,6 +983,94 @@ export async function prepareConnectedAppReview(
   );
 }
 
+export type ConnectedAppUpgradeReviewRequest = ConnectedAppReviewRequest & Readonly<{
+  schema_version: 'deft.connected_app_upgrade_request.v1';
+  prior_app_version_id: string;
+  pending_work_policy: 'supersede_pending_work';
+}>;
+export type ConnectedAppUpgradeActivationRequest = ConnectedAppUpgradeReviewRequest & ConnectedAppActivationRequest
+  & Readonly<{ expected_upgrade_review_digest: string }>;
+export type ConnectedAppUpgradeReview = Readonly<{
+  schema_version: 'deft.connected_app_upgrade_review.v1';
+  prior_app_version_id: string;
+  pending_work_policy: 'supersede_pending_work';
+  policy_summary: string;
+  connected_review: ConnectedAppReview;
+  upgrade_review_digest: string;
+}>;
+type ConnectedUpgradeOptions = Readonly<{
+  guard?: (executor: ReviewExecutor) => Promise<void>;
+  failBeforePointerSwap?: boolean;
+}>;
+
+async function assertConnectedUpgradeTarget(executor: ReviewExecutor, context: ReviewContext,
+  request: ConnectedAppUpgradeReviewRequest): Promise<void> {
+  if (!APPS_ENABLED) throw new AppError('Apps are unavailable', 'APP_DISABLED', 503);
+  if (request.schema_version !== 'deft.connected_app_upgrade_request.v1'
+    || request.pending_work_policy !== 'supersede_pending_work') {
+    throw new AppError('Explicit pending-work policy is required', 'APP_REVIEW_REQUIRED', 409);
+  }
+  const [prior] = await executor.select().from(appVersions).where(and(
+    eq(appVersions.org_id, context.installation.org_id),
+    eq(appVersions.installation_id, context.installation.id),
+    eq(appVersions.id, request.prior_app_version_id),
+  )).limit(1);
+  if (!['active', 'disabled'].includes(context.installation.state)
+    || context.installation.active_version_id !== request.prior_app_version_id
+    || request.prior_app_version_id === context.version.id
+    || !prior || prior.state !== 'active'
+    || !isConnectedAppProtocolVersion(context.version.protocol_version) || context.version.state !== 'staged') {
+    throw appError('Exact connected upgrade is unavailable', 'APP_STALE');
+  }
+}
+
+function connectedUpgradeReview(request: ConnectedAppUpgradeReviewRequest,
+  review: ConnectedAppReview): ConnectedAppUpgradeReview {
+  const body = { schema_version: 'deft.connected_app_upgrade_review.v1' as const,
+    prior_app_version_id: request.prior_app_version_id,
+    pending_work_policy: request.pending_work_policy,
+    policy_summary: 'Old pending authority is superseded. Ineligible fires stop; unstarted Runs cannot dispatch and expire normally. Accepted or ambiguous effects retain their original pins and require normal settlement or reconciliation. No work is rebound or automatically cancelled.',
+    connected_review: review };
+  return { ...body, upgrade_review_digest: digestAppGrantValue(body) };
+}
+
+export async function prepareConnectedAppUpgradeReview(actor: ModuleActor, installationId: string,
+  request: ConnectedAppUpgradeReviewRequest, capability: AppReviewCapabilityPort = capabilityService,
+  options: ConnectedUpgradeOptions = {}): Promise<ConnectedAppUpgradeReview> {
+  const review = await prepareConnectedAppReview(actor, installationId, request, capability);
+  await db.transaction(async tx => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
+    await assertConnectedUpgradeTarget(tx, await loadReviewContext(tx, actor, installationId, request), request);
+    await options.guard?.(tx);
+    if (!APPS_ENABLED) throw new AppError('Apps are unavailable', 'APP_DISABLED', 503);
+  });
+  return connectedUpgradeReview(request, review);
+}
+
+export async function activateConnectedAppUpgrade(actor: ModuleActor, installationId: string,
+  request: ConnectedAppUpgradeActivationRequest, capability: AppReviewCapabilityPort = capabilityService,
+  options: ConnectedUpgradeOptions = {}): Promise<ConnectedAppUpgradeReview> {
+  let result: ConnectedAppUpgradeReview | undefined;
+  await activateConnectedAppInstallation(actor, installationId, request, capability, {
+    failBeforePointerSwap: options.failBeforePointerSwap,
+    assertUpgradeReview: async (tx, context, review) => {
+      await assertConnectedUpgradeTarget(tx, context, request);
+      result = connectedUpgradeReview(request, review);
+      if (result.upgrade_review_digest !== request.expected_upgrade_review_digest) {
+        throw appError('Reviewed upgrade policy changed before activation', 'APP_STALE');
+      }
+    },
+    finalGuard: async tx => {
+      await options.guard?.(tx);
+      if (!APPS_ENABLED) throw new AppError('Apps are unavailable', 'APP_DISABLED', 503);
+    },
+    upgradeAudit: { pending_work_policy: request.pending_work_policy,
+      prior_app_version_id: request.prior_app_version_id,
+      upgrade_review_digest: request.expected_upgrade_review_digest },
+  });
+  return result!;
+}
+
 async function lockReviewInputs(
   executor: ReviewExecutor,
   context: ReviewContext,
@@ -1159,7 +1248,13 @@ export async function activateConnectedAppInstallation(
   installationId: string,
   request: ConnectedAppActivationRequest,
   capability: AppReviewCapabilityPort = capabilityService,
-  testHooks?: { failBeforePointerSwap?: boolean },
+  testHooks?: {
+    failBeforePointerSwap?: boolean;
+    /** Used only by the separately versioned connected-upgrade entry point. */
+    assertUpgradeReview?: (executor: ReviewExecutor, context: ReviewContext, review: ConnectedAppReview) => Promise<void>;
+    finalGuard?: (executor: ReviewExecutor) => Promise<void>;
+    upgradeAudit?: Readonly<Record<string, unknown>>;
+  },
 ): Promise<ConnectedAppReview> {
   assertHumanManager(actorValue);
   await assertCurrentModuleManagerWithExecutor(db, actorValue);
@@ -1170,6 +1265,10 @@ export async function activateConnectedAppInstallation(
     await assertCurrentModuleManagerWithExecutor(tx, actorValue);
     await lockReviewInputs(tx, before);
     const context = await loadReviewContext(tx, actorValue, installationId, request);
+    if (isConnectedAppProtocolVersion(context.version.protocol_version) && context.installation.active_version_id
+      && context.installation.active_version_id !== context.version.id && !testHooks?.assertUpgradeReview) {
+      throw new AppError('Explicit connected upgrade review is required', 'APP_REVIEW_REQUIRED', 409);
+    }
     const evidence = new Map<string, ProviderEvidence>();
     for (const [key, currentConnection] of context.connections) {
       const item = discovered.get(key);
@@ -1187,6 +1286,7 @@ export async function activateConnectedAppInstallation(
       evidence,
       await priorAuthoritySurface(tx, context.installation),
     );
+    await testHooks?.assertUpgradeReview?.(tx, context, review);
     if (review.module_adoptions.length && request.accept_module_adoptions !== true) {
       throw new AppError('Existing Module adoption must be explicitly accepted', 'APP_REVIEW_REQUIRED', 409);
     }
@@ -1300,6 +1400,7 @@ export async function activateConnectedAppInstallation(
       });
     }
     await installOrCarryIncludedModules(tx, actorValue, context, postCommit);
+    await testHooks?.finalGuard?.(tx);
     if (testHooks?.failBeforePointerSwap) throw new Error('Injected connected App activation failure');
     const now = new Date();
     if (context.installation.active_version_id && context.installation.active_version_id !== context.version.id) {
@@ -1365,7 +1466,7 @@ export async function activateConnectedAppInstallation(
         grant_epoch: activeInstallation.grant_epoch,
         review_digest: review.review_digest,
       },
-      metadata: { source: actorValue.source },
+      metadata: { source: actorValue.source, ...testHooks?.upgradeAudit },
     });
     return review;
   });

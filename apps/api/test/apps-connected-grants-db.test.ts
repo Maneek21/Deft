@@ -85,6 +85,10 @@ import {
 } from '../src/lib/app-service.js';
 import {
   activateConnectedAppInstallation,
+  activateConnectedAppUpgrade,
+  prepareConnectedAppUpgradeReview,
+  type ConnectedAppActivationRequest,
+  type AppReviewCapabilityPort,
   getConnectedAppGrantManagement,
   inspectConnectedAppHealth,
   prepareConnectedAppReview,
@@ -133,6 +137,20 @@ function moduleRef(installationId: string, resourceType: string, resourceId: str
     resource_type: resourceType,
     resource_id: resourceId,
   };
+}
+
+async function activateReviewedConnectedUpgrade(actor: ReturnType<typeof humanModuleActor>, installationId: string,
+  request: ConnectedAppActivationRequest, capability: AppReviewCapabilityPort,
+  options?: { failBeforePointerSwap?: boolean }) {
+  const [prior] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installationId),
+  ));
+  assert.ok(prior?.active_version_id);
+  const upgrade = { ...request, schema_version: 'deft.connected_app_upgrade_request.v1' as const,
+    prior_app_version_id: prior.active_version_id, pending_work_policy: 'supersede_pending_work' as const };
+  const review = await prepareConnectedAppUpgradeReview(actor, installationId, upgrade, capability);
+  return activateConnectedAppUpgrade(actor, installationId, { ...upgrade,
+    expected_upgrade_review_digest: review.upgrade_review_digest }, capability, options);
 }
 
 async function relationPersistenceSnapshot(
@@ -2172,7 +2190,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   ));
   try {
     await assert.rejects(
-      activateConnectedAppInstallation(actor, predecessor.id, {
+      activateReviewedConnectedUpgrade(actor, predecessor.id, {
         ...reviewRequest,
         expected_review_digest: review.review_digest,
         accept_host_policy: true,
@@ -2187,7 +2205,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     ));
   }
   await assert.rejects(
-    activateConnectedAppInstallation(actor, predecessor.id, {
+    activateReviewedConnectedUpgrade(actor, predecessor.id, {
       ...reviewRequest,
       expected_review_digest: review.review_digest,
       accept_host_policy: true,
@@ -2231,7 +2249,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     eq(appGrantSnapshots.snapshot_kind, 'effective'),
   )))[0]?.value, 0);
 
-  await activateConnectedAppInstallation(actor, predecessor.id, {
+  await activateReviewedConnectedUpgrade(actor, predecessor.id, {
     ...reviewRequest,
     expected_review_digest: review.review_digest,
     accept_host_policy: true,
@@ -2410,7 +2428,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   );
   assert.equal(identicalReview.permission_diff.kind, 'unchanged');
   assert.equal(identicalReview.permission_diff.carry_forward_eligible, true);
-  await activateConnectedAppInstallation(actor, predecessor.id, {
+  await activateReviewedConnectedUpgrade(actor, predecessor.id, {
     ...identicalReviewRequest,
     expected_review_digest: identicalReview.review_digest,
     accept_host_policy: false,
@@ -2453,7 +2471,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.deepEqual(widenedReview.permission_diff.changed_atoms, ['resources', 'included_modules']);
   assert.equal(widenedReview.permission_diff.carry_forward_eligible, false);
   await assert.rejects(
-    activateConnectedAppInstallation(actor, predecessor.id, {
+    activateReviewedConnectedUpgrade(actor, predecessor.id, {
       ...widenedReviewRequest,
       expected_review_digest: widenedReview.review_digest,
       accept_host_policy: false,
