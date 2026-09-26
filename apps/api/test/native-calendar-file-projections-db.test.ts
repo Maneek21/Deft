@@ -11,8 +11,10 @@ import { resolveNativeCalendarDisplay, resolveNativeFileDisplay } from
 
 const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = target === process.env.DATABASE_URL && target !== undefined
+  && new URL(target).username === 'gate_g_test' && !new URL(target).password
   && new URL(target).hostname === '127.0.0.1' && new URL(target).port === '55435'
-  && /^\/gate_g_phase5_test_c0(?:3b|4)_(?:public|root)(?:_v[0-9]+)?$/.test(new URL(target).pathname);
+  && !new URL(target).search && !new URL(target).hash
+  && /^\/(?:gate_g_phase5_test_c0(?:3b|4)_(?:public|root)|gate_g_20260926_c17_file_download_test)(?:_v[0-9]+)?$/.test(new URL(target).pathname);
 
 test('native Calendar and File display uses current event owner and attachment parent ACLs',
   { skip: !safe }, async () => {
@@ -144,11 +146,11 @@ test('native Calendar and File display uses current event owner and attachment p
       assert.equal((await resolveNativeFileDisplay(owner, stagedId))?.label, 'staged-owner.txt');
       assert.equal(await resolveNativeFileDisplay(peer, stagedId), null);
       assert.equal((await resolveNativeFileDisplay(owner, taskFileId))?.label, 'task-attachment.txt');
-      // Existing direct owner helper does not validate Space/Project org on
-      // these malformed parent rows; the App-facing leaf must fail closed.
-      assert.ok(await getVisibleAttachment(malformedMessageFileId, orgId, ownerId));
-      assert.ok(await getVisibleAttachment(malformedTaskFileId, orgId, ownerId));
-      assert.ok(await getVisibleAttachment(legacyBadId, orgId, ownerId));
+      // Generic File and native display both validate the complete parent org
+      // chain; neither typed nor legacy links borrow foreign parent visibility.
+      assert.equal(await getVisibleAttachment(malformedMessageFileId, orgId, ownerId), null);
+      assert.equal(await getVisibleAttachment(malformedTaskFileId, orgId, ownerId), null);
+      assert.equal(await getVisibleAttachment(legacyBadId, orgId, ownerId), null);
       assert.equal(await resolveNativeFileDisplay(owner, malformedMessageFileId), null);
       assert.equal(await resolveNativeFileDisplay(owner, malformedTaskFileId), null);
       assert.equal(await resolveNativeFileDisplay(owner, legacyBadId), null);
