@@ -2892,6 +2892,102 @@
           "name": "native resource web resolver binds current session and owner without widening v1 or Runtime access"
         }
       ]
+    },
+    {
+      "id": "public-cancellation-owner-a",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "retained public cancellation selects one current owner binding and releases only after exact approved native effect and verified receipt"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "public cancellation owner selection and replay never acquire a retained original or selected Run lock behind current App authority"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "retained customer cancellation after upgrade requires explicit current owner consent to exact historical create pins"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "accepted current owner cancellation outlives customer control expiry without extending that public capability"
+        }
+      ]
+    },
+    {
+      "id": "public-cancellation-owner-b",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "controlled persisted failed and unknown cancel Runs project honest retained reservation states without a refund"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "current cancel binding revocation after review or approval never releases the reservation or refunds the original daily charge"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "public cancellation late capsule writes roll back current owner human SID and native gate withdrawal without partial Run or selection"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-owner-http-db.test.ts",
+          "name": "public cancellation maintenance repairs lost post-commit settlement after actual capsule purge using retained signed receipts and exact native ledger hashes"
+        }
+      ]
+    },
+    {
+      "id": "public-cancellation-contracts",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-cancellation-contract.test.ts",
+          "name": "public cancellation owner review token retains key versions across instances and rejects tampering or another audience"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-contract.test.ts",
+          "name": "historical Calendar-create consent has exactly bounded unique version and grant pins"
+        }
+      ]
+    },
+    {
+      "id": "public-cancellation-schema",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-cancellation-schema-db.test.ts",
+          "name": "public cancellation SQL historical consent accepts sixteen exact tuples and rejects malformed or widened ancestry"
+        },
+        {
+          "file": "apps/api/test/app-public-cancellation-schema-db.test.ts",
+          "name": "public cancellation SQL retains unique owner selection and inherited original Run ancestry with deferred complete association"
+        }
+      ]
+    },
+    {
+      "id": "attachment-custody-schema",
+      "description": "Dormant attachment schema proof; staged producer version is recorded in checkpoint evidence. Not full attachment acceptance.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-custody-schema-db.test.ts",
+          "name": "official attachment fresh schema contains exact .47 ledger, scoped custody FKs and enforcing triggers"
+        },
+        {
+          "file": "apps/api/test/app-attachment-custody-schema-db.test.ts",
+          "name": "installed SQL consent check denies old-binding promotion and closed v3 policy widening/null/duplicate bypasses"
+        }
+      ]
+    },
+    {
+      "id": "attachment-grant-schema",
+      "description": "Dormant attachment schema proof; staged producer version is recorded in checkpoint evidence. Not full attachment acceptance.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-grant-schema-db.test.ts",
+          "name": "installed .50 grant functions deny scope, reviewer, unsupported and null authority in isolated corruption probes"
+        },
+        {
+          "file": "apps/api/test/app-attachment-grant-schema-db.test.ts",
+          "name": "protocol7 live pointer cannot become bare and active checkpoint accounting excludes purged history by index"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

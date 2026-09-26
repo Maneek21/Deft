@@ -1,12 +1,5 @@
 /** Synthetic separate process. IPC carries transient credentials privately;
  * reports retain only Run/attempt/queue state, never credential values. */
-import { AppRunAttemptRunner } from '../../src/lib/app-run-attempt-runner.js';
-import { AppRunSecretService } from '../../src/lib/app-run-secrets.js';
-import { PostgresAppRunReceiptWriter } from '../../src/lib/app-run-receipts.js';
-import { AppResourceSyncChannel } from '../../src/lib/app-resource-sync-channel.js';
-import { AppRuntimeChannel } from '../../src/lib/app-runtime-channel.js';
-import { getAppRunRuntime, shutdownAppRunRuntime } from '../../src/lib/app-run-runtime.js';
-import { closeDb } from '../../src/lib/db.js';
 import { writeFile } from 'node:fs/promises';
 
 const database = new URL(process.env.DATABASE_URL ?? 'postgresql://invalid');
@@ -14,6 +7,17 @@ if (database.username !== 'gate_g_test' || database.hostname !== '127.0.0.1' || 
   || !/^\/gate_g_20260926_c12_runtime_maintenance_test(?:_v[0-9]+)?$/.test(database.pathname)) {
   throw Error('Synthetic maintenance child requires dedicated guarded database');
 }
+
+// Reject an unsafe target before loading the API dependency graph. Static
+// imports run before the guard and delayed rejection past its bounded timeout.
+const [{ AppRunAttemptRunner }, { AppRunSecretService }, { PostgresAppRunReceiptWriter },
+  { AppResourceSyncChannel }, { AppRuntimeChannel }, { getAppRunRuntime, shutdownAppRunRuntime },
+  { closeDb }] = await Promise.all([
+  import('../../src/lib/app-run-attempt-runner.js'), import('../../src/lib/app-run-secrets.js'),
+  import('../../src/lib/app-run-receipts.js'), import('../../src/lib/app-resource-sync-channel.js'),
+  import('../../src/lib/app-runtime-channel.js'), import('../../src/lib/app-run-runtime.js'),
+  import('../../src/lib/db.js'),
+]);
 
 process.on('message', async (message: any) => {
   try {
