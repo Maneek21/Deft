@@ -1,2 +1,3 @@
 export const HUDDLES_ENABLED = process.env.NEXT_PUBLIC_FEATURE_HUDDLES === 'true';
 export const APPS_ENABLED = process.env.NEXT_PUBLIC_FEATURE_APPS === 'true';
+export const APP_RESOURCE_SYNC_ENABLED = APPS_ENABLED && process.env.NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC === 'true';

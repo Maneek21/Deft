@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/empty-state';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
+import { APP_RESOURCE_SYNC_ENABLED } from '@/lib/feature-flags';
 import { useAuth } from '@/lib/auth-context';
 import { APP_PACKAGE_MAX_BYTES, appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
@@ -134,6 +135,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     <input ref={inputRef} type="file" accept="application/json,.json" onChange={(event) => void inspect(event)} className="sr-only" aria-label="Choose a Deft App package" />
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6">
       <div className="mx-auto max-w-5xl space-y-4">
+        {canManage && APP_RESOURCE_SYNC_ENABLED && <Link className="deft-pill min-h-11" href="/settings/apps/private-resources">Your private App resources</Link>}
         {message && <div role={message.tone === 'error' ? 'alert' : 'status'} className="rounded-lg px-3 py-2 text-[13px]" style={{ background: message.tone === 'error' ? 'var(--danger-subtle)' : 'rgba(48,164,108,.12)', color: message.tone === 'error' ? 'var(--error)' : 'var(--status-green)' }}>{message.text}</div>}
         {pairing && <section className="rounded-xl p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }} aria-label="One-time developer pairing">
           <div className="flex items-start justify-between gap-3"><div><h2 className="text-sm font-semibold">One-time Codex pairing</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Enter this only in the CLI prompt. It expires at {new Date(pairing.expires_at).toLocaleTimeString()} and cannot be replayed.</p></div><button type="button" onClick={() => setPairing(null)} aria-label="Dismiss pairing"><X size={16} /></button></div>
@@ -169,7 +171,8 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
   const connectedManifest = isConnectedAppManifest(pending.manifest) ? pending.manifest : null;
   const connected = Boolean(connectedManifest);
   const runtime = pending.manifest.compatibility.app_protocol === '3'
-    || pending.manifest.compatibility.app_protocol === '4';
+    || pending.manifest.compatibility.app_protocol === '4'
+    || pending.manifest.compatibility.app_protocol === '5';
   return <section className="rounded-xl p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--primary)' }}>
     <div className="flex items-start gap-3"><ShieldCheck size={20} style={{ color: 'var(--status-green)' }} /><div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">Review {pending.manifest.name}{upgradeTarget ? ' upgrade' : ''}</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{pending.manifest.description ?? 'Declarative workspace App.'}</p></div></div>
     <dl className="mt-4 grid gap-2 text-xs sm:grid-cols-2"><Fact label="Identity" value={`${pending.manifest.id}@${pending.manifest.version}`} /><Fact label="Protocol" value={`App v${pending.manifest.compatibility.app_protocol}`} /><Fact label="Package format" value={pending.package_format} /><Fact label="License" value={pending.manifest.license} /><Fact label="Provenance" value={pending.manifest.provenance ? `Unsigned local · unverified ${pending.manifest.provenance.source_repository}@${pending.manifest.provenance.source_commit}` : 'Unsigned local package · no source attestation'} /><Fact label="Package digest" value={pending.package_digest} mono /></dl>
@@ -183,7 +186,8 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
 function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChooseUpgrade }: { app: AppInstallation; canManage: boolean; busy: boolean; onActivate: () => void; onEnable: () => void; onDisable: () => void; onChooseUpgrade: () => void }) {
   const connected = isConnectedAppManifest(app.manifest);
   const runtime = app.manifest.compatibility.app_protocol === '3'
-    || app.manifest.compatibility.app_protocol === '4';
+    || app.manifest.compatibility.app_protocol === '4'
+    || app.manifest.compatibility.app_protocol === '5';
   const showConnectedManagement = connected || canStageConnectedUpgrade(app);
   const tone = app.state === 'active' ? 'var(--status-green)' : app.state === 'disabled' ? 'var(--outline)' : 'var(--status-amber)';
   return <article className={`flex min-h-56 min-w-0 flex-col rounded-xl p-4 ${connected || runtime ? 'md:col-span-2' : ''}`} style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}>

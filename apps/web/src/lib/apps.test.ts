@@ -164,6 +164,21 @@ test('App installation normalization preserves v0 and expanded connected manifes
   }
 });
 
+test('resource App normalization preserves Protocol 5 and never enables v0 activation', () => {
+  const base = installation('0');
+  const manifest = { ...base.manifest, schema_version: '5', compatibility: { app_protocol: '5' },
+    runtime_requirements: [{ key: 'provider', protocol_version: 'deft.app_runtime_channel.v2' }],
+    private_capabilities: [], runtime_actions: [], experiences: [], public_actions: [],
+    sync_descriptors: [{ key: 'inbox', requested_visibility: 'user_private' }] };
+  const app = normalizeAppInstallation({ ...base, manifest });
+  assert.equal(app.manifest.schema_version, '5');
+  assert.equal(isConnectedAppManifest(app.manifest), false);
+  assert.equal(canEnableAppWithoutReview({ ...app, state: 'disabled' }), false);
+  if (app.manifest.schema_version === '5') assert.equal(app.manifest.sync_descriptors[0].key, 'inbox');
+  assert.throws(() => normalizeAppInstallation({ ...base, manifest: { ...manifest, sync_descriptors: null } }));
+  assert.throws(() => normalizeAppInstallation({ ...base, manifest: { ...manifest, schema_version: '4' } }));
+});
+
 test('Protocol v0 active and disabled installations expose connected upgrade review', () => {
   const v0 = installation('0') as unknown as Parameters<typeof canStageConnectedUpgrade>[0];
   const v1 = installation('1') as unknown as Parameters<typeof canStageConnectedUpgrade>[0];

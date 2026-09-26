@@ -91,11 +91,16 @@ export type AppInstalledManifestV4 = Omit<AppRuntimeManifestV3, 'schema_version'
   experiences: AppExperienceReference[]; public_actions: unknown[];
 };
 
+export type AppResourceManifestV5 = Omit<AppInstalledManifestV4, 'schema_version' | 'compatibility'> & {
+  schema_version: '5'; compatibility: { app_protocol: '5' };
+  sync_descriptors: Record<string, unknown>[];
+};
+
 export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
-  | AppRuntimeManifestV3 | AppInstalledManifestV4;
+  | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
 export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1'
-  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4';
+  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4' | 'deft.app.package.v5';
 
 export function isConnectedAppManifest(manifest: AppManifest): manifest is ConnectedAppManifest {
   return manifest.compatibility.app_protocol === '1' || manifest.compatibility.app_protocol === '2';
@@ -416,7 +421,8 @@ function packageFormat(value: unknown): AppPackageFormat {
     && value !== 'deft.app.package.v1'
     && value !== 'deft.app.package.v2'
     && value !== 'deft.app.package.v3'
-    && value !== 'deft.app.package.v4') {
+    && value !== 'deft.app.package.v4'
+    && value !== 'deft.app.package.v5') {
     throw new Error('Invalid App package format.');
   }
   return value;
@@ -510,7 +516,7 @@ function normalizeManifest(value: unknown): AppManifest {
   const compatibility = object(row.compatibility, 'App compatibility');
   const protocol = compatibility.app_protocol;
   if (protocol !== '0' && protocol !== '1' && protocol !== '2'
-    && protocol !== '3' && protocol !== '4') throw new Error('Unsupported App protocol.');
+    && protocol !== '3' && protocol !== '4' && protocol !== '5') throw new Error('Unsupported App protocol.');
   if (row.schema_version !== protocol) throw new Error('App manifest protocol and schema do not match.');
   const base: AppManifestBase = {
     id: stringValue(row.id, 'App identity'),
@@ -537,7 +543,7 @@ function normalizeManifest(value: unknown): AppManifest {
     } : {}),
   };
   if (protocol === '0') return { ...base, schema_version: '0', compatibility: { app_protocol: '0' } };
-  if (protocol === '3' || protocol === '4') {
+  if (protocol === '3' || protocol === '4' || protocol === '5') {
     const runtime = {
       ...base,
       runtime_requirements: recordArray(row.runtime_requirements, 'Runtime requirements'),
@@ -545,7 +551,7 @@ function normalizeManifest(value: unknown): AppManifest {
       runtime_actions: recordArray(row.runtime_actions, 'Runtime actions'),
     };
     if (protocol === '3') return { ...runtime, schema_version: '3', compatibility: { app_protocol: '3' } };
-    return { ...runtime, schema_version: '4', compatibility: { app_protocol: '4' },
+    const installed = { ...runtime,
       experiences: recordArray(row.experiences, 'App Experiences').map((item) => {
         if (item.bridge_version !== 'deft.experience_bridge.v1'
           || item.renderer_version !== 'deft.trusted_renderer.v1') {
@@ -555,10 +561,13 @@ function normalizeManifest(value: unknown): AppManifest {
           label: stringValue(item.label, 'Experience label'),
           artifact_path: stringValue(item.artifact_path, 'Experience path'),
           artifact_digest: stringValue(item.artifact_digest, 'Experience digest'),
-          bridge_version: item.bridge_version, renderer_version: item.renderer_version };
+          bridge_version: item.bridge_version as 'deft.experience_bridge.v1', renderer_version: item.renderer_version as 'deft.trusted_renderer.v1' };
       }),
       public_actions: recordArray(row.public_actions, 'public actions'),
     };
+    if (protocol === '4') return { ...installed, schema_version: '4', compatibility: { app_protocol: '4' } };
+    return { ...installed, schema_version: '5', compatibility: { app_protocol: '5' },
+      sync_descriptors: recordArray(row.sync_descriptors, 'App sync descriptors') };
   }
   const connected = {
     ...base,
