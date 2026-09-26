@@ -1985,6 +1985,146 @@
       ],
       "id": "a05-postgres-midnight",
       "description": "C10 actual100/101 persisted Run reservations and natural isolated PostgreSQL/JS midnight while an old provider Run remains in flight, followed by2effects/verifiedreceipts. Requires isolated55436 matching guarded database and private per-process clock shim/file. Never run against host/shared clock; missing clock environment must fail required evidence rather than satisfy via skips."
+    },
+    {
+      "id": "runtime-reviewed-upgrade",
+      "description": "Reviewed same-protocol Runtime App upgrade HTTP and transaction boundaries.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade 3: live prior staging atomic supersede and exact lost-response recovery"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade 4: live prior staging atomic supersede and exact lost-response recovery"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade 5: live prior staging atomic supersede and exact lost-response recovery"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade rejects unknown query/body foreign current-member and stale review pins"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade module carry and additive schema change preserve installation records and rollback"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade counts pending approval even after supported old binding revoke"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade counts all guarded nonterminal sync states without joining live binding authority"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade final web authority: membership inactive"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade final web authority: membership role"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade final web authority: SID revoked"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade final web authority: kind after SID wait"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade final web authority: gate after SID wait"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade final web authority: stage kind after SID wait"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade refuses confirmed pending public outbox before any Run exists until normal worker terminalizes it"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade App fence observes a supported action admission committed after a real lock wait"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade refuses module removal and immutable prior ownership deletion without silently dropping data"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade keeps cross-protocol staging and non-web purposes unsupported"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade settlement never waits on Run locks and retires old private authority while retaining records"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade refuses active inbound dependency metadata until supported dependent disable"
+        },
+        {
+          "file": "apps/api/test/app-runtime-upgrade-http-db.test.ts",
+          "name": "runtime upgrade unchanged Module carry preserves exact identity and nonadditive change rolls back"
+        }
+      ]
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-availability-db.test.ts",
+          "name": "reviewed public availability exposes only authored scalars with bounded opaque pagination and canonical claim omission"
+        },
+        {
+          "file": "apps/api/test/app-public-availability-db.test.ts",
+          "name": "public availability preserves claim-only endpoints and rejects field, version, ownership and cursor substitutions"
+        },
+        {
+          "file": "apps/api/test/app-public-availability-db.test.ts",
+          "name": "public claim deadlines reject actual post-lock expiry while confirmed replay and rollback identities remain honest"
+        },
+        {
+          "file": "apps/api/test/app-public-availability-db.test.ts",
+          "name": "public availability cursor survives another keyring instance and retained-key rotation while exact UTC deadline edges remain closed"
+        },
+        {
+          "file": "apps/api/test/app-public-service-db.test.ts",
+          "name": "reviewed public claims use canonical rows and one transaction for ingress and queue"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "forged forwarding headers cannot multiply socket-peer budget; rejection precedes route"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "unknown socket peer shares a fail-closed bucket regardless of forwarding headers"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "peer identity table is capped and overflow identities share one bucket"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "global budget holds across peer and slug rotation"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "in-flight slots reject before route and release after success or error"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "abort does not release capacity until downstream work settles"
+        },
+        {
+          "file": "apps/api/test/app-public-limits.test.ts",
+          "name": "global concurrency cap spans different verified peers"
+        }
+      ],
+      "id": "public-availability",
+      "description": "Reviewed bounded public availability, deadlines and existing public foundation/limits."
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

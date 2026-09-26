@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
 import type { ServerType } from '@hono/node-server';
-const target = 'postgresql://gate_g_test@127.0.0.1:55435/gate_g_20260926_c11_runtime_upgrade_test';
-const safe = process.env.DATABASE_URL === target && process.env.DEFT_TEST_DATABASE_URL === target;
+const target = process.env.DEFT_TEST_DATABASE_URL;
+const safe = !!target && process.env.DATABASE_URL === target
+  && /^postgresql:\/\/gate_g_test@127\.0\.0\.1:55435\/gate_g_20260926_c11_runtime_upgrade_test(?:_v[0-9]+)?$/.test(target);
 Object.assign(process.env, { DEFT_APPS_ENABLED:'true', DEFT_APP_RUNS_ENABLED:'true', DEFT_APP_RUN_APP_ORIGIN_ENABLED:'true',
  DEFT_APP_RUNTIME_CHANNEL_ENABLED:'true', DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED:'true', DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED:'true' });
 const ring=(kind:string)=>({current:kind,keys:{[kind]:createHash('sha256').update(`c11-upgrade:${kind}`).digest('base64')}});
