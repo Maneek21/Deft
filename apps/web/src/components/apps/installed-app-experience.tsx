@@ -140,11 +140,11 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   };
   const withdrawExposure = async () => {
     if (!session) return;
-    reviewGeneration.current += 1; setExposureBusy(true); setReview(null);
+    const generation = ++reviewGeneration.current; setExposureBusy(true); setReview(null);
     stopWorker.current?.(false);
     setError('Private access ended. Reopen this Experience to review a new session.');
     await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE', keepalive: true }).catch(() => undefined);
-    setExposure(null); setExposureBusy(false);
+    if (generation === reviewGeneration.current) { setExposure(null); setExposureBusy(false); }
   };
 
   useEffect(() => {
@@ -295,14 +295,14 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div><p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Installed App Experience</p>
         <h1 className="text-xl font-semibold">{session?.experience.label ?? 'Loading Experience'}</h1></div>
-      <Link className="deft-pill min-h-11" href="/settings/apps">App settings</Link>
+      <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps">App settings</Link>
     </header>
     {error ? <p role="alert" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
       : !ready ? <p role="status" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening reviewed App Experience…</p>
       : null}
     {session && session.bundle.resource_keys.length > 0 && <section aria-label="Experience private access" className="mb-4 min-w-0 space-y-3 rounded-xl border p-4 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>
-      {exposure ? <><p>This session may read the private fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
-        <button className="deft-pill min-h-11" onClick={() => void withdrawExposure()}>End private access</button></>
+      {exposure && !error ? <><p>This session may read the private fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
+        <button className="deft-pill min-h-11" style={{ minHeight: 44 }} onClick={() => void withdrawExposure()}>End private access</button></>
         : review ? <><h2 className="font-semibold">Allow private fields for this Experience?</h2>
           <p>Allow this Experience’s App code to read the listed saved private fields for this session, until {new Date(review.snapshot.expires_at).toLocaleString()}? It can process and display these records. Ending access stops future reads; previously delivered content cannot be recalled.</p>
           <dl className="space-y-2"><div><dt>App</dt><dd>{review.snapshot.app_name} {review.snapshot.app_version}</dd></div>
@@ -310,16 +310,17 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             <div><dt>Verified artifact</dt><dd className="break-all font-mono text-xs">{review.snapshot.artifact_digest}</dd></div></dl>
           {review.snapshot.resources.map(resource => <div key={resource.resource_key} className="min-w-0 rounded-lg border p-3" style={{ borderColor: 'var(--ghost-border)' }}>
             <p className="break-words font-medium">{resource.label} ({resource.resource_type})</p>
-            <p>Allowed reads: list saved record summaries; read one saved record.</p><p className="break-words">Permitted fields: {resource.allowed_fields.join(', ')}.</p>
-            <p>At most 10 summaries per page; 32 scalar fields; 4096 characters per string; 60 KiB per response.</p></div>)}
+            <p>Allowed reads: list saved record summaries; read one saved record{resource.allowed_operations.includes('search') ? '; search approved fields using literal queries with snippets' : ''}.</p><p className="break-words">Permitted fields: {resource.allowed_fields.join(', ')}.</p>
+            {resource.allowed_operations.includes('search') && <p>Literal search examines the complete saved approved fields within the App’s reviewed limits. It delivers at most 240 characters per matching excerpt. Continue until the search is complete.</p>}
+            <p>At most 10 {resource.allowed_operations.includes('search') ? 'summaries or search matches' : 'summaries'} per page; 32 scalar fields; 4096 characters per string; 60 KiB per response.</p></div>)}
           <p>The recipient is the verified App author Worker for this exact session. Provider credentials and provider identifiers are excluded.</p>
-          <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" disabled={exposureBusy} onClick={() => void acceptExposure()}>Allow listed private fields</button>
-            <button className="deft-pill min-h-11" disabled={exposureBusy} onClick={() => { reviewGeneration.current += 1; setReview(null); }}>Cancel private access review</button></div></>
+          <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => void acceptExposure()}>Allow listed private fields</button>
+            <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => { reviewGeneration.current += 1; setReview(null); }}>Cancel private access review</button></div></>
           : <><p>This App’s code cannot read your saved private resources until you approve the exact fields for this session.</p>
-            <button className="deft-pill min-h-11" disabled={exposureBusy || !!error} onClick={() => void prepareExposure()}>Review private access</button></>}
+            <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy || !!error} onClick={() => void prepareExposure()}>Review private access</button></>}
       {exposureBusy && <p role="status">Checking private access…</p>}
     </section>}
-    {error && <button className="deft-pill mb-4 min-h-11" onClick={() => { setExposure(null); setReview(null); setOpening(value => value + 1); }}>Reopen Experience</button>}
+    {error && <button className="deft-pill mb-4 min-h-11" style={{ minHeight: 44 }} onClick={() => { setExposure(null); setReview(null); setOpening(value => value + 1); }}>Reopen Experience</button>}
     <div ref={viewHost} className="min-h-[420px] overflow-hidden rounded-xl" aria-label="App Experience" />
     <div ref={iframeHost} aria-hidden="true" />
   </div>;

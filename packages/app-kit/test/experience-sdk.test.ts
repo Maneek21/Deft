@@ -11,6 +11,27 @@ class Port {
   receive(value: unknown) { this.onmessage?.({ data:value } as MessageEvent); }
 }
 
+test('SDK search uses closed request v2 and rejects private metadata or unselected fields in replies', async () => {
+  const port = new Port(), sdk = createDeftExperienceSdk(port, 'session_12345678');
+  const reply = { schema_version: 'deft.experience_resource_search_page.v1', operation: 'search',
+    items: [{ record_id: '00000000-0000-4000-8000-000000000001', label: 'Subject', snippet: 'literal needle', field_key: 'subject' }],
+    scan: { records_scanned: 100, complete: false }, next_cursor: 'signed_cursor', freshness: 'unknown' };
+  const first = sdk.searchResourceRecords('inbox', { query: 'needle', field_keys: ['subject'] });
+  assert.deepEqual((port.sent[0] as { input: unknown }).input,
+    { schema_version: 'deft.experience_resource_request.v2', operation: 'search', query: 'needle', field_keys: ['subject'] });
+  port.receive({ version: 'deft.experience_bridge.v1', kind: 'response', session_id: 'session_12345678', request_id: 'request_1', ok: true, output: reply });
+  assert.deepEqual(await first, reply);
+  for (const output of [{ ...reply, provider_id: 'secret' }, { ...reply, items: [{ ...reply.items[0], field_key: 'body' }] },
+    { ...reply, scan: { records_scanned: 100, complete: true } }]) {
+    const promise = sdk.searchResourceRecords('inbox', { query: 'needle', field_keys: ['subject'] });
+    port.receive({ version: 'deft.experience_bridge.v1', kind: 'response', session_id: 'session_12345678',
+      request_id: (port.sent.at(-1) as { request_id: string }).request_id, ok: true, output });
+    await assert.rejects(promise, /Invalid Experience search response/);
+  }
+  assert.throws(() => sdk.searchResourceRecords('inbox', { query: ' ', field_keys: ['subject'] }));
+  assert.throws(() => sdk.searchResourceRecords('inbox', { query: 'needle', field_keys: ['subject', 'subject'] }));
+});
+
 test('SDK sequences views and requests and ignores foreign-session responses', async () => {
   const port = new Port();
   const sdk = createDeftExperienceSdk(port, 'session_12345678');

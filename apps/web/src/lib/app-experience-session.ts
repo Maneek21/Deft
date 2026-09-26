@@ -11,7 +11,7 @@ export type InstalledExperienceSession = Readonly<{
   pin: ExperiencePin;
   experience: Readonly<{ key: string; label: string; artifact_digest: string;
     bridge_version: 'deft.experience_bridge.v1'; renderer_version: 'deft.trusted_renderer.v1' }>;
-  bundle: Readonly<{ schema_version: 'deft.experience_bundle.v1'; worker_source: string;
+  bundle: Readonly<{ schema_version: 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2'; search_resource_keys?: readonly string[]; worker_source: string;
     entry_view: string; resource_keys: readonly string[]; action_keys: readonly string[] }>;
   expires_at: string;
 }>;
@@ -19,7 +19,7 @@ export type InstalledExperienceSession = Readonly<{
 export type ExperienceExposureStatus = Readonly<{ exposure_id: string; exposure_epoch: number;
   review_digest: string; expires_at: string; active: true }>;
 export type ExperienceExposureReview = Readonly<{ review_token: string; review_digest: string; snapshot: {
-  schema_version: 'deft.experience_resource_exposure.v1'; destination: 'verified_installed_experience_worker';
+  schema_version: 'deft.experience_resource_exposure.v1' | 'deft.experience_resource_exposure.v2'; destination: 'verified_installed_experience_worker';
   app_name: string; app_version: string; owner_label: string; experience_label: string; artifact_digest: string;
   expires_at: string; review_expires_at: string; resources: Array<{ resource_key: string; label: string; resource_type: string;
     allowed_operations: string[]; allowed_fields: string[] }>;
@@ -33,22 +33,23 @@ export function normalizeExperienceExposureStatus(value: unknown): ExperienceExp
 }
 export function normalizeExperienceExposureReview(value: unknown): ExperienceExposureReview {
   const row = object(value); const snapshot = object(row.snapshot);
-  if (snapshot.schema_version !== 'deft.experience_resource_exposure.v1' || snapshot.destination !== 'verified_installed_experience_worker'
+  if (!['deft.experience_resource_exposure.v1', 'deft.experience_resource_exposure.v2'].includes(String(snapshot.schema_version)) || snapshot.destination !== 'verified_installed_experience_worker'
     || typeof row.review_token !== 'string' || row.review_token.length > 24576 || !/^sha256:[a-f0-9]{64}$/.test(String(row.review_digest))
     || !Array.isArray(snapshot.resources) || snapshot.resources.length < 1 || snapshot.resources.length > 16
     || !Number.isFinite(new Date(String(snapshot.expires_at)).getTime())
     || !Number.isFinite(new Date(String(snapshot.review_expires_at)).getTime())) throw new Error('Private access review is unavailable.');
   return { review_token: row.review_token, review_digest: str(row.review_digest), snapshot: {
-    schema_version: 'deft.experience_resource_exposure.v1', destination: 'verified_installed_experience_worker',
+    schema_version: snapshot.schema_version as 'deft.experience_resource_exposure.v1' | 'deft.experience_resource_exposure.v2', destination: 'verified_installed_experience_worker',
     app_name: str(snapshot.app_name), app_version: str(snapshot.app_version), owner_label: str(snapshot.owner_label),
     experience_label: str(snapshot.experience_label), artifact_digest: str(snapshot.artifact_digest), expires_at: str(snapshot.expires_at),
     review_expires_at: str(snapshot.review_expires_at), resources: snapshot.resources.map(value => {
       const resource = object(value);
       if (!Array.isArray(resource.allowed_fields) || resource.allowed_fields.length > 32
         || !resource.allowed_fields.every(field => typeof field === 'string' && field.length <= 48)
-        || JSON.stringify(resource.allowed_operations) !== '["list_summary","read_one"]') throw new Error('Private access review is unavailable.');
+        || !(JSON.stringify(resource.allowed_operations) === '["list_summary","read_one"]'
+          || snapshot.schema_version === 'deft.experience_resource_exposure.v2' && JSON.stringify(resource.allowed_operations) === '["list_summary","read_one","search"]')) throw new Error('Private access review is unavailable.');
       return { resource_key: str(resource.resource_key), label: str(resource.label), resource_type: str(resource.resource_type),
-        allowed_operations: ['list_summary', 'read_one'], allowed_fields: resource.allowed_fields as string[] };
+        allowed_operations: resource.allowed_operations as string[], allowed_fields: resource.allowed_fields as string[] };
     }),
   } };
 }
@@ -80,12 +81,19 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
   const bundle = object(result.bundle);
   if (experience.bridge_version !== 'deft.experience_bridge.v1'
     || experience.renderer_version !== 'deft.trusted_renderer.v1'
-    || bundle.schema_version !== 'deft.experience_bundle.v1'
+    || !['deft.experience_bundle.v1', 'deft.experience_bundle.v2'].includes(String(bundle.schema_version))
     || typeof bundle.worker_source !== 'string'
     || new TextEncoder().encode(bundle.worker_source).byteLength < 1
     || new TextEncoder().encode(bundle.worker_source).byteLength > 64 * 1024) {
     throw new Error('Unsupported Experience bundle.');
   }
+  const resourceKeys = keys(bundle.resource_keys);
+  const searchKeys = bundle.schema_version === 'deft.experience_bundle.v2' ? keys(bundle.search_resource_keys) : undefined;
+  const allowed = ['schema_version', 'worker_source', 'entry_view', 'resource_keys', 'action_keys',
+    ...(searchKeys ? ['search_resource_keys'] : [])];
+  if (Object.keys(bundle).some(key => !allowed.includes(key)) || searchKeys && (!searchKeys.length
+    || new Set(searchKeys).size !== searchKeys.length || searchKeys.some((key, index) => !resourceKeys.includes(key)
+      || index > 0 && searchKeys[index - 1]! >= key))) throw new Error('Unsupported Experience bundle.');
   const normalizedPin = {
     org_id: str(pin.org_id), user_id: str(pin.user_id),
     app_installation_id: str(pin.app_installation_id),
@@ -99,7 +107,8 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
     experience: { key: str(experience.key), label: str(experience.label),
       artifact_digest: str(experience.artifact_digest),
       bridge_version: 'deft.experience_bridge.v1', renderer_version: 'deft.trusted_renderer.v1' },
-    bundle: { schema_version: 'deft.experience_bundle.v1',
+    bundle: { schema_version: bundle.schema_version as 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2',
+      ...(searchKeys ? { search_resource_keys: searchKeys } : {}),
       worker_source: bundle.worker_source, entry_view: str(bundle.entry_view),
       resource_keys: keys(bundle.resource_keys), action_keys: keys(bundle.action_keys) },
     expires_at: str(result.expires_at),

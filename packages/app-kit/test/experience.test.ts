@@ -14,6 +14,22 @@ const bundle = {
 } as const;
 const path = 'experiences/workspace.json';
 
+test('search requires explicit closed bundle v2 pinned by canonical artifact bytes', async () => {
+  const old = await prepareDeftExperienceArtifact(path, bundle);
+  assert.equal(old.content, JSON.stringify(bundle));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...bundle, search_resource_keys: ['records'] }));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...bundle, schema_version: 'deft.experience_bundle.v2', search_resource_keys: [] }));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...bundle, schema_version: 'deft.experience_bundle.v2', search_resource_keys: ['foreign'] }));
+  const v2 = { ...bundle, schema_version: 'deft.experience_bundle.v2', search_resource_keys: ['records'] };
+  const artifact = await prepareDeftExperienceArtifact(path, v2);
+  assert.notEqual(artifact.digest, old.digest);
+  const reference = { artifact_path: path, artifact_digest: artifact.digest,
+    bridge_version: DEFT_EXPERIENCE_BRIDGE_VERSION, renderer_version: DEFT_EXPERIENCE_RENDERER_VERSION };
+  assert.deepEqual(await verifyDeftExperienceArtifact(reference, artifact), v2);
+  await assert.rejects(() => verifyDeftExperienceArtifact({ ...reference, artifact_digest: old.digest }, artifact));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...v2, schema_version: 'deft.experience_bundle.v3' }));
+});
+
 test('canonical Experience artifact verifies its exact path, MIME, length and digest', async () => {
   const artifact = await prepareDeftExperienceArtifact(path, bundle);
   const ref = { artifact_path: path, artifact_digest: artifact.digest,

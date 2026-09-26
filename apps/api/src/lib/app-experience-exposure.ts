@@ -4,14 +4,15 @@ import { z } from 'zod';
 import { appExperienceSessions, appExperienceResourceExposures, appExperienceResourceExposureResources,
   appExperienceResourceExposureAudit, appInstallations, appVersions, appGrantSnapshots, appResourceBindings,
   appRuntimeRegistrations, appSyncCheckpoints, appResourceProjections, users } from '@deft/db/schema';
-import { parseSyncPage } from '@deft/app-kit/experimental/resource-sync';
+import { decodePrivateProjection } from './app-resource-private-projection.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { verifiedExperienceBundle, assertExperienceWeb, type ExperienceCaller } from './app-experience-service.js';
 import { experienceExposureDatabase, type ExperienceExposureTransaction } from './app-experience-exposure-db.js';
 import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled } from './env.js';
-import { EXPOSURE_VERSION, PAYLOAD_VERSION, EXPOSURE_LIMITS, ExposureSnapshotSchema, ExposureAcceptSchema,
+import { scanPrivateResourceCheckpoint } from './app-resource-private-search-scan.js';
+import { EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, ExposureSearchCursorSchema, PAYLOAD_VERSION, EXPOSURE_LIMITS, ExposureSnapshotSchema, ExposureAcceptSchema,
   ExposureCursorSchema, ResourceRequestSchema, ExperienceExposureError, exposureUnavailable, exposureStale,
   exposureDigest, sealExposureToken, openExposureToken, exposurePayloadData, type ExposureSnapshot } from './app-experience-exposure-contract.js';
 
@@ -139,12 +140,15 @@ export class AppExperienceExposureService {
       if (!fields.length || fields.length > 32 || fields.some(field => field.length > 48)) throw exposureUnavailable();
       return { resource_key: a.binding.resource_key, binding_id: a.binding.id, registration_id: a.registration.id,
         runtime_epoch: a.registration.runtime_epoch, descriptor_digest: a.descriptor_digest, resource_type: a.descriptor.resource_type,
-        label: label(a.descriptor.key), allowed_operations: ['list_summary', 'read_one'] as ['list_summary', 'read_one'], allowed_fields: fields,
+        label: label(a.descriptor.key), allowed_operations: context.verified.bundle.schema_version === 'deft.experience_bundle.v2'
+          && context.verified.bundle.search_resource_keys.includes(a.binding.resource_key)
+          ? ['list_summary', 'read_one', 'search'] as ['list_summary', 'read_one', 'search']
+          : ['list_summary', 'read_one'] as ['list_summary', 'read_one'], allowed_fields: fields,
         consent_expires_at: a.binding.consent_expires_at!.toISOString() };
     });
     const expiry = Math.min(preparedAt.getTime() + EXPOSURE_LIMITS.exposure_ms, accessExpiry.getTime(), context.web.expires_at.getTime(),
       context.session.expires_at.getTime(), ...context.authorities.map(a => a.binding.consent_expires_at!.getTime()));
-    return ExposureSnapshotSchema.parse({ schema_version: EXPOSURE_VERSION, payload_policy_version: PAYLOAD_VERSION,
+    return ExposureSnapshotSchema.parse({ schema_version: context.verified.bundle.schema_version === 'deft.experience_bundle.v2' ? SEARCH_EXPOSURE_VERSION : EXPOSURE_VERSION, payload_policy_version: PAYLOAD_VERSION,
       visibility: 'user_private', destination: 'verified_installed_experience_worker', org_id: caller.org_id, owner_user_id: caller.user_id,
       owner_label: context.owner_label, web_session_id: caller.sid, experience_session_id: context.session.id,
       installation_id: context.installation.id, app_version_id: context.version.id, app_name: label(context.verified.manifest.name),
@@ -273,6 +277,7 @@ export class AppExperienceExposureService {
       const checkpoint = authority && context.checkpoints.find(c => c.resource_binding_id === authority.binding.id);
       if (!resource || !authority || !checkpoint) throw exposureUnavailable();
       const exposure = context.exposure!;
+      if (!resource.allowed_operations.some(operation => operation === input.operation)) throw exposureUnavailable();
       const identity_scope_digest = exposureDigest({ org_id: caller.org_id, owner_user_id: caller.user_id,
         web_session_id: caller.sid, experience_session_id: sessionId, exposure_id: exposure.id,
         exposure_epoch: exposure.exposure_epoch, resource_key: key, binding_id: authority.binding.id,
@@ -285,7 +290,7 @@ export class AppExperienceExposureService {
       if (cursor && cursor.checkpoint_scope_digest !== checkpoint_scope_digest) {
         throw new ExperienceExposureError('RESOURCE_CURSOR_STALE', 409);
       }
-      const rows = await tx.select().from(appResourceProjections).where(and(eq(appResourceProjections.org_id, caller.org_id),
+      const rows = input.operation === 'search' ? [] : await tx.select().from(appResourceProjections).where(and(eq(appResourceProjections.org_id, caller.org_id),
         eq(appResourceProjections.resource_binding_id, authority.binding.id), eq(appResourceProjections.checkpoint_id, checkpoint.id),
         eq(appResourceProjections.generation, checkpoint.generation), eq(appResourceProjections.state, 'live'),
         input.operation === 'read_one' ? eq(appResourceProjections.id, input.record_id) : cursor ? gt(appResourceProjections.id, cursor.after) : undefined))
@@ -293,13 +298,7 @@ export class AppExperienceExposureService {
       if (input.operation === 'read_one' && !rows[0]) throw exposureUnavailable();
       const decode = (row: typeof appResourceProjections.$inferSelect) => {
         signal?.throwIfAborted();
-        const body = z.strictObject({ revision: z.string(), data: z.unknown() }).parse(this.secrets.openJson({
-          schema_version: row.body_envelope_version, algorithm: row.body_algorithm, key_version: row.body_key_version,
-          nonce_b64: row.body_nonce_b64, ciphertext_b64: row.body_ciphertext_b64, auth_tag_b64: row.body_auth_tag_b64 }, {
-          org_id: caller.org_id, resource_binding_id: authority.binding.id, checkpoint_id: checkpoint.id,
-          payload_kind: 'projection', generation: row.generation, projection_id: row.id, slot: 'record' }));
-        const parsed = parseSyncPage(authority.descriptor, { schema_version: 'deft.app_sync_request.v1', cursor: null, max_items: 1 }, {
-          schema_version: 'deft.app_sync_page.v1', upserts: [{ id: 'x', ...body }], tombstones: [], next_cursor: null, has_more: false }).upserts[0]!;
+        const parsed = decodePrivateProjection(this.secrets, row, authority.descriptor);
         return { record_id: row.id, label: label(String(parsed.data[authority.descriptor.label_field] ?? '')), data: parsed.data };
       };
       let output: unknown;
@@ -307,6 +306,42 @@ export class AppExperienceExposureService {
         const item = decode(rows[0]!);
         output = { schema_version: PAYLOAD_VERSION, operation: 'read_one', item: { ...item,
           data: exposurePayloadData(item.data, resource.allowed_fields), freshness: 'unknown' } };
+      } else if (input.operation === 'search') {
+        if (snapshot.schema_version !== SEARCH_EXPOSURE_VERSION || context.verified.bundle.schema_version !== 'deft.experience_bundle.v2'
+          || !context.verified.bundle.search_resource_keys.includes(key)) throw exposureUnavailable();
+        const fields = [...input.field_keys].sort();
+        if (fields.some(field => !resource.allowed_fields.includes(field))) throw exposureUnavailable();
+        const query_fields_scope_digest = exposureDigest({ query: input.query, fields });
+        const searchIdentity = exposureDigest({ identity_scope_digest, artifact_digest: context.session.artifact_digest, review_digest: exposure.review_digest });
+        const searchCursor = input.cursor ? ExposureSearchCursorSchema.parse(openExposureToken(this.keys, 'search_cursor', input.cursor)) : null;
+        if (searchCursor && (searchCursor.identity_scope_digest !== searchIdentity
+          || searchCursor.query_fields_scope_digest !== query_fields_scope_digest
+          || searchCursor.expires_at !== exposure.expires_at.toISOString()
+          || new Date(searchCursor.expires_at) <= this.clock())) throw exposureUnavailable();
+        if (searchCursor && searchCursor.checkpoint_scope_digest !== checkpoint_scope_digest)
+          throw new ExperienceExposureError('RESOURCE_CURSOR_STALE', 409);
+        const needle = input.query.toLowerCase(), deadline = performance.now() + 3000;
+        const check = () => { signal?.throwIfAborted(); if (performance.now() >= deadline || exposure.expires_at <= this.clock()) throw exposureUnavailable(); };
+        const scan = await scanPrivateResourceCheckpoint(tx,
+          { org_id: caller.org_id, binding_id: authority.binding.id, checkpoint_id: checkpoint.id, generation: checkpoint.generation },
+          { after: searchCursor?.after, max_items: 10, check, unavailable: exposureUnavailable,
+            decodeMatch: row => {
+              const item = decode(row);
+              for (const field of fields) {
+                const scalar = item.data[field];
+                if (scalar === undefined) continue;
+                const text = String(scalar), at = text.toLowerCase().indexOf(needle);
+                if (at >= 0) return { record_id: item.record_id, label: item.label,
+                  snippet: text.slice(Math.max(0, at - 60), Math.max(0, at - 60) + 240), field_key: field };
+              }
+              return undefined;
+            } });
+        const next_cursor = !scan.complete && scan.after ? sealExposureToken(this.keys, 'search_cursor', {
+          schema_version: 'deft.experience_resource_search_cursor.v1', identity_scope_digest: searchIdentity, checkpoint_scope_digest,
+          query_fields_scope_digest, after: scan.after, expires_at: exposure.expires_at.toISOString() }) : null;
+        if (!scan.complete && !next_cursor) throw exposureUnavailable();
+        output = { schema_version: 'deft.experience_resource_search_page.v1', operation: 'search', items: scan.items,
+          scan: { records_scanned: scan.scanned, complete: scan.complete }, next_cursor, freshness: 'unknown' };
       } else {
         const limit = input.limit ?? 10;
         const items = rows.slice(0, limit).map(row => { const item = decode(row); return { record_id: item.record_id, label: item.label }; });

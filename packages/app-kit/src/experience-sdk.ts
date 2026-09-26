@@ -8,6 +8,25 @@ export type ExperienceResourceSummaryPage = Readonly<{ schema_version: 'deft.exp
   items: readonly Readonly<{ record_id: string; label: string }>[]; next_cursor: string | null; freshness: 'unknown' }>;
 export type ExperienceResourceRecord = Readonly<{ schema_version: 'deft.experience_resource_payload.v1'; operation: 'read_one';
   item: Readonly<{ record_id: string; label: string; data: Readonly<Record<string, string | number | boolean>>; freshness: 'unknown' }> }>;
+export type ExperienceResourceSearchPage = Readonly<{ schema_version: 'deft.experience_resource_search_page.v1'; operation: 'search';
+  items: readonly Readonly<{ record_id: string; label: string; snippet: string; field_key: string }>[];
+  scan: Readonly<{ records_scanned: number; complete: boolean }>; next_cursor: string | null; freshness: 'unknown' }>;
+function resourceSearchReply(value: unknown, fields: readonly string[]): ExperienceResourceSearchPage {
+  const object = (row: unknown): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row);
+  const exact = (row: Record<string, unknown>, keys: readonly string[]) => Object.keys(row).length === keys.length && keys.every(key => Object.hasOwn(row, key));
+  if (!object(value) || !exact(value, ['schema_version', 'operation', 'items', 'scan', 'next_cursor', 'freshness'])
+    || value.schema_version !== 'deft.experience_resource_search_page.v1' || value.operation !== 'search' || value.freshness !== 'unknown'
+    || new TextEncoder().encode(JSON.stringify(value)).byteLength > 60 * 1024 || !Array.isArray(value.items) || value.items.length > 10
+    || !value.items.every(item => object(item) && exact(item, ['record_id', 'label', 'snippet', 'field_key'])
+      && resourceRecordId(item.record_id) && typeof item.label === 'string' && item.label.length <= 200
+      && typeof item.snippet === 'string' && item.snippet.length <= 240 && typeof item.field_key === 'string' && fields.includes(item.field_key))
+    || !object(value.scan) || !exact(value.scan, ['records_scanned', 'complete'])
+    || !Number.isInteger(value.scan.records_scanned) || (value.scan.records_scanned as number) < 0 || (value.scan.records_scanned as number) > 100
+    || typeof value.scan.complete !== 'boolean' || value.scan.complete !== (value.next_cursor === null)
+    || !(value.next_cursor === null || typeof value.next_cursor === 'string' && value.next_cursor.length > 0 && value.next_cursor.length <= 2048))
+    throw new Error('Invalid Experience search response');
+  return value as unknown as ExperienceResourceSearchPage;
+}
 const resourceRecordId = (value: unknown): value is string => typeof value === 'string'
   && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 function resourceReply(value: unknown, operation: 'list_summary' | 'read_one') {
@@ -89,6 +108,20 @@ export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: stri
       if (!resourceRecordId(recordId)) throw new Error('Invalid record locator');
       return request('resource', key, { schema_version: 'deft.experience_resource_request.v1', operation: 'read_one', record_id: recordId })
         .then(value => resourceReply(value, 'read_one') as ExperienceResourceRecord);
+    },
+    searchResourceRecords(key: string, options: { query: string; field_keys: readonly string[]; cursor?: string }): Promise<ExperienceResourceSearchPage> {
+      resourceKey(key);
+      if (Object.keys(options).some(field => !['query', 'field_keys', 'cursor'].includes(field))
+        || typeof options.query !== 'string' || !options.query.trim() || options.query.length > 200
+        || !Array.isArray(options.field_keys) || options.field_keys.length < 1 || options.field_keys.length > 32
+        || new Set(options.field_keys).size !== options.field_keys.length
+        || !options.field_keys.every(field => typeof field === 'string' && field.length > 0 && field.length <= 48 && !['__proto__', 'constructor', 'prototype'].includes(field))
+        || options.cursor !== undefined && (typeof options.cursor !== 'string' || !options.cursor || options.cursor.length > 2048))
+        throw new Error('Invalid resource search input');
+      const fields = [...options.field_keys];
+      return request('resource', key, { schema_version: 'deft.experience_resource_request.v2', operation: 'search',
+        query: options.query, field_keys: fields, ...(options.cursor === undefined ? {} : { cursor: options.cursor }) })
+        .then(value => resourceSearchReply(value, fields));
     },
     onEvent(handler: (event: unknown) => void): void { onUiEvent = handler; },
     close(): void {

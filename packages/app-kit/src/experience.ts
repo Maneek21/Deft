@@ -32,13 +32,16 @@ export const DeftExperienceReferenceSchema = z.strictObject({
 });
 export type DeftExperienceReference = z.infer<typeof DeftExperienceReferenceSchema>;
 
-export const DeftExperienceBundleSchema = z.strictObject({
-  schema_version: z.literal(DEFT_EXPERIENCE_BUNDLE_VERSION),
-  worker_source: z.string().min(1),
-  entry_view: keySchema,
-  resource_keys: uniqueKeys,
-  action_keys: uniqueKeys,
-}).superRefine((value, ctx) => {
+const bundleFields = {
+  worker_source: z.string().min(1), entry_view: keySchema,
+  resource_keys: uniqueKeys, action_keys: uniqueKeys,
+};
+const bundleV1 = z.strictObject({ schema_version: z.literal(DEFT_EXPERIENCE_BUNDLE_VERSION), ...bundleFields });
+const bundleV2 = z.strictObject({ schema_version: z.literal('deft.experience_bundle.v2'), ...bundleFields,
+  search_resource_keys: uniqueKeys.refine(keys => keys.length > 0),
+}).refine(value => value.search_resource_keys.every(key => value.resource_keys.includes(key)),
+  'Search keys must be declared resource keys');
+export const DeftExperienceBundleSchema = z.union([bundleV1, bundleV2]).superRefine((value, ctx) => {
   if (encoder.encode(value.worker_source).byteLength > MAX_WORKER_BYTES) {
     ctx.addIssue({ code: 'custom', path: ['worker_source'], message: 'Worker source exceeds 64 KiB' });
   }
@@ -62,6 +65,7 @@ function canonicalBundleJson(input: unknown): string {
     entry_view: bundle.entry_view,
     resource_keys: bundle.resource_keys,
     action_keys: bundle.action_keys,
+    ...(bundle.schema_version === 'deft.experience_bundle.v2' ? { search_resource_keys: bundle.search_resource_keys } : {}),
   });
   if (encoder.encode(content).byteLength > MAX_BUNDLE_BYTES) {
     throw new Error('Experience bundle exceeds 128 KiB');

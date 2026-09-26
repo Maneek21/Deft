@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appResourceBindings, appResourceProjections, appSyncCheckpoints } from '@deft/db/schema';
-import { parseSyncPage } from '@deft/app-kit/experimental/resource-sync';
+import { decodePrivateProjection } from './app-resource-private-projection.js';
 import { AppRuntimeResourceRefV2Schema, canonicalCapabilityJson } from '@deft/shared';
 import type { ResourceRefV2 } from '@deft/shared';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
@@ -10,6 +10,7 @@ import { PostgresAppRunRepository, type AppRunTransaction } from './app-run-repo
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { isAppResourceSyncChannelEnabled } from './env.js';
+import { scanPrivateResourceCheckpoint } from './app-resource-private-search-scan.js';
 import { openPrivateSearchCursor, privateSearchDigest, sealPrivateSearchCursor } from './app-resource-private-search-cursor.js';
 
 export const APP_RESOURCE_PRIVATE_READ_LIMITS = Object.freeze({ items: 25, response_bytes: 1_048_576 });
@@ -111,45 +112,23 @@ export class AppResourcePrivateReadService {
       expires = cursor?.expires_at ?? Math.min(this.clock().getTime() + APP_RESOURCE_PRIVATE_SEARCH_LIMITS.cursor_ms,
         b.consent_expires_at!.getTime());
       check();
-      const locators = await tx.select({ id: appResourceProjections.id, bytes: appResourceProjections.body_bytes })
-        .from(appResourceProjections).where(and(...this.#scope(subject.data.org_id, b.id, checkpoint),
-          cursor ? gt(appResourceProjections.id, cursor.after) : undefined))
-        .orderBy(asc(appResourceProjections.id)).limit(APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_records + 1);
-      check();
-      let bytes = 0;
-      const selected: string[] = [];
-      for (const locator of locators.slice(0, APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_records)) {
-        if (locator.bytes > APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_bytes) throw unavailable();
-        if (bytes + locator.bytes > APP_RESOURCE_PRIVATE_SEARCH_LIMITS.scan_bytes) break;
-        bytes += locator.bytes; selected.push(locator.id);
-      }
-      const rows = selected.length ? await tx.select().from(appResourceProjections).where(and(
-        ...this.#scope(subject.data.org_id, b.id, checkpoint), inArray(appResourceProjections.id, selected)))
-        .orderBy(asc(appResourceProjections.id)) : [];
-      if (rows.length !== selected.length) throw unavailable();
-      const items: PrivateSearchPage['items'][number][] = [];
-      let scanned = 0, after: string | null = null;
-      for (const row of rows) {
-        check();
-        const record = this.#record(row, authority);
-        let hit: PrivateSearchPage['items'][number] | undefined;
-        for (const key of fields) {
-          const value = record.data[key];
-          if (value === undefined) continue;
-          const text = String(value), at = text.toLowerCase().indexOf(needle);
-          if (at < 0) continue;
-          const start = Math.max(0, at - 60);
-          hit = { ref: record.ref, label: record.label,
-            snippet: text.slice(start, start + APP_RESOURCE_PRIVATE_SEARCH_LIMITS.snippet_chars), field_key: key,
-            href: `/app-resources/${encodeURIComponent(record.ref.provider.provider_instance_id)}/${encodeURIComponent(record.resource_type)}/${encodeURIComponent(record.projection_id)}` };
-          break;
-        }
-        if (hit && items.length >= APP_RESOURCE_PRIVATE_SEARCH_LIMITS.items) break;
-        if (hit) items.push(hit);
-        scanned++; after = row.id;
-        if (items.length === APP_RESOURCE_PRIVATE_SEARCH_LIMITS.items) break;
-      }
-      const complete = scanned === locators.length;
+      const { items, scanned, after, complete } = await scanPrivateResourceCheckpoint<PrivateSearchPage['items'][number]>(tx,
+        { org_id: subject.data.org_id, binding_id: b.id, checkpoint_id: checkpoint.id, generation: checkpoint.generation },
+        { after: cursor?.after, max_items: APP_RESOURCE_PRIVATE_SEARCH_LIMITS.items, check, unavailable,
+          decodeMatch: row => {
+            const record = this.#record(row, authority);
+            for (const key of fields) {
+              const value = record.data[key];
+              if (value === undefined) continue;
+              const text = String(value), at = text.toLowerCase().indexOf(needle);
+              if (at < 0) continue;
+              const start = Math.max(0, at - 60);
+              return { ref: record.ref, label: record.label,
+                snippet: text.slice(start, start + APP_RESOURCE_PRIVATE_SEARCH_LIMITS.snippet_chars), field_key: key,
+                href: `/app-resources/${encodeURIComponent(record.ref.provider.provider_instance_id)}/${encodeURIComponent(record.resource_type)}/${encodeURIComponent(record.projection_id)}` };
+            }
+            return undefined;
+          } });
       const next_cursor = !complete && after ? sealPrivateSearchCursor(this.keys, {
         after, expires_at: expires, identity_scope, checkpoint_scope, query_fields_scope }) : null;
       if (!complete && !next_cursor) throw unavailable();
@@ -321,19 +300,7 @@ export class AppResourcePrivateReadService {
 
   #record(row: typeof appResourceProjections.$inferSelect, authority: Authority): PrivateResourceRecord {
     try {
-      const body = z.strictObject({ revision: z.string(), data: z.unknown() }).parse(this.#secrets.openJson({
-        schema_version: row.body_envelope_version, algorithm: row.body_algorithm,
-        key_version: row.body_key_version, nonce_b64: row.body_nonce_b64,
-        ciphertext_b64: row.body_ciphertext_b64, auth_tag_b64: row.body_auth_tag_b64,
-      }, { org_id: row.org_id, resource_binding_id: row.resource_binding_id,
-        checkpoint_id: row.checkpoint_id, payload_kind: 'projection', generation: row.generation,
-        projection_id: row.id, slot: 'record' }));
-      // The ID is only a parser placeholder; never decrypt the provider ID.
-      // Its minimum length cannot inflate a valid near-ceiling stored page.
-      const parsed = parseSyncPage(authority.descriptor, {
-        schema_version: 'deft.app_sync_request.v1', cursor: null, max_items: 1,
-      }, { schema_version: 'deft.app_sync_page.v1', upserts: [{ id: 'x', ...body }],
-        tombstones: [], next_cursor: null, has_more: false }).upserts[0]!;
+      const parsed = decodePrivateProjection(this.#secrets, row, authority.descriptor);
       const label = (parsed.data[authority.descriptor.label_field] as string)
         .replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim();
       const ref = AppRuntimeResourceRefV2Schema.parse({ schema_version: 'deft.resource_ref.v2',
