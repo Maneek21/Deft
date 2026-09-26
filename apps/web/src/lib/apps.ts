@@ -387,6 +387,15 @@ export type ConnectedAppReview = {
   review_digest: string;
 };
 
+export type ConnectedAppUpgradeReview = {
+  schema_version: 'deft.connected_app_upgrade_review.v1';
+  prior_app_version_id: string;
+  pending_work_policy: 'supersede_pending_work';
+  policy_summary: string;
+  connected_review: ConnectedAppReview;
+  upgrade_review_digest: string;
+};
+
 export type ConnectedAppHealth = {
   status: 'healthy' | 'unhealthy';
   installation_id: string;
@@ -1061,6 +1070,22 @@ export function normalizeConnectedAppReview(value: unknown): ConnectedAppReview 
     }),
     authority_surface_digest: stringValue(row.authority_surface_digest, 'App authority surface digest'),
     review_digest: stringValue(row.review_digest, 'App review digest'),
+  };
+}
+
+export function normalizeConnectedAppUpgradeReview(value: unknown): ConnectedAppUpgradeReview {
+  const row = object(value, 'connected App upgrade review');
+  if (row.schema_version !== 'deft.connected_app_upgrade_review.v1'
+    || row.pending_work_policy !== 'supersede_pending_work') throw new Error('Invalid connected App upgrade policy.');
+  const digest = stringValue(row.upgrade_review_digest, 'connected App upgrade review digest');
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid connected App upgrade review digest.');
+  return {
+    schema_version: 'deft.connected_app_upgrade_review.v1',
+    prior_app_version_id: stringValue(row.prior_app_version_id, 'prior App version identity'),
+    pending_work_policy: 'supersede_pending_work',
+    policy_summary: stringValue(row.policy_summary, 'connected App pending work policy'),
+    connected_review: normalizeConnectedAppReview(row.connected_review),
+    upgrade_review_digest: digest,
   };
 }
 
