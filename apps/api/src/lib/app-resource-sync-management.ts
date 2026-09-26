@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { digestResourceSyncDescriptor } from '@deft/app-kit/experimental/resource-sync';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
   appSyncCheckpoints, auditLog, orgMembers, users,
@@ -18,7 +19,8 @@ import { createResourceSyncDiscoverySnapshot } from './app-resource-sync-discove
 import { loadReviewedResourceSyncDescriptor } from './app-resource-sync-reviewed.js';
 import { loadLiveResourceSyncBindingAuthority,
   loadLiveResourceSyncAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
-import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS,
+import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS, APP_RESOURCE_SYNC_MAX_CONSENT_MS,
+  APP_RESOURCE_SYNC_LIMIT_BOUNDS,
   AppResourceSyncConsentActivationSchema, AppResourceSyncConsentRequestSchema,
   assertResourceSyncConsentWindow, hashAppResourceSyncToken,
   type AppResourceSyncConsentRequest } from './app-resource-sync-policy.js';
@@ -71,6 +73,73 @@ export class AppResourceSyncManagement {
   readonly #secrets: AppResourceSyncSecretService;
   constructor(keys: AppRunKeyProvider, private readonly clock: () => Date = () => new Date()) {
     this.#secrets = new AppResourceSyncSecretService(keys);
+  }
+
+  /** Discovery conveys no private read or Runtime authority. The only operator
+   * offered by this initial setup surface is the current manager-owner. */
+  async setupContext(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
+    reviewer(actor);
+    const { installation_id } = z.strictObject({ installation_id: Id }).parse(value);
+    return db.transaction(async (tx) => {
+      await assertManager(tx, actor);
+      const reviewed = await loadReviewedResourceSyncDescriptor(tx, actor.org_id, installation_id);
+      const { installation, version, grant } = reviewed;
+      const bindings = await tx.select({ binding_id: appResourceBindings.id,
+        resource_key: appResourceBindings.resource_key, state: appResourceBindings.state,
+        operator_user_id: appRuntimeRegistrations.operator_user_id,
+        registration_state: appRuntimeRegistrations.state,
+        consent_expires_at: appResourceBindings.consent_expires_at })
+        .from(appResourceBindings).innerJoin(appRuntimeRegistrations, and(
+          eq(appRuntimeRegistrations.org_id, appResourceBindings.org_id),
+          eq(appRuntimeRegistrations.id, appResourceBindings.runtime_registration_id)))
+        .where(and(eq(appResourceBindings.org_id, actor.org_id),
+          eq(appResourceBindings.app_installation_id, installation.id),
+          eq(appResourceBindings.grant_snapshot_id, grant.id),
+          eq(appResourceBindings.owner_user_id, actor.actor_id),
+          inArray(appResourceBindings.state, ['active', 'disabled'])))
+        .limit(8).for('share');
+      const descriptors = await Promise.all(reviewed.descriptors.map(async (descriptor) => ({
+        resource_key: descriptor.key, resource_type: descriptor.resource_type,
+        visibility: descriptor.requested_visibility,
+        descriptor_digest: await digestResourceSyncDescriptor(descriptor),
+      })));
+      await guard?.(tx);
+      if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, actor.actor_id)) throw denied();
+      const now = this.clock();
+      const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      return { schema_version: 'deft.app_resource_sync_setup.v1' as const,
+        org_id: actor.org_id, owner_user_id: actor.actor_id, operator_user_id: actor.actor_id,
+        installation_id: installation.id, app_version_id: version.id,
+        host_policy: APP_RESOURCE_SYNC_HOST_POLICY,
+        host_limits: { max_consent_ms: APP_RESOURCE_SYNC_MAX_CONSENT_MS,
+          session_ms: APP_RESOURCE_SYNC_SESSION_MS, limits: APP_RESOURCE_SYNC_LIMIT_BOUNDS },
+        descriptors: descriptors.map((descriptor) => {
+          const binding = bindings.find((item) => item.resource_key === descriptor.resource_key);
+          const consent_request: AppResourceSyncConsentRequest = {
+            installation_id: installation.id, resource_key: descriptor.resource_key,
+            operator_user_id: actor.actor_id, expected_app_version_id: version.id,
+            expected_package_digest: version.package_digest,
+            expected_grant_snapshot_digest: grant.snapshot_digest,
+            expected_lifecycle_epoch: installation.lifecycle_epoch,
+            expected_grant_epoch: installation.grant_epoch,
+            consent_expires_at: expiresAt, limits: {
+              max_records_per_page: 100, max_page_bytes: 524_288,
+              max_retained_records: 10_000, max_retained_bytes: 104_857_600,
+              min_interval_seconds: 300,
+            },
+          };
+          return { ...descriptor, consent_request,
+            existing_binding: binding ? { binding_id: binding.binding_id,
+              state: binding.state as 'active' | 'disabled',
+              consent_expires_at: binding.consent_expires_at?.toISOString() ?? null,
+              can_issue_session: binding.operator_user_id === actor.actor_id
+                && binding.registration_state === 'active' && binding.state === 'active'
+                && binding.consent_expires_at !== null && binding.consent_expires_at > now,
+              requires_revoke: binding.state !== 'active' || !binding.consent_expires_at
+                || binding.consent_expires_at <= now } : null };
+        }),
+      };
+    });
   }
 
   async #reviewContext(tx: Tx, actor: Human, input: AppResourceSyncConsentRequest,

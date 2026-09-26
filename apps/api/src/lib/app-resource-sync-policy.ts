@@ -10,6 +10,13 @@ export const APP_RESOURCE_SYNC_HOST_POLICY = Object.freeze({
 } as const);
 export const APP_RESOURCE_SYNC_MAX_CONSENT_MS = 90 * 24 * 60 * 60 * 1_000;
 export const APP_RESOURCE_SYNC_SESSION_MS = 15 * 60 * 1_000;
+export const APP_RESOURCE_SYNC_LIMIT_BOUNDS = Object.freeze({
+  max_records_per_page: { min: 1, max: 100 },
+  max_page_bytes: { min: 1, max: 524_288 },
+  max_retained_records: { min: 1, max: 100_000 },
+  max_retained_bytes: { min: 1, max: 1_073_741_824 },
+  min_interval_seconds: { min: 60, max: 86_400 },
+});
 
 const identity = z.string().uuid();
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -17,12 +24,13 @@ const epoch = z.number().int().min(0).max(2_147_483_647);
 const resourceKey = z.string().min(1).max(48).regex(/^[a-z][a-z0-9_]*$/u)
   .refine((value) => !['constructor', 'prototype', '__proto__'].includes(value));
 
+const bounded = (range: { min: number; max: number }) => z.number().int().min(range.min).max(range.max);
 export const AppResourceSyncConsentLimitsSchema = z.strictObject({
-  max_records_per_page: z.number().int().min(1).max(100),
-  max_page_bytes: z.number().int().min(1).max(524_288),
-  max_retained_records: z.number().int().min(1).max(100_000),
-  max_retained_bytes: z.number().int().min(1).max(1_073_741_824),
-  min_interval_seconds: z.number().int().min(60).max(86_400),
+  max_records_per_page: bounded(APP_RESOURCE_SYNC_LIMIT_BOUNDS.max_records_per_page),
+  max_page_bytes: bounded(APP_RESOURCE_SYNC_LIMIT_BOUNDS.max_page_bytes),
+  max_retained_records: bounded(APP_RESOURCE_SYNC_LIMIT_BOUNDS.max_retained_records),
+  max_retained_bytes: bounded(APP_RESOURCE_SYNC_LIMIT_BOUNDS.max_retained_bytes),
+  min_interval_seconds: bounded(APP_RESOURCE_SYNC_LIMIT_BOUNDS.min_interval_seconds),
 });
 
 export const AppResourceSyncConsentRequestSchema = z.strictObject({

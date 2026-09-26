@@ -13,7 +13,7 @@ const stale = () => new AppError('Reviewed App resource authority changed', 'APP
  * owner/operator before this reader, and separately check resource consent,
  * registration, session and Run intent. A reviewed App never grants a read. */
 export async function loadReviewedResourceSyncDescriptor(
-  tx: AppRunTransaction, orgId: string, installationId: string, resourceKey: string,
+  tx: AppRunTransaction, orgId: string, installationId: string, resourceKey?: string,
 ) {
   const [installation] = await tx.select().from(appInstallations).where(and(
     eq(appInstallations.org_id, orgId), eq(appInstallations.id, installationId),
@@ -30,7 +30,8 @@ export async function loadReviewedResourceSyncDescriptor(
   let manifest: ReturnType<typeof parseResourceAppManifest>;
   try { manifest = parseResourceAppManifest(version.manifest); }
   catch { throw stale(); }
-  const descriptor = manifest.sync_descriptors.find((item) => item.key === resourceKey);
+  const descriptor = resourceKey === undefined ? manifest.sync_descriptors[0]
+    : manifest.sync_descriptors.find((item) => item.key === resourceKey);
   if (!descriptor) throw stale();
   const [grant] = await tx.select().from(appGrantSnapshots).where(and(
     eq(appGrantSnapshots.org_id, orgId), eq(appGrantSnapshots.app_installation_id, installation.id),
@@ -72,5 +73,6 @@ export async function loadReviewedResourceSyncDescriptor(
     classification, review_digest: stored.review_digest };
   if (digestAppGrantValue(expected) !== grant.snapshot_digest) throw stale();
   const descriptorDigest = await digestResourceSyncDescriptor(descriptor);
-  return { installation, version, grant, descriptor, descriptor_digest: descriptorDigest };
+  return { installation, version, grant, descriptor, descriptor_digest: descriptorDigest,
+    descriptors: manifest.sync_descriptors };
 }

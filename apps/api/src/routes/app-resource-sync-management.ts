@@ -84,6 +84,15 @@ export function createAppResourceSyncManagementRoutes(options: {
     catch (error) { return failure(c, error); }
     await next();
   });
+  routes.get('/setup', async (c) => {
+    try {
+      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+      const entries = [...new URL(c.req.url).searchParams.entries()];
+      if (new Set(entries.map(([key]) => key)).size !== entries.length) throw new SyntaxError('Duplicate query');
+      return c.json({ setup: await (await options.management()).setupContext(actor,
+        Object.fromEntries(entries), guard) });
+    } catch (error) { return failure(c, error); }
+  });
   routes.post('/reviews/prepare', async (c) => {
     try {
       z.strictObject({}).parse(c.req.query());
