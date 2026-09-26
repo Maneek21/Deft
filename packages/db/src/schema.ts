@@ -1,7 +1,7 @@
 // packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
 // This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
 
-import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, unique, uniqueIndex, real, vector, check, primaryKey, numeric, customType, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, bigserial, text, timestamp, boolean, integer, jsonb, pgEnum, index, unique, uniqueIndex, real, vector, check, primaryKey, numeric, customType, foreignKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ═══ HELPERS ═══
@@ -5474,4 +5474,26 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
   check('app_canonical_claims_resource_type_check', sql`${t.resource_type} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('app_canonical_claims_kind_check', sql`${t.claim_kind} = 'exclusive'`),
   check('app_canonical_claims_release_check', sql`${t.released_at} IS NULL OR ${t.released_at} >= ${t.created_at}`),
+]);
+// Explicit human-only exact-content App resource disclosure; no body copies.
+export const appResourceAccessGrants = pgTable('app_resource_access_grants', {
+  ...id(), ...orgId(), owner_user_id: text('owner_user_id').notNull(),
+  recipient_user_id: text('recipient_user_id').notNull(), app_installation_id: text('app_installation_id').notNull(),
+  resource_binding_id: text('resource_binding_id').notNull(), checkpoint_id: text('checkpoint_id').notNull(),
+  projection_id: text('projection_id').notNull(), review_digest: text('review_digest').notNull(),
+  snapshot: jsonb('snapshot').notNull(), accepted_sequence: bigserial('accepted_sequence', { mode: 'bigint' }).notNull(), accepted_at: timestamp('accepted_at', { withTimezone: true }).notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }), revoked_by_user_id: text('revoked_by_user_id'),
+}, t => [
+  foreignKey({ columns: [t.org_id, t.resource_binding_id, t.owner_user_id], foreignColumns: [appResourceBindings.org_id, appResourceBindings.id, appResourceBindings.owner_user_id], name: 'app_resource_access_grants_owner_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.checkpoint_id, t.resource_binding_id], foreignColumns: [appSyncCheckpoints.org_id, appSyncCheckpoints.id, appSyncCheckpoints.resource_binding_id], name: 'app_resource_access_grants_checkpoint_fk' }).onDelete('cascade'),
+  foreignKey({ columns: [t.org_id, t.projection_id], foreignColumns: [appResourceProjections.org_id, appResourceProjections.id], name: 'app_resource_access_grants_projection_fk' }).onDelete('cascade'),
+  foreignKey({ columns: [t.org_id, t.recipient_user_id], foreignColumns: [orgMembers.org_id, orgMembers.user_id], name: 'app_resource_access_grants_recipient_fk' }).onDelete('restrict'),
+  unique('app_resource_access_grants_review_unique').on(t.org_id, t.owner_user_id, t.review_digest),
+  index('app_resource_access_grants_owner_idx').on(t.org_id, t.owner_user_id, t.app_installation_id),
+  index('app_resource_access_grants_recipient_idx').on(t.org_id, t.recipient_user_id, t.accepted_sequence),
+  check('app_resource_access_grants_digest_check', sql`${t.review_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_resource_access_grants_expiry_check', sql`${t.expires_at} > ${t.accepted_at} AND ${t.expires_at} <= ${t.accepted_at} + interval '24 hours'`),
+  check('app_resource_access_grants_revocation_check', sql`(${t.revoked_at} IS NULL AND ${t.revoked_by_user_id} IS NULL) OR (${t.revoked_at} IS NOT NULL AND ${t.revoked_by_user_id} = ${t.owner_user_id})`),
+  check('app_resource_access_grants_snapshot_check', sql`COALESCE(jsonb_typeof(${t.snapshot})='object' AND octet_length(${t.snapshot}::text)<=8192 AND ${t.snapshot} ?& ARRAY['schema_version','purpose','org_id','owner_user_id','recipient_user_id','app_installation_id','app_version_id','grant_snapshot_id','lifecycle_epoch','grant_epoch','registration_id','operator_user_id','runtime_epoch','resource_binding_id','descriptor_digest','checkpoint_id','generation','ref','revision_digest','content_digest','field_keys','operations','app_label','recipient_label','expires_at','review_expires_at'] AND (${t.snapshot} - ARRAY['schema_version','purpose','org_id','owner_user_id','recipient_user_id','app_installation_id','app_version_id','grant_snapshot_id','lifecycle_epoch','grant_epoch','registration_id','operator_user_id','runtime_epoch','resource_binding_id','descriptor_digest','checkpoint_id','generation','ref','revision_digest','content_digest','field_keys','operations','app_label','recipient_label','expires_at','review_expires_at'])='{}'::jsonb AND ${t.snapshot}->>'schema_version'='deft.app_resource_access_snapshot.v1' AND ${t.snapshot}->>'purpose'='human_view' AND ${t.snapshot}->>'org_id'=${t.org_id} AND ${t.snapshot}->>'owner_user_id'=${t.owner_user_id} AND ${t.snapshot}->>'recipient_user_id'=${t.recipient_user_id} AND ${t.snapshot}->>'app_installation_id'=${t.app_installation_id} AND ${t.snapshot}->>'resource_binding_id'=${t.resource_binding_id} AND ${t.snapshot}->>'checkpoint_id'=${t.checkpoint_id} AND jsonb_typeof(${t.snapshot}->'ref')='object' AND jsonb_typeof(${t.snapshot}->'field_keys')='array' AND jsonb_array_length(${t.snapshot}->'field_keys') BETWEEN 1 AND 32 AND jsonb_typeof(${t.snapshot}->'operations')='array' AND jsonb_array_length(${t.snapshot}->'operations') BETWEEN 1 AND 3 AND (${t.snapshot}->'operations') <@ '["cite","read","search"]'::jsonb AND ${t.snapshot}->'operations' IN ('["cite"]'::jsonb,'["read"]'::jsonb,'["search"]'::jsonb,'["cite","read"]'::jsonb,'["cite","search"]'::jsonb,'["read","search"]'::jsonb,'["cite","read","search"]'::jsonb) AND ${t.snapshot}#>>'{ref,schema_version}'='deft.resource_ref.v2' AND ${t.snapshot}#>>'{ref,provider,kind}'='app_runtime' AND ${t.snapshot}#>>'{ref,resource_id}'=${t.projection_id} AND ${t.snapshot}#>>'{ref,provider,provider_instance_id}'=${t.snapshot}->>'registration_id' AND jsonb_typeof(${t.snapshot}->'app_version_id')='string' AND jsonb_typeof(${t.snapshot}->'grant_snapshot_id')='string' AND jsonb_typeof(${t.snapshot}->'registration_id')='string' AND jsonb_typeof(${t.snapshot}->'operator_user_id')='string' AND jsonb_typeof(${t.snapshot}->'descriptor_digest')='string' AND jsonb_typeof(${t.snapshot}->'revision_digest')='string' AND jsonb_typeof(${t.snapshot}->'content_digest')='string' AND jsonb_typeof(${t.snapshot}->'expires_at')='string' AND jsonb_typeof(${t.snapshot}->'review_expires_at')='string' AND jsonb_typeof(${t.snapshot}->'app_label')='string' AND length(${t.snapshot}->>'app_label')<=200 AND jsonb_typeof(${t.snapshot}->'recipient_label')='string' AND length(${t.snapshot}->>'recipient_label')<=200 AND jsonb_typeof(${t.snapshot}->'lifecycle_epoch')='number' AND jsonb_typeof(${t.snapshot}->'grant_epoch')='number' AND jsonb_typeof(${t.snapshot}->'runtime_epoch')='number' AND jsonb_typeof(${t.snapshot}->'generation')='number',false)`),
 ]);

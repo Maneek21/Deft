@@ -240,6 +240,7 @@ export const upgradeManifest = {
       version: '0.3.0-preview.44', file: '0.3.0-preview.44-app-native-calendar.sql',
       description: 'Add separately consented host-native Calendar bindings and exact protocol 6 Run/public ancestry',
     },
+    { version: '0.3.0-preview.45', file: '0.3.0-preview.45-app-resource-access.sql', description: 'Add dormant immutable exact-content human private App resource sharing' },
   ] satisfies UpgradeMigration[],
 } as const;
 

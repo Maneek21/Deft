@@ -157,6 +157,7 @@ async function main() {
       '0.3.0-preview.42-app-public-budgets.sql',
       '0.3.0-preview.43-app-public-hmac.sql',
       '0.3.0-preview.44-app-native-calendar.sql',
+      '0.3.0-preview.45-app-resource-access.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);
