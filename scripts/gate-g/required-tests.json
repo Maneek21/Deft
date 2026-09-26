@@ -2862,6 +2862,36 @@
           "name": "Tenant-scoped active and retained admission bounds never block revoke; maintenance removes at most 100"
         }
       ]
+    },
+    {
+      "id": "native-file-web-authority",
+      "description": "Actual File web metadata parent withdrawal, JWT deadline, staged/blocked tenant checks and terminal SID contention; existing native web compatibility.",
+      "cases": [
+        {
+          "file": "apps/api/test/native-file-authority-db.test.ts",
+          "name": "Native File metadata denies a supported parent withdrawal while the actual parent query result is delayed"
+        },
+        {
+          "file": "apps/api/test/native-file-authority-db.test.ts",
+          "name": "Native File metadata honors Task watcher withdrawal after the actual visibility result waits"
+        },
+        {
+          "file": "apps/api/test/native-file-authority-db.test.ts",
+          "name": "Native File metadata rejects verified JWT expiry after the held parent result"
+        },
+        {
+          "file": "apps/api/test/native-file-authority-db.test.ts",
+          "name": "Native File metadata preserves staged uploader access and denies foreign SID, blocked and malformed parent metadata"
+        },
+        {
+          "file": "apps/api/test/native-file-authority-db.test.ts",
+          "name": "Native File metadata retains the real parent grant lock through its terminal SID wait"
+        },
+        {
+          "file": "apps/api/test/native-resource-service-db.test.ts",
+          "name": "native resource web resolver binds current session and owner without widening v1 or Runtime access"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

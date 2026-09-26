@@ -11,6 +11,8 @@ import { resolveNativeMessageDisplay, resolveNativeWikiDisplay, resolveNativeNot
 import { resolveNativeCalendarDisplay, resolveNativeFileDisplay } from './native-calendar-file-projections.js';
 import { resolveNativePersonDisplay, resolveNativeTeamDisplay } from './native-directory-projections.js';
 import { resolveAppRuntimeDisplay } from './app-runtime-resource-display.js';
+import { AttachmentDownloadAuthorityError, authorizeAttachmentDownload, getVisibleAttachment } from './attachment-access.js';
+import { verifyWebAccess } from './web-sessions.js';
 
 const callerSchema = z.strictObject({ org_id: ResourceHostOrganizationIdSchema,
   user_id: ResourceOpaqueIdSchema, sid: z.string().uuid() });
@@ -43,6 +45,41 @@ function safeLabel(value: string): string {
   return label.trim() || 'Resource';
 }
 
+function projection(ref: ResourceRefV2, display: NativeResourceDisplay | null): ResourceResolveResultV2 {
+  const base = { schema_version: RESOURCE_V2_CONTRACT_VERSIONS.resolve, ref };
+  if (!display) return ResourceResolveResultV2Schema.parse({ ...base, state: 'unavailable' });
+  return ResourceResolveResultV2Schema.parse({ ...base, state: 'available', resource: {
+    schema_version: RESOURCE_V2_CONTRACT_VERSIONS.safe_projection, ref,
+    label: safeLabel(display.label),
+    ...(display.href === undefined ? {} : { href: display.href }),
+    ...(display.revision === undefined ? {} : { revision: display.revision }),
+    ...(display.updated_at === undefined ? {} : { updated_at: display.updated_at }),
+  } });
+}
+
+async function currentFileDisplay(caller: NativeResourceWebCaller, id: string,
+  authorization: string | undefined): Promise<NativeResourceDisplay | null> {
+  let credential: Awaited<ReturnType<typeof verifyWebAccess>>;
+  try {
+    credential = await verifyWebAccess(authorization?.startsWith('Bearer ') ? authorization.slice(7) : '');
+    if (credential.id !== caller.user_id || credential.org_id !== caller.org_id || credential.sid !== caller.sid) throw denied();
+  } catch { throw denied(); }
+  const file = await getVisibleAttachment(id, caller.org_id, caller.user_id);
+  if (!file || file.processing_status === 'blocked') return null;
+  try {
+    const result = await authorizeAttachmentDownload({ ...caller, file,
+      jwt_expires_at: credential.exp * 1000, signal: AbortSignal.timeout(3000) });
+    if (result.expires_at <= Date.now()) throw denied();
+    return { label: result.file.filename, updated_at: result.file.updated_at.toISOString() };
+  } catch (error) {
+    if (error instanceof AttachmentDownloadAuthorityError) {
+      if (error.code === 'INVALID_TOKEN') throw denied();
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function nativeDisplay(subject: NativeResourceSubject, ref: ResourceRefV2): Promise<NativeResourceDisplay | null> {
   if (ref.provider.kind !== 'core') return null;
   // Code-owned slots only: package strings never select an executable adapter.
@@ -70,21 +107,18 @@ export class NativeResourceService {
     const ref = parsed.data;
     try {
       const subject = await liveSubject(caller.data);
+      if (ref.provider.kind === 'core' && ref.provider.provider_instance_id === 'files') {
+        // The shared content authority locks current parent grants through its
+        // terminal SID fence. Do not add another awaited query after this result.
+        return projection(ref, await currentFileDisplay(caller.data, ref.resource_id, authorization));
+      }
       const display: NativeResourceDisplay | null = ref.provider.kind === 'app_runtime'
         ? await resolveAppRuntimeDisplay(caller.data, ref, authorization)
         : await nativeDisplay(subject, ref);
       const current = await liveSubject(caller.data);
       // A role change during a private-team read cannot retain the old role's result.
       if (current.role !== subject.role) throw denied();
-      const base = { schema_version: RESOURCE_V2_CONTRACT_VERSIONS.resolve, ref };
-      if (!display) return ResourceResolveResultV2Schema.parse({ ...base, state: 'unavailable' });
-      return ResourceResolveResultV2Schema.parse({ ...base, state: 'available', resource: {
-        schema_version: RESOURCE_V2_CONTRACT_VERSIONS.safe_projection, ref,
-        label: safeLabel(display.label),
-        ...(display.href === undefined ? {} : { href: display.href }),
-        ...(display.revision === undefined ? {} : { revision: display.revision }),
-        ...(display.updated_at === undefined ? {} : { updated_at: display.updated_at }),
-      } });
+      return projection(ref, display);
     } catch (error) {
       if (error instanceof ResourceAuthorizationError) throw error;
       throw new ResourceAuthorizationError('Resource provider failed safely', 'RESOURCE_PROVIDER_FAILURE', 500);
