@@ -36,3 +36,30 @@ test('SDK closes pending calls without leaking reusable credentials', async () =
   assert.equal(JSON.stringify(port.sent).includes('token'), false);
   assert.throws(() => sdk.render({root:{kind:'text',id:'x',text:'late'}}), /closed/);
 });
+
+test('resource helpers bound locators and validate whole scalar replies', async () => {
+  const port = new Port();
+  const sdk = createDeftExperienceSdk(port, 'session_12345678');
+  const recordId = '11111111-1111-4111-8111-111111111111';
+  assert.throws(() => sdk.listResourceSummaries('inbox', { limit: 11 }), /Invalid/);
+  assert.throws(() => sdk.readResourceRecord('inbox', 'provider-id'), /Invalid/);
+  const listing = sdk.listResourceSummaries('inbox', { limit: 10 });
+  assert.deepEqual((port.sent[0] as any).input, { schema_version: 'deft.experience_resource_request.v1', operation: 'list_summary', limit: 10 });
+  const reply = (requestId: string, output: unknown) => port.receive({ version: 'deft.experience_bridge.v1', kind: 'response',
+    session_id: 'session_12345678', request_id: requestId, ok: true, output });
+  reply('request_1', { schema_version: 'deft.experience_resource_payload.v1', operation: 'list_summary',
+    items: [{ record_id: recordId, label: 'Saved' }], next_cursor: null, freshness: 'unknown' });
+  assert.equal((await listing).items.length, 1);
+  const detail = sdk.readResourceRecord('inbox', recordId);
+  reply('request_2', { schema_version: 'deft.experience_resource_payload.v1', operation: 'read_one',
+    item: { record_id: recordId, label: 'Saved', data: { body: 'x'.repeat(4096), count: 2, read: true }, freshness: 'unknown' } });
+  assert.equal((await detail).item.data.body?.toString().length, 4096);
+  for (const data of [{ body: 'x'.repeat(4097) }, { nested: {} }, { count: Infinity }]) {
+    const rejected = sdk.readResourceRecord('inbox', recordId);
+    const requestId = (port.sent.at(-1) as any).request_id;
+    reply(requestId, { schema_version: 'deft.experience_resource_payload.v1', operation: 'read_one',
+      item: { record_id: recordId, label: 'Saved', data, freshness: 'unknown' } });
+    await assert.rejects(rejected, /Invalid Experience resource response/);
+  }
+  sdk.close();
+});

@@ -139,6 +139,12 @@ export function isAppResourceSyncSchedulerEnabled(): boolean {
   return isAppResourceSyncChannelEnabled()
     && process.env.DEFT_APP_RESOURCE_SYNC_SCHEDULER_ENABLED === 'true';
 }
+// Saved-private-data delivery to independent App author code requires its own
+// explicit consent and separate host opt-in. Existing sync grants never enable it.
+export function isAppExperienceResourceExposureEnabled(): boolean {
+  return isAppResourceSyncChannelEnabled()
+    && process.env.DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';

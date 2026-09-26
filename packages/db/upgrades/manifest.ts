@@ -217,6 +217,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.39-app-resource-consent.sql',
       description: 'Prevent duplicate current owner-private resource consent for one reviewed App grant',
     },
+    {
+      version: '0.3.0-preview.40',
+      file: '0.3.0-preview.40-app-experience-resource-exposure.sql',
+      description: 'Add dormant immutable human session consent for exact Experience private-field disclosure',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

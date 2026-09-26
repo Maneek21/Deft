@@ -6,7 +6,7 @@ const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = target === process.env.DATABASE_URL && target !== undefined
   && new URL(target).hostname === '127.0.0.1'
   && new URL(target).port === '55435'
-  && /^\/gate_g_phase5_test_c03(?:_b_experience|_root(?:_v[0-9]+)?|b_root(?:_v[0-9]+)?)$/.test(new URL(target).pathname);
+  && /^\/(?:gate_g_phase5_test_c03(?:_b_experience|_root(?:_v[0-9]+)?|b_root(?:_v[0-9]+)?)|gate_g_20260926_c09_exposure_test(?:_v[0-9]+)?)$/.test(new URL(target).pathname);
 
 test('installed Experience session pins human web SID, App, grant and bounded active count',
   { skip: !safe }, async () => {

@@ -5125,6 +5125,7 @@ export const appExperienceSessions = pgTable('app_experience_sessions', {
     foreignColumns: [appGrantSnapshots.org_id, appGrantSnapshots.app_installation_id,
       appGrantSnapshots.app_version_id, appGrantSnapshots.id, appGrantSnapshots.snapshot_kind],
     name: 'app_experience_sessions_grant_fk' }).onDelete('restrict'),
+  unique('app_experience_sessions_org_identity_unique').on(t.org_id, t.id, t.user_id, t.web_session_id),
   index('app_experience_sessions_web_app_idx').on(t.org_id, t.web_session_id,
     t.app_installation_id, t.expires_at),
   index('app_experience_sessions_expires_idx').on(t.expires_at),
@@ -5133,6 +5134,62 @@ export const appExperienceSessions = pgTable('app_experience_sessions', {
   check('app_experience_sessions_epoch_check', sql`${t.lifecycle_epoch} >= 0 AND ${t.grant_epoch} >= 0`),
   check('app_experience_sessions_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
   check('app_experience_sessions_expiry_check', sql`${t.expires_at} > ${t.created_at}`),
+]);
+
+// Separate explicit disclosure consent. App/sync grants and old sessions never
+// populate these rows. Session pruning cascades operational rows, not the audit.
+export const appExperienceResourceExposures = pgTable('app_experience_resource_exposures', {
+  ...id(), ...orgId(),
+  experience_session_id: text('experience_session_id').notNull(),
+  owner_user_id: text('owner_user_id').notNull(),
+  web_session_id: text('web_session_id').notNull(),
+  review_digest: text('review_digest').notNull(),
+  snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull(),
+  payload_policy_version: text('payload_policy_version').notNull(),
+  exposure_epoch: integer('exposure_epoch').default(0).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }),
+}, t => [
+  foreignKey({ columns: [t.org_id, t.experience_session_id, t.owner_user_id, t.web_session_id],
+    foreignColumns: [appExperienceSessions.org_id, appExperienceSessions.id, appExperienceSessions.user_id, appExperienceSessions.web_session_id],
+    name: 'app_experience_resource_exposures_session_fk' }).onDelete('cascade'),
+  unique('app_experience_resource_exposures_org_id_unique').on(t.org_id, t.id),
+  unique('app_experience_resource_exposures_review_unique').on(t.org_id, t.experience_session_id, t.review_digest),
+  uniqueIndex('app_experience_resource_exposures_current_unique').on(t.org_id, t.experience_session_id).where(sql`${t.revoked_at} IS NULL`),
+  check('app_experience_resource_exposures_digest_check', sql`${t.review_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_experience_resource_exposures_policy_check', sql`${t.payload_policy_version} = 'deft.experience_resource_payload.v1'`),
+  check('app_experience_resource_exposures_epoch_check', sql`${t.exposure_epoch} >= 0`),
+  check('app_experience_resource_exposures_expiry_check', sql`${t.expires_at} > ${t.created_at}`),
+]);
+
+export const appExperienceResourceExposureResources = pgTable('app_experience_resource_exposure_resources', {
+  ...orgId(), exposure_id: text('exposure_id').notNull(), resource_key: text('resource_key').notNull(),
+  resource_binding_id: text('resource_binding_id').notNull(), runtime_registration_id: text('runtime_registration_id').notNull(),
+  runtime_epoch: integer('runtime_epoch').notNull(), descriptor_digest: text('descriptor_digest').notNull(),
+  resource_type: text('resource_type').notNull(),
+  allowed_operations: jsonb('allowed_operations').$type<string[]>().notNull(),
+  allowed_fields: jsonb('allowed_fields').$type<string[]>().notNull(),
+}, t => [
+  primaryKey({ columns: [t.org_id, t.exposure_id, t.resource_key] }),
+  foreignKey({ columns: [t.org_id, t.exposure_id], foreignColumns: [appExperienceResourceExposures.org_id, appExperienceResourceExposures.id],
+    name: 'app_experience_resource_exposure_resources_parent_fk' }).onDelete('cascade'),
+  foreignKey({ columns: [t.org_id, t.runtime_registration_id, t.resource_binding_id],
+    foreignColumns: [appResourceBindings.org_id, appResourceBindings.runtime_registration_id, appResourceBindings.id],
+    name: 'app_experience_resource_exposure_resources_binding_fk' }).onDelete('restrict'),
+  check('app_experience_resource_exposure_resources_epoch_check', sql`${t.runtime_epoch} > 0`),
+  check('app_experience_resource_exposure_resources_key_check', sql`${t.resource_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
+]);
+
+export const appExperienceResourceExposureAudit = pgTable('app_experience_resource_exposure_audit', {
+  ...id(), ...orgId(), exposure_id: text('exposure_id').notNull(), experience_session_id: text('experience_session_id').notNull(),
+  owner_user_id: text('owner_user_id').notNull(), review_digest: text('review_digest').notNull(),
+  event: text('event').$type<'accepted' | 'revoked'>().notNull(),
+  safe_snapshot: jsonb('safe_snapshot').$type<Record<string, unknown>>().notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique('app_experience_resource_exposure_audit_event_unique').on(t.org_id, t.exposure_id, t.event),
+  check('app_experience_resource_exposure_audit_event_check', sql`${t.event} IN ('accepted', 'revoked')`),
 ]);
 
 // ═══ REVOKED TOKENS ═══

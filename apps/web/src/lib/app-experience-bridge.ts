@@ -226,14 +226,22 @@ export function createExperienceBridge(input: Readonly<{
           send({ version: 'deft.experience_bridge.v1', kind: 'response',
             session_id: pin.session_id, request_id: requestId, ok: false, code: 'UNAVAILABLE' });
         } else if (boundedJson(output)) {
-          send({ version: 'deft.experience_bridge.v1', kind: 'response',
-            session_id: pin.session_id, request_id: requestId, ok: true, output });
+          const response = { version: 'deft.experience_bridge.v1', kind: 'response',
+            session_id: pin.session_id, request_id: requestId, ok: true, output };
+          if (operation === 'resource' && (!boundedJson(response)
+            || encoder.encode(JSON.stringify(response)).byteLength > 60 * 1024)) {
+            send({ version: 'deft.experience_bridge.v1', kind: 'response', session_id: pin.session_id,
+              request_id: requestId, ok: false, code: 'RESOURCE_PAYLOAD_TOO_LARGE' });
+          } else if (boundedJson(response)) send(response);
+          else revoke();
         } else {
           revoke();
         }
-      } catch {
+      } catch (reason) {
+        const code = reason instanceof Error && ['RESOURCE_PAYLOAD_TOO_LARGE', 'RESOURCE_CURSOR_STALE'].includes(reason.message)
+          ? reason.message : 'UNAVAILABLE';
         if (active) send({ version: 'deft.experience_bridge.v1', kind: 'response',
-          session_id: pin.session_id, request_id: requestId, ok: false, code: 'UNAVAILABLE' });
+          session_id: pin.session_id, request_id: requestId, ok: false, code });
       } finally { pending -= 1; }
     })();
   };

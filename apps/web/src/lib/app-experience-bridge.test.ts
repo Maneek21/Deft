@@ -160,3 +160,24 @@ test('input change reaches the Worker before a rapid submit click', async () => 
   assert.deepEqual((port.sent as Array<{event: {kind: string}}>).map((item) => item.event.kind),
     ['input', 'click']);
 });
+
+test('resource response bounds cover the entire envelope and withdrawal drops late data', async () => {
+  const port = new FakePort();
+  let resolveRead!: (value: unknown) => void;
+  const pending = new Promise(resolve => { resolveRead = resolve; });
+  const bridge = createExperienceBridge({ port, pin, resourceKeys: ['inbox'], actionKeys: [],
+    broker: { isLive: () => true, resource: () => pending }, onView: () => undefined });
+  port.receive(message(1, { kind: 'request', request_id: 'request_1', operation: 'resource', key: 'inbox', input: {} }));
+  await delay();
+  bridge.revoke();
+  resolveRead({ private_body: 'late' });
+  await delay();
+  assert.equal(port.sent.length, 0);
+  const boundedPort = new FakePort();
+  createExperienceBridge({ port: boundedPort, pin, resourceKeys: ['inbox'], actionKeys: [],
+    broker: { isLive: () => true, resource: async () => Array.from({ length: 15 }, () => 'x'.repeat(4095)) }, onView: () => undefined });
+  boundedPort.receive(message(1, { kind: 'request', request_id: 'request_1', operation: 'resource', key: 'inbox', input: {} }));
+  await delay();
+  assert.equal((boundedPort.sent[0] as any).code, 'RESOURCE_PAYLOAD_TOO_LARGE');
+  assert.equal((boundedPort.sent[0] as any).output, undefined);
+});

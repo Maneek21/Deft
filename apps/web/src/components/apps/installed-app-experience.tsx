@@ -7,8 +7,9 @@ import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
 import { createExperienceBridge } from '@/lib/app-experience-bridge';
 import { renderExperienceView, EXPERIENCE_RENDERER_CSS } from '@/lib/app-experience-renderer';
-import { normalizeInstalledExperienceSession,
-  type InstalledExperienceSession } from '@/lib/app-experience-session';
+import { normalizeInstalledExperienceSession, experienceLifetimeIsCurrent,
+  normalizeExperienceExposureStatus, normalizeExperienceExposureReview, type ExperienceExposureStatus,
+  type ExperienceExposureReview, type InstalledExperienceSession } from '@/lib/app-experience-session';
 import { getSocket } from '@/lib/socket';
 
 const root = '/api/app-experiences';
@@ -21,14 +22,22 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const [session, setSession] = useState<InstalledExperienceSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [opening, setOpening] = useState(0);
+  const [review, setReview] = useState<ExperienceExposureReview | null>(null);
+  const [exposure, setExposure] = useState<ExperienceExposureStatus | null>(null);
+  const [exposureBusy, setExposureBusy] = useState(false);
+  const reviewGeneration = useRef(0);
+  const stopWorker = useRef<((retireSession?: boolean) => void) | null>(null);
   const iframeHost = useRef<HTMLDivElement>(null);
   const viewHost = useRef<HTMLDivElement>(null);
   const rendered = useRef(false);
 
   useLayoutEffect(() => {
+    stopWorker.current?.();
     setSession(null);
     setError(null);
     setReady(false);
+    setReview(null); setExposure(null); setExposureBusy(false); reviewGeneration.current += 1;
     viewHost.current?.replaceChildren();
     rendered.current = false;
     if (!user || !org || !sessionCacheScope) return;
@@ -49,12 +58,68 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         if (!cancelled) setError(cause instanceof Error ? cause.message : 'This Experience is unavailable.');
       }
     })();
-    return () => { cancelled = true; abort.abort(); };
-  }, [installationId, experienceKey, user?.id, org?.id, sessionCacheScope]);
+    return () => { cancelled = true; abort.abort(); stopWorker.current?.(); reviewGeneration.current += 1; setReview(null); setExposure(null); };
+  }, [installationId, experienceKey, user?.id, org?.id, sessionCacheScope, opening]);
+
+  const prepareExposure = async () => {
+    if (!session || document.hidden) return;
+    const generation = ++reviewGeneration.current;
+    setExposureBusy(true); setReview(null); setError(null);
+    try {
+      const response = await api.post(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure/review`, {});
+      if (!response.ok) throw new Error(await appApiError(response, 'Private access review is unavailable.'));
+      const prepared = normalizeExperienceExposureReview(await response.json());
+      if (generation === reviewGeneration.current && !document.hidden) setReview(prepared);
+    } catch (reason) { if (generation === reviewGeneration.current) setError(reason instanceof Error ? reason.message : 'Private access review is unavailable.'); }
+    finally { if (generation === reviewGeneration.current) setExposureBusy(false); }
+  };
+  const acceptExposure = async () => {
+    if (!session || !review || document.hidden) return;
+    const generation = ++reviewGeneration.current;
+    setExposureBusy(true); setError(null);
+    const expectedDigest = review.review_digest;
+    try {
+      let accepted: ExperienceExposureStatus;
+      try {
+        const response = await api.post(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure/accept`, {
+          review_token: review.review_token, review_digest: expectedDigest, accept_exposure: true });
+        if (!response.ok) throw new Error(await appApiError(response, 'Unable to accept private access.'));
+        accepted = normalizeExperienceExposureStatus(await response.json());
+      } catch (reason) {
+        // A committed acceptance may lose its response. Read safe status only;
+        // never retry the authority-changing request automatically.
+        const recovered = await api.get(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`);
+        if (!recovered.ok) throw reason;
+        accepted = normalizeExperienceExposureStatus(await recovered.json());
+      }
+      if (accepted.review_digest !== expectedDigest || new Date(accepted.expires_at).getTime() <= Date.now()) throw new Error('Private access review expired; reopen the Experience.');
+      if (generation === reviewGeneration.current && !document.hidden) { setExposure(accepted); setReview(null); }
+      else {
+        // Acceptance can commit after this page has retired. Keep its authority
+        // out of a later Worker lifetime and retire the exact old session.
+        await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE' }).catch(() => undefined);
+        await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE' }).catch(() => undefined);
+      }
+    } catch (reason) { if (generation === reviewGeneration.current) { setReview(null); setError(reason instanceof Error ? reason.message : 'Unable to accept private access.'); } }
+    finally { if (generation === reviewGeneration.current) setExposureBusy(false); }
+  };
+  const withdrawExposure = async () => {
+    if (!session) return;
+    reviewGeneration.current += 1; setExposureBusy(true); setReview(null);
+    stopWorker.current?.(false);
+    setError('Private access ended. Reopen this Experience to review a new session.');
+    await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE' }).catch(() => undefined);
+    setExposure(null); setExposureBusy(false);
+  };
 
   useEffect(() => {
-    if (!session || !iframeHost.current || !viewHost.current || !sessionCacheScope) return;
+    if (!session || !iframeHost.current || !viewHost.current || !sessionCacheScope
+      || document.hidden || !experienceLifetimeIsCurrent(session.expires_at, exposure?.expires_at)
+      || (session.bundle.resource_keys.length > 0 && !exposure)) return;
     let stopped = false;
+    const generation = reviewGeneration.current;
+    const locallyCurrent = () => !stopped && generation === reviewGeneration.current && !document.hidden
+      && !!api.getAccessToken() && experienceLifetimeIsCurrent(session.expires_at, exposure?.expires_at);
     const knownRunIds = new Set<string>();
     const port = new MessageChannel();
     const frame = document.createElement('iframe');
@@ -64,10 +129,20 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     frame.setAttribute('aria-hidden', 'true');
     frame.style.cssText = 'position:absolute;width:1px;height:1px;border:0;opacity:0;pointer-events:none';
     const live = async () => {
-      if (stopped || !api.getAccessToken()) return false;
+      if (!locallyCurrent()) return false;
       try {
+        if (document.hidden || new Date(session.expires_at).getTime() <= Date.now()
+          || (exposure && new Date(exposure.expires_at).getTime() <= Date.now())) return false;
         const response = await api.get(livePath(session.pin.session_id));
-        return !stopped && response.ok;
+        if (stopped || !response.ok) return false;
+        if (exposure) {
+          const status = await api.get(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`);
+          if (!status.ok || stopped) return false;
+          const current = normalizeExperienceExposureStatus(await status.json());
+          return locallyCurrent() && current.exposure_id === exposure.exposure_id && current.exposure_epoch === exposure.exposure_epoch
+            && current.review_digest === exposure.review_digest && current.expires_at === exposure.expires_at;
+        }
+        return locallyCurrent();
       } catch { return false; }
     };
     let bridge: ReturnType<typeof createExperienceBridge>;
@@ -77,6 +152,18 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       actionKeys: session.bundle.action_keys,
       broker: {
         isLive: live,
+        async resource(_pin, key, input, signal) {
+          if (!exposure || !locallyCurrent()) return undefined;
+          const response = await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/resources/${encodeURIComponent(key)}`,
+            { method: 'POST', signal, body: JSON.stringify(input) });
+          const body = await response.json() as { exposure_id?: string; exposure_epoch?: number; output?: unknown; code?: string };
+          if (!response.ok) {
+            if (body.code === 'RESOURCE_PAYLOAD_TOO_LARGE' || body.code === 'RESOURCE_CURSOR_STALE') throw new Error(body.code);
+            return undefined;
+          }
+          if (!locallyCurrent() || signal.aborted || body.exposure_id !== exposure.exposure_id || body.exposure_epoch !== exposure.exposure_epoch) return undefined;
+          return body.output;
+        },
         async action(_pin, key, input, signal, requestId) {
           const response = await api.fetch(
             `${root}/sessions/${encodeURIComponent(session.pin.session_id)}/actions/${encodeURIComponent(key)}`,
@@ -98,23 +185,26 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         },
       },
       onView(view) {
-        if (stopped || !viewHost.current) return;
+        if (!locallyCurrent() || !viewHost.current) return;
         renderExperienceView(viewHost.current, view, (event) => { void bridge.sendUiEvent(event); });
         rendered.current = true;
       },
     });
-    const stop = () => {
+    const stop = (retireSession = true) => {
       if (stopped) return;
       stopped = true;
+      frame.contentWindow?.postMessage({ kind: 'stop', session_id: session.pin.session_id }, '*');
       bridge.revoke();
       frame.remove();
       if (rendered.current && viewHost.current) viewHost.current.replaceChildren();
       rendered.current = false;
       setError('This Experience session ended. Reopen it to continue.');
+      if (retireSession) void api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE' }).catch(() => undefined);
     };
+    stopWorker.current = stop;
     let started = false;
     const onBootstrapReady = (event: MessageEvent) => {
-      if (stopped || started || event.source !== frame.contentWindow || event.origin !== 'null'
+      if (!locallyCurrent() || started || event.source !== frame.contentWindow || event.origin !== 'null'
         || !event.data || event.data.kind !== 'deft_experience_bootstrap_ready.v1'
         || !frame.contentWindow) return;
       started = true;
@@ -135,19 +225,35 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     const socket = token ? getSocket(token) : null;
     const onAppChange = () => { void live().then((current) => { if (!current) stop(); }); };
     socket?.on('app:changed', onAppChange);
+    const hidden = () => { if (document.hidden) stop(); };
+    document.addEventListener('visibilitychange', hidden);
+    const pageHide = () => stop();
+    addEventListener('pagehide', pageHide);
+    const expiry = setTimeout(() => stop(), Math.max(0, Math.min(new Date(session.expires_at).getTime(),
+      exposure ? new Date(exposure.expires_at).getTime() : Infinity) - Date.now()));
     return () => {
       clearInterval(poll);
       removeEventListener('message', onBootstrapReady);
       removeEventListener('storage', onStorage);
       socket?.off('app:changed', onAppChange);
+      document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', pageHide); clearTimeout(expiry);
       stopped = true;
+      frame.contentWindow?.postMessage({ kind: 'stop', session_id: session.pin.session_id }, '*');
       bridge.revoke();
       frame.remove();
       if (viewHost.current) viewHost.current.replaceChildren();
       rendered.current = false;
+      stopWorker.current = null;
       void api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE' }).catch(() => undefined);
     };
-  }, [session, sessionCacheScope]);
+  }, [session, sessionCacheScope, exposure]);
+
+  useEffect(() => {
+    const clear = () => { reviewGeneration.current += 1; setReview(null); setExposureBusy(false); stopWorker.current?.(); };
+    const hidden = () => { if (document.hidden) clear(); };
+    document.addEventListener('visibilitychange', hidden); addEventListener('pagehide', clear);
+    return () => { clear(); document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', clear); };
+  }, []);
 
   return <div className="mx-auto w-full max-w-6xl px-3 py-5 sm:px-6">
     <style>{EXPERIENCE_RENDERER_CSS}</style>
@@ -159,6 +265,26 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     {error ? <p role="alert" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
       : !ready ? <p role="status" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening reviewed App Experience…</p>
       : null}
+    {session && session.bundle.resource_keys.length > 0 && <section aria-label="Experience private access" className="mb-4 min-w-0 space-y-3 rounded-xl border p-4 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>
+      {exposure ? <><p>This session may read the private fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
+        <button className="deft-pill min-h-11" onClick={() => void withdrawExposure()}>End private access</button></>
+        : review ? <><h2 className="font-semibold">Allow private fields for this Experience?</h2>
+          <p>Allow this Experience’s App code to read the listed saved private fields for this session, until {new Date(review.snapshot.expires_at).toLocaleString()}? It can process and display these records. Ending access stops future reads; previously delivered content cannot be recalled.</p>
+          <dl className="space-y-2"><div><dt>App</dt><dd>{review.snapshot.app_name} {review.snapshot.app_version}</dd></div>
+            <div><dt>Experience</dt><dd>{review.snapshot.experience_label}</dd></div><div><dt>Owner</dt><dd>{review.snapshot.owner_label}</dd></div>
+            <div><dt>Verified artifact</dt><dd className="break-all font-mono text-xs">{review.snapshot.artifact_digest}</dd></div></dl>
+          {review.snapshot.resources.map(resource => <div key={resource.resource_key} className="min-w-0 rounded-lg border p-3" style={{ borderColor: 'var(--ghost-border)' }}>
+            <p className="break-words font-medium">{resource.label} ({resource.resource_type})</p>
+            <p>Allowed reads: list saved record summaries; read one saved record.</p><p className="break-words">Permitted fields: {resource.allowed_fields.join(', ')}.</p>
+            <p>At most 10 summaries per page; 32 scalar fields; 4096 characters per string; 60 KiB per response.</p></div>)}
+          <p>The recipient is the verified App author Worker for this exact session. Provider credentials and provider identifiers are excluded.</p>
+          <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" disabled={exposureBusy} onClick={() => void acceptExposure()}>Allow listed private fields</button>
+            <button className="deft-pill min-h-11" disabled={exposureBusy} onClick={() => { reviewGeneration.current += 1; setReview(null); }}>Cancel private access review</button></div></>
+          : <><p>This App’s code cannot read your saved private resources until you approve the exact fields for this session.</p>
+            <button className="deft-pill min-h-11" disabled={exposureBusy || !!error} onClick={() => void prepareExposure()}>Review private access</button></>}
+      {exposureBusy && <p role="status">Checking private access…</p>}
+    </section>}
+    {error && <button className="deft-pill mb-4 min-h-11" onClick={() => { setExposure(null); setReview(null); setOpening(value => value + 1); }}>Reopen Experience</button>}
     <div ref={viewHost} className="min-h-[420px] overflow-hidden rounded-xl" aria-label="App Experience" />
     <div ref={iframeHost} aria-hidden="true" />
   </div>;

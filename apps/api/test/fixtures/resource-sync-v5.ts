@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SyncDescriptorV1 } from '@deft/app-kit/experimental/resource-sync';
 import type { AppRunKeyProvider } from '../../src/lib/app-run-keyrings.js';
+import type { DeftExperienceArtifact } from '@deft/app-kit';
 
 const defaultDescriptor: SyncDescriptorV1 = {
   schema_version: 'deft.app_sync_descriptor.v1', key: 'inbox',
@@ -15,6 +16,7 @@ const defaultDescriptor: SyncDescriptorV1 = {
  * configures feature flags before calling and owns its DB pool/keyring. */
 export async function createReviewedResourceSyncFixture(input: Readonly<{
   keys: AppRunKeyProvider; clock: () => Date; descriptor?: SyncDescriptorV1;
+  experience_artifact?: DeftExperienceArtifact;
 }>) {
   const [{ db }, schema, kit, apps, reviews, modules, managementModule, drizzle] = await Promise.all([
     import('../../src/lib/db.js'), import('@deft/db/schema'), import('@deft/app-kit'),
@@ -46,9 +48,11 @@ export async function createReviewedResourceSyncFixture(input: Readonly<{
     runtime_requirements: [{ key: descriptor.runtime_requirement_key,
       protocol_version: 'deft.app_runtime_channel.v2' as const }],
     private_capabilities: [], runtime_actions: [], sync_descriptors: [descriptor],
-    experiences: [], public_actions: [],
+    experiences: input.experience_artifact ? [{ key: 'main', label: 'Saved private records',
+      artifact_path: input.experience_artifact.path, artifact_digest: input.experience_artifact.digest,
+      bridge_version: 'deft.experience_bridge.v1' as const, renderer_version: 'deft.trusted_renderer.v1' as const }] : [], public_actions: [],
   };
-  const pkg = await kit.buildDeftAppPackage({ manifest, artifacts: [] });
+  const pkg = await kit.buildDeftAppPackage({ manifest, artifacts: input.experience_artifact ? [input.experience_artifact] : [] });
   const staged = await apps.stageAppPackage(ownerActor, pkg.json);
   const [version] = await db.select().from(schema.appVersions).where(drizzle.and(
     drizzle.eq(schema.appVersions.org_id, orgId),

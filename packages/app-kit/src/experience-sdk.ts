@@ -4,6 +4,34 @@ export const DEFT_EXPERIENCE_SDK_VERSION = 'deft.experience_bridge.v1' as const;
 
 export type ExperienceSdkPort = Pick<MessagePort, 'postMessage' | 'close' | 'onmessage'>;
 export type ExperienceSdkIntent = 'resource' | 'action' | 'run_status' | 'run_cancel' | 'navigate' | 'dialog';
+export type ExperienceResourceSummaryPage = Readonly<{ schema_version: 'deft.experience_resource_payload.v1'; operation: 'list_summary';
+  items: readonly Readonly<{ record_id: string; label: string }>[]; next_cursor: string | null; freshness: 'unknown' }>;
+export type ExperienceResourceRecord = Readonly<{ schema_version: 'deft.experience_resource_payload.v1'; operation: 'read_one';
+  item: Readonly<{ record_id: string; label: string; data: Readonly<Record<string, string | number | boolean>>; freshness: 'unknown' }> }>;
+const resourceRecordId = (value: unknown): value is string => typeof value === 'string'
+  && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+function resourceReply(value: unknown, operation: 'list_summary' | 'read_one') {
+  const object = (row: unknown): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row);
+  const exact = (row: Record<string, unknown>, keys: readonly string[]) => Object.keys(row).length === keys.length && keys.every(key => Object.hasOwn(row, key));
+  const label = (value: unknown) => typeof value === 'string' && value.length <= 200;
+  const invalid = () => { throw new Error('Invalid Experience resource response'); };
+  if (!object(value) || value.schema_version !== 'deft.experience_resource_payload.v1' || value.operation !== operation
+    || new TextEncoder().encode(JSON.stringify(value)).byteLength > 60 * 1024) return invalid();
+  if (operation === 'list_summary') {
+    if (!exact(value, ['schema_version', 'operation', 'items', 'next_cursor', 'freshness']) || value.freshness !== 'unknown'
+      || !Array.isArray(value.items) || value.items.length > 10
+      || !value.items.every(item => object(item) && exact(item, ['record_id', 'label']) && resourceRecordId(item.record_id) && label(item.label))
+      || (value.next_cursor !== null && (typeof value.next_cursor !== 'string' || !value.next_cursor || value.next_cursor.length > 2048))) return invalid();
+    return value as unknown as ExperienceResourceSummaryPage;
+  }
+  const item = value.item;
+  if (!exact(value, ['schema_version', 'operation', 'item']) || !object(item)
+    || !exact(item, ['record_id', 'label', 'data', 'freshness']) || !resourceRecordId(item.record_id) || !label(item.label) || item.freshness !== 'unknown'
+    || !object(item.data) || Object.keys(item.data).length > 32
+    || !Object.entries(item.data).every(([key, data]) => key.length > 0 && key.length <= 48 && !['__proto__', 'constructor', 'prototype'].includes(key)
+      && (typeof data === 'boolean' || (typeof data === 'string' && data.length <= 4096) || (typeof data === 'number' && Number.isFinite(data))))) return invalid();
+  return value as unknown as ExperienceResourceRecord;
+}
 
 export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: string) {
   if (!/^[a-zA-Z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid Experience session');
@@ -31,16 +59,36 @@ export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: stri
       session_id: sessionId, sequence, ...message });
     return sequence;
   };
+  const request = (operation: ExperienceSdkIntent, key?: string, input?: unknown): Promise<unknown> => {
+    if (pending.size >= 16) return Promise.reject(new Error('Experience request limit'));
+    const requestId = `request_${sequence + 1}`;
+    return new Promise((resolve, reject) => {
+      pending.set(requestId, { resolve, reject });
+      try { post({ kind: 'request', request_id: requestId, operation, key, input }); }
+      catch (error) { pending.delete(requestId); reject(error); }
+    });
+  };
+  const resourceKey = (key: string) => {
+    if (!/^[a-z][a-z0-9_]{0,47}$/.test(key)) throw new Error('Invalid resource key');
+  };
   return Object.freeze({
     render(view: unknown): void { post({ kind: 'view', view }); },
-    request(operation: ExperienceSdkIntent, key?: string, input?: unknown): Promise<unknown> {
-      if (pending.size >= 16) return Promise.reject(new Error('Experience request limit'));
-      const requestId = `request_${sequence + 1}`;
-      return new Promise((resolve, reject) => {
-        pending.set(requestId, { resolve, reject });
-        try { post({ kind: 'request', request_id: requestId, operation, key, input }); }
-        catch (error) { pending.delete(requestId); reject(error); }
-      });
+    request,
+    listResourceSummaries(key: string, options: { limit?: number; cursor?: string } = {}): Promise<ExperienceResourceSummaryPage> {
+      resourceKey(key);
+      if (Object.keys(options).some(field => !['limit', 'cursor'].includes(field))
+        || (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 10))
+        || (options.cursor !== undefined && (typeof options.cursor !== 'string' || !options.cursor || options.cursor.length > 2048))) {
+        throw new Error('Invalid resource list input');
+      }
+      return request('resource', key, { schema_version: 'deft.experience_resource_request.v1', operation: 'list_summary', ...options })
+        .then(value => resourceReply(value, 'list_summary') as ExperienceResourceSummaryPage);
+    },
+    readResourceRecord(key: string, recordId: string): Promise<ExperienceResourceRecord> {
+      resourceKey(key);
+      if (!resourceRecordId(recordId)) throw new Error('Invalid record locator');
+      return request('resource', key, { schema_version: 'deft.experience_resource_request.v1', operation: 'read_one', record_id: recordId })
+        .then(value => resourceReply(value, 'read_one') as ExperienceResourceRecord);
     },
     onEvent(handler: (event: unknown) => void): void { onUiEvent = handler; },
     close(): void {
