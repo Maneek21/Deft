@@ -52,11 +52,14 @@ async function assertCounts(tx: Transaction, endpoint: Endpoint, ownClaimId: str
                 AND r.origin_app_installation_id = e.app_installation_id
                 AND r.origin_app_version_id = e.app_version_id
                 AND r.origin_app_grant_snapshot_id = e.grant_snapshot_id
-                AND r.origin_runtime_binding_id = e.runtime_binding_id
+                AND ((e.native_binding_id IS NULL AND r.provider_kind = 'app_runtime'
+                    AND r.origin_runtime_binding_id = e.runtime_binding_id)
+                  OR (e.native_binding_id IS NOT NULL AND e.runtime_binding_id IS NULL
+                    AND r.provider_kind = 'native' AND r.origin_native_binding_id = e.native_binding_id
+                    AND r.origin_runtime_binding_id IS NULL))
                 AND r.origin_public_endpoint_id = e.id AND r.origin_public_ingress_id = i.id
                 AND r.initiating_actor_type = 'app_public' AND r.initiating_actor_id = i.id
                 AND r.execution_actor_type = 'human' AND r.execution_actor_id = e.approver_user_id
-                AND r.provider_kind = 'app_runtime'
                 AND r.state IN (${sql.join(APP_RUN_TERMINAL_STATES.map(state => sql`${state}`), sql`, `)})
             ))) LIMIT ${scope.limits.max_pending + 1}`);
       if (pending.rows.length > scope.limits.max_pending) throw new PublicBudgetExceededError();
