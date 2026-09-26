@@ -1,3 +1,5 @@
+import { ResourceSyncSessionCredentialSchema, type ResourceSyncSessionCredential } from './resource-sync-transport-contract.js';
+import { createResourceSyncTransport, ResourceSyncClientError } from './resource-sync-transport.js';
 import { z } from 'zod';
 import {
   parseSyncPage, SyncDescriptorV1Schema, SyncPageV1Schema, SyncRequestV1Schema,
@@ -16,11 +18,7 @@ const token = z.string().min(32).max(512).regex(/^[A-Za-z0-9_-]+$/u);
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const instant = z.iso.datetime({ offset: true });
 
-export const ResourceSyncSessionCredentialSchema = z.strictObject({
-  session_id: uuid, session_token: token,
-});
-export type ResourceSyncSessionCredential = z.infer<typeof ResourceSyncSessionCredentialSchema>;
-
+export { ResourceSyncSessionCredentialSchema, type ResourceSyncSessionCredential } from './resource-sync-transport-contract.js';
 const requestBase = { schema_version: version, audience, session_id: uuid, session_token: token };
 const attemptRequest = { ...requestBase, run_id: uuid, attempt_id: uuid,
   claim_token: uuid, sequence };
@@ -79,19 +77,7 @@ export const ResourceSyncResultReplySchema = z.strictObject({
   run_id: uuid, attempt_id: uuid, sequence, accepted: z.literal(true),
 });
 
-export const ResourceSyncErrorSchema = z.strictObject({
-  code: z.enum([
-    'APP_RESOURCE_SYNC_DISABLED', 'APP_RESOURCE_SYNC_ACCESS_DENIED',
-    'APP_RESOURCE_SYNC_INVALID_REQUEST', 'APP_RESOURCE_SYNC_TOO_LARGE',
-    'APP_RESOURCE_SYNC_TIMEOUT', 'APP_RESOURCE_SYNC_FAILURE',
-  ]),
-  error: z.enum([
-    'Resource sync channel unavailable', 'Resource sync credential required',
-    'Invalid resource sync request', 'Resource sync request too large',
-    'Resource sync request timed out', 'Resource sync request failed',
-  ]),
-});
-
+export { ResourceSyncErrorSchema } from './resource-sync-transport-contract.js';
 /** Matches the host's sorted-key SHA-256 descriptor digest. It confers no
  * authority; the host must compare the stored reviewed descriptor independently. */
 export async function digestResourceSyncDescriptor(value: unknown): Promise<`sha256:${string}`> {
@@ -131,108 +117,11 @@ export type ResourceSyncClientOptions = Readonly<{
 }>;
 export type ResourceSyncCallOptions = Readonly<{ signal?: AbortSignal }>;
 
-const MAX_TRANSPORT_BYTES = 1_100_000;
-export class ResourceSyncClientError extends Error {
-  constructor(readonly status: number, readonly code: string) {
-    super(`Resource sync channel request failed: ${code}`);
-    this.name = 'ResourceSyncClientError';
-  }
-}
+export { ResourceSyncClientError } from './resource-sync-transport.js';
 
 export function createResourceSyncClient(options: ResourceSyncClientOptions) {
-  const url = new URL(options.channel_url);
-  if (url.username || url.password || url.search || url.hash
-    || (url.protocol !== 'https:' && !(url.protocol === 'http:'
-      && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
-    throw new TypeError('Resource sync channel URL must be HTTPS or loopback HTTP without credentials');
-  }
   const credential = ResourceSyncSessionCredentialSchema.parse(options.credential);
-  const fetcher = options.fetch ?? globalThis.fetch;
-  const timeout = options.timeout_ms ?? 15_000;
-  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60_000) {
-    throw new TypeError('Invalid resource sync request deadline');
-  }
-
-  async function post(operation: 'claim' | 'start' | 'heartbeat' | 'result',
-    fields: Record<string, unknown>, callOptions?: ResourceSyncCallOptions): Promise<unknown> {
-    if (callOptions?.signal?.aborted) {
-      throw new ResourceSyncClientError(0, 'APP_RESOURCE_SYNC_ABORTED');
-    }
-    const body = JSON.stringify({ ...fields,
-      schema_version: APP_RESOURCE_SYNC_CHANNEL_VERSION,
-      audience: APP_RESOURCE_SYNC_AUDIENCE,
-      session_id: credential.session_id });
-    if (new TextEncoder().encode(body).byteLength > MAX_TRANSPORT_BYTES) {
-      throw new ResourceSyncClientError(0, 'APP_RESOURCE_SYNC_TOO_LARGE');
-    }
-    const controller = new AbortController();
-    const signal = callOptions?.signal;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let abortHandler: (() => void) | undefined;
-    const boundary = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        reject(new ResourceSyncClientError(0, 'APP_RESOURCE_SYNC_TIMEOUT'));
-      }, timeout);
-      abortHandler = () => {
-        controller.abort();
-        reject(new ResourceSyncClientError(0, 'APP_RESOURCE_SYNC_ABORTED'));
-      };
-      if (signal?.aborted) abortHandler();
-      else signal?.addEventListener('abort', abortHandler, { once: true });
-    });
-    const bounded = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, boundary]);
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    try {
-      const destination = new URL(url);
-      destination.pathname = `${url.pathname.replace(/\/$/u, '')}/${operation}`;
-      const response = await bounded(fetcher(destination, {
-        method: 'POST', credentials: 'omit', redirect: 'error', signal: controller.signal,
-        headers: { authorization: `AppRuntime ${credential.session_token}`,
-          'content-type': 'application/json' }, body,
-      }));
-      const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
-      if (response.redirected || contentType !== 'application/json') {
-        throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_INVALID_RESPONSE');
-      }
-      const declared = response.headers.get('content-length');
-      if (declared !== null && (!/^\d+$/u.test(declared)
-        || Number(declared) > MAX_TRANSPORT_BYTES)) {
-        throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_RESPONSE_TOO_LARGE');
-      }
-      reader = response.body?.getReader();
-      if (!reader) throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_INVALID_RESPONSE');
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      while (true) {
-        const next = await bounded(reader.read());
-        if (next.done) break;
-        size += next.value.byteLength;
-        if (size > MAX_TRANSPORT_BYTES) {
-          throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_RESPONSE_TOO_LARGE');
-        }
-        chunks.push(next.value);
-      }
-      const bytes = new Uint8Array(size);
-      let offset = 0;
-      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-      let payload: unknown;
-      try { payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
-      catch { throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_INVALID_RESPONSE'); }
-      if (!response.ok) {
-        const failure = ResourceSyncErrorSchema.safeParse(payload);
-        throw new ResourceSyncClientError(response.status,
-          failure.success ? failure.data.code : 'APP_RESOURCE_SYNC_FAILURE');
-      }
-      return payload;
-    } finally {
-      if (timer) clearTimeout(timer);
-      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
-      if (reader) void reader.cancel().catch(() => {});
-      controller.abort();
-    }
-  }
-
+  const post = createResourceSyncTransport({ ...options, channel_version: APP_RESOURCE_SYNC_CHANNEL_VERSION });
   function fieldsForClaim(value: unknown): Record<string, unknown> {
     const claim = ResourceSyncClaimSchema.parse(value);
     if (claim.session_id !== credential.session_id) throw new TypeError('Resource sync session mismatch');

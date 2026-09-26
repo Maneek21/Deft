@@ -127,7 +127,8 @@ export const NativeAuthoringShape = {
   sync_descriptors: z.array(SyncDescriptorV1Schema).max(8), experiences: z.array(InstalledExperienceSchema).max(1),
   public_actions: z.array(z.union([PublicActionDeclarationSchema, NativePublicActionDeclarationSchema])).max(8),
 };
-export const NativeAuthoringSchema = z.strictObject(NativeAuthoringShape).superRefine((value, ctx) => {
+/** Shared declaration relationships; shape/version admission stays in each parser. */
+export function refineNativeAuthoring(value: z.infer<z.ZodObject<typeof NativeAuthoringShape>>, ctx: z.RefinementCtx) {
   const fail = (path: (string | number)[], message: string) => ctx.addIssue({ code: 'custom', path, message });
   for (const name of Object.keys(NativeAuthoringShape) as (keyof typeof NativeAuthoringShape)[]) {
     if (new Set(value[name].map(item => item.key)).size !== value[name].length) fail([name], 'Keys must be unique');
@@ -176,7 +177,8 @@ export const NativeAuthoringSchema = z.strictObject(NativeAuthoringShape).superR
         })) fail(['public_actions', index], 'Runtime public inputs retain canonical claim string mappings');
     }
   }
-});
+}
+export const NativeAuthoringSchema = z.strictObject(NativeAuthoringShape).superRefine(refineNativeAuthoring);
 export const NativeRequestedAuthoritySchema = z.strictObject({
   requirements: NativeAuthoringSchema,
   classification: z.strictObject({ authority_state: z.literal('requested_only'), executable: z.literal(false),
