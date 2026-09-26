@@ -1114,11 +1114,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       // locks. Check them after every event, result and receipt write has waited,
       // without acquiring user locks in reverse order. Failure rolls back the
       // native effect and its entire terminal ledger together.
+      const currentHumans = await nativeParticipantsAreHuman(tx, authority.participants);
       const finalNow = this.now();
       if (!isAppNativeCalendarEnabled() || signal?.aborted
         || attempt.lease_expires_at <= finalNow || run.input_expires_at <= finalNow
         || run.result_expires_at <= finalNow
-        || !await nativeParticipantsAreHuman(tx, authority.participants))
+        || !currentHumans)
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
     }, signal);
   }

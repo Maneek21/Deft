@@ -1749,10 +1749,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
           const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
           nativeGuard = async tx => {
             await guard(tx);
+            const currentHumans = await nativeParticipantsAreHuman(tx, participantIds);
             assertNativeCalendarEnabled();
             const now = Date.now();
             if (run.input_expires_at.getTime() <= now || run.result_expires_at.getTime() <= now
-              || !await nativeParticipantsAreHuman(tx, participantIds)) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+              || !currentHumans) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
           };
         } catch (error) {
           if (error && typeof error === 'object' && 'status' in error && 'code' in error
