@@ -275,4 +275,3 @@ test('private read HTTP rechecks participant kind after the final web SID lock w
     assert.ok(!JSON.stringify(denied.body).includes('Private HTTP message'));
   } finally { release(); await h.close(); }
 });
-
