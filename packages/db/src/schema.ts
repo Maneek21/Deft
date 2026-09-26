@@ -2804,6 +2804,8 @@ export const appAttachmentStages = pgTable('app_attachment_stages', {
     name: 'app_attachment_stages_projection_fk' }).onDelete('restrict'),
   index('app_attachment_stages_cleanup_idx').on(t.state, t.stage_expires_at, t.id),
   index('app_attachment_stages_parent_idx').on(t.org_id, t.resource_binding_id, t.projection_id, t.state),
+  index('app_attachment_stages_active_checkpoint_idx').on(t.org_id,t.resource_binding_id,t.checkpoint_id,t.state,t.stage_expires_at,t.id)
+    .where(sql`${t.state} IN ('uploading','ready','blocked','linked','linked_blocked','retired')`),
   check('app_attachment_stages_identity_check', sql`${t.generation} >= 1 AND ${t.reservation_sequence} >= 1
     AND ${t.fingerprint_key_version} ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
     AND ${t.parent_locator_hmac} ~ '^[a-f0-9]{64}$' AND ${t.parent_revision_hmac} ~ '^[a-f0-9]{64}$'

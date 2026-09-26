@@ -162,6 +162,7 @@ async function main() {
       '0.3.0-preview.47-app-attachment-custody.sql',
       '0.3.0-preview.48-app-public-cancellation.sql',
       '0.3.0-preview.49-app-private-mcp.sql',
+      '0.3.0-preview.50-app-attachment-grant-admission.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);
@@ -298,7 +299,7 @@ async function main() {
     console.log('[apply-extras] verified composite module foreign-key constraints');
 
     const requiredIndexes = [
-      'app_attachment_stages_cleanup_idx', 'app_attachment_stages_parent_idx',
+      'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_cleanup_idx', 'app_attachment_stages_parent_idx',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -375,7 +376,7 @@ async function main() {
     console.log('[apply-extras] verified module_versions_immutable_fields_trigger');
 
     const requiredAppRunTriggers = [
-      'app_attachment_binding_policy_guard_trigger',
+      'app_v7_effective_grant_shape_trigger', 'app_v7_effective_grant_shape_trigger', 'app_attachment_binding_policy_guard_trigger',
       'app_attachment_stage_guard_trigger', 'app_attachment_stage_capacity_trigger',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
