@@ -9,6 +9,8 @@ import { api } from '@/lib/api';
 import { appApiError } from '@/lib/apps';
 import { useAuth } from '@/lib/auth-context';
 import { useApps } from '@/hooks/use-apps';
+import { PrivateResourceSetup } from './private-resource-setup';
+import styles from './private-resources.module.css';
 
 type Binding = { binding_id: string; installation_id: string; resource_key: string; state: string; consent_expires_at: string };
 type Status = { binding: Binding; checkpoint: { state: string; retained_record_count: number; last_applied_at: string | null } | null; latest_run: { state: string; terminal_at: string | null } | null };
@@ -37,6 +39,7 @@ function PrivateResourceWorkspace() {
   const [busy, setBusy] = useState(false);
   const [revokeReview, setRevokeReview] = useState(false);
   const [consentExpired, setConsentExpired] = useState(false);
+  const [setupGeneration, setSetupGeneration] = useState(0);
   const generation = useRef(0);
   const clearContent = useCallback(() => { generation.current += 1; setPage(null); setBusy(false); }, []);
 
@@ -105,16 +108,17 @@ function PrivateResourceWorkspace() {
     setBusy(true); setPage(null); setError(null); setRevokeReview(false);
     try {
       await result(await api.post(`${management}/bindings/${encodeURIComponent(selected.binding.binding_id)}/revoke`));
-      if (request === generation.current) await loadBindings();
+      if (request === generation.current) { setSetupGeneration(value => value + 1); await loadBindings(); }
     } catch (reason) { if (request === generation.current) setError(reason instanceof Error ? reason.message : 'Unable to revoke access.'); }
     finally { if (request === generation.current) setBusy(false); }
   };
   const readable = !consentExpired && selected?.binding.state === 'active' && new Date(selected.binding.consent_expires_at).getTime() > Date.now();
-  return <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+  return <div className={`${styles.workspace} flex h-full min-h-0 flex-1 flex-col overflow-hidden`}>
     <PageHeader title="Your private App resources" description="Review your connections, sync activity, and saved records." compact />
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 md:px-6"><div className="mx-auto max-w-5xl space-y-4">
       <div className="flex flex-wrap items-center gap-2"><Link className="deft-pill min-h-11" href="/settings/apps">← Apps</Link><button className="deft-pill min-h-11" disabled={busy} onClick={() => void loadBindings()}><RefreshCw size={14} /> Refresh connections</button></div>
       <p className="flex items-start gap-2 text-sm" style={{ color: 'var(--on-surface-variant)' }}><LockKeyhole size={16} className="mt-0.5 shrink-0" />Only resources you explicitly connected are shown here. Reading them does not share them with your workspace.</p>
+      <PrivateResourceSetup key={setupGeneration} apps={apps} onChanged={() => void loadBindings()} />
       {error && <p role="alert" className="rounded-lg border p-3 text-sm" style={{ color: 'var(--error)', borderColor: 'var(--ghost-border)' }}>{error}</p>}
       {busy && <div role="status" className="flex items-center gap-2 text-sm"><Loader2 size={16} className="animate-spin" /> Loading…</div>}
       {!busy && !error && bindings.length === 0 && <p className="rounded-xl border p-5 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>You have no private App connections. A connection appears here after you review and activate its consent.</p>}

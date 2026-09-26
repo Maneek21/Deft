@@ -6,6 +6,7 @@ import { AppWindow, Check, Copy, FileUp, KeyRound, Loader2, Power, ShieldCheck, 
 import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
+import { ResourceAppReview } from '@/components/apps/resource-app-review';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
 import { APP_RESOURCE_SYNC_ENABLED } from '@/lib/feature-flags';
@@ -199,8 +200,10 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
       <span className="mr-auto text-xs" style={{ color: 'var(--on-surface-variant)' }}>{app.state === 'active' ? 'Reviewed Runtime App' : 'Owner review required before use'}</span>
       {app.state === 'active' && app.manifest.schema_version === '4' && app.manifest.experiences.map((experience) =>
         <Link key={experience.key} className="deft-pill min-h-11" href={`/apps/${encodeURIComponent(app.id)}/${encodeURIComponent(experience.key)}`}>Open {experience.label}</Link>)}
+      {canManage && APP_RESOURCE_SYNC_ENABLED && app.state === 'active' && app.manifest.schema_version === '5' && app.manifest.sync_descriptors.length > 0 && <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps/private-resources">Connect private resources</Link>}
       {canManage && app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}><Power size={13} /> Disable</button>}
     </div>}
+    {canManage && APP_RESOURCE_SYNC_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '5' && app.manifest.runtime_actions.length === 0 && app.manifest.sync_descriptors.length > 0 && <ResourceAppReview app={app} />}
     {showConnectedManagement && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
   </article>;
 }
