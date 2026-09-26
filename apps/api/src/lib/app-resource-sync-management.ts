@@ -17,7 +17,7 @@ import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { createResourceSyncDiscoverySnapshot } from './app-resource-sync-discovery.js';
 import { loadReviewedResourceSyncDescriptor } from './app-resource-sync-reviewed.js';
 import { loadLiveResourceSyncBindingAuthority,
-  loadLiveResourceSyncAuthority } from './app-resource-sync-authority.js';
+  loadLiveResourceSyncAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS,
   AppResourceSyncConsentActivationSchema, AppResourceSyncConsentRequestSchema,
   assertResourceSyncConsentWindow, hashAppResourceSyncToken,
@@ -27,11 +27,11 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type ResourceSyncManagementGuard = (tx: Tx) => Promise<void>;
 
 async function managementTransaction<T>(guard: ResourceSyncManagementGuard | undefined,
-  operation: (tx: Tx) => Promise<T>, assertFinal?: (result: T) => void): Promise<T> {
+  operation: (tx: Tx) => Promise<T>, assertFinal?: (result: T, tx: Tx) => void | Promise<void>): Promise<T> {
   return db.transaction(async (tx) => {
     const result = await operation(tx);
     await guard?.(tx);
-    assertFinal?.(result);
+    await assertFinal?.(result, tx);
     return result;
   });
 }
@@ -188,7 +188,10 @@ export class AppResourceSyncManagement {
         checkpoint_id: checkpointId, app_version_id: version.id,
         grant_snapshot_id: grant.id, resource_key: descriptor.key,
         review_digest: review.review_digest });
-    }, () => assertBeforeDeadline(new Date(input.consent_expires_at), this.clock));
+    }, async (_result, tx) => {
+      if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
+      assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
+    });
   }
 
   async issueOperatorSession(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
@@ -222,9 +225,13 @@ export class AppResourceSyncManagement {
           runtime_registration_id: live.registration.id,
           audience: 'app_resource_sync', expires_at: expiresAt.toISOString() },
         metadata: { source: actor.source } });
-      return expiresAt;
-    }, (expiresAt) => assertBeforeDeadline(expiresAt, this.clock));
-    return Object.freeze({ session_id: sessionId, session_token: token, expires_at: issued });
+      return { expiresAt, ownerUserId: live.binding.owner_user_id,
+        operatorUserId: live.registration.operator_user_id };
+    }, async (result, tx) => {
+      if (!await resourceSyncParticipantsAreHuman(tx, result.ownerUserId, result.operatorUserId)) throw denied();
+      assertBeforeDeadline(result.expiresAt, this.clock);
+    });
+    return Object.freeze({ session_id: sessionId, session_token: token, expires_at: issued.expiresAt });
   }
 
   /** The private owner can end consent without retaining a live App grant. */
