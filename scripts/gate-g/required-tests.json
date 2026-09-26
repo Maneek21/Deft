@@ -2511,6 +2511,174 @@
           "name": "explicit immutable Experience exposure over HTTP is separate from sync authority"
         }
       ]
+    },
+    {
+      "id": "native-calendar-http",
+      "description": "Native6 owner consent, atomic Calendar effects, exact ancestry, final authority races, real process/commit failure recovery, mixed sync/Experience v2 consumption, and reviewed same6 upgrade.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native separate-process crash before commit leaves no effect and claimed recovery never replays it"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native separate-process lost post-commit delivery recovers exact result and one effect without retry"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native retained output is unavailable to generic Defty Run-result ingress and web responses are uncached"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native real COMMIT acknowledgement loss returns transport uncertainty and redelivery retains one exact effect"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native same6 widening upgrade drains old work, refreshes review, revokes old consent and recovers exact activation"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native Calendar two-human consent and normal owner approval create one retained signed event"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native cancel owner kind withdrawal during actual Calendar row wait rolls back effect and terminal receipt"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "mixed protocol6 reviewed native and private sync planes remain independently usable"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native cancel exact retained create identity settles once and exact invocation replay returns the original Run"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native cancel substituted unrelated create reference cannot mutate either event or sign terminal success"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native approval manager kind withdrawal during final owner SID wait rolls back approval and scheduling"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native invocation manager kind withdrawal during final owner SID wait commits no Run or approval"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native exact-input review manager kind withdrawal during final SID wait discloses no retained input"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native retained-result manager kind withdrawal during actual output wait discloses no retained result"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native final human read wait preserves exact executed SID deadline under a local injected clock"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native App stage manager kind withdrawal during final SID wait rolls back all staged authority"
+        },
+        {
+          "file": "apps/api/test/app-native-calendar-http-db.test.ts",
+          "name": "native Experience action retains the verified session deadline through its final Run guard"
+        }
+      ]
+    },
+    {
+      "id": "native-public-http",
+      "description": "Real public native claims, immutable canonical input, target gates, savepoint rollback, and mixed6 Runtime operator claim/start/settlement/result.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "packed native Booking public HTTP claim yields one owner-approved native event and verified receipt from immutable canonical input"
+        },
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "native public claim denies a changed canonical record before Run admission without an event or fabricated release"
+        },
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "mixed protocol 6 public Runtime target admits its unchanged string mapping to one governed Runtime Run"
+        },
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "native public availability claim and replay deny authority withdrawn during a real endpoint lock wait"
+        },
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "native public activation denies owner human-kind withdrawal during a real endpoint update wait"
+        },
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "native public admission rolls back partial Run capsule approval and receipts after a real late capsule INSERT wait"
+        },
+        {
+          "file": "apps/api/test/app-public-native-http-db.test.ts",
+          "name": "public management gates follow actual runtime or native target across both independent host switches"
+        }
+      ]
+    },
+    {
+      "id": "native-public-budget",
+      "description": "Terminal native success/rejection releases exact pending claim capacity; unrelated Run cannot substitute, replay uncharged and daily cap retained.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-native-budget-db.test.ts",
+          "name": "native public successful terminal Run releases its exact pending slot while unrelated terminal Run cannot substitute and daily charge persists"
+        },
+        {
+          "file": "apps/api/test/app-public-native-budget-db.test.ts",
+          "name": "native public owner rejection releases pending capacity through supported terminalization without refunding its canonical daily reservation"
+        }
+      ]
+    },
+    {
+      "id": "native-public-mapping",
+      "description": "Closed canonical scalar mapping into certified native inputs.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-native-mapping.test.ts",
+          "name": "native public mapping projects only reviewed canonical scalars into certified Calendar input"
+        },
+        {
+          "file": "apps/api/test/app-public-native-mapping.test.ts",
+          "name": "native public mapping denies undeclared selectors, non-datetime times and invalid captured values"
+        }
+      ]
+    },
+    {
+      "id": "native-authoring-kit",
+      "description": "Portable native6 contracts and closed old-version compatibility.",
+      "cases": [
+        {
+          "file": "packages/app-kit/test/native-app-v6.test.ts",
+          "name": "native-only v6 packs a real Experience with declared native keys and requested-only authority"
+        },
+        {
+          "file": "packages/app-kit/test/native-app-v6.test.ts",
+          "name": "v6 mixed planes remain disjoint and reject authority fields, uncertified pairs and old-version native claims"
+        },
+        {
+          "file": "packages/app-kit/test/native-app-v6.test.ts",
+          "name": "native Calendar certified input enforces exact keys, time range and complete Unicode envelope bound"
+        }
+      ]
+    },
+    {
+      "id": "native-approval-parser",
+      "description": "Closed exact owner/input/native policy parser before review can enable approval.",
+      "cases": [
+        {
+          "file": "apps/web/src/lib/native-app-review.test.ts",
+          "name": "native exact input review requires matching owner Run binding operation and closed host policy"
+        },
+        {
+          "file": "apps/web/src/lib/native-app-review.test.ts",
+          "name": "native exact input review rejects private extras malformed Calendar input and substituted cancellation references"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

@@ -9,7 +9,7 @@ const safe = /^postgresql:\/\/gate_g_test@127\.0\.0\.1:55435\/gate_g_20260926_c1
   && process.env.DEFT_TEST_DATABASE_URL === target;
 Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true', DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true',
   DEFT_APP_NATIVE_CALENDAR_ENABLED: 'true', DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'true', DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: 'true',
-  DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED: 'true', JWT_SECRET: 'synthetic-native-calendar-only', NODE_ENV: 'test' });
+  DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED: 'true', DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED: 'true', JWT_SECRET: 'synthetic-native-calendar-only', NODE_ENV: 'test' });
 const ring = (key: string) => ({ current: key, keys: { [key]: createHash('sha256').update(`c14-native:${key}`).digest('base64') } });
 process.env.DEFT_APP_RUN_KEYRINGS = JSON.stringify({ schema_version: 'deft.app_run_keyring.v1',
   run_encryption: ring('c14-enc'), receipt_signing: ring('c14-sign'), fingerprint: ring('c14-fp') });
@@ -18,7 +18,7 @@ after(async () => {
   server?.closeAllConnections(); if (server) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
   if (safe) { await (await import('../src/lib/app-run-runtime.js')).shutdownAppRunRuntime(); await (await import('../src/lib/db.js')).closeDb(); }
 });
-async function fixture(options: { experience?: boolean; sync?: boolean } = {}) {
+async function fixture(options: { experience?: boolean; sync?: boolean; search?: boolean } = {}) {
   const [{ db }, schema, orm, kit, web, { Hono }, { authMiddleware }, { appRoutes }, { agentRoutes }, { appRunRoutes }, { serve }] = await Promise.all([
     import('../src/lib/db.js'), import('@deft/db/schema'), import('drizzle-orm'), import('@deft/app-kit'), import('../src/lib/web-sessions.js'),
     import('hono'), import('../src/middleware/auth.js'), import('../src/routes/apps.js'), import('../src/routes/agent.js'),
@@ -45,7 +45,9 @@ async function fixture(options: { experience?: boolean; sync?: boolean } = {}) {
     return { status: response.status, body: await response.json() as any, cache: response.headers.get('cache-control') };
   };
   const artifact = options.experience ? await kit.prepareDeftExperienceArtifact('experiences/main.json', {
-    schema_version: 'deft.experience_bundle.v1', worker_source: 'self.onmessage=()=>{};', entry_view: 'main', resource_keys: [], action_keys: ['create_event'],
+    schema_version: options.search ? 'deft.experience_bundle.v2' : 'deft.experience_bundle.v1',
+    ...(options.search ? { search_resource_keys: ['inbox'] } : {}),
+    worker_source: 'self.onmessage=()=>{};', entry_view: 'main', resource_keys: options.search ? ['inbox'] : [], action_keys: ['create_event'],
   }) : undefined;
   const manifest = { schema_version: '6' as const, id: `community.example.native.a${suffix}`, version: '1.0.0', name: 'Native Calendar',
     license: 'AGPL-3.0-only', compatibility: { app_protocol: '6' as const }, modules: [], navigation: [],
@@ -329,7 +331,10 @@ test('native cancel owner kind withdrawal during actual Calendar row wait rolls 
 });
 
 test('mixed protocol6 reviewed native and private sync planes remain independently usable', { skip: !safe }, async () => {
-  const h = await fixture({ sync: true }), native = await h.consent(await h.stageBinding('create'));
+  const runtimeActionsGate = process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED;
+  process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED = 'false';
+  try {
+  const h = await fixture({ sync: true, experience: true, search: true }), native = await h.consent(await h.stageBinding('create'));
   const runtime = await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime();
   const { AppResourceSyncManagement } = await import('../src/lib/app-resource-sync-management.js');
   const { humanModuleActor } = await import('../src/lib/module-service.js');
@@ -358,8 +363,55 @@ test('mixed protocol6 reviewed native and private sync planes remain independent
   assert.equal(page.status, 200, JSON.stringify(page.body)); assert.equal(page.body.items.length, 1);
   assert.equal(page.body.items[0].data.subject, 'Mixed private saved record');
   assert.notEqual((await h.call(`/api/private-resources/bindings/${consent.binding_id}/records?limit=10`, undefined, h.ownerWeb.accessToken)).status, 200);
+  const session = await h.call(`/api/app-experiences/${h.installed.id}/main/sessions`, {});
+  assert.equal(session.status, 200, JSON.stringify(session.body));
+  const experiencePath = `/api/app-experiences/sessions/${session.body.pin.session_id}`;
+  const listRequest = { schema_version: 'deft.experience_resource_request.v1', operation: 'list_summary' };
+  const searchRequest = { schema_version: 'deft.experience_resource_request.v2', operation: 'search', query: 'Mixed', field_keys: ['subject'] };
+  assert.equal((await h.call(`${experiencePath}/resources/inbox`, listRequest)).status, 404);
+  assert.equal((await h.call(`${experiencePath}/resources/inbox`, searchRequest)).status, 404);
+  const exposureReview = await h.call(`${experiencePath}/exposure/review`, {});
+  assert.equal(exposureReview.status, 200, JSON.stringify(exposureReview.body));
+  assert.equal(exposureReview.body.snapshot.schema_version, 'deft.experience_resource_exposure.v2');
+  assert.deepEqual(exposureReview.body.snapshot.resources[0].allowed_operations, ['list_summary', 'read_one', 'search']);
+  const exposureAccept = await h.call(`${experiencePath}/exposure/accept`, {
+    review_token: exposureReview.body.review_token, review_digest: exposureReview.body.review_digest, accept_exposure: true });
+  assert.equal(exposureAccept.status, 200, JSON.stringify(exposureAccept.body));
+  const summaries = await h.call(`${experiencePath}/resources/inbox`, listRequest);
+  assert.equal(summaries.status, 200, JSON.stringify(summaries.body)); assert.equal(summaries.cache, 'no-store');
+  assert.equal(summaries.body.output.items.length, 1);
+  const exposedRead = await h.call(`${experiencePath}/resources/inbox`, { schema_version: 'deft.experience_resource_request.v1',
+    operation: 'read_one', record_id: summaries.body.output.items[0].record_id });
+  assert.equal(exposedRead.status, 200, JSON.stringify(exposedRead.body));
+  assert.equal(exposedRead.body.output.item.data.subject, 'Mixed private saved record');
+  const searched = await h.call(`${experiencePath}/resources/inbox`, searchRequest);
+  assert.equal(searched.status, 200, JSON.stringify(searched.body));
+  assert.equal(searched.body.output.items.length, 1); assert.equal(searched.body.output.items[0].label, 'Mixed private saved record');
+  assert.equal((await h.call(`${experiencePath}/resources/inbox`, searchRequest, h.ownerWeb.accessToken)).status, 404);
+  const [webSession] = await h.db.select().from(h.schema.webSessions).where(h.eq(h.schema.webSessions.user_id, h.manager)); assert.ok(webSession);
+  const { default: pg } = await import('pg');
+  const blocker = new pg.Client({ connectionString: target }), observer = new pg.Client({ connectionString: target });
+  await blocker.connect(); await observer.connect(); let pending: ReturnType<Harness['call']> | undefined;
+  try {
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM web_sessions WHERE id=$1 FOR UPDATE', [webSession.id]);
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    pending = h.call(`${experiencePath}/resources/inbox`, searchRequest);
+    let waited = false;
+    for (let i = 0; i < 300; i++) {
+      const { rows: [row] } = await observer.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'native exposure actually waited on exact owner SID');
+    process.env.DEFT_APP_NATIVE_CALENDAR_ENABLED = 'false'; await blocker.query('COMMIT');
+    const denied = await pending; assert.equal(denied.status, 404); assert.equal(denied.cache, 'no-store');
+    assert.ok(!JSON.stringify(denied.body).includes('Mixed private saved record'));
+  } finally {
+    process.env.DEFT_APP_NATIVE_CALENDAR_ENABLED = 'true';
+    await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end();
+  }
   const created = await run(h, native, input); await approve(h, created.id); assert.equal((await execute(h, created.id)).state, 'succeeded');
   assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
+  } finally { process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED = runtimeActionsGate; }
 });
 
 test('native cancel exact retained create identity settles once and exact invocation replay returns the original Run', { skip: !safe }, async () => {

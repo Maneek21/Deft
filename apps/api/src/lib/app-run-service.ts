@@ -594,7 +594,7 @@ export class AppRunService {
 
   /** Native delivery keeps current authority locked through the bounded output
    * read and final exact web SID fence. Other providers retain their old path. */
-  async resultReviewedNative(caller: ReviewedRuntimeCaller, runId: string, guard?: (tx: AppRunTransaction) => Promise<void>) {
+  async resultReviewedNative(caller: ReviewedRuntimeCaller, runId: string, guard?: (tx: AppRunTransaction) => Promise<void>): Promise<Readonly<{ run: AppRunSafeView; value: unknown }>> {
     return this.repository.transaction(async tx => {
       const run = await this.repository.lockRun(tx, caller.org_id, runId);
       if (!run || run.provider_kind !== 'native' || run.execution_actor_type !== 'human'
