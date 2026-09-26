@@ -12,6 +12,7 @@ import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js
 import { digestAppGrantValue } from './app-grant-service.js';
 import { publicEndpointReviewDigest } from './app-public-service.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
+import { validatePublicAvailabilityPolicy, type PublicAvailabilityPolicy } from './app-public-availability.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -77,7 +78,7 @@ async function reviewedSetup(tx: Tx, input: Readonly<{
     eq(moduleInstallations.org_id, input.org_id),
     eq(moduleInstallations.id, moduleBinding.module_installation_id),
   )).limit(1).for('share');
-  const [moduleVersion] = await tx.select({ id: moduleVersions.id }).from(moduleVersions).where(and(
+  const [moduleVersion] = await tx.select({ id: moduleVersions.id, manifest: moduleVersions.manifest }).from(moduleVersions).where(and(
     eq(moduleVersions.org_id, input.org_id),
     eq(moduleVersions.installation_id, moduleBinding.module_installation_id),
     eq(moduleVersions.id, moduleBinding.module_version_id),
@@ -85,7 +86,14 @@ async function reviewedSetup(tx: Tx, input: Readonly<{
   )).limit(1);
   if (!module || module.is_deleted || !module.is_enabled
     || module.module_id !== declaration.module_id || !moduleVersion) throw stale();
-  return { runtime, declaration, moduleBinding };
+  let availabilityPolicy: PublicAvailabilityPolicy | null = null;
+  if (declaration.availability) {
+    try {
+      availabilityPolicy = validatePublicAvailabilityPolicy({ ...declaration.availability,
+        module_version_id: moduleVersion.id }, moduleVersion.manifest, declaration.collection_key, moduleVersion.id);
+    } catch { throw stale(); }
+  }
+  return { runtime, declaration, moduleBinding, availabilityPolicy };
 }
 
 export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
@@ -97,7 +105,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
   const slugDigest = hash(slug);
   return db.transaction(async (tx) => {
     await assertCurrentModuleManagerWithExecutor(tx, actor);
-    const { runtime, declaration, moduleBinding } = await reviewedSetup(tx, {
+    const { runtime, declaration, moduleBinding, availabilityPolicy } = await reviewedSetup(tx, {
       org_id: actor.org_id, installation_id: input.installation_id,
       public_action_key: input.public_action_key,
       runtime_binding_id: input.runtime_binding_id,
@@ -121,6 +129,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
       approver_user_id: input.approver_user_id,
       input_mapping: declaration.input_mapping,
       mapping_digest: digestAppGrantValue(declaration.input_mapping),
+      availability_policy: availabilityPolicy,
       state: 'disabled' as const, endpoint_epoch: 1,
       public_label: input.public_label, max_body_bytes: input.max_body_bytes,
       reviewed_by_user_id: actor.actor_id, reviewed_at: now };
@@ -165,6 +174,8 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
       || endpoint.grant_snapshot_id !== setup.runtime.binding.grant_snapshot_id
       || endpoint.installation_lifecycle_epoch !== setup.runtime.installation_lifecycle_epoch
       || endpoint.installation_grant_epoch !== setup.runtime.installation_grant_epoch) throw stale();
+    if (digestAppGrantValue(endpoint.availability_policy ?? null)
+      !== digestAppGrantValue(setup.availabilityPolicy)) throw stale();
     const epoch = endpoint.endpoint_epoch + 1;
     const reviewDigest = publicEndpointReviewDigest({ ...endpoint, endpoint_epoch: epoch });
     await tx.update(appPublicEndpoints).set({ state: 'enabled', endpoint_epoch: epoch,

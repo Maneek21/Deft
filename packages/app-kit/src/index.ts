@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { RuntimeAuthoringShape, RuntimeAuthoringSchema, RuntimeRequestedAuthoritySchema } from './runtime-authoring.js';
-import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAuthoritySchema } from './installed-authoring.js';
+import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAuthoritySchema, PUBLIC_AVAILABILITY_SCALAR_TYPES } from './installed-authoring.js';
 import { ResourceAuthoringShape, ResourceAuthoringSchema, ResourceRequestedAuthoritySchema } from './resource-authoring.js';
 import { DeftExperienceArtifactSchema, verifyDeftExperienceArtifact } from './experience.js';
 export * from './installed-authoring.js';
@@ -1983,9 +1983,15 @@ async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
       }
     }
     for (const declaration of packageValue.manifest.public_actions) {
-      const module = moduleManifests.get(declaration.module_id) as { collections?: { key?: string }[] } | undefined;
-      if (!module?.collections?.some((collection) => collection.key === declaration.collection_key)) {
+      const module = moduleManifests.get(declaration.module_id) as { collections?: { key?: string; fields?: { key: string; type: string }[] }[] } | undefined;
+      const collection = module?.collections?.find(collection => collection.key === declaration.collection_key);
+      if (!collection) {
         throw new Error('Public claim must select a declared included Module collection');
+      }
+      if (declaration.availability && (collection.fields?.find(field => field.key === declaration.availability!.claim_deadline_field)?.type !== 'datetime'
+        || declaration.availability.fields.some(key => !collection.fields?.some(field => field.key === key
+          && PUBLIC_AVAILABILITY_SCALAR_TYPES.includes(field.type))))) {
+        throw new Error('Public availability requires declared scalar fields and a datetime claim deadline');
       }
     }
   }

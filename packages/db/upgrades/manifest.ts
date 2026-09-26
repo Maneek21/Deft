@@ -222,6 +222,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.40-app-experience-resource-exposure.sql',
       description: 'Add dormant immutable human session consent for exact Experience private-field disclosure',
     },
+    {
+      version: '0.3.0-preview.41',
+      file: '0.3.0-preview.41-app-public-availability.sql',
+      description: 'Add optional reviewed scalar public availability and canonical claim deadlines',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

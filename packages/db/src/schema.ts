@@ -5223,6 +5223,7 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   approver_user_id: text('approver_user_id'),
   input_mapping: jsonb('input_mapping').$type<Record<string, 'claim.resource_id' | 'claim.claim_id'> | null>(),
   mapping_digest: text('mapping_digest'),
+  availability_policy: jsonb('availability_policy').$type<Record<string, unknown> | null>(),
   state: text('state').$type<'disabled' | 'enabled'>().default('disabled').notNull(),
   endpoint_epoch: integer('endpoint_epoch').default(1).notNull(),
   review_digest: text('review_digest').notNull(),

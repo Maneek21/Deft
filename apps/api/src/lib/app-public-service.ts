@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { parseRuntimeAppManifest, PublicAvailabilityPolicySchema } from '@deft/app-kit';
 import {
   AppInstallationAuthoritySchema,
   AppPublicPrincipalSchema,
@@ -23,6 +24,10 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { enqueue, QUEUE_NAMES } from './queues.js';
+import { getAppRunRuntime } from './app-run-runtime.js';
+import { digestAppGrantValue } from './app-grant-service.js';
+import { openPublicAvailabilityCursor, sealPublicAvailabilityCursor, publicClaimDeadline,
+  projectPublicAvailability, validatePublicAvailabilityPolicy, canClaimPublicAvailability, type PublicAvailabilityPolicy } from './app-public-availability.js';
 
 type PublicTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
@@ -72,7 +77,7 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   | 'installation_lifecycle_epoch' | 'installation_grant_epoch' | 'module_installation_id'
   | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>
   & Partial<Pick<Endpoint, 'public_action_key' | 'runtime_binding_id' | 'approver_user_id'
-    | 'input_mapping' | 'mapping_digest'>>): string {
+    | 'input_mapping' | 'mapping_digest' | 'availability_policy'>>): string {
   const core = {
     review_version: 'deft.app_public_review.v1',
     endpoint_id: endpoint.id,
@@ -91,12 +96,13 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   };
   if (!endpoint.public_action_key) return hash(JSON.stringify(core));
   return hash(JSON.stringify({ ...core,
-    review_version: 'deft.app_public_review.v2',
+    review_version: endpoint.availability_policy ? 'deft.app_public_review.v3' : 'deft.app_public_review.v2',
     public_action_key: endpoint.public_action_key,
     runtime_binding_id: endpoint.runtime_binding_id,
     approver_user_id: endpoint.approver_user_id,
     input_mapping: endpoint.input_mapping,
     mapping_digest: endpoint.mapping_digest,
+    ...(endpoint.availability_policy ? { availability_policy: digestAppGrantValue(endpoint.availability_policy) } : {}),
   }));
 }
 
@@ -173,7 +179,7 @@ async function assertLiveAuthority(tx: PublicTransaction, endpoint: Endpoint, pr
       grant_epoch: app.grant_epoch,
     }))) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
 
-  const [version] = await tx.select({ id: appVersions.id }).from(appVersions).where(and(
+  const [version] = await tx.select({ id: appVersions.id, manifest: appVersions.manifest }).from(appVersions).where(and(
     eq(appVersions.org_id, principal.org_id),
     eq(appVersions.installation_id, app.id),
     eq(appVersions.id, endpoint.app_version_id),
@@ -195,7 +201,8 @@ async function assertLiveAuthority(tx: PublicTransaction, endpoint: Endpoint, pr
   if (!moduleInstallation || !moduleInstallation.is_enabled || moduleInstallation.is_deleted) {
     throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
   }
-  const [binding] = await tx.select({ module_version_id: appModuleBindings.module_version_id })
+  const [binding] = await tx.select({ module_version_id: appModuleBindings.module_version_id,
+    ownership: appModuleBindings.ownership })
     .from(appModuleBindings).where(and(
       eq(appModuleBindings.org_id, principal.org_id),
       eq(appModuleBindings.app_installation_id, app.id),
@@ -204,13 +211,39 @@ async function assertLiveAuthority(tx: PublicTransaction, endpoint: Endpoint, pr
       eq(appModuleBindings.module_id, moduleInstallation.module_id),
     )).limit(1);
   if (!binding) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
-  const [moduleVersion] = await tx.select({ id: moduleVersions.id }).from(moduleVersions).where(and(
+  const [moduleVersion] = await tx.select({ id: moduleVersions.id, manifest: moduleVersions.manifest }).from(moduleVersions).where(and(
     eq(moduleVersions.org_id, principal.org_id),
     eq(moduleVersions.installation_id, moduleInstallation.id),
     eq(moduleVersions.id, binding.module_version_id),
     eq(moduleVersions.is_active, true),
   )).limit(1);
   if (!moduleVersion) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+  if (!endpoint.availability_policy) return null;
+  try {
+    if (binding.ownership !== 'app') throw new Error('Public Module is not owned');
+    const policy = validatePublicAvailabilityPolicy(endpoint.availability_policy, moduleVersion.manifest,
+      endpoint.collection_key, moduleVersion.id);
+    const manifest = parseRuntimeAppManifest(version.manifest);
+    if (manifest.schema_version !== '4') throw new Error('Public declaration unavailable');
+    const declaration = manifest.public_actions.find(item => item.key === endpoint.public_action_key);
+    const { module_version_id: _version, ...authorPolicy } = policy;
+    if (!declaration?.availability || declaration.module_id !== moduleInstallation.module_id
+      || declaration.collection_key !== endpoint.collection_key
+      || JSON.stringify(PublicAvailabilityPolicySchema.parse(declaration.availability)) !== JSON.stringify(authorPolicy)) {
+      throw new Error('Public policy differs from authored declaration');
+    }
+    return policy;
+  } catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
+}
+
+async function freshPublicClock(tx: PublicTransaction): Promise<Date> {
+  const result = await tx.execute(sql`SELECT clock_timestamp() AS now`);
+  return new Date((result.rows[0] as { now: Date | string }).now);
+}
+
+async function assertClaimDeadline(tx: PublicTransaction, policy: PublicAvailabilityPolicy | null, data: unknown) {
+  if (!policy) return;
+  if (!canClaimPublicAvailability(policy, data, await freshPublicClock(tx))) throw new AppPublicError('PUBLIC_CLAIM_CONFLICT', 409);
 }
 
 async function outcomeFromReceipt(tx: PublicTransaction, receipt: Ingress, inputFingerprint: string): Promise<PublicClaimResult | 'conflict'> {
@@ -258,6 +291,82 @@ export class AppPublicClaimService {
 
   isEnabled(): boolean { return this.options.enabled === true; }
 
+  async availability(slug: string, cursorToken?: string) {
+    if (!this.isEnabled()) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+    try {
+      return await db.transaction(async tx => {
+        await tx.execute(sql`SET LOCAL statement_timeout = 5000`);
+        await tx.execute(sql`SET LOCAL lock_timeout = 1000`);
+        await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
+        const { endpoint, principal, app } = await resolveEndpoint(tx, slug);
+        const policy = await assertLiveAuthority(tx, endpoint, principal, app);
+        if (!policy) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+        let now = await freshPublicClock(tx);
+        const keys = (await getAppRunRuntime()).keys;
+        let after: string | undefined;
+        if (cursorToken !== undefined) {
+          try {
+            const cursor = openPublicAvailabilityCursor(keys, cursorToken);
+            if (cursor.endpoint_id !== endpoint.id || cursor.endpoint_epoch !== endpoint.endpoint_epoch
+              || cursor.review_digest !== endpoint.review_digest || cursor.module_version_id !== policy.module_version_id
+              || cursor.expires_at <= now.getTime()) throw new Error('Stale cursor');
+            after = cursor.after;
+          } catch { throw new AppPublicError('PUBLIC_INVALID_INPUT', 400); }
+        }
+        // Scan cap is independent of emitted item cap. Expired or claimed
+        // records still advance a continuation, including an empty page.
+        const projectedKeys = [...new Set([...policy.fields, policy.claim_deadline_field])];
+        const projectedData = sql<Record<string, unknown>>`jsonb_build_object(${sql.join(projectedKeys.map(key =>
+          sql`${key}::text, ${moduleRecords.data}->${key}::text`), sql`, `)})`;
+        const rows = await tx.select({ id: moduleRecords.id, revision: moduleRecords.revision,
+          data: projectedData, claimed: sql<boolean>`EXISTS (SELECT 1 FROM app_canonical_claims c
+            WHERE c.org_id = ${principal.org_id} AND c.provider_kind = 'module'
+              AND c.provider_instance_id = ${endpoint.module_installation_id}
+              AND c.resource_id = "module_records"."id" AND c.claim_kind = 'exclusive' AND c.released_at IS NULL)` })
+          .from(moduleRecords).where(and(eq(moduleRecords.org_id, principal.org_id),
+            eq(moduleRecords.installation_id, endpoint.module_installation_id),
+            eq(moduleRecords.collection_key, endpoint.collection_key), eq(moduleRecords.is_deleted, false),
+            after ? gt(moduleRecords.id, after) : undefined)).orderBy(moduleRecords.id).limit(101);
+        now = await freshPublicClock(tx);
+        if (cursorToken !== undefined && openPublicAvailabilityCursor(keys, cursorToken).expires_at <= now.getTime()) {
+          throw new AppPublicError('PUBLIC_INVALID_INPUT', 400);
+        }
+        const items: Array<{ resource_ref: z.infer<typeof ModuleResourceRefV1Schema>; revision: number;
+          fields: Record<string, string | number | boolean>; claim_deadline_utc: string }> = [];
+        let last: string | undefined;
+        let consumed = 0;
+        for (const row of rows.slice(0, 100)) {
+          const deadline = publicClaimDeadline(policy, row.data);
+          const fields = projectPublicAvailability(policy, row.data);
+          if (!row.claimed && deadline && canClaimPublicAvailability(policy, row.data, now) && fields) {
+            const candidate = {
+            resource_ref: ModuleResourceRefV1Schema.parse({ schema_version: 'deft.resource_ref.v1',
+              provider: { kind: 'module', provider_instance_id: endpoint.module_installation_id },
+              resource_type: endpoint.collection_key, resource_id: row.id }),
+            revision: row.revision, fields, claim_deadline_utc: deadline.toISOString() };
+            // Include the response wrapper and reserve the maximum cursor size
+            // before consuming this row. A large valid page continues safely.
+            if (Buffer.byteLength(JSON.stringify({ result: { schema_version: 'deft.app_public_availability.v1',
+              items: [...items, candidate], next_cursor: 'x'.repeat(2048) } })) > 32_768) break;
+            items.push(candidate);
+          }
+          consumed++; last = row.id;
+          if (items.length >= policy.page_size) break;
+        }
+        const next_cursor = last && rows.length > consumed ? sealPublicAvailabilityCursor(keys, {
+          schema_version: 'deft.app_public_availability_cursor.v1', endpoint_id: endpoint.id,
+          endpoint_epoch: endpoint.endpoint_epoch, review_digest: endpoint.review_digest,
+          module_version_id: policy.module_version_id, after: last, expires_at: now.getTime() + 300_000 }) : null;
+        const result = { schema_version: 'deft.app_public_availability.v1' as const, items, next_cursor };
+        if (Buffer.byteLength(JSON.stringify({ result })) > 32_768) throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof AppPublicError) throw error;
+      throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
+    }
+  }
+
   async claim(slug: string, rawBody: Uint8Array): Promise<PublicClaimResult> {
     if (!this.isEnabled()) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
     if (rawBody.byteLength > MAX_PUBLIC_BODY_BYTES) throw new AppPublicError('PUBLIC_PAYLOAD_TOO_LARGE', 413);
@@ -270,7 +379,7 @@ export class AppPublicClaimService {
         await tx.execute(sql`SET LOCAL lock_timeout = 1000`);
         await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
         const { endpoint, principal, app } = await resolveEndpoint(tx, slug);
-        await assertLiveAuthority(tx, endpoint, principal, app);
+        const policy = await assertLiveAuthority(tx, endpoint, principal, app);
         const input = parseBody(rawBody, endpoint.max_body_bytes);
         const ref = input.resource_ref;
         if (ref.provider.provider_instance_id !== endpoint.module_installation_id
@@ -295,7 +404,10 @@ export class AppPublicClaimService {
           if (!receipt) throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
           return outcomeFromReceipt(tx, receipt, fingerprint);
         }
-        const [record] = await tx.select({ id: moduleRecords.id, revision: moduleRecords.revision })
+        const deadlineData = policy ? sql<Record<string, unknown>>`jsonb_build_object(
+          ${policy.claim_deadline_field}::text, ${moduleRecords.data}->${policy.claim_deadline_field}::text)`
+          : sql<Record<string, unknown>>`'{}'::jsonb`;
+        const [record] = await tx.select({ id: moduleRecords.id, revision: moduleRecords.revision, data: deadlineData })
           .from(moduleRecords).where(and(
             eq(moduleRecords.org_id, principal.org_id),
             eq(moduleRecords.installation_id, endpoint.module_installation_id),
@@ -307,6 +419,7 @@ export class AppPublicClaimService {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
           return 'conflict';
         }
+        await assertClaimDeadline(tx, policy, record.data);
         const claimId = randomUUID();
         const [claimed] = await tx.insert(appCanonicalClaims).values({
           id: claimId, org_id: principal.org_id, endpoint_id: endpoint.id, ingress_id: ingressId,
@@ -318,6 +431,7 @@ export class AppPublicClaimService {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
           return 'conflict';
         }
+        await assertClaimDeadline(tx, policy, record.data);
         await (this.options.deliver ?? enqueueIngress)(tx, principal.org_id, endpoint.id, ingressId, endpoint.endpoint_epoch);
         await tx.update(appPublicIngress).set({ state: 'confirmed' }).where(eq(appPublicIngress.id, ingressId));
         return { claim_id: claimId, claim_state: 'confirmed', follow_up_state: 'pending', replayed: false };

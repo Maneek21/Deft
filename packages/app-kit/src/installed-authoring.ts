@@ -4,14 +4,22 @@ import { RuntimeAuthoringShape, RuntimeAuthoringSchema } from './runtime-authori
 
 const key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
   .refine((value) => !['constructor', 'prototype'].includes(value));
+export const PUBLIC_AVAILABILITY_SCALAR_TYPES = Object.freeze(['text', 'number', 'boolean', 'date', 'datetime', 'single_select']);
 export const InstalledExperienceSchema = DeftExperienceReferenceSchema.extend({
   key, label: z.string().min(1).max(80).regex(/^[^\u0000-\u001f\u007f<>]+$/),
+});
+export const PublicAvailabilityPolicySchema = z.strictObject({
+  schema_version: z.literal('deft.app_public_availability.v1'),
+  fields: z.array(key).min(1).max(8).refine(fields => new Set(fields).size === fields.length),
+  claim_deadline_field: key,
+  page_size: z.number().int().min(1).max(10),
 });
 export const PublicActionDeclarationSchema = z.strictObject({
   key, action_key: key, module_id: z.string().min(1).max(128),
   collection_key: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
   input_mapping: z.record(key, z.enum(['claim.resource_id', 'claim.claim_id']))
     .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 32),
+  availability: PublicAvailabilityPolicySchema.optional(),
 });
 export const InstalledAuthoringShape = {
   ...RuntimeAuthoringShape,

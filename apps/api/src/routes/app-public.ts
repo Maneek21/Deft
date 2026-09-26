@@ -49,6 +49,20 @@ export function createAppPublicRoutes(service: AppPublicClaimService = appPublic
     await next();
   });
   routes.use('*', appPublicLimits);
+  routes.get('/:slug/availability', async c => {
+    try {
+      const query = c.req.query();
+      if (Object.keys(query).some(key => key !== 'cursor')
+        || new URL(c.req.url).searchParams.getAll('cursor').length > 1) {
+        throw new AppPublicError('PUBLIC_INVALID_INPUT', 400);
+      }
+      const result = await service.availability(c.req.param('slug'), query.cursor);
+      return c.json({ result });
+    } catch (error) {
+      if (error instanceof AppPublicError) return c.json({ error: error.message, code: error.code }, error.status);
+      return c.json({ error: 'Public availability is temporarily unavailable', code: 'PUBLIC_UNAVAILABLE' }, 503);
+    }
+  });
   routes.post('/:slug/claims', async (c) => {
   try {
     if (!service.isEnabled()) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
