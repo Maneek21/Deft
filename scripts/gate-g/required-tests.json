@@ -1105,6 +1105,28 @@
       ]
     },
     {
+      "id": "automation-renewal-acceptance",
+      "description": "A02 actual reviewed renewal, permanent revocation, pause/resume epoch and queued-fire fencing. All four cases required; the fixture throws before execution unless DATABASE_URL equals DEFT_TEST_DATABASE_URL and matches postgresql://gate_g_test@127.0.0.1:55435/gate_g_20260926_automation_renewal with optional _vN suffix. This is the focused renewal profile, not all automation or Gate G acceptance.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-renewal-acceptance-db.test.ts",
+          "name": "A02 reviewed renewal creates new authority while expired definitions and old queued fires stay inert"
+        },
+        {
+          "file": "apps/api/test/app-automation-renewal-acceptance-db.test.ts",
+          "name": "A02 permanent revocation blocks already admitted work and cannot be resumed with any epoch"
+        },
+        {
+          "file": "apps/api/test/app-automation-renewal-acceptance-db.test.ts",
+          "name": "A02 pause resume rejects stale epochs and missed occurrences without forbidden backfill"
+        },
+        {
+          "file": "apps/api/test/app-automation-renewal-acceptance-db.test.ts",
+          "name": "A02 queued fires from an earlier definition epoch cannot execute after pause and resume"
+        }
+      ]
+    },
+    {
       "id": "crm-compatibility",
       "description": "Existing base-to-reviewed-connected CRM lifecycle preserves canonical records, relations and Task links; current CRM HTTP/agent owner boundaries. Requires matching explicitly disposable DATABASE_URL and DEFT_TEST_DATABASE_URL; synthetic loopback regression database only. Package v0-v2 golden bytes remain required in app-kit.",
       "cases": [
