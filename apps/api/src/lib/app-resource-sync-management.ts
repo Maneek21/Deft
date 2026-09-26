@@ -24,6 +24,15 @@ import { APP_RESOURCE_SYNC_HOST_POLICY, APP_RESOURCE_SYNC_SESSION_MS,
   type AppResourceSyncConsentRequest } from './app-resource-sync-policy.js';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type ResourceSyncManagementGuard = (tx: Tx) => Promise<void>;
+
+async function managementTransaction<T>(guard: ResourceSyncManagementGuard | undefined, operation: (tx: Tx) => Promise<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    const result = await operation(tx);
+    await guard?.(tx);
+    return result;
+  });
+}
 type Human = Extract<ModuleActor, { kind: 'human' }>;
 const Id = z.string().uuid();
 const stale = () => new AppError('Private resource sync authority changed', 'APP_STALE', 409);
@@ -91,16 +100,16 @@ export class AppResourceSyncManagement {
       review: Object.freeze({ ...review, review_digest: digestAppGrantValue(review) }) };
   }
 
-  async prepareConsent(actor: ModuleActor, value: unknown) {
+  async prepareConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     const input = AppResourceSyncConsentRequestSchema.parse(value);
-    return db.transaction(async (tx) => (await this.#reviewContext(tx, actor, input, false)).review);
+    return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false)).review);
   }
 
-  async activateConsent(actor: ModuleActor, value: unknown) {
+  async activateConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     const input = AppResourceSyncConsentActivationSchema.parse(value);
-    return db.transaction(async (tx) => {
+    return managementTransaction(guard, async (tx) => {
       const { installation, version, grant, descriptor, descriptor_digest, expiresAt, review } =
         await this.#reviewContext(tx, actor, input, true);
       if (review.review_digest !== input.expected_review_digest) throw stale();
@@ -173,13 +182,13 @@ export class AppResourceSyncManagement {
     });
   }
 
-  async issueOperatorSession(actor: ModuleActor, bindingId: string) {
+  async issueOperatorSession(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
     operator(actor);
     bindingId = Id.parse(bindingId);
     const sessionId = randomUUID();
     const token = randomBytes(32).toString('base64url');
     const tokenHash = hashAppResourceSyncToken(token);
-    const issued = await db.transaction(async (tx) => {
+    const issued = await managementTransaction(guard, async (tx) => {
       const live = await loadLiveResourceSyncBindingAuthority(tx, { org_id: actor.org_id,
         resource_binding_id: bindingId, clock: this.clock });
       if (!live || live.registration.operator_user_id !== actor.actor_id) throw denied();
@@ -210,10 +219,10 @@ export class AppResourceSyncManagement {
   }
 
   /** The private owner can end consent without retaining a live App grant. */
-  async revokeConsent(actor: ModuleActor, bindingId: string) {
+  async revokeConsent(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     bindingId = Id.parse(bindingId);
-    return db.transaction(async (tx) => {
+    return managementTransaction(guard, async (tx) => {
       const [locator] = await tx.select({ owner_user_id: appResourceBindings.owner_user_id,
         installation_id: appResourceBindings.app_installation_id,
         registration_id: appResourceBindings.runtime_registration_id })
@@ -263,10 +272,10 @@ export class AppResourceSyncManagement {
   }
 
   /** Emergency operator registration revoke. A registration is per consent. */
-  async revokeRegistration(actor: ModuleActor, registrationId: string) {
+  async revokeRegistration(actor: ModuleActor, registrationId: string, guard?: ResourceSyncManagementGuard) {
     reviewer(actor);
     registrationId = Id.parse(registrationId);
-    return db.transaction(async (tx) => {
+    return managementTransaction(guard, async (tx) => {
       const [locator] = await tx.select({ installation_id: appRuntimeRegistrations.app_installation_id,
         operator_user_id: appRuntimeRegistrations.operator_user_id })
         .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, actor.org_id),
@@ -320,10 +329,10 @@ export class AppResourceSyncManagement {
     });
   }
 
-  async revokeOperatorSession(actor: ModuleActor, sessionId: string) {
+  async revokeOperatorSession(actor: ModuleActor, sessionId: string, guard?: ResourceSyncManagementGuard) {
     operator(actor);
     sessionId = Id.parse(sessionId);
-    return db.transaction(async (tx) => {
+    return managementTransaction(guard, async (tx) => {
       const [locator] = await tx.select({ audience: appRuntimeSessions.audience,
         operator_user_id: appRuntimeSessions.operator_user_id,
         registration_id: appRuntimeSessions.runtime_registration_id,
