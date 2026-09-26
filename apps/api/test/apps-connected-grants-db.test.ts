@@ -921,7 +921,8 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal(new Set(managedIds).size, managedIds.length, 'management cursor pages do not duplicate definitions');
 
   if (capacityMode) {
-    await t.test('A05 capacity mode pages 402 definitions across two organizations within frozen bounds', async () => {
+    await t.test('A05 capacity mode pages 402 definitions across two organizations within frozen bounds', async (capacity) => {
+    capacity.after(async () => (await import('@deft/mcp')).mcpClientManager.disconnect(connectionId));
     const currentDue = await Promise.all(Array.from({ length: 23 }, (_value, index) => (
       createDefinition(1, 100, new Date(approvedAt.getTime() + index + 1))
     )));
@@ -954,6 +955,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       eq(appGrantSnapshots.org_id, orgB), eq(appGrantSnapshots.id, versionB!.requested_grant_snapshot_id!),
     ));
     const connectionB = randomUUID();
+    capacity.after(async () => (await import('@deft/mcp')).mcpClientManager.disconnect(connectionB));
     await db.insert(mcpConnections).values({
       id: connectionB,
       org_id: orgB,
