@@ -39,6 +39,7 @@ import {
   type AppRunReadAuthorityRef,
 } from './app-run-authorization.js';
 import { AppRunError, asAppRunError } from './app-run-errors.js';
+import { isAppError } from './app-errors.js';
 import {
   PostgresAppRunRepository,
   appRunActorId,
@@ -495,13 +496,22 @@ export class AppRunService {
       || !this.appLiveAuthorization?.captureReviewedPublicNativeInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
       ${`app-public-ingress:${identity.org_id}:${identity.ingress_id}`}, 0))`);
-    const capture = await this.appLiveAuthorization.captureReviewedPublicNativeInTransaction(tx, { ...identity, capture_input: true });
-    if (!capture.public_input) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
-    const actor: AppRunActor = { actor_type: 'app_public', endpoint_id: capture.endpoint.id, ingress_id: capture.ingress.id };
-    const executor: AppRunActor = { actor_type: 'human', user_id: capture.binding.owner_user_id };
-    const submission = this.#nativeSubmission(capture, actor, capture.public_input, `app-public-ingress:${capture.ingress.id}`);
-    return this.#submit({ org_id: identity.org_id, initiating_actor: actor, execution_actor: executor }, submission,
-      null, undefined, undefined, undefined, undefined, tx, undefined, capture);
+    try {
+      const capture = await this.appLiveAuthorization.captureReviewedPublicNativeInTransaction(tx, { ...identity, capture_input: true });
+      if (!capture.public_input) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const actor: AppRunActor = { actor_type: 'app_public', endpoint_id: capture.endpoint.id, ingress_id: capture.ingress.id };
+      const executor: AppRunActor = { actor_type: 'human', user_id: capture.binding.owner_user_id };
+      const submission = this.#nativeSubmission(capture, actor, capture.public_input, `app-public-ingress:${capture.ingress.id}`);
+      return await this.#submit({ org_id: identity.org_id, initiating_actor: actor, execution_actor: executor }, submission,
+        null, undefined, undefined, undefined, undefined, tx, undefined, capture);
+    } catch (error) {
+      // The durable public worker recognizes the established Run authority
+      // errors as terminal unsupported work. Do not turn a stale native App
+      // pin into an indefinitely retried accepted ingress.
+      if (isAppError(error) && error.code === 'APP_STALE') throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      if (isAppError(error) && error.code === 'APP_ACCESS_DENIED') throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      throw error;
+    }
   }
 
   #nativeSubmission(capture: ReviewedNativeCapture | ReviewedPublicNativeCapture, actor: AppRunActor,
