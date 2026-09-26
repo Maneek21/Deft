@@ -5171,7 +5171,7 @@ export const appExperienceResourceExposureResources = pgTable('app_experience_re
   allowed_operations: jsonb('allowed_operations').$type<string[]>().notNull(),
   allowed_fields: jsonb('allowed_fields').$type<string[]>().notNull(),
 }, t => [
-  primaryKey({ columns: [t.org_id, t.exposure_id, t.resource_key] }),
+  primaryKey({ name: 'app_experience_resource_exposure_resources_pkey', columns: [t.org_id, t.exposure_id, t.resource_key] }),
   foreignKey({ columns: [t.org_id, t.exposure_id], foreignColumns: [appExperienceResourceExposures.org_id, appExperienceResourceExposures.id],
     name: 'app_experience_resource_exposure_resources_parent_fk' }).onDelete('cascade'),
   foreignKey({ columns: [t.org_id, t.runtime_registration_id, t.resource_binding_id],
