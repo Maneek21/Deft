@@ -1437,6 +1437,24 @@
           "name": "A05 concurrent 99th 100th 101st daily reservations and replay remain bounded across controlled UTC midnight"
         }
       ]
+    },
+    {
+      "id": "automation-history-dst",
+      "description": "C08 actual leased-worker persisted DST gap terminality, earlier fold identity with production UTC decoder, rejected later fold instant, and30-day history with29misfires/1pending fire. Scan-metadata deletion preserves domain and delivery identities. Matching synthetic gate_g_20260926_a05_history_test[_vN] loopback URLs required. Controlled policy clocks and unexecuted provider deliveries do not establish real-time cadence or duplicate-effect recovery; whole A05 remains open.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-automation-history-dst-db.test.ts",
+          "name": "A05 persisted DST gap is one explicit terminal identity across leased replay and metadata retention loss"
+        },
+        {
+          "file": "apps/api/test/app-automation-history-dst-db.test.ts",
+          "name": "A05 persisted DST fold chooses earlier UTC identity and refuses a later matching instant"
+        },
+        {
+          "file": "apps/api/test/app-automation-history-dst-db.test.ts",
+          "name": "A05 leased scanner persists full 30-day history and reuses every fire and delivery identity after retention loss"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
