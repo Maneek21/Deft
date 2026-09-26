@@ -271,3 +271,33 @@ test('native retained-result manager kind withdrawal during actual output wait d
     assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
   } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
 });
+
+test('native final human read wait preserves exact executed SID deadline under a local injected clock', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create'));
+  const { guard } = await (await import('../src/lib/app-resource-sync-web-authority.js')).resourceSyncWebAuthority(`Bearer ${h.ownerWeb.accessToken}`);
+  const { loadLiveNativeAuthority } = await import('../src/lib/app-native-authority.js');
+  const { nativeFinalAuthorityIsCurrent } = await import('../src/lib/app-native-final-authority.js');
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), released = new Promise<void>(resolve => { release = resolve; });
+  await h.db.transaction(async tx => {
+    const authority = await loadLiveNativeAuthority(tx, { org_id: h.org, native_binding_id: binding.binding_id });
+    let localNow = new Date();
+    // Delay only the final complete-human query. The executed real SID guard
+    // and the actual SQL read are unchanged; no process/global clock changes.
+    const delayed = new Proxy(tx, { get(target, property, receiver) {
+      if (property !== 'select') return Reflect.get(target, property, receiver);
+      return (fields: Record<string, unknown>) => {
+        const builder = target.select(fields as any);
+        if (!('is_agent' in fields)) return builder;
+        return { from(table: any) { const selected = builder.from(table); return { async where(predicate: any) {
+          enter(); await released; return selected.where(predicate);
+        } }; } };
+      };
+    } });
+    const pending = nativeFinalAuthorityIsCurrent(delayed, authority.participants, { guard, clock: () => localNow });
+    await entered;
+    localNow = new Date(guard.current_web_session_expires_at().getTime() + 1); release();
+    assert.equal(await pending, false);
+    assert.equal((await h.db.select().from(h.schema.appRuns).where(h.eq(h.schema.appRuns.org_id, h.org))).length, 0);
+  });
+});

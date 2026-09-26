@@ -7,6 +7,11 @@ import { humanModuleActor } from './module-service.js';
 import { AppError } from './app-errors.js';
 import type { ResourceSyncManagementGuard } from './app-resource-sync-management.js';
 
+export type WebAuthorityGuard = ResourceSyncManagementGuard & {
+  /** Conservative deadline captured by this exact executed SID guard. */
+  current_web_session_expires_at: () => Date;
+};
+
 export class ResourceSyncWebAuthenticationError extends Error {
   readonly code = 'APP_ACCESS_DENIED';
   readonly status = 401;
@@ -29,7 +34,8 @@ export async function resourceSyncWebAuthority(authorization: string | undefined
   if (human?.kind !== 'human') throw new AppError('Private resource sync access denied', 'APP_ACCESS_DENIED', 403);
   const actor = humanModuleActor({ orgId: user.org_id, userId: user.id,
     role: user.role, source: 'rest' });
-  const guard: ResourceSyncManagementGuard = async (tx) => {
+  let webDeadline = user.exp * 1000;
+  const guard: WebAuthorityGuard = Object.assign(async (tx: Parameters<ResourceSyncManagementGuard>[0]) => {
     // Service locks run member -> App -> registration -> binding -> runtime session.
     // Web session comes last, as in password/membership revocation. Do not take a
     // users lock here: password changes hold users before membership and session.
@@ -52,7 +58,8 @@ export async function resourceSyncWebAuthority(authorization: string | undefined
     if (!session || session.revoked_at || session.expires_at.getTime() <= now || user.exp * 1000 <= now) {
       throw new ResourceSyncWebAuthenticationError('Invalid or expired web session');
     }
-  };
+    webDeadline = Math.min(user.exp * 1000, session.expires_at.getTime());
+  }, { current_web_session_expires_at: () => new Date(webDeadline) });
   return { actor, guard, web_session: { sid: user.sid, expires_at: user.exp * 1000 } };
 }
 
