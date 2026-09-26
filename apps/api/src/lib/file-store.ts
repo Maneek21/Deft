@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat as fsStat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, stat as fsStat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export type StoredFileStat = {
@@ -8,7 +8,7 @@ export type StoredFileStat = {
 
 export interface FileStore {
   put(key: string, bytes: Uint8Array): Promise<void>;
-  get(key: string): Promise<Buffer>;
+  get(key: string, options?: Readonly<{ signal?: AbortSignal; maxBytes: number }>): Promise<Buffer>;
   stat(key: string): Promise<StoredFileStat | null>;
   delete(key: string): Promise<void>;
 }
@@ -40,8 +40,22 @@ export class LocalFileStore implements FileStore {
     await writeFile(this.pathFor(key), bytes);
   }
 
-  get(key: string): Promise<Buffer> {
-    return readFile(this.pathFor(key));
+  async get(key: string, options?: Readonly<{ signal?: AbortSignal; maxBytes: number }>): Promise<Buffer> {
+    if (!options) return readFile(this.pathFor(key));
+    if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) throw new Error('Invalid file read limit');
+    options.signal?.throwIfAborted();
+    const handle = await open(this.pathFor(key), 'r');
+    try {
+      options.signal?.throwIfAborted();
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const chunk of handle.createReadStream({ signal: options.signal, autoClose: false })) {
+        size += chunk.length;
+        if (size > options.maxBytes) throw new Error('File exceeds read limit');
+        chunks.push(chunk);
+      }
+      options.signal?.throwIfAborted();
+      return Buffer.concat(chunks, size);
+    } finally { await handle.close(); }
   }
 
   async stat(key: string): Promise<StoredFileStat | null> {
