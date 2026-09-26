@@ -31,7 +31,7 @@ const AppAutomationFireJobSchema = z.strictObject({
 
 export async function runAppAutomationScan(now = new Date()): Promise<void> {
   if (!APP_AUTOMATIONS_ENABLED) return;
-  await scanAppAutomations({
+  const result = await scanAppAutomations({
     listEligibleDefinitions: (eligibleAt, limit, after) => (
       listEligibleAppAutomationDefinitionsWithExecutor(db, {
         eligible_at: eligibleAt,
@@ -121,6 +121,10 @@ export async function runAppAutomationScan(now = new Date()): Promise<void> {
       if (!charged) throw new Error('Failed queue delivery changed before its attempt was charged');
     }),
   }, now);
+  if (Object.values(result.errors).some(count => count > 0)) {
+    // One bounded aggregate warning; never emit raw tenant/provider errors.
+    console.warn('[app-automations] scan item failures', result);
+  }
 }
 
 export async function runAppAutomationFire(job: JobData, now = new Date()): Promise<void> {
