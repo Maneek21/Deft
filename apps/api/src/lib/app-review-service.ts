@@ -68,6 +68,7 @@ import { compareAppSemver } from './app-service.js';
 import { APPS_ENABLED } from './env.js';
 
 type ReviewExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
+type ReviewTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Installation = typeof appInstallations.$inferSelect;
 type Version = typeof appVersions.$inferSelect;
 type RequestedSnapshot = typeof appGrantSnapshots.$inferSelect;
@@ -999,7 +1000,7 @@ export type ConnectedAppUpgradeReview = Readonly<{
   upgrade_review_digest: string;
 }>;
 type ConnectedUpgradeOptions = Readonly<{
-  guard?: (executor: ReviewExecutor) => Promise<void>;
+  guard?: (executor: ReviewTransaction) => Promise<void>;
   failBeforePointerSwap?: boolean;
 }>;
 
@@ -1037,6 +1038,7 @@ function connectedUpgradeReview(request: ConnectedAppUpgradeReviewRequest,
 export async function prepareConnectedAppUpgradeReview(actor: ModuleActor, installationId: string,
   request: ConnectedAppUpgradeReviewRequest, capability: AppReviewCapabilityPort = capabilityService,
   options: ConnectedUpgradeOptions = {}): Promise<ConnectedAppUpgradeReview> {
+  assertHumanManager(actor);
   const review = await prepareConnectedAppReview(actor, installationId, request, capability);
   await db.transaction(async tx => {
     await assertCurrentModuleManagerWithExecutor(tx, actor);
@@ -1252,7 +1254,7 @@ export async function activateConnectedAppInstallation(
     failBeforePointerSwap?: boolean;
     /** Used only by the separately versioned connected-upgrade entry point. */
     assertUpgradeReview?: (executor: ReviewExecutor, context: ReviewContext, review: ConnectedAppReview) => Promise<void>;
-    finalGuard?: (executor: ReviewExecutor) => Promise<void>;
+    finalGuard?: (executor: ReviewTransaction) => Promise<void>;
     upgradeAudit?: Readonly<Record<string, unknown>>;
   },
 ): Promise<ConnectedAppReview> {
