@@ -2125,6 +2125,145 @@
       ],
       "id": "public-availability",
       "description": "Reviewed bounded public availability, deadlines and existing public foundation/limits."
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-budgets-db.test.ts",
+          "name": "reviewed endpoint limits count only that endpoint while replay and rollback preserve one durable charge"
+        },
+        {
+          "file": "apps/api/test/app-public-budgets-db.test.ts",
+          "name": "public pending capacity follows the real member-operated Run and retains missing or unknown outcomes until terminalization"
+        },
+        {
+          "file": "apps/api/test/app-public-budgets-db.test.ts",
+          "name": "the host App pending ceiling spans null-policy endpoints and rotation while unrelated tenants progress beside its held mutex"
+        },
+        {
+          "file": "apps/api/test/app-public-budgets-db.test.ts",
+          "name": "public budget charges use the actual post-lock PostgreSQL instant and preserve UTC-naive legacy fallback and anonymous 429"
+        },
+        {
+          "file": "apps/api/test/app-public-budgets-db.test.ts",
+          "name": "supported public worker revocation terminalizes unsupported ingress and frees pending capacity without refunding daily charges"
+        },
+        {
+          "file": "apps/api/test/app-public-budgets-db.test.ts",
+          "name": "the host App daily ceiling retains 100 real confirmations across endpoint rotation and terminal Runs without refunds"
+        }
+      ],
+      "id": "public-budgets"
+    },
+    {
+      "cases": [
+        {
+          "file": "apps/api/test/app-public-postgres-midnight-db.test.ts",
+          "name": "public reservation charges cross actual PostgreSQL UTC midnight after a held record while the old-day governed Run remains running"
+        }
+      ],
+      "id": "public-budget-postgres-midnight"
+    },
+    {
+      "cases": [
+        {
+          "file": "packages/app-kit/test/installed-authoring.test.ts",
+          "name": "installed v4 combines exact Module, Experience and public mapping without granting authority"
+        },
+        {
+          "file": "packages/app-kit/test/installed-authoring.test.ts",
+          "name": "installed v4 rejects orphan artifacts, undeclared actions and invalid canonical claim mappings"
+        }
+      ],
+      "id": "public-kit-compatibility"
+    },
+    {
+      "id": "runtime-maintenance",
+      "description": "Checkpoint 12 focused cases; not complete Gate G certification.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "maintenance bounds twenty items, observes contention, continues and advances keyset fairly"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "maintenance shutdown aborts held item within bounded lock wait and later host resumes"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "upgrade explicit drain policy is strict and reviewed without promising automatic progress"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "separate provider crash after sync start becomes unknown with no effect retry and still blocks upgrade"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "normal worker recovers expired unstarted sync claim without released input and permits fresh upgrade"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "normal worker retention expires unclaimed old sync work under retained original pins"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "atomic recovered Attention survives maintenance crash and retry projects current reconciled state"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "maintenance bounds a dropped established PostgreSQL response and discards its socket"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "production default-off maintenance does not parse malformed keyrings or initialize runtime"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "coincident recovery and retention retain bounded eventual service for both modes"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "bounded recovery isolates immutable receipt conflict and continues later Run"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "Attention projection Run fence orders real concurrent reconciliation without resurrecting unknown"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "accepted public outbox continues under original version then fresh reviewed upgrade retains artifacts"
+        },
+        {
+          "file": "apps/api/test/app-run-maintenance-http-db.test.ts",
+          "name": "concurrent normal and delayed reconciliation projection cannot resolve its own update"
+        }
+      ]
+    },
+    {
+      "id": "private-native-reference",
+      "description": "Checkpoint 12 focused cases; not complete Gate G certification.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-native-reference-http.test.ts",
+          "name": "native App reference resolves exact owner body and host href without widening other subjects"
+        },
+        {
+          "file": "apps/api/test/app-resource-native-reference-http.test.ts",
+          "name": "native App reference denies sync gate withdrawal after an actual exact SID lock wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-native-reference-http.test.ts",
+          "name": "native App reference discards body when stored exact SID retires during its lock wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-native-reference-http.test.ts",
+          "name": "private read HTTP rechecks consent after the final web SID lock wait"
+        },
+        {
+          "file": "apps/api/test/app-resource-native-reference-http.test.ts",
+          "name": "private read HTTP rechecks participant kind after the final web SID lock wait"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

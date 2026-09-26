@@ -329,4 +329,3 @@ test('concurrent normal and delayed reconciliation projection cannot resolve its
  await handler({id:job.id,name:job.name,data:job.data,attempts:job.attempts});const [repeated]=await h.db.select().from(h.schema.attentionItems).where(h.eq(h.schema.attentionItems.id,item.id));assert.equal(repeated!.state,'open_unseen');assert.equal(repeated!.event_count,item.event_count);
  }finally{await client.query('ROLLBACK');await reconciliation?.catch(()=>{});await projection?.catch(()=>{});await client.end();await observer.end();}
 });
-
