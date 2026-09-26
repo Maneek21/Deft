@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { parseRuntimeAppManifest } from '@deft/app-kit';
+import { parseRuntimeAppManifest, PublicBudgetPolicySchema } from '@deft/app-kit';
 import { appModuleBindings, appPublicEndpoints, appVersions, moduleInstallations,
   moduleVersions } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
@@ -13,6 +13,7 @@ import { digestAppGrantValue } from './app-grant-service.js';
 import { publicEndpointReviewDigest } from './app-public-service.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
 import { validatePublicAvailabilityPolicy, type PublicAvailabilityPolicy } from './app-public-availability.js';
+import { publicEndpointBudget, PUBLIC_APP_BUDGET_CEILINGS } from './app-public-budgets.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -22,6 +23,7 @@ export const StagePublicEndpointSchema = z.strictObject({
   approver_user_id: Id, public_label: z.string().min(1).max(200)
     .regex(/^[^\u0000-\u001f\u007f<>]+$/),
   max_body_bytes: z.number().int().min(128).max(8192),
+  budget_policy: PublicBudgetPolicySchema.optional(),
   expected_app_version_id: Id, expected_grant_snapshot_id: Id,
   expected_lifecycle_epoch: z.number().int().nonnegative(),
   expected_grant_epoch: z.number().int().positive(),
@@ -130,6 +132,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
       input_mapping: declaration.input_mapping,
       mapping_digest: digestAppGrantValue(declaration.input_mapping),
       availability_policy: availabilityPolicy,
+      budget_policy: input.budget_policy ?? null,
       state: 'disabled' as const, endpoint_epoch: 1,
       public_label: input.public_label, max_body_bytes: input.max_body_bytes,
       reviewed_by_user_id: actor.actor_id, reviewed_at: now };
@@ -137,6 +140,7 @@ export async function stagePublicEndpoint(actor: ModuleActor, raw: unknown) {
     await tx.insert(appPublicEndpoints).values({ ...fields, review_digest: reviewDigest });
     return { endpoint_id: endpointId, slug, state: 'disabled' as const,
       review_digest: reviewDigest, endpoint_epoch: 1,
+      budget_policy: input.budget_policy ?? null, host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS,
       app_version_id: runtime.binding.app_version_id,
       grant_snapshot_id: runtime.binding.grant_snapshot_id };
   });
@@ -176,6 +180,7 @@ export async function activatePublicEndpoint(actor: ModuleActor, endpointId: str
       || endpoint.installation_grant_epoch !== setup.runtime.installation_grant_epoch) throw stale();
     if (digestAppGrantValue(endpoint.availability_policy ?? null)
       !== digestAppGrantValue(setup.availabilityPolicy)) throw stale();
+    try { publicEndpointBudget(endpoint.budget_policy); } catch { throw stale(); }
     const epoch = endpoint.endpoint_epoch + 1;
     const reviewDigest = publicEndpointReviewDigest({ ...endpoint, endpoint_epoch: epoch });
     await tx.update(appPublicEndpoints).set({ state: 'enabled', endpoint_epoch: epoch,

@@ -10,12 +10,19 @@ import { prepareRuntimeBindingReview, activateRuntimeBinding } from '../../src/l
 import { stagePublicEndpoint, activatePublicEndpoint } from '../../src/lib/app-public-management.js';
 import { humanModuleActor, getModuleInstallation, createModuleRecord } from '../../src/lib/module-service.js';
 
-export async function publicAvailabilityFixture(options: { availability?: boolean; deadlineField?: string } = {}) {
+export async function publicAvailabilityFixture(options: { availability?: boolean; deadlineField?: string;
+  budgetPolicy?: { schema_version: 'deft.app_public_budget.v1'; max_pending: number; max_confirmed_per_utc_day: number };
+  memberOperator?: boolean } = {}) {
   const suffix = randomUUID().replaceAll('-', '');
   const orgId = randomUUID(), ownerId = randomUUID();
   await db.insert(orgs).values({ id: orgId, name: 'Availability fixture', slug: `availability-${suffix}` });
   await db.insert(users).values({ id: ownerId, name: 'Owner', email: `availability-${suffix}@example.test` });
   await db.insert(orgMembers).values({ id: randomUUID(), org_id: orgId, user_id: ownerId, role: 'owner', is_active: true });
+  const operatorId = options.memberOperator ? randomUUID() : ownerId;
+  if (options.memberOperator) {
+    await db.insert(users).values({ id: operatorId, name: 'Selected member operator', email: `operator-${suffix}@example.test` });
+    await db.insert(orgMembers).values({ id: randomUUID(), org_id: orgId, user_id: operatorId, role: 'member', is_active: true });
+  }
   const owner = humanModuleActor({ orgId, userId: ownerId, role: 'owner', source: 'rest' });
   const moduleId = `community.example.slots.a${suffix}`;
   const artifact = await kit.prepareModuleArtifact({ path: 'modules/slots/deft.module.json', manifest: {
@@ -57,7 +64,7 @@ export async function publicAvailabilityFixture(options: { availability?: boolea
   const active = await activateRuntimeApp(owner, staged.id, { ...reviewInput,
     expected_review_digest: review.review_digest, accept_host_policy: true });
   const [grant] = await db.select().from(appGrantSnapshots).where(eq(appGrantSnapshots.id, active.grant_snapshot_id)); assert.ok(grant);
-  const bindingInput = { installation_id: staged.id, action_key: 'follow_up', operator_user_id: ownerId,
+  const bindingInput = { installation_id: staged.id, action_key: 'follow_up', operator_user_id: operatorId,
     expected_app_version_id: version.id, expected_package_digest: version.package_digest,
     expected_grant_snapshot_digest: grant.snapshot_digest, expected_lifecycle_epoch: active.installation.lifecycle_epoch,
     expected_grant_epoch: active.installation.grant_epoch };
@@ -65,9 +72,10 @@ export async function publicAvailabilityFixture(options: { availability?: boolea
   const binding = await activateRuntimeBinding(owner, { ...bindingInput,
     expected_review_digest: bindingReview.review_digest, accept_host_policy: true });
   const endpointInput = { installation_id: staged.id, public_action_key: 'reserve', runtime_binding_id: binding.binding_id,
-    approver_user_id: ownerId, public_label: 'Reserve a slot', max_body_bytes: 1024, expected_app_version_id: version.id,
+    approver_user_id: operatorId, public_label: 'Reserve a slot', max_body_bytes: 1024, expected_app_version_id: version.id,
     expected_grant_snapshot_id: grant.id, expected_lifecycle_epoch: active.installation.lifecycle_epoch,
-    expected_grant_epoch: active.installation.grant_epoch };
+    expected_grant_epoch: active.installation.grant_epoch,
+    ...(options.budgetPolicy ? { budget_policy: options.budgetPolicy } : {}) };
   const endpoint = await stagePublicEndpoint(owner, endpointInput);
   await activatePublicEndpoint(owner, endpoint.endpoint_id, { expected_review_digest: endpoint.review_digest,
     expected_endpoint_epoch: endpoint.endpoint_epoch, accept_host_policy: true });
@@ -82,5 +90,5 @@ export async function publicAvailabilityFixture(options: { availability?: boolea
   const body = (recordId: string, revision: number, key = randomUUID()) => Buffer.from(JSON.stringify({
     resource_ref: { schema_version: 'deft.resource_ref.v1', provider: { kind: 'module', provider_instance_id: module.id },
       resource_type: 'slots', resource_id: recordId }, expected_revision: revision, idempotency_key: key }));
-  return { owner, orgId, module, record, body, endpoint, endpointInput, pkg };
+  return { owner, ownerId, operatorId, orgId, module, record, body, endpoint, endpointInput, pkg };
 }

@@ -5224,6 +5224,7 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   input_mapping: jsonb('input_mapping').$type<Record<string, 'claim.resource_id' | 'claim.claim_id'> | null>(),
   mapping_digest: text('mapping_digest'),
   availability_policy: jsonb('availability_policy').$type<Record<string, unknown> | null>(),
+  budget_policy: jsonb('budget_policy').$type<Record<string, unknown> | null>(),
   state: text('state').$type<'disabled' | 'enabled'>().default('disabled').notNull(),
   endpoint_epoch: integer('endpoint_epoch').default(1).notNull(),
   review_digest: text('review_digest').notNull(),
@@ -5324,6 +5325,9 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
   resource_id: text('resource_id').notNull(),
   claim_kind: text('claim_kind').$type<'exclusive'>().notNull(),
   released_at: timestamp('released_at'),
+  // Fresh PostgreSQL admission instant; historical NULL rows retain their
+  // original created_at as an explicitly approximate budget-day fallback.
+  budget_reserved_at: timestamp('budget_reserved_at'),
   created_at: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   foreignKey({

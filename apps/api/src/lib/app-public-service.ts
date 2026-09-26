@@ -28,6 +28,8 @@ import { getAppRunRuntime } from './app-run-runtime.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { openPublicAvailabilityCursor, sealPublicAvailabilityCursor, publicClaimDeadline,
   projectPublicAvailability, validatePublicAvailabilityPolicy, canClaimPublicAvailability, type PublicAvailabilityPolicy } from './app-public-availability.js';
+import { acquirePublicBudgetAdmission, publicEndpointBudget, reservePublicBudget,
+  PublicBudgetExceededError, PUBLIC_APP_BUDGET_CEILINGS } from './app-public-budgets.js';
 
 type PublicTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
@@ -54,15 +56,17 @@ export type AppPublicErrorCode =
   | 'PUBLIC_PAYLOAD_TOO_LARGE'
   | 'PUBLIC_IDEMPOTENCY_CONFLICT'
   | 'PUBLIC_CLAIM_CONFLICT'
+  | 'PUBLIC_BUDGET_EXCEEDED'
   | 'PUBLIC_UNAVAILABLE';
 
 export class AppPublicError extends Error {
-  constructor(readonly code: AppPublicErrorCode, readonly status: 400 | 404 | 409 | 413 | 503) {
+  constructor(readonly code: AppPublicErrorCode, readonly status: 400 | 404 | 409 | 413 | 429 | 503) {
     super(code === 'PUBLIC_NOT_FOUND' ? 'Public endpoint not found'
       : code === 'PUBLIC_INVALID_INPUT' ? 'Invalid public claim'
       : code === 'PUBLIC_PAYLOAD_TOO_LARGE' ? 'Public request is too large'
       : code === 'PUBLIC_IDEMPOTENCY_CONFLICT' ? 'Request key belongs to different input'
       : code === 'PUBLIC_CLAIM_CONFLICT' ? 'Resource is unavailable'
+      : code === 'PUBLIC_BUDGET_EXCEEDED' ? 'Public reservation budget is exhausted'
       : 'Public claim is temporarily unavailable');
     this.name = 'AppPublicError';
   }
@@ -77,7 +81,7 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   | 'installation_lifecycle_epoch' | 'installation_grant_epoch' | 'module_installation_id'
   | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>
   & Partial<Pick<Endpoint, 'public_action_key' | 'runtime_binding_id' | 'approver_user_id'
-    | 'input_mapping' | 'mapping_digest' | 'availability_policy'>>): string {
+    | 'input_mapping' | 'mapping_digest' | 'availability_policy' | 'budget_policy'>>): string {
   const core = {
     review_version: 'deft.app_public_review.v1',
     endpoint_id: endpoint.id,
@@ -96,13 +100,16 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   };
   if (!endpoint.public_action_key) return hash(JSON.stringify(core));
   return hash(JSON.stringify({ ...core,
-    review_version: endpoint.availability_policy ? 'deft.app_public_review.v3' : 'deft.app_public_review.v2',
+    review_version: endpoint.budget_policy ? 'deft.app_public_review.v4'
+      : endpoint.availability_policy ? 'deft.app_public_review.v3' : 'deft.app_public_review.v2',
     public_action_key: endpoint.public_action_key,
     runtime_binding_id: endpoint.runtime_binding_id,
     approver_user_id: endpoint.approver_user_id,
     input_mapping: endpoint.input_mapping,
     mapping_digest: endpoint.mapping_digest,
     ...(endpoint.availability_policy ? { availability_policy: digestAppGrantValue(endpoint.availability_policy) } : {}),
+    ...(endpoint.budget_policy ? { budget_policy: digestAppGrantValue(endpoint.budget_policy),
+      host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS } : {}),
   }));
 }
 
@@ -135,7 +142,7 @@ function principalFor(endpoint: Endpoint): AppPublicPrincipal {
   });
 }
 
-async function resolveEndpoint(tx: PublicTransaction, slug: string): Promise<{
+async function resolveEndpoint(tx: PublicTransaction, slug: string, admission = false): Promise<{
   endpoint: Endpoint; principal: AppPublicPrincipal; app: AppInstallation;
 }> {
   if (!slugPattern.test(slug)) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
@@ -154,6 +161,7 @@ async function resolveEndpoint(tx: PublicTransaction, slug: string): Promise<{
     eq(appInstallations.id, locator.app_installation_id),
   )).limit(1).for('share');
   if (!app) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+  if (admission) await acquirePublicBudgetAdmission(tx, app.org_id, app.id);
   const [endpoint] = await tx.select().from(appPublicEndpoints).where(and(
     eq(appPublicEndpoints.org_id, locator.org_id),
     eq(appPublicEndpoints.id, locator.id),
@@ -163,6 +171,8 @@ async function resolveEndpoint(tx: PublicTransaction, slug: string): Promise<{
     || endpoint.review_digest !== publicEndpointReviewDigest(endpoint)) {
     throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
   }
+  try { publicEndpointBudget(endpoint.budget_policy); }
+  catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
   return { endpoint, principal: principalFor(endpoint), app };
 }
 
@@ -378,7 +388,7 @@ export class AppPublicClaimService {
         await tx.execute(sql`SET LOCAL statement_timeout = 5000`);
         await tx.execute(sql`SET LOCAL lock_timeout = 1000`);
         await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
-        const { endpoint, principal, app } = await resolveEndpoint(tx, slug);
+        const { endpoint, principal, app } = await resolveEndpoint(tx, slug, true);
         const policy = await assertLiveAuthority(tx, endpoint, principal, app);
         const input = parseBody(rawBody, endpoint.max_body_bytes);
         const ref = input.resource_ref;
@@ -431,13 +441,17 @@ export class AppPublicClaimService {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
           return 'conflict';
         }
-        await assertClaimDeadline(tx, policy, record.data);
+        const reservedAt = await reservePublicBudget(tx, endpoint, claimId);
+        if (policy && !canClaimPublicAvailability(policy, record.data, reservedAt)) {
+          throw new AppPublicError('PUBLIC_CLAIM_CONFLICT', 409);
+        }
         await (this.options.deliver ?? enqueueIngress)(tx, principal.org_id, endpoint.id, ingressId, endpoint.endpoint_epoch);
         await tx.update(appPublicIngress).set({ state: 'confirmed' }).where(eq(appPublicIngress.id, ingressId));
         return { claim_id: claimId, claim_state: 'confirmed', follow_up_state: 'pending', replayed: false };
       });
     } catch (error) {
       if (error instanceof AppPublicError) throw error;
+      if (error instanceof PublicBudgetExceededError) throw new AppPublicError('PUBLIC_BUDGET_EXCEEDED', 429);
       throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
     }
     if (outcome === 'conflict') throw new AppPublicError('PUBLIC_CLAIM_CONFLICT', 409);

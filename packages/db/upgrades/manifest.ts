@@ -227,6 +227,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.41-app-public-availability.sql',
       description: 'Add optional reviewed scalar public availability and canonical claim deadlines',
     },
+    {
+      version: '0.3.0-preview.42',
+      file: '0.3.0-preview.42-app-public-budgets.sql',
+      description: 'Add reviewed public endpoint budgets and fresh canonical reservation charge instants',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

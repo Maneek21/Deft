@@ -14,6 +14,12 @@ export const PublicAvailabilityPolicySchema = z.strictObject({
   claim_deadline_field: key,
   page_size: z.number().int().min(1).max(10),
 });
+// Host-selected endpoint limits are reviewed separately from authored fields.
+export const PublicBudgetPolicySchema = z.strictObject({
+  schema_version: z.literal('deft.app_public_budget.v1'),
+  max_pending: z.number().int().min(1).max(25),
+  max_confirmed_per_utc_day: z.number().int().min(1).max(100),
+});
 export const PublicActionDeclarationSchema = z.strictObject({
   key, action_key: key, module_id: z.string().min(1).max(128),
   collection_key: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
