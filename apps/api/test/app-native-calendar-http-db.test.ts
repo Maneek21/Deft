@@ -230,3 +230,44 @@ test('native invocation manager kind withdrawal during final owner SID wait comm
     assert.equal((await h.db.select().from(h.schema.agentActions).where(h.eq(h.schema.agentActions.org_id, h.org))).length, 0);
   } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
 });
+
+test('native exact-input review manager kind withdrawal during final SID wait discloses no retained input', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create')), created = await run(h, binding, input);
+  const [session] = await h.db.select().from(h.schema.webSessions).where(h.eq(h.schema.webSessions.user_id, h.owner)); assert.ok(session);
+  const { default: pg } = await import('pg'); const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+  const observer = new pg.Client({ connectionString: target }); await observer.connect(); let pending: ReturnType<Harness['call']> | undefined;
+  try {
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM web_sessions WHERE id=$1 FOR UPDATE', [session.id]);
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    pending = h.call(`/api/apps/native/runs/${created.id}/review`, undefined, h.ownerWeb.accessToken);
+    let waited = false;
+    for (let i = 0; i < 300; i++) {
+      const { rows: [row] } = await observer.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'real final input review SID wait must be observed');
+    await observer.query('UPDATE users SET is_agent=true WHERE id=$1', [h.manager]); await blocker.query('COMMIT');
+    const response = await pending; assert.notEqual(response.status, 200); assert.equal(response.body.input, undefined);
+  } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
+});
+
+test('native retained-result manager kind withdrawal during actual output wait discloses no retained result', { skip: !safe }, async () => {
+  const h = await fixture(), binding = await h.consent(await h.stageBinding('create')), created = await run(h, binding, input);
+  await approve(h, created.id); await execute(h, created.id);
+  const { default: pg } = await import('pg'); const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+  const observer = new pg.Client({ connectionString: target }); await observer.connect(); let pending: ReturnType<Harness['call']> | undefined;
+  try {
+    await blocker.query('BEGIN'); await blocker.query('LOCK TABLE app_run_secret_payloads IN ACCESS EXCLUSIVE MODE');
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    pending = h.call(`/api/app-runs/${created.id}/result`, undefined, h.ownerWeb.accessToken);
+    let waited = false;
+    for (let i = 0; i < 300; i++) {
+      const { rows: [row] } = await observer.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%app_run_secret_payloads%'", [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'real retained output query wait must be observed');
+    await observer.query('UPDATE users SET is_agent=true WHERE id=$1', [h.manager]); await blocker.query('COMMIT');
+    const response = await pending; assert.notEqual(response.status, 200); assert.equal(response.body.value, undefined);
+    assert.equal((await h.db.select().from(h.schema.events).where(h.eq(h.schema.events.user_id, h.owner))).length, 1);
+  } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
+});

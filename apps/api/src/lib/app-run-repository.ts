@@ -577,8 +577,8 @@ export class PostgresAppRunRepository {
     return rows.map((row) => row.id);
   }
 
-  async latestRetainedAttemptId(orgId: string, runId: string): Promise<string | null> {
-    const [row] = await db.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
+  async latestRetainedAttemptId(orgId: string, runId: string, tx: AppRunTransaction | typeof db = db): Promise<string | null> {
+    const [row] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
       eq(appRunAttempts.org_id, orgId),
       eq(appRunAttempts.run_id, runId),
       sql`${appRunAttempts.provider_call_finished_at} IS NOT NULL`,

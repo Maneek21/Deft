@@ -1741,19 +1741,16 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         .where(and(eq(appRuns.org_id, user.org_id), eq(appRuns.id, action.app_run_id))).limit(1);
       if (run?.provider_kind === 'native') {
         try {
-          const { assertNativeCalendarEnabled, nativeParticipantsAreHuman } = await import('../lib/app-native-authority.js');
+          const { assertNativeCalendarEnabled } = await import('../lib/app-native-authority.js');
+          const { nativeFinalAuthorityIsCurrent } = await import('../lib/app-native-final-authority.js');
           const { resourceSyncWebAuthority } = await import('../lib/app-resource-sync-web-authority.js');
           assertNativeCalendarEnabled();
           if (!user.sid || !run.owner_user_id || !run.manager_user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
           const participantIds = [run.owner_user_id, run.manager_user_id];
           const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
           nativeGuard = async tx => {
-            await guard(tx);
-            const currentHumans = await nativeParticipantsAreHuman(tx, participantIds);
-            assertNativeCalendarEnabled();
-            const now = Date.now();
-            if (run.input_expires_at.getTime() <= now || run.result_expires_at.getTime() <= now
-              || !currentHumans) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+            if (!await nativeFinalAuthorityIsCurrent(tx, participantIds, { guard,
+              expires_at: [run.input_expires_at, run.result_expires_at] })) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
           };
         } catch (error) {
           if (error && typeof error === 'object' && 'status' in error && 'code' in error

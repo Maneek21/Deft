@@ -1,6 +1,6 @@
-import { parseNativeCalendarInput, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
+import { parseNativeCalendarInput, parseNativeCalendarResult, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
 import { isAppNativeCalendarEnabled } from './env.js';
-import { nativeParticipantsAreHuman } from './app-native-authority.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 import type { ReviewedNativeCapture, ReviewedPublicNativeCapture } from './app-native-run-authorization.js';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
@@ -11,6 +11,8 @@ import {
   AppRunAuthorizationSnapshotSchema,
   AppRunSafePreviewSchema,
   AppRunSafeOutcomeSchema,
+  AppRunRetainedProviderResultSchema,
+  assertAppRunOutputWithinBudget,
   canonicalCapabilityJson,
   idempotencyDeadline,
   parseAppRunSubmission,
@@ -481,11 +483,8 @@ export class AppRunService {
       const submission = this.#nativeSubmission(capture, actor, input, request.idempotency_key);
       const run = await this.#submit({ org_id: caller.org_id, initiating_actor: actor, execution_actor: actor },
         submission, null, undefined, undefined, undefined, undefined, tx, undefined, capture);
-      if (guard) await guard(tx);
-      const currentHumans = await nativeParticipantsAreHuman(tx, capture.participants);
-      const finalNow = this.now();
-      if (!isAppNativeCalendarEnabled() || !currentHumans
-        || run.input_expires_at <= finalNow || run.result_expires_at <= finalNow)
+      if (!await nativeFinalAuthorityIsCurrent(tx, capture.participants, { guard, clock: this.now,
+        expires_at: [run.input_expires_at, run.result_expires_at] }))
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       return run;
     });
@@ -502,13 +501,20 @@ export class AppRunService {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
       ${`app-public-ingress:${identity.org_id}:${identity.ingress_id}`}, 0))`);
     try {
-      const capture = await this.appLiveAuthorization.captureReviewedPublicNativeInTransaction(tx, { ...identity, capture_input: true });
-      if (!capture.public_input) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
-      const actor: AppRunActor = { actor_type: 'app_public', endpoint_id: capture.endpoint.id, ingress_id: capture.ingress.id };
-      const executor: AppRunActor = { actor_type: 'human', user_id: capture.binding.owner_user_id };
-      const submission = this.#nativeSubmission(capture, actor, capture.public_input, `app-public-ingress:${capture.ingress.id}`);
-      return await this.#submit({ org_id: identity.org_id, initiating_actor: actor, execution_actor: executor }, submission,
-        null, undefined, undefined, undefined, undefined, tx, undefined, capture);
+      // The outer public worker catches expected stale authority to commit an
+      // unsupported ingress. Roll back every partial Run/capsule/approval first.
+      return await tx.transaction(async nativeTx => {
+        const capture = await this.appLiveAuthorization!.captureReviewedPublicNativeInTransaction!(nativeTx, { ...identity, capture_input: true });
+        if (!capture.public_input) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        const actor: AppRunActor = { actor_type: 'app_public', endpoint_id: capture.endpoint.id, ingress_id: capture.ingress.id };
+        const executor: AppRunActor = { actor_type: 'human', user_id: capture.binding.owner_user_id };
+        const submission = this.#nativeSubmission(capture, actor, capture.public_input, `app-public-ingress:${capture.ingress.id}`);
+        const run = await this.#submit({ org_id: identity.org_id, initiating_actor: actor, execution_actor: executor }, submission,
+          null, undefined, undefined, undefined, undefined, nativeTx, undefined, capture);
+        if (!await nativeFinalAuthorityIsCurrent(nativeTx, capture.participants, { clock: this.now,
+          expires_at: [run.input_expires_at, run.result_expires_at] })) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        return run;
+      });
     } catch (error) {
       // The durable public worker recognizes the established Run authority
       // errors as terminal unsupported work. Do not turn a stale native App
@@ -542,6 +548,28 @@ export class AppRunService {
   }
 
   /** The owner sees the retained exact input, never newly projected record fields. */
+  async #nativeRunAuthority(tx: AppRunTransaction, caller: ReviewedRuntimeCaller, runId: string) {
+    const pin = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+    if (!this.appOriginEnabled() || !isAppNativeCalendarEnabled()
+      || !this.appLiveAuthorization?.captureReviewedNativeInTransaction || !pin?.origin_native_binding_id
+      || pin.provider_kind !== 'native' || pin.origin_kind !== 'app' || pin.execution_actor_type !== 'human'
+      || pin.execution_actor_id !== caller.user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const current = pin.origin_public_endpoint_id && pin.origin_public_ingress_id
+      ? await this.appLiveAuthorization.captureReviewedPublicNativeInTransaction!(tx, { org_id: caller.org_id,
+        endpoint_id: pin.origin_public_endpoint_id, ingress_id: pin.origin_public_ingress_id })
+      : await this.appLiveAuthorization.captureReviewedNativeInTransaction(tx, { org_id: caller.org_id,
+        user_id: caller.user_id, native_binding_id: pin.origin_native_binding_id });
+    let snapshotMatches = false;
+    try { snapshotMatches = canonicalAuthorization(current.authorization_snapshot)
+      === canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot)); } catch { /* fail closed */ }
+    if (current.binding.id !== pin.origin_native_binding_id || current.binding.owner_user_id !== caller.user_id
+      || current.binding.app_installation_id !== pin.origin_app_installation_id || current.binding.app_version_id !== pin.origin_app_version_id
+      || current.binding.grant_snapshot_id !== pin.origin_app_grant_snapshot_id || current.binding.provider_snapshot_id !== pin.provider_snapshot_id
+      || current.binding.operation_name !== pin.operation_name || current.binding.provider_instance_id !== pin.provider_instance_id
+      || !snapshotMatches) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    return current;
+  }
+
   async reviewNativeInput(caller: ReviewedRuntimeCaller, runId: string, guard?: (tx: AppRunTransaction) => Promise<void>) {
     if (!this.appOriginEnabled() || !isAppNativeCalendarEnabled()
       || !this.appLiveAuthorization?.captureReviewedNativeInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
@@ -552,24 +580,37 @@ export class AppRunService {
         || run.execution_actor_type !== 'human' || run.execution_actor_id !== caller.user_id
         || run.state !== 'pending_approval' || run.input_expires_at <= this.now() || !pin.origin_native_binding_id)
         throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      const current = pin.origin_public_endpoint_id && pin.origin_public_ingress_id
-        ? await this.appLiveAuthorization!.captureReviewedPublicNativeInTransaction!(tx, { org_id: caller.org_id,
-          endpoint_id: pin.origin_public_endpoint_id, ingress_id: pin.origin_public_ingress_id })
-        : await this.appLiveAuthorization!.captureReviewedNativeInTransaction!(tx, { org_id: caller.org_id,
-          user_id: caller.user_id, native_binding_id: pin.origin_native_binding_id });
-      if (current.binding.id !== pin.origin_native_binding_id || current.binding.owner_user_id !== caller.user_id
-        || current.binding.app_installation_id !== pin.origin_app_installation_id || current.binding.app_version_id !== pin.origin_app_version_id
-        || current.binding.grant_snapshot_id !== pin.origin_app_grant_snapshot_id || current.binding.provider_snapshot_id !== pin.provider_snapshot_id
-        || current.binding.operation_name !== pin.operation_name || current.binding.provider_instance_id !== pin.provider_instance_id
-        || canonicalAuthorization(current.authorization_snapshot) !== canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot))
-        || !await this.repository.hasPendingRuntimeApproval(tx, caller.org_id, runId, caller.user_id)) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const current = await this.#nativeRunAuthority(tx, caller, runId);
+      if (!await this.repository.hasPendingRuntimeApproval(tx, caller.org_id, runId, caller.user_id)) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       const input = parseNativeCalendarInput(current.action.operation, await this.secretRepository.readInput(caller.org_id, runId, tx));
-      if (guard) await guard(tx);
-      if (!isAppNativeCalendarEnabled() || run.input_expires_at <= this.now()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      if (!await nativeFinalAuthorityIsCurrent(tx, current.participants, { guard, clock: this.now,
+        expires_at: [run.input_expires_at] })) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       return { schema_version: 'deft.app_native_run_review.v1' as const, run_id: runId,
         operation_name: current.action.operation, owner_user_id: caller.user_id, action_label: current.action.label,
         native_binding_id: current.binding.id, consent_digest: current.binding.consent_digest,
         host_policy: NATIVE_ACTION_HOST_POLICY, input };
+    });
+  }
+
+  /** Native delivery keeps current authority locked through the bounded output
+   * read and final exact web SID fence. Other providers retain their old path. */
+  async resultReviewedNative(caller: ReviewedRuntimeCaller, runId: string, guard?: (tx: AppRunTransaction) => Promise<void>) {
+    return this.repository.transaction(async tx => {
+      const run = await this.repository.lockRun(tx, caller.org_id, runId);
+      if (!run || run.provider_kind !== 'native' || run.execution_actor_type !== 'human'
+        || run.execution_actor_id !== caller.user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const current = await this.#nativeRunAuthority(tx, caller, runId);
+      if (run.result_purged_at || run.result_expires_at <= this.now()) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
+      const attemptId = await this.repository.latestRetainedAttemptId(caller.org_id, runId, tx);
+      if (!attemptId) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
+      const value = await this.secretRepository.readOutput(caller.org_id, runId, attemptId, tx);
+      if (value === null) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
+      const envelope = AppRunRetainedProviderResultSchema.parse(value);
+      assertAppRunOutputWithinBudget(envelope);
+      parseNativeCalendarResult(current.action.operation, envelope.output);
+      if (!await nativeFinalAuthorityIsCurrent(tx, current.participants, { guard, clock: this.now,
+        expires_at: [run.result_expires_at] })) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      return Object.freeze({ run, value });
     });
   }
 
@@ -1330,6 +1371,10 @@ export class AppRunService {
   }>> {
     const run = await this.requiredRun(orgId, runId);
     await this.assertAuthorized('result', orgId, actor, run, requiredAuthorityRef);
+    if (run.provider_kind === 'native') {
+      if (actor.actor_type !== 'human') throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      return this.resultReviewedNative({ org_id: orgId, user_id: actor.user_id }, runId);
+    }
     if (
       run.origin_kind === 'app'
       && (!this.appLiveAuthorization || !await this.appLiveAuthorization.authorizeDelivery({

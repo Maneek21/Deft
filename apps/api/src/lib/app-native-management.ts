@@ -7,11 +7,12 @@ import { AppError } from './app-errors.js';
 import { assertCurrentModuleManagerWithExecutor } from './module-service.js';
 import { NativeBindingStageSchema, NativeOwnerReviewRequestSchema, NativeOwnerAcceptSchema, buildNativeProviderSnapshot } from './app-native-contract.js';
 import { assertNativeCalendarEnabled, loadReviewedNativeApp, loadLiveNativeAuthority, lockNativeParticipants,
-  nativeParticipantsAreHuman, nativeProposal, nativeStale } from './app-native-authority.js';
+  nativeProposal, nativeStale } from './app-native-authority.js';
 import { nativeActionDescriptors } from './app-native-contract.js';
 import { persistCapabilityProviderSnapshotWithExecutor } from './capability-provider-snapshot-repository.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import type { AppRunTransaction } from './app-run-repository.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 export type NativeManagementOptions = { guard?: (tx: AppRunTransaction) => Promise<void> };
 function human(actor: ModuleActor) {
@@ -22,9 +23,7 @@ function manager(actor: ModuleActor) {
   if (actor.kind !== 'human' || !['owner', 'admin'].includes(actor.role)) throw new AppError('Native Calendar manager required', 'APP_ACCESS_DENIED', 403);
 }
 async function finalGuard(tx: AppRunTransaction, participants: readonly string[], options: NativeManagementOptions) {
-  await options.guard?.(tx);
-  if (!await nativeParticipantsAreHuman(tx, participants)) throw nativeStale();
-  assertNativeCalendarEnabled();
+  if (!await nativeFinalAuthorityIsCurrent(tx, participants, options)) throw nativeStale();
 }
 export async function stageNativeBinding(actor: ModuleActor, raw: unknown, options: NativeManagementOptions = {}) {
   manager(actor); assertNativeCalendarEnabled();
@@ -146,9 +145,7 @@ export async function revokeNativeBinding(actor: ModuleActor, bindingId: string,
     const [binding] = await tx.select().from(appNativeBindings).where(and(eq(appNativeBindings.org_id, actor.org_id), eq(appNativeBindings.id, bindingId))).limit(1).for('update');
     if (!binding || binding.proposal_digest !== expectedProposalDigest) throw nativeStale();
     if (binding.state !== 'revoked') await tx.update(appNativeBindings).set({ state: 'revoked' }).where(and(eq(appNativeBindings.org_id, actor.org_id), eq(appNativeBindings.id, bindingId)));
-    await options.guard?.(tx);
-    if (!await nativeParticipantsAreHuman(tx, [actor.actor_id])) throw nativeStale();
-    assertNativeCalendarEnabled();
+    if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], options)) throw nativeStale();
     return { schema_version: 'deft.app_native_revoke_result.v1', binding_id: bindingId, state: 'revoked' };
   });
 }

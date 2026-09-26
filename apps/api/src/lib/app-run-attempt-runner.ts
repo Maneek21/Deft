@@ -2,7 +2,7 @@ import { nativeExecutionTransaction } from './app-native-execution-db.js';
 import { executeNativeCalendarInTransaction } from './app-native-calendar-executor.js';
 import { captureReviewedNativeInTransaction, captureReviewedPublicNativeInTransaction } from './app-native-run-authorization.js';
 import { isAppNativeCalendarEnabled } from './env.js';
-import { nativeParticipantsAreHuman } from './app-native-authority.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
@@ -1114,12 +1114,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       // locks. Check them after every event, result and receipt write has waited,
       // without acquiring user locks in reverse order. Failure rolls back the
       // native effect and its entire terminal ledger together.
-      const currentHumans = await nativeParticipantsAreHuman(tx, authority.participants);
-      const finalNow = this.now();
-      if (!isAppNativeCalendarEnabled() || signal?.aborted
-        || attempt.lease_expires_at <= finalNow || run.input_expires_at <= finalNow
-        || run.result_expires_at <= finalNow
-        || !currentHumans)
+      if (!await nativeFinalAuthorityIsCurrent(tx, authority.participants, { clock: this.now,
+        expires_at: [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at], signal }))
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
     }, signal);
   }

@@ -9,10 +9,11 @@ import { assertCurrentModuleManagerWithExecutor, installModuleFromManifestWithEx
   type ModuleLifecyclePostCommit } from './module-service.js';
 import { APP_GRANT_SNAPSHOT_VERSION, buildRequestedAppGrantProjection, digestAppGrantValue } from './app-grant-service.js';
 import { buildNativeAppReviewedAuthority, NATIVE_APP_EFFECTIVE_CLASSIFICATION } from './app-native-grant.js';
-import { assertNativeCalendarEnabled, loadReviewedNativeApp, nativeParticipantsAreHuman, nativeStale } from './app-native-authority.js';
+import { assertNativeCalendarEnabled, loadReviewedNativeApp, nativeStale } from './app-native-authority.js';
 import type { NativeManagementOptions } from './app-native-management.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { AppError } from './app-errors.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 export const NativeAppReviewRequestSchema = z.strictObject({
   schema_version: z.literal('deft.app_native_review_request.v1'), app_version_id: z.uuid(),
@@ -50,9 +51,7 @@ async function context(tx: AppRunTransaction, actor: ModuleActor, installationId
   return { installation, version, requested, manifest, authority, request, review: { ...review, review_digest: digestAppGrantValue(review) } };
 }
 async function final(tx: AppRunTransaction, actor: ModuleActor, options: NativeManagementOptions) {
-  await options.guard?.(tx);
-  if (!await nativeParticipantsAreHuman(tx, [actor.actor_id])) throw nativeStale();
-  assertNativeCalendarEnabled();
+  if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], options)) throw nativeStale();
 }
 export async function getNativeAppReviewContext(actor: ModuleActor, installationId: string, versionId: string,
   options: NativeManagementOptions = {}) {
