@@ -14,6 +14,11 @@ import { getSocket } from '@/lib/socket';
 
 const root = '/api/app-experiences';
 const livePath = (id: string) => `${root}/sessions/${encodeURIComponent(id)}/live`;
+// A known session belongs to this page even before its Worker starts. Keep the
+// bounded, bodyless retirement request alive when the document is unloading.
+const retireSession = (id: string) => api.fetch(`${root}/sessions/${encodeURIComponent(id)}`, {
+  method: 'DELETE', keepalive: true,
+}).catch(() => undefined);
 
 export function InstalledAppExperience({ installationId, experienceKey }: {
   installationId: string; experienceKey: string;
@@ -43,22 +48,52 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     if (!user || !org || !sessionCacheScope) return;
     let cancelled = false;
     const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), 15_000);
+    let ownedSessionId: string | null = null;
+    const retireOwnedSession = () => {
+      if (!ownedSessionId) return;
+      const id = ownedSessionId;
+      ownedSessionId = null;
+      void retireSession(id);
+    };
+    const pageHide = () => {
+      cancelled = true;
+      abort.abort();
+      stopWorker.current?.();
+      retireOwnedSession();
+    };
+    addEventListener('pagehide', pageHide);
     void (async () => {
       try {
+        // Effect replay can deactivate this owner before any request is needed.
+        await Promise.resolve();
+        if (cancelled || document.hidden) return;
         const response = await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/sessions`, {
           method: 'POST', signal: abort.signal,
         });
         if (!response.ok) throw new Error(await appApiError(response, 'This Experience is unavailable.'));
         const created = normalizeInstalledExperienceSession(await response.json());
+        ownedSessionId = created.pin.session_id;
         if (created.pin.org_id !== org.id || created.pin.user_id !== user.id
           || created.pin.app_installation_id !== installationId
           || created.experience.key !== experienceKey) throw new Error('Experience session identity changed.');
-        if (!cancelled) { setSession(created); setReady(true); }
+        if (!cancelled && !document.hidden) { setSession(created); setReady(true); }
+        else {
+          retireOwnedSession();
+          if (!cancelled) setError('This Experience session ended. Reopen it to continue.');
+        }
       } catch (cause) {
+        retireOwnedSession();
         if (!cancelled) setError(cause instanceof Error ? cause.message : 'This Experience is unavailable.');
-      }
+      } finally { clearTimeout(deadline); }
     })();
-    return () => { cancelled = true; abort.abort(); stopWorker.current?.(); reviewGeneration.current += 1; setReview(null); setExposure(null); };
+    return () => {
+      // Consume an already dispatched response while this document remains alive
+      // so its exact session can be retired rather than abandoned.
+      cancelled = true; removeEventListener('pagehide', pageHide);
+      stopWorker.current?.(); retireOwnedSession();
+      reviewGeneration.current += 1; setReview(null); setExposure(null);
+    };
   }, [installationId, experienceKey, user?.id, org?.id, sessionCacheScope, opening]);
 
   const prepareExposure = async () => {
@@ -97,8 +132,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       else {
         // Acceptance can commit after this page has retired. Keep its authority
         // out of a later Worker lifetime and retire the exact old session.
-        await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE' }).catch(() => undefined);
-        await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE' }).catch(() => undefined);
+        await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE', keepalive: true }).catch(() => undefined);
+        await retireSession(session.pin.session_id);
       }
     } catch (reason) { if (generation === reviewGeneration.current) { setReview(null); setError(reason instanceof Error ? reason.message : 'Unable to accept private access.'); } }
     finally { if (generation === reviewGeneration.current) setExposureBusy(false); }
@@ -108,7 +143,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     reviewGeneration.current += 1; setExposureBusy(true); setReview(null);
     stopWorker.current?.(false);
     setError('Private access ended. Reopen this Experience to review a new session.');
-    await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE' }).catch(() => undefined);
+    await api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}/exposure`, { method: 'DELETE', keepalive: true }).catch(() => undefined);
     setExposure(null); setExposureBusy(false);
   };
 
@@ -199,7 +234,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if (rendered.current && viewHost.current) viewHost.current.replaceChildren();
       rendered.current = false;
       setError('This Experience session ended. Reopen it to continue.');
-      if (retireSession) void api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE' }).catch(() => undefined);
+      if (retireSession) void api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE', keepalive: true }).catch(() => undefined);
     };
     stopWorker.current = stop;
     let started = false;
@@ -244,7 +279,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if (viewHost.current) viewHost.current.replaceChildren();
       rendered.current = false;
       stopWorker.current = null;
-      void api.fetch(`${root}/sessions/${encodeURIComponent(session.pin.session_id)}`, { method: 'DELETE' }).catch(() => undefined);
+      void retireSession(session.pin.session_id);
     };
   }, [session, sessionCacheScope, exposure]);
 
