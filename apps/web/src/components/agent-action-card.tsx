@@ -29,6 +29,8 @@ import {
 import { ReceiptViewer } from './receipt-viewer';
 import { AppRunInspector } from './apps/app-run-inspector';
 import { RuntimeAppInputReview, type RuntimeReviewIdentity } from './runtime-app-input-review';
+import { NativeAppInputReview, type NativeReviewIdentity } from './native-app-input-review';
+import { useAuth } from '@/lib/auth-context';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
@@ -501,6 +503,8 @@ export function AgentActionCard({
   const [messageReview, setMessageReview] = useState<{ actionId: string; to: string; subject: string; body_text: string } | null>(null);
   const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const { user, org, sessionCacheScope } = useAuth();
+  const [nativeReviewed, setNativeReviewed] = useState<(NativeReviewIdentity & { actionId: string }) | null>(null);
   const [runtimeReviewed, setRuntimeReviewed] = useState<(RuntimeReviewIdentity & { actionId: string }) | null>(null);
   // Only the supported App-origin email contract has this message presenter.
   // Other governed operations keep their existing review flow.
@@ -516,6 +520,17 @@ export function AgentActionCard({
     && runtimeReviewed.runId === runtimeRunId && runtimeReviewed.bindingId === runtimeBindingId;
   const onRuntimeReviewed = useCallback((identity: RuntimeReviewIdentity | null) => {
     setRuntimeReviewed(identity ? { actionId: action.id, ...identity } : null);
+  }, [action.id]);
+  const needsNativeReview = action.action === 'app_run_invoke' && action.params.safe_preview?.fields?.provider_kind === 'native';
+  const nativeBindingId = typeof action.params.safe_preview?.fields?.native_binding_id === 'string' ? action.params.safe_preview.fields.native_binding_id : null;
+  const nativeOperation = action.params.safe_preview?.fields?.operation_name === 'calendar.events.create.v1' ? 'calendar.events.create.v1' as const
+    : action.params.safe_preview?.fields?.operation_name === 'calendar.events.cancel.v1' ? 'calendar.events.cancel.v1' as const : null;
+  const nativeScope = user && org && sessionCacheScope ? JSON.stringify([user.id, org.id, sessionCacheScope]) : null;
+  const nativeReviewReady = needsNativeReview && nativeReviewed?.actionId === action.id && nativeReviewed.runId === runtimeRunId
+    && nativeReviewed.bindingId === nativeBindingId && nativeReviewed.operation === nativeOperation && nativeReviewed.scope === nativeScope
+    && Date.now() < nativeReviewed.expiresAt;
+  const onNativeReviewed = useCallback((identity: NativeReviewIdentity | null) => {
+    setNativeReviewed(identity ? { actionId: action.id, ...identity } : null);
   }, [action.id]);
   const reviewedMessage = messageReview?.actionId === action.id ? messageReview : null;
   const needsTaskLinkReview = action.action === 'module_record_task_link' || action.action === 'module_record_task_unlink';
@@ -667,6 +682,9 @@ export function AgentActionCard({
       busy={isBusy} onReviewed={onRuntimeReviewed} />
   ) : null;
 
+  const nativeReviewPanel = needsNativeReview ? <NativeAppInputReview runId={runtimeRunId} bindingId={nativeBindingId}
+    operation={nativeOperation} ownerId={user?.id ?? null} scope={nativeScope} busy={isBusy} onReviewed={onNativeReviewed} /> : null;
+
   const appRunInspectorButton = isAppRunAction && appRunReference ? (
     <button
       type="button"
@@ -688,7 +706,8 @@ export function AgentActionCard({
   async function handleApprove() {
     if (isBusy || (needsMessageReview && !reviewedMessage)
       || (needsTaskLinkReview && !reviewedTaskLink)
-      || (needsRuntimeReview && !runtimeReviewReady)) return;
+      || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && (!nativeReviewReady
+        || !nativeReviewed || Date.now() >= nativeReviewed.expiresAt))) return;
     setLocalError(null);
     setLocalStatus('approving');
     try {
@@ -1043,16 +1062,16 @@ export function AgentActionCard({
           )}
         </div>
 
-        {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}
+        {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleApprove}
             disabled={isBusy || (needsMessageReview && !reviewedMessage)
               || (needsTaskLinkReview && !reviewedTaskLink)
-              || (needsRuntimeReview && !runtimeReviewReady)}
+              || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
             className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm disabled:opacity-60"
-            style={{ background: 'var(--primary-container)' }}
+            style={{ background: 'var(--primary-container)', minHeight: needsNativeReview ? 44 : undefined }}
           >
             <CheckCircle2 size={13} strokeWidth={1.9} />
             {compactApproveLabel}
@@ -1192,7 +1211,7 @@ export function AgentActionCard({
         </div>
       )}
 
-      {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview && <>
+      {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview && !needsNativeReview && <>
       <div
         className="mt-3 rounded-md px-3 py-2 min-w-0"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
@@ -1265,7 +1284,7 @@ export function AgentActionCard({
       )}
 
       <div className="text-[12px] mt-2 space-y-1" style={{ color: 'var(--foreground-secondary)' }}>
-        {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview
+        {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview && !needsNativeReview
           && !(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
         {captureLabel && (
           <p style={{ color: 'var(--muted)' }}>
@@ -1300,15 +1319,15 @@ export function AgentActionCard({
         )}
       </div>
 
-      {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}
+      {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
         <button
           onClick={handleApprove}
           disabled={isBusy || (needsMessageReview && !reviewedMessage)
             || (needsTaskLinkReview && !reviewedTaskLink)
-            || (needsRuntimeReview && !runtimeReviewReady)}
+            || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"
-          style={{ background: 'var(--status-green)' }}
+          style={{ background: 'var(--status-green)', minHeight: needsNativeReview ? 44 : undefined }}
         >
           <CheckCircle2 size={13} strokeWidth={1.8} />
           {approveLabel}
