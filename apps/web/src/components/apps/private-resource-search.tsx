@@ -49,18 +49,24 @@ function SearchView({ bindingId }: { bindingId: string }) {
   const clear = () => { generation.current++; pending.current?.abort(); setHits([]); setPage(null); setScanned(0); setBusy(false); };
   useLayoutEffect(() => {
     alive.current = true; let timer: ReturnType<typeof setTimeout>;
+    const loadingScope = () => { clear(); setScope(null); setError(null); setBusy(true); clearTimeout(timer); };
     const clearPrivate = () => { clear(); setScope(null); };
-    const onHide = () => { if (document.hidden) clearPrivate(); };
+    const load = async () => {
+    loadingScope();
     const request = ++generation.current, token = api.getAccessToken();
     const controller = new AbortController(); pending.current = controller;
-    void (async () => { try {
+    try {
       const response = await api.fetch(`/api/app-resource-private/bindings/${encodeURIComponent(bindingId)}/search-scope`, { signal: controller.signal });
       if (!response.ok) throw new Error(await appApiError(response, 'Private search is unavailable.'));
       const value = scopeValue(await response.json()), deadline = Date.parse(value.consent_expires_at);
       if (!alive.current || request !== generation.current || document.hidden || !isSameWebSession(token, localStorage.getItem('deft-access-token')) || deadline <= Date.now()) return;
       setScope(value); setFields([value.label_field]);
       timer = setTimeout(() => { clearPrivate(); setError('Private resource consent expired.'); }, Math.min(deadline - Date.now(), 2147483647));
-    } catch (e) { if (alive.current && request === generation.current && !controller.signal.aborted) setError(e instanceof Error ? e.message : 'Private search is unavailable.'); } })();
+    } catch (e) { if (alive.current && request === generation.current && !controller.signal.aborted) setError(e instanceof Error ? e.message : 'Private search is unavailable.'); }
+    finally { if (alive.current && request === generation.current) setBusy(false); }
+    };
+    const onHide = () => { if (document.hidden) clearPrivate(); else void load(); };
+    if (!document.hidden) void load();
     document.addEventListener('visibilitychange', onHide); addEventListener('pagehide', clearPrivate);
     return () => { alive.current = false; generation.current++; pending.current?.abort(); clearTimeout(timer);
       document.removeEventListener('visibilitychange', onHide); removeEventListener('pagehide', clearPrivate); };
@@ -73,7 +79,7 @@ function SearchView({ bindingId }: { bindingId: string }) {
     try {
       const response = await api.fetch(`/api/app-resource-private/bindings/${encodeURIComponent(bindingId)}/search`, { method: 'POST', signal: controller.signal,
         body: JSON.stringify({ query, field_keys: fields, ...(continuation && page?.next_cursor ? { cursor: page.next_cursor } : {}) }) });
-      if (!response.ok) { if (response.status === 409) clear(); throw new Error(await appApiError(response, 'Private search is unavailable.')); }
+      if (!response.ok) { if (response.status === 409 && alive.current && request === generation.current) { setHits([]); setPage(null); setScanned(0); } throw new Error(await appApiError(response, 'Private search is unavailable.')); }
       const value = pageValue(await response.json(), fields);
       if (!alive.current || request !== generation.current || controller.signal.aborted || document.hidden
         || !isSameWebSession(token, localStorage.getItem('deft-access-token')) || Date.parse(value.consent_expires_at) <= Date.now()) return;
@@ -90,7 +96,7 @@ function SearchView({ bindingId }: { bindingId: string }) {
         <fieldset><legend>Approved fields</legend>{scope.field_keys.map(field => <label key={field} className="mr-4 inline-flex min-h-11 items-center gap-2"><input type="checkbox" checked={fields.includes(field)} onChange={() => { clear(); setFields(previous => previous.includes(field) ? previous.filter(key => key !== field) : [...previous, field]); }} />{field}</label>)}</fieldset>
         <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={busy || !query.trim() || !fields.length}>Search saved data</button>
       </form>}
-      {busy && <p role="status">Searching this saved checkpoint…</p>}
+      {busy && <p role="status">{scope ? 'Searching this saved checkpoint…' : 'Checking private search access…'}</p>}
       {page && <p role="status" className="mb-3">{page.scan.complete ? 'Search complete' : 'More saved records remain to scan'} · {scanned} records scanned · {hits.length} matches on this page</p>}
       <ul className="space-y-4">{hits.map(hit => <li key={hit.href} className="break-words [overflow-wrap:anywhere]"><Link href={hit.href} className="inline-flex min-h-11 items-center font-semibold underline">{hit.label}</Link><p className="whitespace-pre-wrap text-sm">{hit.snippet}</p><p className="text-xs">Field: {hit.field_key}</p></li>)}</ul>
       {page?.next_cursor && <button className="deft-pill mt-4 min-h-11" style={{ minHeight: 44 }} disabled={busy} onClick={() => void search(true)}>Continue search</button>}
