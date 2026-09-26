@@ -26,6 +26,7 @@ import {
   type AppRunProviderDispatchPin,
   type AppRunSafeView,
   type AppRunTransaction,
+  safeRunSelection,
 } from './app-run-repository.js';
 import {
   noOpAppRunReceiptWriter,
@@ -60,6 +61,12 @@ import {
 type ClaimedAttempt = Readonly<{
   run: AppRunSafeView;
   attempt: typeof appRunAttempts.$inferSelect;
+}>;
+
+export type AppRunRecoveryOptions = Readonly<{
+  transaction?: <T>(work: (tx: AppRunTransaction) => Promise<T>) => Promise<T>;
+  /** A durable projection replaces the normal post-commit Attention call. */
+  onRecovered?: (tx: AppRunTransaction, run: AppRunSafeView) => Promise<void>;
 }>;
 
 export type AppRunImmediateExecution = Readonly<{
@@ -925,9 +932,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     return recovered;
   }
 
-  async recoverRun(orgId: string, runId: string, attemptId?: string): Promise<number> {
+  async recoverRun(orgId: string, runId: string, attemptId?: string, options: AppRunRecoveryOptions = {}): Promise<number> {
     const now = this.now();
-    const recovered = await this.repository.transaction(async (tx) => {
+    const transaction = options.transaction ?? this.repository.transaction.bind(this.repository);
+    const recovered = await transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
       if (!run) return 0;
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
@@ -939,14 +947,27 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
       if (!attempt) return 0;
       await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${orgId} AND id = ${attempt.id} FOR UPDATE`);
-      if (attempt.state === 'provider_call_started' && attempt.provider_call_finished_at && attempt.safe_outcome) {
+      if (run.state === 'expired' && attempt.state === 'claimed') {
+        // Retention can win before lease recovery. Input was never released;
+        // settle its abandoned claim without changing the terminal Run.
+        await tx.update(appRunAttempts).set({ state: 'failed', error_code: 'APP_RUN_EXPIRED', updated_at: now })
+          .where(and(eq(appRunAttempts.org_id, orgId), eq(appRunAttempts.id, attempt.id)));
+        await this.repository.appendEvent(tx, { id: crypto.randomUUID(), org_id: orgId, run_id: runId,
+          event_type: 'attempt_terminal', payload: { attempt_id: attempt.id, state: 'failed' }, now });
+        await this.#writeAttemptReceipt(tx, run, attempt.id, 'failed', now, 'APP_RUN_EXPIRED', false,
+          { provider_call_attempted: false });
+      } else if (attempt.state === 'provider_call_started' && attempt.provider_call_finished_at && attempt.safe_outcome) {
         await this.#finalizeKnownInTransaction(tx, run, attempt, now);
-        return 1;
+      } else {
+        await this.#recoverUnknownInTransaction(tx, run, attempt, now);
       }
-      await this.#recoverUnknownInTransaction(tx, run, attempt, now);
+      if (options.onRecovered) {
+        const [current] = await tx.select(safeRunSelection).from(appRuns).where(and(eq(appRuns.org_id, orgId), eq(appRuns.id, runId))).limit(1);
+        if (current) await options.onRecovered(tx, current);
+      }
       return 1;
     });
-    if (recovered > 0) {
+    if (recovered > 0 && !options.onRecovered) {
       const run = await this.repository.inspect(orgId, runId);
       if (run) await this.#projectState(run);
     }

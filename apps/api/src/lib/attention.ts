@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import {
   agentActionApprovers,
   agentActions,
@@ -318,9 +318,11 @@ function emitAttention(event: 'attention:new' | 'attention:updated', item: typeo
 
 export async function upsertAttentionItem(
   draft: AttentionDraft,
-  options: { deliver?: boolean } = {},
+  options: { deliver?: boolean; executor?: Pick<typeof db, 'select' | 'insert'>;
+    afterCommit?: (effect: () => Promise<void>) => void } = {},
 ) {
-  const [existingEvent] = await db
+  const executor = options.executor ?? db;
+  const [existingEvent] = await executor
     .select({ attention_item_id: attentionEvents.attention_item_id })
     .from(attentionEvents)
     .where(and(
@@ -331,7 +333,7 @@ export async function upsertAttentionItem(
     ))
     .limit(1);
   if (existingEvent) {
-    const [existingItem] = await db
+    const [existingItem] = await executor
       .select()
       .from(attentionItems)
       .where(eq(attentionItems.id, existingEvent.attention_item_id))
@@ -340,7 +342,7 @@ export async function upsertAttentionItem(
   }
 
   const now = draft.occurredAt ?? new Date();
-  const [item] = await db
+  const [item] = await executor
     .insert(attentionItems)
     .values({
       org_id: draft.orgId,
@@ -391,7 +393,7 @@ export async function upsertAttentionItem(
     .returning();
   if (!item) return null;
 
-  await db
+  await executor
     .insert(attentionEvents)
     .values({
       org_id: draft.orgId,
@@ -403,14 +405,17 @@ export async function upsertAttentionItem(
     })
     .onConflictDoNothing();
 
-  emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
-  if (options.deliver !== false) {
-    try {
-      await scheduleAttentionDelivery(item);
-    } catch (error) {
-      console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+  const deliver = async () => {
+    emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
+    if (options.deliver !== false) {
+      try {
+        await scheduleAttentionDelivery(item);
+      } catch (error) {
+        console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+      }
     }
-  }
+  };
+  if (options.afterCommit) options.afterCommit(deliver); else await deliver();
   return item;
 }
 
@@ -908,6 +913,7 @@ export async function resolveAttentionBySource(params: {
   sourceId: string;
   resolution: string;
   actorUserId?: string;
+  excludeKind?: string;
 }) {
   const rows = await db
     .select()
@@ -916,6 +922,7 @@ export async function resolveAttentionBySource(params: {
       eq(attentionItems.org_id, params.orgId),
       eq(attentionItems.source_type, params.sourceType),
       eq(attentionItems.source_id, params.sourceId),
+      ...(params.excludeKind ? [ne(attentionItems.kind, params.excludeKind)] : []),
       inArray(attentionItems.state, ['open_unseen', 'open_seen', 'acknowledged', 'snoozed']),
     ));
   return Promise.all(rows.map((item) => transitionAttentionItem({

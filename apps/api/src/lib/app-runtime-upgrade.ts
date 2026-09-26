@@ -18,6 +18,7 @@ const stale = () => new AppError('Runtime upgrade authority changed', 'APP_STALE
 export const RuntimeUpgradeStageSchema = z.strictObject({ schema_version: z.literal('deft.app_runtime_upgrade_stage.v1'),
   package_json: z.string().min(1).max(1_048_576), expected_lifecycle_epoch: z.number().int().nonnegative() });
 export const RuntimeUpgradeRequestSchema = z.strictObject({ schema_version: z.literal('deft.app_runtime_upgrade_review_request.v1'),
+  pending_work_policy: z.literal('drain_before_activation'),
   prior_app_version_id: Id, expected_prior_package_digest: AppDigestSchema,
   expected_prior_grant_snapshot_digest: AppDigestSchema, app_version_id: Id,
   expected_package_digest: AppDigestSchema, expected_requested_snapshot_digest: AppDigestSchema,
@@ -106,7 +107,8 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
     const before = z.strictObject({ app_version_id: Id, grant_snapshot_id: Id }).safeParse(audit?.before_state);
     const after = z.strictObject({ app_version_id: Id, grant_snapshot_id: Id, review_digest: AppDigestSchema }).safeParse(audit?.after_state);
     const metadata = z.object({ schema_version: z.literal('deft.app_runtime_upgrade_activation.v1'),
-      prior_grant_snapshot_digest: AppDigestSchema }).safeParse(audit?.metadata);
+      prior_grant_snapshot_digest: AppDigestSchema,
+      pending_work_policy: z.literal('drain_before_activation').optional() }).safeParse(audit?.metadata);
     if (!digest.success || !audit || !before.success || !after.success || !metadata.success
       || after.data.review_digest !== digest.data || before.data.grant_snapshot_id !== effective.supersedes_snapshot_id
       || before.data.app_version_id === target.id) throw stale();
@@ -171,11 +173,13 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
       eq(appPublicEndpoints.app_version_id, prior.id), eq(appPublicIngress.state, 'confirmed'),
       eq(appPublicIngress.follow_up_state, 'pending')));
   const request = RuntimeUpgradeRequestSchema.parse({ schema_version: 'deft.app_runtime_upgrade_review_request.v1',
+    pending_work_policy: 'drain_before_activation',
     prior_app_version_id: prior.id, expected_prior_package_digest: prior.package_digest,
     expected_prior_grant_snapshot_digest: effective.snapshot_digest, app_version_id: target.id,
     expected_package_digest: target.package_digest, expected_requested_snapshot_digest: requested.snapshot_digest,
     expected_lifecycle_epoch: installation.lifecycle_epoch, expected_grant_epoch: installation.grant_epoch });
   const review = { schema_version: 'deft.app_runtime_upgrade_review.v1' as const, organization_id: actor.org_id,
+    pending_work_policy: request.pending_work_policy,
     installation_id: installationId, request, prior_authority: priorAuthority, target_authority: targetAuthority,
     modules: modules.map(item => item.effect), blockers: { old_work: Object.fromEntries(counts.map(row => [row.state, row.count])),
       active_dependents: dependencies?.count ?? 0, pending_public_followups: followups?.count ?? 0 }, fresh_runtime_binding_review_required: true,
@@ -256,6 +260,7 @@ export async function activateRuntimeUpgrade(actor: ModuleActor, installationId:
       before_state: { app_version_id: current.prior.id, grant_snapshot_id: current.effective.id },
       after_state: { app_version_id: current.target.id, grant_snapshot_id: grantId, review_digest: expected_review_digest },
       metadata: { source: actor.source, schema_version: 'deft.app_runtime_upgrade_activation.v1',
+        pending_work_policy: request.pending_work_policy,
         prior_grant_snapshot_digest: current.effective.snapshot_digest, review_schema_version: current.review.schema_version, authority_carry_forward: false } });
     await final(tx, actor, current.manifest, options);
     return { schema_version: 'deft.app_runtime_upgrade_activation.v1' as const, installation: installation!, grant_snapshot_id: grantId,

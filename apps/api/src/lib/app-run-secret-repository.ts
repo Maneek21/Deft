@@ -184,7 +184,13 @@ export class AppRunSecretRepository {
   }
 
   async #purgeRun(orgId: string, runId: string, now: Date): Promise<number> {
-    return db.transaction(async (tx) => {
+    return this.purgeExpiredRunForMaintenance(orgId, runId, now, work => db.transaction(work));
+  }
+
+  /** Host maintenance only; exact row scope and Run-first order are unchanged. */
+  async purgeExpiredRunForMaintenance(orgId: string, runId: string, now: Date,
+    transaction: <T>(work: (tx: AppRunTransaction) => Promise<T>) => Promise<T>): Promise<number> {
+    return transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM app_runs WHERE org_id = ${orgId} AND id = ${runId} FOR UPDATE`);
       const expired = await tx.select({
         id: appRunSecretPayloads.id,

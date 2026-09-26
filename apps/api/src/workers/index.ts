@@ -14,7 +14,7 @@ import {
   type QueueName,
 } from '../lib/queues.js';
 import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
-import { APP_AUTOMATIONS_ENABLED } from '../lib/env.js';
+import { APP_AUTOMATIONS_ENABLED, APP_RUNS_ENABLED } from '../lib/env.js';
 import { APP_RESOURCE_SYNC_SCAN_JOB, ensureAppResourceSyncScan } from '../lib/app-resource-sync-scanner.js';
 import { APP_AUTOMATION_SCAN_CRON, ensureAppAutomationScan } from '../lib/app-automation-scan-progress.js';
 import type { JobHandler } from './types.js';
@@ -275,6 +275,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
     case 'app-run-attempt': {
       const mod = await import('../lib/app-run-worker-handler.js');
       return mod.handleAppRunAttempt;
+    }
+    case 'app-run-attention': {
+      const mod = await import('../lib/app-run-maintenance-attention.js');
+      return mod.handleAppRunAttention;
     }
     case 'app-public-ingress': {
       const mod = await import('../lib/app-public-worker-handler.js');
@@ -692,17 +696,22 @@ async function reconcileRecurringJobs(): Promise<void> {
 }
 
 async function runStaleMaintenance(): Promise<void> {
-  const count = await cleanupStaleJobs();
-  if (count > 0) console.log(`[workers] Recovered ${count} expired job lease(s)`);
-  // This also repairs a recurrence whose prior occurrence terminal-failed in
-  // cleanup or whose post-settlement registration hit a transient DB error.
-  await reconcileRecurringJobs();
+  await Promise.all([
+    (async () => {
+      const count = await cleanupStaleJobs();
+      if (count > 0) console.log(`[workers] Recovered ${count} expired job lease(s)`);
+      // Repair a recurring occurrence after its durable queue settlement.
+      await reconcileRecurringJobs();
+    })(),
+    APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('recovery')) : Promise.resolve(),
+  ]);
 }
 
 async function runRetentionMaintenance(): Promise<void> {
   const [pruned, attachments] = await Promise.all([
     pruneFinishedJobs(JOB_RETENTION_MS),
     sweepExpiredStagedAttachments(),
+    APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('retention')) : Promise.resolve(),
   ]);
   if (pruned > 0) console.log(`[workers] Pruned ${pruned} expired terminal job(s)`);
   if (attachments.deletedRows > 0) {
@@ -836,6 +845,9 @@ export async function stopWorkers(opts?: { timeoutMs?: number }): Promise<void> 
   const timeoutMs = Math.max(1, opts?.timeoutMs ?? WORKER_SHUTDOWN_TIMEOUT_MS);
   stoppingPromise = (async () => {
     workersRunning = false;
+    if (APP_RUNS_ENABLED) {
+      void trackBackground(import('../lib/app-run-maintenance.js').then(mod => mod.stopAppRunMaintenance()));
+    }
     if (pollingInterval) clearInterval(pollingInterval);
     if (staleCleanupInterval) clearInterval(staleCleanupInterval);
     if (retentionInterval) clearInterval(retentionInterval);
