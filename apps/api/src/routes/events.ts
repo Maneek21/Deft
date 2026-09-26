@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { db } from '../lib/db.js';
 import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-create.js';
 import { events } from '@deft/db/schema';
+import { createNativeCalendarEventInTransaction } from '../lib/native-calendar.js';
 
 export const eventRoutes = new Hono();
 
@@ -54,35 +55,9 @@ eventRoutes.post('/', async (c) => {
     orgId: user.org_id, userId: user.id, operation: 'event',
     key: nativeCreateKey(c.req.header('Idempotency-Key')), payload: parsed.data,
     replay: async (tx, id) => (await tx.select().from(events).where(and(eq(events.id, id), eq(events.org_id, user.org_id), eq(events.user_id, user.id), eq(events.source, 'native'))).limit(1))[0],
-    create: async (tx) => {
-  const [created] = await tx.insert(events).values({
-    org_id: user.org_id,
-    source: 'native' as const,
-    event_type: 'calendar_event',
-    external_id: null,
-    title,
-    body: description || null,
-    url: null,
-    actor: user.email,
-    timestamp: startDate,
-    metadata: {
-      start: startDate.toISOString(),
-      end: endDate.toISOString(),
-      location: location || null,
-      attendees: (metadata?.attendees ?? []).map((attendee) => ({
-        email: attendee.email,
-        displayName: attendee.displayName ?? attendee.name ?? attendee.email.split('@')[0],
-      })),
-      hangoutLink: null,
-      status: 'confirmed',
-      allDay: false,
-    },
-    user_id: user.id,
-    connected_account_id: null,
-  }).returning();
-
-  return created!;
-  } });
+    create: tx => createNativeCalendarEventInTransaction(tx, { orgId: user.org_id, userId: user.id, email: user.email,
+      input: { title, start, end, description, location, attendees: metadata?.attendees } }),
+  });
   return c.json(created, 201);
   } catch (err) {
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);

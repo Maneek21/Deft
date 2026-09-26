@@ -196,8 +196,24 @@ export const AppRunActorSchema = z.discriminatedUnion('actor_type', [
 ]);
 export type AppRunActor = z.infer<typeof AppRunActorSchema>;
 
+export const AppRunNativeOperationIdentitySchema = z.strictObject({
+  provider: z.strictObject({ org_id: ExactIdentitySchema, provider_kind: z.literal('native'),
+    provider_instance_id: z.string().regex(/^calendar:[0-9a-f-]{36}$/i) }),
+  operation_name: z.enum(['calendar.events.create.v1', 'calendar.events.cancel.v1']),
+});
+export const AppRunOperationIdentitySchema = z.union([CapabilityProviderOperationIdentitySchema, AppRunNativeOperationIdentitySchema]);
+
 export const AppRunOriginSchema = z.union([
   z.object({ origin_kind: z.literal('core') }).strict(),
+  z.object({
+    origin_kind: z.literal('app'), installation_id: ExactIdentitySchema, app_version_id: ExactIdentitySchema,
+    native_binding_id: ExactIdentitySchema, grant_snapshot_id: ExactIdentitySchema,
+  }).strict(),
+  z.object({
+    origin_kind: z.literal('app'), installation_id: ExactIdentitySchema, app_version_id: ExactIdentitySchema,
+    native_binding_id: ExactIdentitySchema, grant_snapshot_id: ExactIdentitySchema,
+    public_endpoint_id: ExactIdentitySchema, public_ingress_id: ExactIdentitySchema,
+  }).strict(),
   z.object({
     origin_kind: z.literal('legacy_connector'),
     connection_id: ExactIdentitySchema,
@@ -339,6 +355,8 @@ export const AppRunAuthorityRefSchema = z.object({
     'app_binding',
     'app_runtime_registration',
     'app_runtime_binding',
+    'app_native_binding',
+    'app_native_owner_consent',
     'app_public_endpoint',
     'app_public_ingress',
     'app_public_claim',
@@ -459,7 +477,7 @@ export const AppRunReceiptEnvelopeSchema = z.object({
   attempt_id: ExactIdentitySchema.optional(),
   run_state: AppRunStateSchema,
   actor: AppRunActorSchema.optional(),
-  operation: CapabilityProviderOperationIdentitySchema,
+  operation: AppRunOperationIdentitySchema,
   policy: AppRunReceiptPolicySnapshotSchema,
   input_fingerprint: z.object({
     key_version: ExactIdentitySchema,
@@ -492,7 +510,7 @@ export const AppRunSubmissionSchema = z.object({
   initiating_actor: AppRunActorSchema,
   execution_actor: AppRunActorSchema,
   origin: AppRunOriginSchema,
-  operation: CapabilityProviderOperationIdentitySchema,
+  operation: AppRunOperationIdentitySchema,
   provider_snapshot_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   policy: AppRunPolicySnapshotSchema,
   retention_class: AppRunRetentionClassSchema,
@@ -503,6 +521,10 @@ export const AppRunSubmissionSchema = z.object({
 }).strict().superRefine((value, ctx) => {
   if (value.operation.provider.org_id !== value.org_id) {
     ctx.addIssue({ code: 'custom', path: ['operation', 'provider', 'org_id'], message: 'Provider organization must match Run organization' });
+  }
+  const native = value.origin.origin_kind === 'app' && 'native_binding_id' in value.origin;
+  if (native !== (value.operation.provider.provider_kind === 'native')) {
+    ctx.addIssue({ code: 'custom', path: ['origin'], message: 'Native operations require exact native App ancestry' });
   }
 });
 export type AppRunSubmission = z.infer<typeof AppRunSubmissionSchema>;

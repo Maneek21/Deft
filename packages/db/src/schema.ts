@@ -648,7 +648,7 @@ export const favorites = pgTable('favorites', {
 export const capabilityProviderSnapshots = pgTable('capability_provider_snapshots', {
   ...id(),
   org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
-  provider_kind: text('provider_kind').$type<'mcp' | 'app_runtime'>().notNull(),
+  provider_kind: text('provider_kind').$type<'mcp' | 'app_runtime' | 'native'>().notNull(),
   provider_instance_id: text('provider_instance_id').notNull(),
   adapter_contract_version: text('adapter_contract_version').notNull(),
   snapshot_digest: text('snapshot_digest').notNull(),
@@ -663,7 +663,7 @@ export const capabilityProviderSnapshots = pgTable('capability_provider_snapshot
     .on(t.org_id, t.provider_kind, t.provider_instance_id, t.snapshot_digest),
   index('capability_provider_snapshots_provider_idx')
     .on(t.org_id, t.provider_kind, t.provider_instance_id, t.captured_at),
-  check('capability_provider_snapshots_kind_check', sql`${t.provider_kind} IN ('mcp', 'app_runtime')`),
+  check('capability_provider_snapshots_kind_check', sql`${t.provider_kind} IN ('mcp', 'app_runtime', 'native')`),
   check('capability_provider_snapshots_digest_check', sql`${t.snapshot_digest} ~ '^sha256:[a-f0-9]{64}$'`),
   check('capability_provider_snapshots_json_check', sql`jsonb_typeof(${t.safe_snapshot}) = 'object'`),
   check('capability_provider_snapshots_size_check', sql`octet_length(${t.safe_snapshot}::text) <= 1048576`),
@@ -682,7 +682,7 @@ export const appRuns = pgTable('app_runs', {
     .$type<'human' | 'agent_employee' | 'system' | 'automation'>()
     .notNull(),
   execution_actor_id: text('execution_actor_id').notNull(),
-  provider_kind: text('provider_kind').$type<'mcp' | 'app_runtime'>().notNull(),
+  provider_kind: text('provider_kind').$type<'mcp' | 'app_runtime' | 'native'>().notNull(),
   provider_instance_id: text('provider_instance_id').notNull(),
   operation_name: text('operation_name').notNull(),
   provider_snapshot_id: text('provider_snapshot_id').notNull(),
@@ -691,6 +691,7 @@ export const appRuns = pgTable('app_runs', {
   origin_app_binding_key: text('origin_app_binding_key'),
   origin_runtime_binding_id: text('origin_runtime_binding_id'),
   origin_resource_binding_id: text('origin_resource_binding_id'),
+  origin_native_binding_id: text('origin_native_binding_id'),
   origin_public_endpoint_id: text('origin_public_endpoint_id'),
   origin_public_ingress_id: text('origin_public_ingress_id'),
   origin_app_grant_snapshot_id: text('origin_app_grant_snapshot_id'),
@@ -846,6 +847,17 @@ export const appRuns = pgTable('app_runs', {
     name: 'app_runs_resource_binding_fk',
   }).onDelete('restrict'),
   foreignKey({
+    columns: [t.org_id, t.origin_app_installation_id, t.origin_app_version_id, t.origin_app_grant_snapshot_id,
+      t.origin_native_binding_id, t.provider_kind, t.provider_instance_id, t.operation_name, t.provider_snapshot_id,
+      t.execution_actor_id, t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class],
+    foreignColumns: [appNativeBindings.org_id, appNativeBindings.app_installation_id, appNativeBindings.app_version_id,
+      appNativeBindings.grant_snapshot_id, appNativeBindings.id, appNativeBindings.provider_kind,
+      appNativeBindings.provider_instance_id, appNativeBindings.operation_name, appNativeBindings.provider_snapshot_id,
+      appNativeBindings.owner_user_id, appNativeBindings.risk_class, appNativeBindings.review_requirement,
+      appNativeBindings.review_scope, appNativeBindings.retry_class, appNativeBindings.retention_class],
+    name: 'app_runs_native_binding_fk',
+  }).onDelete('restrict'),
+  foreignKey({
     columns: [t.org_id, t.origin_app_automation_definition_id],
     foreignColumns: [appAutomationDefinitions.org_id, appAutomationDefinitions.id],
     name: 'app_runs_automation_definition_fk',
@@ -906,6 +918,7 @@ export const appRuns = pgTable('app_runs', {
   // Database ancestry is exact; the API's independent feature flag remains
   // disabled by default until Phase 5 certification deliberately enables it.
   check('app_runs_app_origin_coherence_check', sql`
+    (${t.origin_native_binding_id} IS NULL AND (
     (
       ${t.origin_kind} = 'app'
       AND ${t.origin_app_installation_id} IS NOT NULL
@@ -1000,6 +1013,19 @@ export const appRuns = pgTable('app_runs', {
       AND ${t.initiating_actor_type} <> 'automation'
       AND ${t.initiating_actor_type} <> 'app_public'
       AND ${t.execution_actor_type} <> 'automation'
+    ))) OR (
+      ${t.origin_kind} = 'app' AND ${t.provider_kind} = 'native'
+      AND ${t.origin_app_installation_id} IS NOT NULL AND ${t.origin_app_version_id} IS NOT NULL
+      AND ${t.origin_app_grant_snapshot_id} IS NOT NULL AND ${t.origin_native_binding_id} IS NOT NULL
+      AND ${t.origin_app_binding_key} IS NULL AND ${t.origin_runtime_binding_id} IS NULL AND ${t.origin_resource_binding_id} IS NULL
+      AND ${t.origin_app_automation_definition_id} IS NULL AND ${t.origin_app_automation_fire_id} IS NULL
+      AND ${t.execution_actor_type} = 'human' AND ${t.review_scope} = 'per_invocation'
+      AND ${t.risk_class} = 'internal_write' AND ${t.review_requirement} = 'always'
+      AND ${t.retry_class} = 'idempotent_with_key' AND ${t.retention_class} = 'standard'
+      AND ((${t.initiating_actor_type} = 'human' AND ${t.initiating_actor_id} = ${t.execution_actor_id}
+        AND ${t.origin_public_endpoint_id} IS NULL AND ${t.origin_public_ingress_id} IS NULL)
+        OR (${t.initiating_actor_type} = 'app_public' AND ${t.initiating_actor_id} = ${t.origin_public_ingress_id}
+          AND ${t.origin_public_endpoint_id} IS NOT NULL AND ${t.origin_public_ingress_id} IS NOT NULL))
     )
   `),
   check('app_runs_app_binding_key_check', sql`
@@ -1012,7 +1038,7 @@ export const appRuns = pgTable('app_runs', {
     ${t.initiating_actor_type} IN ('human', 'agent_employee', 'system', 'automation', 'app_public')
     AND ${t.execution_actor_type} IN ('human', 'agent_employee', 'system', 'automation')
   `),
-  check('app_runs_provider_kind_check', sql`${t.provider_kind} IN ('mcp', 'app_runtime')`),
+  check('app_runs_provider_kind_check', sql`${t.provider_kind} IN ('mcp', 'app_runtime', 'native')`),
   check('app_runs_state_check', sql`${t.state} IN (
     'pending', 'pending_approval', 'running', 'waiting_external', 'succeeded',
     'failed', 'cancelled', 'expired', 'unknown_outcome'
@@ -1777,7 +1803,7 @@ export const appVersions = pgTable('app_versions', {
   uniqueIndex('app_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
     .where(sql`${t.state} = 'active'`),
-  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4', '5')`),
+  check('app_versions_protocol_supported_check', sql`${t.protocol_version} IN ('0', '1', '2', '3', '4', '5', '6')`),
   check('app_versions_connected_request_check', sql`
     ${t.protocol_version} = '0' OR ${t.requested_grant_snapshot_id} IS NOT NULL
   `),
@@ -2278,6 +2304,67 @@ export const appRuntimeBindings = pgTable('app_runtime_bindings', {
 
 // Host-reviewed resource sync authority is distinct from v1 action bindings.
 // Cursor state and provider records live in separate tables below.
+export const appNativeBindings = pgTable('app_native_bindings', {
+  ...id(), ...orgId(),
+  app_installation_id: text('app_installation_id').notNull(), app_version_id: text('app_version_id').notNull(),
+  grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
+  action_key: text('action_key').notNull(), operation_name: text('operation_name')
+    .$type<'calendar.events.create.v1' | 'calendar.events.cancel.v1'>().notNull(),
+  provider_kind: text('provider_kind').$type<'native'>().default('native').notNull(),
+  provider_instance_id: text('provider_instance_id').notNull(), provider_snapshot_id: text('provider_snapshot_id').notNull(),
+  owner_user_id: text('owner_user_id').notNull(), stage_manager_user_id: text('stage_manager_user_id').notNull(),
+  stage_manager_authorization_version: integer('stage_manager_authorization_version').notNull(),
+  owner_authorization_version: integer('owner_authorization_version').notNull(),
+  installation_lifecycle_epoch: integer('installation_lifecycle_epoch').notNull(),
+  installation_grant_epoch: integer('installation_grant_epoch').notNull(),
+  package_digest: text('package_digest').notNull(), grant_snapshot_digest: text('grant_snapshot_digest').notNull(),
+  target: jsonb('target').$type<Record<string, unknown>>().notNull(),
+  proposal_digest: text('proposal_digest').notNull(), consent_digest: text('consent_digest'),
+  reviewed_contract_digest: text('reviewed_contract_digest').notNull(),
+  risk_class: text('risk_class').$type<'internal_write'>().default('internal_write').notNull(),
+  review_requirement: text('review_requirement').$type<'always'>().default('always').notNull(),
+  review_scope: text('review_scope').$type<'per_invocation'>().default('per_invocation').notNull(),
+  retry_class: text('retry_class').$type<'idempotent_with_key'>().default('idempotent_with_key').notNull(),
+  retention_class: text('retention_class').$type<'standard'>().default('standard').notNull(),
+  state: text('state').$type<'staged' | 'active' | 'revoked'>().default('staged').notNull(),
+  reviewed_at: timestamp('reviewed_at'), ...timestamps(),
+}, (t) => [
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id, t.grant_snapshot_id, t.grant_snapshot_kind],
+    foreignColumns: [appGrantSnapshots.org_id, appGrantSnapshots.app_installation_id, appGrantSnapshots.app_version_id,
+      appGrantSnapshots.id, appGrantSnapshots.snapshot_kind], name: 'app_native_bindings_grant_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.provider_kind, t.provider_instance_id, t.provider_snapshot_id],
+    foreignColumns: [capabilityProviderSnapshots.org_id, capabilityProviderSnapshots.provider_kind,
+      capabilityProviderSnapshots.provider_instance_id, capabilityProviderSnapshots.id], name: 'app_native_bindings_provider_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.owner_user_id], foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_native_bindings_owner_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.stage_manager_user_id], foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'app_native_bindings_manager_fk' }).onDelete('restrict'),
+  unique('app_native_bindings_org_id_id_unique').on(t.org_id, t.id),
+  unique('app_native_bindings_owner_identity_unique').on(t.org_id, t.app_installation_id, t.app_version_id,
+    t.grant_snapshot_id, t.id, t.owner_user_id),
+  unique('app_native_bindings_run_identity_unique').on(t.org_id, t.app_installation_id, t.app_version_id,
+    t.grant_snapshot_id, t.id, t.provider_kind, t.provider_instance_id, t.operation_name, t.provider_snapshot_id,
+    t.owner_user_id, t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class),
+  uniqueIndex('app_native_bindings_current_action_unique').on(t.org_id, t.app_installation_id, t.app_version_id,
+    t.grant_snapshot_id, t.action_key).where(sql`${t.state} <> 'revoked'`),
+  check('app_native_bindings_identity_check', sql`${t.provider_kind} = 'native' AND ${t.grant_snapshot_kind} = 'effective'
+    AND ${t.provider_instance_id} = 'calendar:' || ${t.owner_user_id}
+    AND ${t.operation_name} IN ('calendar.events.create.v1', 'calendar.events.cancel.v1')
+    AND ${t.action_key} ~ '^[a-z][a-z0-9_]{0,47}$' AND ${t.action_key} !~ '^(deft|core|system)(_|$)'`),
+  check('app_native_bindings_policy_check', sql`${t.risk_class} = 'internal_write' AND ${t.review_requirement} = 'always'
+    AND ${t.review_scope} = 'per_invocation' AND ${t.retry_class} = 'idempotent_with_key' AND ${t.retention_class} = 'standard'`),
+  check('app_native_bindings_epoch_check', sql`${t.installation_lifecycle_epoch} >= 0 AND ${t.installation_grant_epoch} >= 1
+    AND ${t.stage_manager_authorization_version} >= 1 AND ${t.owner_authorization_version} >= 1`),
+  check('app_native_bindings_digest_check', sql`${t.proposal_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.reviewed_contract_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.package_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.grant_snapshot_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_native_bindings_state_check', sql`${t.state} IN ('staged', 'active', 'revoked')
+    AND ((${t.consent_digest} IS NULL AND ${t.reviewed_at} IS NULL AND ${t.state} <> 'active')
+      OR (${t.consent_digest} IS NOT NULL AND ${t.consent_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.reviewed_at} IS NOT NULL AND ${t.state} <> 'staged'))`),
+  check('app_native_bindings_target_check', sql`jsonb_typeof(${t.target}) = 'object' AND octet_length(${t.target}::text) <= 1024`),
+]);
+
 export const appResourceBindings = pgTable('app_resource_bindings', {
   ...id(),
   ...orgId(),
@@ -5220,6 +5307,8 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   collection_key: text('collection_key').notNull(),
   public_action_key: text('public_action_key'),
   runtime_binding_id: text('runtime_binding_id'),
+  native_binding_id: text('native_binding_id'),
+  native_input_mapping: jsonb('native_input_mapping').$type<Record<string, { source: 'claim.resource_id' | 'claim.claim_id' } | { source: 'record.field'; field_key: string }> | null>(),
   approver_user_id: text('approver_user_id'),
   input_mapping: jsonb('input_mapping').$type<Record<string, 'claim.resource_id' | 'claim.claim_id'> | null>(),
   mapping_digest: text('mapping_digest'),
@@ -5255,6 +5344,10 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   foreignKey({ columns: [t.org_id, t.runtime_binding_id],
     foreignColumns: [appRuntimeBindings.org_id, appRuntimeBindings.id],
     name: 'app_public_endpoints_runtime_binding_fk' }).onDelete('restrict'),
+  foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id, t.grant_snapshot_id, t.native_binding_id, t.approver_user_id],
+    foreignColumns: [appNativeBindings.org_id, appNativeBindings.app_installation_id, appNativeBindings.app_version_id,
+      appNativeBindings.grant_snapshot_id, appNativeBindings.id, appNativeBindings.owner_user_id],
+    name: 'app_public_endpoints_native_binding_fk' }).onDelete('restrict'),
   foreignKey({ columns: [t.org_id, t.approver_user_id],
     foreignColumns: [orgMembers.org_id, orgMembers.user_id],
     name: 'app_public_endpoints_approver_fk' }).onDelete('restrict'),
@@ -5270,13 +5363,19 @@ export const appPublicEndpoints = pgTable('app_public_endpoints', {
   check('app_public_endpoints_label_check', sql`octet_length(${t.public_label}) BETWEEN 1 AND 200`),
   check('app_public_endpoints_body_limit_check', sql`${t.max_body_bytes} BETWEEN 128 AND 8192`),
   check('app_public_endpoints_action_shape_check', sql`
+    (${t.native_binding_id} IS NULL AND ${t.native_input_mapping} IS NULL AND (
     (${t.public_action_key} IS NULL AND ${t.runtime_binding_id} IS NULL
       AND ${t.approver_user_id} IS NULL AND ${t.input_mapping} IS NULL AND ${t.mapping_digest} IS NULL)
     OR (${t.public_action_key} IS NOT NULL AND ${t.public_action_key} ~ '^[a-z][a-z0-9_]{0,47}$'
       AND ${t.runtime_binding_id} IS NOT NULL AND ${t.approver_user_id} IS NOT NULL
       AND ${t.input_mapping} IS NOT NULL AND jsonb_typeof(${t.input_mapping}) = 'object'
       AND octet_length(${t.input_mapping}::text) <= 4096
-      AND ${t.mapping_digest} IS NOT NULL AND ${t.mapping_digest} ~ '^sha256:[a-f0-9]{64}$')
+      AND ${t.mapping_digest} IS NOT NULL AND ${t.mapping_digest} IS NOT NULL AND ${t.mapping_digest} ~ '^sha256:[a-f0-9]{64}$')
+    )) OR (${t.native_binding_id} IS NOT NULL AND ${t.runtime_binding_id} IS NULL
+      AND ${t.input_mapping} IS NULL AND ${t.native_input_mapping} IS NOT NULL
+      AND jsonb_typeof(${t.native_input_mapping}) = 'object' AND octet_length(${t.native_input_mapping}::text) <= 4096
+      AND ${t.public_action_key} IS NOT NULL AND ${t.public_action_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+      AND ${t.approver_user_id} IS NOT NULL AND ${t.mapping_digest} IS NOT NULL AND ${t.mapping_digest} ~ '^sha256:[a-f0-9]{64}$')
   `),
 ]);
 
@@ -5347,6 +5446,7 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
   resource_type: text('resource_type').notNull(),
   resource_id: text('resource_id').notNull(),
   claim_kind: text('claim_kind').$type<'exclusive'>().notNull(),
+  claimed_resource_revision: integer('claimed_resource_revision'),
   released_at: timestamp('released_at'),
   // Fresh PostgreSQL admission instant; historical NULL rows retain their
   // original created_at as an explicitly approximate budget-day fallback.
@@ -5369,6 +5469,7 @@ export const appCanonicalClaims = pgTable('app_canonical_claims', {
     .on(t.org_id, t.provider_kind, t.provider_instance_id, t.resource_id, t.claim_kind)
     .where(sql`${t.released_at} IS NULL`),
   index('app_canonical_claims_endpoint_created_idx').on(t.org_id, t.endpoint_id, t.created_at),
+  check('app_canonical_claims_revision_check', sql`${t.claimed_resource_revision} IS NULL OR ${t.claimed_resource_revision} >= 1`),
   check('app_canonical_claims_provider_check', sql`${t.provider_kind} = 'module'`),
   check('app_canonical_claims_resource_type_check', sql`${t.resource_type} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('app_canonical_claims_kind_check', sql`${t.claim_kind} = 'exclusive'`),

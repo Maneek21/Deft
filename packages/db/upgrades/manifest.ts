@@ -236,6 +236,10 @@ export const upgradeManifest = {
       version: '0.3.0-preview.43', file: '0.3.0-preview.43-app-public-hmac.sql',
       description: 'Add reviewed signed public ingress key versions and bounded durable nonce receipts',
     },
+    {
+      version: '0.3.0-preview.44', file: '0.3.0-preview.44-app-native-calendar.sql',
+      description: 'Add separately consented host-native Calendar bindings and exact protocol 6 Run/public ancestry',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

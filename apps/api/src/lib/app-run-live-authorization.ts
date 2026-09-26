@@ -22,7 +22,7 @@ import {
   DeftAppManifestV2Schema,
   PublicActionDeclarationSchema,
   RuntimeObjectSchema,
-  parseRuntimeAppManifest,
+  parseRuntimeAppManifest, parseNativeAppManifest,
   parseRuntimeObjectInput,
 } from '@deft/app-kit';
 import {
@@ -82,6 +82,8 @@ import { loadReviewedRuntimeAction } from './app-runtime-review.js';
 import { APP_RUNTIME_CHANNEL_VERSION } from './app-runtime-contract.js';
 import { publicEndpointReviewDigest } from './app-public-service.js';
 
+import { captureReviewedNativeInTransaction, captureReviewedPublicNativeInTransaction } from './app-native-run-authorization.js';
+
 const HOST_POLICY_VERSION = 'deft.app_run.host_policy.v1';
 const APP_MCP_INVOKE_SCOPES = Object.freeze(['read:modules', 'invoke:apps'] as const);
 
@@ -127,6 +129,7 @@ type InternalRunAuthorization = Readonly<{
   origin_app_version_id: string | null;
   origin_app_binding_key: string | null;
   origin_runtime_binding_id: string | null;
+  origin_native_binding_id: string | null;
   origin_public_endpoint_id: string | null;
   origin_public_ingress_id: string | null;
   origin_app_grant_snapshot_id: string | null;
@@ -283,6 +286,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
 
   /** Host-only v3 Runtime capture. The public App Kit cannot assert these
    * pins: a reviewed binding and the live effective grant are required. */
+  captureReviewedNativeInTransaction = captureReviewedNativeInTransaction;
+  captureReviewedPublicNativeInTransaction = captureReviewedPublicNativeInTransaction;
+
   async captureReviewedRuntimeForPreparation(input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
   }>) {
@@ -486,9 +492,9 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       protocol_version: appVersions.protocol_version }).from(appVersions).where(and(
         eq(appVersions.org_id, input.org_id), eq(appVersions.id, endpoint.app_version_id),
       )).limit(1);
-    if (!version || version.protocol_version !== '4') throw new Error('APP_RUN_AUTHORIZATION_STALE');
-    const manifest = parseRuntimeAppManifest(version.manifest);
-    if (manifest.schema_version !== '4') throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    if (!version || !['4', '6'].includes(version.protocol_version)) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const manifest = version.protocol_version === '6' ? parseNativeAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
+    if (manifest.schema_version !== '4' && manifest.schema_version !== '6') throw new Error('APP_RUN_AUTHORIZATION_STALE');
     const declaration = manifest.public_actions.find((item) => item.key === endpoint.public_action_key);
     if (!declaration) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     const reviewed = PublicActionDeclarationSchema.parse(declaration);
@@ -784,6 +790,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       origin_app_version_id: appRuns.origin_app_version_id,
       origin_app_binding_key: appRuns.origin_app_binding_key,
       origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
+      origin_native_binding_id: appRuns.origin_native_binding_id,
       origin_public_endpoint_id: appRuns.origin_public_endpoint_id,
       origin_public_ingress_id: appRuns.origin_public_ingress_id,
       origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
@@ -805,6 +812,36 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     // Resource sync requires its own host-created intent and live consent.
     // The existing action authorization paths cannot authorize that scope.
     if (run.review_scope === 'reviewed_resource_sync') return false;
+    if (run.provider_kind === 'native') {
+      try {
+        if (run.origin_kind !== 'app' || run.execution_actor_type !== 'human'
+          || !internal.origin_native_binding_id || internal.origin_runtime_binding_id
+          || internal.origin_app_binding_key || internal.origin_app_automation_definition_id
+          || internal.origin_app_automation_fire_id) return false;
+        const current = run.initiating_actor_type === 'app_public'
+          && internal.origin_public_endpoint_id && internal.origin_public_ingress_id
+          && run.initiating_actor_id === internal.origin_public_ingress_id
+          ? await this.captureReviewedPublicNativeInTransaction(tx, { org_id: run.org_id,
+            endpoint_id: internal.origin_public_endpoint_id, ingress_id: internal.origin_public_ingress_id })
+          : run.initiating_actor_type === 'human' && run.initiating_actor_id === run.execution_actor_id
+            && !internal.origin_public_endpoint_id && !internal.origin_public_ingress_id
+            ? await this.captureReviewedNativeInTransaction(tx, { org_id: run.org_id,
+              user_id: run.execution_actor_id, native_binding_id: internal.origin_native_binding_id }) : null;
+        if (!current) return false;
+        const binding = current.binding;
+        return binding.id === internal.origin_native_binding_id && binding.owner_user_id === run.execution_actor_id
+          && binding.provider_instance_id === run.provider_instance_id && binding.operation_name === run.operation_name
+          && binding.provider_snapshot_id === internal.provider_snapshot_id
+          && binding.app_installation_id === internal.origin_app_installation_id
+          && binding.app_version_id === internal.origin_app_version_id
+          && binding.grant_snapshot_id === internal.origin_app_grant_snapshot_id
+          && binding.risk_class === run.risk_class && binding.review_requirement === run.review_requirement
+          && binding.review_scope === run.review_scope && binding.retry_class === run.retry_class
+          && binding.retention_class === run.retention_class
+          && sameAuthorityRefs(AppRunAuthorizationSnapshotSchema.parse(internal.authorization_snapshot).authority_refs,
+            current.authorization_snapshot.authority_refs);
+      } catch { return false; }
+    }
     if (run.provider_kind === 'app_runtime') {
       try {
         if (run.origin_kind !== 'app' || run.execution_actor_type !== 'human'

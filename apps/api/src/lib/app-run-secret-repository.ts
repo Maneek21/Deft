@@ -104,8 +104,8 @@ export class AppRunSecretRepository {
     });
   }
 
-  async readOutput(orgId: string, runId: string, attemptId: string): Promise<CapabilityJsonValue | null> {
-    const [row] = await db.select().from(appRunSecretPayloads).where(and(
+  async readOutput(orgId: string, runId: string, attemptId: string, tx: AppRunTransaction | typeof db = db): Promise<CapabilityJsonValue | null> {
+    const [row] = await tx.select().from(appRunSecretPayloads).where(and(
       eq(appRunSecretPayloads.org_id, orgId),
       eq(appRunSecretPayloads.run_id, runId),
       eq(appRunSecretPayloads.attempt_id, attemptId),

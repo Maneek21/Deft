@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, gt, isNull, lt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appExperienceSessions, appGrantSnapshots, appInstallations, appRuntimeBindings, appRuntimeRegistrations,
-  appVersions, orgMembers, users, webSessions } from '@deft/db/schema';
+  appVersions, appNativeBindings, orgMembers, users, webSessions } from '@deft/db/schema';
 import { parseRuntimeAppManifest, verifyDeftAppPackageJson,
-  verifyDeftExperienceArtifact, parseResourceAppManifest } from '@deft/app-kit';
+  verifyDeftExperienceArtifact, parseResourceAppManifest, parseNativeAppManifest } from '@deft/app-kit';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { AppRuntimeActionService, appRuntimeActionService } from './app-runtime-action-service.js';
 import type { AppRunTransaction } from './app-run-repository.js';
-import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled } from './env.js';
+import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled } from './env.js';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
@@ -47,16 +47,17 @@ export async function assertExperienceWeb(tx: Executor, caller: ExperienceCaller
 }
 
 export async function verifiedExperienceBundle(version: typeof appVersions.$inferSelect, experienceKey: string) {
+  const native = version.protocol_version === '6';
   const resource = version.protocol_version === '5';
-  if (resource ? !isAppExperienceResourceExposureEnabled() : version.protocol_version !== '4') throw stale();
-  const manifest = resource ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
-  if (manifest.schema_version !== (resource ? '5' : '4')) throw stale();
+  if (native ? !isAppNativeCalendarEnabled() : resource ? !isAppExperienceResourceExposureEnabled() : version.protocol_version !== '4') throw stale();
+  const manifest = native ? parseNativeAppManifest(version.manifest) : resource ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
+  if (manifest.schema_version !== (native ? '6' : resource ? '5' : '4')) throw stale();
   const reference = manifest.experiences.find((item) => item.key === experienceKey);
   if (!reference) throw denied();
   const verified = await verifyDeftAppPackageJson(JSON.stringify(version.package));
   if (verified.digest !== version.package_digest
     || verified.package.manifest_digest !== version.manifest_digest
-    || verified.package.manifest.schema_version !== (resource ? '5' : '4')) throw stale();
+    || verified.package.manifest.schema_version !== (native ? '6' : resource ? '5' : '4')) throw stale();
   const artifact = verified.package.artifacts.find((item) => item.path === reference.artifact_path);
   if (!artifact) throw stale();
   const bundle = await verifyDeftExperienceArtifact({
@@ -65,7 +66,13 @@ export async function verifiedExperienceBundle(version: typeof appVersions.$infe
     bridge_version: reference.bridge_version,
     renderer_version: reference.renderer_version,
   }, artifact);
-  if ((!resource && bundle.resource_keys.length !== 0)
+  if (native) {
+    if ((bundle.resource_keys.length && !isAppExperienceResourceExposureEnabled())
+      || manifest.schema_version !== '6'
+      || bundle.resource_keys.some(resourceKey => !manifest.sync_descriptors.some(item => item.key === resourceKey))
+      || bundle.action_keys.some(actionKey => !manifest.native_actions.some(item => item.key === actionKey)
+        && (!isAppV5RuntimeActionsEnabled() || !manifest.runtime_actions.some(item => item.key === actionKey)))) throw stale();
+  } else if ((!resource && bundle.resource_keys.length !== 0)
     || (resource && ((bundle.action_keys.length > 0 && !isAppV5RuntimeActionsEnabled()) || manifest.schema_version !== '5'
       || bundle.resource_keys.some(resourceKey => !manifest.sync_descriptors.some(d => d.key === resourceKey))))
     || bundle.action_keys.some((action) => !manifest.runtime_actions.some((item) => item.key === action))) {
@@ -222,6 +229,26 @@ export class AppExperienceService {
     const request = actionRequest.parse(raw);
     const { session, bundle } = await this.liveContext(caller, sessionId);
     if (!bundle.action_keys.includes(actionKey)) throw denied();
+    const [nativeBinding] = await db.select().from(appNativeBindings).where(and(eq(appNativeBindings.org_id, caller.org_id),
+      eq(appNativeBindings.app_installation_id, session.app_installation_id), eq(appNativeBindings.app_version_id, session.app_version_id),
+      eq(appNativeBindings.grant_snapshot_id, session.grant_snapshot_id), eq(appNativeBindings.owner_user_id, caller.user_id),
+      eq(appNativeBindings.action_key, actionKey), eq(appNativeBindings.state, 'active'))).limit(1);
+    if (nativeBinding) {
+      const { getAppRunRuntime } = await import('./app-run-runtime.js');
+      const run = await (await getAppRunRuntime()).service.submitReviewedNative({ org_id: caller.org_id, user_id: caller.user_id }, {
+        native_binding_id: nativeBinding.id, expected_consent_digest: nativeBinding.consent_digest!,
+        idempotency_key: `experience:${session.id}:${request.request_id}`, input: request.input,
+      }, async tx => {
+        // Native capture has already locked the complete owner/manager set before App.
+        const current = await this.lockedLiveContext(tx, caller, sessionId);
+        if (current.manifest.schema_version !== '6' || !current.bundle.action_keys.includes(actionKey)
+          || !current.manifest.native_actions.some(item => item.key === actionKey)
+          || current.session.app_version_id !== nativeBinding.app_version_id
+          || current.session.grant_snapshot_id !== nativeBinding.grant_snapshot_id) throw stale();
+      });
+      await this.liveContext(caller, sessionId);
+      return { run };
+    }
     const [binding] = await db.select().from(appRuntimeBindings).where(and(
       eq(appRuntimeBindings.org_id, caller.org_id),
       eq(appRuntimeBindings.app_installation_id, session.app_installation_id),

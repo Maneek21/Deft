@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { appGrantSnapshots, appInstallations, appVersions } from '@deft/db/schema';
 import { parseResourceAppManifest } from '@deft/app-kit';
 import { digestResourceSyncDescriptor } from '@deft/app-kit/experimental/resource-sync';
@@ -24,9 +24,18 @@ export async function loadReviewedResourceSyncDescriptor(
   const [version] = await tx.select().from(appVersions).where(and(
     eq(appVersions.org_id, orgId), eq(appVersions.installation_id, installation.id),
     eq(appVersions.id, installation.active_version_id), eq(appVersions.state, 'active'),
-    eq(appVersions.protocol_version, '5'),
+    inArray(appVersions.protocol_version, ['5', '6']),
   )).limit(1).for('share');
   if (!version) throw stale();
+  if (version.protocol_version === '6') {
+    const { loadReviewedNativeApp } = await import('./app-native-authority.js');
+    const native = await loadReviewedNativeApp(tx, orgId, installationId);
+    const descriptor = resourceKey === undefined ? native.manifest.sync_descriptors[0]
+      : native.manifest.sync_descriptors.find(item => item.key === resourceKey);
+    if (!descriptor) throw stale();
+    return { installation: native.installation, version: native.version, grant: native.grant,
+      descriptor, descriptor_digest: await digestResourceSyncDescriptor(descriptor), descriptors: native.manifest.sync_descriptors };
+  }
   let manifest: ReturnType<typeof parseResourceAppManifest>;
   try { manifest = parseResourceAppManifest(version.manifest); }
   catch { throw stale(); }

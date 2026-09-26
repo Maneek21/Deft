@@ -150,6 +150,11 @@ export function isAppV5RuntimeActionsEnabled(): boolean {
   return isAppRuntimeChannelEnabled()
     && process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED === 'true';
 }
+// Native Calendar uses its own host consent and atomic Run executor.
+export function isAppNativeCalendarEnabled(): boolean {
+  return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
+    && process.env.DEFT_APP_NATIVE_CALENDAR_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';

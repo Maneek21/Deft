@@ -1,3 +1,8 @@
+import { nativeExecutionTransaction } from './app-native-execution-db.js';
+import { executeNativeCalendarInTransaction } from './app-native-calendar-executor.js';
+import { captureReviewedNativeInTransaction, captureReviewedPublicNativeInTransaction } from './app-native-run-authorization.js';
+import { isAppNativeCalendarEnabled } from './env.js';
+import { nativeParticipantsAreHuman } from './app-native-authority.js';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
@@ -190,6 +195,13 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       return { run };
     }
 
+    if (claimed.run.provider_kind === 'native') {
+      await this.#executeNativeAtomic(claimed, signal);
+      const settled = await this.repository.inspect(orgId, runId);
+      if (!settled) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      await this.#projectState(settled);
+      return { run: settled };
+    }
     const input = await this.secretRepository.readInput(orgId, runId);
     if (input === null) {
       await this.#settleBeforeCallFailure(claimed, 'APP_RUN_EXPIRED');
@@ -212,7 +224,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     try {
       result = await this.executor.execute({
         org_id: orgId,
-        provider_kind: claimed.run.provider_kind,
+        provider_kind: claimed.run.provider_kind === 'app_runtime' ? 'app_runtime' : 'mcp',
         provider_instance_id: claimed.run.provider_instance_id,
         operation_name: claimed.run.operation_name,
         origin_kind: claimed.run.origin_kind,
@@ -985,7 +997,9 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     return this.repository.transaction(async (tx) => {
       let run = await this.repository.lockRun(tx, orgId, runId);
       if (!run || (runtime ? run.provider_kind !== 'app_runtime'
-        : run.provider_kind !== 'mcp')) return null;
+        : !['mcp', 'native'].includes(run.provider_kind))) return null;
+      if (run.provider_kind === 'native') await tx.execute(sql`SELECT id FROM app_run_attempts
+        WHERE org_id = ${orgId} AND run_id = ${runId} AND id = ${attemptId} FOR UPDATE`);
       const runtimeAuthority = runtime ? await loadLiveRuntimeAuthority(
         tx, orgId, runtime.session_id, runtime.token_hash, this.now, runId) : null;
       if (runtime && (!runtimeAuthority
@@ -1051,6 +1065,62 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       });
       return { run, attempt: claimed };
     });
+  }
+
+  /** Provider start, native effect, retained result and signed receipt commit together.
+   * A transport failure may have lost COMMIT's response: no effect retry occurs
+   * here; redelivery observes the original Run and retained exact result. */
+  async #executeNativeAtomic(claimed: ClaimedAttempt, signal?: AbortSignal): Promise<void> {
+    await nativeExecutionTransaction(async tx => {
+      let run = await this.repository.lockRun(tx, claimed.run.org_id, claimed.run.id);
+      if (!run || run.provider_kind !== 'native') return;
+      const [attempt] = await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id, run.org_id),
+        eq(appRunAttempts.run_id, run.id), eq(appRunAttempts.id, claimed.attempt.id))).limit(1).for('update');
+      if (!attempt || attempt.state !== 'claimed' || attempt.claim_token !== claimed.attempt.claim_token
+        || !attempt.lease_expires_at || attempt.lease_expires_at <= this.now()
+        || !run.execution_released_at || !['pending', 'pending_approval'].includes(run.state) || run.cancel_requested_at
+        || run.input_expires_at <= this.now() || run.result_expires_at <= this.now()) return;
+      const pin = await this.repository.findRuntimeReviewPin(tx, run.org_id, run.id);
+      if (!pin?.origin_native_binding_id) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const authority = pin.origin_public_endpoint_id && pin.origin_public_ingress_id
+        ? await captureReviewedPublicNativeInTransaction(tx, { org_id: run.org_id,
+          endpoint_id: pin.origin_public_endpoint_id, ingress_id: pin.origin_public_ingress_id })
+        : await captureReviewedNativeInTransaction(tx, { org_id: run.org_id,
+          user_id: run.execution_actor_id, native_binding_id: pin.origin_native_binding_id });
+      if (!await this.executionAuthorizer.authorizeExecution({ org_id: run.org_id, run, tx, stage: 'provider_call', now: this.now() }))
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const input = await this.secretRepository.readInput(run.org_id, run.id, tx);
+      if (!isAppNativeCalendarEnabled() || signal?.aborted || attempt.lease_expires_at <= this.now()
+        || run.input_expires_at <= this.now()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const now = this.now();
+      await tx.update(appRunAttempts).set({ state: 'provider_call_started', provider_call_started_at: now, updated_at: now })
+        .where(and(eq(appRunAttempts.org_id, run.org_id), eq(appRunAttempts.id, attempt.id), eq(appRunAttempts.claim_token, attempt.claim_token!)));
+      run = await this.repository.transition(tx, { run, state: 'running', now });
+      await this.repository.appendEvent(tx, { id: crypto.randomUUID(), org_id: run.org_id, run_id: run.id,
+        event_type: 'provider_call_started', payload: { attempt_id: attempt.id }, now });
+      const output = await executeNativeCalendarInTransaction(tx, { run, authority, input,
+        secretRepository: this.secretRepository, secrets: this.secrets, now: this.now });
+      const envelope = AppRunRetainedProviderResultSchema.parse({ schema_version: APP_RUN_CONTRACT_VERSIONS.provider_result,
+        provider_succeeded: true, output });
+      assertAppRunOutputWithinBudget(envelope);
+      await this.secretRepository.insertOutput(tx, { org_id: run.org_id, run_id: run.id, attempt_id: attempt.id,
+        value: envelope, expires_at: run.result_expires_at });
+      const outcome = AppRunSafeOutcomeSchema.parse({ success: true, provider_call_attempted: true, result_status: 'retained' });
+      await tx.update(appRunAttempts).set({ provider_call_finished_at: now, safe_outcome: outcome, updated_at: now })
+        .where(and(eq(appRunAttempts.org_id, run.org_id), eq(appRunAttempts.id, attempt.id)));
+      await this.#finalizeKnownInTransaction(tx, run, { ...attempt, provider_call_started_at: now,
+        provider_call_finished_at: now, safe_outcome: outcome }, now);
+      // Mutable human kind and clocks are not protected by the participant/App
+      // locks. Check them after every event, result and receipt write has waited,
+      // without acquiring user locks in reverse order. Failure rolls back the
+      // native effect and its entire terminal ledger together.
+      const finalNow = this.now();
+      if (!isAppNativeCalendarEnabled() || signal?.aborted
+        || attempt.lease_expires_at <= finalNow || run.input_expires_at <= finalNow
+        || run.result_expires_at <= finalNow
+        || !await nativeParticipantsAreHuman(tx, authority.participants))
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    }, signal);
   }
 
   async #createAttempt(

@@ -25,15 +25,20 @@ function canonical(value: unknown): string {
 }
 const digest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
 
+export const nativeCreateIdentity = (orgId: string, userId: string, operation: string, key: string) =>
+  digest([orgId, userId, operation, key]);
+
 /** Call only after current authorization and validation. Identity and create commit together. */
-export async function nativeCreate<T extends { id: string }>(options: {
+export type NativeCreateOptions<T extends { id: string }> = {
   orgId: string; userId: string; operation: string; key?: string; payload: unknown;
   create: (tx: Transaction) => Promise<T>;
   replay: (tx: Transaction, id: string) => Promise<T | undefined>;
-}): Promise<{ value: T; replayed: boolean }> {
-  return db.transaction(async tx => {
+};
+
+/** Compose with the caller's authorization, effect and receipt transaction. */
+export async function nativeCreateWithExecutor<T extends { id: string }>(tx: Transaction, options: NativeCreateOptions<T>): Promise<{ value: T; replayed: boolean }> {
     if (!options.key) return { value: await options.create(tx), replayed: false };
-    const identity = digest([options.orgId, options.userId, options.operation, options.key]);
+    const identity = nativeCreateIdentity(options.orgId, options.userId, options.operation, options.key);
     const requestHash = digest(options.payload);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`native-create:${identity}`}, 0))`);
     const [prior] = await tx.select().from(nativeCreateRequests).where(eq(nativeCreateRequests.id, identity)).limit(1);
@@ -46,5 +51,9 @@ export async function nativeCreate<T extends { id: string }>(options: {
     const value = await options.create(tx);
     await tx.insert(nativeCreateRequests).values({ id: identity, org_id: options.orgId, user_id: options.userId, operation: options.operation, request_hash: requestHash, resource_id: value.id });
     return { value, replayed: false };
-  });
+}
+
+/** Call only after current authorization and validation. Identity and create commit together. */
+export async function nativeCreate<T extends { id: string }>(options: NativeCreateOptions<T>): Promise<{ value: T; replayed: boolean }> {
+  return db.transaction(tx => nativeCreateWithExecutor(tx, options));
 }

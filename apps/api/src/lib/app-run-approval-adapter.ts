@@ -117,18 +117,23 @@ export class PostgresAppRunApprovalResolver {
   async approve(
     actionId: string,
     approverUserId: string,
+    finalGuard?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunApprovalResolution> {
     const result = await db.transaction(async (tx): Promise<AppRunApprovalResolution> => {
+      const resolve = async (): Promise<AppRunApprovalResolution> => {
       const action = await this.#lockAction(tx, actionId);
       if (!action?.app_run_id || action.action !== APP_RUN_APPROVAL_ACTION) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
-      if (run.initiating_actor_type === 'app_public' && action.user_id !== approverUserId) {
+      if ((run.initiating_actor_type === 'app_public' || run.provider_kind === 'native') && action.user_id !== approverUserId) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
 
+      if (run.provider_kind === 'native' && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
+        return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
+      }
       if (run.execution_release_kind === 'approved') {
         await this.#markApproved(tx, action.id, approverUserId, run);
         await this.#writeApprovalReceipt(
@@ -208,6 +213,10 @@ export class PostgresAppRunApprovalResolver {
       );
       await this.attemptScheduler.scheduleInTransaction(tx, run, approvalNow);
       return { status: 'approved', result: this.#safeResult(run, true) };
+      };
+      const resolved = await resolve();
+      await finalGuard?.(tx);
+      return resolved;
     });
     await this.#resolveApprovalAttention(actionId, approverUserId);
     return result;

@@ -3,7 +3,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appModuleBindings, moduleInstallations, auditLog } from '@deft/db/schema';
 import { parseRuntimeAppManifest, parseResourceAppManifest, RUNTIME_ACTION_HOST_POLICY, AppDigestSchema,
-  type RuntimeAppManifest, type DeftAppManifestV5, type DeftAppPackage } from '@deft/app-kit';
+  RuntimePrivateCapabilitySchema, type RuntimeAppManifest, type DeftAppManifestV5, type DeftAppManifestV6, type DeftAppPackage } from '@deft/app-kit';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
@@ -36,9 +36,9 @@ export const RuntimeAppReviewContextSchema = z.strictObject({
   current_activation: z.strictObject({ grant_snapshot_id: z.string(), review_digest: AppDigestSchema }).nullable(),
 });
 
-export function runtimeActionDescriptors(manifest: Pick<RuntimeAppManifest, 'runtime_actions' | 'private_capabilities'>) {
+export function runtimeActionDescriptors(manifest: Pick<RuntimeAppManifest | DeftAppManifestV6, 'runtime_actions' | 'private_capabilities'>) {
   return manifest.runtime_actions.map((action) => {
-    const capability = manifest.private_capabilities.find((item) => item.key === action.capability_key)!;
+    const capability = RuntimePrivateCapabilitySchema.parse(manifest.private_capabilities.find((item) => item.key === action.capability_key));
     const identity = { namespace: 'app_lineage' as const, key: capability.key, version: capability.version };
     return { action_key: action.key, runtime_requirement_key: action.runtime_requirement_key,
       interface: identity, operation_name: action.key,
@@ -251,12 +251,20 @@ export async function loadReviewedRuntimeAction(tx: Executor, orgId: string, ins
     || !installation.active_grant_snapshot_id || installation.active_grant_snapshot_kind !== 'effective') throw stale();
   const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, orgId),
     eq(appVersions.installation_id, installationId), eq(appVersions.id, installation.active_version_id),
-    eq(appVersions.state, 'active'), inArray(appVersions.protocol_version, ['3', '4', '5']))).limit(1).for('share');
+    eq(appVersions.state, 'active'), inArray(appVersions.protocol_version, ['3', '4', '5', '6']))).limit(1).for('share');
   const [grant] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, orgId),
     eq(appGrantSnapshots.app_installation_id, installationId), eq(appGrantSnapshots.id, installation.active_grant_snapshot_id),
     eq(appGrantSnapshots.snapshot_kind, 'effective'))).limit(1);
   if (!version || !grant || grant.app_version_id !== version.id
     || digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) throw stale();
+  if (version.protocol_version === '6') {
+    if (!isAppV5RuntimeActionsEnabled()) throw stale();
+    const { loadReviewedNativeApp } = await import('./app-native-authority.js');
+    const native = await loadReviewedNativeApp(tx, orgId, installationId);
+    const action = runtimeActionDescriptors(native.manifest).find(item => item.action_key === actionKey);
+    if (!action) throw stale();
+    return { installation: native.installation, version: native.version, grant: native.grant, action };
+  }
   if (version.protocol_version === '5' && !isAppV5RuntimeActionsEnabled()) throw stale();
   const manifest = version.protocol_version === '5'
     ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);

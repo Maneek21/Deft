@@ -8,6 +8,7 @@ import {
   auditLog,
   moduleInstallations,
   users,
+  appNativeBindings,
 } from '@deft/db/schema';
 import {
   isDeftAppProtocolOperationSupported,
@@ -34,6 +35,7 @@ import { AppError } from './app-errors.js';
 import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service.js';
 import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
 import type { RuntimeAppReviewOptions } from './app-runtime-review.js';
+import { isAppNativeCalendarEnabled } from './env.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -211,9 +213,13 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
 export async function stageAppPackage(
   actor: ModuleActor,
   packageJson: string,
+  options: { guard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void> } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
+  if (inspected.manifest.schema_version === '6' && !isAppNativeCalendarEnabled()) {
+    throw new AppError('Native Calendar unavailable', 'APP_FEATURE_DISABLED', 503);
+  }
   assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
   const identity = { type: actor.kind, id: actor.actor_id };
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
@@ -278,6 +284,12 @@ export async function stageAppPackage(
       package_digest: version.package_digest,
       permissions: [],
     });
+    if (inspected.manifest.schema_version === '6') {
+      await options.guard?.(tx);
+      const [human] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, actor.actor_id)).limit(1);
+      if (human?.kind !== 'human') throw new AppError('Current human manager required', 'APP_ACCESS_DENIED', 403);
+      if (!isAppNativeCalendarEnabled()) throw new AppError('Native Calendar unavailable', 'APP_FEATURE_DISABLED', 503);
+    }
     return { installation, version };
   });
   emitAppChange(actor.org_id, { change: 'staged', installation_id: created.installation.id });
@@ -502,6 +514,9 @@ export async function disableAppInstallation(
         eq(moduleInstallations.id, binding.module_installation_id),
       ));
     }
+    if (version.protocol_version === '6') await tx.update(appNativeBindings).set({ state: 'revoked' }).where(and(
+      eq(appNativeBindings.org_id, actor.org_id), eq(appNativeBindings.app_installation_id, installation.id),
+      inArray(appNativeBindings.state, ['staged', 'active'])));
     const [updated] = await tx.update(appInstallations).set({
       state: 'disabled',
       lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,

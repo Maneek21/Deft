@@ -40,8 +40,10 @@ import {
 } from '../lib/app-automation-management-service.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { appHttpFailure } from './app-http-errors.js';
+import { appNativeRoutes } from './app-native.js';
 
 export const appRoutes = new Hono();
+appRoutes.route('/native', appNativeRoutes);
 
 const IdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const activateSchema = z.strictObject({ expected_package_digest: AppDigestSchema });
@@ -178,7 +180,16 @@ appRoutes.post('/pairings/:pairingId/revoke', async (c) => {
 
 appRoutes.post('/stage', async (c) => {
   try {
-    return c.json({ app: await stageAppPackage(managerFromContext(c), await boundedPackageBody(c)) }, 201);
+    const packageJson = await boundedPackageBody(c);
+    let native = false;
+    try { native = (JSON.parse(packageJson) as { manifest?: { schema_version?: string } })?.manifest?.schema_version === '6'; } catch { /* The package parser owns invalid-package errors. */ }
+    if (native) {
+      const user = c.get('user') as AuthUser;
+      if (!user.sid) throw new ResourceSyncWebAuthenticationError('Web authentication required');
+      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
+      return c.json({ app: await stageAppPackage(actor, packageJson, { guard }) }, 201);
+    }
+    return c.json({ app: await stageAppPackage(managerFromContext(c), packageJson) }, 201);
   } catch (error) {
     return failure(c, error);
   }

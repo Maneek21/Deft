@@ -1,3 +1,4 @@
+import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { Hono } from 'hono';
 import {
   authorizedDurableAgentResult,
@@ -19,6 +20,7 @@ import { eq, and, asc, desc, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
+  appRuns,
   agentActionApprovers,
   agentMemory,
   agentEmployees,
@@ -1725,7 +1727,34 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   // boundary. Legacy Defty actions (create_task/update_task_status/…) still
   // use the original executeAction path.
   if (isApprovalResolverAction(action.action)) {
-    const result = await resolveApproveAction(actionId, user.id);
+    let nativeGuard: ((tx: AppRunTransaction) => Promise<void>) | undefined;
+    if (action.app_run_id) {
+      const [run] = await db.select({ provider_kind: appRuns.provider_kind }).from(appRuns)
+        .where(and(eq(appRuns.org_id, user.org_id), eq(appRuns.id, action.app_run_id))).limit(1);
+      if (run?.provider_kind === 'native') {
+        try {
+          const { assertNativeCalendarEnabled, nativeParticipantsAreHuman } = await import('../lib/app-native-authority.js');
+          const { resourceSyncWebAuthority } = await import('../lib/app-resource-sync-web-authority.js');
+          assertNativeCalendarEnabled();
+          if (!user.sid) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+          const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
+          nativeGuard = async tx => {
+            await guard(tx);
+            assertNativeCalendarEnabled();
+            if (!await nativeParticipantsAreHuman(tx, [user.id])) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+          };
+        } catch (error) {
+          if (error && typeof error === 'object' && 'status' in error && 'code' in error
+            && typeof error.status === 'number' && [400, 401, 403, 409, 503].includes(error.status)) {
+            return c.json({ error: 'Native Calendar approval unavailable', code: String(error.code) }, error.status as 400 | 401 | 403 | 409 | 503);
+          }
+          return appHttpFailure(c, error, 'App Run', 'app-runs');
+        }
+      }
+    }
+    let result: Awaited<ReturnType<typeof resolveApproveAction>>;
+    try { result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard }); }
+    catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
     if (result.status === 'error') {
       const statusCode =
         result.code === 'NOT_FOUND' ? 404

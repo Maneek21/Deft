@@ -1,3 +1,6 @@
+import { parseNativeCalendarInput, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
+import { isAppNativeCalendarEnabled } from './env.js';
+import type { ReviewedNativeCapture, ReviewedPublicNativeCapture } from './app-native-run-authorization.js';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import {
@@ -123,6 +126,12 @@ export interface AppRunPreparedAppAuthorizer {
     org_id: string;
     run: AppRunSafeView;
   }>): Promise<boolean>;
+  captureReviewedNativeInTransaction?(tx: AppRunTransaction, input: Readonly<{
+    org_id: string; user_id: string; native_binding_id: string;
+  }>): Promise<ReviewedNativeCapture>;
+  captureReviewedPublicNativeInTransaction?(tx: AppRunTransaction, input: Readonly<{
+    org_id: string; endpoint_id: string; ingress_id: string; capture_input?: boolean;
+  }>): Promise<ReviewedPublicNativeCapture>;
   captureReviewedRuntimeForPreparation?(input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
   }>): Promise<ReviewedRuntimeCapture>;
@@ -289,6 +298,7 @@ export function appRunReplayAuthorityMatches(
     origin_app_version_id: string | null;
     origin_app_binding_key: string | null;
     origin_runtime_binding_id?: string | null;
+    origin_native_binding_id?: string | null;
     origin_public_endpoint_id?: string | null;
     origin_public_ingress_id?: string | null;
     origin_app_grant_snapshot_id: string | null;
@@ -315,6 +325,7 @@ export function appRunReplayAuthorityMatches(
     || replay.origin_app_version_id !== submission.origin.app_version_id
     || replay.origin_app_binding_key !== actionBindingKey
     || (replay.origin_runtime_binding_id ?? null) !== runtimeBindingId
+    || (replay.origin_native_binding_id ?? null) !== ('native_binding_id' in submission.origin ? submission.origin.native_binding_id : null)
     || (replay.origin_public_endpoint_id ?? null) !== publicEndpointId
     || (replay.origin_public_ingress_id ?? null) !== publicIngressId
     || replay.origin_app_grant_snapshot_id !== submission.origin.grant_snapshot_id
@@ -451,6 +462,102 @@ export class AppRunService {
 
   /** Host-only human intake for one reviewed Runtime binding. The request
    * supplies no provider, policy, origin ancestry, approval or actor facts. */
+  /** Owner-directed invocation. The binding and every authority pin are host-derived. */
+  async submitReviewedNative(caller: ReviewedRuntimeCaller, request: Readonly<{
+    native_binding_id: string; expected_consent_digest: string; idempotency_key: string; input: unknown;
+  }>, guard?: (tx: AppRunTransaction) => Promise<void>): Promise<AppRunSafeView> {
+    if (!this.appOriginEnabled() || !isAppNativeCalendarEnabled()
+      || !this.appLiveAuthorization?.captureReviewedNativeInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const submitted = await this.repository.transaction(async tx => {
+      const capture = await this.appLiveAuthorization!.captureReviewedNativeInTransaction!(tx, {
+        org_id: caller.org_id, user_id: caller.user_id, native_binding_id: request.native_binding_id });
+      if (capture.binding.consent_digest !== request.expected_consent_digest) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      let input;
+      try { input = parseNativeCalendarInput(capture.action.operation, request.input); }
+      catch { throw new AppRunError('APP_RUN_INPUT_INVALID'); }
+      const actor: AppRunActor = { actor_type: 'human', user_id: caller.user_id };
+      const submission = this.#nativeSubmission(capture, actor, input, request.idempotency_key);
+      const run = await this.#submit({ org_id: caller.org_id, initiating_actor: actor, execution_actor: actor },
+        submission, null, undefined, undefined, undefined, undefined, tx, undefined, capture);
+      if (guard) await guard(tx);
+      if (!isAppNativeCalendarEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      return run;
+    });
+    if (submitted.state === 'pending_approval') await this.attention.projectApprovalRequested(submitted.org_id, submitted.id);
+    return submitted;
+  }
+
+  /** Scoped locator only; public input is captured once from the claimed revision. */
+  async submitReviewedPublicNativeInTransaction(tx: AppRunTransaction, identity: Readonly<{
+    org_id: string; endpoint_id: string; ingress_id: string;
+  }>): Promise<AppRunSafeView> {
+    if (!this.appOriginEnabled() || !isAppNativeCalendarEnabled()
+      || !this.appLiveAuthorization?.captureReviewedPublicNativeInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+      ${`app-public-ingress:${identity.org_id}:${identity.ingress_id}`}, 0))`);
+    const capture = await this.appLiveAuthorization.captureReviewedPublicNativeInTransaction(tx, { ...identity, capture_input: true });
+    if (!capture.public_input) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    const actor: AppRunActor = { actor_type: 'app_public', endpoint_id: capture.endpoint.id, ingress_id: capture.ingress.id };
+    const executor: AppRunActor = { actor_type: 'human', user_id: capture.binding.owner_user_id };
+    const submission = this.#nativeSubmission(capture, actor, capture.public_input, `app-public-ingress:${capture.ingress.id}`);
+    return this.#submit({ org_id: identity.org_id, initiating_actor: actor, execution_actor: executor }, submission,
+      null, undefined, undefined, undefined, undefined, tx, undefined, capture);
+  }
+
+  #nativeSubmission(capture: ReviewedNativeCapture | ReviewedPublicNativeCapture, actor: AppRunActor,
+    input: unknown, idempotency_key: string) {
+    const { binding } = capture;
+    const publicOrigin = 'endpoint' in capture ? { public_endpoint_id: capture.endpoint.id, public_ingress_id: capture.ingress.id } : {};
+    return {
+      schema_version: APP_RUN_CONTRACT_VERSIONS.run, org_id: binding.org_id, initiating_actor: actor,
+      execution_actor: { actor_type: 'human' as const, user_id: binding.owner_user_id },
+      origin: { origin_kind: 'app' as const, installation_id: binding.app_installation_id, app_version_id: binding.app_version_id,
+        grant_snapshot_id: binding.grant_snapshot_id, native_binding_id: binding.id, ...publicOrigin },
+      operation: { provider: { org_id: binding.org_id, provider_kind: 'native' as const, provider_instance_id: binding.provider_instance_id },
+        operation_name: binding.operation_name }, provider_snapshot_digest: capture.provider_snapshot_digest,
+      policy: { risk_class: NATIVE_ACTION_HOST_POLICY.risk_class, review_requirement: NATIVE_ACTION_HOST_POLICY.review_requirement,
+        review_scope: NATIVE_ACTION_HOST_POLICY.review_scope, retry_class: NATIVE_ACTION_HOST_POLICY.retry_class },
+      retention_class: NATIVE_ACTION_HOST_POLICY.retention_class, idempotency_key, input,
+      authorization_snapshot: capture.authorization_snapshot,
+      safe_preview: AppRunSafePreviewSchema.parse({ schema_version: APP_RUN_CONTRACT_VERSIONS.run,
+        title: capture.action.label, summary: 'One native Calendar action requiring owner approval.', resource_refs: [],
+        fields: { provider_kind: 'native', operation_name: binding.operation_name,
+          action_key: binding.action_key, native_binding_id: binding.id } }),
+    };
+  }
+
+  /** The owner sees the retained exact input, never newly projected record fields. */
+  async reviewNativeInput(caller: ReviewedRuntimeCaller, runId: string, guard?: (tx: AppRunTransaction) => Promise<void>) {
+    if (!this.appOriginEnabled() || !isAppNativeCalendarEnabled()
+      || !this.appLiveAuthorization?.captureReviewedNativeInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    return this.repository.transaction(async tx => {
+      const run = await this.repository.lockRun(tx, caller.org_id, runId);
+      const pin = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+      if (!run || !pin || run.provider_kind !== 'native' || run.origin_kind !== 'app'
+        || run.execution_actor_type !== 'human' || run.execution_actor_id !== caller.user_id
+        || run.state !== 'pending_approval' || run.input_expires_at <= this.now() || !pin.origin_native_binding_id)
+        throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const current = pin.origin_public_endpoint_id && pin.origin_public_ingress_id
+        ? await this.appLiveAuthorization!.captureReviewedPublicNativeInTransaction!(tx, { org_id: caller.org_id,
+          endpoint_id: pin.origin_public_endpoint_id, ingress_id: pin.origin_public_ingress_id })
+        : await this.appLiveAuthorization!.captureReviewedNativeInTransaction!(tx, { org_id: caller.org_id,
+          user_id: caller.user_id, native_binding_id: pin.origin_native_binding_id });
+      if (current.binding.id !== pin.origin_native_binding_id || current.binding.owner_user_id !== caller.user_id
+        || current.binding.app_installation_id !== pin.origin_app_installation_id || current.binding.app_version_id !== pin.origin_app_version_id
+        || current.binding.grant_snapshot_id !== pin.origin_app_grant_snapshot_id || current.binding.provider_snapshot_id !== pin.provider_snapshot_id
+        || current.binding.operation_name !== pin.operation_name || current.binding.provider_instance_id !== pin.provider_instance_id
+        || canonicalAuthorization(current.authorization_snapshot) !== canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot))
+        || !await this.repository.hasPendingRuntimeApproval(tx, caller.org_id, runId, caller.user_id)) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      const input = parseNativeCalendarInput(current.action.operation, await this.secretRepository.readInput(caller.org_id, runId, tx));
+      if (guard) await guard(tx);
+      if (!isAppNativeCalendarEnabled() || run.input_expires_at <= this.now()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      return { schema_version: 'deft.app_native_run_review.v1' as const, run_id: runId,
+        operation_name: current.action.operation, owner_user_id: caller.user_id, action_label: current.action.label,
+        native_binding_id: current.binding.id, consent_digest: current.binding.consent_digest,
+        host_policy: NATIVE_ACTION_HOST_POLICY, input };
+    });
+  }
+
   async submitReviewedRuntime(
     caller: ReviewedRuntimeCaller,
     request: ReviewedRuntimeInvoke,
@@ -793,6 +900,7 @@ export class AppRunService {
     trustedPublicCapture?: ReviewedPublicRuntimeCapture,
     existingTx?: AppRunTransaction,
     hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
+    trustedNativeCapture?: ReviewedNativeCapture | ReviewedPublicNativeCapture,
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -805,21 +913,23 @@ export class AppRunService {
       || !sameActor(context.initiating_actor, submission.initiating_actor)
       || !sameActor(context.execution_actor, submission.execution_actor)
       || !sameActor(context.initiating_actor, submission.authorization_snapshot.authenticated_subject)
-      || (submission.origin.origin_kind === 'app' && !trustedAppVector && !trustedRuntimeCapture && !trustedPublicCapture)
+      || (submission.origin.origin_kind === 'app' && !trustedAppVector && !trustedRuntimeCapture && !trustedPublicCapture && !trustedNativeCapture)
       || (submission.origin.origin_kind !== 'app'
-        && (trustedAppVector !== undefined || trustedRuntimeCapture !== undefined || trustedPublicCapture !== undefined))
-      || [trustedAppVector, trustedRuntimeCapture, trustedPublicCapture].filter(Boolean).length > 1
+        && (trustedAppVector !== undefined || trustedRuntimeCapture !== undefined || trustedPublicCapture !== undefined || trustedNativeCapture !== undefined))
+      || [trustedAppVector, trustedRuntimeCapture, trustedPublicCapture, trustedNativeCapture].filter(Boolean).length > 1
       || (submission.origin.origin_kind === 'app' && 'runtime_binding_id' in submission.origin
         && !trustedRuntimeCapture && !trustedPublicCapture)
       || (submission.origin.origin_kind === 'app' && 'binding_key' in submission.origin
         && !trustedAppVector)
       || (submission.origin.origin_kind === 'app' && 'public_endpoint_id' in submission.origin
-        && !trustedPublicCapture)
+        && !trustedPublicCapture && !(trustedNativeCapture && 'endpoint' in trustedNativeCapture))
+      || (submission.origin.origin_kind === 'app' && 'native_binding_id' in submission.origin && !trustedNativeCapture)
+      || (trustedNativeCapture !== undefined && (submission.origin.origin_kind !== 'app' || !('native_binding_id' in submission.origin)))
       || (trustedPublicCapture !== undefined && (submission.origin.origin_kind !== 'app'
         || !('public_endpoint_id' in submission.origin)
         || submission.initiating_actor.actor_type !== 'app_public'
         || submission.execution_actor.actor_type !== 'human'))
-      || (!trustedAppVector && !trustedRuntimeCapture && !trustedPublicCapture && submission.authorization_snapshot.authority_refs.some(
+      || (!trustedAppVector && !trustedRuntimeCapture && !trustedPublicCapture && !trustedNativeCapture && submission.authorization_snapshot.authority_refs.some(
         (ref) => APP_AUTHORITY_KINDS.has(ref.authority_kind),
       ))
       || (submission.origin.origin_kind === 'legacy_connector'
@@ -942,6 +1052,29 @@ export class AppRunService {
           || live.provider_snapshot_digest !== submission.provider_snapshot_digest
           || !matchingInput) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       }
+      if (trustedNativeCapture) {
+        if (submission.origin.origin_kind !== 'app' || !('native_binding_id' in submission.origin)
+          || submission.execution_actor.actor_type !== 'human') throw new AppRunError('APP_RUN_ACCESS_DENIED');
+        const live = 'endpoint' in trustedNativeCapture
+          ? await this.appLiveAuthorization!.captureReviewedPublicNativeInTransaction!(tx, {
+            org_id: submission.org_id, endpoint_id: trustedNativeCapture.endpoint.id,
+            ingress_id: trustedNativeCapture.ingress.id })
+          : await this.appLiveAuthorization!.captureReviewedNativeInTransaction!(tx, {
+            org_id: submission.org_id, user_id: submission.execution_actor.user_id,
+            native_binding_id: submission.origin.native_binding_id });
+        const binding = live.binding;
+        let validInput = false;
+        try { validInput = canonicalCapabilityJson(parseNativeCalendarInput(live.action.operation, submission.input))
+          === canonicalCapabilityJson(submission.input); } catch { /* Deny changed contract or malformed input. */ }
+        if (!isAppNativeCalendarEnabled() || canonicalAuthorization(live.authorization_snapshot) !== canonicalAuthorization(submission.authorization_snapshot)
+          || binding.id !== submission.origin.native_binding_id || binding.owner_user_id !== submission.execution_actor.user_id
+          || binding.app_installation_id !== submission.origin.installation_id || binding.app_version_id !== submission.origin.app_version_id
+          || binding.grant_snapshot_id !== submission.origin.grant_snapshot_id || binding.provider_instance_id !== submission.operation.provider.provider_instance_id
+          || binding.operation_name !== submission.operation.operation_name || live.provider_snapshot_digest !== submission.provider_snapshot_digest
+          || canonicalCapabilityJson(submission.policy) !== canonicalCapabilityJson({ risk_class: 'internal_write', review_requirement: 'always',
+            review_scope: 'per_invocation', retry_class: 'idempotent_with_key' }) || submission.retention_class !== 'standard'
+          || !validInput) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
       const replay = await this.repository.findReplay(
         tx,
         submission,
@@ -967,6 +1100,7 @@ export class AppRunService {
           origin_app_version_id: _appVersion,
           origin_app_binding_key: _binding,
           origin_runtime_binding_id: _runtimeBinding,
+          origin_native_binding_id: _nativeBinding,
           origin_public_endpoint_id: _publicEndpoint,
           origin_public_ingress_id: _publicIngress,
           origin_app_grant_snapshot_id: _grant,
@@ -1007,7 +1141,7 @@ export class AppRunService {
         input_expires_at: boundedInputExpiry,
         result_expires_at: boundedResultExpiry,
         idempotency_expires_at: boundedIdempotencyExpiry,
-        attempt_limit: lineage
+        attempt_limit: trustedNativeCapture ? 1 : lineage
           ? Math.min(APP_RUN_DEFAULT_ATTEMPT_LIMIT, lineage.parent.attempt_limit)
           : APP_RUN_DEFAULT_ATTEMPT_LIMIT,
         lineage: lineageInsert,
