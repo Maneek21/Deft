@@ -36,6 +36,7 @@ import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service
 import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
 import type { RuntimeAppReviewOptions } from './app-runtime-review.js';
 import { isAppNativeCalendarEnabled } from './env.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -285,10 +286,9 @@ export async function stageAppPackage(
       permissions: [],
     });
     if (inspected.manifest.schema_version === '6') {
-      await options.guard?.(tx);
-      const [human] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, actor.actor_id)).limit(1);
-      if (human?.kind !== 'human') throw new AppError('Current human manager required', 'APP_ACCESS_DENIED', 403);
-      if (!isAppNativeCalendarEnabled()) throw new AppError('Native Calendar unavailable', 'APP_FEATURE_DISABLED', 503);
+      if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) {
+        throw new AppError('Current native manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
     }
     return { installation, version };
   });

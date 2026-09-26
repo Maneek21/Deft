@@ -16,7 +16,7 @@ after(async () => {
   server?.closeAllConnections(); if (server) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
   if (safe) { await (await import('../src/lib/app-run-runtime.js')).shutdownAppRunRuntime(); await (await import('../src/lib/db.js')).closeDb(); }
 });
-async function fixture() {
+async function fixture(options: { experience?: boolean } = {}) {
   const [{ db }, schema, orm, kit, web, { Hono }, { authMiddleware }, { appRoutes }, { agentRoutes }, { appRunRoutes }, { serve }] = await Promise.all([
     import('../src/lib/db.js'), import('@deft/db/schema'), import('drizzle-orm'), import('@deft/app-kit'), import('../src/lib/web-sessions.js'),
     import('hono'), import('../src/middleware/auth.js'), import('../src/routes/apps.js'), import('../src/routes/agent.js'),
@@ -41,15 +41,19 @@ async function fixture() {
       ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
     return { status: response.status, body: await response.json() as any };
   };
+  const artifact = options.experience ? await kit.prepareDeftExperienceArtifact('experiences/main.json', {
+    schema_version: 'deft.experience_bundle.v1', worker_source: 'self.onmessage=()=>{};', entry_view: 'main', resource_keys: [], action_keys: ['create_event'],
+  }) : undefined;
   const manifest = { schema_version: '6' as const, id: `community.example.native.a${suffix}`, version: '1.0.0', name: 'Native Calendar',
     license: 'AGPL-3.0-only', compatibility: { app_protocol: '6' as const }, modules: [], navigation: [], runtime_requirements: [],
-    runtime_actions: [], sync_descriptors: [], experiences: [], public_actions: [],
+    runtime_actions: [], sync_descriptors: [], experiences: artifact ? [{ key: 'main', label: 'Calendar', artifact_path: artifact.path,
+      artifact_digest: artifact.digest, bridge_version: kit.DEFT_EXPERIENCE_BRIDGE_VERSION, renderer_version: kit.DEFT_EXPERIENCE_RENDERER_VERSION }] : [], public_actions: [],
     private_capabilities: ['create', 'cancel'].map(name => ({ key: `calendar_${name}`, version: '1',
       ...kit.NATIVE_CALENDAR_CONTRACTS[`calendar.events.${name}.v1` as keyof typeof kit.NATIVE_CALENDAR_CONTRACTS] })),
     native_actions: ['create', 'cancel'].map(name => ({ key: `${name}_event`, label: `${name} Calendar event`,
       capability_key: `calendar_${name}`, operation: `calendar.events.${name}.v1` })),
   };
-  const pkg = await kit.buildDeftAppPackage({ manifest, artifacts: [] });
+  const pkg = await kit.buildDeftAppPackage({ manifest, artifacts: artifact ? [artifact] : [] });
   const staged = await call('/api/apps/stage', JSON.parse(pkg.json)); assert.equal(staged.status, 201, JSON.stringify(staged.body));
   const installed = staged.body.app, path = `/api/apps/native/app/${installed.id}`;
   const context = await call(`${path}/context?app_version_id=${installed.version_id}`); assert.equal(context.status, 200, JSON.stringify(context.body));
@@ -300,4 +304,60 @@ test('native final human read wait preserves exact executed SID deadline under a
     assert.equal(await pending, false);
     assert.equal((await h.db.select().from(h.schema.appRuns).where(h.eq(h.schema.appRuns.org_id, h.org))).length, 0);
   });
+});
+
+test('native App stage manager kind withdrawal during final SID wait rolls back all staged authority', { skip: !safe }, async () => {
+  const h = await fixture();
+  const manifest = { ...h.manifest, id: `community.example.native.stage${randomUUID().replaceAll('-', '')}` };
+  const pkg = await h.kit.buildDeftAppPackage({ manifest, artifacts: [] });
+  const [session] = await h.db.select().from(h.schema.webSessions).where(h.eq(h.schema.webSessions.user_id, h.manager)); assert.ok(session);
+  const { default: pg } = await import('pg'); const blocker = new pg.Client({ connectionString: target }); await blocker.connect();
+  const observer = new pg.Client({ connectionString: target }); await observer.connect(); let pending: ReturnType<Harness['call']> | undefined;
+  try {
+    await blocker.query('BEGIN'); await blocker.query('SELECT id FROM web_sessions WHERE id=$1 FOR UPDATE', [session.id]);
+    const { rows: [pid] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    pending = h.call('/api/apps/stage', JSON.parse(pkg.json));
+    let waited = false;
+    for (let i = 0; i < 300; i++) {
+      const { rows: [row] } = await observer.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))', [pid.id]);
+      if (row.n) { waited = true; break; } await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.ok(waited, 'real final staging SID row wait must be observed');
+    await observer.query('UPDATE users SET is_agent=true WHERE id=$1', [h.manager]); await blocker.query('COMMIT');
+    assert.notEqual((await pending).status, 201);
+    assert.equal((await h.db.select().from(h.schema.appInstallations).where(h.and(h.eq(h.schema.appInstallations.org_id, h.org), h.eq(h.schema.appInstallations.app_id, manifest.id)))).length, 0);
+  } finally { await blocker.query('ROLLBACK'); await pending?.catch(() => {}); await blocker.end(); await observer.end(); }
+});
+
+test('native Experience action retains the verified session deadline through its final Run guard', { skip: !safe }, async () => {
+  const h = await fixture({ experience: true }), binding = await h.consent(await h.stageBinding('create'));
+  const opened = await h.call(`/api/app-experiences/${h.installed.id}/main/sessions`, {}, h.ownerWeb.accessToken);
+  assert.equal(opened.status, 200, JSON.stringify(opened.body));
+  const sessionId = opened.body.pin.session_id;
+  const [web] = await h.db.select().from(h.schema.webSessions).where(h.eq(h.schema.webSessions.user_id, h.owner)); assert.ok(web);
+  const owner = await (await import('../src/lib/web-sessions.js')).verifyWebAccess(h.ownerWeb.accessToken);
+  const expected = Math.min(web.expires_at.getTime(), new Date(opened.body.expires_at).getTime(), owner.exp * 1000);
+  const runtime = await (await import('../src/lib/app-run-runtime.js')).getAppRunRuntime();
+  const original = runtime.service.submitReviewedNative;
+  let observed = false;
+  // Inspect the actual adapter metadata around its real DB guard; admission,
+  // capsule writes, authority checks and final fence still execute normally.
+  runtime.service.submitReviewedNative = async function(caller, request, guard) {
+    const metadata = guard as typeof guard & { current_web_session_expires_at?: () => Date };
+    assert.ok(metadata?.current_web_session_expires_at);
+    assert.equal(metadata.current_web_session_expires_at().getTime(), 0);
+    const checked = Object.assign(async (tx: Parameters<NonNullable<typeof guard>>[0]) => {
+      await guard!(tx); observed = true;
+      assert.equal(metadata.current_web_session_expires_at!().getTime(), expected);
+    }, { current_web_session_expires_at: metadata.current_web_session_expires_at });
+    return original.call(this, caller, request, checked);
+  };
+  try {
+    const admitted = await h.call(`/api/app-experiences/sessions/${sessionId}/actions/create_event`, { request_id: 'request_1', input }, h.ownerWeb.accessToken);
+    assert.equal(admitted.status, 200, JSON.stringify(admitted.body)); assert.ok(observed);
+    const [persisted] = await h.db.select().from(h.schema.appRuns).where(h.and(h.eq(h.schema.appRuns.org_id, h.org), h.eq(h.schema.appRuns.id, admitted.body.run.id)));
+    assert.equal(persisted!.origin_native_binding_id, binding.binding_id);
+    const review = await h.call(`/api/apps/native/runs/${admitted.body.run.id}/review`, undefined, h.ownerWeb.accessToken);
+    assert.equal(review.status, 200, JSON.stringify(review.body)); assert.deepEqual(review.body.input, input);
+  } finally { runtime.service.submitReviewedNative = original; }
 });

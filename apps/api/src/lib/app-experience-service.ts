@@ -10,6 +10,7 @@ import { AppError } from './app-errors.js';
 import { AppRuntimeActionService, appRuntimeActionService } from './app-runtime-action-service.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled } from './env.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
@@ -138,6 +139,8 @@ export class AppExperienceService {
         lifecycle_epoch: installation.lifecycle_epoch, grant_epoch: installation.grant_epoch,
         created_at: now, expires_at: expiresAt,
       });
+      if (version.protocol_version === '6' && !await nativeFinalAuthorityIsCurrent(tx, [caller.user_id],
+        { expires_at: [expiresAt] })) throw stale();
       return { pin: { org_id: caller.org_id, user_id: caller.user_id,
         app_installation_id: installation.id, app_version_id: version.id,
         grant_snapshot_id: grant.id, lifecycle_epoch: installation.lifecycle_epoch,
@@ -149,7 +152,7 @@ export class AppExperienceService {
     });
   }
 
-  private async lockedLiveContext(tx: Executor, caller: ExperienceCaller, sessionId: string, sessionLock: 'share' | 'update' = 'share') {
+  private async lockedLiveContext(tx: AppRunTransaction, caller: ExperienceCaller, sessionId: string, sessionLock: 'share' | 'update' = 'share') {
     uuid.parse(sessionId);
       const [locator] = await tx.select().from(appExperienceSessions).where(and(
         eq(appExperienceSessions.id, sessionId), eq(appExperienceSessions.org_id, caller.org_id),
@@ -199,7 +202,12 @@ export class AppExperienceService {
       if (web.expires_at <= checkedAt || lockedSession.expires_at <= checkedAt) throw stale();
       if (version.protocol_version === '5' && (!isAppExperienceResourceExposureEnabled()
         || (verified.bundle.action_keys.length > 0 && !isAppV5RuntimeActionsEnabled()))) throw stale();
-      return { session: lockedSession, bundle: verified.bundle, manifest: verified.manifest };
+      const currentAuthorityExpiresAt = new Date(Math.min(web.expires_at.getTime(), lockedSession.expires_at.getTime(),
+        caller.access_expires_at ?? Infinity));
+      if (version.protocol_version === '6' && !await nativeFinalAuthorityIsCurrent(tx, [caller.user_id],
+        { expires_at: [currentAuthorityExpiresAt] })) throw stale();
+      return { session: lockedSession, bundle: verified.bundle, manifest: verified.manifest,
+        current_authority_expires_at: currentAuthorityExpiresAt };
   }
 
   private async liveContext(caller: ExperienceCaller, sessionId: string) {
@@ -213,13 +221,15 @@ export class AppExperienceService {
 
   async revoke(caller: ExperienceCaller, sessionId: string) {
     await db.transaction(async tx => {
-      await this.lockedLiveContext(tx, caller, sessionId, 'update');
+      const current = await this.lockedLiveContext(tx, caller, sessionId, 'update');
       await tx.update(appExperienceSessions).set({ revoked_at: new Date() }).where(and(
       eq(appExperienceSessions.id, sessionId), eq(appExperienceSessions.org_id, caller.org_id),
       eq(appExperienceSessions.user_id, caller.user_id),
       eq(appExperienceSessions.web_session_id, caller.sid),
       isNull(appExperienceSessions.revoked_at),
       ));
+      if (current.manifest.schema_version === '6' && !await nativeFinalAuthorityIsCurrent(tx, [caller.user_id],
+        { expires_at: [current.current_authority_expires_at] })) throw stale();
     });
     return { revoked: true as const };
   }
@@ -235,17 +245,20 @@ export class AppExperienceService {
       eq(appNativeBindings.action_key, actionKey), eq(appNativeBindings.state, 'active'))).limit(1);
     if (nativeBinding) {
       const { getAppRunRuntime } = await import('./app-run-runtime.js');
-      const run = await (await getAppRunRuntime()).service.submitReviewedNative({ org_id: caller.org_id, user_id: caller.user_id }, {
-        native_binding_id: nativeBinding.id, expected_consent_digest: nativeBinding.consent_digest!,
-        idempotency_key: `experience:${session.id}:${request.request_id}`, input: request.input,
-      }, async tx => {
+      let currentAuthorityExpiresAt = new Date(0);
+      const guard = Object.assign(async (tx: AppRunTransaction) => {
         // Native capture has already locked the complete owner/manager set before App.
         const current = await this.lockedLiveContext(tx, caller, sessionId);
         if (current.manifest.schema_version !== '6' || !current.bundle.action_keys.includes(actionKey)
           || !current.manifest.native_actions.some(item => item.key === actionKey)
           || current.session.app_version_id !== nativeBinding.app_version_id
           || current.session.grant_snapshot_id !== nativeBinding.grant_snapshot_id) throw stale();
-      });
+        currentAuthorityExpiresAt = current.current_authority_expires_at;
+      }, { current_web_session_expires_at: () => currentAuthorityExpiresAt });
+      const run = await (await getAppRunRuntime()).service.submitReviewedNative({ org_id: caller.org_id, user_id: caller.user_id }, {
+        native_binding_id: nativeBinding.id, expected_consent_digest: nativeBinding.consent_digest!,
+        idempotency_key: `experience:${session.id}:${request.request_id}`, input: request.input,
+      }, guard);
       await this.liveContext(caller, sessionId);
       return { run };
     }
