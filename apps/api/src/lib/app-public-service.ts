@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { parseRuntimeAppManifest, PublicAvailabilityPolicySchema } from '@deft/app-kit';
+import { parseRuntimeAppManifest, parseNativeAppManifest, PublicAvailabilityPolicySchema } from '@deft/app-kit';
 import {
   AppInstallationAuthoritySchema,
   AppPublicPrincipalSchema,
@@ -31,6 +31,7 @@ import { acquirePublicBudgetAdmission, publicEndpointBudget, reservePublicBudget
   PublicBudgetExceededError, PUBLIC_APP_BUDGET_CEILINGS } from './app-public-budgets.js';
 import { publicAuthenticationPolicy, verifyPublicSignature, acceptPublicSignature, assertPublicSignatureFresh,
   PublicSignatureInvalid, PublicSignatureReplay, PublicSignatureCapacity, type PublicSignedRequest } from './app-public-hmac.js';
+import { validatePublicNativeMapping } from './app-public-native-mapping.js';
 
 type PublicTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Endpoint = typeof appPublicEndpoints.$inferSelect;
@@ -87,7 +88,7 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
   | 'collection_key' | 'endpoint_epoch' | 'public_label' | 'max_body_bytes'>
   & Partial<Pick<Endpoint, 'public_action_key' | 'runtime_binding_id' | 'approver_user_id'
     | 'input_mapping' | 'mapping_digest' | 'availability_policy' | 'budget_policy'
-    | 'authentication_policy' | 'hmac_key_id'>>): string {
+    | 'authentication_policy' | 'hmac_key_id' | 'native_binding_id' | 'native_input_mapping'>>): string {
   const core = {
     review_version: 'deft.app_public_review.v1',
     endpoint_id: endpoint.id,
@@ -105,6 +106,18 @@ export function publicEndpointReviewDigest(endpoint: Pick<Endpoint,
     max_body_bytes: endpoint.max_body_bytes,
   };
   if (!endpoint.public_action_key) return hash(JSON.stringify(core));
+  if (endpoint.native_binding_id) return hash(JSON.stringify({ ...core,
+    review_version: 'deft.app_public_review.v6', public_action_key: endpoint.public_action_key,
+    binding_target: { schema_version: 'deft.app_public_binding_target.v2', kind: 'native',
+      native_binding_id: endpoint.native_binding_id },
+    approver_user_id: endpoint.approver_user_id, native_input_mapping: endpoint.native_input_mapping,
+    mapping_digest: endpoint.mapping_digest,
+    ...(endpoint.availability_policy ? { availability_policy: digestAppGrantValue(endpoint.availability_policy) } : {}),
+    ...(endpoint.budget_policy ? { budget_policy: digestAppGrantValue(endpoint.budget_policy),
+      host_budget_ceilings: PUBLIC_APP_BUDGET_CEILINGS } : {}),
+    ...(endpoint.authentication_policy ? { authentication_policy: digestAppGrantValue(endpoint.authentication_policy),
+      hmac_key_id: endpoint.hmac_key_id } : {}),
+  }));
   return hash(JSON.stringify({ ...core,
     review_version: endpoint.authentication_policy ? 'deft.app_public_review.v5'
       : endpoint.budget_policy ? 'deft.app_public_review.v4'
@@ -152,7 +165,7 @@ function principalFor(endpoint: Endpoint): AppPublicPrincipal {
 }
 
 async function resolveEndpoint(tx: PublicTransaction, slug: string, admission = false): Promise<{
-  endpoint: Endpoint; principal: AppPublicPrincipal; app: AppInstallation;
+  endpoint: Endpoint; principal: AppPublicPrincipal; app: AppInstallation; native_participant_ids: readonly string[];
 }> {
   if (!slugPattern.test(slug)) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
   const slugDigest = hash(slug);
@@ -163,8 +176,19 @@ async function resolveEndpoint(tx: PublicTransaction, slug: string, admission = 
     id: appPublicEndpoints.id,
     org_id: appPublicEndpoints.org_id,
     app_installation_id: appPublicEndpoints.app_installation_id,
+    native_binding_id: appPublicEndpoints.native_binding_id,
   }).from(appPublicEndpoints).where(eq(appPublicEndpoints.slug_digest, slugDigest)).limit(1);
   if (!locator) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+  // Native participants must be collected and locked before any App lock.
+  // The helper owns that prefix; later App SHARE is reentrant. Never discover
+  // a Calendar owner from behind the public admission mutex/endpoint locks.
+  let native: Awaited<ReturnType<typeof import('./app-native-authority.js')['loadLiveNativeAuthority']>> | null = null;
+  if (locator.native_binding_id) {
+    try {
+      const { loadLiveNativeAuthority } = await import('./app-native-authority.js');
+      native = await loadLiveNativeAuthority(tx, { org_id: locator.org_id, native_binding_id: locator.native_binding_id });
+    } catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
+  }
   const [app] = await tx.select().from(appInstallations).where(and(
     eq(appInstallations.org_id, locator.org_id),
     eq(appInstallations.id, locator.app_installation_id),
@@ -177,14 +201,44 @@ async function resolveEndpoint(tx: PublicTransaction, slug: string, admission = 
   )).limit(1).for('share');
   if (!endpoint || endpoint.slug_digest !== slugDigest
     || endpoint.app_installation_id !== app.id || endpoint.state !== 'enabled'
+    || endpoint.native_binding_id !== locator.native_binding_id
     || endpoint.review_digest !== publicEndpointReviewDigest(endpoint)) {
     throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+  }
+  if (native && (endpoint.runtime_binding_id !== null || endpoint.input_mapping !== null
+    || endpoint.native_binding_id !== native.binding.id || endpoint.approver_user_id !== native.binding.owner_user_id
+    || endpoint.app_installation_id !== native.binding.app_installation_id
+    || endpoint.app_version_id !== native.binding.app_version_id
+    || endpoint.grant_snapshot_id !== native.binding.grant_snapshot_id
+    || endpoint.installation_lifecycle_epoch !== native.binding.installation_lifecycle_epoch
+    || endpoint.installation_grant_epoch !== native.binding.installation_grant_epoch)) {
+    throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+  }
+  if (native) {
+    const declaration = native.manifest.public_actions.find(item => item.key === endpoint.public_action_key);
+    if (!declaration || declaration.action_key !== native.action.key
+      || digestAppGrantValue(declaration.input_mapping) !== endpoint.mapping_digest
+      || digestAppGrantValue(endpoint.native_input_mapping) !== endpoint.mapping_digest) {
+      throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+    }
   }
   try { publicEndpointBudget(endpoint.budget_policy); }
   catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
   try { publicAuthenticationPolicy(endpoint); }
   catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
-  return { endpoint, principal: principalFor(endpoint), app };
+  return { endpoint, principal: principalFor(endpoint), app, native_participant_ids: native?.participants ?? [] };
+}
+
+/** Recheck only the already locked native participants after later endpoint,
+ * record, uniqueness or delivery waits. Never discover/lock users behind App. */
+async function assertFinalNativeAuthority(tx: PublicTransaction, endpoint: Endpoint, participantIds: readonly string[]) {
+  if (!endpoint.native_binding_id) return;
+  try {
+    const { assertNativeCalendarEnabled, nativeParticipantsAreHuman } = await import('./app-native-authority.js');
+    assertNativeCalendarEnabled();
+    if (participantIds.length === 0 || !await nativeParticipantsAreHuman(tx, participantIds)) throw new Error('Native authority changed');
+    assertNativeCalendarEnabled();
+  } catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
 }
 
 async function assertLiveAuthority(tx: PublicTransaction, endpoint: Endpoint, principal: AppPublicPrincipal, app: AppInstallation) {
@@ -200,7 +254,8 @@ async function assertLiveAuthority(tx: PublicTransaction, endpoint: Endpoint, pr
       grant_epoch: app.grant_epoch,
     }))) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
 
-  const [version] = await tx.select({ id: appVersions.id, manifest: appVersions.manifest }).from(appVersions).where(and(
+  const [version] = await tx.select({ id: appVersions.id, manifest: appVersions.manifest,
+    protocol_version: appVersions.protocol_version }).from(appVersions).where(and(
     eq(appVersions.org_id, principal.org_id),
     eq(appVersions.installation_id, app.id),
     eq(appVersions.id, endpoint.app_version_id),
@@ -239,13 +294,24 @@ async function assertLiveAuthority(tx: PublicTransaction, endpoint: Endpoint, pr
     eq(moduleVersions.is_active, true),
   )).limit(1);
   if (!moduleVersion) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
+  if (endpoint.native_binding_id) {
+    try {
+      if (binding.ownership !== 'app' || version.protocol_version !== '6') throw new Error('Native public Module is not owned');
+      const manifest = parseNativeAppManifest(version.manifest);
+      const declaration = manifest.public_actions.find(item => item.key === endpoint.public_action_key);
+      const action = manifest.native_actions.find(item => item.key === declaration?.action_key);
+      if (!declaration || !action || declaration.module_id !== moduleInstallation.module_id
+        || declaration.collection_key !== endpoint.collection_key) throw new Error('Native public declaration changed');
+      validatePublicNativeMapping(endpoint.native_input_mapping, moduleVersion.manifest, endpoint.collection_key, action.operation);
+    } catch { throw new AppPublicError('PUBLIC_NOT_FOUND', 404); }
+  }
   if (!endpoint.availability_policy) return null;
   try {
     if (binding.ownership !== 'app') throw new Error('Public Module is not owned');
     const policy = validatePublicAvailabilityPolicy(endpoint.availability_policy, moduleVersion.manifest,
       endpoint.collection_key, moduleVersion.id);
-    const manifest = parseRuntimeAppManifest(version.manifest);
-    if (manifest.schema_version !== '4') throw new Error('Public declaration unavailable');
+    const manifest = version.protocol_version === '6' ? parseNativeAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
+    if (manifest.schema_version !== '4' && manifest.schema_version !== '6') throw new Error('Public declaration unavailable');
     const declaration = manifest.public_actions.find(item => item.key === endpoint.public_action_key);
     const { module_version_id: _version, ...authorPolicy } = policy;
     if (!declaration?.availability || declaration.module_id !== moduleInstallation.module_id
@@ -319,7 +385,7 @@ export class AppPublicClaimService {
         await tx.execute(sql`SET LOCAL statement_timeout = 5000`);
         await tx.execute(sql`SET LOCAL lock_timeout = 1000`);
         await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
-        const { endpoint, principal, app } = await resolveEndpoint(tx, slug);
+        const { endpoint, principal, app, native_participant_ids } = await resolveEndpoint(tx, slug);
         const policy = await assertLiveAuthority(tx, endpoint, principal, app);
         if (!policy) throw new AppPublicError('PUBLIC_NOT_FOUND', 404);
         let now = await freshPublicClock(tx);
@@ -381,6 +447,7 @@ export class AppPublicClaimService {
           module_version_id: policy.module_version_id, after: last, expires_at: now.getTime() + 300_000 }) : null;
         const result = { schema_version: 'deft.app_public_availability.v1' as const, items, next_cursor };
         if (Buffer.byteLength(JSON.stringify({ result })) > 32_768) throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
+        await assertFinalNativeAuthority(tx, endpoint, native_participant_ids);
         return result;
       });
     } catch (error) {
@@ -400,7 +467,7 @@ export class AppPublicClaimService {
         await tx.execute(sql`SET LOCAL statement_timeout = 5000`);
         await tx.execute(sql`SET LOCAL lock_timeout = 1000`);
         await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = 6000`);
-        const { endpoint, principal, app } = await resolveEndpoint(tx, slug, true);
+        const { endpoint, principal, app, native_participant_ids } = await resolveEndpoint(tx, slug, true);
         const policy = await assertLiveAuthority(tx, endpoint, principal, app);
         const verified = endpoint.authentication_policy
           ? await verifyPublicSignature(tx, (await (await import('./app-run-runtime.js')).getAppRunRuntime()).keys,
@@ -429,6 +496,7 @@ export class AppPublicClaimService {
           if (!receipt) throw new AppPublicError('PUBLIC_UNAVAILABLE', 503);
           const prior = await outcomeFromReceipt(tx, receipt, fingerprint);
           if (prior !== 'conflict') await acceptPublicSignature(tx, endpoint, verified);
+          await assertFinalNativeAuthority(tx, endpoint, native_participant_ids);
           return prior;
         }
         const deadlineData = policy ? sql<Record<string, unknown>>`jsonb_build_object(
@@ -445,6 +513,7 @@ export class AppPublicClaimService {
         await assertPublicSignatureFresh(tx, verified);
         if (!record || record.revision !== input.expected_revision) {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
+          await assertFinalNativeAuthority(tx, endpoint, native_participant_ids);
           return 'conflict';
         }
         await assertClaimDeadline(tx, policy, record.data);
@@ -454,10 +523,12 @@ export class AppPublicClaimService {
           provider_kind: 'module', provider_instance_id: endpoint.module_installation_id,
           resource_type: endpoint.collection_key, resource_id: record.id,
           claim_kind: 'exclusive',
+          ...(endpoint.native_binding_id ? { claimed_resource_revision: record.revision } : {}),
         }).onConflictDoNothing().returning({ id: appCanonicalClaims.id });
         await assertPublicSignatureFresh(tx, verified);
         if (!claimed) {
           await tx.update(appPublicIngress).set({ state: 'conflict' }).where(eq(appPublicIngress.id, ingressId));
+          await assertFinalNativeAuthority(tx, endpoint, native_participant_ids);
           return 'conflict';
         }
         const reservedAt = await reservePublicBudget(tx, endpoint, claimId);
@@ -467,6 +538,7 @@ export class AppPublicClaimService {
         await acceptPublicSignature(tx, endpoint, verified);
         await (this.options.deliver ?? enqueueIngress)(tx, principal.org_id, endpoint.id, ingressId, endpoint.endpoint_epoch);
         await tx.update(appPublicIngress).set({ state: 'confirmed' }).where(eq(appPublicIngress.id, ingressId));
+        await assertFinalNativeAuthority(tx, endpoint, native_participant_ids);
         return { claim_id: claimId, claim_state: 'confirmed', follow_up_state: 'pending', replayed: false };
       });
     } catch (error) {

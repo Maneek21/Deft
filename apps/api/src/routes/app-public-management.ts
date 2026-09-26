@@ -5,6 +5,7 @@ import { publicWebAuthority } from '../lib/app-public-web-authority.js';
 import { AppError, isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { appRuntimeChannelEnabled } from '../lib/app-runtime-channel.js';
+import { isAppNativeCalendarEnabled } from '../lib/env.js';
 import { activatePublicEndpoint, disablePublicEndpoint,
   stagePublicEndpoint, rotatePublicHmacKey } from '../lib/app-public-management.js';
 
@@ -66,7 +67,7 @@ function failure(c: Context, error: unknown) {
 
 appPublicManagementRoutes.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
-  if (!appRuntimeChannelEnabled()) {
+  if (!appRuntimeChannelEnabled() && !isAppNativeCalendarEnabled()) {
     return c.json({ error: 'Runtime unavailable', code: 'APP_RUNTIME_DISABLED' }, 503);
   }
   await next();

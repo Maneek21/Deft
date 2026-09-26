@@ -19,7 +19,7 @@ const PayloadSchema = z.strictObject({
   endpoint_epoch: z.number().int().positive(),
 });
 
-/** The reviewed v4 mapping is the only executable follow-up. Historical
+/** Only reviewed runtime/native mappings are executable follow-ups. Historical
  * unmapped ingress stays terminal unsupported; no package callback is invoked. */
 export const handleAppPublicIngress: JobHandler = async (job) => {
   if (job.name !== 'app-public-ingress' || job.signal?.aborted) throw new Error('Invalid public ingress job');
@@ -41,7 +41,8 @@ export const handleAppPublicIngress: JobHandler = async (job) => {
     }
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
       ${`app-public-ingress:${payload.organization_id}:${payload.ingress_id}`}, 0))`);
-    const [actionLocator] = await tx.select({ public_action_key: appPublicEndpoints.public_action_key })
+    const [actionLocator] = await tx.select({ public_action_key: appPublicEndpoints.public_action_key,
+      native_binding_id: appPublicEndpoints.native_binding_id })
       .from(appPublicEndpoints).where(and(
         eq(appPublicEndpoints.org_id, payload.organization_id),
         eq(appPublicEndpoints.id, payload.endpoint_id),
@@ -55,10 +56,16 @@ export const handleAppPublicIngress: JobHandler = async (job) => {
     if (actionLocator?.public_action_key && receiptLocator?.follow_up_state === 'pending') {
       try {
         if (job.signal?.aborted) throw new Error('Public ingress job aborted');
-        const run = await (await getAppRunRuntime()).service.submitReviewedPublicRuntimeInTransaction(tx, {
+        const service = (await getAppRunRuntime()).service;
+        // Both helpers own their complete participant-before-App prefix. This
+        // branch is deliberately before the fallback App/endpoint lock path.
+        const run = await (actionLocator.native_binding_id
+          ? service.submitReviewedPublicNativeInTransaction(tx, {
+            org_id: payload.organization_id, endpoint_id: payload.endpoint_id, ingress_id: payload.ingress_id,
+          }) : service.submitReviewedPublicRuntimeInTransaction(tx, {
           org_id: payload.organization_id, endpoint_id: payload.endpoint_id,
           ingress_id: payload.ingress_id,
-        });
+        }));
         const [updated] = await tx.update(appPublicIngress).set({
           follow_up_state: 'run_created', handled_at: new Date(),
         }).where(and(eq(appPublicIngress.org_id, payload.organization_id),
