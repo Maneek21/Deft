@@ -9,6 +9,7 @@ import { isAppError } from '../lib/app-errors.js';
 import { isModuleError } from '../lib/module-errors.js';
 import { isAppResourceSyncChannelEnabled } from '../lib/env.js';
 import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
+import { stageRuntimeAppUpgrade, getRuntimeUpgradeContext, prepareRuntimeUpgrade, activateRuntimeUpgrade } from '../lib/app-runtime-upgrade.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 class RuntimeReviewChannelDisabledError extends Error {
@@ -47,7 +48,9 @@ appRuntimeReviewRoutes.use('*', async (c, next) => {
   if (!appRuntimeChannelEnabled() && !isAppResourceSyncChannelEnabled()) return c.json({ error: 'Runtime unavailable', code: 'APP_RUNTIME_DISABLED' }, 503);
   await next();
 });
-appRuntimeReviewRoutes.use('*', bodyLimit({ maxSize: 8192 }));
+appRuntimeReviewRoutes.use('*', async (c, next) => bodyLimit({
+  maxSize: c.req.method === 'POST' && c.req.path.endsWith('/upgrade/stage') ? 2 * 1024 * 1024 : 8192,
+})(c, next));
 appRuntimeReviewRoutes.get('/:installationId/context', async c => {
   try {
     const queries = c.req.queries();
@@ -70,5 +73,25 @@ for (const operation of ['review', 'activate'] as const) {
     } catch (error) {
       return failure(c, error);
     }
+  });
+}
+appRuntimeReviewRoutes.get('/:installationId/upgrade/context', async c => {
+  try {
+    if (Object.values(c.req.queries()).some(values => values.length !== 1)) throw new SyntaxError();
+    const query = z.strictObject({ app_version_id: Id }).parse(c.req.query());
+    const { actor, options } = await authority(c);
+    return c.json(await getRuntimeUpgradeContext(actor, Id.parse(c.req.param('installationId')), query.app_version_id, options));
+  } catch (error) { return failure(c, error); }
+});
+for (const operation of ['stage', 'review', 'activate'] as const) {
+  appRuntimeReviewRoutes.post(`/:installationId/upgrade/${operation}`, async c => {
+    try {
+      if (new URL(c.req.url).search || !/^application\/json(?:\s*;|$)/i.test(c.req.header('content-type') ?? '')) throw new SyntaxError();
+      const { actor, options } = await authority(c);
+      const id = Id.parse(c.req.param('installationId')); const raw: unknown = await c.req.json();
+      return c.json(operation === 'stage' ? await stageRuntimeAppUpgrade(actor, id, raw, options)
+        : operation === 'review' ? await prepareRuntimeUpgrade(actor, id, raw, options)
+          : await activateRuntimeUpgrade(actor, id, raw, options));
+    } catch (error) { return failure(c, error); }
   });
 }

@@ -7,6 +7,7 @@ import {
   appVersions,
   auditLog,
   moduleInstallations,
+  users,
 } from '@deft/db/schema';
 import {
   isDeftAppProtocolOperationSupported,
@@ -32,6 +33,7 @@ import {
 import { AppError } from './app-errors.js';
 import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service.js';
 import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
+import type { RuntimeAppReviewOptions } from './app-runtime-review.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -287,11 +289,14 @@ export async function stageAppUpgrade(
   installationId: string,
   packageJson: string,
   expectedLifecycleEpoch: number,
+  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
   assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
-  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol)) {
+  const runtimeUpgrade = options.runtimeUpgrade === true
+    && ['3', '4', '5'].includes(inspected.manifest.compatibility.app_protocol);
+  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol) && !runtimeUpgrade) {
     throw new AppError('Connected App upgrades require App Protocol v1 or v2', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
@@ -321,6 +326,11 @@ export async function stageAppUpgrade(
       eq(appVersions.state, 'active'),
     )).limit(1).for('update');
     if (!activeVersion) throw new AppError('Active App version not found', 'APP_STATE_CONFLICT', 409);
+    if (runtimeUpgrade && (installation.state !== 'active'
+      || activeVersion.protocol_version !== inspected.manifest.compatibility.app_protocol)) {
+      throw new AppError('Runtime upgrades require an active App using the same protocol', 'APP_PROTOCOL_UNSUPPORTED', 409);
+    }
+    if (runtimeUpgrade) options.assertAdmission?.(inspected.manifest as Parameters<NonNullable<RuntimeAppReviewOptions['assertAdmission']>>[0]);
     if (compareAppSemver(activeVersion.version, inspected.manifest.version) >= 0) {
       throw new AppError('App upgrade must use a strictly newer semantic version', 'APP_INVALID_PACKAGE', 409);
     }
@@ -360,6 +370,12 @@ export async function stageAppUpgrade(
       version: version.version,
       package_digest: version.package_digest,
     });
+    await options.guard?.(tx);
+    if (runtimeUpgrade) {
+      const [human] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, actor.actor_id)).limit(1);
+      if (human?.kind !== 'human') throw new AppError('Current human manager required', 'APP_ACCESS_DENIED', 403);
+      options.assertAdmission?.(inspected.manifest as Parameters<NonNullable<RuntimeAppReviewOptions['assertAdmission']>>[0]);
+    }
     return { installation, version };
   });
   emitAppChange(actor.org_id, {

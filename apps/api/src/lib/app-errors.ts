@@ -1,4 +1,5 @@
 export type AppErrorCode =
+  | 'APP_UPGRADE_BLOCKED'
   | 'APP_ACCESS_DENIED'
   | 'APP_ACTION_INVALID'
   | 'APP_ACTION_UNAVAILABLE'
