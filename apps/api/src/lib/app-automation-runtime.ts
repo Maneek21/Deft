@@ -15,7 +15,8 @@ import {
   terminalizeAppAutomationFireDefinitionIneligibleWithExecutor,
   terminalizeUnclaimedAppAutomationFireMisfireWithExecutor,
 } from './app-automation-repository.js';
-import { scanAppAutomations } from './app-automation-scanner.js';
+import { scanAppAutomations, type AppAutomationScannerPort } from './app-automation-scanner.js';
+import { appAutomationScanDatabase, type AppAutomationScanTransaction } from './app-automation-scan-db.js';
 import { db } from './db.js';
 import { APP_AUTOMATIONS_ENABLED } from './env.js';
 import { isAppError } from './app-errors.js';
@@ -29,25 +30,29 @@ const AppAutomationFireJobSchema = z.strictObject({
   definition_epoch: z.number().int().min(1),
 });
 
-export async function runAppAutomationScan(now = new Date()): Promise<void> {
+export async function runAppAutomationScan(now = new Date(), signal?: AbortSignal): Promise<void> {
   if (!APP_AUTOMATIONS_ENABLED) return;
-  const result = await scanAppAutomations({
-    listEligibleDefinitions: (eligibleAt, limit, after) => (
-      listEligibleAppAutomationDefinitionsWithExecutor(db, {
-        eligible_at: eligibleAt,
-        limit,
-        after,
-      })
-    ),
-    listExpiredClaims: (scanAt, limit, after) => (
-      listExpiredClaimedAppAutomationFiresWithExecutor(db, { now: scanAt, limit, after })
-    ),
-    reconcileExpiredClaim: (fire, recoveredAt) => db.transaction(async (tx) => {
+  const started = performance.now();
+  const currentTime = () => new Date(now.getTime() + performance.now() - started);
+  const transaction = <T>(run: (tx: AppAutomationScanTransaction) => Promise<T>) => (
+    appAutomationScanDatabase().transaction(run, signal)
+  );
+  const reconcileExpiredClaim: AppAutomationScannerPort['reconcileExpiredClaim'] = (fire) => (
+    transaction(async (tx) => {
       const definition = await getAppAutomationDefinitionWithExecutor(
         tx,
         fire.org_id,
         fire.definition_id,
+        { lock: true },
       );
+      // Read policy time only after both mutable rows are locked. Reusing this
+      // path for occurrence recovery avoids passing time captured before a wait.
+      const currentFire = await getAppAutomationFireWithExecutor(
+        tx, fire.org_id, fire.definition_id, fire.id, { lock: true },
+      );
+      if (!currentFire || currentFire.state !== 'claimed'
+        || currentFire.claim_token !== fire.claim_token) return null;
+      const recoveredAt = currentTime();
       if (!definition
         || definition.state !== 'active'
         || definition.definition_epoch !== fire.definition_epoch
@@ -63,7 +68,7 @@ export async function runAppAutomationScan(now = new Date()): Promise<void> {
           terminal_at: recoveredAt,
         });
       }
-      return recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
+      const recovered = await recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
         organization_id: fire.org_id,
         definition_id: fire.definition_id,
         fire_id: fire.id,
@@ -71,10 +76,27 @@ export async function runAppAutomationScan(now = new Date()): Promise<void> {
         expected_claim_token: fire.claim_token!,
         recovered_at: recoveredAt,
       });
-    }),
-    ensureFire: async (input, createdAt) => {
+      if (currentTime() >= definition.valid_until) {
+        throw new Error('App automation definition expired during claim recovery');
+      }
+      return recovered;
+    })
+  );
+  const result = await scanAppAutomations({
+    listEligibleDefinitions: (eligibleAt, limit, after) => (
+      transaction(tx => listEligibleAppAutomationDefinitionsWithExecutor(tx, {
+        eligible_at: eligibleAt,
+        limit,
+        after,
+      }))
+    ),
+    listExpiredClaims: (scanAt, limit, after) => (
+      transaction(tx => listExpiredClaimedAppAutomationFiresWithExecutor(tx, { now: scanAt, limit, after }))
+    ),
+    reconcileExpiredClaim,
+    ensureFire: async (input) => {
       try {
-        return await persistAppAutomationFire(input, { now: () => createdAt });
+        return await transaction(tx => persistAppAutomationFire(input, { now: currentTime, executor: tx }));
       } catch (error) {
         if (isAppError(error) && (error.code === 'APP_STALE' || error.code === 'APP_NOT_FOUND')) {
           return null;
@@ -82,17 +104,8 @@ export async function runAppAutomationScan(now = new Date()): Promise<void> {
         throw error;
       }
     },
-    recoverFire: (fire, recoveredAt) => db.transaction((tx) => (
-      recoverExpiredAppAutomationFireClaimWithExecutor(tx, {
-        organization_id: fire.org_id,
-        definition_id: fire.definition_id,
-        fire_id: fire.id,
-        expected_epoch: fire.definition_epoch,
-        expected_claim_token: fire.claim_token!,
-        recovered_at: recoveredAt,
-      })
-    )),
-    deliverFire: (fire, chargedAt) => db.transaction(async (tx) => {
+    recoverFire: reconcileExpiredClaim,
+    deliverFire: (fire) => transaction(async (tx) => {
       const delivery = await enqueueOrRearmFailed(
         QUEUE_NAMES.SCHEDULED_JOBS,
         'app-automation-fire',
@@ -116,11 +129,11 @@ export async function runAppAutomationScan(now = new Date()): Promise<void> {
         fire_id: fire.id,
         expected_epoch: fire.definition_epoch,
         expected_attempt_count: fire.attempt_count,
-        charged_at: chargedAt,
+        charged_at: currentTime(),
       });
       if (!charged) throw new Error('Failed queue delivery changed before its attempt was charged');
     }),
-  }, now);
+  }, now, { signal, now: currentTime });
   if (Object.values(result.errors).some(count => count > 0)) {
     // One bounded aggregate warning; never emit raw tenant/provider errors.
     console.warn('[app-automations] scan item failures', result);

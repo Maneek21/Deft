@@ -329,3 +329,30 @@ test('scanner propagates explicit cancellation from item work without starting l
     assert.ok(!visited.includes('later'));
   }
 });
+
+test('scanner propagates worker signals with arbitrary reasons at every awaited item boundary', async () => {
+  for (const reason of [new Error('worker lease lost'), 'host shutdown']) {
+    for (const stage of ['reconcile', 'ensure', 'recover', 'deliver'] as const) {
+      const controller = new AbortController();
+      const visited: string[] = [];
+      const abort = (): never => { controller.abort(reason); throw new Error('underlying I/O settled'); };
+      const claimed = fire({ organization_id: 'org-1', definition_id: 'first', expected_epoch: 1,
+        logical_local_date: '2026-09-01', resolution: { kind: 'resolved', resolved_at_utc: new Date('2026-09-01T04:00:00Z') } },
+        { state: 'claimed', claim_token: 'expired', lease_expires_at: new Date('2026-09-01T04:00:00Z') });
+      await assert.rejects(scanAppAutomations(scannerPort({
+        listExpiredClaims: async () => stage === 'reconcile' ? [claimed] : [],
+        reconcileExpiredClaim: async () => abort(),
+        listEligibleDefinitions: async () => ['first', 'later'].map(id => definition({ id,
+          valid_from: new Date('2026-09-01T03:00:00Z'), state_changed_at: new Date('2026-09-01T03:00:00Z') })),
+        ensureFire: async input => {
+          visited.push(input.definition_id);
+          if (stage === 'ensure') abort();
+          return stage === 'recover' ? claimed : fire(input);
+        },
+        recoverFire: async () => abort(),
+        deliverFire: async () => abort(),
+      }), new Date('2026-09-01T04:10:00Z'), { signal: controller.signal }), error => error === reason);
+      assert.ok(!visited.includes('later'));
+    }
+  }
+});

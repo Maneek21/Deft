@@ -180,6 +180,12 @@ async function runClaimedWork<T>(
   } finally {
     if (timeout) clearTimeout(timeout);
     clearInterval(renewal);
+    // Scanner SQL has server-enforced limits and cooperative transaction
+    // rollback. Keep its worker slot until that bounded rollback has settled;
+    // otherwise a timed-out scan could overlap with its replacement.
+    if (jobs.length > 0 && jobs.every(job => job.name === 'app-automation-scan')) {
+      await settled;
+    }
   }
 }
 
