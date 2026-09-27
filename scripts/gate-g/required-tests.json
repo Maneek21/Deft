@@ -3422,6 +3422,24 @@
         }
       ],
       "description": "Final lazy bounded body parsing preserves legacy authentication before body consumption; first-class invocation provenance and streamed byte ceilings."
+    },
+    {
+      "id": "module-task-live-compatibility",
+      "description": "Live Module/Task adapters, additive relation identity and denied native Task links on the current schema. CRM companion cases remain in crm-compatibility.",
+      "cases": [
+        {
+          "file": "apps/api/test/resource-provider-adapters-db.test.ts",
+          "name": "Module and Task adapters preserve owner authorization on live data"
+        },
+        {
+          "file": "apps/api/test/resource-relations-db.test.ts",
+          "name": "Module v2 relations remain live-authorized, revisioned, replay-safe, and additive"
+        },
+        {
+          "file": "apps/api/test/module-task-links.test.ts",
+          "name": "module record task links enforce native task and module boundaries"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
