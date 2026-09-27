@@ -244,3 +244,29 @@ test('safe presentation options round-trip without admitting author HTML or CSS'
   ];
   for (const root of cases) assert.equal(parseExperienceView({ root }), null);
 });
+
+
+test('flat workspace presentation stays symbolic and bounded', () => {
+  const workspace = { root: { kind: 'stack', id: 'root', layout: 'workspace', children: [
+    { kind: 'stack', id: 'toolbar', layout: 'toolbar', children: [
+      { kind: 'button', id: 'compose', label: 'Compose', icon: 'compose' },
+      { kind: 'input', id: 'search', label: 'Search', value: '', appearance: 'search' },
+    ] },
+    { kind: 'stack', id: 'split', layout: 'split', children: [
+      { kind: 'stack', id: 'sidebar', surface: 'sidebar', children: [
+        { kind: 'button', id: 'message', label: 'Subject', eyebrow: 'Sender', variant: 'list' },
+      ] },
+      { kind: 'stack', id: 'document', surface: 'document', children: [
+        { kind: 'text', id: 'body', text: 'Literal body', tone: 'body' },
+        { kind: 'input', id: 'to', label: 'To', value: '', appearance: 'inline' },
+        { kind: 'input', id: 'draft', label: 'Message', value: '', multiline: true, appearance: 'body' },
+      ] },
+    ] },
+  ] } };
+  assert.deepEqual(parseExperienceView(workspace), workspace);
+  for (const extra of [{ icon: '<svg onload=alert(1)>' }, { icon: 'https://example.test/icon.svg' },
+    { icon: { toString: () => 'send' } }, { eyebrow: 'x'.repeat(129) }, { icon_only: true }]) {
+    assert.equal(parseExperienceView({ root: { kind: 'button', id: 'send', label: 'Send', ...extra } }), null);
+  }
+  assert.equal(parseExperienceView({ root: { kind: 'input', id: 'body', label: 'Body', value: '', appearance: 'html' } }), null);
+});

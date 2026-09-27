@@ -48,16 +48,90 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-field input,.deft-experience .ex-field textarea { min-height:44px; border-color:#cbd5e1; border-color:color-mix(in srgb,var(--foreground,#1e293b) 22%,transparent); background:var(--surface,#fff); font-weight:400; font-size:14px }
 .deft-experience .ex-field textarea { min-height:220px; resize:vertical; line-height:1.6 }
 .deft-experience canvas { display:block; width:100%; height:200px; border:1px solid var(--border-default,#cbd5e1); border-radius:9px; background:var(--surface-container-low,#f8fafc); touch-action:none }
+.deft-experience.ex-workspace { padding:0; height:100%; min-height:0; overflow:hidden }
+.deft-experience .ex-stack-workspace { display:flex; flex-direction:column; gap:0; height:100%; min-height:0; overflow:hidden }
+.deft-experience .ex-stack-workspace > .ex-stack-split { flex:1; min-height:0; grid-template-columns:clamp(340px,32%,380px) minmax(0,1fr); grid-template-rows:minmax(0,1fr); gap:0; overflow:hidden }
+.deft-experience .ex-stack-sidebar { border-right:1px solid var(--border,#e2e8f0); padding:0; overflow:auto; min-height:0; gap:0; background:var(--surface,#fff) }
+.deft-experience .ex-stack-document { padding:32px 40px; overflow:auto; min-height:0; gap:24px; background:var(--surface,#fff) }
+.deft-experience .ex-stack-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 20px; border-bottom:1px solid var(--border,#e2e8f0); position:sticky; top:0; z-index:1; flex-shrink:0; background:var(--surface,#fff) }
+.deft-experience .ex-stack-toolbar > .ex-field-search { flex:1; min-width:180px; max-width:420px }
+.deft-experience .ex-stack-sidebar > .ex-text { padding:12px 20px }
+.deft-experience .ex-stack-sidebar > .ex-stack-list > .ex-text { padding:24px 20px 12px; font-size:14px }
+.deft-experience .ex-stack-sidebar > .ex-button-ghost { justify-self:start; margin:0 8px 12px }
+.deft-experience .ex-stack-sidebar > .ex-stack-horizontal { padding:12px 16px }
+.deft-experience .ex-stack-sidebar > .ex-field-search { margin:12px 16px }
+.deft-experience .ex-text-body { max-width:68ch; font-size:15px; line-height:1.8; color:var(--foreground,#1e293b) }
+.deft-experience .ex-button-list { padding:18px 24px; gap:4px 16px; background:transparent }
+.deft-experience .ex-button-list[aria-pressed=true] { background:color-mix(in srgb,var(--foreground,#1e293b) 5%,transparent); box-shadow:inset 2px 0 var(--accent,#2563eb) }
+.deft-experience .ex-button-list .ex-button-label { grid-column:1/-1; font-size:14px; font-weight:500; line-height:1.5 }
+.deft-experience .ex-button-eyebrow { grid-column:1; grid-row:1; font-size:12px; font-weight:650; color:var(--foreground,#1e293b); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.deft-experience .ex-button-list .ex-button-meta { grid-column:2; grid-row:1; align-self:center }
+.deft-experience .ex-button-list .ex-button-description { font-size:13px; line-height:1.6; -webkit-line-clamp:2 }
+.deft-experience button:not(.ex-button-list) { display:inline-flex; align-items:center; justify-content:center; gap:8px; font-size:13px; border-radius:6px }
+.deft-experience .ex-icon { width:16px; height:16px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round }
+.deft-experience .ex-field-search label { position:relative; display:block }
+.deft-experience .ex-field-search .ex-field-label,.deft-experience .ex-field-body .ex-field-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
+.deft-experience .ex-field-search .ex-icon { position:absolute; left:12px; top:14px; color:var(--foreground-secondary,#64748b) }
+.deft-experience .ex-field-search input { padding-left:38px; border-color:transparent; background:var(--surface-container-low,#f8fafc) }
+.deft-experience .ex-field-inline label { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--border,#e2e8f0); font-weight:400; font-size:13px }
+.deft-experience .ex-field-inline .ex-field-label { flex:0 0 56px }
+.deft-experience .ex-field-inline input { border:0; border-radius:0; padding:12px 0; background:transparent }
+.deft-experience .ex-field-body textarea { border:0; border-radius:0; padding:12px 0; min-height:260px; font-size:15px; line-height:1.8; background:transparent }
+@media(pointer:fine) and (min-width:701px) { .deft-experience button:not(.ex-button-list) { min-height:36px; padding:7px 12px } }
+
+.deft-experience .ex-stack-toolbar > .ex-text:first-child { margin-right:auto; font-weight:600; font-size:14px }
+.deft-experience .ex-stack-workspace > .ex-stack-toolbar > .ex-text:first-child { font-size:18px; letter-spacing:-.02em }
+.deft-experience .ex-stack-horizontal > .ex-field-search { flex:1; min-width:0 }
+.deft-experience .ex-stack-horizontal:has(> .ex-field-search) > button > .ex-icon { display:none }
+.deft-experience .ex-stack-horizontal > button { flex-shrink:0 }
+.deft-experience .ex-stack-document:has(> .ex-field-body) { display:flex; flex-direction:column; gap:0 }
+.deft-experience .ex-stack-document:has(> .ex-field-body) > .ex-stack-toolbar { margin:-32px -40px 12px; padding:12px 24px }
+.deft-experience .ex-stack-document:has(> .ex-field-body) > .ex-field-body { display:flex; flex:1; min-height:200px; margin-top:12px }
+.deft-experience .ex-field-body label { display:flex; flex:1; min-height:0 }
+.deft-experience .ex-field-body textarea { flex:1; height:100%; min-height:200px; resize:none }
+.deft-experience .ex-stack-document:has(> .ex-field-body) > .ex-stack-horizontal:last-child { margin-top:auto; padding-top:16px; flex-shrink:0 }
+.deft-experience .ex-stack-document > .ex-text-muted + .ex-text-caption { margin-top:-16px }
+.deft-experience .ex-stack-document > .ex-button-ghost:has(.ex-button-description) { justify-self:start; align-items:flex-start; flex-direction:column; text-align:left; padding:8px 0; color:var(--primary,#6d5bd0) }
+.deft-experience .ex-stack-document > .ex-button-ghost:has(.ex-button-description):hover .ex-button-label { text-decoration:underline; text-underline-offset:3px }
+.deft-experience .ex-stack-sidebar { background:color-mix(in srgb,var(--foreground,#1e293b) 2%,var(--surface,#fff)); border-right-color:color-mix(in srgb,var(--foreground,#1e293b) 10%,transparent) }
+.deft-experience .ex-stack-workspace > .ex-stack:last-child:not(.ex-stack-split):not(.ex-stack-toolbar):not(.ex-stack-sidebar):not(.ex-stack-document) { gap:0 }
+.deft-experience .ex-stack-workspace > .ex-stack:last-child:not(.ex-stack-split):not(.ex-stack-toolbar):not(.ex-stack-sidebar):not(.ex-stack-document) > .ex-text:not(:empty) { padding:8px 20px; border-top:1px solid var(--border,#e2e8f0); font-size:12px }
+.deft-experience .ex-text:empty { display:none }
+
 .deft-experience .ex-mobile-only { display:none }
-@media(max-width:700px) { .deft-experience { padding:16px } .deft-experience .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:16px } .deft-experience .ex-mobile-hidden { display:none } .deft-experience .ex-mobile-only { display:grid } .deft-experience .ex-mobile-only.ex-stack-horizontal { display:flex } .deft-experience .ex-stack-panel { padding:16px } }
+.deft-experience .ex-mobile-only > button { justify-self:start }
+@media(max-width:700px) { .deft-experience .ex-stack-document:has(> .ex-field-body) > .ex-stack-toolbar { margin:-24px -20px 12px; padding:12px 16px } .deft-experience .ex-stack-workspace > .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:0 } .deft-experience .ex-stack-document { padding:24px 20px } .deft-experience .ex-stack-sidebar { border-right:0 } .deft-experience .ex-stack-toolbar { padding:12px 16px } .deft-experience .ex-button-list { padding:16px 20px } .deft-experience.ex-workspace { padding:0 } .deft-experience { padding:16px } .deft-experience .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:16px } .deft-experience .ex-stack.ex-mobile-hidden { display:none } .deft-experience .ex-mobile-only { display:grid } .deft-experience .ex-mobile-only.ex-stack-horizontal,.deft-experience .ex-mobile-only.ex-stack-toolbar,.deft-experience .ex-mobile-only.ex-stack-workspace { display:flex } .deft-experience .ex-stack-panel { padding:16px } }
 @media(max-width:420px) { .deft-experience { padding:12px } .deft-experience table { min-width:510px } .deft-experience .ex-stack-title { font-size:16px } }
-@container(max-width:700px) { .deft-experience .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:16px } .deft-experience .ex-mobile-hidden { display:none } .deft-experience .ex-mobile-only { display:grid } .deft-experience .ex-mobile-only.ex-stack-horizontal { display:flex } }
+@container(max-width:700px) { .deft-experience .ex-stack-document:has(> .ex-field-body) > .ex-stack-toolbar { margin:-24px -20px 12px; padding:12px 16px } .deft-experience .ex-stack-workspace > .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:0 } .deft-experience .ex-stack-document { padding:24px 20px } .deft-experience .ex-stack-sidebar { border-right:0 } .deft-experience .ex-stack-toolbar { padding:12px 16px } .deft-experience .ex-button-list { padding:16px 20px } .deft-experience.ex-workspace { padding:0 } .deft-experience .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:16px } .deft-experience .ex-stack.ex-mobile-hidden { display:none } .deft-experience .ex-mobile-only { display:grid } .deft-experience .ex-mobile-only.ex-stack-horizontal,.deft-experience .ex-mobile-only.ex-stack-toolbar,.deft-experience .ex-mobile-only.ex-stack-workspace { display:flex } }
 `;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
   if (className) element.className = className;
   return element;
+}
+
+const ICON_PATHS = {
+  compose: 'M12 20H4V4h8 M16 3l5 5-9 9H7v-5z M14 5l5 5',
+  refresh: 'M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-2l2 2 M4 17l2 2a7 7 0 0 0 12-2',
+  search: 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
+  reply: 'M9 4l-6 6 6 6 M3 10h10a8 8 0 0 1 8 8v2',
+  archive: 'M3 3h18v4H3z M5 7v14h14V7 M10 11h4',
+  back: 'M15 18l-6-6 6-6',
+  close: 'M6 6l12 12 M6 18L18 6',
+  send: 'M22 2L9 15 M22 2l-7 20-6-7-7-6z',
+} as const;
+
+/** Only host-owned paths enter SVG; authors choose a bounded symbolic name. */
+function renderIcon(name: keyof typeof ICON_PATHS): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'ex-icon');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', ICON_PATHS[name]); svg.append(path);
+  return svg;
 }
 
 function paint(canvas: HTMLCanvasElement, strokes: ExperienceNode & { kind: 'canvas' }): void {
@@ -87,13 +161,17 @@ function paint(canvas: HTMLCanvasElement, strokes: ExperienceNode & { kind: 'can
 
 function renderNode(node: ExperienceNode, emit: (event: ExperienceUiEvent) => void): HTMLElement {
   if (node.kind === 'text') {
-    const p = el('p', `ex-text ex-text-${node.tone ?? 'default'}`);
+    const p = el(node.tone === 'heading' ? 'h2' : 'p', `ex-text ex-text-${node.tone ?? 'default'}`);
     p.textContent = node.text;
     return p;
   }
   if (node.kind === 'button') {
     const button = el('button', `ex-button-${node.variant ?? 'primary'}`);
     button.type = 'button';
+    if (node.icon) button.append(renderIcon(node.icon));
+    if (node.eyebrow !== undefined) {
+      const eyebrow = el('span', 'ex-button-eyebrow'); eyebrow.textContent = node.eyebrow; button.append(eyebrow);
+    }
     const label = el('span', 'ex-button-label');
     label.textContent = node.label;
     button.append(label);
@@ -111,13 +189,15 @@ function renderNode(node: ExperienceNode, emit: (event: ExperienceUiEvent) => vo
     return button;
   }
   if (node.kind === 'input') {
-    const wrap = el('div', 'ex-field');
+    const wrap = el('div', `ex-field${node.appearance ? ` ex-field-${node.appearance}` : ''}`);
     const label = el('label');
     const input = node.multiline ? el('textarea') : el('input');
     input.value = node.value;
     input.placeholder = node.placeholder ?? '';
     input.dataset.focusKey = node.id;
-    label.textContent = node.label;
+    const labelText = el('span', 'ex-field-label'); labelText.textContent = node.label;
+    label.append(labelText);
+    if (node.appearance === 'search') label.append(renderIcon('search'));
     input.addEventListener('change', () => emit({ kind: 'input', node_id: node.id, value: input.value }));
     label.append(input);
     wrap.append(label);
@@ -125,6 +205,7 @@ function renderNode(node: ExperienceNode, emit: (event: ExperienceUiEvent) => vo
   }
   if (node.kind === 'stack') {
     const wrap = el('section', `ex-stack ex-stack-${node.layout ?? 'vertical'} ex-stack-${node.surface ?? 'plain'}${node.mobile ? ` ex-mobile-${node.mobile}` : ''}`);
+    if (node.surface === 'sidebar' || node.surface === 'document') wrap.dataset.scrollKey = node.id;
     if (node.title) {
       const title = el('h2', 'ex-stack-title');
       title.textContent = node.title;
@@ -211,12 +292,18 @@ function renderNode(node: ExperienceNode, emit: (event: ExperienceUiEvent) => vo
 export function renderExperienceView(
   container: HTMLElement, view: ExperienceView, emit: (event: ExperienceUiEvent) => void,
 ): void {
+  const scrollPositions = new Map(Array.from(container.querySelectorAll<HTMLElement>('[data-scroll-key]'))
+    .map((element) => [element.dataset.scrollKey, element.scrollTop]));
   const focused = document.activeElement instanceof HTMLElement && container.contains(document.activeElement)
     ? document.activeElement.dataset.focusKey : undefined;
   const selection = (document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement)
     ? { start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : undefined;
   container.classList.add('deft-experience');
+  container.classList.toggle('ex-workspace', view.root.kind === 'stack' && view.root.layout === 'workspace');
   container.replaceChildren(renderNode(view.root, emit));
+  container.querySelectorAll<HTMLElement>('[data-scroll-key]').forEach((element) => {
+    element.scrollTop = scrollPositions.get(element.dataset.scrollKey) ?? 0;
+  });
   if (focused) {
     const candidate = Array.from(container.querySelectorAll<HTMLElement>('[data-focus-key]'))
       .find((element) => element.dataset.focusKey === focused);

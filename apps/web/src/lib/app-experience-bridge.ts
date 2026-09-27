@@ -6,10 +6,10 @@ export type ExperiencePin = Readonly<{
 }>;
 
 export type ExperienceNode =
-  | Readonly<{ kind: 'text'; id: string; text: string; tone?: 'default' | 'muted' | 'heading' | 'caption' }>
-  | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean }>
-  | Readonly<{ kind: 'input'; id: string; label: string; value: string; multiline?: boolean; placeholder?: string }>
-  | Readonly<{ kind: 'stack'; id: string; title?: string; layout?: 'vertical' | 'horizontal' | 'split' | 'list'; surface?: 'plain' | 'panel'; mobile?: 'hidden' | 'only'; children: readonly ExperienceNode[] }>
+  | Readonly<{ kind: 'text'; id: string; text: string; tone?: 'default' | 'muted' | 'heading' | 'caption' | 'body' }>
+  | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean; eyebrow?: string; icon?: 'compose' | 'refresh' | 'search' | 'reply' | 'archive' | 'back' | 'close' | 'send' }>
+  | Readonly<{ kind: 'input'; id: string; label: string; value: string; multiline?: boolean; placeholder?: string; appearance?: 'search' | 'inline' | 'body' }>
+  | Readonly<{ kind: 'stack'; id: string; title?: string; layout?: 'vertical' | 'horizontal' | 'split' | 'list' | 'workspace' | 'toolbar'; surface?: 'plain' | 'panel' | 'sidebar' | 'document'; mobile?: 'hidden' | 'only'; children: readonly ExperienceNode[] }>
   | Readonly<{ kind: 'grid'; id: string; columns: readonly string[];
       rows: readonly Readonly<{ id: string; cells: readonly string[] }>[]; selected_row_id?: string }>
   | Readonly<{ kind: 'canvas'; id: string;
@@ -75,43 +75,49 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
   switch (input.kind) {
     case 'text':
       return exact(input, ['kind', 'id', 'text', 'tone']) && text(input.text)
-        && (input.tone === undefined || (typeof input.tone === 'string' && ['default', 'muted', 'heading', 'caption'].includes(input.tone)))
+        && (input.tone === undefined || (typeof input.tone === 'string' && ['default', 'muted', 'heading', 'caption', 'body'].includes(input.tone)))
         ? { kind: 'text', id: input.id, text: input.text,
-          ...(input.tone !== undefined ? { tone: input.tone as 'default' | 'muted' | 'heading' | 'caption' } : {}) } : null;
+          ...(input.tone !== undefined ? { tone: input.tone as 'default' | 'muted' | 'heading' | 'caption' | 'body' } : {}) } : null;
     case 'button':
-      return exact(input, ['kind', 'id', 'label', 'variant', 'description', 'meta', 'selected', 'disabled'])
+      return exact(input, ['kind', 'id', 'label', 'variant', 'description', 'meta', 'selected', 'disabled', 'eyebrow', 'icon'])
         && text(input.label, 128)
         && (input.variant === undefined || (typeof input.variant === 'string' && ['primary', 'secondary', 'ghost', 'list'].includes(input.variant)))
         && (input.description === undefined || text(input.description, 512))
         && (input.meta === undefined || text(input.meta, 80))
         && (input.selected === undefined || typeof input.selected === 'boolean')
         && (input.disabled === undefined || typeof input.disabled === 'boolean')
+        && (input.eyebrow === undefined || text(input.eyebrow, 128))
+        && (input.icon === undefined || (typeof input.icon === 'string' && ['compose', 'refresh', 'search', 'reply', 'archive', 'back', 'close', 'send'].includes(input.icon)))
         ? { kind: 'button', id: input.id, label: input.label,
           ...(input.variant !== undefined ? { variant: input.variant as 'primary' | 'secondary' | 'ghost' | 'list' } : {}),
           ...(input.description !== undefined ? { description: input.description as string } : {}),
           ...(input.meta !== undefined ? { meta: input.meta as string } : {}),
           ...(input.selected !== undefined ? { selected: input.selected as boolean } : {}),
-          ...(input.disabled !== undefined ? { disabled: input.disabled as boolean } : {}) } : null;
+          ...(input.disabled !== undefined ? { disabled: input.disabled as boolean } : {}),
+          ...(input.eyebrow !== undefined ? { eyebrow: input.eyebrow as string } : {}),
+          ...(input.icon !== undefined ? { icon: input.icon as 'compose' | 'refresh' | 'search' | 'reply' | 'archive' | 'back' | 'close' | 'send' } : {}) } : null;
     case 'input':
-      return exact(input, ['kind', 'id', 'label', 'value', 'multiline', 'placeholder'])
+      return exact(input, ['kind', 'id', 'label', 'value', 'multiline', 'placeholder', 'appearance'])
         && text(input.label, 128) && text(input.value)
         && (input.multiline === undefined || typeof input.multiline === 'boolean')
         && (input.placeholder === undefined || text(input.placeholder, 128))
+        && (input.appearance === undefined || (typeof input.appearance === 'string' && ['search', 'inline', 'body'].includes(input.appearance)))
         ? { kind: 'input', id: input.id, label: input.label, value: input.value,
           ...(input.multiline !== undefined ? { multiline: input.multiline as boolean } : {}),
-          ...(input.placeholder !== undefined ? { placeholder: input.placeholder as string } : {}) } : null;
+          ...(input.placeholder !== undefined ? { placeholder: input.placeholder as string } : {}),
+          ...(input.appearance !== undefined ? { appearance: input.appearance as 'search' | 'inline' | 'body' } : {}) } : null;
     case 'stack': {
       if (!exact(input, ['kind', 'id', 'title', 'children', 'layout', 'surface', 'mobile'])
         || (input.title !== undefined && !text(input.title, 128))
-        || (input.layout !== undefined && (typeof input.layout !== 'string' || !['vertical', 'horizontal', 'split', 'list'].includes(input.layout)))
-        || (input.surface !== undefined && (typeof input.surface !== 'string' || !['plain', 'panel'].includes(input.surface)))
+        || (input.layout !== undefined && (typeof input.layout !== 'string' || !['vertical', 'horizontal', 'split', 'list', 'workspace', 'toolbar'].includes(input.layout)))
+        || (input.surface !== undefined && (typeof input.surface !== 'string' || !['plain', 'panel', 'sidebar', 'document'].includes(input.surface)))
         || (input.mobile !== undefined && (typeof input.mobile !== 'string' || !['hidden', 'only'].includes(input.mobile)))
         || !Array.isArray(input.children) || input.children.length > 64) return null;
       const children = input.children.map((child) => parseNode(child, depth + 1, budget));
       return children.every((child) => child !== null)
         ? { kind: 'stack', id: input.id, ...(input.title ? { title: input.title } : {}),
-          ...(input.layout !== undefined ? { layout: input.layout as 'vertical' | 'horizontal' | 'split' | 'list' } : {}),
-          ...(input.surface !== undefined ? { surface: input.surface as 'plain' | 'panel' } : {}),
+          ...(input.layout !== undefined ? { layout: input.layout as 'vertical' | 'horizontal' | 'split' | 'list' | 'workspace' | 'toolbar' } : {}),
+          ...(input.surface !== undefined ? { surface: input.surface as 'plain' | 'panel' | 'sidebar' | 'document' } : {}),
           ...(input.mobile !== undefined ? { mobile: input.mobile as 'hidden' | 'only' } : {}),
           children: children as ExperienceNode[] } : null;
     }

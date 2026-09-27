@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { Paperclip, ShieldCheck, Settings2, CheckCheck } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
@@ -291,32 +292,19 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     return () => { clear(); document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', clear); };
   }, []);
 
-  return <div className="mx-auto w-full max-w-[1600px] px-3 py-4 sm:px-6">
+  return <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
     <style>{EXPERIENCE_RENDERER_CSS}</style>
-    <header className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>
-      <h1 className="font-medium">{session?.experience.label ?? 'Opening app…'}</h1>
-      <nav aria-label="App tools" className="flex flex-wrap items-center gap-4">
-        {APP_ATTACHMENT_BROKER_ENABLED && <Link className="inline-flex min-h-11 items-center hover:underline" href="/settings/apps/private-resources">Saved files</Link>}
-        <Link className="inline-flex min-h-11 items-center hover:underline" href="/inbox">Approvals</Link>
-        <Link className="inline-flex min-h-11 items-center hover:underline" href="/settings/apps">App settings</Link>
-      </nav>
-    </header>
-    {error ? <p role="alert" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
-      : !ready ? <p role="status" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening reviewed App Experience…</p>
+    <h1 className="sr-only">{session?.experience.label ?? 'Opening app…'}</h1>
+    {error ? <p role="alert" className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
+      : !ready ? <p role="status" className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening app…</p>
       : null}
-    {session && session.bundle.resource_keys.length > 0 && <section aria-label="Experience private access" className={`mb-3 min-w-0 text-sm ${exposure && !error ? '' : 'space-y-3 rounded-xl border p-4'}`} style={{ borderColor: 'var(--ghost-border)' }}>
-      {exposure && !error ? <details className="rounded-lg text-xs" style={{ color: 'var(--on-surface-variant)' }}>
-        <summary className="min-h-8 cursor-pointer py-2">Private access active · session only</summary>
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg p-3" style={{ background: 'var(--surface-container-low)' }}>
-          <p>This app can read the fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
-          <button className="deft-pill min-h-11" style={{ minHeight: 44 }} onClick={() => void withdrawExposure()}>End private access</button>
-        </div></details>
-        : review ? <><h2 className="font-semibold">Allow private fields for this Experience?</h2>
+    {session && session.bundle.resource_keys.length > 0 && !(exposure && !error) && <section aria-label="Experience private access" className="mx-auto w-full max-w-3xl shrink-0 space-y-4 overflow-y-auto px-5 py-6 text-sm" style={{ maxHeight: 'calc(100% - 100px)' }}>
+      {review ? <><h2 className="text-lg font-semibold">Allow private fields for this Experience?</h2>
           <p>Allow this Experience’s App code to read the listed saved private fields for this session, until {new Date(review.snapshot.expires_at).toLocaleString()}? It can process and display these records. Ending access stops future reads; previously delivered content cannot be recalled.</p>
           <dl className="space-y-2"><div><dt>App</dt><dd>{review.snapshot.app_name} {review.snapshot.app_version}</dd></div>
             <div><dt>Experience</dt><dd>{review.snapshot.experience_label}</dd></div><div><dt>Owner</dt><dd>{review.snapshot.owner_label}</dd></div>
             <div><dt>Verified artifact</dt><dd className="break-all font-mono text-xs">{review.snapshot.artifact_digest}</dd></div></dl>
-          {review.snapshot.resources.map(resource => <div key={resource.resource_key} className="min-w-0 rounded-lg border p-3" style={{ borderColor: 'var(--ghost-border)' }}>
+          {review.snapshot.resources.map(resource => <div key={resource.resource_key} className="min-w-0 space-y-2 border-t py-3" style={{ borderColor: 'var(--ghost-border)' }}>
             <p className="break-words font-medium">{resource.label} ({resource.resource_type})</p>
             <p>Allowed reads: list saved record summaries; read one saved record{resource.allowed_operations.includes('search') ? '; search approved fields using literal queries with snippets' : ''}.</p><p className="break-words">Permitted fields: {resource.allowed_fields.join(', ')}.</p>
             {resource.allowed_operations.includes('search') && <p>Literal search examines the complete saved approved fields within the App’s reviewed limits. It delivers at most 240 characters per matching excerpt. Continue until the search is complete.</p>}
@@ -328,8 +316,23 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy || !!error} onClick={() => void prepareExposure()}>Review private access</button></>}
       {exposureBusy && <p role="status">Checking private access…</p>}
     </section>}
-    {error && <button className="deft-pill mb-4 min-h-11" style={{ minHeight: 44 }} onClick={() => { setExposure(null); setReview(null); setOpening(value => value + 1); }}>Reopen Experience</button>}
-    <div ref={viewHost} className="min-h-[540px] overflow-hidden rounded-xl border" style={{ borderColor: 'var(--ghost-border)' }} aria-label="App Experience" />
+    {error && <button className="deft-pill m-4 min-h-11 shrink-0 self-start" style={{ minHeight: 44 }} onClick={() => { setExposure(null); setReview(null); setOpening(value => value + 1); }}>Reopen Experience</button>}
+    <div ref={viewHost} className="min-h-0 flex-1 overflow-auto" aria-label="App Experience" />
+    <footer className="relative flex min-h-11 shrink-0 items-center justify-between gap-2 border-t px-3 text-[11px] sm:px-6" style={{ borderColor: 'var(--ghost-border)', color: 'var(--on-surface-variant)', background: 'var(--surface)' }}>
+      {exposure && !error ? <details className="group">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden"><ShieldCheck size={14} aria-hidden="true" /><span>Access</span></summary>
+        <div className="absolute bottom-full left-3 z-20 mb-2 w-[min(340px,calc(100vw-40px))] space-y-3 rounded-lg border p-4 text-xs shadow-xl" style={{ background: 'var(--surface-container)', borderColor: 'var(--outline-variant)' }}>
+          <p className="font-medium">Private access · this session only</p>
+          <p>This app can read the fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
+          <button className="deft-pill min-h-11" onClick={() => void withdrawExposure()}>End private access</button>
+        </div>
+      </details> : <span>Deft app</span>}
+      <nav aria-label="App tools" className="flex items-center gap-3 sm:gap-5">
+        {APP_ATTACHMENT_BROKER_ENABLED && <Link className="inline-flex min-h-11 items-center gap-1.5 hover:underline" href="/settings/apps/private-resources"><Paperclip size={14} aria-hidden="true" />Files</Link>}
+        <Link className="inline-flex min-h-11 items-center gap-1.5 hover:underline" href="/inbox"><CheckCheck size={14} aria-hidden="true" />Approvals</Link>
+        <Link aria-label="App settings" title="App settings" className="inline-flex min-h-11 min-w-8 items-center justify-center" href="/settings/apps"><Settings2 size={15} aria-hidden="true" /></Link>
+      </nav>
+    </footer>
     <div ref={iframeHost} aria-hidden="true" />
   </div>;
 }
