@@ -7,6 +7,7 @@ import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
+import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellation-owner-panel';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
 import { APP_RESOURCE_SYNC_ENABLED } from '@/lib/feature-flags';
@@ -150,6 +151,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           : selectedApp ? <>
             <Link href="/settings/apps" className="deft-pill min-h-11">← All Apps</Link>
             <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} />
+            {selectedApp.manifest.schema_version === '6' && <PublicCancellationOwnerPanel installationId={selectedApp.id} />}
           </> : <section aria-label="Installed Apps" className="space-y-3">
             <label className="block text-xs font-medium">
               Find an App

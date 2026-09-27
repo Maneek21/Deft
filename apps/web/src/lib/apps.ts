@@ -96,11 +96,14 @@ export type AppResourceManifestV5 = Omit<AppInstalledManifestV4, 'schema_version
   sync_descriptors: Record<string, unknown>[];
 };
 
+export type AppNativeManifestV6 = Omit<AppResourceManifestV5, 'schema_version' | 'compatibility'> & {
+  schema_version: '6'; compatibility: { app_protocol: '6' }; native_actions: Record<string, unknown>[];
+};
 export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
-  | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5;
+  | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5 | AppNativeManifestV6;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
 export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1'
-  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4' | 'deft.app.package.v5';
+  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4' | 'deft.app.package.v5' | 'deft.app.package.v6';
 
 export function isConnectedAppManifest(manifest: AppManifest): manifest is ConnectedAppManifest {
   return manifest.compatibility.app_protocol === '1' || manifest.compatibility.app_protocol === '2';
@@ -431,7 +434,7 @@ function packageFormat(value: unknown): AppPackageFormat {
     && value !== 'deft.app.package.v2'
     && value !== 'deft.app.package.v3'
     && value !== 'deft.app.package.v4'
-    && value !== 'deft.app.package.v5') {
+    && value !== 'deft.app.package.v5' && value !== 'deft.app.package.v6') {
     throw new Error('Invalid App package format.');
   }
   return value;
@@ -525,7 +528,7 @@ function normalizeManifest(value: unknown): AppManifest {
   const compatibility = object(row.compatibility, 'App compatibility');
   const protocol = compatibility.app_protocol;
   if (protocol !== '0' && protocol !== '1' && protocol !== '2'
-    && protocol !== '3' && protocol !== '4' && protocol !== '5') throw new Error('Unsupported App protocol.');
+    && protocol !== '3' && protocol !== '4' && protocol !== '5' && protocol !== '6') throw new Error('Unsupported App protocol.');
   if (row.schema_version !== protocol) throw new Error('App manifest protocol and schema do not match.');
   const base: AppManifestBase = {
     id: stringValue(row.id, 'App identity'),
@@ -552,7 +555,7 @@ function normalizeManifest(value: unknown): AppManifest {
     } : {}),
   };
   if (protocol === '0') return { ...base, schema_version: '0', compatibility: { app_protocol: '0' } };
-  if (protocol === '3' || protocol === '4' || protocol === '5') {
+  if (protocol === '3' || protocol === '4' || protocol === '5' || protocol === '6') {
     const runtime = {
       ...base,
       runtime_requirements: recordArray(row.runtime_requirements, 'Runtime requirements'),
@@ -575,6 +578,27 @@ function normalizeManifest(value: unknown): AppManifest {
       public_actions: recordArray(row.public_actions, 'public actions'),
     };
     if (protocol === '4') return { ...installed, schema_version: '4', compatibility: { app_protocol: '4' } };
+    if (protocol === '6') {
+      // Display projection only; the host validates the exact Kit contract.
+      // Importing the packaging entry point would pull Node-only code into Web.
+      const fields = ['schema_version', 'compatibility', 'id', 'version', 'name', 'description', 'license', 'provenance',
+        'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions',
+        'sync_descriptors', 'experiences', 'public_actions'];
+      if (Object.keys(row).some(field => !fields.includes(field)) || Object.keys(compatibility).length !== 1) throw new Error('Invalid native App display fields.');
+      const native = recordArray(row.native_actions, 'native actions');
+      if (native.length < 1 || native.length > 8 || new Set(native.map(item => item.key)).size !== native.length) throw new Error('Invalid native action count.');
+      for (const item of native) {
+        if (Object.keys(item).length !== 4 || Object.keys(item).some(field => !['key', 'label', 'operation', 'capability_key'].includes(field))
+          || typeof item.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(item.key)
+          || typeof item.capability_key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(item.capability_key)
+          || typeof item.label !== 'string' || item.label.length < 1 || item.label.length > 200 || /[\u0000-\u001f\u007f<>]/.test(item.label)
+          || !['calendar.events.create.v1', 'calendar.events.cancel.v1'].includes(String(item.operation))) throw new Error('Invalid native action display.');
+      }
+      const sync = recordArray(row.sync_descriptors, 'App sync descriptors');
+      if (runtime.runtime_requirements.length > 8 || runtime.private_capabilities.length > 16 || runtime.runtime_actions.length > 16
+        || installed.experiences.length > 1 || installed.public_actions.length > 8 || sync.length > 8) throw new Error('Native App display bounds exceeded.');
+      return { ...installed, schema_version: '6', compatibility: { app_protocol: '6' }, sync_descriptors: sync, native_actions: native };
+    }
     return { ...installed, schema_version: '5', compatibility: { app_protocol: '5' },
       sync_descriptors: recordArray(row.sync_descriptors, 'App sync descriptors') };
   }

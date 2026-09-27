@@ -584,11 +584,22 @@ export class AppRunService {
       || !this.appLiveAuthorization?.captureReviewedNativeInTransaction || !pin?.origin_native_binding_id
       || pin.provider_kind !== 'native' || pin.origin_kind !== 'app' || pin.execution_actor_type !== 'human'
       || pin.execution_actor_id !== caller.user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
-    const current = pin.origin_public_endpoint_id && pin.origin_public_ingress_id
+    let current = pin.origin_public_endpoint_id && pin.origin_public_ingress_id
       ? await this.appLiveAuthorization.captureReviewedPublicNativeInTransaction!(tx, { org_id: caller.org_id,
         endpoint_id: pin.origin_public_endpoint_id, ingress_id: pin.origin_public_ingress_id })
       : await this.appLiveAuthorization.captureReviewedNativeInTransaction(tx, { org_id: caller.org_id,
         user_id: caller.user_id, native_binding_id: pin.origin_native_binding_id });
+    if (pin.operation_name === 'calendar.events.cancel.v1') {
+      const { appPublicCancellationSelections } = await import('@deft/db/schema');
+      const [selection] = await tx.select({ cancellation_id: appPublicCancellationSelections.cancellation_id })
+        .from(appPublicCancellationSelections).where(and(eq(appPublicCancellationSelections.org_id, caller.org_id),
+          eq(appPublicCancellationSelections.cancel_run_id, runId))).limit(1);
+      if (selection) {
+        const { decoratePublicCancellationCapture } = await import('./app-public-cancellation-authority.js');
+        current = await decoratePublicCancellationCapture(tx, current,
+          { cancellation_id: selection.cancellation_id, run_id: runId }, this.secrets, this.secretRepository, this.now());
+      }
+    }
     let snapshotMatches = false;
     try { snapshotMatches = canonicalAuthorization(current.authorization_snapshot)
       === canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot)); } catch { /* fail closed */ }

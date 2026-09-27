@@ -8,7 +8,8 @@ import { appRuntimeChannelEnabled } from '../lib/app-runtime-channel.js';
 import { isAppNativeCalendarEnabled } from '../lib/env.js';
 import { activatePublicEndpoint, disablePublicEndpoint,
   stagePublicEndpoint, rotatePublicHmacKey } from '../lib/app-public-management.js';
-import { resourceSyncWebAuthority } from '../lib/app-resource-sync-web-authority.js';
+import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
+import { contextPublicCancellationOwner, listPublicCancellationOwner, PublicCancellationListQuerySchema } from '../lib/app-public-cancellation-discovery.js';
 import { reviewPublicCancellationOwner, submitPublicCancellationOwner } from '../lib/app-public-cancellation-owner.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { appHttpFailure } from './app-http-errors.js';
@@ -61,6 +62,7 @@ async function body(c: Context): Promise<unknown> {
 }
 
 function failure(c: Context, error: unknown) {
+  if (error instanceof ResourceSyncWebAuthenticationError) return c.json({ error: error.message, code: error.code }, 401);
   if (isAppError(error) || isModuleError(error)) return c.json({ error: error.message, code: error.code }, error.status);
   if (error instanceof z.ZodError || error instanceof SyntaxError || error instanceof TypeError) {
     return c.json({ error: 'Invalid public endpoint request', code: 'VALIDATION_ERROR' }, 400);
@@ -89,6 +91,26 @@ appPublicManagementRoutes.post('/endpoints/:endpointId/disable', async (c) => {
   try { const { actor, guard } = await authority(c); return c.json(await disablePublicEndpoint(actor,
     Id.parse(c.req.param('endpointId')), guard)); }
   catch (error) { return failure(c, error); }
+});
+appPublicManagementRoutes.get('/cancellations/owner', async c => {
+  try {
+    const params = new URL(c.req.url).searchParams;
+    if ([...params.keys()].some(key => params.getAll(key).length !== 1)) throw new SyntaxError();
+    const input = PublicCancellationListQuerySchema.parse(Object.fromEntries(params));
+    const user = c.get('user') as AuthUser | undefined;
+    if (!user?.sid) throw new AppError('Authentication required', 'APP_ACCESS_DENIED', 403);
+    const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
+    return c.json(await listPublicCancellationOwner(actor, input, { guard }));
+  } catch (error) { return failure(c, error); }
+});
+appPublicManagementRoutes.get('/cancellations/:cancellationId/owner/context', async c => {
+  try {
+    if (new URL(c.req.url).search) throw new SyntaxError();
+    const user = c.get('user') as AuthUser | undefined;
+    if (!user?.sid) throw new AppError('Authentication required', 'APP_ACCESS_DENIED', 403);
+    const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
+    return c.json(await contextPublicCancellationOwner(actor, z.uuid().parse(c.req.param('cancellationId')), { guard }));
+  } catch (error) { return failure(c, error); }
 });
 appPublicManagementRoutes.post('/endpoints/:endpointId/rotate-signing-key', async c => {
   try { const { actor, guard } = await authority(c); return c.json(await rotatePublicHmacKey(actor, Id.parse(c.req.param('endpointId')), await body(c), guard)); }
