@@ -3560,6 +3560,26 @@
         }
       ],
       "description": "Owner-reviewed sealed Defty conversation, real model, encrypted retained messages, replay/unknown outcomes, current authority and native-route denials."
+    },
+    {
+      "id": "private-defty-custom-headers",
+      "description": "Actual SDK environment header credential override is rejected before private model dispatch.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-defty-model.test.ts",
+          "name": "private Anthropic custom environment headers cannot add an unreviewed credential"
+        }
+      ]
+    },
+    {
+      "id": "private-defty-email7",
+      "description": "Retained packed mixed Email7 parent under distinct current owner model consent; selected scalar-only input, final attachment gate denial and unchanged original Runs.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-defty-email7-http-db.test.ts",
+          "name": "Retained packed Email7 parent reaches separately reviewed sealed Defty context without custody or action authority"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
