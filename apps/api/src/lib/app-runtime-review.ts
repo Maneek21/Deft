@@ -251,12 +251,21 @@ export async function loadReviewedRuntimeAction(tx: Executor, orgId: string, ins
     || !installation.active_grant_snapshot_id || installation.active_grant_snapshot_kind !== 'effective') throw stale();
   const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, orgId),
     eq(appVersions.installation_id, installationId), eq(appVersions.id, installation.active_version_id),
-    eq(appVersions.state, 'active'), inArray(appVersions.protocol_version, ['3', '4', '5', '6']))).limit(1).for('share');
+    eq(appVersions.state, 'active'), inArray(appVersions.protocol_version, ['3', '4', '5', '6', '7']))).limit(1).for('share');
   const [grant] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, orgId),
     eq(appGrantSnapshots.app_installation_id, installationId), eq(appGrantSnapshots.id, installation.active_grant_snapshot_id),
     eq(appGrantSnapshots.snapshot_kind, 'effective'))).limit(1);
   if (!version || !grant || grant.app_version_id !== version.id
     || digestAppGrantValue(grant.canonical_snapshot) !== grant.snapshot_digest) throw stale();
+  if (version.protocol_version === '7') {
+    if (!isAppV5RuntimeActionsEnabled()) throw stale();
+    const { loadReviewedAttachmentApp } = await import('./app-attachment-authority.js');
+    const attachment = await loadReviewedAttachmentApp(tx, orgId, installationId);
+    if (!attachment.composition) throw stale();
+    const action = runtimeActionDescriptors(attachment.manifest).find(item => item.action_key === actionKey);
+    if (!action) throw stale();
+    return { installation: attachment.installation, version: attachment.version, grant: attachment.grant, action };
+  }
   if (version.protocol_version === '6') {
     if (!isAppV5RuntimeActionsEnabled()) throw stale();
     const { loadReviewedNativeApp } = await import('./app-native-authority.js');

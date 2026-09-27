@@ -7,6 +7,10 @@ import { loadLiveResourceSyncBindingAuthority } from './app-resource-sync-author
 import { decodePrivateProjection } from './app-resource-private-projection.js';
 import type { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { accessUnavailable, type AccessSnapshot } from './app-resource-access-contract.js';
+import { loadReviewedAttachmentApp } from './app-attachment-authority.js';
+import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
+import { isAppAttachmentBrokerEnabled } from './env.js';
+import type { SyncDescriptorV1 } from '@deft/app-kit/experimental/resource-sync';
 const digest = (value: unknown) => `sha256:${createHash('sha256').update(canonicalCapabilityJson(value)).digest('hex')}`;
 
 /** Shared exact parent evaluator. Callers supply their complete participant fence
@@ -62,7 +66,23 @@ export async function loadLockedPrivateAccessParent(options: {
     })) {
       throw accessUnavailable();
     }
-    const authority = await loadLiveResourceSyncBindingAuthority(tx, { org_id: orgId, resource_binding_id: b.id, clock: clock });
+    const authority = lockedR.contract_version === 'deft.app_runtime_channel.v3'
+      ? await (async () => {
+        const reviewed = await loadReviewedAttachmentApp(tx, orgId, b.app_installation_id);
+        // Custody-only v1 never grants independent scalar-purpose authority.
+        if (!reviewed.composition) throw accessUnavailable();
+        const attachment = await loadLiveAttachmentSyncBindingAuthority(tx, {
+          org_id: orgId, resource_binding_id: b.id, clock,
+          prelocked_participant_ids: [b.owner_user_id, recipient, r.operator_user_id],
+        });
+        if (!attachment) return null;
+        const { attachments: _custodyPolicy, ...scalar } = attachment.descriptor;
+        // Decoder normalization is internal. Stored v2 digest remains the wire
+        // and grant identity; selected scalar grants never contain attachments.
+        const descriptor: SyncDescriptorV1 = { ...scalar, schema_version: 'deft.app_sync_descriptor.v1' };
+        return { ...attachment, descriptor };
+      })()
+      : await loadLiveResourceSyncBindingAuthority(tx, { org_id: orgId, resource_binding_id: b.id, clock: clock });
     if (!authority || authority.descriptor.resource_type !== ref.resource_type || authority.registration.id !== ref.provider.provider_instance_id) {
       throw accessUnavailable();
     }
@@ -92,4 +112,9 @@ export async function loadLockedPrivateAccessParent(options: {
       record,
       participants: [b.owner_user_id, recipient, r.operator_user_id]
     };
+}
+
+/** Call after the purpose's final awaited authority operation. */
+export function privateAccessParentGateIsCurrent(parent: Awaited<ReturnType<typeof loadLockedPrivateAccessParent>>): boolean {
+  return parent.authority.version.protocol_version !== '7' || isAppAttachmentBrokerEnabled();
 }

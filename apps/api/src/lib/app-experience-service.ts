@@ -4,12 +4,12 @@ import { z } from 'zod';
 import { appExperienceSessions, appGrantSnapshots, appInstallations, appRuntimeBindings, appRuntimeRegistrations,
   appVersions, appNativeBindings, orgMembers, users, webSessions } from '@deft/db/schema';
 import { parseRuntimeAppManifest, verifyDeftAppPackageJson,
-  verifyDeftExperienceArtifact, parseResourceAppManifest, parseNativeAppManifest } from '@deft/app-kit';
+  verifyDeftExperienceArtifact, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { AppRuntimeActionService, appRuntimeActionService } from './app-runtime-action-service.js';
 import type { AppRunTransaction } from './app-run-repository.js';
-import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled } from './env.js';
+import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled, isAppAttachmentBrokerEnabled } from './env.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 const SESSION_MS = 15 * 60_000;
@@ -50,15 +50,18 @@ export async function assertExperienceWeb(tx: Executor, caller: ExperienceCaller
 export async function verifiedExperienceBundle(version: typeof appVersions.$inferSelect, experienceKey: string) {
   const native = version.protocol_version === '6';
   const resource = version.protocol_version === '5';
-  if (native ? !isAppNativeCalendarEnabled() : resource ? !isAppExperienceResourceExposureEnabled() : version.protocol_version !== '4') throw stale();
-  const manifest = native ? parseNativeAppManifest(version.manifest) : resource ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
-  if (manifest.schema_version !== (native ? '6' : resource ? '5' : '4')) throw stale();
+  const attachment = version.protocol_version === '7';
+  if (attachment ? !isAppAttachmentBrokerEnabled() || !isAppExperienceResourceExposureEnabled()
+    : native ? !isAppNativeCalendarEnabled() : resource ? !isAppExperienceResourceExposureEnabled() : version.protocol_version !== '4') throw stale();
+  const manifest = attachment ? parseAttachmentAppManifest(version.manifest) : native ? parseNativeAppManifest(version.manifest)
+    : resource ? parseResourceAppManifest(version.manifest) : parseRuntimeAppManifest(version.manifest);
+  if (manifest.schema_version !== (attachment ? '7' : native ? '6' : resource ? '5' : '4')) throw stale();
   const reference = manifest.experiences.find((item) => item.key === experienceKey);
   if (!reference) throw denied();
   const verified = await verifyDeftAppPackageJson(JSON.stringify(version.package));
   if (verified.digest !== version.package_digest
     || verified.package.manifest_digest !== version.manifest_digest
-    || verified.package.manifest.schema_version !== (native ? '6' : resource ? '5' : '4')) throw stale();
+    || verified.package.manifest.schema_version !== (attachment ? '7' : native ? '6' : resource ? '5' : '4')) throw stale();
   const artifact = verified.package.artifacts.find((item) => item.path === reference.artifact_path);
   if (!artifact) throw stale();
   const bundle = await verifyDeftExperienceArtifact({
@@ -67,7 +70,12 @@ export async function verifiedExperienceBundle(version: typeof appVersions.$infe
     bridge_version: reference.bridge_version,
     renderer_version: reference.renderer_version,
   }, artifact);
-  if (native) {
+  if (attachment) {
+    if (manifest.schema_version !== '7' || bundle.schema_version !== 'deft.experience_bundle.v2'
+      || manifest.native_actions.length || manifest.public_actions.length
+      || bundle.resource_keys.some(key => !manifest.sync_descriptors.some(item => item.key === key))
+      || bundle.action_keys.some(key => !manifest.runtime_actions.some(item => item.key === key))) throw stale();
+  } else if (native) {
     if ((bundle.resource_keys.length && !isAppExperienceResourceExposureEnabled())
       || manifest.schema_version !== '6'
       || bundle.resource_keys.some(resourceKey => !manifest.sync_descriptors.some(item => item.key === resourceKey))
@@ -110,6 +118,11 @@ export class AppExperienceService {
       )).limit(1).for('share');
       if (!version || !grant || grant.package_digest !== version.package_digest
         || grant.manifest_digest !== version.manifest_digest) throw stale();
+      if (version.protocol_version === '7') {
+        const { loadReviewedAttachmentApp } = await import('./app-attachment-authority.js');
+        const current = await loadReviewedAttachmentApp(tx, caller.org_id, installationId);
+        if (!current.composition || current.version.id !== version.id || current.grant.id !== grant.id) throw stale();
+      }
       const { reference, bundle } = await verifiedExperienceBundle(version, experienceKey);
       const now = new Date();
       await tx.delete(appExperienceSessions).where(and(
@@ -141,6 +154,11 @@ export class AppExperienceService {
       });
       if (version.protocol_version === '6' && !await nativeFinalAuthorityIsCurrent(tx, [caller.user_id],
         { expires_at: [expiresAt] })) throw stale();
+      if (version.protocol_version === '7') {
+        const { attachmentFinalAuthorityIsCurrent } = await import('./app-attachment-authority.js');
+        if (!await attachmentFinalAuthorityIsCurrent(tx, [caller.user_id], { expires_at: [expiresAt] })
+          || !isAppExperienceResourceExposureEnabled()) throw stale();
+      }
       return { pin: { org_id: caller.org_id, user_id: caller.user_id,
         app_installation_id: installation.id, app_version_id: version.id,
         grant_snapshot_id: grant.id, lifecycle_epoch: installation.lifecycle_epoch,
@@ -186,6 +204,11 @@ export class AppExperienceService {
       if (!version || !grant || grant.package_digest !== version.package_digest
         || grant.manifest_digest !== version.manifest_digest) throw stale();
       const verified = await verifiedExperienceBundle(version, session.experience_key);
+      if (version.protocol_version === '7') {
+        const { loadReviewedAttachmentApp } = await import('./app-attachment-authority.js');
+        const current = await loadReviewedAttachmentApp(tx, caller.org_id, session.app_installation_id);
+        if (!current.composition || current.version.id !== version.id || current.grant.id !== grant.id) throw stale();
+      }
       if (verified.reference.artifact_digest !== session.artifact_digest) throw stale();
       const [lockedSession] = await tx.select().from(appExperienceSessions).where(and(
         eq(appExperienceSessions.id, sessionId), eq(appExperienceSessions.org_id, caller.org_id))).limit(1).for(sessionLock);
@@ -206,6 +229,11 @@ export class AppExperienceService {
         caller.access_expires_at ?? Infinity));
       if (version.protocol_version === '6' && !await nativeFinalAuthorityIsCurrent(tx, [caller.user_id],
         { expires_at: [currentAuthorityExpiresAt] })) throw stale();
+      if (version.protocol_version === '7') {
+        const { attachmentFinalAuthorityIsCurrent } = await import('./app-attachment-authority.js');
+        if (!await attachmentFinalAuthorityIsCurrent(tx, [caller.user_id], { expires_at: [currentAuthorityExpiresAt] })
+          || !isAppExperienceResourceExposureEnabled()) throw stale();
+      }
       return { session: lockedSession, bundle: verified.bundle, manifest: verified.manifest,
         current_authority_expires_at: currentAuthorityExpiresAt };
   }
@@ -237,7 +265,7 @@ export class AppExperienceService {
   async action(caller: ExperienceCaller, sessionId: string, actionKey: string, raw: unknown) {
     key.parse(actionKey);
     const request = actionRequest.parse(raw);
-    const { session, bundle } = await this.liveContext(caller, sessionId);
+    const { session, bundle, manifest } = await this.liveContext(caller, sessionId);
     if (!bundle.action_keys.includes(actionKey)) throw denied();
     const [nativeBinding] = await db.select().from(appNativeBindings).where(and(eq(appNativeBindings.org_id, caller.org_id),
       eq(appNativeBindings.app_installation_id, session.app_installation_id), eq(appNativeBindings.app_version_id, session.app_version_id),
@@ -318,7 +346,16 @@ export class AppExperienceService {
         eq(appRuntimeBindings.state, 'active'),
       )).limit(1).for('share');
       if (!lockedBinding) throw stale();
-    });
+    },manifest.schema_version==='7'?async(tx:AppRunTransaction)=>{
+      const current=await this.lockedLiveContext(tx,caller,sessionId);
+      const [registration]=await tx.select().from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id,caller.org_id),
+        eq(appRuntimeRegistrations.id,binding.runtime_registration_id))).limit(1);
+      const {attachmentFinalAuthorityIsCurrent}=await import('./app-attachment-authority.js');
+      if(current.manifest.schema_version!=='7'||!current.bundle.action_keys.includes(actionKey)
+        ||current.session.app_version_id!==binding.app_version_id||current.session.grant_snapshot_id!==binding.grant_snapshot_id
+        ||!registration||!await attachmentFinalAuthorityIsCurrent(tx,[caller.user_id,registration.operator_user_id],
+          {expires_at:[current.current_authority_expires_at]})||!isAppV5RuntimeActionsEnabled())throw stale();
+    }:undefined);
     await this.liveContext(caller, sessionId);
     return { run };
   }

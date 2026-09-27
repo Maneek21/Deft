@@ -4,7 +4,7 @@ import { loadLiveAttachmentSyncAuthority, loadLiveAttachmentSyncBindingAuthority
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
 import { parseAttachmentSyncResult, type AttachmentSyncResultRequest } from './app-attachment-sync-contract.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
-import { isAppAttachmentBrokerEnabled } from './env.js';
+import { isAppAttachmentBrokerEnabled, isAppRuntimeChannelEnabled, isAppV5RuntimeActionsEnabled } from './env.js';
 import { nativeExecutionTransaction } from './app-native-execution-db.js';
 import { executeNativeCalendarInTransaction } from './app-native-calendar-executor.js';
 import { captureReviewedNativeInTransaction, captureReviewedPublicNativeInTransaction } from './app-native-run-authorization.js';
@@ -365,7 +365,17 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || attempt.runtime_sequence !== input.sequence
         || !attempt.lease_expires_at || attempt.lease_expires_at <= this.now()) return null;
       // The authority rows remain locked until the secret read completes.
-      return this.secretRepository.readInput(input.org_id, input.run_id, tx);
+      const exact = await this.secretRepository.readInput(input.org_id, input.run_id, tx);
+      if (authority.attachment_authority) {
+        // Newly enabled7 input delivery uses current kinds/gates and actual
+        // retained deadlines AFTER this last I/O. The earlier dispatch marker
+        // remains honest if delivery is denied; no effect/retry is fabricated.
+        if (!await attachmentFinalAuthorityIsCurrent(tx, authority.attachment_authority.participants,
+          { clock: this.now, expires_at: [authority.attachment_authority.session_expires_at,
+            attempt.lease_expires_at, run.input_expires_at, run.result_expires_at] })
+          || !isAppRuntimeChannelEnabled() || !isAppV5RuntimeActionsEnabled()) return null;
+      }
+      return exact;
     });
     if (exactInput === null) return null;
     return Object.freeze({

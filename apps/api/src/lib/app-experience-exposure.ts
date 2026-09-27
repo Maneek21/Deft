@@ -8,16 +8,19 @@ import { decodePrivateProjection } from './app-resource-private-projection.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
+import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { verifiedExperienceBundle, assertExperienceWeb, type ExperienceCaller } from './app-experience-service.js';
 import { experienceExposureDatabase, type ExperienceExposureTransaction } from './app-experience-exposure-db.js';
-import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled } from './env.js';
+import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled,
+  isAppAttachmentBrokerEnabled } from './env.js';
 import { scanPrivateResourceCheckpoint } from './app-resource-private-search-scan.js';
 import { EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, ExposureSearchCursorSchema, PAYLOAD_VERSION, EXPOSURE_LIMITS, ExposureSnapshotSchema, ExposureAcceptSchema,
   ExposureCursorSchema, ResourceRequestSchema, ExperienceExposureError, exposureUnavailable, exposureStale,
   exposureDigest, sealExposureToken, openExposureToken, exposurePayloadData, type ExposureSnapshot } from './app-experience-exposure-contract.js';
 
 type Tx = ExperienceExposureTransaction;
-type BindingAuthority = NonNullable<Awaited<ReturnType<typeof loadLiveResourceSyncBindingAuthority>>>;
+type BindingAuthority = NonNullable<Awaited<ReturnType<typeof loadLiveResourceSyncBindingAuthority>>>
+  | NonNullable<Awaited<ReturnType<typeof loadLiveAttachmentSyncBindingAuthority>>>;
 type Repository = Pick<ReturnType<typeof experienceExposureDatabase>, 'transaction'>;
 const uuid = z.string().uuid();
 const resourceKey = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/);
@@ -47,7 +50,7 @@ export class AppExperienceExposureService {
       eq(appVersions.id, locator.app_version_id), eq(appVersions.installation_id, locator.app_installation_id))).limit(1);
     if (!versionLocator) throw exposureUnavailable();
     const earlyBundle = await verifiedExperienceBundle(versionLocator, locator.experience_key);
-    if (!['5', '6'].includes(versionLocator.protocol_version) || !earlyBundle.bundle.resource_keys.length) throw exposureUnavailable();
+    if (!['5', '6', '7'].includes(versionLocator.protocol_version) || !earlyBundle.bundle.resource_keys.length) throw exposureUnavailable();
     const bindingLocators = await tx.select().from(appResourceBindings).where(and(eq(appResourceBindings.org_id, caller.org_id),
       eq(appResourceBindings.app_installation_id, locator.app_installation_id), eq(appResourceBindings.app_version_id, locator.app_version_id),
       eq(appResourceBindings.grant_snapshot_id, locator.grant_snapshot_id), eq(appResourceBindings.owner_user_id, caller.user_id),
@@ -104,7 +107,9 @@ export class AppExperienceExposureService {
     // cannot add a late membership/App/registration edge after a checkpoint.
     const authorities: BindingAuthority[] = [];
     for (const binding of [...bindingLocators].sort((a, b) => a.resource_key.localeCompare(b.resource_key))) {
-      const authority = await loadLiveResourceSyncBindingAuthority(tx, { org_id: caller.org_id, resource_binding_id: binding.id, clock: this.clock });
+      const authority = version.protocol_version === '7'
+        ? await loadLiveAttachmentSyncBindingAuthority(tx, { org_id: caller.org_id, resource_binding_id: binding.id, clock: this.clock })
+        : await loadLiveResourceSyncBindingAuthority(tx, { org_id: caller.org_id, resource_binding_id: binding.id, clock: this.clock });
       if (!authority || authority.binding.owner_user_id !== caller.user_id || authority.version.id !== session.app_version_id
         || authority.grant.id !== session.grant_snapshot_id
         || !participantIds.includes(authority.registration.operator_user_id)) throw exposureUnavailable();
@@ -131,7 +136,11 @@ export class AppExperienceExposureService {
     if (!Number.isFinite(now) || context.session.expires_at.getTime() <= now || caller.access_expires_at! <= now
       || context.authorities.some(a => !a.binding.consent_expires_at || a.binding.consent_expires_at.getTime() <= now)) throw exposureUnavailable();
     this.enabled(caller, signal);
-    if (context.verified.manifest.schema_version === '6') {
+    if (context.verified.manifest.schema_version === '7') {
+      // Scalar exposure never confers an action or attachment read. Its own
+      // reviewed resource gate survives independent action-plane withdrawal.
+      if (!isAppAttachmentBrokerEnabled()) throw exposureUnavailable();
+    } else if (context.verified.manifest.schema_version === '6') {
       if (!isAppNativeCalendarEnabled()) throw exposureUnavailable();
       const runtimeKeys = new Set(context.verified.manifest.runtime_actions.map(action => action.key));
       if (context.verified.bundle.action_keys.some(key => runtimeKeys.has(key)) && !isAppV5RuntimeActionsEnabled()) throw exposureUnavailable();
@@ -302,7 +311,11 @@ export class AppExperienceExposureService {
       if (input.operation === 'read_one' && !rows[0]) throw exposureUnavailable();
       const decode = (row: typeof appResourceProjections.$inferSelect) => {
         signal?.throwIfAborted();
-        const parsed = decodePrivateProjection(this.secrets, row, authority.descriptor);
+        const descriptor = authority.descriptor.schema_version === 'deft.app_sync_descriptor.v2'
+          ? (() => { const { attachments: _policy, ...scalar } = authority.descriptor;
+            return { ...scalar, schema_version: 'deft.app_sync_descriptor.v1' as const }; })()
+          : authority.descriptor;
+        const parsed = decodePrivateProjection(this.secrets, row, descriptor);
         return { record_id: row.id, label: label(String(parsed.data[authority.descriptor.label_field] ?? '')), data: parsed.data };
       };
       let output: unknown;

@@ -13,19 +13,22 @@ export const ReviewedRuntimeInvokeSchema = z.strictObject({
 export type ReviewedRuntimeInvoke = z.infer<typeof ReviewedRuntimeInvokeSchema>;
 export type ReviewedRuntimeCaller = Readonly<{ org_id: string; user_id: string }>;
 export type ReviewedRuntimeHostAdmission = (tx: AppRunTransaction) => Promise<void>;
+export type ReviewedRuntimeInputFinalGuard = (tx: AppRunTransaction,
+  participants: readonly string[], expires_at: readonly Date[]) => Promise<void>;
 
 export interface ReviewedRuntimeRunPort {
   submitReviewedRuntime(caller: ReviewedRuntimeCaller, request: ReviewedRuntimeInvoke,
-    hostAdmission?: ReviewedRuntimeHostAdmission): Promise<AppRunSafeView>;
-  reviewRuntimeInput(caller: ReviewedRuntimeCaller, runId: string): Promise<unknown>;
+    hostAdmission?: ReviewedRuntimeHostAdmission,hostFinalGuard?:ReviewedRuntimeHostAdmission): Promise<AppRunSafeView>;
+  reviewRuntimeInput(caller: ReviewedRuntimeCaller, runId: string,
+    finalGuard?: ReviewedRuntimeInputFinalGuard): Promise<unknown>;
 }
 
 const lazyRuns: ReviewedRuntimeRunPort = {
-  async submitReviewedRuntime(caller, request, hostAdmission) {
-    return (await getAppRunRuntime()).service.submitReviewedRuntime(caller, request, hostAdmission);
+  async submitReviewedRuntime(caller, request, hostAdmission,hostFinalGuard) {
+    return (await getAppRunRuntime()).service.submitReviewedRuntime(caller, request, hostAdmission,hostFinalGuard);
   },
-  async reviewRuntimeInput(caller, runId) {
-    return (await getAppRunRuntime()).service.reviewRuntimeInput(caller, runId);
+  async reviewRuntimeInput(caller, runId, finalGuard) {
+    return (await getAppRunRuntime()).service.reviewRuntimeInput(caller, runId, finalGuard);
   },
 };
 
@@ -44,15 +47,16 @@ export class AppRuntimeActionService {
   /** Only an in-process host broker may supply this guard. HTTP request data
    * cannot construct callbacks or bypass the normal Runtime authority capture. */
   invokeFromExperience(caller: ReviewedRuntimeCaller, raw: unknown,
-    hostAdmission: ReviewedRuntimeHostAdmission): Promise<AppRunSafeView> {
+    hostAdmission: ReviewedRuntimeHostAdmission,hostFinalGuard?:ReviewedRuntimeHostAdmission): Promise<AppRunSafeView> {
     if (!appRuntimeChannelEnabled()) throw new AppRunError('APP_RUNS_DISABLED');
     const request = ReviewedRuntimeInvokeSchema.parse(raw);
-    return this.runs.submitReviewedRuntime(caller, request, hostAdmission);
+    return this.runs.submitReviewedRuntime(caller, request, hostAdmission,hostFinalGuard);
   }
 
-  review(caller: ReviewedRuntimeCaller, runId: string): Promise<unknown> {
+  review(caller: ReviewedRuntimeCaller, runId: string,
+    finalGuard?: ReviewedRuntimeInputFinalGuard): Promise<unknown> {
     if (!appRuntimeChannelEnabled()) throw new AppRunError('APP_RUNS_DISABLED');
-    return this.runs.reviewRuntimeInput(caller, z.string().uuid().parse(runId));
+    return this.runs.reviewRuntimeInput(caller, z.string().uuid().parse(runId), finalGuard);
   }
 }
 

@@ -2,7 +2,13 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { APP_LIMITS } from '@deft/app-kit';
 import { AppError } from '../lib/app-errors.js';
+import { AppRunError } from '../lib/app-run-errors.js';
+import { appHttpFailure } from './app-http-errors.js';
 import { assertAttachmentBrokerEnabled } from '../lib/app-attachment-authority.js';
+import { attachmentFinalAuthorityIsCurrent } from '../lib/app-attachment-authority.js';
+import { and,eq } from 'drizzle-orm';
+import { appRuntimeBindings,appRuntimeRegistrations,appVersions } from '@deft/db/schema';
+import { isAppV5RuntimeActionsEnabled } from '../lib/env.js';
 import { getAppAttachmentRuntime } from '../lib/app-attachment-runtime.js';
 import { resourceSyncWebAuthority,ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { stageAppPackage } from '../lib/app-service.js';
@@ -58,6 +64,7 @@ async function body(c: Context, maxBytes=16_384, rawText=false): Promise<unknown
 }
 
 function failure(c:Context,error:unknown){
+  if(error instanceof AppRunError)return appHttpFailure(c,error,'App Run','app-runs');
   if(error instanceof AppError||error instanceof ResourceSyncWebAuthenticationError)return c.json({error:error.message,code:error.code},error.status);
   if(error instanceof z.ZodError||error instanceof SyntaxError||error instanceof TypeError)return c.json({error:'Invalid attachment request',code:'VALIDATION_ERROR'},400);
   console.error('[app-attachments] failure metadata', {name:error instanceof Error?error.name:'UNKNOWN',cause_code:(error as {cause?:{code?:string}})?.cause?.code,constraint:(error as {cause?:{constraint?:string}})?.cause?.constraint});
@@ -146,5 +153,76 @@ appAttachmentOwnerRoutes.get('/bindings/:bindingId/records/:projectionId/attachm
     c.header('Content-Type','application/octet-stream');c.header('X-Content-Type-Options','nosniff');
     c.header('Content-Disposition',`attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(value.filename).replace(/[!'()*]/gu,char=>'%'+char.charCodeAt(0).toString(16).toUpperCase())}`);
     return c.body(new Uint8Array(value.bytes));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentOwnerRoutes.get('/bindings/:bindingId/attachment-parents',async c=>{
+  try{const {actor,guard,web_session}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await (await getAppAttachmentRuntime()).owner.parents({org_id:actor.org_id,user_id:actor.actor_id,guard},
+      id.parse(c.req.param('bindingId')),web_session.sid,query(c),c.req.raw.signal));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentOwnerRoutes.get('/bindings/:bindingId/attachment-parents/:projectionId',async c=>{
+  try{noQuery(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await (await getAppAttachmentRuntime()).owner.parent({org_id:actor.org_id,user_id:actor.actor_id,guard},
+      {binding_id:id.parse(c.req.param('bindingId')),projection_id:id.parse(c.req.param('projectionId'))},c.req.raw.signal));
+  }catch(error){return failure(c,error);}
+});
+// Explicit v2 entry points do not reinterpret the owner-only v1 review.
+appAttachmentRoutes.post('/composition/stage',async c=>{
+  try{noQuery(c);const input=await body(c,APP_LIMITS.package_bytes,true);
+    const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json({app:await stageAppPackage(actor,input as string,{attachmentStage:true,attachmentComposition:true,guard})},201);
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/composition/:installationId/context',async c=>{
+  try{const q=z.strictObject({app_version_id:id}).parse(query(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await getAttachmentAppReviewContext(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,composition:true}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/composition/:installationId/review',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json({review:await prepareAttachmentAppReview(actor,id.parse(c.req.param('installationId')),input,{guard,composition:true})});
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/composition/:installationId/activate',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json({app:await activateAttachmentApp(actor,id.parse(c.req.param('installationId')),input,{guard,composition:true})});
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/composition/runtime/reviews/prepare',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {prepareRuntimeBindingReview}=await import('../lib/app-runtime-management.js');
+    return c.json({review:await prepareRuntimeBindingReview(actor,input,{guard})});
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/composition/runtime/bindings/activate',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {activateRuntimeBinding}=await import('../lib/app-runtime-management.js');
+    return c.json({binding:await activateRuntimeBinding(actor,input,{guard})},201);
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/composition/runtime/bindings/:bindingId/sessions',async c=>{
+  try{noQuery(c);z.strictObject({}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {issueRuntimeOperatorSession}=await import('../lib/app-runtime-management.js');
+    return c.json({session:await issueRuntimeOperatorSession(actor,id.parse(c.req.param('bindingId')),{guard})},201);
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/composition/runtime/invoke',async c=>{
+  try{noQuery(c);const input=await body(c,65_536);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {ReviewedRuntimeInvokeSchema,appRuntimeActionService}=await import('../lib/app-runtime-action-service.js');
+    const request=ReviewedRuntimeInvokeSchema.parse(input);
+    const run=await appRuntimeActionService.invokeFromExperience({org_id:actor.org_id,user_id:actor.actor_id},request,
+      async()=>{},async tx=>{
+        // Capture already locked and revalidated this binding and its complete
+        // participant prefix. No new membership/App lock follows the final SID.
+        const [current]=await tx.select({operator:appRuntimeRegistrations.operator_user_id,protocol:appVersions.protocol_version})
+          .from(appRuntimeBindings).innerJoin(appRuntimeRegistrations,and(eq(appRuntimeRegistrations.org_id,appRuntimeBindings.org_id),
+            eq(appRuntimeRegistrations.id,appRuntimeBindings.runtime_registration_id)))
+          .innerJoin(appVersions,and(eq(appVersions.org_id,appRuntimeBindings.org_id),eq(appVersions.id,appRuntimeBindings.app_version_id)))
+          .where(and(eq(appRuntimeBindings.org_id,actor.org_id),eq(appRuntimeBindings.id,request.runtime_binding_id))).limit(1);
+        if(!current||current.protocol!=='7'||!await attachmentFinalAuthorityIsCurrent(tx,[actor.actor_id,current.operator],{guard})
+          ||!isAppV5RuntimeActionsEnabled())throw new AppError('Attachment Runtime authority changed','APP_STALE',409);
+      });
+    return c.json({run});
   }catch(error){return failure(c,error);}
 });

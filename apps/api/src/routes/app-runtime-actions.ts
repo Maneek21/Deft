@@ -1,9 +1,13 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import type { AuthUser } from '../middleware/auth.js';
 import { AppRuntimeActionService, appRuntimeActionService } from '../lib/app-runtime-action-service.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { appRuntimeChannelEnabled } from '../lib/app-runtime-channel.js';
 import { appHttpFailure } from './app-http-errors.js';
+import { db } from '../lib/db.js';
+import { sql } from 'drizzle-orm';
+import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 
 const MAX_REQUEST_BYTES = 65_536;
 const READ_DEADLINE_MS = 10_000;
@@ -57,9 +61,31 @@ export function createAppRuntimeActionRoutes(service: AppRuntimeActionService = 
       if (!appRuntimeChannelEnabled()) throw new AppRunError('APP_RUNS_DISABLED');
       const user = c.get('user') as AuthUser | undefined;
       if (!user?.id || !user.org_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const runId = c.req.param('runId');
+      // Advisory only: AppRunService revalidates the locked Run/version and
+      // requires this guard for protocol 7. Existing 0–6 callers stay unchanged.
+      const locator = user.sid && z.string().uuid().safeParse(runId).success
+        ? (await db.execute(sql<{ protocol_version: string }>`SELECT v.protocol_version
+        FROM app_runs r JOIN app_versions v ON v.org_id=r.org_id AND v.id=r.origin_app_version_id
+        WHERE r.org_id=${user.org_id} AND r.id=${runId} LIMIT 1`)).rows[0]
+        : undefined;
+      let finalGuard;
+      if (locator?.protocol_version === '7') {
+        if (!user.sid) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+        const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'),
+          { org_id: user.org_id, user_id: user.id, sid: user.sid });
+        finalGuard = async (tx: import('../lib/app-run-repository.js').AppRunTransaction,
+          participants: readonly string[], expires_at: readonly Date[]) => {
+          const { attachmentFinalAuthorityIsCurrent } = await import('../lib/app-attachment-authority.js');
+          const { isAppV5RuntimeActionsEnabled } = await import('../lib/env.js');
+          if (!await attachmentFinalAuthorityIsCurrent(tx, participants, { guard, expires_at })
+            || !isAppV5RuntimeActionsEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        };
+      }
       return c.json({ review: await service.review({ org_id: user.org_id, user_id: user.id },
-        c.req.param('runId')) });
+        runId, finalGuard) });
     } catch (error) {
+      if (error instanceof ResourceSyncWebAuthenticationError) return c.json({ error: error.message, code: error.code }, error.status);
       return appHttpFailure(c, error, 'App Run', 'app-runs');
     }
   });

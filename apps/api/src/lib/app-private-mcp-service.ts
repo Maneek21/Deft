@@ -5,7 +5,7 @@ import { canonicalCapabilityJson } from '@deft/shared';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
-import { loadLockedPrivateAccessParent } from './app-private-access-parent.js';
+import { loadLockedPrivateAccessParent, privateAccessParentGateIsCurrent } from './app-private-access-parent.js';
 import { decodePrivateProjection } from './app-resource-private-projection.js';
 import { privateSearchDatabase } from './app-resource-private-search-db.js';
 import { ACCESS_LIMITS, HumanAccessAccept, accessUnavailable, PrivateResourceAccessError } from './app-resource-access-contract.js';
@@ -147,14 +147,14 @@ export class AppPrivateMcpService {
     };
   }
 
-  private async ownerFinal(tx: Tx, c: AccessCaller, participants: readonly string[], expires: Date, kind: 'personal_mcp' | 'employee_mcp', allowDisabled = false) {
+  private async ownerFinal(tx: Tx, c: AccessCaller, participants: readonly string[], expires: Date, kind: 'personal_mcp' | 'employee_mcp', allowDisabled = false, parent?: Parent) {
     await c.guard(tx);
     this.deadline(tx, new Date(Math.min(expires.getTime(), c.guard.current_web_session_expires_at().getTime())));
     if (!allowDisabled) await this.freshMembers(tx, c.org_id, participants[0]!, participants[1]!, participants[2]!, kind);
     const rows = await tx.select({ id: users.id, kind: users.kind, active: orgMembers.is_active, role: orgMembers.role }).from(orgMembers)
       .innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, c.org_id), inArray(orgMembers.user_id, [...new Set(participants)])));
     if (!rows.some(row => row.id === c.user_id && row.kind === 'human' && row.active && row.role !== 'guest')
-      || (!allowDisabled && !privateMcpEnabled()) || expires <= this.current(tx) || c.guard.current_web_session_expires_at() <= this.current(tx)) throw accessUnavailable();
+      || (!allowDisabled && !privateMcpEnabled()) || parent && !privateAccessParentGateIsCurrent(parent) || expires <= this.current(tx) || c.guard.current_web_session_expires_at() <= this.current(tx)) throw accessUnavailable();
   }
 
   private async auditMcpTool(tx: Tx, stamp: FirstClassMcpAuthentication, tool: string, grantId: string) {
@@ -186,7 +186,7 @@ export class AppPrivateMcpService {
       encodePrivateMcpToolResult({ schema_version: 'deft.app_private_mcp_record.v1', grant_id: randomUUID(), label: 'Private App record', data: selected, freshness: 'unknown', expires_at: snapshot.expires_at });
       const result = PrivateMcpReviewResponse.parse({ snapshot, selected_data: selected, custody_notice: custodyNotice, review_digest: digest(snapshot), review_token: this.seal(snapshot, 'review') });
       if (Buffer.byteLength(JSON.stringify(result)) > 128 * 1024) throw new PrivateResourceAccessError('APP_RESOURCE_ACCESS_TOO_LARGE', 413);
-      await this.ownerFinal(tx, c, parent.participants, expires, input.destination.kind);
+      await this.ownerFinal(tx, c, parent.participants, expires, input.destination.kind, false, parent);
       return result;
     });
   }
@@ -224,7 +224,7 @@ export class AppPrivateMcpService {
       if (prior) {
         if (prior.revoked_at) throw accessUnavailable();
         this.stored(prior);
-        await this.ownerFinal(tx, c, parent.participants, expires, snapshot.destination.kind);
+        await this.ownerFinal(tx, c, parent.participants, expires, snapshot.destination.kind, false, parent);
         return { grant_id: prior.id, expires_at: snapshot.expires_at };
       }
       await assertPrivateAccessAdmission(tx, c.org_id, c.user_id, snapshot.app_installation_id, snapshot.subject_user_id);
@@ -234,7 +234,7 @@ export class AppPrivateMcpService {
       // Exact review, binding and owner SID deadlines must survive awaited writes.
       const finalPins = await this.credentialPins(tx, c.org_id, snapshot.destination);
       if (digest(finalPins) !== digest(Object.fromEntries(Object.keys(finalPins).map(key => [key, snapshot[key as keyof PrivateMcpSnapshot]])))) throw accessUnavailable();
-      await this.ownerFinal(tx, c, parent.participants, expires, snapshot.destination.kind);
+      await this.ownerFinal(tx, c, parent.participants, expires, snapshot.destination.kind, false, parent);
       return { grant_id: id, expires_at: snapshot.expires_at };
     });
   }
@@ -261,6 +261,7 @@ export class AppPrivateMcpService {
       const deadline = new Date(Math.min(current.expires_at.getTime(), parent.authority.binding.consent_expires_at!.getTime(), citation ? Date.parse(citation.expires_at) : Infinity));
       const tool = operation === 'read' ? 'app_private_resource_read' : 'app_private_resource_cite';
       await finalPrivateMcpCredential(tx, invocation, tool, deadline, this.deadline(tx, deadline));
+      if (!privateAccessParentGateIsCurrent(parent)) throw accessUnavailable();
       call.signal.throwIfAborted();
       const record = decodePrivateProjection(this.secrets, parent.row, parent.authority.descriptor);
       const pins = this.pins({ ...parent, record });
@@ -278,6 +279,7 @@ export class AppPrivateMcpService {
       }
       await this.freshMembers(tx, stamp.org_id, parent.participants[0]!, target.subject, parent.participants[2]!, snapshot.destination.kind);
       await finalPrivateMcpCredential(tx, invocation, tool, deadline, this.deadline(tx, deadline));
+      if (!privateAccessParentGateIsCurrent(parent)) throw accessUnavailable();
       return result;
     }, call.deadline);
   }
@@ -330,6 +332,7 @@ export class AppPrivateMcpService {
       const projectionRows = await tx.select().from(appResourceProjections).where(and(eq(appResourceProjections.org_id, stamp.org_id), eq(appResourceProjections.resource_binding_id, scope.resource_binding_id), eq(appResourceProjections.checkpoint_id, parent.checkpoint.id), eq(appResourceProjections.generation, parent.checkpoint.generation), eq(appResourceProjections.state, 'live'), inArray(appResourceProjections.id, projections)));
       let expiry = Math.min(currentAnchor.expires_at.getTime(), parent.authority.binding.consent_expires_at!.getTime(), cursor ? Date.parse(cursor.expires_at) : this.issuance(tx).getTime() + 300000);
       await finalPrivateMcpCredential(tx, invocation, 'app_private_resource_search', new Date(expiry), this.deadline(tx, new Date(expiry)));
+      if (!privateAccessParentGateIsCurrent(parent)) throw accessUnavailable();
       const decoded = new Map<string, ReturnType<typeof decodePrivateProjection>>();
       for (const row of projectionRows) {
         requirePrivateMcpInvocation(invocation);
@@ -381,6 +384,7 @@ export class AppPrivateMcpService {
       await this.auditMcpTool(tx, stamp, 'app_private_resource_search', anchor.id);
       await this.freshMembers(tx, stamp.org_id, parent.participants[0]!, target.subject, parent.participants[2]!, scope.destination.kind);
       await finalPrivateMcpCredential(tx, invocation, 'app_private_resource_search', new Date(expiry), this.deadline(tx, new Date(expiry)));
+      if (!privateAccessParentGateIsCurrent(parent)) throw accessUnavailable();
       return result;
     }, call.deadline);
   }

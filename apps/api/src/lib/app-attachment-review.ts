@@ -8,7 +8,8 @@ import { db } from './db.js';
 import { assertCurrentModuleManagerWithExecutor, installModuleFromManifestWithExecutor, invalidateModuleCatalogCaches,
   type ModuleLifecyclePostCommit } from './module-service.js';
 import { APP_GRANT_SNAPSHOT_VERSION, buildRequestedAppGrantProjection, digestAppGrantValue } from './app-grant-service.js';
-import { buildAttachmentAppReviewedAuthority, ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION } from './app-attachment-authority.js';
+import { buildAttachmentAppReviewedAuthority, assertAttachmentManifestAdmission, assertAttachmentCompositionActionsEnabled,
+  ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION } from './app-attachment-authority.js';
 import { assertAttachmentBrokerEnabled, loadReviewedAttachmentApp, attachmentStale, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import type { AttachmentManagementOptions } from './app-attachment-authority.js';
 import type { AppRunTransaction } from './app-run-repository.js';
@@ -20,7 +21,13 @@ export const AttachmentAppReviewRequestSchema = z.strictObject({
   expected_lifecycle_epoch: z.number().int().nonnegative(), expected_grant_epoch: z.number().int().nonnegative(),
 });
 export const AttachmentAppActivateSchema = AttachmentAppReviewRequestSchema.extend({ expected_review_digest: AppDigestSchema, accept_host_policy: z.literal(true) });
-async function context(tx: AppRunTransaction, actor: ModuleActor, installationId: string, versionId: string) {
+export const AttachmentCompositionReviewRequestSchema = AttachmentAppReviewRequestSchema.extend({
+  schema_version: z.literal('deft.app_blob_review_request.v2'),
+});
+export const AttachmentCompositionActivateSchema = AttachmentCompositionReviewRequestSchema.extend({
+  expected_review_digest: AppDigestSchema, accept_host_policy: z.literal(true),
+});
+async function context(tx: AppRunTransaction, actor: ModuleActor, installationId: string, versionId: string, composition = false) {
   assertAttachmentBrokerEnabled();
   if (actor.kind !== 'human' || !['owner', 'admin'].includes(actor.role) || !['rest', 'ui'].includes(actor.source)) {
     throw new AppError('Attachment App manager required', 'APP_ACCESS_DENIED', 403);
@@ -41,45 +48,51 @@ async function context(tx: AppRunTransaction, actor: ModuleActor, installationId
     app_version_id: version.id, manifest, manifest_digest: version.manifest_digest, package_digest: version.package_digest });
   if (!requested || requested.snapshot_digest !== expected.snapshot_digest || digestAppGrantValue(requested.canonical_snapshot) !== expected.snapshot_digest) throw attachmentStale();
   const authority = buildAttachmentAppReviewedAuthority(manifest, { lineage_key: installation.lineage_key,
-    package_digest: version.package_digest, manifest_digest: version.manifest_digest });
-  const request = AttachmentAppReviewRequestSchema.parse({ schema_version: 'deft.app_blob_review_request.v1', app_version_id: version.id,
+    package_digest: version.package_digest, manifest_digest: version.manifest_digest }, composition);
+  const request = (composition ? AttachmentCompositionReviewRequestSchema : AttachmentAppReviewRequestSchema).parse({
+    schema_version: composition ? 'deft.app_blob_review_request.v2' : 'deft.app_blob_review_request.v1', app_version_id: version.id,
     expected_package_digest: version.package_digest, expected_requested_snapshot_digest: requested.snapshot_digest,
     expected_lifecycle_epoch: installation.lifecycle_epoch, expected_grant_epoch: installation.grant_epoch });
-  const review = { schema_version: 'deft.app_blob_review.v1', installation_id: installationId, organization_id: actor.org_id,
+  const review = { schema_version: composition ? 'deft.app_blob_review.v2' : 'deft.app_blob_review.v1', installation_id: installationId, organization_id: actor.org_id,
     request, authority, requested_snapshot_id: requested.id };
   return { installation, version, requested, manifest, authority, request, review: { ...review, review_digest: digestAppGrantValue(review) } };
 }
-async function final(tx: AppRunTransaction, actor: ModuleActor, options: AttachmentManagementOptions) {
+async function final(tx: AppRunTransaction, actor: ModuleActor, options: AttachmentManagementOptions,
+  manifest: Parameters<typeof assertAttachmentManifestAdmission>[0]) {
   if (!await attachmentFinalAuthorityIsCurrent(tx, [actor.actor_id], options)) throw attachmentStale();
+  assertAttachmentManifestAdmission(manifest, options.composition === true);
+  if (options.composition) assertAttachmentCompositionActionsEnabled(manifest);
 }
 export async function getAttachmentAppReviewContext(actor: ModuleActor, installationId: string, versionId: string,
   options: AttachmentManagementOptions = {}) {
   return db.transaction(async tx => {
-    const current = await context(tx, actor, installationId, versionId);
+    const current = await context(tx, actor, installationId, versionId, options.composition === true);
     let activation: { grant_snapshot_id: string; review_digest: string } | null = null;
     if (current.installation.state === 'active') {
       const live = await loadReviewedAttachmentApp(tx, actor.org_id, installationId);
+      if (live.composition !== (options.composition === true)) throw attachmentStale();
       activation = { grant_snapshot_id: live.grant.id, review_digest: AppDigestSchema.parse(live.grant.canonical_snapshot.review_digest) };
     }
-    await final(tx, actor, options);
-    return { schema_version: 'deft.app_blob_review_context.v1', installation_id: installationId, app_version_id: versionId,
+    await final(tx, actor, options, current.manifest);
+    return { schema_version: options.composition ? 'deft.app_blob_review_context.v2' : 'deft.app_blob_review_context.v1', installation_id: installationId, app_version_id: versionId,
       protocol_version: '7', state: current.installation.state, review_request: activation ? null : current.request, current_activation: activation };
   });
 }
 export async function prepareAttachmentAppReview(actor: ModuleActor, installationId: string, raw: unknown, options: AttachmentManagementOptions = {}) {
-  const input = AttachmentAppReviewRequestSchema.parse(raw);
+  const input = (options.composition ? AttachmentCompositionReviewRequestSchema : AttachmentAppReviewRequestSchema).parse(raw);
   return db.transaction(async tx => {
-    const current = await context(tx, actor, installationId, input.app_version_id);
+    const current = await context(tx, actor, installationId, input.app_version_id, options.composition === true);
     if (current.installation.state === 'active' || digestAppGrantValue(input) !== digestAppGrantValue(current.request)) throw attachmentStale();
-    await final(tx, actor, options);
+    await final(tx, actor, options, current.manifest);
     return current.review;
   });
 }
 export async function activateAttachmentApp(actor: ModuleActor, installationId: string, raw: unknown, options: AttachmentManagementOptions = {}) {
-  const { expected_review_digest, accept_host_policy: _accept, ...input } = AttachmentAppActivateSchema.parse(raw);
+  const { expected_review_digest, accept_host_policy: _accept, ...input } =
+    (options.composition ? AttachmentCompositionActivateSchema : AttachmentAppActivateSchema).parse(raw);
   const postCommit: ModuleLifecyclePostCommit[] = [];
   const result = await db.transaction(async tx => {
-    const current = await context(tx, actor, installationId, input.app_version_id);
+    const current = await context(tx, actor, installationId, input.app_version_id, options.composition === true);
     if (current.installation.state === 'active' || digestAppGrantValue(input) !== digestAppGrantValue(current.request)
       || current.review.review_digest !== expected_review_digest) throw attachmentStale();
     if (current.version.state === 'staged') {
@@ -122,7 +135,7 @@ export async function activateAttachmentApp(actor: ModuleActor, installationId: 
     await tx.insert(auditLog).values({ org_id: actor.org_id, actor_type: 'human', actor_id: actor.actor_id,
       action: 'app.blob.review_activate', entity_type: 'app_installation', entity_id: installationId,
       after_state: { state: 'active', grant_snapshot_id: effectiveId, review_digest: expected_review_digest } });
-    await final(tx, actor, options);
+    await final(tx, actor, options, current.manifest);
     return { installation, grant_snapshot_id: effectiveId };
   });
   for (const effect of postCommit) effect.emit();

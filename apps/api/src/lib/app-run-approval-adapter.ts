@@ -3,9 +3,10 @@ import {
   AppRunSafeOutcomeSchema,
   type AppRunSubmission,
 } from '@deft/shared';
-import { agentActions, agentEmployees } from '@deft/db/schema';
+import { agentActions, agentEmployees, appRuns, appVersions } from '@deft/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from './db.js';
+import { AppRunError } from './app-run-errors.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
   PostgresAppRunRepository,
@@ -127,11 +128,20 @@ export class PostgresAppRunApprovalResolver {
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      let requiresWebGuard = false;
+      if (run.provider_kind === 'app_runtime') {
+        const [version] = await tx.select({ protocol_version: appVersions.protocol_version }).from(appRuns)
+          .innerJoin(appVersions, and(eq(appVersions.org_id, appRuns.org_id), eq(appVersions.id, appRuns.origin_app_version_id)))
+          .where(and(eq(appRuns.org_id, run.org_id), eq(appRuns.id, run.id))).limit(1);
+        requiresWebGuard = version?.protocol_version === '7';
+        if (requiresWebGuard && !finalGuard) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      }
       if ((run.initiating_actor_type === 'app_public' || run.provider_kind === 'native') && action.user_id !== approverUserId) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
 
-      if (run.provider_kind === 'native' && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
+      if ((run.provider_kind === 'native' || requiresWebGuard)
+        && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }
       if (run.execution_release_kind === 'approved') {

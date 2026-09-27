@@ -54,8 +54,9 @@ appRunRoutes.get('/:runId/result', async (c) => {
     const user = c.get('user') as AuthUser;
     // Keep this advisory discriminator independent of the full growing schema
     // relation graph; the native reader revalidates the exact scoped Run.
-    const locator = (await db.execute(sql<{ provider_kind: string }>`SELECT provider_kind FROM app_runs
-      WHERE org_id=${user.org_id} AND id=${runId} LIMIT 1`)).rows[0];
+    const locator = (await db.execute(sql<{ provider_kind: string; protocol_version: string | null }>`SELECT r.provider_kind,v.protocol_version
+      FROM app_runs r LEFT JOIN app_versions v ON v.org_id=r.org_id AND v.id=r.origin_app_version_id
+      WHERE r.org_id=${user.org_id} AND r.id=${runId} LIMIT 1`)).rows[0];
     if (locator?.provider_kind === 'native') {
       const { assertNativeCalendarEnabled } = await import('../lib/app-native-authority.js');
       assertNativeCalendarEnabled();
@@ -63,6 +64,19 @@ appRunRoutes.get('/:runId/result', async (c) => {
       const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
       const { getAppRunRuntime } = await import('../lib/app-run-runtime.js');
       return c.json(await (await getAppRunRuntime()).service.resultReviewedNative({ org_id: user.org_id, user_id: user.id }, runId, guard));
+    }
+    if (locator?.provider_kind === 'app_runtime' && locator.protocol_version === '7') {
+      if (!user.sid) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'),
+        { org_id: user.org_id, user_id: user.id, sid: user.sid });
+      const { getAppRunRuntime } = await import('../lib/app-run-runtime.js');
+      return c.json(await (await getAppRunRuntime()).service.resultReviewedAttachmentRuntime(
+        { org_id: user.org_id, user_id: user.id }, runId, async (tx, participants, expires_at) => {
+          const { attachmentFinalAuthorityIsCurrent } = await import('../lib/app-attachment-authority.js');
+          const { isAppV5RuntimeActionsEnabled } = await import('../lib/env.js');
+          if (!await attachmentFinalAuthorityIsCurrent(tx, participants, { guard, expires_at })
+            || !isAppV5RuntimeActionsEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        }));
     }
     return c.json(await appActionService.result(callerFromContext(c), runId));
   } catch (error) {

@@ -18,6 +18,17 @@ import { loadReviewedRuntimeAction } from './app-runtime-review.js';
 import { APP_RUNTIME_CHANNEL_VERSION } from './app-runtime-contract.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
 import { issueAppRuntimeSession } from './app-runtime-authority.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
+import { isAppV5RuntimeActionsEnabled } from './env.js';
+
+type RuntimeManagementOptions = Readonly<{ guard?: WebAuthorityGuard }>;
+async function finalComposition(tx: Parameters<Parameters<typeof db.transaction>[0]>[0],protocol:string,
+  participants:readonly string[],options:RuntimeManagementOptions) {
+  if(protocol!=='7')return;
+  if(!options.guard)denied();
+  const {attachmentFinalAuthorityIsCurrent}=await import('./app-attachment-authority.js');
+  if(!await attachmentFinalAuthorityIsCurrent(tx,participants,{guard:options.guard})||!isAppV5RuntimeActionsEnabled())stale();
+}
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -119,16 +130,17 @@ async function reviewContext(tx: Parameters<Parameters<typeof db.transaction>[0]
   return { ...reviewed, review: { ...review, review_digest: digestAppGrantValue(review) } };
 }
 
-export async function prepareRuntimeBindingReview(actor: ModuleActor, value: unknown) {
+export async function prepareRuntimeBindingReview(actor: ModuleActor, value: unknown, options:RuntimeManagementOptions={}) {
   manager(actor);
   const input = RuntimeReviewInputSchema.parse(value);
   return db.transaction(async (tx) => {
-    const { review } = await reviewContext(tx, actor, input);
+    const { review,version } = await reviewContext(tx, actor, input);
+    await finalComposition(tx,version.protocol_version,[actor.actor_id,input.operator_user_id],options);
     return review;
   });
 }
 
-export async function activateRuntimeBinding(actor: ModuleActor, value: unknown) {
+export async function activateRuntimeBinding(actor: ModuleActor, value: unknown, options:RuntimeManagementOptions={}) {
   manager(actor);
   const input = RuntimeActivateInputSchema.parse(value);
   return db.transaction(async (tx) => {
@@ -197,19 +209,20 @@ export async function activateRuntimeBinding(actor: ModuleActor, value: unknown)
         contract_digest: action.contract_digest, review_digest: review.review_digest },
       metadata: { source: actor.source },
     });
+    await finalComposition(tx,version.protocol_version,[actor.actor_id,input.operator_user_id],options);
     return Object.freeze({ registration_id: registrationId, binding_id: bindingId,
       app_version_id: version.id, grant_snapshot_id: grant.id,
       action_key: action.action_key, review_digest: review.review_digest });
   });
 }
 
-export async function issueRuntimeOperatorSession(actor: ModuleActor, bindingId: string) {
+export async function issueRuntimeOperatorSession(actor: ModuleActor, bindingId: string, options:RuntimeManagementOptions={}) {
   if (actor.kind !== 'human' || (actor.source !== 'ui' && actor.source !== 'rest')) denied();
   if (!appRuntimeChannelEnabled()) {
     throw new AppError('App Runtime channel is disabled', 'APP_FEATURE_DISABLED', 503);
   }
   const issued = await issueAppRuntimeSession({ org_id: actor.org_id,
-    runtime_binding_id: Id.parse(bindingId), operator_user_id: actor.actor_id });
+    runtime_binding_id: Id.parse(bindingId), operator_user_id: actor.actor_id, guard:options.guard });
   if (!issued) denied();
   return issued;
 }

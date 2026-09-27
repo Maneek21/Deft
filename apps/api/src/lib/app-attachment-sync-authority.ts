@@ -28,7 +28,8 @@ export type LiveAttachmentSyncBindingAuthority = Readonly<Reviewed & {
 }>;
 export type LiveAttachmentSyncAuthority = Readonly<LiveAttachmentSyncBindingAuthority & { session: Session }>;
 
-type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; clock: () => Date }>;
+type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; clock: () => Date;
+  prelocked_participant_ids?: readonly string[] }>;
 type SessionLocator = Readonly<{ org_id: string; session_id: string;
   token_hash: string; clock: () => Date }>;
 
@@ -81,9 +82,16 @@ export async function loadLiveAttachmentSyncBindingAuthority(tx: AppRunTransacti
     .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, input.org_id),
       eq(appRuntimeRegistrations.id, locator.registration_id))).limit(1);
   if (!registrationLocator || registrationLocator.app_installation_id !== locator.installation_id) return null;
-  for (const userId of [...new Set([locator.owner_user_id, registrationLocator.operator_user_id])].sort()) {
-    await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
-      AND user_id = ${userId} FOR SHARE`);
+  const participantIds = [...new Set([locator.owner_user_id, registrationLocator.operator_user_id])].sort();
+  if (input.prelocked_participant_ids) {
+    // Composite readers already hold their full participant set before App.
+    // A changed locator must fail rather than introduce a later member lock.
+    if (participantIds.some(id => !input.prelocked_participant_ids!.includes(id))) return null;
+  } else {
+    for (const userId of participantIds) {
+      await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
+        AND user_id = ${userId} FOR SHARE`);
+    }
   }
   const [owner] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind, is_agent: users.is_agent })
     .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, input.org_id),

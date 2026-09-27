@@ -78,6 +78,8 @@ import type { ReviewedRuntimeInvoke, ReviewedRuntimeCaller } from './app-runtime
 import type { AppRunTransaction } from './app-run-repository.js';
 
 export type ReviewedRuntimeCapture = Readonly<{
+  protocol_version?: string;
+  operator_user_id?: string;
   authorization_snapshot: AppRunAuthorizationSnapshot;
   binding: Readonly<{
     id: string;
@@ -659,6 +661,7 @@ export class AppRunService {
     caller: ReviewedRuntimeCaller,
     request: ReviewedRuntimeInvoke,
     hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
+    hostFinalGuard?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunSafeView> {
     if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
       || !this.appLiveAuthorization?.captureReviewedRuntimeForPreparation
@@ -675,6 +678,7 @@ export class AppRunService {
       throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
     }
     const binding = capture.binding;
+    if(capture.protocol_version==='7'&&!hostFinalGuard)throw new AppRunError('APP_RUN_ACCESS_DENIED');
     if (binding.id !== request.runtime_binding_id || binding.org_id !== caller.org_id
       || binding.provider_kind !== 'app_runtime'
       || binding.action_key !== capture.action.action_key
@@ -730,12 +734,55 @@ export class AppRunService {
         resource_refs: [],
         fields: { app_installation_id: binding.app_installation_id,
           action_key: binding.action_key, runtime_binding_id: binding.id,
-          provider_kind: 'app_runtime' },
+          provider_kind: 'app_runtime',...(capture.protocol_version==='7'?{app_protocol:'7'}:{}) },
       }),
     };
     return this.#submit({ org_id: caller.org_id, initiating_actor: actor,
       execution_actor: actor }, submission, null, undefined, undefined, capture,
-      undefined, undefined, hostAdmission);
+      undefined, undefined, hostAdmission, undefined, hostFinalGuard);
+  }
+
+  /** Protocol 7 output is delivered only through the exact current web session;
+   * its retained authority stays locked through decryption and the final fence. */
+  async resultReviewedAttachmentRuntime(caller: ReviewedRuntimeCaller, runId: string,
+    finalGuard: (tx: AppRunTransaction, participants: readonly string[], expires_at: readonly Date[]) => Promise<void>
+  ): Promise<Readonly<{ run: AppRunSafeView; value: unknown }>> {
+    return this.repository.transaction(async tx => {
+      const run = await this.repository.lockRun(tx, caller.org_id, runId);
+      const pin = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
+      if (!run || !pin || run.provider_kind !== 'app_runtime' || run.origin_kind !== 'app'
+        || run.initiating_actor_type !== 'human' || run.initiating_actor_id !== caller.user_id
+        || run.execution_actor_type !== 'human' || run.execution_actor_id !== caller.user_id
+        || !pin.origin_runtime_binding_id || !this.appLiveAuthorization?.captureReviewedRuntimeInTransaction) {
+        throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      }
+      let current: ReviewedRuntimeCapture;
+      let authorityMatches = false;
+      try {
+        current = await this.appLiveAuthorization.captureReviewedRuntimeInTransaction(tx,
+          { org_id: caller.org_id, user_id: caller.user_id, runtime_binding_id: pin.origin_runtime_binding_id });
+        authorityMatches = canonicalAuthorization(current.authorization_snapshot)
+          === canonicalAuthorization(AppRunAuthorizationSnapshotSchema.parse(pin.authorization_snapshot));
+      } catch { throw new AppRunError('APP_RUN_AUTHORIZATION_STALE'); }
+      if (current.protocol_version !== '7' || !current.operator_user_id
+        || current.binding.app_installation_id !== pin.origin_app_installation_id
+        || current.binding.app_version_id !== pin.origin_app_version_id
+        || current.binding.grant_snapshot_id !== pin.origin_app_grant_snapshot_id
+        || current.binding.provider_instance_id !== run.provider_instance_id
+        || current.binding.provider_snapshot_id !== pin.provider_snapshot_id
+        || current.binding.operation_name !== run.operation_name || !authorityMatches) {
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
+      if (run.result_purged_at || run.result_expires_at <= this.now()) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
+      const attemptId = await this.repository.latestRetainedAttemptId(caller.org_id, runId, tx);
+      if (!attemptId) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
+      const value = await this.secretRepository.readOutput(caller.org_id, runId, attemptId, tx);
+      if (value === null) throw new AppRunError('APP_RUN_RESULT_EXPIRED');
+      const envelope = AppRunRetainedProviderResultSchema.parse(value);
+      assertAppRunOutputWithinBudget(envelope);
+      await finalGuard(tx, [caller.user_id, current.operator_user_id], [run.result_expires_at]);
+      return Object.freeze({ run, value });
+    });
   }
 
   /** Only the validated public-ingress worker calls this inside the ingress
@@ -810,7 +857,8 @@ export class AppRunService {
   /** Transient approval review: disclose exact retained input only to the
    * initiating human while the reviewed binding and pending approval remain
    * live. Nothing plaintext is copied into a card, event, or receipt. */
-  async reviewRuntimeInput(caller: ReviewedRuntimeCaller, runId: string) {
+  async reviewRuntimeInput(caller: ReviewedRuntimeCaller, runId: string,
+    finalGuard?: (tx:AppRunTransaction,participants:readonly string[],expires_at:readonly Date[])=>Promise<void>) {
     if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
       || !this.appLiveAuthorization?.captureReviewedRuntimeInTransaction) {
       throw new AppRunError('APP_RUNS_DISABLED');
@@ -879,11 +927,16 @@ export class AppRunService {
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       }
       let input: Record<string, string | number | boolean>;
+      if(current.protocol_version==='7'&&!finalGuard)throw new AppRunError('APP_RUN_ACCESS_DENIED');
       try {
         const retained = await this.secretRepository.readInput(caller.org_id, runId, tx);
         input = parseRuntimeObjectInput(RuntimeObjectSchema.parse(current.action.input_schema), retained);
       } catch {
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+      }
+      if(current.protocol_version==='7'){
+        if(!current.operator_user_id)throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        await finalGuard!(tx,[caller.user_id,current.operator_user_id],[pin.input_expires_at,locked.result_expires_at]);
       }
       return Object.freeze({ run_id: runId,
         action_key: current.action.action_key,
@@ -998,6 +1051,7 @@ export class AppRunService {
     existingTx?: AppRunTransaction,
     hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
     trustedNativeCapture?: ReviewedNativeCapture | ReviewedPublicNativeCapture,
+    hostFinalGuard?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -1212,6 +1266,11 @@ export class AppRunService {
           authorization_snapshot: _authorization,
           ...safe
         } = replay;
+        if(hostFinalGuard)await hostFinalGuard(tx);
+        if (trustedRuntimeCapture?.protocol_version === '7'
+          && (safe.input_expires_at <= this.now() || safe.result_expires_at <= this.now())) {
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+        }
         return safe;
       }
       const lineage = parentRunId === null
@@ -1298,6 +1357,11 @@ export class AppRunService {
       }
       if (run.execution_released_at) {
         await this.attemptScheduler.scheduleInTransaction(tx, run, now);
+      }
+      if(hostFinalGuard)await hostFinalGuard(tx);
+      if (trustedRuntimeCapture?.protocol_version === '7'
+        && (run.input_expires_at <= this.now() || run.result_expires_at <= this.now())) {
+        throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       }
       return run;
     };
@@ -1422,6 +1486,13 @@ export class AppRunService {
       // Generic action/agent callers can map to a human identity but have no
       // exact live web SID. Native output uses the explicit guarded entry.
       throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    }
+    if (run.provider_kind === 'app_runtime') {
+      const protocol = await this.repository.transaction(async tx => (await tx.execute(sql<{ protocol_version: string }>`
+        SELECT v.protocol_version FROM app_runs r JOIN app_versions v
+          ON v.org_id=r.org_id AND v.id=r.origin_app_version_id
+        WHERE r.org_id=${orgId} AND r.id=${runId} LIMIT 1`)).rows[0]?.protocol_version);
+      if (protocol === '7') throw new AppRunError('APP_RUN_ACCESS_DENIED');
     }
     if (
       run.origin_kind === 'app'

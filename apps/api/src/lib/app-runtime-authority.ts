@@ -12,6 +12,8 @@ import type { AppRunTransaction } from './app-run-repository.js';
 import { APP_RUNTIME_CHANNEL_VERSION, APP_RUNTIME_SESSION_MS } from './app-runtime-contract.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import type { ReviewedRuntimeAction } from './app-runtime-review.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
+import { isAppV5RuntimeActionsEnabled } from './env.js';
 
 const runtimeLiveAuthorizer = new PostgresAppRunLiveAuthorization();
 
@@ -31,6 +33,7 @@ export type LiveRuntimeAuthority = Readonly<{
   retry_class: typeof appRuntimeBindings.$inferSelect['retry_class'];
   retention_class: typeof appRuntimeBindings.$inferSelect['retention_class'];
   prelocked_run_actor_id?: string;
+  attachment_authority?: Readonly<{ participants: readonly string[]; session_expires_at: Date }>;
 }>;
 
 /** This private candidate slice accepts a human-origin Run fixture only. A
@@ -210,7 +213,7 @@ export async function loadLiveRuntimeAuthority(
     || installation.grant_epoch !== session.grant_epoch) return null;
   await tx.execute(sql`SELECT id FROM app_versions WHERE org_id = ${orgId}
     AND id = ${registration.app_version_id} FOR SHARE`);
-  const [version] = await tx.select({ state: appVersions.state }).from(appVersions).where(and(
+  const [version] = await tx.select({ state: appVersions.state, protocol_version: appVersions.protocol_version }).from(appVersions).where(and(
       eq(appVersions.org_id, orgId), eq(appVersions.id, registration.app_version_id),
       eq(appVersions.installation_id, registration.app_installation_id),
     )).limit(1);
@@ -248,6 +251,9 @@ export async function loadLiveRuntimeAuthority(
     retry_class: binding.retry_class,
     retention_class: binding.retention_class,
     ...(prelockedRunActorId ? { prelocked_run_actor_id: prelockedRunActorId } : {}),
+    ...(version.protocol_version === '7' ? { attachment_authority: Object.freeze({
+      participants: Object.freeze([...new Set(memberIds)]), session_expires_at: session.expires_at,
+    }) } : {}),
   });
 }
 
@@ -257,6 +263,7 @@ export async function issueAppRuntimeSession(input: Readonly<{
   runtime_binding_id: string;
   operator_user_id: string;
   now?: Date;
+  guard?: WebAuthorityGuard;
 }>): Promise<Readonly<{ session_id: string; session_token: string; expires_at: Date }> | null> {
   const now = input.now ?? new Date();
   const sessionId = crypto.randomUUID();
@@ -309,6 +316,15 @@ export async function issueAppRuntimeSession(input: Readonly<{
     if (!await loadLiveRuntimeAuthority(tx, input.org_id, sessionId, bootstrapTokenHash,
       () => input.now ?? new Date())) {
       throw new Error('APP_RUNTIME_AUTHORITY_STALE');
+    }
+    const [version]=await tx.select({protocol:appVersions.protocol_version}).from(appVersions)
+      .where(and(eq(appVersions.org_id,input.org_id),eq(appVersions.id,lockedBinding.app_version_id),
+        eq(appVersions.installation_id,installation.id))).limit(1);
+    if(version?.protocol==='7'){
+      if(!input.guard)throw new Error('APP_RUNTIME_AUTHORITY_STALE');
+      const {attachmentFinalAuthorityIsCurrent}=await import('./app-attachment-authority.js');
+      if(!await attachmentFinalAuthorityIsCurrent(tx,[input.operator_user_id],{guard:input.guard,
+        expires_at:[new Date(now.getTime()+APP_RUNTIME_SESSION_MS)]})||!isAppV5RuntimeActionsEnabled())throw new Error('APP_RUNTIME_AUTHORITY_STALE');
     }
     return true;
   }); } catch { return null; }
