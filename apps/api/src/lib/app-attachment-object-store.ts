@@ -1,4 +1,4 @@
-import { link, mkdir, open, unlink } from 'node:fs/promises';
+import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit';
 import { LocalFileStore } from './file-store.js';
@@ -9,10 +9,10 @@ export interface AppAttachmentObjectStore {
   delete(objectId: string): Promise<void>;
 }
 
-/** Quarantined ciphertext has no generic File row or client URL. A hard-link
- * publication is atomic and refuses an existing destination; rename would
- * overwrite one on common filesystems. Uncertain publication is never retried
- * with a new identity by this adapter. The custody row decides accessibility. */
+/** Quarantined ciphertext has no generic File row or client URL. Direct wx
+ * writes may be partial while uploading; only complete verified bytes can gain
+ * ready authority. Purge permanently replaces the destination with an empty
+ * inode, fencing late/restarted writers without a ciphertext temporary path. */
 export class LocalAppAttachmentObjectStore implements AppAttachmentObjectStore {
   readonly #files: LocalFileStore;
   constructor(rootDir = join(process.cwd(), 'uploads', 'app-attachments')) {
@@ -28,31 +28,31 @@ export class LocalAppAttachmentObjectStore implements AppAttachmentObjectStore {
     const key = this.#key(objectId);
     if (ciphertext.byteLength > RESOURCE_ATTACHMENT_LIMITS.attachment_bytes) throw new TypeError('Attachment exceeds host limit');
     signal.throwIfAborted(); await mkdir(this.#files.rootDir, { recursive: true }); signal.throwIfAborted();
-    // A crash before publication must leave a locator derived from the durable
-    // reserved stage identity, rather than an unidentified ciphertext orphan.
-    const temporary = join(this.#files.rootDir, `.pending-${key}`);
-    let owned = false;
+    const handle = await open(join(this.#files.rootDir, key), 'wx');
     try {
-      const handle = await open(temporary, 'wx');
-      owned = true;
-      try { await handle.writeFile(ciphertext, { signal }); }
-      finally { await handle.close(); }
+      await handle.writeFile(ciphertext, { signal });
       signal.throwIfAborted();
-      await link(temporary, join(this.#files.rootDir, key));
-      signal.throwIfAborted();
-    } finally {
-      // Never remove an existing pending writer when our exclusive open failed.
-      if (owned) await unlink(temporary).catch(error => {
-        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
-      });
-    }
+    } finally { await handle.close(); }
   }
   get(objectId: string, signal: AbortSignal): Promise<Buffer> {
     return this.#files.get(this.#key(objectId), { signal, maxBytes: RESOURCE_ATTACHMENT_LIMITS.attachment_bytes });
   }
   async delete(objectId: string): Promise<void> {
     const key = this.#key(objectId);
-    await this.#files.delete(key);
+    await mkdir(this.#files.rootDir, { recursive: true });
+    // Atomic replacement keeps the reserved namespace occupied after purge.
+    // Concurrent marker interference must fail closed: an empty destination
+    // can still belong to an uploading writer, so it is not proof of retirement.
+    const marker = join(this.#files.rootDir, `.retiring-${key}`);
+    await writeFile(marker, Buffer.alloc(0));
+    try { await rename(marker, join(this.#files.rootDir, key)); }
+    finally {
+      await unlink(marker).catch(error => {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
+      });
+    }
+    // Compatibility with the unfrozen hard-link draft: remove its known
+    // pending ciphertext too. New writers never create that path.
     await unlink(join(this.#files.rootDir, `.pending-${key}`)).catch(error => {
       if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
     });

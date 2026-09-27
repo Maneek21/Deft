@@ -80,7 +80,12 @@ export class AppAttachmentCustodyService {
         if (encrypted) {
           const put = this.objects.putExclusive(reserved.row.id,encrypted.ciphertext,signal);
           try {
-            await put; signal.throwIfAborted();
+            try { await put; }
+            catch(error) {
+              if(error&&typeof error==='object'&&'code' in error&&error.code==='EEXIST')throw conflict();
+              throw error;
+            }
+            signal.throwIfAborted();
             const stored = await this.objects.get(reserved.row.id,signal);
             try {
               const verified = this.#secrets.openBinary({ ...encrypted,ciphertext:stored },attachmentStageContext(reserved.row));

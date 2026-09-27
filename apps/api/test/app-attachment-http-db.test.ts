@@ -104,12 +104,61 @@ test('packed protocol7 provider stages bytes then normal channel3 settlement lin
       composed.objects.putExclusive=async(...args)=>{await put(...args);entered();await held;};
       try{
         child.send({type:'withdraw',channel_url:base+'/api/app-resource-sync-channel/v3',credential:{session_id:withdrawSession.session_id,session_token:withdrawSession.session_token}});
-        await written;process.env.DEFT_APP_ATTACHMENT_BROKER_ENABLED='false';release();
+        await written;
+        const [unready]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.run_id,withdrawRun.run_id));
+        const [attempt]=await db.select().from(s.appRunAttempts).where(orm.eq(s.appRunAttempts.run_id,withdrawRun.run_id));
+        assert.ok(unready&&attempt?.claim_token);assert.equal(unready.state,'uploading');
+        // Even complete quarantined bytes cannot become parent/download
+        // authority before ready publication; partial writes have less state.
+        const premature=await fetch(base+'/api/app-resource-sync-channel/v3/result',{method:'POST',headers:{
+          authorization:`AppRuntime ${withdrawSession.session_token}`,'content-type':'application/json'},body:JSON.stringify({
+          schema_version:'deft.app_runtime_channel.v3',audience:'app_resource_sync',session_id:withdrawSession.session_id,
+          run_id:withdrawRun.run_id,attempt_id:attempt.id,claim_token:attempt.claim_token,sequence:attempt.runtime_sequence,
+          status:'returned',provider_succeeded:true,page:{schema_version:'deft.app_sync_page.v2',upserts:[{id:'synthetic-message-1',
+            revision:'1',data:{subject:'Unready parent'},attachments:[{attachment_key:'part-1',staging_id:unready.id}]}],
+            tombstones:[],next_cursor:'premature',has_more:false}})});
+        assert.equal(premature.status,409,'Uploading ciphertext cannot acquire linked parent authority');
+        assert.equal((await db.select().from(s.appResourceProjections).where(orm.eq(s.appResourceProjections.resource_binding_id,withdrawBinding.binding_id))).length,0);
+        process.env.DEFT_APP_ATTACHMENT_BROKER_ENABLED='false';release();
         const denied=await wait('stage_denied');assert.equal(denied.run_id,withdrawRun.run_id);assert.equal(denied.http_status,409);
         const rows=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.run_id,withdrawRun.run_id));assert.equal(rows.length,1);assert.equal(rows[0]?.state,'uploading');
         assert.equal(rows[0]?.object_id,null);assert.equal(rows[0]?.binary_key_version,null);
         assert.equal((await db.select().from(s.appResourceProjections).where(orm.eq(s.appResourceProjections.resource_binding_id,withdrawBinding.binding_id))).length,0);
       }finally{process.env.DEFT_APP_ATTACHMENT_BROKER_ENABLED='true';release?.();composed.objects.putExclusive=put;}
+    });
+    await t.test('purge before delayed ciphertext publication cannot leave an object after reservation retirement',async()=>{
+      const {binding:purgeBinding,session:purgeSession}=await reviewedBinding(`${suffix}late`);
+      const admitted=await call(`/sync/bindings/${purgeBinding.binding_id}/sync`,'POST',{});assert.equal(admitted.state,'created');
+      const put=composed.objects.putExclusive.bind(composed.objects);let release!:()=>void,entered!:(id:string)=>void;
+      const held=new Promise<void>(ready=>{release=ready;});const entering=new Promise<string>(ready=>{entered=ready;});
+      let putSignal:AbortSignal|undefined;
+      composed.objects.putExclusive=async(id,bytes,signal)=>{putSignal=signal;entered(id);await held;await put(id,bytes,signal);};
+      let cleanup:InstanceType<typeof cleanupModule.AppAttachmentCleanup>|undefined;
+      try{
+        child.send({type:'withdraw',channel_url:base+'/api/app-resource-sync-channel/v3',credential:{session_id:purgeSession.session_id,session_token:purgeSession.session_token}});
+        const stageId=await entering;
+        await assert.rejects(composed.objects.get(stageId,new AbortController().signal),'Publication has not created an object');
+        const [reserved]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.id,stageId));
+        assert.ok(reserved);assert.equal(reserved.state,'uploading');
+        // An explicitly advanced local cleanup clock exercises expiry while
+        // the real store publication remains held inside its live I/O budget.
+        cleanup=new cleanupModule.AppAttachmentCleanup(()=>true,()=>new Date(reserved.stage_expires_at.getTime()+1),composed.objects,target!);
+        let purged=false;
+        for(let pass=0;pass<10&&!purged;pass++){
+          await cleanup.run();
+          const [row]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.id,stageId));purged=row?.state==='purged';
+        }
+        assert.ok(purged,'Bounded keyset cleanup reached the reserved uploading stage');
+        const [before]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.id,stageId));
+        assert.equal(before?.metadata_envelope,null);
+        const [capacity]=await db.select().from(s.appSyncCheckpoints).where(orm.eq(s.appSyncCheckpoints.resource_binding_id,purgeBinding.binding_id));
+        assert.equal(capacity?.retained_bytes,0,'Purge had confirmed absence and released declared byte capacity');
+        assert.equal(putSignal?.aborted,false,'Publication resumes with a live signal, not transfer cancellation');release();
+        const denied=await wait('stage_denied');assert.equal(denied.run_id,admitted.run_id);assert.equal(denied.http_status,409);
+        assert.equal((await composed.objects.get(stageId,new AbortController().signal)).length,0,'Rejected delayed publication retains only the permanent zero-byte namespace fence');
+        await assert.rejects(put(stageId,Buffer.from('late replacement'),new AbortController().signal),'Fresh publication cannot reclaim a purged identity');
+        assert.equal((await db.select().from(s.appResourceProjections).where(orm.eq(s.appResourceProjections.resource_binding_id,purgeBinding.binding_id))).length,0);
+      }finally{release?.();composed.objects.putExclusive=put;await cleanup?.stop();}
     });
     await t.test('operator human flag withdrawal during final real SID lock wait prevents content delivery',async()=>{
       const {default:pg}=await import('pg');const blocker=new pg.Client({connectionString:target});const observer=new pg.Client({connectionString:target});
@@ -160,13 +209,19 @@ test('packed protocol7 provider stages bytes then normal channel3 settlement lin
     await t.test('failed physical deletion retains encrypted metadata and capacity until confirmed purge',async()=>{
     const cleanup=new cleanupModule.AppAttachmentCleanup(()=>true,()=>new Date(Date.now()+2*86400_000),composed.objects,target!);
     const remove=composed.objects.delete.bind(composed.objects);
+    const fs=await import('node:fs/promises');
+    let openedWriter:Awaited<ReturnType<typeof fs.open>>|undefined;
     try{
-      composed.objects.delete=async id=>{if(id===settled.staging_id)throw new Error('Controlled unavailable storage');await remove(id);};
+      if(process.platform==='win32')openedWriter=await fs.open(resolve('uploads','app-attachments',settled.staging_id),'r+');
+      else composed.objects.delete=async id=>{if(id===settled.staging_id)throw new Error('Controlled unavailable storage');await remove(id);};
       assert.ok((await cleanup.run()).failed>=1);
       const [retired]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.id,settled.staging_id));
       assert.equal(retired?.state,'retired');assert.ok(retired?.metadata_envelope);assert.equal(retired?.object_id,settled.staging_id);
       const [charged]=await db.select().from(s.appSyncCheckpoints).where(orm.eq(s.appSyncCheckpoints.id,projection.checkpoint_id));
       assert.equal(charged?.retained_bytes,projection.provider_id_bytes+projection.body_bytes+Buffer.from(settled.bytes_b64,'base64').length);
+      const chargedRefs=await composed.database.transaction(tx=>inventory.listAppAttachmentKeyReferences(tx,org),new AbortController().signal,performance.now()+10_000);
+      assert.ok(chargedRefs.some(ref=>ref.purpose==='run_encryption'),'Failed physical replacement retains required ciphertext keys');
+      await openedWriter?.close();openedWriter=undefined;
       composed.objects.delete=remove;
       const purged=await cleanup.run();assert.ok(purged.purged>=1);
       const [stageRow]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.id,settled.staging_id));
@@ -175,7 +230,7 @@ test('packed protocol7 provider stages bytes then normal channel3 settlement lin
       assert.equal(retained?.retained_bytes,projection.provider_id_bytes+projection.body_bytes,'Binary counter released exactly after confirmed purge');
       assert.ok((await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.run_id,settled.run_id))).length>=1,'Purged lifetime reservation identity retained');
       const refs=await composed.database.transaction(tx=>inventory.listAppAttachmentKeyReferences(tx,org),new AbortController().signal,performance.now()+10_000);assert.deepEqual(refs,[]);
-    }finally{composed.objects.delete=remove;await cleanup.stop();}
+    }finally{await openedWriter?.close();composed.objects.delete=remove;await cleanup.stop();}
     });
   }finally{
     child.kill();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));
