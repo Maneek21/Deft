@@ -13,6 +13,9 @@ import { getAppAttachmentRuntime } from '../lib/app-attachment-runtime.js';
 import { resourceSyncWebAuthority,ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { stageAppPackage } from '../lib/app-service.js';
 import { getAttachmentAppReviewContext,prepareAttachmentAppReview,activateAttachmentApp } from '../lib/app-attachment-review.js';
+import { listResourceSyncBindings, inspectResourceSyncBinding } from '../lib/app-resource-sync-status.js';
+import { listEligibleResourceSyncOperators, listAssignedResourceSyncBindings,
+  listOwnResourceSyncSessions } from '../lib/app-resource-sync-operator.js';
 const READ_DEADLINE_MS=10_000;
 const id=z.string().uuid();
 function query(c:Context){const entries=[...new URL(c.req.url).searchParams.entries()];
@@ -153,6 +156,31 @@ appAttachmentOwnerRoutes.get('/bindings/:bindingId/records/:projectionId/attachm
     c.header('Content-Type','application/octet-stream');c.header('X-Content-Type-Options','nosniff');
     c.header('Content-Disposition',`attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(value.filename).replace(/[!'()*]/gu,char=>'%'+char.charCodeAt(0).toString(16).toUpperCase())}`);
     return c.body(new Uint8Array(value.bytes));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/sync/operators',async c=>{
+  try{const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await listEligibleResourceSyncOperators(actor,query(c),undefined,{kind:'attachment_v3',guard}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/sync/operator/assignments',async c=>{
+  try{const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await listAssignedResourceSyncBindings(actor,query(c),undefined,{kind:'attachment_v3',guard}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/sync/bindings',async c=>{
+  try{const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await listResourceSyncBindings(actor,query(c),undefined,{kind:'attachment_v3',guard}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/sync/bindings/:bindingId',async c=>{
+  try{noQuery(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await inspectResourceSyncBinding(actor,id.parse(c.req.param('bindingId')),undefined,{kind:'attachment_v3',guard}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/sync/bindings/:bindingId/sessions',async c=>{
+  try{const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await listOwnResourceSyncSessions(actor,id.parse(c.req.param('bindingId')),query(c),undefined,{kind:'attachment_v3',guard}));
   }catch(error){return failure(c,error);}
 });
 appAttachmentOwnerRoutes.get('/bindings/:bindingId/attachment-parents',async c=>{

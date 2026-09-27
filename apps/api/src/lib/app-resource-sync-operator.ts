@@ -8,6 +8,8 @@ import { assertResourceSyncManager } from './app-resource-sync-web-authority.js'
 import { ResourceSyncListQuery } from './app-resource-sync-status.js';
 import { loadLiveResourceSyncBindingAuthority, resourceSyncParticipantsAreHuman } from './app-resource-sync-authority.js';
 import type { ResourceSyncManagementGuard } from './app-resource-sync-management.js';
+import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
+import { finishAttachmentSyncMetadata, type AttachmentSyncReadMode } from './app-resource-sync-read-mode.js';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const Id = z.string().uuid();
@@ -40,25 +42,27 @@ async function currentActor(tx: Tx, actor: ModuleActor, manager = false) {
 /** Advisory choices only. Do not lock candidates after the manager membership;
  * consent takes all nominated participant memberships in sorted order. */
 export async function listEligibleResourceSyncOperators(actor: ModuleActor, raw: unknown,
-  guard?: ResourceSyncManagementGuard) {
+  guard?: ResourceSyncManagementGuard, mode?: AttachmentSyncReadMode) {
   const query = ResourceSyncListQuery.parse(raw);
   return db.transaction(async tx => {
     await members(tx, actor.org_id, [actor.actor_id]);
     await currentActor(tx, actor, true);
-    await guard?.(tx);
+    if (!mode) await guard?.(tx);
     await currentActor(tx, actor, true);
     const rows = await tx.select({ user_id: users.id, name: users.name }).from(orgMembers)
       .innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, actor.org_id),
         eq(orgMembers.is_active, true), ne(orgMembers.role, 'guest'), eq(users.kind, 'human'),
+        mode ? eq(users.is_agent, false) : undefined,
         query.after ? gt(users.id, query.after) : undefined)).orderBy(asc(users.id)).limit(query.limit + 1);
     const page = rows.slice(0, query.limit).map(row => ({ ...row, name: name(row.name) }));
+    await finishAttachmentSyncMetadata(tx, [actor.actor_id], mode);
     return Operators.parse({ schema_version: 'deft.app_resource_sync_operators.v1', operators: page,
       next_after: rows.length > query.limit ? page.at(-1)!.user_id : null });
   });
 }
 
 export async function listAssignedResourceSyncBindings(actor: ModuleActor, raw: unknown,
-  guard?: ResourceSyncManagementGuard) {
+  guard?: ResourceSyncManagementGuard, mode?: AttachmentSyncReadMode) {
   const query = ResourceSyncListQuery.parse(raw);
   return db.transaction(async tx => {
     // Locate at most one page, then lock the complete participant set before
@@ -74,12 +78,13 @@ export async function listAssignedResourceSyncBindings(actor: ModuleActor, raw: 
       .innerJoin(users, eq(users.id, appResourceBindings.owner_user_id)).where(and(
         eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.state, 'active'),
         eq(appRuntimeRegistrations.operator_user_id, actor.actor_id), eq(appRuntimeRegistrations.state, 'active'),
-        eq(appRuntimeRegistrations.contract_version, 'deft.app_runtime_channel.v2'),
+        eq(appRuntimeRegistrations.contract_version, mode ? 'deft.app_runtime_channel.v3' : 'deft.app_runtime_channel.v2'),
         gt(appResourceBindings.consent_expires_at, new Date()),
         query.after ? gt(appResourceBindings.id, query.after) : undefined))
       .orderBy(asc(appResourceBindings.id)).limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
-    await members(tx, actor.org_id, [actor.actor_id, ...page.map(row => row.owner_user_id)]);
+    const participantIds = [actor.actor_id, ...page.map(row => row.owner_user_id)];
+    await members(tx, actor.org_id, participantIds);
     await currentActor(tx, actor);
     const installationIds = [...new Set(page.map(row => row.installation_id))].sort();
     for (const id of installationIds) await tx.execute(sql`SELECT id FROM app_installations
@@ -112,11 +117,12 @@ export async function listAssignedResourceSyncBindings(actor: ModuleActor, raw: 
         || current.version_id !== row.version_id || current.registration_id !== row.registration_id
         || current.operator_id !== actor.actor_id || current.registration_installation_id !== row.installation_id
         || activeVersions.get(row.installation_id) !== row.version_id) continue;
-      const authority = await loadLiveResourceSyncBindingAuthority(tx, { org_id: actor.org_id,
-        resource_binding_id: row.binding_id, clock: () => new Date() });
+      const input = { org_id: actor.org_id, resource_binding_id: row.binding_id, clock: () => new Date() };
+      const authority = mode ? await loadLiveAttachmentSyncBindingAuthority(tx, { ...input,
+        prelocked_participant_ids: participantIds }) : await loadLiveResourceSyncBindingAuthority(tx, input);
       if (authority?.registration.operator_user_id === actor.actor_id) live.push({ row, authority });
     }
-    await guard?.(tx);
+    if (!mode) await guard?.(tx);
     await currentActor(tx, actor);
     const assignments = [];
     for (const { row, authority } of live) {
@@ -126,13 +132,15 @@ export async function listAssignedResourceSyncBindings(actor: ModuleActor, raw: 
         resource_key: authority.binding.resource_key, owner_user_id: row.owner_user_id,
         owner_name: name(row.owner_name), consent_expires_at: authority.binding.consent_expires_at.toISOString() });
     }
+    await finishAttachmentSyncMetadata(tx, [actor.actor_id, ...live.map(({ row }) => row.owner_user_id)],
+      mode, live.map(({ authority }) => authority.binding.consent_expires_at!));
     return Assignments.parse({ schema_version: 'deft.app_resource_sync_assignments.v1', assignments,
       next_after: rows.length > query.limit ? page.at(-1)!.binding_id : null });
   });
 }
 
 export async function listOwnResourceSyncSessions(actor: ModuleActor, bindingId: string, raw: unknown,
-  guard?: ResourceSyncManagementGuard) {
+  guard?: ResourceSyncManagementGuard, mode?: AttachmentSyncReadMode) {
   bindingId = Id.parse(bindingId);
   const input = z.strictObject({ session_id: Id.optional(), after: Id.optional(),
     limit: z.coerce.number().int().min(1).max(50).optional() }).superRefine((value, context) => {
@@ -141,8 +149,22 @@ export async function listOwnResourceSyncSessions(actor: ModuleActor, bindingId:
   }).parse(raw);
   const query = ResourceSyncListQuery.parse({ after: input.after, limit: input.limit });
   return db.transaction(async tx => {
-    const live = await loadLiveResourceSyncBindingAuthority(tx, { org_id: actor.org_id,
-      resource_binding_id: bindingId, clock: () => new Date() });
+    let participantIds: string[] | undefined;
+    if (mode) {
+      const [locator] = await tx.select({ owner_id: appResourceBindings.owner_user_id,
+        operator_id: appRuntimeRegistrations.operator_user_id }).from(appResourceBindings)
+        .innerJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, appResourceBindings.org_id),
+          eq(appRuntimeRegistrations.id, appResourceBindings.runtime_registration_id)))
+        .where(and(eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.id, bindingId),
+          eq(appResourceBindings.registration_contract_version, 'deft.app_runtime_channel.v3'))).limit(1);
+      if (!locator || locator.operator_id !== actor.actor_id) throw denied();
+      participantIds = [actor.actor_id, locator.owner_id];
+      await members(tx, actor.org_id, participantIds);
+    }
+    const authorityInput = { org_id: actor.org_id, resource_binding_id: bindingId, clock: () => new Date() };
+    const live = mode ? await loadLiveAttachmentSyncBindingAuthority(tx, { ...authorityInput,
+      prelocked_participant_ids: participantIds })
+      : await loadLiveResourceSyncBindingAuthority(tx, authorityInput);
     await currentActor(tx, actor);
     if (!live || live.registration.operator_user_id !== actor.actor_id) throw denied();
     const rows = await tx.select({ session_id: appRuntimeSessions.id, created_at: appRuntimeSessions.created_at,
@@ -154,13 +176,15 @@ export async function listOwnResourceSyncSessions(actor: ModuleActor, bindingId:
         input.session_id ? eq(appRuntimeSessions.id, input.session_id) : undefined,
         query.after ? gt(appRuntimeSessions.id, query.after) : undefined))
       .orderBy(asc(appRuntimeSessions.id)).limit(input.session_id ? 1 : query.limit + 1).for('share');
-    await guard?.(tx);
+    if (!mode) await guard?.(tx);
     await currentActor(tx, actor);
     if (!await resourceSyncParticipantsAreHuman(tx, live.binding.owner_user_id, actor.actor_id)
       || !live.binding.consent_expires_at || live.binding.consent_expires_at <= new Date()) throw denied();
     const page = rows.slice(0, query.limit).map(row => ({ session_id: row.session_id,
       created_at: row.created_at.toISOString(), expires_at: row.expires_at.toISOString(),
       revoked_at: row.revoked_at?.toISOString() ?? null }));
+    await finishAttachmentSyncMetadata(tx, [actor.actor_id, live.binding.owner_user_id], mode,
+      [live.binding.consent_expires_at!]);
     return Sessions.parse({ schema_version: 'deft.app_resource_sync_sessions.v1', sessions: page,
       next_after: rows.length > query.limit ? page.at(-1)!.session_id : null });
   });

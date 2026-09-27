@@ -7,6 +7,7 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { assertResourceSyncManager } from './app-resource-sync-web-authority.js';
 import type { ResourceSyncManagementGuard } from './app-resource-sync-management.js';
+import { finishAttachmentSyncMetadata, type AttachmentSyncReadMode } from './app-resource-sync-read-mode.js';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const Id = z.string().uuid();
@@ -32,28 +33,31 @@ async function manager(tx: Tx, actor: ModuleActor) {
 /** Operational observation only. Revoked/expired consent does not prevent its
  * current manager-owner from inspecting lifecycle. This is not delivery authority. */
 export async function listResourceSyncBindings(actor: ModuleActor, value: unknown,
-  guard?: ResourceSyncManagementGuard) {
+  guard?: ResourceSyncManagementGuard, mode?: AttachmentSyncReadMode) {
   const query = ResourceSyncListQuery.parse(value);
   return db.transaction(async (tx) => {
     await manager(tx, actor);
     const rows = await tx.select(bindingFields).from(appResourceBindings).where(and(
       eq(appResourceBindings.org_id, actor.org_id),
       eq(appResourceBindings.owner_user_id, actor.actor_id),
+      mode ? eq(appResourceBindings.registration_contract_version, 'deft.app_runtime_channel.v3') : undefined,
       query.after ? gt(appResourceBindings.id, query.after) : undefined))
       .orderBy(asc(appResourceBindings.id)).limit(query.limit + 1);
     const bindings = rows.slice(0, query.limit);
-    await guard?.(tx);
+    if (!mode) await guard?.(tx);
+    await finishAttachmentSyncMetadata(tx, [actor.actor_id], mode);
     return { bindings, next_after: rows.length > query.limit ? bindings.at(-1)!.binding_id : null };
   });
 }
 export async function inspectResourceSyncBinding(actor: ModuleActor, bindingId: string,
-  guard?: ResourceSyncManagementGuard) {
+  guard?: ResourceSyncManagementGuard, mode?: AttachmentSyncReadMode) {
   bindingId = Id.parse(bindingId);
   return db.transaction(async (tx) => {
     await manager(tx, actor);
     const [binding] = await tx.select(bindingFields).from(appResourceBindings).where(and(
       eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.id, bindingId),
-      eq(appResourceBindings.owner_user_id, actor.actor_id))).for('share');
+      eq(appResourceBindings.owner_user_id, actor.actor_id),
+      mode ? eq(appResourceBindings.registration_contract_version, 'deft.app_runtime_channel.v3') : undefined)).for('share');
     if (!binding) throw denied();
     const [checkpoint] = await tx.select({ checkpoint_id: appSyncCheckpoints.id,
       state: appSyncCheckpoints.state, generation: appSyncCheckpoints.generation,
@@ -70,7 +74,8 @@ export async function inspectResourceSyncBinding(actor: ModuleActor, bindingId: 
     const [receipt] = run ? await tx.select({ receipt_id: appRunReceipts.id }).from(appRunReceipts)
       .where(and(eq(appRunReceipts.org_id, actor.org_id), eq(appRunReceipts.run_id, run.run_id)))
       .orderBy(desc(appRunReceipts.created_at), desc(appRunReceipts.id)).limit(1) : [];
-    await guard?.(tx);
+    if (!mode) await guard?.(tx);
+    await finishAttachmentSyncMetadata(tx, [actor.actor_id], mode);
     return { binding, checkpoint: checkpoint ?? null,
       latest_run: run ? { ...run, receipt_id: receipt?.receipt_id ?? null } : null };
   });
