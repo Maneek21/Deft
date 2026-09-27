@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { hasReservedPrivateDeftyMetadata, isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -189,6 +190,9 @@ messageRoutes.post('/forward', async (c) => {
 
     const isTargetMember = await requireSpaceMembership(target_space_id, user.id);
     if (!isTargetMember) return c.json({ error: 'No access to target space', code: 'FORBIDDEN' }, 403);
+    if (await isPrivateDeftySpace(user.org_id, original.space_id) || await isPrivateDeftySpace(user.org_id, target_space_id)) {
+      return c.json({ error: 'Private context messages cannot be forwarded', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
+    }
 
     const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, original.user_id)).limit(1);
     const [sourceSpace] = await db.select({ name: spaces.name }).from(spaces).where(eq(spaces.id, original.space_id)).limit(1);
@@ -387,6 +391,8 @@ messageRoutes.post('/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
     const body = await c.req.json();
+    if (hasReservedPrivateDeftyMetadata(body?.metadata)) return c.json({ error: 'Reserved message metadata', code: 'VALIDATION_ERROR' }, 400);
+    if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
     const parsed = sendMessageSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);

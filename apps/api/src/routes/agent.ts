@@ -1,4 +1,5 @@
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
+import { isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { Hono } from 'hono';
 import {
   authorizedDurableAgentResult,
@@ -1170,6 +1171,7 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
 agentRoutes.post('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
+  if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
   const body = await c.req.json();
   const { content, agent_employee_id, hidden } = body;
 
@@ -1244,6 +1246,7 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
 agentRoutes.post('/conversations/:id/continue', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
+  if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
 
   // Verify the current user is a member of this agent_conversation space.
   const [convoMembership] = await db

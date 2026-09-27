@@ -247,6 +247,7 @@ export const upgradeManifest = {
     { version: '0.3.0-preview.49', file: '0.3.0-preview.49-app-private-mcp.sql', description: 'Add dormant independent exact-purpose first-class MCP private resource grants' },
     { version: '0.3.0-preview.50', file: '0.3.0-preview.50-app-attachment-grant-admission.sql', description: 'Admit closed owner-only protocol7 effective grants and bounded checkpoint custody accounting' },
     { version: '0.3.0-preview.51', file: '0.3.0-preview.51-app-attachment-composition.sql', description: 'Admit separately reviewed protocol7 blob-grant.v2 Runtime and Experience composition without widening v1' },
+    { version: '0.3.0-preview.52', file: '0.3.0-preview.52-private-defty-context.sql', description: 'Add permanent exact Defty Space seals, reviewed private-purpose grants and bounded encrypted canonical message history' },
   ] satisfies UpgradeMigration[],
 } as const;
 

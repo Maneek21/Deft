@@ -83,6 +83,7 @@ import { appResourceSyncManagementRoutes } from './routes/app-resource-sync-mana
 import { appResourceAccessRoutes } from './routes/app-resource-access.js';
 import { appAttachmentOwnerRoutes } from './routes/app-attachments.js';
 import { appPrivateMcpRoutes } from './routes/app-private-mcp.js';
+import { appPrivateDeftyRoutes } from './routes/app-private-defty.js';
 import { appResourcePrivateReadRoutes } from './routes/app-resource-private-read.js';
 import { appResourcePrivateReadLimits, appResourceSyncManagementLimits, createAppResourcePrivateReadLimits } from './middleware/app-resource-private-limits.js';
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
@@ -222,6 +223,8 @@ if (APPS_ENABLED) {
   app.route('/api/app-resource-access', appResourceAccessRoutes);
   app.use('/api/app-private-mcp/*', createAppResourcePrivateReadLimits());
   app.route('/api/app-private-mcp', appPrivateMcpRoutes);
+  app.use('/api/apps/private-defty/*', createAppResourcePrivateReadLimits());
+  app.route('/api/apps/private-defty', appPrivateDeftyRoutes);
 }
 if (APPS_ENABLED && process.env.DEFT_APP_PUBLIC_INGRESS_ENABLED === 'true') {
   app.route('/api/public/apps', createAppPublicRoutes(new AppPublicClaimService({ enabled: true })));

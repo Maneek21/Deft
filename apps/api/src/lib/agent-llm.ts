@@ -35,7 +35,41 @@ export type CreateAgentMessageParams = {
   tools: Anthropic.Tool[];
   maxTokens: number;
   abortSignal?: AbortSignal;
+  /** Trusted private-turn opt-in; ordinary callers retain existing transport. */
+  privateResponseBytes?: number;
 };
+
+async function agentFetch(p: CreateAgentMessageParams, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, p.privateResponseBytes === undefined ? init : { ...init, redirect: 'error' });
+  if (p.privateResponseBytes === undefined) return response;
+  const limit = p.privateResponseBytes;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 524_288) {
+    await response.body?.cancel();
+    throw new Error('Private model transport unavailable');
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return response;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) throw new Error('Private model response exceeds its bound');
+      chunks.push(value);
+    }
+    // No untrusted provider error text is surfaced by the private path.
+    if (!response.ok) throw new Error('Private model request failed');
+    const body = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally { reader.releaseLock(); }
+}
 
 export async function createAgentMessage(p: CreateAgentMessageParams): Promise<AgentMessageResult> {
   switch (p.resolved.provider) {
@@ -65,7 +99,12 @@ function isOpenAIReasoningModel(model: string): boolean {
 
 async function callAnthropicAgent(p: CreateAgentMessageParams): Promise<AgentMessageResult> {
   if (!p.resolved.apiKey) throw new Error('Anthropic API key not configured (org or env)');
-  const anthropic = new Anthropic({ apiKey: p.resolved.apiKey, timeout: 60_000, maxRetries: 1 });
+  const anthropic = new Anthropic({ apiKey: p.resolved.apiKey, timeout: 60_000,
+    maxRetries: p.privateResponseBytes === undefined ? 1 : 0,
+    ...(p.privateResponseBytes === undefined ? {} : { baseURL: p.resolved.baseUrl }),
+    ...(p.privateResponseBytes === undefined ? {} : { logLevel: 'off' as const, authToken: null }),
+    ...(p.privateResponseBytes === undefined ? {} : { fetch: (input, init) => agentFetch(p, input, init) }),
+  });
 
   // Two cache breakpoints: end of system, end of tools list — both stable
   // across iterations within a turn, so re-reads cost 10%.
@@ -128,7 +167,7 @@ async function callOpenAIAgent(p: CreateAgentMessageParams): Promise<AgentMessag
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(`${baseURL}/chat/completions`, {
+  const res = await agentFetch(p, `${baseURL}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -176,7 +215,7 @@ async function callOpenAIResponsesAgent(p: CreateAgentMessageParams): Promise<Ag
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(`${baseURL}/responses`, {
+  const res = await agentFetch(p, `${baseURL}/responses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -226,7 +265,7 @@ async function callOllamaAgent(p: CreateAgentMessageParams): Promise<AgentMessag
     body.tools = toOpenAITools(p.tools);
   }
 
-  const res = await fetch(`${baseURL}/api/chat`, {
+  const res = await agentFetch(p, `${baseURL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

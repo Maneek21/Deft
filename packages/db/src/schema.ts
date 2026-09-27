@@ -256,6 +256,7 @@ export const spaces = pgTable('spaces', {
   ...timestamps(),
 }, (t) => [
   index('space_org_idx').on(t.org_id),
+  unique('spaces_org_id_id_unique').on(t.org_id, t.id),
 ]);
 
 // ═══ SPACE MEMBERS ═══
@@ -291,9 +292,49 @@ export const messages = pgTable('messages', {
   index('message_parent_idx').on(t.parent_id),
   index('message_created_idx').on(t.created_at),
   unique('messages_org_id_id_unique').on(t.org_id, t.id),
+  uniqueIndex('app_private_defty_messages_request_unique').on(t.org_id, t.space_id, sql`(${t.metadata}->>'request_id')`, sql`(${t.metadata}->>'role')`).where(sql`${t.metadata}->>'schema_version'='deft.private_defty_message.v1'`),
 ]);
 
 // ═══ REACTIONS ═══
+// Permanent private Defty audience authority; bodies remain in canonical messages.
+export const appPrivateDeftySeals = pgTable('app_private_defty_seals', {
+  ...id(), ...orgId(), space_id: text('space_id').notNull(),
+  owner_user_id: text('owner_user_id').notNull(), defty_user_id: text('defty_user_id').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).default(sql`clock_timestamp()`).notNull(),
+}, t => [
+  unique('app_private_defty_seals_space_unique').on(t.org_id, t.space_id),
+  uniqueIndex('app_private_defty_seals_global_space_unique').on(t.space_id),
+  unique('app_private_defty_seals_identity_unique').on(t.org_id, t.id),
+  foreignKey({ name: 'app_private_defty_seals_space_fk', columns: [t.org_id, t.space_id], foreignColumns: [spaces.org_id, spaces.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_private_defty_seals_owner_fk', columns: [t.owner_user_id], foreignColumns: [users.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_private_defty_seals_agent_fk', columns: [t.defty_user_id], foreignColumns: [users.id] }).onDelete('restrict'),
+  check('app_private_defty_seals_actor_check', sql`${t.owner_user_id}<>${t.defty_user_id}`),
+  index('app_private_defty_seals_owner_idx').on(t.org_id, t.owner_user_id),
+]);
+
+export const appPrivateDeftyGrants = pgTable('app_private_defty_grants', {
+  ...id(), ...orgId(), seal_id: text('seal_id').notNull(), owner_user_id: text('owner_user_id').notNull(),
+  resource_binding_id: text('resource_binding_id').notNull(), checkpoint_id: text('checkpoint_id').notNull(),
+  projection_id: text('projection_id').notNull(), review_digest: text('review_digest').notNull(), snapshot: jsonb('snapshot').notNull(),
+  accepted_at: timestamp('accepted_at', { withTimezone: true }).notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }),
+  active_request_id: text('active_request_id'), active_prompt_digest: text('active_prompt_digest'),
+}, t => [
+  unique('app_private_defty_grants_seal_unique').on(t.org_id, t.seal_id),
+  unique('app_private_defty_grants_identity_unique').on(t.org_id, t.id),
+  foreignKey({ name: 'app_private_defty_grants_seal_fk', columns: [t.org_id, t.seal_id], foreignColumns: [appPrivateDeftySeals.org_id, appPrivateDeftySeals.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_private_defty_grants_owner_fk', columns: [t.org_id, t.resource_binding_id, t.owner_user_id], foreignColumns: [appResourceBindings.org_id, appResourceBindings.id, appResourceBindings.owner_user_id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_private_defty_grants_checkpoint_fk', columns: [t.org_id, t.checkpoint_id, t.resource_binding_id], foreignColumns: [appSyncCheckpoints.org_id, appSyncCheckpoints.id, appSyncCheckpoints.resource_binding_id] }).onDelete('cascade'),
+  foreignKey({ name: 'app_private_defty_grants_projection_fk', columns: [t.org_id, t.projection_id], foreignColumns: [appResourceProjections.org_id, appResourceProjections.id] }).onDelete('cascade'),
+  check('app_private_defty_grants_digest_check', sql`${t.review_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_private_defty_grants_reservation_check', sql`(${t.active_request_id} IS NULL AND ${t.active_prompt_digest} IS NULL) OR (${t.active_request_id} ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$' AND ${t.active_prompt_digest} ~ '^hmac-sha256:[a-f0-9]{64}$')`),
+  check('app_private_defty_grants_expiry_check', sql`${t.expires_at}>${t.accepted_at} AND ${t.expires_at}<=${t.accepted_at}+interval '15 minutes'`),
+  check('app_private_defty_grants_snapshot_check', sql`COALESCE(jsonb_typeof(${t.snapshot})='object' AND octet_length(${t.snapshot}::text)<=16384 AND ${t.snapshot}->>'schema_version'='deft.app_private_defty_snapshot.v1' AND ${t.snapshot}->>'purpose'='defty_private_context' AND ${t.snapshot}->>'org_id'=${t.org_id} AND ${t.snapshot}->>'seal_id'=${t.seal_id} AND ${t.snapshot}->>'owner_user_id'=${t.owner_user_id} AND ${t.snapshot}->>'resource_binding_id'=${t.resource_binding_id} AND ${t.snapshot}->>'checkpoint_id'=${t.checkpoint_id} AND ${t.snapshot}#>>'{ref,resource_id}'=${t.projection_id},false)`),
+  index('app_private_defty_grants_parent_idx').on(t.org_id, t.resource_binding_id),
+  index('app_private_defty_grants_owner_app_idx').on(t.org_id, t.owner_user_id, sql`(${t.snapshot}->>'app_installation_id')`, t.expires_at),
+]);
+
 export const reactions = pgTable('reactions', {
   ...id(),
   message_id: text('message_id').notNull().references(() => messages.id),
