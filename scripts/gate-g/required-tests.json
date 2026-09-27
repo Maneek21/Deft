@@ -3591,6 +3591,10 @@
         },
         {
           "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "legacy channel2 owner list and inspect cannot return channel3 binding metadata"
+        },
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
           "name": "channel3 owner status and operator assignment pages expose bounded metadata only"
         },
         {
