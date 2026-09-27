@@ -2988,6 +2988,274 @@
           "name": "protocol7 live pointer cannot become bare and active checkpoint accounting excludes purged history by index"
         }
       ]
+    },
+    {
+      "id": "public-cancellation-discovery",
+      "description": "Current Calendar owner metadata/context, exact selected cancellation input, final SID withdrawal and candidate-manager lock ordering. Official50 guarded disposable DB required; no reviewed follow-up or restore claim.",
+      "cases": [
+        {
+          "name": "public cancellation owner discovery is bounded metadata and current binding choices for the immutable Calendar owner only",
+          "file": "apps/api/test/app-public-cancellation-discovery-db.test.ts"
+        },
+        {
+          "name": "selected public cancellation Run exposes exact retained input only to its current owner and refuses review after binding revocation",
+          "file": "apps/api/test/app-public-cancellation-discovery-db.test.ts"
+        },
+        {
+          "name": "public cancellation discovery rejects owner SID withdrawal after an actual held final session read",
+          "file": "apps/api/test/app-public-cancellation-discovery-db.test.ts"
+        },
+        {
+          "name": "public cancellation context rejects a changed candidate locator set after App wait without locking a new manager late",
+          "file": "apps/api/test/app-public-cancellation-discovery-db.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "public-cancellation-display",
+      "description": "Closed display contract for actual packed protocol6 and current owner cancellation review; rendered compound workflow has a separate external acceptance inventory.",
+      "cases": [
+        {
+          "name": "native App settings accept the actual packed six display and reject malformed or unknown native display fields",
+          "file": "apps/api/test/app-public-cancellation-display.test.ts"
+        },
+        {
+          "name": "public cancellation display rejects extra private fields mismatched locators and excess binding choices",
+          "file": "apps/api/test/app-public-cancellation-display.test.ts"
+        },
+        {
+          "name": "public cancellation review display stays closed and requires exact current selection fresh lifetime and owner approval policy",
+          "file": "apps/api/test/app-public-cancellation-display.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "attachment-custody-http",
+      "description": "Packed public Kit provider, parent-authorized encrypted custody, retained quota/key accounting, held authority withdrawal, rollback and durable late-publication purge fence. Official50 guarded attachment DB and outside DEFT_ATTACHMENT_AUTHOR_DIR required; Windows refusal/retry observed, Linux branch not certified.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "retained binary and encrypted metadata keys cannot retire before confirmed purge"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "purged reservation still consumes lifetime Run quota after a legitimate heartbeat"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "gate withdrawal during real held ciphertext publication leaves no ready or linked authority"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "purge before delayed ciphertext publication cannot leave an object after reservation retirement"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "operator human flag withdrawal during final real SID lock wait prevents content delivery"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "wrong staged parent rolls back projection cursor output and receipt before explicit corrected settlement"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "consent withdrawal during actual held ciphertext read prevents plaintext delivery"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "failed physical deletion retains encrypted metadata and capacity until confirmed purge"
+        },
+        {
+          "file": "apps/api/test/app-attachment-http-db.test.ts",
+          "name": "packed protocol7 provider stages bytes then normal channel3 settlement links owner-only download"
+        }
+      ]
+    },
+    {
+      "id": "attachment-primitives-v2",
+      "description": "Closed framing/media/policy/AAD, bounded transfer, permanent empty retirement marker, cold-process publication refusal and affected legacy channel2 contracts. Marker storage remains retained; no whole capacity claim.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-frame.test.ts",
+          "name": "attachment frame reserves before binary consumption and accepts exact split framing"
+        },
+        {
+          "file": "apps/api/test/app-attachment-frame.test.ts",
+          "name": "attachment frame rejects truncated, trailing, oversized and declared-length substitution"
+        },
+        {
+          "file": "apps/api/test/app-attachment-frame.test.ts",
+          "name": "attachment frame cancels held binary I/O without partial bytes"
+        },
+        {
+          "file": "apps/api/test/app-attachment-object-store.test.ts",
+          "name": "quarantine object publication is exclusive, bounded, abortable and never exposes a partial replacement"
+        },
+        {
+          "file": "apps/api/test/app-attachment-object-store.test.ts",
+          "name": "conservative media classification blocks active document declarations, mismatches and malformed UTF8"
+        },
+        {
+          "file": "apps/api/test/app-attachment-policy.test.ts",
+          "name": "attachment consent is a strict separate envelope with owner-narrowed policy and channel3 token domain"
+        },
+        {
+          "file": "apps/api/test/app-attachment-policy.test.ts",
+          "name": "channel3 discovery is independently hashed and closed while channel2 snapshot stays separate"
+        },
+        {
+          "file": "apps/api/test/app-attachment-secrets.test.ts",
+          "name": "binary and quarantine metadata authenticate every retained stage/parent tuple and separate payload domains"
+        },
+        {
+          "file": "apps/api/test/app-attachment-secrets.test.ts",
+          "name": "retained encryption/fingerprint key rotation preserves original bytes and denies absent key versions"
+        },
+        {
+          "file": "apps/api/test/app-attachment-secrets.test.ts",
+          "name": "fixed stage retention survives renewed same-claim lease without changing sequence or admitting a replacement claim"
+        },
+        {
+          "file": "apps/api/test/app-attachment-transfer.test.ts",
+          "name": "held I/O response aborts boundedly and retains the two transfer permits until underlying work settles"
+        },
+        {
+          "file": "apps/api/test/app-attachment-transfer.test.ts",
+          "name": "caller abort rejects held read and an already-aborted request allocates no transfer"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts",
+          "name": "v2 resource channel fails closed before parsing a request"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-channel-disabled.test.ts",
+          "name": "v2 pre-auth limits ignore spoofed forwarding headers and cap concurrency"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-contract.test.ts",
+          "name": "API and Kit use the same closed v2 claim and result request schemas"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-contract.test.ts",
+          "name": "API success parses page against host-reviewed descriptor and starting request"
+        },
+        {
+          "file": "apps/api/test/app-resource-sync-contract.test.ts",
+          "name": "closed failure and indeterminate outcomes never carry a page"
+        },
+        {
+          "file": "apps/api/test/app-attachment-object-store.test.ts",
+          "name": "confirmed quarantine purge removes reserved prepublication ciphertext from a retained crash fixture"
+        },
+        {
+          "file": "apps/api/test/app-attachment-object-store.test.ts",
+          "name": "atomic retirement fences an actual opened Windows writer, late writes and restarted publication"
+        },
+        {
+          "file": "apps/api/test/app-attachment-object-store.test.ts",
+          "name": "failed atomic retirement preserves legacy pending ciphertext for a later confirmed purge"
+        }
+      ]
+    },
+    {
+      "id": "attachment-default-off",
+      "description": "Cold disabled broker in Runs-off/invalid-key and Runs-on/valid-key modes, plus permanent cleanup stop fence before resource allocation.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-default-off.test.ts",
+          "name": "default-off cold attachment runtime denies before retained key-provider initialization or database connection"
+        }
+      ]
+    },
+    {
+      "id": "attachment-kit-contracts",
+      "description": "Portable closed protocol7/descriptor2/page2/channel3 and representative0–6 contracts; includes attachment secret/AAD cases. Does not certify mixed7-v2 activation or compound Email.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-secrets.test.ts",
+          "name": "binary and quarantine metadata authenticate every retained stage/parent tuple and separate payload domains"
+        },
+        {
+          "file": "apps/api/test/app-attachment-secrets.test.ts",
+          "name": "retained encryption/fingerprint key rotation preserves original bytes and denies absent key versions"
+        },
+        {
+          "file": "apps/api/test/app-attachment-secrets.test.ts",
+          "name": "fixed stage retention survives renewed same-claim lease without changing sequence or admitting a replacement claim"
+        },
+        {
+          "file": "packages/app-kit/test/attachment-client.test.ts",
+          "name": "channel3 sends bounded exact binary framing and permits heartbeat while one per-Run stage is held"
+        },
+        {
+          "file": "packages/app-kit/test/attachment-client.test.ts",
+          "name": "channel3 rejects wrong session, oversized bytes and substituted acknowledgment without automatic retry"
+        },
+        {
+          "file": "packages/app-kit/test/attachment-contracts.test.ts",
+          "name": "protocol7 attachment-only candidate packs exact descriptor2 policy without old-parser admission"
+        },
+        {
+          "file": "packages/app-kit/test/attachment-contracts.test.ts",
+          "name": "page2 requires complete bounded unique catalog and exact host-narrowed scalar policy"
+        },
+        {
+          "file": "packages/app-kit/test/attachment-contracts.test.ts",
+          "name": "stage framing preserves literal bounded Unicode and binary bytes without token or provider authority"
+        },
+        {
+          "file": "packages/app-kit/test/native-app-v6.test.ts",
+          "name": "native-only v6 packs a real Experience with declared native keys and requested-only authority"
+        },
+        {
+          "file": "packages/app-kit/test/native-app-v6.test.ts",
+          "name": "v6 mixed planes remain disjoint and reject authority fields, uncertified pairs and old-version native claims"
+        },
+        {
+          "file": "packages/app-kit/test/native-app-v6.test.ts",
+          "name": "native Calendar certified input enforces exact keys, time range and complete Unicode envelope bound"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "v2 SDK validates every reply and sends a sync-only bearer transcript"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "descriptor digest is canonical and start must match all claim correlation pins"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "SDK rejects wrong audience, malformed replies, replay substitution and invalid pages"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync-client.test.ts",
+          "name": "transport guards URL, AbortSignal, deadline, response size and generic errors"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "golden v1 page preserves only declared scalar data and stable canonical bytes"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "descriptor and request admit no authority, URL, owner, or executable envelope fields"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "descriptor requires a declared, required, bounded string label and closed scalar fields"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "cursor progression and UTF-8 byte bounds are exact"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "item count, duplicate IDs, exact resource identities and version fields are closed"
+        },
+        {
+          "file": "packages/app-kit/test/resource-sync.test.ts",
+          "name": "canonical full-page 512 KiB ceiling accepts the boundary and rejects one byte more"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"

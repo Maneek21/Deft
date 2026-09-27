@@ -6,12 +6,12 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 test('default-off cold attachment runtime denies before retained key-provider initialization or database connection',async()=>{
-  const path=resolve('apps/api/src/lib/app-attachment-runtime.ts');
-  const cleanup=resolve('apps/api/src/lib/app-attachment-cleanup.ts');
-  const script=`const {getAppAttachmentRuntime}=await import(${JSON.stringify(new URL(`file:///${path.replaceAll('\\','/')}`).href)});
+  const path=new URL('../src/lib/app-attachment-runtime.ts',import.meta.url).href;
+  const cleanup=new URL('../src/lib/app-attachment-cleanup.ts',import.meta.url).href;
+  const script=`const {getAppAttachmentRuntime}=await import(${JSON.stringify(path)});
     try { await getAppAttachmentRuntime(); process.exit(2); }
     catch(error) { if(error.code!=='APP_FEATURE_DISABLED') process.exit(3); }
-    const {appAttachmentCleanup,AppAttachmentCleanup}=await import(${JSON.stringify(new URL(`file:///${cleanup.replaceAll('\\','/')}`).href)});
+    const {appAttachmentCleanup,AppAttachmentCleanup}=await import(${JSON.stringify(cleanup)});
     const result=await appAttachmentCleanup.run();
     if(result.inspected||result.purged||result.failed) process.exit(4);
     await appAttachmentCleanup.stop();

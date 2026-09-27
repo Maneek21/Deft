@@ -3,7 +3,6 @@ import { mkdtemp, readdir, rm,writeFile,readFile,open,mkdir } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { LocalAppAttachmentObjectStore } from '../src/lib/app-attachment-object-store.js';
 import { appAttachmentMediaAllowed } from '../src/lib/app-attachment-media.js';
@@ -74,7 +73,7 @@ test('atomic retirement fences an actual opened Windows writer, late writes and 
   await assert.rejects(restarted.putExclusive(object,Buffer.from('new ciphertext'),new AbortController().signal));
   assert.equal((await restarted.get(object,new AbortController().signal)).length,0);
   assert.deepEqual(await readdir(dir),[object],'No ciphertext temporary path survives retirement or restart');
-  const moduleUrl=pathToFileURL(resolve('apps/api/src/lib/app-attachment-object-store.ts')).href;
+  const moduleUrl=new URL('../src/lib/app-attachment-object-store.ts',import.meta.url).href;
   const script=`const {LocalAppAttachmentObjectStore}=await import(${JSON.stringify(moduleUrl)});
     const store=new LocalAppAttachmentObjectStore(${JSON.stringify(dir)});
     try{await store.putExclusive(${JSON.stringify(object)},Buffer.from('restart ciphertext'),new AbortController().signal);process.exit(2);}
