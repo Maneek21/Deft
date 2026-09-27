@@ -26,7 +26,7 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-text { margin:0; white-space:pre-wrap; overflow-wrap:anywhere }
 .deft-experience .ex-field { display:grid; gap:4px; min-width:0 }
 .deft-experience .ex-field label { display:grid; gap:4px; color:#a9b9d1; font-size:12px }
-.deft-experience .ex-field input { min-height:44px }
+.deft-experience .ex-field input { min-height:44px; border-color:#4b75a8; background:#172235 }
 .deft-experience canvas { display:block; width:100%; height:200px; border:1px solid #4b75a8; border-radius:9px; background:#0d1a2c; touch-action:none }
 @media(max-width:420px) { .deft-experience { padding:10px } .deft-experience table { min-width:510px } .deft-experience .ex-stack-title { font-size:16px } }
 `;

@@ -1327,7 +1327,7 @@ export function AgentActionCard({
             || (needsTaskLinkReview && !reviewedTaskLink)
             || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"
-          style={{ background: 'var(--status-green)', minHeight: needsNativeReview ? 44 : undefined }}
+          style={{ background: 'var(--status-green)', minHeight: needsNativeReview || needsRuntimeReview ? 44 : undefined }}
         >
           <CheckCircle2 size={13} strokeWidth={1.8} />
           {approveLabel}
@@ -1336,7 +1336,7 @@ export function AgentActionCard({
           onClick={handleReject}
           disabled={isBusy}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium disabled:opacity-60 min-h-[32px]"
-          style={{ background: 'var(--bg-overlay)', color: 'var(--text-secondary)' }}
+          style={{ background: 'var(--bg-overlay)', color: 'var(--text-secondary)', minHeight: needsNativeReview || needsRuntimeReview ? 44 : undefined }}
         >
           <XCircle size={13} strokeWidth={1.8} />
           Dismiss

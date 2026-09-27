@@ -80,8 +80,8 @@ export function RuntimeAppInputReview({ runId, bindingId, busy, onReviewed }: {
       </p> : null}
       <button type="button" onClick={() => { void load(); }}
         disabled={!runId || !bindingId || loading || busy}
-        className="mt-2 min-h-9 rounded-md border px-3 py-1 text-xs disabled:opacity-60"
-        style={{ borderColor: 'var(--border)' }}>
+        className="mt-2 min-h-11 rounded-md border px-3 py-1 text-xs disabled:opacity-60"
+        style={{ borderColor: 'var(--border)', minHeight: 44 }}>
         {loading ? 'Loading input…' : review ? 'Refresh exact input' : 'Review exact input'}
       </button>
     </section>
