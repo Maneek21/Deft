@@ -3,8 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import test, { after } from 'node:test';
 import { createReviewedResourceSyncFixture } from './fixtures/resource-sync-v5.js';
 
-const target = 'postgresql://gate_g_test@127.0.0.1:55435/gate_g_20260926_c09_operator_test';
-const safe = process.env.DATABASE_URL === target && process.env.DEFT_TEST_DATABASE_URL === target;
+const target = process.env.DEFT_TEST_DATABASE_URL;
+const safe = !!target && process.env.DATABASE_URL === target
+  && /^postgresql:\/\/gate_g_test@127\.0\.0\.1:55435\/gate_g_20260926_c09_operator_test(?:_v[0-9]+)?$/.test(target);
 Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true',
   DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true', DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'false',
   DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: 'true' });
