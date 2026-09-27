@@ -3610,6 +3610,24 @@
           "name": "actual final SID waits deny channel3 metadata after broker withdrawal and stored session expiry"
         }
       ]
+    },
+    {
+      "id": "experience-view-order",
+      "description": "Later accepted Experience views supersede delayed older renders while all failed liveness checks still revoke authority.",
+      "cases": [
+        {
+          "file": "apps/web/src/lib/app-experience-view-order.test.ts",
+          "name": "a held earlier live view cannot replace the newer compose view"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-view-order.test.ts",
+          "name": "an earlier false liveness result still revokes after a newer view renders"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-view-order.test.ts",
+          "name": "a pending newer true view cannot render after the earlier result revokes"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
