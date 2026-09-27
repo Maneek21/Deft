@@ -127,6 +127,7 @@ app.use('*', cors({
     'Mcp-Name',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options'],
 }));
 
 // Task 4 (private-alpha): security headers. Browsers loading API responses
