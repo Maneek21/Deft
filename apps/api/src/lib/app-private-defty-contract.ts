@@ -90,6 +90,7 @@ export const PrivateDeftyHistoryOutput = z.strictObject({
   schema_version: z.literal('deft.app_private_defty_history.v1'),
   space_id: uuid, seal_id: uuid,
   grant_state: z.enum(['active', 'ended']),
+  grant_id: uuid.nullable(), grant_expires_at: z.string().datetime().nullable(),
   turn_requires_reauthorization: z.literal(true),
   messages: z.array(z.strictObject({
     id: uuid, request_id: uuid, role: z.enum(['user', 'assistant']),

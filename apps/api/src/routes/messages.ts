@@ -392,7 +392,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId');
     const body = await c.req.json();
     if (hasReservedPrivateDeftyMetadata(body?.metadata)) return c.json({ error: 'Reserved message metadata', code: 'VALIDATION_ERROR' }, 400);
-    if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
+
     const parsed = sendMessageSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
@@ -405,6 +405,8 @@ messageRoutes.post('/:spaceId', async (c) => {
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
+
+    if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
 
     if (parsed.data.parent_id) {
       const parentMsg = await getVisibleMessage(parsed.data.parent_id, user.org_id, user.id);
@@ -608,6 +610,8 @@ messageRoutes.post('/:spaceId', async (c) => {
     }
 
     // If it's a thread reply, notify the parent message author and broadcast thread:updated
+    if (await isPrivateDeftySpace(user.org_id, spaceId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
+
     if (parsed.data.parent_id) {
       try {
         const [parentMessage] = await db.select({

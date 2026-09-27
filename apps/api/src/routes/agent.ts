@@ -1174,6 +1174,11 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
 agentRoutes.post('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
+  const [convoMembership] = await db.select({ space_id: spaceMembers.space_id }).from(spaceMembers)
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
+    .limit(1);
+  if (!convoMembership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
   const body = await c.req.json();
   const { content, agent_employee_id, hidden } = body;
@@ -1249,15 +1254,17 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
 agentRoutes.post('/conversations/:id/continue', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
-  if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
+
 
   // Verify the current user is a member of this agent_conversation space.
   const [convoMembership] = await db
     .select({ space_id: spaceMembers.space_id })
     .from(spaceMembers)
-    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id)))
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
     .limit(1);
   if (!convoMembership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
 
   const ctx = await buildStreamContext(user, convoId);
   if (ctx._kind === 'error') {
@@ -1495,7 +1502,8 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
   const [membership] = await db
     .select({ user_id: spaceMembers.user_id })
     .from(spaceMembers)
-    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id)))
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
     .limit(1);
   if (!membership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 

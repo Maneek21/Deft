@@ -223,6 +223,8 @@ export class AppPrivateDeftyService {
       // Retained viewer authority is distinct from model replay authority.
       // It does not assert that the historical parent/model remains live.
       const result = PrivateDeftyHistoryOutput.parse({ schema_version: 'deft.app_private_defty_history.v1',
+        grant_id: grant ? String(grant.id) : null,
+        grant_expires_at: grant ? new Date(String(grant.expires_at)).toISOString() : null,
         space_id: spaceId, seal_id: seal.id, grant_state: grant && !grant.revoked_at
           && new Date(String(grant.expires_at)) > this.current(tx) && privateDeftyEnabled() ? 'active' : 'ended',
         turn_requires_reauthorization: true, messages: values });

@@ -124,6 +124,8 @@ test('Actual owner review and Defty model dispatch retain only encrypted canonic
   assert.equal(changed.status, 409); assert.equal(changed.body.code, 'APP_PRIVATE_DEFTY_REQUEST_CONFLICT'); assert.equal(h.requests(), 1);
   const history = await h.call(`/spaces/${h.spaceId}/history`);
   assert.equal(history.status, 200); assert.equal(history.body.turn_requires_reauthorization, true);
+  assert.equal(typeof history.body.grant_id, 'string');
+  assert.ok(Number.isFinite(Date.parse(history.body.grant_expires_at)));
   assert.equal(history.body.messages[1].text, 'private-derived-answer');
 });
 
@@ -146,6 +148,7 @@ test('Held actual Defty response after owner revocation retains prompt but no as
   assert.equal(h.requests(), 1);
   const history = await h.call(`/spaces/${h.spaceId}/history`);
   assert.equal(history.status, 200); assert.equal(history.body.grant_state, 'ended');
+  assert.equal(history.body.grant_id, grant.grant_id);
   assert.equal(history.body.messages[0].text, input.prompt);
 });
 
@@ -174,16 +177,99 @@ test('Private sealed message move/metadata forgery and audience widening deny wh
   assert.equal((await h.call(`/spaces/${h.spaceId}/turns`, 'POST', { ...input, request_id: randomUUID() })).status, 404);
   assert.equal(h.requests(), 1);
   assert.equal((await h.call(`/spaces/${h.spaceId}/history`)).status, 200);
+  await h.db.execute(h.sql`DELETE FROM org_members WHERE org_id=${h.owned.org_id} AND user_id=${h.defty}`);
+  assert.equal((await h.call(`/spaces/${h.spaceId}/history`)).status, 200);
+  assert.equal((await h.call(`/spaces/${h.spaceId}/turns`, 'POST', { ...input, request_id: randomUUID() })).status, 404);
 });
 
 test('Inactive unhealthy and substituted canonical Defty identities deny before model dispatch', { skip: !safe }, async t => {
   const h = await fixture(); t.after(h.close);
-  for (const change of ["is_active=false", "unhealthy=true", "runtime_kind='external'"]) {
+  for (const change of ["is_active=false", "unhealthy=true", "slug='substituted-canonical'"]) {
     await h.db.execute(h.sql.raw(`UPDATE agent_employees SET ${change} WHERE org_id='${h.owned.org_id}' AND user_id='${h.defty}'`));
     assert.equal((await h.call('/review', 'POST', h.reviewInput)).status, 404);
     assert.equal(h.requests(), 0);
-    await h.db.execute(h.sql`UPDATE agent_employees SET is_active=true,unhealthy=false,runtime_kind='defty_system'
+    await h.db.execute(h.sql`UPDATE agent_employees SET is_active=true,unhealthy=false,slug='defty-system'
       WHERE org_id=${h.owned.org_id} AND user_id=${h.defty}`);
   }
   assert.equal((await h.call('/review', 'POST', h.reviewInput)).status, 200);
+});
+test('Owner consent alone and default-off gate never authorize private Defty model dispatch', { skip: !safe }, async t => {
+  const h = await fixture(); t.after(h.close);
+  const input = { schema_version: 'deft.app_private_defty_turn.v1', request_id: randomUUID(), prompt: 'No implicit authority' };
+  assert.equal((await h.call(`/spaces/${h.spaceId}/turns`, 'POST', input)).status, 404);
+  process.env.DEFT_APP_PRIVATE_DEFTY_ENABLED = 'false';
+  try { assert.equal((await h.call('/review', 'POST', h.reviewInput)).status, 404); }
+  finally { process.env.DEFT_APP_PRIVATE_DEFTY_ENABLED = 'true'; }
+  assert.equal(h.requests(), 0);
+});
+
+test('Held model response after owner WebSID revocation cannot persist assistant or deliver output', { skip: !safe }, async t => {
+  const h = await fixture(); t.after(h.close);
+  await h.accept();
+  let release!: () => void; let entered!: () => void;
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const observed = new Promise<void>(resolve => { entered = resolve; });
+  h.hold(async () => { entered(); await wait; });
+  const input = { schema_version: 'deft.app_private_defty_turn.v1', request_id: randomUUID(), prompt: 'SID held question' };
+  const pending = h.call(`/spaces/${h.spaceId}/turns`, 'POST', input);
+  await observed;
+  await h.db.execute(h.sql`UPDATE web_sessions SET revoked_at=clock_timestamp() WHERE org_id=${h.owned.org_id} AND user_id=${h.owned.owner_user_id}`);
+  release();
+  assert.equal((await pending).status, 401);
+  const rows = await h.db.execute(h.sql`SELECT metadata->>'role' AS role FROM messages WHERE org_id=${h.owned.org_id} AND space_id=${h.spaceId}`);
+  assert.deepEqual(rows.rows.map(row => row.role), ['user']);
+  assert.equal(h.requests(), 1);
+});
+test('Unrelated native callers cannot classify a sealed conversation from ordinary write routes', { skip: !safe }, async t => {
+  const h = await fixture(); t.after(h.close);
+  await h.accept();
+  const [{ Hono }, { agentRoutes }, { messageRoutes }] = await Promise.all([
+    import('hono'), import('../src/routes/agent.js'), import('../src/routes/messages.js'),
+  ]);
+  const native = new Hono();
+  let nativeSubject = { id: h.owned.operator_user_id, org_id: h.owned.org_id };
+  native.use('*', async (c, next) => {
+    c.set('user' as never, nativeSubject as never);
+    await next();
+  });
+  native.route('/agent', agentRoutes); native.route('/messages', messageRoutes);
+  for (const [path, expected] of [[`/agent/conversations/${h.spaceId}/messages`, 404],
+    [`/agent/conversations/${h.spaceId}/continue`, 404], [`/messages/${h.spaceId}`, 403]] as const) {
+    const denied = await native.request('http://local.test' + path, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: 'Foreign write' }) });
+    assert.equal(denied.status, expected, path);
+    assert.equal(JSON.stringify(await denied.json()).includes('PRIVATE_CONTEXT_REQUIRED'), false);
+  }
+  nativeSubject = { id: h.owned.owner_user_id, org_id: randomUUID() };
+  for (const suffix of ['messages', 'continue']) {
+    const denied = await native.request(`http://local.test/agent/conversations/${h.spaceId}/${suffix}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: 'Foreign org write' }),
+    });
+    assert.equal(denied.status, 404);
+    assert.equal(JSON.stringify(await denied.json()).includes('PRIVATE_CONTEXT_REQUIRED'), false);
+  }
+  const rows = await h.db.execute(h.sql`SELECT id FROM messages WHERE org_id=${h.owned.org_id} AND space_id=${h.spaceId}`);
+  assert.equal(rows.rows.length, 0); assert.equal(h.requests(), 0);
+});
+test('Private operational withdrawal leaves an unknown request fenced without automatic model resend', { skip: !safe }, async t => {
+  const h = await fixture(); t.after(h.close);
+  await h.accept();
+  let release!: () => void; let entered!: () => void;
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const observed = new Promise<void>(resolve => { entered = resolve; });
+  h.hold(async () => { entered(); await wait; });
+  const input = { schema_version: 'deft.app_private_defty_turn.v1', request_id: randomUUID(), prompt: 'Unknown effect boundary' };
+  const pending = h.call(`/spaces/${h.spaceId}/turns`, 'POST', input);
+  await observed;
+  process.env.DEFT_APP_PRIVATE_DEFTY_ENABLED = 'false';
+  release();
+  try { assert.equal((await pending).status, 404); }
+  finally { process.env.DEFT_APP_PRIVATE_DEFTY_ENABLED = 'true'; }
+  const same = await h.call(`/spaces/${h.spaceId}/turns`, 'POST', input);
+  assert.equal(same.status, 409); assert.equal(same.body.code, 'APP_PRIVATE_DEFTY_REQUEST_PENDING_OR_UNKNOWN');
+  const changed = await h.call(`/spaces/${h.spaceId}/turns`, 'POST', { ...input, prompt: 'Changed request' });
+  assert.equal(changed.status, 409); assert.equal(changed.body.code, 'APP_PRIVATE_DEFTY_REQUEST_CONFLICT');
+  assert.equal(h.requests(), 1);
+  const rows = await h.db.execute(h.sql`SELECT metadata->>'role' AS role FROM messages WHERE org_id=${h.owned.org_id} AND space_id=${h.spaceId}`);
+  assert.deepEqual(rows.rows.map(row => row.role), ['user']);
 });
