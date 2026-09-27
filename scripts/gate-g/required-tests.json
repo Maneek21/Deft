@@ -3440,6 +3440,126 @@
           "name": "module record task links enforce native task and module boundaries"
         }
       ]
+    },
+    {
+      "id": "email7-composition-http",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "packed Email7 composition retains separately reviewed sync, scalar and Runtime authority"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "separately consented parent catalog, bytes and Experience search remain readable with action plane disabled"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "Email7 scalar human and MCP grants require independent consent and never deliver attachment metadata or bytes"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "actual human SID and MCP token waits deny Email7 scalar delivery after attachment gate withdrawal"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "guarded invocation and normal Inbox exact-input review reject the legacy unguarded path"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "actual held final SID expiry denies private review and new invocation without partial admission"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "normal owner approval, packed Runtime consumption and guarded retained output preserve one Run and verified receipt"
+        },
+        {
+          "file": "apps/api/test/app-attachment-composition-http-db.test.ts",
+          "name": "held exact Runtime input read cannot release Email7 private input after action gate withdrawal"
+        }
+      ],
+      "description": "Normal public HTTP reviewed7-v2 Runtime, sync custody, independently consented scalar purposes and final input disclosure fences."
+    },
+    {
+      "id": "attachment-composition-schema-db",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-composition-schema-db.test.ts",
+          "name": "installed .51 keeps exact v1 and rejects malformed v2 composition, unsupported planes and foreign ancestry"
+        }
+      ],
+      "description": "Installed51 closed v1/v2 grant shape under actual mixed public activation; no live immutability bypass."
+    },
+    {
+      "id": "private-defty-contract-model",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-defty-contract.test.ts",
+          "name": "private Defty envelope binds every destination identity and rejects Run replay"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-contract.test.ts",
+          "name": "private Defty strict inputs enforce UTF-8 limits and reject authority/metadata additions"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-model.test.ts",
+          "name": "private Defty actual model HTTP uses exact endpoint and has no tools"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-model.test.ts",
+          "name": "private Defty streamed overflow and non-2xx response reject wholly without provider text"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-model.test.ts",
+          "name": "private Defty actual redirect never forwards reviewed prompt to another endpoint"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-model.test.ts",
+          "name": "private Defty unexpected model tool request never returns a partial answer"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-model.test.ts",
+          "name": "private Anthropic dispatch binds reviewed endpoint despite SDK environment override"
+        }
+      ],
+      "description": "Private Defty strict contracts, AEAD destination binding and actual bounded model transport including redirect/credential inheritance denial."
+    },
+    {
+      "id": "private-defty-http",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Actual owner review and Defty model dispatch retain only encrypted canonical messages and replay once"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Held actual Defty response after owner revocation retains prompt but no assistant or model replay"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Private sealed message move/metadata forgery and audience widening deny while safe removal retains key inventory"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Inactive unhealthy and substituted canonical Defty identities deny before model dispatch"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Owner consent alone and default-off gate never authorize private Defty model dispatch"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Held model response after owner WebSID revocation cannot persist assistant or deliver output"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Unrelated native callers cannot classify a sealed conversation from ordinary write routes"
+        },
+        {
+          "file": "apps/api/test/app-private-defty-http-db.test.ts",
+          "name": "Private operational withdrawal leaves an unknown request fenced without automatic model resend"
+        }
+      ],
+      "description": "Owner-reviewed sealed Defty conversation, real model, encrypted retained messages, replay/unknown outcomes, current authority and native-route denials."
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
