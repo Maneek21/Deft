@@ -1,12 +1,14 @@
 import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq, sql, inArray } from "drizzle-orm";
-import { appResourceAccessGrants as grants, appResourceBindings as bindings, appResourceProjections as projections, appRuntimeRegistrations as registrations, appSyncCheckpoints as checkpoints, appInstallations, orgMembers, users, auditLog } from "@deft/db/schema";
+import { appResourceAccessGrants as grants, appResourceProjections as projections, orgMembers, users, auditLog } from "@deft/db/schema";
 import { canonicalCapabilityJson } from "@deft/shared";
 import type { AppRunKeyProvider } from "./app-run-keyrings.js";
 import type { AppRunTransaction } from "./app-run-repository.js";
 import type { WebAuthorityGuard } from "./app-resource-sync-web-authority.js";
 import { privateSearchDatabase } from "./app-resource-private-search-db.js";
-import { loadLiveResourceSyncBindingAuthority } from "./app-resource-sync-authority.js";
+import { assertPrivateAccessAdmission } from "./app-private-access-admission.js";
+import { samplePrivateAccessClock, type PrivateAccessClock } from "./app-private-access-clock.js";
+import { loadLockedPrivateAccessParent } from "./app-private-access-parent.js";
 import { decodePrivateProjection } from "./app-resource-private-projection.js";
 import { AppResourceSyncSecretService } from "./app-resource-sync-secrets.js";
 import { isAppResourceSyncChannelEnabled } from "./env.js";
@@ -22,6 +24,9 @@ export const privateSharingEnabled = () => isAppResourceSyncChannelEnabled() && 
 type Tx = AppRunTransaction;
 export class AppResourceAccessService {
   readonly secrets: AppResourceSyncSecretService;
+  private readonly clocks = new WeakMap<Tx, PrivateAccessClock>();
+  private current(tx: Tx) { const clock = this.clocks.get(tx); if (!clock) throw accessUnavailable(); return clock.current(); }
+  private issuance(tx: Tx) { const clock = this.clocks.get(tx); if (!clock) throw accessUnavailable(); return clock.issuance(); }
   constructor(private readonly keys: AppRunKeyProvider, private readonly clock: () => Date = () => new Date()) {
     this.secrets = new AppResourceSyncSecretService(keys);
   }
@@ -84,10 +89,16 @@ export class AppResourceAccessService {
       await this.human(tx, org, [...new Set([owner, recipient, operator])]);
     }
   }
-  private async final(tx: Tx, c: AccessCaller, ids: readonly string[], expires?: Date) {
+  private async webFinal(tx: Tx, c: AccessCaller, expires?: Date) {
     await c.guard(tx);
+    const deadline = new Date(Math.min(expires?.getTime() ?? Infinity, c.guard.current_web_session_expires_at().getTime()));
+    this.clocks.get(tx)?.bindDeadline(deadline);
+    if (deadline <= this.current(tx)) throw accessUnavailable();
+  }
+  private async final(tx: Tx, c: AccessCaller, ids: readonly string[], expires?: Date) {
+    await this.webFinal(tx, c, expires);
     await this.human(tx, c.org_id, ids);
-    const now = this.clock();
+    const now = this.current(tx);
     if (!privateSharingEnabled() || expires && expires <= now || c.guard.current_web_session_expires_at() <= now) {
       throw accessUnavailable();
     }
@@ -96,80 +107,22 @@ export class AppResourceAccessService {
     if (!allowDisabled && !privateSharingEnabled()) {
       throw accessUnavailable();
     }
-    const result = await privateSearchDatabase().transaction(work, signal, performance.now() + 3000);
+    let localClock: PrivateAccessClock | undefined;
+    const result = await privateSearchDatabase().transaction(async tx => {
+      localClock = await samplePrivateAccessClock(tx, this.clock);
+      this.clocks.set(tx, localClock);
+      try { return await work(tx); }
+      finally { this.clocks.delete(tx); }
+    }, signal, performance.now() + 3000);
     signal?.throwIfAborted();
+    if (localClock?.expired() || !allowDisabled && !privateSharingEnabled()) throw accessUnavailable();
     return result;
   }
   private async live(tx: Tx, c: AccessCaller, ref: AccessSnapshot["ref"], recipient: string, write: boolean, signal?: AbortSignal, decrypt = true) {
-    const [locator] = await tx.select().from(bindings).innerJoin(projections, and(eq(projections.org_id, bindings.org_id), eq(projections.resource_binding_id, bindings.id))).where(and(eq(bindings.org_id, c.org_id), eq(projections.id, ref.resource_id), eq(bindings.runtime_registration_id, ref.provider.provider_instance_id), eq(bindings.resource_family, ref.resource_type))).limit(1);
-    if (!locator) {
-      throw accessUnavailable();
-    }
-    const b = locator.app_resource_bindings;
-    const [r] = await tx.select().from(registrations).where(and(eq(registrations.org_id, c.org_id), eq(registrations.id, b.runtime_registration_id))).limit(1);
-    if (!r) {
-      throw accessUnavailable();
-    }
-    await this.members(tx, c.org_id, b.owner_user_id, recipient, r.operator_user_id, write);
-    await tx.execute(sql `SELECT id FROM app_installations WHERE org_id=${c.org_id} AND id=${b.app_installation_id} FOR SHARE`);
-    const [app] = await tx.select().from(appInstallations).where(and(eq(appInstallations.org_id, c.org_id), eq(appInstallations.id, b.app_installation_id))).limit(1);
-    if (!app || app.active_version_id !== b.app_version_id || app.active_grant_snapshot_id !== b.grant_snapshot_id) {
-      throw accessUnavailable();
-    }
-    await tx.execute(sql `SELECT id FROM app_versions WHERE org_id=${c.org_id} AND id=${b.app_version_id} FOR SHARE`);
-    await tx.execute(sql `SELECT id FROM app_grant_snapshots WHERE org_id=${c.org_id} AND id=${b.grant_snapshot_id} FOR SHARE`);
-    await tx.execute(sql `SELECT id FROM app_runtime_registrations WHERE org_id=${c.org_id} AND id=${r.id} FOR SHARE`);
-    await tx.execute(sql `SELECT id FROM app_resource_bindings WHERE org_id=${c.org_id} AND id=${b.id} FOR SHARE`);
-    const [lockedB] = await tx.select().from(bindings).where(and(eq(bindings.org_id, c.org_id), eq(bindings.id, b.id))), [lockedR] = await tx.select().from(registrations).where(and(eq(registrations.org_id, c.org_id), eq(registrations.id, r.id)));
-    if (!lockedB || !lockedR || digest({
-      owner: lockedB.owner_user_id,
-      app: lockedB.app_installation_id,
-      version: lockedB.app_version_id,
-      grant: lockedB.grant_snapshot_id,
-      registration: lockedB.runtime_registration_id,
-      key: lockedB.resource_key,
-      operator: lockedR.operator_user_id
-    }) !== digest({
-      owner: b.owner_user_id,
-      app: b.app_installation_id,
-      version: b.app_version_id,
-      grant: b.grant_snapshot_id,
-      registration: b.runtime_registration_id,
-      key: b.resource_key,
-      operator: r.operator_user_id
-    })) {
-      throw accessUnavailable();
-    }
-    const authority = await loadLiveResourceSyncBindingAuthority(tx, { org_id: c.org_id, resource_binding_id: b.id, clock: this.clock });
-    if (!authority || authority.descriptor.resource_type !== ref.resource_type || authority.registration.id !== ref.provider.provider_instance_id) {
-      throw accessUnavailable();
-    }
-    await tx.execute(sql `SELECT id FROM app_sync_checkpoints WHERE org_id=${c.org_id} AND resource_binding_id=${b.id} FOR SHARE`);
-    const [checkpoint] = await tx.select().from(checkpoints).where(and(eq(checkpoints.org_id, c.org_id), eq(checkpoints.resource_binding_id, b.id), eq(checkpoints.state, "active"))).limit(1);
-    if (!checkpoint) {
-      throw accessUnavailable();
-    }
-    const [row] = await tx.select().from(projections).where(and(eq(projections.org_id, c.org_id), eq(projections.id, ref.resource_id), eq(projections.resource_binding_id, b.id), eq(projections.checkpoint_id, checkpoint.id), eq(projections.generation, checkpoint.generation), eq(projections.state, "live"))).limit(1);
-    if (!row) {
-      throw accessUnavailable();
-    }
-    signal?.throwIfAborted();
-    let record: ReturnType<typeof decodePrivateProjection> | null = null;
-    try {
-      if (decrypt) {
-        record = decodePrivateProjection(this.secrets, row, authority.descriptor);
-      }
-    }
-    catch {
-      throw accessUnavailable();
-    }
-    return {
-      authority,
-      checkpoint,
-      row,
-      record,
-      participants: [b.owner_user_id, recipient, r.operator_user_id]
-    };
+    return loadLockedPrivateAccessParent({
+      tx, orgId: c.org_id, ref, recipient, clock: () => this.current(tx), secrets: this.secrets, signal, decrypt,
+      lockParticipants: (owner, target, operator) => this.members(tx, c.org_id, owner, target, operator, write),
+    });
   }
   private pins(live: Awaited<ReturnType<AppResourceAccessService["live"]>>) {
     const { authority: a, checkpoint: p, record: r } = live;
@@ -204,7 +157,7 @@ export class AppResourceAccessService {
       if (fields.some(f => !Object.hasOwn(live.authority.descriptor.record_schema.properties, f))) {
         throw accessUnavailable();
       }
-      const now = this.clock(), expires = new Date(Math.min(new Date(input.expires_at).getTime(), now.getTime() + ACCESS_LIMITS.grant_ms, live.authority.binding.consent_expires_at!.getTime()));
+      const now = this.issuance(tx), expires = new Date(Math.min(new Date(input.expires_at).getTime(), now.getTime() + ACCESS_LIMITS.grant_ms, live.authority.binding.consent_expires_at!.getTime()));
       if (expires <= now) {
         throw accessUnavailable();
       }
@@ -265,7 +218,7 @@ export class AppResourceAccessService {
       if (digest(this.pins(live)) !== digest(Object.fromEntries(Object.keys(this.pins(live)).map(k => [k, s[k as keyof AccessSnapshot]])))) {
         throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_STALE", 409);
       }
-      const now = this.clock();
+      const now = this.current(tx);
       if (new Date(s.review_expires_at) <= now || new Date(s.expires_at) > live.authority.binding.consent_expires_at!) {
         throw accessUnavailable();
       }
@@ -277,10 +230,7 @@ export class AppResourceAccessService {
         await this.final(tx, c, live.participants, new Date(Math.min(prior.expires_at.getTime(), Date.parse(s.review_expires_at), live.authority.binding.consent_expires_at!.getTime())));
         return { grant_id: prior.id, expires_at: prior.expires_at.toISOString() };
       }
-      const [counts] = await tx.execute(sql `SELECT count(*) FILTER(WHERE owner_user_id=${c.user_id} AND app_installation_id=${s.app_installation_id})::int AS owner_retained,count(*) FILTER(WHERE recipient_user_id=${s.recipient_user_id})::int AS recipient_retained,count(*) FILTER(WHERE owner_user_id=${c.user_id} AND app_installation_id=${s.app_installation_id} AND revoked_at IS NULL AND expires_at>clock_timestamp())::int AS owner_active,count(*) FILTER(WHERE recipient_user_id=${s.recipient_user_id} AND revoked_at IS NULL AND expires_at>clock_timestamp())::int AS recipient_active FROM app_resource_access_grants WHERE org_id=${c.org_id} AND ((owner_user_id=${c.user_id} AND app_installation_id=${s.app_installation_id}) OR recipient_user_id=${s.recipient_user_id})`).then(r => r.rows);
-      if (!counts || Number(counts.owner_retained) >= ACCESS_LIMITS.owner_retained || Number(counts.recipient_retained) >= ACCESS_LIMITS.recipient_retained || Number(counts.owner_active) >= ACCESS_LIMITS.owner_active || Number(counts.recipient_active) >= ACCESS_LIMITS.recipient_active) {
-        throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_LIMIT", 409);
-      }
+      await assertPrivateAccessAdmission(tx, c.org_id, c.user_id, s.app_installation_id, s.recipient_user_id);
       await this.final(tx, c, live.participants, new Date(Math.min(Date.parse(s.expires_at), Date.parse(s.review_expires_at), live.authority.binding.consent_expires_at!.getTime())));
       const id = randomUUID();
       await tx.execute(sql `INSERT INTO app_resource_access_grants(id,org_id,owner_user_id,recipient_user_id,app_installation_id,resource_binding_id,checkpoint_id,projection_id,review_digest,snapshot,accepted_at,expires_at) VALUES(${id},${c.org_id},${c.user_id},${s.recipient_user_id},${s.app_installation_id},${s.resource_binding_id},${s.checkpoint_id},${s.ref.resource_id},${input.review_digest},${JSON.stringify(s)}::jsonb,clock_timestamp(),${s.expires_at}::timestamptz)`);
@@ -348,7 +298,7 @@ export class AppResourceAccessService {
         throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_TOO_LARGE", 413);
       }
       await this.final(tx, c, live.participants, current.expires_at);
-      if (live.authority.binding.consent_expires_at! <= this.clock()) {
+      if (live.authority.binding.consent_expires_at! <= this.current(tx)) {
         throw accessUnavailable();
       }
       return result;
@@ -364,13 +314,13 @@ export class AppResourceAccessService {
       await this.members(tx, c.org_id, c.user_id, g.recipient_user_id, s.operator_user_id, true, false);
       await this.staleParents(tx, c.org_id, [s]);
       await tx.execute(sql `SELECT id FROM app_resource_access_grants WHERE org_id=${c.org_id} AND id=${id} FOR UPDATE`);
-      await c.guard(tx);
+      await this.webFinal(tx, c);
       const [current] = await tx.select().from(grants).where(and(eq(grants.org_id, c.org_id), eq(grants.id, id)));
       if (!current) {
         throw accessUnavailable();
       }
       if (!current.revoked_at) {
-        await tx.update(grants).set({ revoked_at: this.clock(), revoked_by_user_id: c.user_id }).where(eq(grants.id, id));
+        await tx.update(grants).set({ revoked_at: this.current(tx), revoked_by_user_id: c.user_id }).where(eq(grants.id, id));
         await tx.insert(auditLog).values({
           org_id: c.org_id,
           actor_type: "user",
@@ -381,7 +331,7 @@ export class AppResourceAccessService {
           metadata: { review_digest: current.review_digest }
         });
       }
-      await c.guard(tx);
+      await this.webFinal(tx, c);
       return { revoked: true };
     }, true);
   }
@@ -401,7 +351,7 @@ export class AppResourceAccessService {
     }
     return this.run(signal, async (tx) => {
       const [anchor] = await tx.select().from(grants).where(and(eq(grants.org_id, c.org_id), eq(grants.recipient_user_id, c.user_id), eq(grants.id, anchorId)));
-      if (!anchor || anchor.revoked_at || anchor.expires_at <= this.clock()) {
+      if (!anchor || anchor.revoked_at || anchor.expires_at <= this.current(tx)) {
         throw accessUnavailable();
       }
       const scope = this.stored(anchor);
@@ -425,10 +375,10 @@ export class AppResourceAccessService {
         await tx.execute(sql `SELECT id FROM app_resource_access_grants WHERE org_id=${c.org_id} AND id=${id} FOR SHARE`);
       }
       const [currentAnchor] = await tx.select().from(grants).where(and(eq(grants.org_id, c.org_id), eq(grants.id, anchorId)));
-      if (!currentAnchor || currentAnchor.revoked_at || currentAnchor.expires_at <= this.clock() || currentAnchor.review_digest !== anchor.review_digest) {
+      if (!currentAnchor || currentAnchor.revoked_at || currentAnchor.expires_at <= this.current(tx) || currentAnchor.review_digest !== anchor.review_digest) {
         throw accessUnavailable();
       }
-      const projectionIds = [...new Set([anchor.projection_id, ...rows.filter(g => !g.revoked_at && g.expires_at > this.clock()).map(g => g.projection_id)])];
+      const projectionIds = [...new Set([anchor.projection_id, ...rows.filter(g => !g.revoked_at && g.expires_at > this.current(tx)).map(g => g.projection_id)])];
       if (projectionIds.length) {
         const total = await tx.execute(sql `SELECT coalesce(sum(octet_length(body_ciphertext_b64)),0)::text AS bytes
           FROM app_resource_projections WHERE org_id=${c.org_id} AND id IN (${sql.join(projectionIds.map(id => sql `${id}`), sql `,`)})`);
@@ -461,7 +411,7 @@ export class AppResourceAccessService {
       for (const g of rows) {
         after = g.accepted_sequence.toString();
         const s = this.stored(g);
-        if (g.revoked_at || g.expires_at <= this.clock() || !s.operations.includes("search") || input.field_keys.some(k => !s.field_keys.includes(k))) {
+        if (g.revoked_at || g.expires_at <= this.current(tx) || !s.operations.includes("search") || input.field_keys.some(k => !s.field_keys.includes(k))) {
           continue;
         }
         const live = decoded.get(g.projection_id);
@@ -505,7 +455,7 @@ export class AppResourceAccessService {
         query_digest: queryDigest,
         cutoff,
         after,
-        expires_at: cursor?.expires_at ?? new Date(Math.min(this.clock().getTime() + 300000, anchor.expires_at.getTime(), c.guard.current_web_session_expires_at().getTime())).toISOString()
+        expires_at: cursor?.expires_at ?? new Date(Math.min(this.issuance(tx).getTime() + 300000, anchor.expires_at.getTime(), c.guard.current_web_session_expires_at().getTime())).toISOString()
       }, "search") : null;
       const result = {
         schema_version: "deft.app_resource_access_search_page.v1",
@@ -533,7 +483,7 @@ export class AppResourceAccessService {
       const after = cursor?.after ?? "0";
       const rows = await tx.select().from(grants).where(and(eq(grants.org_id, c.org_id), subjectFilter, sql `${grants.accepted_sequence}>${after}::bigint`, sql `${grants.accepted_sequence}<=${cutoff}::bigint`)).orderBy(grants.accepted_sequence).limit(ACCESS_LIMITS.inventory + 1);
       const page = rows.slice(0, ACCESS_LIMITS.inventory);
-      const now = this.clock();
+      const now = this.current(tx);
       const items = page.map(g => ({
         grant_id: g.id,
         label: "Shared App record",
@@ -541,11 +491,11 @@ export class AppResourceAccessService {
         state: g.revoked_at ? "revoked" : g.expires_at <= now ? "expired" : "active"
       }));
       if (input.view === "owned") {
-        await c.guard(tx);
+        await this.webFinal(tx, c, cursor ? new Date(cursor.expires_at) : undefined);
       }
       else
         await this.final(tx, c, [c.user_id], cursor ? new Date(cursor.expires_at) : undefined);
-      if (cursor && new Date(cursor.expires_at) <= this.clock()) throw accessUnavailable();
+      if (cursor && new Date(cursor.expires_at) <= this.current(tx)) throw accessUnavailable();
       const next = rows.length > page.length ? this.token({
         schema_version: "deft.app_resource_access_inventory_cursor.v1",
         org_id: c.org_id,
@@ -555,7 +505,7 @@ export class AppResourceAccessService {
         app_installation_id: input.app_installation_id ?? null,
         cutoff,
         after: page.at(-1)!.accepted_sequence.toString(),
-        expires_at: cursor?.expires_at ?? new Date(Math.min(now.getTime() + 300000, c.guard.current_web_session_expires_at().getTime())).toISOString()
+        expires_at: cursor?.expires_at ?? new Date(Math.min(this.issuance(tx).getTime() + 300000, c.guard.current_web_session_expires_at().getTime())).toISOString()
       }, "inventory") : null;
       const result = {
         schema_version: "deft.app_resource_access_inventory.v1",
@@ -587,7 +537,7 @@ export class AppResourceAccessService {
       for (const g of candidates) {
         await tx.execute(sql `SELECT id FROM app_resource_access_grants WHERE org_id=${c.org_id} AND id=${g.id} FOR UPDATE`);
       }
-      await c.guard(tx);
+      await this.webFinal(tx, c);
       const ids = candidates.map(g => g.id);
       const removed = ids.length ? await tx.delete(grants).where(and(eq(grants.org_id, c.org_id), eq(grants.owner_user_id, c.user_id), inArray(grants.id, ids), sql `coalesce(${grants.revoked_at},${grants.expires_at})<clock_timestamp()-interval '30 days'`)).returning({ id: grants.id }) : [];
       if (removed.length) {
@@ -601,7 +551,7 @@ export class AppResourceAccessService {
           metadata: { grant_ids: removed.map(g => g.id) }
         });
       }
-      await c.guard(tx);
+      await this.webFinal(tx, c);
       return { removed: removed.length };
     }, true);
   }

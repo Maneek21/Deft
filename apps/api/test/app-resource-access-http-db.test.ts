@@ -22,6 +22,47 @@ Object.assign(process.env, {
     DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: "true",
     DEFT_APP_PRIVATE_SHARING_ENABLED: "true"
 });
+
+test('Human maximum grant respects database ceiling with an ahead application clock', { skip: !safe }, async () => {
+    const h = await fixture(48 * 3600000);
+    const [{ AppResourceAccessService }, { resourceSyncWebAuthority }] = await Promise.all([import('../src/lib/app-resource-access-service.js'), import('../src/lib/app-resource-sync-web-authority.js')]);
+    const v = await resourceSyncWebAuthority('Bearer ' + h.owner.accessToken);
+    const caller = { org_id: v.actor.org_id, user_id: v.actor.actor_id, sid: v.web_session.sid, guard: v.guard };
+    const service = new AppResourceAccessService(h.runtime.keys, () => new Date(Date.now() + 30000));
+    const review = await service.prepare(caller, { ...h.request, expires_at: new Date(Date.now() + 48 * 3600000).toISOString() });
+    const { default: pg } = await import('pg');
+    const prototype = pg.Client.prototype as unknown as { query: (...args: unknown[]) => unknown }, original = prototype.query;
+    const failures: { code?: string; constraint?: string }[] = [];
+    prototype.query = function (...args: unknown[]) {
+        const result = Reflect.apply(original, this, args);
+        return result instanceof Promise ? result.catch((error: { code?: string; constraint?: string }) => {
+            if (error.constraint === 'app_resource_access_grants_expiry_check') failures.push({ code: error.code, constraint: error.constraint });
+            throw error;
+        }) : result;
+    };
+    let grant: { grant_id: string };
+    try { grant = await service.accept(caller, { review_token: review.review_token, review_digest: review.review_digest, accept_access: true }); }
+    finally { prototype.query = original; console.info(JSON.stringify({ clock_fixture_sql_failures: failures })); }
+    const row = (await h.db.execute(h.sql`SELECT expires_at<=accepted_at+interval '24 hours' AS bounded FROM app_resource_access_grants WHERE org_id=${h.owned.org_id} AND id=${grant.grant_id}`)).rows[0];
+    assert.equal(row?.bounded, true);
+});
+
+test('Database-expired human grant denies body with a behind application clock', { skip: !safe }, async () => {
+    const h = await fixture();
+    const review = await h.call('/reviews', 'POST', { ...h.request, expires_at: new Date(Date.now() + 600000).toISOString() });
+    assert.equal(review.status, 200);
+    const { canonicalCapabilityJson } = await import('@deft/shared');
+    const accepted = new Date(Date.now() - 300000), expires = new Date(Date.now() - 60000);
+    const snapshot = { ...review.body.snapshot, expires_at: expires.toISOString(), review_expires_at: new Date(accepted.getTime() + 60000).toISOString() };
+    const id = crypto.randomUUID(), digest = 'sha256:' + createHash('sha256').update(canonicalCapabilityJson(snapshot)).digest('hex');
+    await h.db.insert(h.s.appResourceAccessGrants).values({ id, org_id: snapshot.org_id, owner_user_id: snapshot.owner_user_id, recipient_user_id: snapshot.recipient_user_id,
+        app_installation_id: snapshot.app_installation_id, resource_binding_id: snapshot.resource_binding_id, checkpoint_id: snapshot.checkpoint_id,
+        projection_id: snapshot.ref.resource_id, snapshot, review_digest: digest, accepted_at: accepted, expires_at: expires });
+    const [{ AppResourceAccessService }, { resourceSyncWebAuthority }] = await Promise.all([import('../src/lib/app-resource-access-service.js'), import('../src/lib/app-resource-sync-web-authority.js')]);
+    const v = await resourceSyncWebAuthority('Bearer ' + h.recipient.accessToken);
+    const caller = { org_id: v.actor.org_id, user_id: v.actor.actor_id, sid: v.web_session.sid, guard: v.guard };
+    await assert.rejects(new AppResourceAccessService(h.runtime.keys, () => new Date(Date.now() - 120000)).read(caller, id), /unavailable/i);
+});
 const ring = (purpose: string) => ({ current: purpose, keys: { [purpose]: createHash("sha256").update(`c16-private-sharing:${purpose}`).digest("base64") } });
 process.env.DEFT_APP_RUN_KEYRINGS = JSON.stringify({
     schema_version: "deft.app_run_keyring.v1",
@@ -33,10 +74,10 @@ after(async () => {
     await (await import("../src/lib/app-run-runtime.js")).shutdownAppRunRuntime();
     await (await import("../src/lib/db.js")).closeDb();
 });
-async function fixture() {
+async function fixture(consentDurationMs?: number) {
     const [{ db }, s, { eq, and, sql }, runtimeModule, web, routes, { Hono }] = await Promise.all([import("../src/lib/db.js"), import("@deft/db/schema"), import("drizzle-orm"), import("../src/lib/app-run-runtime.js"), import("../src/lib/web-sessions.js"), import("../src/routes/app-resource-access.js"), import("hono")]);
     const runtime = await runtimeModule.getAppRunRuntime();
-    const owned = await createReviewedResourceSyncFixture({ keys: runtime.keys, clock: () => new Date(), descriptor: {
+    const owned = await createReviewedResourceSyncFixture({ keys: runtime.keys, clock: () => new Date(), consent_duration_ms: consentDurationMs, descriptor: {
             schema_version: "deft.app_sync_descriptor.v1",
             key: "inbox",
             runtime_requirement_key: "provider",

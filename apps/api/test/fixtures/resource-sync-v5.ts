@@ -17,6 +17,7 @@ const defaultDescriptor: SyncDescriptorV1 = {
 export async function createReviewedResourceSyncFixture(input: Readonly<{
   keys: AppRunKeyProvider; clock: () => Date; descriptor?: SyncDescriptorV1;
   experience_artifact?: DeftExperienceArtifact;
+  consent_duration_ms?: number;
 }>) {
   const [{ db }, schema, kit, apps, reviews, modules, managementModule, drizzle] = await Promise.all([
     import('../../src/lib/db.js'), import('@deft/db/schema'), import('@deft/app-kit'),
@@ -80,7 +81,7 @@ export async function createReviewedResourceSyncFixture(input: Readonly<{
     expected_grant_snapshot_digest: grant.snapshot_digest,
     expected_lifecycle_epoch: activated.installation.lifecycle_epoch,
     expected_grant_epoch: activated.installation.grant_epoch,
-    consent_expires_at: new Date(input.clock().getTime() + 60 * 60 * 1_000).toISOString(),
+    consent_expires_at: new Date(input.clock().getTime() + (input.consent_duration_ms ?? 60 * 60 * 1_000)).toISOString(),
     limits: { max_records_per_page: 100, max_page_bytes: 524_288,
       max_retained_records: 100_000, max_retained_bytes: 1_073_741_824,
       min_interval_seconds: 60 },
