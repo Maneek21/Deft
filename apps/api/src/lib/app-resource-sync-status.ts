@@ -40,7 +40,7 @@ export async function listResourceSyncBindings(actor: ModuleActor, value: unknow
     const rows = await tx.select(bindingFields).from(appResourceBindings).where(and(
       eq(appResourceBindings.org_id, actor.org_id),
       eq(appResourceBindings.owner_user_id, actor.actor_id),
-      mode ? eq(appResourceBindings.registration_contract_version, 'deft.app_runtime_channel.v3') : undefined,
+      eq(appResourceBindings.registration_contract_version, mode ? 'deft.app_runtime_channel.v3' : 'deft.app_runtime_channel.v2'),
       query.after ? gt(appResourceBindings.id, query.after) : undefined))
       .orderBy(asc(appResourceBindings.id)).limit(query.limit + 1);
     const bindings = rows.slice(0, query.limit);
@@ -57,7 +57,7 @@ export async function inspectResourceSyncBinding(actor: ModuleActor, bindingId: 
     const [binding] = await tx.select(bindingFields).from(appResourceBindings).where(and(
       eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.id, bindingId),
       eq(appResourceBindings.owner_user_id, actor.actor_id),
-      mode ? eq(appResourceBindings.registration_contract_version, 'deft.app_runtime_channel.v3') : undefined)).for('share');
+      eq(appResourceBindings.registration_contract_version, mode ? 'deft.app_runtime_channel.v3' : 'deft.app_runtime_channel.v2'))).for('share');
     if (!binding) throw denied();
     const [checkpoint] = await tx.select({ checkpoint_id: appSyncCheckpoints.id,
       state: appSyncCheckpoints.state, generation: appSyncCheckpoints.generation,

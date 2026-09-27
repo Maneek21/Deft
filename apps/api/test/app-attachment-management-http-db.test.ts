@@ -69,6 +69,16 @@ test('explicit channel3 metadata supports normal owner and operator management w
     const { binding } = await call(prefix + '/bindings/activate', 'POST', { ...consent,
       expected_review_digest: consentReview.review_digest, accept_host_policy: true });
     const bindingPath = `${prefix}/bindings/${binding.binding_id}`;
+    await t.test('legacy channel2 owner list and inspect cannot return channel3 binding metadata', async () => {
+      const legacy = '/api/app-resource-sync-management';
+      const listed = await call(legacy + '/bindings');
+      assert.deepEqual(listed.bindings, [], 'Legacy channel2 list must exclude the same owner channel3 binding');
+      const denied = await request(`${legacy}/bindings/${binding.binding_id}`);
+      assert.equal(denied.status, 403);
+      assert.ok(!JSON.stringify(denied.value).includes(binding.binding_id));
+      assert.equal((await call(prefix + '/bindings')).bindings[0].binding_id, binding.binding_id);
+      assert.equal((await call(bindingPath)).binding.binding_id, binding.binding_id);
+    });
     await t.test('channel3 owner status and operator assignment pages expose bounded metadata only', async () => {
       process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED = 'false';
       try {
