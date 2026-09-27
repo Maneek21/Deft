@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createExperienceBridge, type ExperiencePin, type ExperiencePort } from './app-experience-bridge';
+import { createDeftExperienceSdk } from '../../../../packages/app-kit/src/experience-sdk';
 
 const pin: ExperiencePin = Object.freeze({
   org_id: 'org_a', user_id: 'user_a', app_installation_id: 'installation_a',
@@ -24,6 +25,38 @@ const message = (sequence: number, value: Record<string, unknown>) => ({
   version:'deft.experience_bridge.v1', session_id:pin.session_id, sequence, ...value,
 });
 const delay = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+test('public SDK optional undefined request fields preserve Run status and keyed action dispatch', async () => {
+  const hostPort = new FakePort(), authorPort = new FakePort();
+  hostPort.postMessage = value => { hostPort.sent.push(value); authorPort.receive(structuredClone(value)); };
+  authorPort.postMessage = value => { authorPort.sent.push(value); hostPort.receive(structuredClone(value)); };
+  let statusCalls = 0, actionCalls = 0;
+  const run = { id: 'run_test', state: 'succeeded' };
+  const bridge = createExperienceBridge({ port: hostPort, pin, resourceKeys: [], actionKeys: ['send_message'],
+    broker: { isLive: () => true, runStatus: async () => { statusCalls += 1; return run; },
+      action: async (_pin, key, input) => { assert.equal(key, 'send_message'); assert.equal(input, undefined); actionCalls += 1; return run; } },
+    onView: () => undefined });
+  const sdk = createDeftExperienceSdk(authorPort, pin.session_id);
+  try {
+    assert.deepEqual(await sdk.request('run_status', undefined, { run_id: run.id }), run);
+    assert.deepEqual(await sdk.request('action', 'send_message'), run);
+    assert.equal(statusCalls, 1); assert.equal(actionCalls, 1); assert.equal(bridge.active, true);
+    assert.ok(Object.hasOwn(authorPort.sent[0] as object, 'key'));
+    assert.ok(Object.hasOwn(authorPort.sent[1] as object, 'input'));
+  } finally { sdk.close(); bridge.revoke(); }
+});
+
+test('optional envelope normalization still denies unknown undefined fields nested undefined and Run status keys', async () => {
+  for (const fields of [{ extra: undefined, key: undefined, input: { run_id: 'run_test' } },
+    { key: undefined, input: { run_id: 'run_test', nested: undefined } },
+    { key: 'send_message', input: { run_id: 'run_test' } }]) {
+    const port = new FakePort(); let calls = 0;
+    const bridge = createExperienceBridge({ port, pin, resourceKeys: [], actionKeys: ['send_message'],
+      broker: { isLive: () => true, runStatus: async () => { calls += 1; return {}; } }, onView: () => undefined });
+    port.receive(structuredClone(message(1, { kind: 'request', request_id: 'request_1', operation: 'run_status', ...fields })));
+    await delay(); assert.equal(bridge.active, false); assert.equal(port.closed, true); assert.equal(calls, 0);
+  }
+});
 
 test('bounded rich view accepted; spoofed session and replay close the port', async () => {
   const port = new FakePort();

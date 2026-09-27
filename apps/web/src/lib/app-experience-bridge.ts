@@ -175,7 +175,15 @@ export function createExperienceBridge(input: Readonly<{
   };
   const send = (message: unknown) => { if (active) input.port.postMessage(message); };
   input.port.onmessage = (event: MessageEvent) => {
-    const value: unknown = event.data;
+    let value: unknown = event.data;
+    // Published SDK requests may retain absent optional fields through
+    // structured clone. Normalize only these envelope fields, never input JSON.
+    if (record(value) && value.kind === 'request') {
+      const envelope = { ...value };
+      if (Object.hasOwn(envelope, 'key') && envelope.key === undefined) delete envelope.key;
+      if (Object.hasOwn(envelope, 'input') && envelope.input === undefined) delete envelope.input;
+      value = envelope;
+    }
     if (!active || !boundedJson(value) || !record(value)
       || value.version !== 'deft.experience_bridge.v1'
       || value.session_id !== pin.session_id || !integer(value.sequence)
