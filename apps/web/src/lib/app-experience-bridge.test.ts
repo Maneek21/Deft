@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createExperienceBridge, type ExperiencePin, type ExperiencePort } from './app-experience-bridge';
+import { createExperienceBridge, parseExperienceView, type ExperiencePin, type ExperiencePort } from './app-experience-bridge';
 import { createDeftExperienceSdk } from '../../../../packages/app-kit/src/experience-sdk';
 
 const pin: ExperiencePin = Object.freeze({
@@ -213,4 +213,34 @@ test('resource response bounds cover the entire envelope and withdrawal drops la
   await delay();
   assert.equal((boundedPort.sent[0] as any).code, 'RESOURCE_PAYLOAD_TOO_LARGE');
   assert.equal((boundedPort.sent[0] as any).output, undefined);
+});
+
+
+test('safe presentation options round-trip without admitting author HTML or CSS', () => {
+  const rich = { root: { kind: 'stack', id: 'root', layout: 'split', surface: 'panel', mobile: 'only', children: [
+    { kind: 'text', id: 'title', text: '<b>Literal title</b>', tone: 'heading' },
+    { kind: 'button', id: 'message', label: 'Sender', variant: 'list', description: 'Preview', meta: '10:00', selected: true, disabled: false },
+    { kind: 'input', id: 'body', label: 'Message', value: 'Draft', multiline: true, placeholder: 'Write a message' },
+  ] } };
+  assert.deepEqual(parseExperienceView(rich), rich);
+  assert.deepEqual(parseExperienceView(view), view);
+  assert.deepEqual(parseExperienceView({ root: { kind: 'stack', id: 'list', layout: 'list', children: [] } }),
+    { root: { kind: 'stack', id: 'list', layout: 'list', children: [] } });
+  const cases = [
+    { kind: 'text', id: 'title', text: 'Hello', tone: 'html' },
+    { kind: 'text', id: 'title', text: 'Hello', html: '<b>Hello</b>' },
+    { kind: 'button', id: 'send', label: 'Send', style: { color: 'red' } },
+    { kind: 'button', id: 'send', label: 'Send', variant: 'link' },
+    { kind: 'button', id: 'send', label: 'Send', selected: 'true' },
+    { kind: 'button', id: 'send', label: 'Send', disabled: 1 },
+    { kind: 'button', id: 'send', label: 'Send', description: 'x'.repeat(513) },
+    { kind: 'button', id: 'send', label: 'Send', meta: 'x'.repeat(81) },
+    { kind: 'input', id: 'body', label: 'Body', value: '', multiline: 'true' },
+    { kind: 'input', id: 'body', label: 'Body', value: '', placeholder: 'x'.repeat(129) },
+    { kind: 'stack', id: 'root', children: [], layout: 'absolute' },
+    { kind: 'stack', id: 'root', children: [], surface: 'glass' },
+    { kind: 'stack', id: 'root', children: [], mobile: 'always' },
+    { kind: 'stack', id: 'root', children: [], layout: { toString: () => 'split' } },
+  ];
+  for (const root of cases) assert.equal(parseExperienceView({ root }), null);
 });

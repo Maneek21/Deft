@@ -291,20 +291,26 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     return () => { clear(); document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', clear); };
   }, []);
 
-  return <div className="mx-auto w-full max-w-6xl px-3 py-5 sm:px-6">
+  return <div className="mx-auto w-full max-w-[1600px] px-3 py-4 sm:px-6">
     <style>{EXPERIENCE_RENDERER_CSS}</style>
-    <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div><p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Installed App Experience</p>
-        <h1 className="text-xl font-semibold">{session?.experience.label ?? 'Loading Experience'}</h1></div>
-      <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps">App settings</Link>
-      {APP_ATTACHMENT_BROKER_ENABLED&&<Link className="deft-pill" style={{minHeight:44}} href="/settings/apps/private-resources">Open saved resources and attachments</Link>}
+    <header className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>
+      <h1 className="font-medium">{session?.experience.label ?? 'Opening app…'}</h1>
+      <nav aria-label="App tools" className="flex flex-wrap items-center gap-4">
+        {APP_ATTACHMENT_BROKER_ENABLED && <Link className="inline-flex min-h-11 items-center hover:underline" href="/settings/apps/private-resources">Saved files</Link>}
+        <Link className="inline-flex min-h-11 items-center hover:underline" href="/inbox">Approvals</Link>
+        <Link className="inline-flex min-h-11 items-center hover:underline" href="/settings/apps">App settings</Link>
+      </nav>
     </header>
     {error ? <p role="alert" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
       : !ready ? <p role="status" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening reviewed App Experience…</p>
       : null}
-    {session && session.bundle.resource_keys.length > 0 && <section aria-label="Experience private access" className="mb-4 min-w-0 space-y-3 rounded-xl border p-4 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>
-      {exposure && !error ? <><p>This session may read the private fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
-        <button className="deft-pill min-h-11" style={{ minHeight: 44 }} onClick={() => void withdrawExposure()}>End private access</button></>
+    {session && session.bundle.resource_keys.length > 0 && <section aria-label="Experience private access" className={`mb-3 min-w-0 text-sm ${exposure && !error ? '' : 'space-y-3 rounded-xl border p-4'}`} style={{ borderColor: 'var(--ghost-border)' }}>
+      {exposure && !error ? <details className="rounded-lg text-xs" style={{ color: 'var(--on-surface-variant)' }}>
+        <summary className="min-h-8 cursor-pointer py-2">Private access active · session only</summary>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg p-3" style={{ background: 'var(--surface-container-low)' }}>
+          <p>This app can read the fields you approved until {new Date(exposure.expires_at).toLocaleString()}.</p>
+          <button className="deft-pill min-h-11" style={{ minHeight: 44 }} onClick={() => void withdrawExposure()}>End private access</button>
+        </div></details>
         : review ? <><h2 className="font-semibold">Allow private fields for this Experience?</h2>
           <p>Allow this Experience’s App code to read the listed saved private fields for this session, until {new Date(review.snapshot.expires_at).toLocaleString()}? It can process and display these records. Ending access stops future reads; previously delivered content cannot be recalled.</p>
           <dl className="space-y-2"><div><dt>App</dt><dd>{review.snapshot.app_name} {review.snapshot.app_version}</dd></div>
@@ -323,7 +329,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       {exposureBusy && <p role="status">Checking private access…</p>}
     </section>}
     {error && <button className="deft-pill mb-4 min-h-11" style={{ minHeight: 44 }} onClick={() => { setExposure(null); setReview(null); setOpening(value => value + 1); }}>Reopen Experience</button>}
-    <div ref={viewHost} className="min-h-[420px] overflow-hidden rounded-xl" aria-label="App Experience" />
+    <div ref={viewHost} className="min-h-[540px] overflow-hidden rounded-xl border" style={{ borderColor: 'var(--ghost-border)' }} aria-label="App Experience" />
     <div ref={iframeHost} aria-hidden="true" />
   </div>;
 }
