@@ -160,6 +160,7 @@ export function createExperienceBridge(input: Readonly<{
   const controller = new AbortController();
   let active = true;
   let sequence = 0;
+  let latestViewSequence = 0;
   let pending = 0;
   let queuedUiEvents = 0;
   let uiTail = Promise.resolve();
@@ -187,9 +188,11 @@ export function createExperienceBridge(input: Readonly<{
       if (!exact(value, ['version', 'session_id', 'sequence', 'kind', 'view'])) { revoke(); return; }
       const view = parseExperienceView(value.view);
       if (!view) { revoke(); return; }
+      const viewSequence = sequence;
+      latestViewSequence = viewSequence;
       void Promise.resolve(input.broker.isLive(pin)).then((live) => {
         if (!live) revoke();
-        else if (active) input.onView(view);
+        else if (active && viewSequence === latestViewSequence) input.onView(view);
       }).catch(revoke);
       return;
     }
