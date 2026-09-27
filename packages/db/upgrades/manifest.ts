@@ -246,6 +246,7 @@ export const upgradeManifest = {
     { version: '0.3.0-preview.48', file: '0.3.0-preview.48-app-public-cancellation.sql', description: 'Add explicit current-owner public cancellation selection and bounded historical create consent' },
     { version: '0.3.0-preview.49', file: '0.3.0-preview.49-app-private-mcp.sql', description: 'Add dormant independent exact-purpose first-class MCP private resource grants' },
     { version: '0.3.0-preview.50', file: '0.3.0-preview.50-app-attachment-grant-admission.sql', description: 'Admit closed owner-only protocol7 effective grants and bounded checkpoint custody accounting' },
+    { version: '0.3.0-preview.51', file: '0.3.0-preview.51-app-attachment-composition.sql', description: 'Admit separately reviewed protocol7 blob-grant.v2 Runtime and Experience composition without widening v1' },
   ] satisfies UpgradeMigration[],
 } as const;
 
