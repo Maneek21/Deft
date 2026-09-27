@@ -17,7 +17,8 @@ import { AppAttachmentSyncChannel } from './app-attachment-sync-channel.js';
 import { assertAttachmentBrokerEnabled } from './app-attachment-authority.js';
 import { AppResourceSyncManagement } from './app-resource-sync-management.js';
 import { env, isAppAttachmentBrokerEnabled } from './env.js';
-import { assertAppRunReferencedKeysAvailable } from './app-run-keyrings.js';
+import { assertAppRunReferencedKeysAvailable, AppRunKeyVersionUnavailableError } from './app-run-keyrings.js';
+import { AppRunError } from './app-run-errors.js';
 import { listAppAttachmentKeyReferences } from './app-attachment-key-references.js';
 
 type Database = ReturnType<typeof createBoundedAppRunDatabase>;
@@ -64,7 +65,13 @@ async function createAttachmentRuntime() {
 let pending: ReturnType<typeof createAttachmentRuntime>|null=null;
 export function getAppAttachmentRuntime() {
   assertAttachmentBrokerEnabled();
-  pending ??=createAttachmentRuntime().catch(error=>{pending=null;throw error;});
+  pending ??=createAttachmentRuntime().catch(error=>{
+    pending=null;
+    if(error instanceof AppRunKeyVersionUnavailableError) {
+      throw new AppRunError('APP_RUN_KEY_VERSION_UNAVAILABLE');
+    }
+    throw error;
+  });
   return pending;
 }
 export async function shutdownAppAttachmentRuntime(): Promise<void> {
