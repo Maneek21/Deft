@@ -4,29 +4,32 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { PageHeader } from '@/components/page-header';
 import { useAuth } from '@/lib/auth-context';
-import { api } from '@/lib/api';
+import { api, isSameWebSession } from '@/lib/api';
+import { APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
+import { attachmentWebDeadline } from '@/lib/app-attachment-view';
 import { appApiError } from '@/lib/apps';
 import { useSetPageContext } from '@/components/app-header-context';
 import styles from '../../private-resources.module.css';
 
 type Session = { session_id: string; session_token: string; expires_at: string };
 type Metadata = { session_id: string; created_at: string; expires_at: string; revoked_at: string | null };
-const management = '/api/app-resource-sync-management';
-const channelUrl = `${(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '')}/api/app-resource-sync/channel`;
 const live = (session: Metadata) => !session.revoked_at && new Date(session.expires_at).getTime() > Date.now();
 async function result<T>(response: Response): Promise<T> {
   if (!response.ok) throw new Error(await appApiError(response, 'Operator session is unavailable.'));
   return response.json() as Promise<T>;
 }
 
-export function OperatorSessionClient({ bindingId }: { bindingId: string }) {
+export function OperatorSessionClient({ bindingId, attachment = false }: { bindingId: string; attachment?: boolean }) {
   const { user, sessionCacheScope } = useAuth();
   useSetPageContext(<span className="text-sm font-semibold">Private resource operator</span>, []);
-  if (!user || !sessionCacheScope) return null;
-  return <OperatorSession key={`${sessionCacheScope}:${bindingId}`} bindingId={bindingId} />;
+  if (!user || !sessionCacheScope || (attachment && !APP_ATTACHMENT_BROKER_ENABLED)) return null;
+  return <OperatorSession key={`${sessionCacheScope}:${bindingId}:${attachment}`} bindingId={bindingId} attachment={attachment} />;
 }
 
-function OperatorSession({ bindingId }: { bindingId: string }) {
+function OperatorSession({ bindingId, attachment }: { bindingId: string; attachment: boolean }) {
+  const management = attachment ? '/api/apps/blob/sync' : '/api/app-resource-sync-management';
+  const channelUrl = `${(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '')}${attachment ? '/api/app-resource-sync-channel/v3' : '/api/app-resource-sync/channel'}`;
+  const token = api.getAccessToken();
   const [sessions, setSessions] = useState<Metadata[]>([]);
   const [after, setAfter] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -36,6 +39,7 @@ function OperatorSession({ bindingId }: { bindingId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const generation = useRef(0);
+  const current = useCallback((request:number) => request === generation.current && !document.hidden && isSameWebSession(token,localStorage.getItem('deft-access-token')), [token]);
   const clearCredential = useCallback(() => {
     generation.current += 1; setCredential(null); setCredentialExpiry(null); setBusy(false);
   }, []);
@@ -44,14 +48,14 @@ function OperatorSession({ bindingId }: { bindingId: string }) {
     setBusy(true); setError(null); setLoaded(false);
     try {
       const body = await result<{ sessions: Metadata[]; next_after: string | null }>(await api.get(`${management}/bindings/${encodeURIComponent(bindingId)}/sessions?limit=20${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`));
-      if (request !== generation.current || document.hidden) return;
+      if (!current(request)) return;
       setSessions(previous => cursor ? [...previous, ...body.sessions.filter(item => !previous.some(old => old.session_id === item.session_id))] : body.sessions);
       setAfter(body.next_after); setLoaded(true);
     } catch (reason) {
       if (request === generation.current) { setSessions([]); setAfter(null); setCredential(null); setCredentialExpiry(null);
         setError(reason instanceof Error ? reason.message : 'Unable to discover sessions.'); }
     } finally { if (request === generation.current) setBusy(false); }
-  }, [bindingId]);
+  }, [bindingId, management, current]);
   useEffect(() => {
     void load();
     const visibility = () => {
@@ -77,22 +81,22 @@ function OperatorSession({ bindingId }: { bindingId: string }) {
     const request = ++generation.current;
     setBusy(true); setCredential(null); setError(null); setNotice(null);
     try {
-      const body = await result<{ session: Session }>(await api.post(`${management}/bindings/${encodeURIComponent(bindingId)}/sessions`));
-      if (request !== generation.current || document.hidden) return;
+      const body = await result<{ session: Session }>(await api.post(`${management}/bindings/${encodeURIComponent(bindingId)}/sessions`, attachment ? {} : undefined));
+      if (!current(request)) return;
       if (!Number.isFinite(new Date(body.session.expires_at).getTime()) || new Date(body.session.expires_at).getTime() <= Date.now()) {
         setNotice('The session expired before delivery. Refresh sessions before requesting another.'); await load(); return;
       }
       // A response can arrive after consent/session revocation. Confirm current
       // assignment and this exact session before disclosing its one-time token.
       const confirmed = await result<{ sessions: Metadata[] }>(await api.get(`${management}/bindings/${encodeURIComponent(bindingId)}/sessions?session_id=${encodeURIComponent(body.session.session_id)}`));
-      if (request !== generation.current || document.hidden) return;
-      const current = confirmed.sessions.find(item => item.session_id === body.session.session_id && live(item));
-      if (!current) throw new Error('The issued session is no longer active.');
-      setSessions(previous => [current, ...previous.filter(item => item.session_id !== current.session_id)]);
-      setCredentialExpiry(current.expires_at);
+      if (!current(request)) return;
+      const confirmedSession = confirmed.sessions.find(item => item.session_id === body.session.session_id && live(item));
+      if (!confirmedSession) throw new Error('The issued session is no longer active.');
+      setSessions(previous => [confirmedSession, ...previous.filter(item => item.session_id !== confirmedSession.session_id)]);
+      setCredentialExpiry(attachment ? new Date(Math.min(Date.parse(confirmedSession.expires_at),attachmentWebDeadline(token))).toISOString() : confirmedSession.expires_at);
       setCredential(JSON.stringify({ session_id: body.session.session_id, session_token: body.session.session_token }, null, 2));
     } catch (reason) {
-      if (request !== generation.current || document.hidden) return;
+      if (!current(request)) return;
       setNotice(`${reason instanceof Error ? reason.message : 'Credential delivery was interrupted.'} Discover and revoke any active session before requesting a replacement.`);
       await load();
     } finally { if (request === generation.current) setBusy(false); }
@@ -101,8 +105,8 @@ function OperatorSession({ bindingId }: { bindingId: string }) {
     const request = ++generation.current;
     setBusy(true); setCredential(null); setCredentialExpiry(null); setError(null);
     try {
-      await result(await api.post(`${management}/sessions/${encodeURIComponent(sessionId)}/revoke`));
-      if (request !== generation.current || document.hidden) return;
+      await result(await api.post(`${management}/sessions/${encodeURIComponent(sessionId)}/revoke`, attachment ? {} : undefined));
+      if (!current(request)) return;
       setNotice('Operator session revoked. Its credential no longer works.'); await load();
     } catch (reason) { if (request === generation.current) setError(reason instanceof Error ? reason.message : 'Unable to revoke session.'); }
     finally { if (request === generation.current) setBusy(false); }

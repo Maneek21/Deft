@@ -21,11 +21,12 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience tr[aria-selected=true] { background:#233f57 }
 .deft-experience input { width:100%; min-width:80px; padding:5px 7px; border:1px solid transparent; border-radius:5px; color:#eaf1ff; background:transparent; font:inherit }
 .deft-experience input:focus { outline:2px solid #60a5fa; border-color:#60a5fa; background:#0f172a }
-.deft-experience button { border:1px solid #4b75a8; background:#244b77; color:#fff; border-radius:7px; padding:8px 12px; cursor:pointer; font:inherit }
+.deft-experience button { min-height:44px; border:1px solid #4b75a8; background:#244b77; color:#fff; border-radius:7px; padding:8px 12px; cursor:pointer; font:inherit }
 .deft-experience button:focus-visible { outline:2px solid #93c5fd; outline-offset:2px }
 .deft-experience .ex-text { margin:0; white-space:pre-wrap; overflow-wrap:anywhere }
 .deft-experience .ex-field { display:grid; gap:4px; min-width:0 }
 .deft-experience .ex-field label { display:grid; gap:4px; color:#a9b9d1; font-size:12px }
+.deft-experience .ex-field input { min-height:44px }
 .deft-experience canvas { display:block; width:100%; height:200px; border:1px solid #4b75a8; border-radius:9px; background:#0d1a2c; touch-action:none }
 @media(max-width:420px) { .deft-experience { padding:10px } .deft-experience table { min-width:510px } .deft-experience .ex-stack-title { font-size:16px } }
 `;

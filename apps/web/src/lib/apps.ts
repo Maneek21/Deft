@@ -99,11 +99,14 @@ export type AppResourceManifestV5 = Omit<AppInstalledManifestV4, 'schema_version
 export type AppNativeManifestV6 = Omit<AppResourceManifestV5, 'schema_version' | 'compatibility'> & {
   schema_version: '6'; compatibility: { app_protocol: '6' }; native_actions: Record<string, unknown>[];
 };
+export type AppAttachmentManifestV7 = Omit<AppNativeManifestV6, 'schema_version' | 'compatibility'> & {
+  schema_version: '7'; compatibility: { app_protocol: '7' };
+};
 export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
-  | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5 | AppNativeManifestV6;
+  | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5 | AppNativeManifestV6 | AppAttachmentManifestV7;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
 export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1'
-  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4' | 'deft.app.package.v5' | 'deft.app.package.v6';
+  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4' | 'deft.app.package.v5' | 'deft.app.package.v6' | 'deft.app.package.v7';
 
 export function isConnectedAppManifest(manifest: AppManifest): manifest is ConnectedAppManifest {
   return manifest.compatibility.app_protocol === '1' || manifest.compatibility.app_protocol === '2';
@@ -434,7 +437,7 @@ function packageFormat(value: unknown): AppPackageFormat {
     && value !== 'deft.app.package.v2'
     && value !== 'deft.app.package.v3'
     && value !== 'deft.app.package.v4'
-    && value !== 'deft.app.package.v5' && value !== 'deft.app.package.v6') {
+    && value !== 'deft.app.package.v5' && value !== 'deft.app.package.v6' && value !== 'deft.app.package.v7') {
     throw new Error('Invalid App package format.');
   }
   return value;
@@ -528,7 +531,7 @@ function normalizeManifest(value: unknown): AppManifest {
   const compatibility = object(row.compatibility, 'App compatibility');
   const protocol = compatibility.app_protocol;
   if (protocol !== '0' && protocol !== '1' && protocol !== '2'
-    && protocol !== '3' && protocol !== '4' && protocol !== '5' && protocol !== '6') throw new Error('Unsupported App protocol.');
+    && protocol !== '3' && protocol !== '4' && protocol !== '5' && protocol !== '6' && protocol !== '7') throw new Error('Unsupported App protocol.');
   if (row.schema_version !== protocol) throw new Error('App manifest protocol and schema do not match.');
   const base: AppManifestBase = {
     id: stringValue(row.id, 'App identity'),
@@ -555,7 +558,7 @@ function normalizeManifest(value: unknown): AppManifest {
     } : {}),
   };
   if (protocol === '0') return { ...base, schema_version: '0', compatibility: { app_protocol: '0' } };
-  if (protocol === '3' || protocol === '4' || protocol === '5' || protocol === '6') {
+  if (protocol === '3' || protocol === '4' || protocol === '5' || protocol === '6' || protocol === '7') {
     const runtime = {
       ...base,
       runtime_requirements: recordArray(row.runtime_requirements, 'Runtime requirements'),
@@ -578,6 +581,41 @@ function normalizeManifest(value: unknown): AppManifest {
       public_actions: recordArray(row.public_actions, 'public actions'),
     };
     if (protocol === '4') return { ...installed, schema_version: '4', compatibility: { app_protocol: '4' } };
+    if (protocol === '7') {
+      // Display projection only. The host's closed Kit parser and exact review
+      // decide authority; importing the packaging entry point would load Node code.
+      const fields = ['schema_version', 'compatibility', 'id', 'version', 'name', 'description', 'license', 'provenance',
+        'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions',
+        'sync_descriptors', 'experiences', 'public_actions'];
+      const sync = recordArray(row.sync_descriptors, 'App attachment sync descriptors');
+      const native = recordArray(row.native_actions, 'native actions');
+      if (Object.keys(row).some(field => !fields.includes(field)) || Object.keys(compatibility).length !== 1
+        || !sync.length || sync.length > 8 || !runtime.runtime_requirements.length || runtime.runtime_requirements.length > 8
+        || runtime.private_capabilities.length > 16 || runtime.runtime_actions.length > 16 || native.length > 8
+        || installed.experiences.length > 1 || installed.public_actions.length > 8) throw new Error('Invalid attachment App display fields.');
+      for (const descriptor of sync) {
+        const allowed = ['schema_version', 'key', 'runtime_requirement_key', 'resource_type', 'requested_visibility', 'label_field', 'record_schema', 'attachments'];
+        if (Object.keys(descriptor).some(field => !allowed.includes(field)) || descriptor.schema_version !== 'deft.app_sync_descriptor.v2'
+          || descriptor.requested_visibility !== 'user_private') throw new Error('Invalid attachment descriptor display.');
+        for (const key of ['key', 'runtime_requirement_key', 'resource_type', 'label_field'])
+          if (typeof descriptor[key] !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(descriptor[key])) throw new Error('Invalid attachment descriptor key.');
+        object(descriptor.record_schema, 'Attachment record schema');
+        const policy = object(descriptor.attachments, 'Attachment policy');
+        const bounds = { max_attachment_bytes: 2097152, max_attachments_per_record: 8, max_attachments_per_run: 32,
+          max_attachment_bytes_per_run: 8388608, retention_days: 30 };
+        if (Object.keys(policy).length !== 6 || Object.keys(policy).some(key => ![...Object.keys(bounds), 'allowed_media_types'].includes(key))) throw new Error('Invalid attachment policy display.');
+        for (const [key, max] of Object.entries(bounds))
+          if (typeof policy[key] !== 'number' || !Number.isSafeInteger(policy[key]) || policy[key] < 1 || policy[key] > max) throw new Error('Invalid attachment policy bound.');
+        const media = policy.allowed_media_types;
+        if (!Array.isArray(media) || !media.length || media.length > 7 || new Set(media).size !== media.length
+          || media.some(type => !['text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(type))) throw new Error('Invalid attachment media display.');
+        if (!runtime.runtime_requirements.some(value => {
+          const requirement = object(value, 'Runtime requirement');
+          return requirement.key === descriptor.runtime_requirement_key && requirement.protocol_version === 'deft.app_runtime_channel.v3';
+        })) throw new Error('Attachment descriptor requires channel 3.');
+      }
+      return { ...installed, schema_version: '7', compatibility: { app_protocol: '7' }, sync_descriptors: sync, native_actions: native };
+    }
     if (protocol === '6') {
       // Display projection only; the host validates the exact Kit contract.
       // Importing the packaging entry point would pull Node-only code into Web.

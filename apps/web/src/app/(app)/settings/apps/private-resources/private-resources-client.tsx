@@ -9,11 +9,12 @@ import { api } from '@/lib/api';
 import { appApiError } from '@/lib/apps';
 import { useAuth } from '@/lib/auth-context';
 import { useApps } from '@/hooks/use-apps';
+import { APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 import { PrivateResourceSetup } from './private-resource-setup';
 import { OperatorAssignments } from './operator-assignments';
 import styles from './private-resources.module.css';
 
-type Binding = { binding_id: string; installation_id: string; resource_key: string; state: string; consent_expires_at: string };
+type Binding = { binding_id: string; installation_id: string; resource_key: string; state: string; consent_expires_at: string; channel?:'attachment' };
 type Status = { binding: Binding; checkpoint: { state: string; retained_record_count: number; last_applied_at: string | null } | null; latest_run: { state: string; terminal_at: string | null } | null };
 type RecordPage = { items: Array<{ projection_id: string; label: string; data: Record<string, unknown> }>; next_cursor: string | null };
 const management = '/api/app-resource-sync-management';
@@ -35,6 +36,7 @@ function PrivateResourceWorkspace() {
   const { apps } = useApps();
   const [bindings, setBindings] = useState<Binding[]>([]);
   const [after, setAfter] = useState<string | null>(null);
+  const [attachmentAfter,setAttachmentAfter]=useState<string|null>(null);
   const [selected, setSelected] = useState<Status | null>(null);
   const [page, setPage] = useState<RecordPage | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,13 +47,17 @@ function PrivateResourceWorkspace() {
   const generation = useRef(0);
   const clearContent = useCallback(() => { generation.current += 1; setPage(null); setBusy(false); }, []);
 
-  const loadBindings = useCallback(async (cursor?: string) => {
+  const loadBindings = useCallback(async (cursor?: string,channel?:'attachment') => {
     const request = ++generation.current;
     setBusy(true); setError(null); setPage(null); setSelected(null); setRevokeReview(false);
     try {
-      const body = await result<{ bindings: Binding[]; next_after: string | null }>(await api.get(`${management}/bindings?limit=25${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`));
+      const selectedBase=channel==='attachment'?'/api/apps/blob/sync':management;
+      const body = await result<{ bindings: Binding[]; next_after: string | null }>(await api.get(`${selectedBase}/bindings?limit=25${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`));
+      const attachmentPage=APP_ATTACHMENT_BROKER_ENABLED&&!cursor&&!channel?await result<{bindings:Binding[];next_after:string|null}>(await api.get('/api/apps/blob/sync/bindings?limit=25')):null;
       if (request !== generation.current) return;
-      setBindings(body.bindings); setAfter(body.next_after);
+      setBindings(channel==='attachment'?body.bindings.map(b=>({...b,channel:'attachment' as const})):attachmentPage?[...body.bindings,...attachmentPage.bindings.map(b=>({...b,channel:'attachment' as const}))]:body.bindings);
+      if(channel==='attachment')setAttachmentAfter(body.next_after);else setAfter(body.next_after);
+      if(attachmentPage)setAttachmentAfter(attachmentPage.next_after);
     } catch (reason) {
       if (request === generation.current) { setBindings([]); setAfter(null); setError(reason instanceof Error ? reason.message : 'Unable to load resources.'); }
     } finally { if (request === generation.current) setBusy(false); }
@@ -82,13 +88,15 @@ function PrivateResourceWorkspace() {
     const request = ++generation.current;
     setBusy(true); setError(null); setPage(null); setSelected(null); setRevokeReview(false);
     try {
-      const status = await result<Status>(await api.get(`${management}/bindings/${encodeURIComponent(binding.binding_id)}`));
-      if (request === generation.current) setSelected(status);
+      const selectedBase=binding.channel==='attachment'?'/api/apps/blob/sync':management;
+      const status = await result<Status>(await api.get(`${selectedBase}/bindings/${encodeURIComponent(binding.binding_id)}`));
+      if (request === generation.current) setSelected({...status,binding:{...status.binding,channel:binding.channel}});
     } catch (reason) { if (request === generation.current) setError(reason instanceof Error ? reason.message : 'Unable to load status.'); }
     finally { if (request === generation.current) setBusy(false); }
   };
   const read = async (cursor?: string) => {
     if (!selected) return;
+    if(selected.binding.channel==='attachment')return;
     const expiresAt = new Date(selected.binding.consent_expires_at).getTime();
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       clearContent(); setConsentExpired(true); return;
@@ -109,7 +117,8 @@ function PrivateResourceWorkspace() {
     const request = ++generation.current;
     setBusy(true); setPage(null); setError(null); setRevokeReview(false);
     try {
-      await result(await api.post(`${management}/bindings/${encodeURIComponent(selected.binding.binding_id)}/revoke`));
+      const selectedBase=selected.binding.channel==='attachment'?'/api/apps/blob/sync':management;
+      await result(await api.post(`${selectedBase}/bindings/${encodeURIComponent(selected.binding.binding_id)}/revoke`,selected.binding.channel==='attachment'?{}:undefined));
       if (request === generation.current) { setSetupGeneration(value => value + 1); await loadBindings(); }
     } catch (reason) { if (request === generation.current) setError(reason instanceof Error ? reason.message : 'Unable to revoke access.'); }
     finally { if (request === generation.current) setBusy(false); }
@@ -126,13 +135,13 @@ function PrivateResourceWorkspace() {
       {busy && <div role="status" className="flex items-center gap-2 text-sm"><Loader2 size={16} className="animate-spin" /> Loading…</div>}
       {!busy && !error && bindings.length === 0 && <p className="rounded-xl border p-5 text-sm" style={{ borderColor: 'var(--ghost-border)' }}>You have no private App connections. A connection appears here after you review and activate its consent.</p>}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-        <section aria-label="Your connections" className="min-w-0 space-y-2">{bindings.map((binding) => <button key={binding.binding_id} onClick={() => void open(binding)} disabled={busy} aria-pressed={selected?.binding.binding_id === binding.binding_id} className="w-full rounded-xl border p-4 text-left" style={{ borderColor: selected?.binding.binding_id === binding.binding_id ? 'var(--primary)' : 'var(--ghost-border)', background: 'var(--surface-container-low)' }}><span className="block break-words text-sm font-semibold">{binding.resource_key}</span><span className="mt-1 block break-words text-xs">{apps.find(app => app.id === binding.installation_id)?.name ?? 'Connected App'}</span><span className="mt-1 block text-xs capitalize" style={{ color: 'var(--on-surface-variant)' }}>{binding.state} · Consent ends {new Date(binding.consent_expires_at).toLocaleDateString()}</span></button>)}{after && <button className="deft-pill min-h-11" disabled={busy} onClick={() => void loadBindings(after)}>Next connections</button>}</section>
+        <section aria-label="Your connections" className="min-w-0 space-y-2">{bindings.map((binding) => <button key={binding.binding_id} onClick={() => void open(binding)} disabled={busy} aria-pressed={selected?.binding.binding_id === binding.binding_id} className="w-full rounded-xl border p-4 text-left" style={{ borderColor: selected?.binding.binding_id === binding.binding_id ? 'var(--primary)' : 'var(--ghost-border)', background: 'var(--surface-container-low)' }}><span className="block break-words text-sm font-semibold">{binding.resource_key}</span><span className="mt-1 block break-words text-xs">{apps.find(app => app.id === binding.installation_id)?.name ?? 'Connected App'}</span><span className="mt-1 block text-xs capitalize" style={{ color: 'var(--on-surface-variant)' }}>{binding.state} · Consent ends {new Date(binding.consent_expires_at).toLocaleDateString()}{binding.channel==='attachment'?' · Attachments':''}</span></button>)}{after && <button className="deft-pill min-h-11" disabled={busy} onClick={() => void loadBindings(after)}>Next connections</button>}{attachmentAfter&&<button className="deft-pill" style={{minHeight:44}} disabled={busy} onClick={()=>void loadBindings(attachmentAfter,'attachment')}>Next attachment connections</button>}</section>
         {selected && <section aria-label="Connection details" className="min-w-0 space-y-4 rounded-xl border p-4" style={{ borderColor: 'var(--ghost-border)', background: 'var(--surface-container-low)' }}>
           <h2 className="break-words text-base font-semibold">{selected.binding.resource_key}</h2>
           <dl className="grid gap-3 text-sm sm:grid-cols-2"><div><dt className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Saved records</dt><dd>{selected.checkpoint?.retained_record_count ?? 0}</dd></div><div><dt className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Latest sync</dt><dd className="capitalize">{selected.latest_run?.state.replaceAll('_', ' ') ?? 'Not started'}</dd></div><div className="sm:col-span-2"><dt className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Last saved update</dt><dd>{selected.checkpoint?.last_applied_at ? new Date(selected.checkpoint.last_applied_at).toLocaleString() : 'No update saved yet'}</dd></div></dl>
           <p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Saved records may differ from the source. Source freshness has not been verified.</p>
           {consentExpired && <p role="status" className="text-sm">Consent has expired. Review a new connection before reading more records.</p>}
-          <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" disabled={busy || !readable} onClick={() => void read()}>Read saved records</button>{selected.binding.state === 'active' && <button className="deft-pill min-h-11" disabled={busy} onClick={() => { clearContent(); setRevokeReview(true); }}>Revoke access</button>}</div>
+          <div className="flex flex-wrap gap-2">{selected.binding.channel==='attachment'?<Link className="deft-pill" style={{minHeight:44}} href={`/app-attachments/${encodeURIComponent(selected.binding.binding_id)}`}>Open saved resources and attachments</Link>:<button className="deft-pill min-h-11" disabled={busy || !readable} onClick={() => void read()}>Read saved records</button>}{selected.binding.state === 'active' && <button className="deft-pill min-h-11" disabled={busy} onClick={() => { clearContent(); setRevokeReview(true); }}>Revoke access</button>}</div>
           {revokeReview && <div className="space-y-3 rounded-lg border p-3" style={{ borderColor: 'var(--ghost-border)' }}><p className="text-sm">Revoke this connection? Future syncs and private reads will be denied. Previously delivered copies cannot be recalled.</p><div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" disabled={busy} onClick={() => void revoke()}>Confirm revocation</button><button className="deft-pill min-h-11" onClick={() => setRevokeReview(false)}>Keep connection</button></div></div>}
           {page && <section aria-label="Saved records" className="space-y-2">{page.items.length === 0 ? <p className="py-3 text-sm">No saved records are available.</p> : page.items.map((item) => <details key={item.projection_id} className="rounded-lg border p-3" style={{ borderColor: 'var(--ghost-border)' }}><summary className="cursor-pointer break-words text-sm font-medium">{item.label}</summary><dl className="mt-3 space-y-3">{Object.entries(item.data).map(([key, value]) => <div key={key}><dt className="break-words text-xs font-medium" style={{ color: 'var(--on-surface-variant)' }}>{key}</dt><dd className="mt-1 whitespace-pre-wrap break-words text-sm">{typeof value === 'string' ? value : JSON.stringify(value)}</dd></div>)}</dl></details>)}{page.next_cursor && <button className="deft-pill min-h-11" disabled={busy} onClick={() => void read(page.next_cursor!)}>Next records</button>}</section>}
         </section>}

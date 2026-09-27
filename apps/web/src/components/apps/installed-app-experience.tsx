@@ -11,6 +11,7 @@ import { normalizeInstalledExperienceSession, experienceLifetimeIsCurrent,
   normalizeExperienceExposureStatus, normalizeExperienceExposureReview, type ExperienceExposureStatus,
   type ExperienceExposureReview, type InstalledExperienceSession } from '@/lib/app-experience-session';
 import { getSocket } from '@/lib/socket';
+import { APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 
 const root = '/api/app-experiences';
 const livePath = (id: string) => `${root}/sessions/${encodeURIComponent(id)}/live`;
@@ -296,6 +297,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       <div><p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Installed App Experience</p>
         <h1 className="text-xl font-semibold">{session?.experience.label ?? 'Loading Experience'}</h1></div>
       <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps">App settings</Link>
+      {APP_ATTACHMENT_BROKER_ENABLED&&<Link className="deft-pill" style={{minHeight:44}} href="/settings/apps/private-resources">Open saved resources and attachments</Link>}
     </header>
     {error ? <p role="alert" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
       : !ready ? <p role="status" className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening reviewed App Experience…</p>

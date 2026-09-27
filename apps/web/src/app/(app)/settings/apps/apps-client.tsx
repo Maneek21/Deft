@@ -7,10 +7,11 @@ import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
+import { AttachmentAppReview } from '@/components/apps/attachment-app-review';
 import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellation-owner-panel';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
-import { APP_RESOURCE_SYNC_ENABLED } from '@/lib/feature-flags';
+import { APP_RESOURCE_SYNC_ENABLED, APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 import { useAuth } from '@/lib/auth-context';
 import { APP_PACKAGE_MAX_BYTES, appApiError, canEnableAppWithoutReview, canStageConnectedUpgrade, isConnectedAppManifest, normalizeAppInspection, type AppInspection, type AppInstallation } from '@/lib/apps';
 import { refreshApps, useAppRealtime, useApps } from '@/hooks/use-apps';
@@ -68,10 +69,13 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     if (!pending) return;
     setBusy('stage'); setMessage(null);
     try {
-      const path = pending.upgradeTarget
+      const attachment = pending.inspection.manifest.schema_version === '7';
+      if (attachment && !APP_ATTACHMENT_BROKER_ENABLED) throw new Error('Attachment Apps are disabled on this host.');
+      if (attachment && pending.upgradeTarget) throw new Error('Attachment App upgrades require a separately supported review.');
+      const path = attachment ? '/api/apps/blob/composition/stage' : pending.upgradeTarget
         ? `/api/apps/${encodeURIComponent(pending.upgradeTarget.id)}/upgrades/stage?expected_lifecycle_epoch=${pending.upgradeTarget.lifecycle_epoch}`
         : '/api/apps/stage';
-      const response = await api.fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/vnd.deft.app.package+json' }, body: pending.source });
+      const response = await api.fetch(path, { method: 'POST', headers: { 'Content-Type': attachment ? 'application/json' : 'application/vnd.deft.app.package+json' }, body: pending.source });
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to stage this App.'));
       await refreshApps();
       const connected = pending.inspection.manifest.compatibility.app_protocol !== '0';
@@ -175,7 +179,7 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
   const connected = Boolean(connectedManifest);
   const runtime = pending.manifest.compatibility.app_protocol === '3'
     || pending.manifest.compatibility.app_protocol === '4'
-    || pending.manifest.compatibility.app_protocol === '5';
+    || pending.manifest.compatibility.app_protocol === '5' || pending.manifest.compatibility.app_protocol === '7';
   return <section className="rounded-xl p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--primary)' }}>
     <div className="flex items-start gap-3"><ShieldCheck size={20} style={{ color: 'var(--status-green)' }} /><div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">Review {pending.manifest.name}{upgradeTarget ? ' upgrade' : ''}</h2><p className="mt-1 text-xs" style={{ color: 'var(--on-surface-variant)' }}>{pending.manifest.description ?? (pending.manifest.schema_version === '6' ? 'App with declared native Calendar actions.' : 'Declarative workspace App.')}</p></div></div>
     <dl className="mt-4 grid gap-2 text-xs sm:grid-cols-2"><Fact label="Identity" value={`${pending.manifest.id}@${pending.manifest.version}`} /><Fact label="Protocol" value={`App v${pending.manifest.compatibility.app_protocol}`} /><Fact label="Package format" value={pending.package_format} /><Fact label="License" value={pending.manifest.license} /><Fact label="Provenance" value={pending.manifest.provenance ? `Unsigned local · unverified ${pending.manifest.provenance.source_repository}@${pending.manifest.provenance.source_commit}` : 'Unsigned local package · no source attestation'} /><Fact label="Package digest" value={pending.package_digest} mono /></dl>
@@ -190,7 +194,7 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
   const connected = isConnectedAppManifest(app.manifest);
   const runtime = app.manifest.compatibility.app_protocol === '3'
     || app.manifest.compatibility.app_protocol === '4'
-    || app.manifest.compatibility.app_protocol === '5';
+    || app.manifest.compatibility.app_protocol === '5' || app.manifest.compatibility.app_protocol === '7';
   const showConnectedManagement = connected || canStageConnectedUpgrade(app);
   const tone = app.state === 'active' ? 'var(--status-green)' : app.state === 'disabled' ? 'var(--outline)' : 'var(--status-amber)';
   return <article className={`flex min-h-56 min-w-0 flex-col rounded-xl p-4 ${connected || runtime ? 'md:col-span-2' : ''}`} style={{ background: 'var(--surface-container-low)', border: '1px solid var(--ghost-border)' }}>
@@ -200,12 +204,13 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
     {!connected && !runtime && <div className="mt-auto flex items-center justify-between gap-3 pt-4"><span className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--status-green)' }}><ShieldCheck size={13} /> {app.manifest.schema_version === '6' ? `${app.manifest.native_actions.length} declared native Calendar actions; current owner bindings govern access` : 'No connected permissions'}</span>{canManage && app.state === 'staged' ? <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={busy} onClick={onActivate}>{busy && <Loader2 size={13} className="animate-spin" />} Activate</button> : canManage && app.state === 'active' ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Disable</button> : canManage && canEnableAppWithoutReview(app) ? <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onEnable}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Re-enable version {app.version}</button> : null}</div>}
     {runtime && <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
       <span className="mr-auto text-xs" style={{ color: 'var(--on-surface-variant)' }}>{app.state === 'active' ? 'Reviewed Runtime App' : 'Owner review required before use'}</span>
-      {app.state === 'active' && app.manifest.schema_version === '4' && app.manifest.experiences.map((experience) =>
+      {app.state === 'active' && (app.manifest.schema_version === '4' || app.manifest.schema_version === '5' || app.manifest.schema_version === '6' || app.manifest.schema_version === '7') && app.manifest.experiences.map((experience) =>
         <Link key={experience.key} className="deft-pill min-h-11" href={`/apps/${encodeURIComponent(app.id)}/${encodeURIComponent(experience.key)}`}>Open {experience.label}</Link>)}
-      {canManage && APP_RESOURCE_SYNC_ENABLED && app.state === 'active' && app.manifest.schema_version === '5' && app.manifest.sync_descriptors.length > 0 && <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps/private-resources">Connect private resources</Link>}
+      {canManage && APP_RESOURCE_SYNC_ENABLED && app.state === 'active' && (app.manifest.schema_version === '5' || app.manifest.schema_version === '7') && app.manifest.sync_descriptors.length > 0 && <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps/private-resources">Connect private resources</Link>}
       {canManage && app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}><Power size={13} /> Disable</button>}
     </div>}
     {canManage && APP_RESOURCE_SYNC_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '5' && app.manifest.runtime_actions.length === 0 && app.manifest.sync_descriptors.length > 0 && <ResourceAppReview app={app} />}
+    {canManage && APP_ATTACHMENT_BROKER_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '7' && <AttachmentAppReview app={app} />}
     {showConnectedManagement && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
   </article>;
 }
