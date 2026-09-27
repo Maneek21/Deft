@@ -3256,6 +3256,172 @@
           "name": "canonical full-page 512 KiB ceiling accepts the boundary and rejects one byte more"
         }
       ]
+    },
+    {
+      "id": "private-mcp-contracts-compat",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-access-clock.test.ts",
+          "name": "Private authority uses the upper clock and maximum issuance uses the lower clock"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-contract.test.ts",
+          "name": "Private MCP DTOs reject actor credential destination and provider selectors"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-contract.test.ts",
+          "name": "Private MCP response is plain scalar closed JSON with no implicit native destination"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-contract.test.ts",
+          "name": "Whole MCP result byte bound includes JSON-string escaping and rejects oversize without partial output"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-contract.test.ts",
+          "name": "Private MCP search page states continuation honestly and bounds hits and snippets"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "MCP Origin validation rejects untrusted browser origins without affecting other routes"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "Hermes result presentation contains Deft failures without changing canonical MCP results"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "Hermes compatibility endpoint exposes the same MCP initialize contract"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "single-endpoint MCP rejects non-JSON request media types"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "legacy JSON-RPC initialize negotiates a supported legacy version without modern fields"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "legacy initialize counter-offers the newest supported legacy version"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "legacy notifications/initialized remains a response-free accepted notification"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "server/discover advertises modern support and stamps complete private metadata"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "modern clientInfo is optional but clientCapabilities remains required"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "modern requests require a protocol header matching request metadata"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "modern requests reject mismatched routing headers with HeaderMismatch"
+        },
+        {
+          "file": "apps/api/test/mcp-server-2026-compat.test.ts",
+          "name": "unsupported modern protocol versions return the standardized downgrade data"
+        }
+      ],
+      "description": "Closed exact MCP-purpose grants, conservative SQL/application/monotonic clock bounds and affected modern MCP compatibility. Transport/provenance changed subset has a separate final profile."
+    },
+    {
+      "id": "private-mcp-http",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Actual issued personal credential receives only independently reviewed private context over MCP TCP"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "MCP grant SQL preserves closed independent purpose immutable pins and fifteen-minute ceiling"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Actual employee credential requires separate purpose and live employee policy"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Employee credential rotation and private read share employee-before-token lock order"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Captured actual credential denies withdrawal after a real terminal token row wait"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "MCP owner inventory and thirty-day metadata retention remain bounded and independently revocable"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Maximum MCP grant remains within the database ceiling when application clock is ahead"
+        },
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Database-expired MCP grant denies disclosure when application clock is behind"
+        }
+      ],
+      "description": "Actual issued first-class personal/employee credential read/search/cite, owner review, current credential/policy fences, shared quota/retention and clock regressions. Separate purpose from human sharing; Defty and OAuth remain denied."
+    },
+    {
+      "id": "private-sharing-clock",
+      "cases": [
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Human maximum grant respects database ceiling with an ahead application clock"
+        },
+        {
+          "file": "apps/api/test/app-resource-access-http-db.test.ts",
+          "name": "Database-expired human grant denies body with a behind application clock"
+        }
+      ],
+      "description": "Two reproduced ahead/behind host-clock regressions; original human14 inventory remains unchanged and is rechecked against the same full16-case stream."
+    },
+    {
+      "id": "private-mcp-credential-issuance",
+      "cases": [
+        {
+          "file": "apps/api/test/app-private-mcp-http-db.test.ts",
+          "name": "Actual employee credential requires separate purpose and live employee policy"
+        },
+        {
+          "file": "apps/api/test/employee-module-scope-issuance.test.ts",
+          "name": "employee resource scopes are opt-in, persisted, resolved, and route guarded"
+        }
+      ],
+      "description": "Additive employee nonsecret credential ID and existing scope issuance; exact employee case supersedes earlier assertion in the8-case MCP stream."
+    },
+    {
+      "id": "private-mcp-transport-provenance",
+      "cases": [
+        {
+          "file": "apps/api/test/mcp-private-provenance.test.ts",
+          "name": "Serialized actor/token/scopes cannot fabricate first-class MCP invocation provenance"
+        },
+        {
+          "file": "apps/api/test/mcp-private-provenance.test.ts",
+          "name": "Actual MCP router bounds parsed input while legacy authentication precedes body consumption"
+        },
+        {
+          "file": "apps/api/test/mcp-request-body.test.ts",
+          "name": "MCP transport preserves maximum bounded bulk/App/document envelopes"
+        },
+        {
+          "file": "apps/api/test/mcp-request-body.test.ts",
+          "name": "MCP counts actual bytes with absent/lying Content-Length and cancels oversized chunks"
+        },
+        {
+          "file": "apps/api/test/mcp-request-body.test.ts",
+          "name": "MCP rejects declared oversize and malformed JSON, abort cancels pending reader"
+        }
+      ],
+      "description": "Final lazy bounded body parsing preserves legacy authentication before body consumption; first-class invocation provenance and streamed byte ceilings."
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
