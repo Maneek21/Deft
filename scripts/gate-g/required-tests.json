@@ -3580,6 +3580,36 @@
           "name": "Retained packed Email7 parent reaches separately reviewed sealed Defty context without custody or action authority"
         }
       ]
+    },
+    {
+      "id": "attachment-management-http",
+      "description": "Explicit channel3 owner/operator metadata, exact session confirmation, scoped denial and final authority checks.",
+      "cases": [
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "explicit channel3 metadata supports normal owner and operator management without delivery authority"
+        },
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "channel3 owner status and operator assignment pages expose bounded metadata only"
+        },
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "channel3 session recovery is operator-only paginated and supports exact confirmation"
+        },
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "channel3 metadata denies foreign owner operator tenant and malformed or duplicate authority queries"
+        },
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "revoked channel3 consent remains observable by its current manager owner without operator authority"
+        },
+        {
+          "file": "apps/api/test/app-attachment-management-http-db.test.ts",
+          "name": "actual final SID waits deny channel3 metadata after broker withdrawal and stored session expiry"
+        }
+      ]
     }
   ],
   "schema_version": "deft.gate_g.test_inventory.v1"
