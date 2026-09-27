@@ -1751,6 +1751,14 @@
       "description": "Full focused public SDK, host MessagePort bridge and local session/deadline unit files. Does not replace real Worker/browser or database acceptance.",
       "cases": [
         {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "public SDK optional undefined request fields preserve Run status and keyed action dispatch"
+        },
+        {
+          "file": "apps/web/src/lib/app-experience-bridge.test.ts",
+          "name": "optional envelope normalization still denies unknown undefined fields nested undefined and Run status keys"
+        },
+        {
           "file": "packages/app-kit/test/experience-sdk.test.ts",
           "name": "SDK sequences views and requests and ignores foreign-session responses"
         },
