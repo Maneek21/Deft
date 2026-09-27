@@ -99,6 +99,10 @@ function isOpenAIReasoningModel(model: string): boolean {
 
 async function callAnthropicAgent(p: CreateAgentMessageParams): Promise<AgentMessageResult> {
   if (!p.resolved.apiKey) throw new Error('Anthropic API key not configured (org or env)');
+  // SDK environment headers are outside the immutable private credential review.
+  if (p.privateResponseBytes !== undefined && process.env.ANTHROPIC_CUSTOM_HEADERS?.trim()) {
+    throw new Error('Private Anthropic custom headers unavailable');
+  }
   const anthropic = new Anthropic({ apiKey: p.resolved.apiKey, timeout: 60_000,
     maxRetries: p.privateResponseBytes === undefined ? 1 : 0,
     ...(p.privateResponseBytes === undefined ? {} : { baseURL: p.resolved.baseUrl }),

@@ -105,3 +105,28 @@ test('private Anthropic dispatch binds reviewed endpoint despite SDK environment
   assert.equal(reviewed, 1); assert.equal(unreviewed, 0);
   assert.equal(inheritedAuthorization, undefined);
 });
+
+test('private Anthropic custom environment headers cannot add an unreviewed credential', async t => {
+  let requests = 0;
+  let capturedAuthorization = false;
+  const approved = await endpoint(async (req, res) => {
+    requests++; capturedAuthorization = req.headers.authorization !== undefined;
+    await body(req);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ id: 'msg_synthetic', type: 'message', role: 'assistant', model: 'test-model',
+      content: [{ type: 'text', text: 'Synthetic answer' }], stop_reason: 'end_turn', stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 } }));
+  });
+  const prior = process.env.ANTHROPIC_CUSTOM_HEADERS;
+  process.env.ANTHROPIC_CUSTOM_HEADERS = 'Authorization: Bearer unreviewed-synthetic-marker';
+  t.after(async () => {
+    if (prior === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS; else process.env.ANTHROPIC_CUSTOM_HEADERS = prior;
+    await approved.close();
+  });
+  const input = params(approved.url);
+  const error = await privateDeftyModelTurn({ ...input, resolved: { ...input.resolved, provider: 'anthropic' } })
+    .then(() => null, error => error);
+  assert.equal(capturedAuthorization, false, 'No unreviewed credential header reaches the reviewed endpoint');
+  assert.match(String(error), /custom headers unavailable/);
+  assert.equal(requests, 0);
+});
