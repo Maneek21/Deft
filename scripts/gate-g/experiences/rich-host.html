@@ -33,7 +33,7 @@ function mount() {
   root.replaceChildren();
   if (disabled) { status.textContent = 'Disabled'; return; }
   generation++;
-  const sessionId = 'session_' + generation + '_' + Math.random().toString(36).slice(2, 14);
+  const sessionId = 'session_' + generation + '_' + crypto.randomUUID();
   const pin = { org_id:'org_fixture', user_id:'user_fixture', app_installation_id:'app_fixture',
     app_version_id:version, grant_snapshot_id:'grant_fixture',
     lifecycle_epoch:generation, grant_epoch:generation, session_id:sessionId, session_epoch:0 };
