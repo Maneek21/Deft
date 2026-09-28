@@ -143,7 +143,11 @@ export class PostgresAppRunApprovalResolver {
         requiresWebGuard = version?.protocol_version === '7';
         if (requiresWebGuard && !finalGuard) throw new AppRunError('APP_RUN_ACCESS_DENIED');
       }
-      if ((run.initiating_actor_type === 'app_public' || run.initiating_actor_type === 'agent_employee' || run.provider_kind === 'native') && action.user_id !== approverUserId) {
+      // Reviewed Runtime/native releases belong to their selected human owner.
+      // Generic MCP employee Runs retain the existing workspace approval path.
+      if ((run.initiating_actor_type === 'app_public' || run.provider_kind === 'native'
+        || (run.provider_kind === 'app_runtime' && run.initiating_actor_type === 'agent_employee'))
+        && action.user_id !== approverUserId) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
 
