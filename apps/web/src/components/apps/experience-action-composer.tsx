@@ -228,8 +228,8 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
   </label>;
   return <AppDialog title={context?.label || 'Compose'} onClose={close} width={640} presentation="editor" footer={<div className="flex items-center justify-between gap-3">
     <p role="status" className="min-w-0 text-xs text-[var(--on-surface-variant)]">{notice || (!context ? 'Opening draft…' : blocked ? 'Draft needs attention' : saving || localSaving ? 'Saving…' : dirty ? 'Unsaved changes' : 'Saved')}</p>
-    <div className="flex shrink-0 gap-2"><button type="button" className="deft-pill min-h-11 px-4" disabled={busy} onClick={close}>Close</button>
-      <button type="button" className="deft-pill deft-pill-active min-h-11 px-5" disabled={!context || busy || blocked || uncertain || Boolean(recovered)} onClick={() => { void send(); }}>{busy ? 'Sending…' : 'Send'}</button></div>
+    <div className="flex shrink-0 gap-2"><button type="button" className="deft-pill px-4" style={{ minHeight: 44 }} disabled={busy} onClick={close}>Close</button>
+      <button type="button" className="deft-pill deft-pill-active px-5" style={{ minHeight: 44 }} disabled={!context || busy || blocked || uncertain || Boolean(recovered)} onClick={() => { void send(); }}>{busy ? 'Sending…' : 'Send'}</button></div>
   </div>}>
     <div className="space-y-4">
       {recovered && <div role="status" className="text-sm"><p>This draft changed in another tab. Your edits are kept below.</p>
