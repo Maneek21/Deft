@@ -59,5 +59,5 @@ test('installed v4 rejects orphan artifacts, undeclared actions and invalid cano
     schema_version: 'deft.experience_bundle.v1', worker_source: 'self.onmessage=()=>{};', entry_view: 'main',
     resource_keys: [], action_keys: ['undeclared'] });
   const manifest = structuredClone(input.manifest); manifest.experiences[0]!.artifact_digest = tampered.digest;
-  await assert.rejects(() => buildDeftAppPackage({ manifest, artifacts: [input.artifacts[0]!, tampered] }), /declared Runtime actions/);
+  await assert.rejects(() => buildDeftAppPackage({ manifest, artifacts: [input.artifacts[0]!, tampered] }), /declared actions/);
 });
