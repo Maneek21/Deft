@@ -5,7 +5,7 @@ import {
   ResourceProviderInstanceIdSchema,
   ResourceRefV1Schema,
   ResourceTypeSchema,
-} from './resources.js';
+} from './resources';
 
 /** Additive resource identities. V1 remains closed to Module and core Task. */
 export const RESOURCE_V2_CONTRACT_VERSIONS = Object.freeze({
