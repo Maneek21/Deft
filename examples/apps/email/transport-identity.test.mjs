@@ -8,7 +8,8 @@ const a=withTransportIdentity(id,'send_message',input),b=withTransportIdentity(i
 assert.equal(a.message_id,b.message_id);assert(!Object.hasOwn(input,'message_id'));
 assert.throws(()=>withTransportIdentity('untrusted','send_message',input),/EXACT_MAIL_RUN_INVALID/);
 assert.throws(()=>withTransportIdentity(id,'send_message',{...input,message_id:'<supplied@test>'}),/SUPPLIED_TRANSPORT_ID_NOT_ALLOWED/);
-const first=await canonicalMail('owner@example.test','send_message',a),second=await canonicalMail('owner@example.test','send_message',b);
+const fixedDate=new Date('2026-09-28T00:00:00Z');
+const first=await canonicalMail('owner@example.test','send_message',a,fixedDate),second=await canonicalMail('owner@example.test','send_message',b,fixedDate);
 assert.equal(first.digest,second.digest);assert(first.bytes.includes(Buffer.from(a.message_id)));
 const archive={resource_id:'inbox:1:1'};assert.equal(withTransportIdentity(id,'archive_message',archive),archive);
 const reply=withReplyParent({...a,parent_resource_id:'inbox:1:1'},{message_id:'<parent@example.test>',references:'<previous@example.test>'});

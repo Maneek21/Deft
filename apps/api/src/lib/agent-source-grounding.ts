@@ -16,6 +16,8 @@ export function hasUnverifiedNativeLinks(text: string, sources: readonly { url?:
 /** A recipient-specific draft must not quietly turn into a placeholder template. */
 export function hasUnresolvedRecipient(text: string, request: string): boolean {
   if (/\b(?:template|with placeholders|sample message|example message)\b/iu.test(request)) return false;
+  const positiveRequest = request.replace(/\b(?:do not|don't|never)\b[^.!?\n]*/giu, '');
+  if (!/\b(?:draft|compose|write|propose|prepare)\b[^.!?\n]{0,80}\b(?:message|email|reply|follow[ -]?up|outreach)\b/iu.test(positiveRequest)) return false;
   const bracketedAddressee = /\[[^\]\n]*(?:contact|recipient|decision\s+maker)[^\]\n]*\]/iu;
   const greetingPlaceholder = /\b(?:dear|hi|hello|hey)\s+(?:\[\s*name\s*\]|_{2,}|<\s*(?:name|recipient|contact|decision\s+maker)\s*>)/iu;
   return bracketedAddressee.test(text) || greetingPlaceholder.test(text);

@@ -10,6 +10,7 @@ test('a remembered draft link requires a current authorized source', () => {
 });
 
 test('an unresolved recipient becomes a clarification, while requested templates and sender placeholders remain usable', () => {
+  assert.equal(hasUnresolvedRecipient('QA Avery Demo works at Acme Studio as Designer. Email input [recipient] requires approval.', 'Read-only QA: find QA Avery Demo in Contacts CRM and report company and role. Check Email action authority; do not send, enqueue, draft, or change anything.'), false);
   assert.equal(hasUnresolvedRecipient('Dear [QA Company Contact Name], how is the pilot?', 'Draft a follow-up for the QA company.'), true);
   assert.equal(hasUnresolvedRecipient('Dear [Recipient], hello.', 'Give me a generic template.'), false);
   assert.equal(hasUnresolvedRecipient('Hi Omar, please review ownership. Regards, [Your Name/Team]', 'Propose an outreach message for Willow Ridge.'), false);

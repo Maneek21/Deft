@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {createDeftResourceSyncClientV3,createAppRuntimeClient,parseSyncPageV2} from '@deft/app-kit';
 import {messages,Journal,effect,syncPage} from './mail.mjs';
+import {settleMailRuntimeEffect} from './runtime-effect.mjs';
 import {attachmentPolicy,EMAIL_MEDIA_TYPES} from './email-attachments.mjs';
 const root=realpathSync(process.cwd());
 assert.ok(realpathSync(resolve('node_modules/@deft/app-kit')).startsWith(root+sep));
@@ -45,11 +46,8 @@ process.once('message',async config=>{let phase='construct',boundedPage;try {
  } else {
   const sdk=createAppRuntimeClient({channel_url:config.url,credential:credential(config.credential)}),journal=new Journal(config.journal);
   phase='claim';const claim=await sdk.claim();if(!claim)throw Error('NO_RUNTIME_CLAIM');
-  phase='start';const started=await sdk.start(claim);
-  phase='actual_transport';const output=await effect(journal,claim.run_id,config.action,started.input);
-  phase='result';await sdk.result(claim,{status:'returned',provider_succeeded:true,output});
-  journal.append({...journal.latest(claim.run_id),state:'reported'});
-  process.send({type:'effect_settled',run_id:claim.run_id,action:config.action});
+  phase='actual_transport';const settled=await settleMailRuntimeEffect({sdk,claim,action:config.action,journal,effect});
+  process.send({type:'effect_settled',run_id:claim.run_id,action:config.action,provider_succeeded:settled.provider_succeeded});
  }
  } catch(error){process.send({type:'error',phase,code:error instanceof Error?error.name:'UNKNOWN',status:error?.status});}
  finally {boundedPage?.close();process.disconnect();}

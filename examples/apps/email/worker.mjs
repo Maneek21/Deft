@@ -10,8 +10,9 @@ self.onmessage = event => {
   let mode = 'reader', mobilePane = 'list', query = '', searchedQuery = '', hits = [], searchCursor = null, searchComplete = false;
   let to = '', subject = '', body = '', status = 'Loading messages…';
   const journal=createRequestJournal(sdk); const actions=journal.entries; let journalReady=false;
-  let pageIndex = 0, pageCursor = null, folder = 'inbox', folderComplete = false;
-  const previousPages = [];
+  let pageIndex = 0, folder = 'inbox', folderComplete = false;
+  let folderIndex = [];
+  const folderIndexLimit = 100, pageSize = 10;
   let lastAction = null;
   let draftRows = [], draftListGeneration = 0, retainedDraftMode='compose';
   const drafts = createDraftController(sdk,{snapshot:()=>({mode,to,subject,body,reply_record_id:mode==='reply'?selectedId||'':''}),onChange:()=>render()});
@@ -72,6 +73,20 @@ self.onmessage = event => {
     catch{journalReady=false;status='Activity could not be loaded. Reading is available; Compose and Archive are paused.';return false;}
   }
 
+  async function refreshActivity() {
+    if (!await loadActivity()) return;
+    let unavailable = false;
+    for (const entry of actions.slice(0, 10)) {
+      if (!entry.runId) continue;
+      try {
+        const run = await sdk.request('run_status', undefined, {run_id: entry.runId});
+        if (run?.id !== entry.runId) throw Error('RUN_MISMATCH');
+        await journal.update(entry, run);
+      } catch { unavailable = true; }
+    }
+    if (unavailable) status = 'Some statuses are unavailable. Last known outcomes retained; no automatic retry.';
+  }
+
   function render() {
     const mail = selected(), composing = mode === 'compose' || mode === 'reply';
     const rows = searchedQuery ? hits.map(hit => ({record_id: hit.record_id, label: hit.label, snippet: hit.snippet})) : items;
@@ -79,7 +94,8 @@ self.onmessage = event => {
       ? button('drafts','Drafts','ghost',{selected:mode==='drafts'})
       : button('folder_'+key,key[0].toUpperCase()+key.slice(1),'ghost',{selected:folder===key&&!searchedQuery&&!['drafts','activity'].includes(mode)}));
     let list = [
-      stack('inbox_heading', [text('list_heading', searchedQuery ? 'Search results' : folder[0].toUpperCase()+folder.slice(1), 'default'), text('loaded_count', `${searchedQuery ? hits.length : items.length} messages`, 'caption')], {layout: 'toolbar'}),
+      stack('inbox_heading', [text('list_heading', searchedQuery ? 'Search results' : folder[0].toUpperCase()+folder.slice(1), 'default'), text('loaded_count', searchedQuery ? `${hits.length} matches on this search page` : `${folderIndex.length} ${folderComplete ? 'messages' : 'loaded messages · partial index'}`, 'caption')], {layout: 'toolbar'}),
+      ...(!searchedQuery && !folderComplete && folderIndex.length ? [text('index_limit', `Newest first within the loaded set. Index limited to ${folderIndexLimit} records; more mail may exist.`, 'caption')] : []),
       stack('search_controls', [input('query', 'Search', query, 'Search mail'),
         button('search', 'Search', 'secondary')], {layout: 'horizontal'}),
       stack('message_rows', rows.length ? rows.map((item, index) => {
@@ -87,13 +103,13 @@ self.onmessage = event => {
         return button(`${searchedQuery ? 'hit' : 'mail'}_${index}`, scalar(data, 'subject') || item.label || '(No subject)', 'list', {
           eyebrow: compact(scalar(data, 'folder') === 'sent' ? `To: ${scalar(data, 'recipients') || 'Not available'}` : scalar(data, 'sender'), 128), description: compact(searchedQuery?(item.snippet || scalar(data,'body')):scalar(data,'body'),140), selected: selectedId === item.record_id,
         });
-      }) : [text('empty_inbox', busy ? 'Loading messages…' : searchedQuery ? searchComplete ? 'No messages found.' : 'No matches on this page. Continue searching.' : folderComplete ? 'No messages in this folder.' : 'No messages on this page. Continue to the next page.', 'muted')], {layout: 'list'}),
+      }) : [text('empty_inbox', busy ? 'Loading messages…' : searchedQuery ? searchComplete ? 'No messages found.' : 'No matches on this page. Continue searching.' : folderComplete ? 'No messages in this folder.' : 'No matching messages in the loaded index. Refresh or use Search to find more mail.', 'muted')], {layout: 'list'}),
       ...(searchedQuery && searchCursor ? [button('more_search', 'Continue search', 'ghost')] : []),
-      ...(!searchedQuery && (previousPages.length || cursor) ? [stack('page_controls', [...(previousPages.length ? [button('previous_page', 'Previous', 'ghost')] : []), text('page_number', `Page ${pageIndex + 1}`, 'caption'), ...(cursor ? [button('more', 'Next', 'ghost')] : [])], {layout: 'horizontal'})] : []),
+      ...(!searchedQuery && (pageIndex || cursor) ? [stack('page_controls', [...(pageIndex ? [button('previous_page', 'Previous', 'ghost')] : []), text('page_number', `Page ${pageIndex + 1}`, 'caption'), ...(cursor ? [button('more', 'Next', 'ghost')] : [])], {layout: 'horizontal'})] : []),
       ...(searchedQuery ? [button('clear_search', `Back to ${folder}`, 'ghost')] : [])];
     if (mode==='drafts') list=[
       stack('drafts_list_heading',[text('draft_list_title','Drafts'),text('draft_count',String(draftRows.length),'caption')],{layout:'toolbar'}),
-      stack('draft_rows',draftRows.length?draftRows.map((row,index)=>button(`draft_open_${index}`,`Draft ${index+1}`,'list',{description:`Updated ${new Date(row.updated_at).toLocaleString()}`})):[text('drafts_empty','No saved drafts.','muted')],{layout:'list'}),
+      stack('draft_rows',draftRows.length?draftRows.map((row,index)=>button(`draft_open_${index}`,compact(row.subject,200)||'(No subject)','list',{description:`Updated ${new Date(row.updated_at).toLocaleString()}`})):[text('drafts_empty','No saved drafts.','muted')],{layout:'list'}),
     ];
     if (mode==='activity') list=[text('activity_list_title','Activity'),text('activity_list_help','Send and archive status. Your mailbox stays in the sidebar.','caption')];
     const detail = [stack('mobile_back', [button('back', mode==='drafts'?'Back to drafts':'Back to '+folder, 'ghost')], {mobile: 'only'})];
@@ -105,7 +121,7 @@ self.onmessage = event => {
       if (!actions.length) detail.push(text('requests_empty', 'No activity yet.', 'muted'));
       for (const [index, action] of actions.entries()) detail.push(stack(`action_${index}`, [
         text(`action_summary_${index}`, `${action.label} · ${action.summary}`, 'caption'),
-        text(`action_state_${index}`, actionState(action.state), 'muted'),
+        text(`action_state_${index}`, actionState(action.state, action.actionKey), 'muted'),
         button(`run_check_${index}`, 'Check status', 'ghost'),
         ...(action.runId ? [button(`run_review_${index}`,['pending_approval','approval_pending'].includes(action.state)?'Review request':'View outcome','secondary')] : []),
         ...(['succeeded','failed','denied','cancelled','expired'].includes(action.state)&&action.runId ? [button(`run_remove_${index}`,'Remove from activity','ghost')] : []),
@@ -158,35 +174,49 @@ self.onmessage = event => {
       const result=await sdk.request('dialog','compose_action',{action_key:key,input:data,draft_state_key:'drafts',draft_id:drafts.current.id});
       if(result?.cancelled===true){await journal.cancelUnsubmitted(entry);try{const saved=await drafts.read(drafts.current.id);to=saved.value.to;subject=saved.value.subject;body=saved.value.body;drafts.use(saved.record_id,saved.revision);}catch{}status='Draft kept. No action was submitted.';return;}
       if(!result?.run?.id){try{const saved=await drafts.read(drafts.current.id);to=saved.value.to;subject=saved.value.subject;body=saved.value.body;drafts.use(saved.record_id,saved.revision);}catch{}status='Action outcome unknown. Check history; do not resend.';return;}
-      await journal.update(entry,result.run);
+      const submitted = result.run.submitted_input;
+      entry.summary=typeof submitted?.to==='string'&&typeof submitted?.subject==='string'
+        ? `${submitted.to} · ${submitted.subject}`.slice(0,400)
+        : 'Submitted message details unavailable.';
       // A known Run must survive a later unavailable draft read.
+      await journal.update(entry,result.run);
       try{const saved=await drafts.read(drafts.current.id);to=saved.value.to;subject=saved.value.subject;body=saved.value.body;drafts.use(saved.record_id,saved.revision);}catch{}
-      drafts.close();mode='reader';to='';subject='';body='';status=actionState(entry.state);
+      drafts.close();mode='reader';to='';subject='';body='';status=actionState(entry.state,entry.actionKey);
     }catch{status='Action outcome unknown. Your saved draft remains available. Do not resend automatically.';}
   }
 
-  function actionState(state) {
+  function actionState(state, actionKey) {
     if (['pending_approval', 'approval_pending'].includes(state)) return 'Waiting for your approval.';
-    if (state === 'succeeded') return 'Completed. View result for the provider outcome. Mail server acceptance does not confirm delivery.';
+    if (state === 'succeeded') return actionKey === 'archive_message' ? 'Archive completed. View outcome for the provider result.' : 'Send completed. View outcome for the provider result. Mail server acceptance does not confirm delivery.';
     if (['failed', 'denied', 'cancelled', 'expired'].includes(state)) return `${state[0].toUpperCase() + state.slice(1)}. No automatic retry.`;
     if (['pending', 'queued', 'running', 'claimed', 'started'].includes(state)) return 'In progress. Waiting for the provider outcome.';
     return 'Outcome unknown. Check approval or its receipt; do not resend automatically.';
   }
   async function loadInbox(reset, backwards = false) {
-    let targetCursor = pageCursor, targetIndex = pageIndex;
-    if (reset) { targetCursor = null; targetIndex = 0; }
-    else if (backwards) { const previous = previousPages.at(-1); if (!previous) return; targetCursor = previous.cursor; targetIndex = previous.index; }
-    else { if (!cursor) return; targetCursor = cursor; targetIndex = pageIndex + 1; }
     status = 'Loading messages…'; render();
-    const page = await sdk.searchResourceRecords('inbox', {query:folder,field_keys:['folder'],...(targetCursor ? {cursor:targetCursor}:{})});
-    folderComplete=page.scan.complete;
-    const newItems = page.items;
-    if (reset) cache.clear();
-    await Promise.all(newItems.map(item => readRecord(item.record_id)));
-    if (reset) previousPages.length = 0;
-    else if (backwards) previousPages.pop();
-    else { previousPages.push({cursor: pageCursor, index: pageIndex}); if (previousPages.length > 10) previousPages.shift(); }
-    items = newItems; cursor = page.next_cursor; pageCursor = targetCursor; pageIndex = targetIndex;
+    if (reset) {
+      cache.clear();
+      const indexed = new Map(), seenCursors = new Set();
+      let next = null, scanned = 0;
+      folderComplete = false;
+      do {
+        const page = await sdk.searchResourceRecords('inbox', {query:folder,field_keys:['folder'],...(next ? {cursor:next}:{})});
+        const bounded = page.items.slice(0, folderIndexLimit - scanned);
+        scanned += bounded.length;
+        const records = await Promise.all(bounded.map(async item => ({item,mail:await readRecord(item.record_id)})));
+        for (const {item,mail} of records) if (scalar(mail,'folder') === folder) indexed.set(item.record_id, {...item,date:Date.parse(scalar(mail,'date'))||0});
+        next = page.next_cursor;
+        if (!next) { folderComplete = bounded.length === page.items.length && page.scan.complete === true; break; }
+        if (seenCursors.has(next)) break;
+        seenCursors.add(next);
+      } while (scanned < folderIndexLimit && seenCursors.size < 10);
+      folderIndex = [...indexed.values()].sort((a,b)=>b.date-a.date||a.record_id.localeCompare(b.record_id));
+      pageIndex = 0;
+    } else if (backwards) pageIndex = Math.max(0,pageIndex-1);
+    else if ((pageIndex+1)*pageSize < folderIndex.length) pageIndex++;
+    items = folderIndex.slice(pageIndex*pageSize,(pageIndex+1)*pageSize);
+    await Promise.all(items.map(item=>readRecord(item.record_id)));
+    cursor = (pageIndex+1)*pageSize < folderIndex.length ? 'local-next' : null;
     selectedId = items[0]?.record_id || null; hits = []; searchedQuery = ''; searchCursor = null; searchComplete = false;
     mode = 'reader'; status = '';
   }
@@ -230,7 +260,7 @@ self.onmessage = event => {
       }
       else if (ui.node_id === 'clear_search') { status = ''; query = ''; searchedQuery = ''; hits = []; searchCursor = null; searchComplete = false; selectedId = items[0]?.record_id || null; mobilePane = 'list'; }
       else if (ui.node_id === 'back') mobilePane = 'list';
-      else if (ui.node_id === 'requests') { mode = 'activity'; mobilePane = 'reader'; status = '';if(!journalReady)await loadActivity(); }
+      else if (ui.node_id === 'requests') { mode = 'activity'; mobilePane = 'reader'; status = '';await refreshActivity(); }
       else if (ui.node_id === 'close_requests') { mode = 'reader'; mobilePane = 'reader'; status = ''; }
       else if (ui.node_id === 'compose') { if(!['compose','reply'].includes(mode)){drafts.use();mode='compose';to='';subject='';body='';}mobilePane='reader';status='';await openHostComposer(); }
       else if (ui.node_id === 'open_composer') await openHostComposer();
@@ -247,7 +277,16 @@ self.onmessage = event => {
       else if (ui.node_id === 'delete_draft') { await drafts.remove(); status='Saved draft copy deleted.'; }
       else if (ui.node_id === 'drafts') {
         if(['compose','reply'].includes(mode)){retainedDraftMode=mode;await drafts.save();}
-        const request=++draftListGeneration;const rows=await drafts.list();if(request!==draftListGeneration)return;draftRows=rows;mode='drafts';mobilePane='list';status='';
+        const request=++draftListGeneration;
+        if (!await loadActivity()) return;
+        const submitted = new Set(actions.filter(entry=>entry.runId&&entry.draftId).map(entry=>entry.draftId));
+        const rows=await drafts.list(), loaded=[];
+        for (const row of rows.slice(0,32)) {
+          if (submitted.has(row.record_id)) continue;
+          const saved=await drafts.read(row.record_id);
+          loaded.push({...row,subject:typeof saved.value?.subject==='string'?saved.value.subject:''});
+        }
+        if(request!==draftListGeneration)return;draftRows=loaded;mode='drafts';mobilePane='list';status='';
       }
       else if (ui.node_id === 'resume_local') { mode=retainedDraftMode; mobilePane='reader'; }
       else if (/^draft_open_\d+$/.test(ui.node_id)) {
@@ -269,7 +308,7 @@ self.onmessage = event => {
         status = 'Requesting approval…'; render();
         const entry = await journal.reserve({actionKey:lastAction,label: 'Archive', summary: scalar(mail, 'subject').slice(0, 200), sourceId: selectedId, intent});
         try { const run = await sdk.request('action', lastAction, {resource_id: mail.resource_id}); entry.runId=run?.id||null;entry.state=run?.state||'unknown';await journal.update(entry,run); } catch { status = 'Request outcome unknown. Do not resend automatically.'; return; }
-        status = actionState(entry.state);
+        status = actionState(entry.state,entry.actionKey);
       } else if (/^run_check_\d+$/.test(ui.node_id)) {
         const entry = actions[Number(ui.node_id.slice(10))];
         if (!entry?.runId) { status = 'Request outcome unknown. Check Deft Approvals; do not resend automatically.'; return; }

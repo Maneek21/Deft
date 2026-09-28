@@ -4,16 +4,16 @@
   "type": "module",
   "packageManager": "pnpm@10.33.1",
   "dependencies": {
-    "@deft/app-kit": "file:deft-app-kit-0.1.0-alpha.6.tgz",
+    "@deft/app-kit": "file:deft-app-kit-0.1.0-alpha.7.tgz",
     "esbuild": "0.28.2",
     "imapflow": "2.0.7",
     "mailparser": "3.9.28",
     "nodemailer": "10.0.10"
   },
-  "version": "1.5.4",
+  "version": "1.5.5",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test draft-controller.test.mjs request-capacity.test.mjs request-journal.test.mjs transport-identity.test.mjs",
+    "test": "node --test draft-controller.test.mjs request-capacity.test.mjs request-journal.test.mjs transport-identity.test.mjs mail-preflight.test.mjs runtime-effect.test.mjs worker-ui.test.mjs",
     "smoke:mailbox": "node mailbox-navigation-smoke.mjs",
     "smoke:activity": "node activity-recovery-smoke.mjs"
   }

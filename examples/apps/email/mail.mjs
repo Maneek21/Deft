@@ -8,6 +8,7 @@ import {loadMessageByLocator} from './mailbox-sync.mjs';
 import {readMailboxLifecyclePage} from './mailbox-lifecycle.mjs';
 import {canonicalMail,appendSentCopy} from './sent-copy.mjs';
 import {withTransportIdentity,withReplyParent} from './transport-identity.mjs';
+import {MailPreEffectValidationError} from './runtime-effect.mjs';
 
 export class Journal {
  constructor(path){this.path=path;}
@@ -70,8 +71,8 @@ export function createMailProvider(raw,{allowLoopbackFixture=false,legacySchema=
    }finally{lock.release();await c.logout();}
    if(fixture){const archived=await messages(account.imap.auth.user,'Archive');if(!archived.some(r=>r.message_id===parent.message_id))throw Error('ARCHIVE_NOT_OBSERVED');}
   }else{
-   if(!['send_message','reply_message'].includes(action)||!singleAddress(input.to)||!clean(input.subject,200)||!clean(input.message_id,200)||!/^<[^<>\s@]+@[^<>\s@]+>$/.test(input.message_id)||typeof input.body!=='string'||input.body.length>4096)throw Error('EXACT_MAIL_INPUT_INVALID');
-   if(account.mode==='loopback_fixture'&&input.to!==account.fixture_recipient)throw Error('EXACT_MAIL_INPUT_INVALID');
+   if(!['send_message','reply_message'].includes(action)||!singleAddress(input.to)||!clean(input.subject,200)||!clean(input.message_id,200)||!/^<[^<>\s@]+@[^<>\s@]+>$/.test(input.message_id)||typeof input.body!=='string'||input.body.length>4096)throw new MailPreEffectValidationError();
+   if(account.mode==='loopback_fixture'&&input.to!==account.fixture_recipient)throw new MailPreEffectValidationError();
    if(legacySchema&&(!input.message_id.startsWith('<c11-')||!input.message_id.endsWith('@email-lite.test>')))throw Error('EXACT_MAIL_INPUT_INVALID');
    if(action==='reply_message'){const parent=await parentByLocator(input.parent_resource_id);input=withReplyParent(input,parent);}
    const mime=legacySchema?null:await canonicalMail(account.owner,action,input);
