@@ -18,6 +18,16 @@ Capture a team discussion into knowledge, ask Defty to propose a task using that
 
 [**Watch the full walkthrough — 5:09.**](https://youtu.be/7z9EH4c9k2o)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=maneek21%2Fdeft&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=maneek21/deft&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=maneek21/deft&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=maneek21/deft&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## Quick start with Docker
 
 Use the prebuilt [v0.3.0-preview.15 release](https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.15) for evaluation. It targets **Linux amd64** and needs Docker Desktop or Docker Engine with Compose v2. An AI provider is optional. No source build, Node.js, or pnpm is needed for this path.
