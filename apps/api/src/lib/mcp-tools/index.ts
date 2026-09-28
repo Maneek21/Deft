@@ -46,6 +46,7 @@ import {
   MODULE_MCP_TOOL_SCHEMAS,
   MODULE_MCP_WRITE_TOOLS,
 } from './modules.js';
+import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_TOOL_SCHEMAS, employeeRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
 import { employeeModuleActor } from '../module-service.js';
 import {
   APP_ACTION_OPERATION_DESCRIPTIONS,
@@ -108,6 +109,10 @@ export const APP_ACTION_MCP_TOOLS: Record<string, ToolHandler> = Object.fromEntr
 );
 
 export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
+  // This registry also contains App-owned governed writes. Their own service
+  // owns approval/budgets; generic MCP dispatch must not charge them twice.
+  ...Object.fromEntries(RUNTIME_WORKFLOW_NAMES.map(name => [name,
+    (args: Record<string, unknown>, ctx: ToolContext) => employeeRuntimeWorkflowTool(name, args, ctx)])),
   ...MODULE_MCP_READ_TOOLS,
   // Neutral adapter registry: App Runs own approval, budget, and execution.
   ...APP_ACTION_MCP_TOOLS,
@@ -190,6 +195,7 @@ const CALLER_SLUG_PROP = {
 };
 
 export const toolSchemas: ToolSchema[] = [
+  ...RUNTIME_WORKFLOW_TOOL_SCHEMAS,
   ...(MODULE_MCP_TOOL_SCHEMAS as ToolSchema[]),
   {
     name: 'platform_context',

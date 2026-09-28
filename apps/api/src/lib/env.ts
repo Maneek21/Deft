@@ -197,3 +197,8 @@ validateAppRunRolloutConfiguration(
   APP_AUTOMATIONS_ENABLED,
 );
 validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYRINGS);
+
+// Private App state is independent, dormant, and never enabled by sync alone.
+export function isAppPrivateStateEnabled(): boolean {
+  return isAppExperienceResourceExposureEnabled() && process.env.DEFT_APP_PRIVATE_STATE_ENABLED === 'true';
+}

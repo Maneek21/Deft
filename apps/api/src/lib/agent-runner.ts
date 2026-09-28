@@ -326,7 +326,7 @@ export async function runAgentQuery(params: {
   }
 
   let connectionInfo = '\nYou can read native Deft calendar events and imported ICS calendar feeds with check_calendar.';
-  const incidentalWrites = new Set(['remember', 'create_plan', 'wiki_suggest_update', 'app_binding_invoke']);
+  const incidentalWrites = new Set(['remember', 'create_plan', 'wiki_suggest_update', 'app_binding_invoke', 'app_runtime_action_request', 'app_action_batch_propose', 'app_action_batch_cancel']);
   if (readOnlyRequest) {
     tools = tools.filter((tool) => !allActionTools.has(tool.name) && !incidentalWrites.has(tool.name));
   }
@@ -750,7 +750,8 @@ export async function runAgentQuery(params: {
           });
         }
       } else {
-        // Read-only tools — execute immediately
+        // Reads and App-owned requests use their canonical executor. App batch
+        // proposals create pending review, never direct external execution.
         try {
         const { result, citations } = await executeToolCall(
           tool.name,
@@ -766,7 +767,7 @@ export async function runAgentQuery(params: {
           params: tool.input,
           success: !(result && typeof result === 'object' && 'error' in result),
           result,
-          readOnly: true,
+          readOnly: !['app_action_batch_propose', 'app_action_batch_cancel'].includes(tool.name),
         });
 
         const formatted = await nativeAgentToolResult({

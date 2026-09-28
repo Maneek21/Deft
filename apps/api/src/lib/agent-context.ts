@@ -1,4 +1,5 @@
 import { executeModuleReadOperation, isModuleReadOperation } from './module-read-operations.js';
+import { executeRuntimeWorkflowTool, isRuntimeWorkflowTool } from './app-runtime-workflow-tools.js';
 import { loadAuthorizedAppDiscovery } from './app-discovery.js';
 import { db } from './db.js';
 import {
@@ -106,6 +107,26 @@ export async function executeToolCall(
 ): Promise<{ result: any; citations: Citation[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
+
+  if (isRuntimeWorkflowTool(toolName)) {
+    try {
+      const actor = await buildModuleReadActor(orgId, _userId, { conversationId, agentEmployeeId });
+      const result = await executeRuntimeWorkflowTool(toolName, params, actor);
+      const batch = result && typeof result === 'object' && 'batch' in result ? result.batch : undefined;
+      const reviewUrl = batch && typeof batch === 'object' && 'review_url' in batch ? batch.review_url : undefined;
+      return { result, citations: typeof reviewUrl === 'string' ? [{ type: 'app_action_batch',
+        id: batch && 'id' in batch ? String(batch.id) : 'batch', title: 'Review proposed App actions', url: reviewUrl }] : [] };
+    } catch (error) {
+      return { result: { error: 'App workflow unavailable or authorization changed.',
+        code: error instanceof Error && 'code' in error ? error.code : 'APP_RUN_INPUT_INVALID' }, citations: [] };
+    }
+  }
+
+  if(toolName==='app_runtime_action_request'){
+    const {requestRuntimeActionForAgent}=await import('./app-experience-human-action-agent-tool.js');
+    try{return {result:await requestRuntimeActionForAgent(orgId,agentEmployeeId,params),citations:[]};}
+    catch(error){return {result:{error:'Runtime action unavailable or requires different input.',code:error instanceof Error && 'code' in error?error.code:'APP_RUN_INPUT_INVALID'},citations:[]};}
+  }
 
   // App operations already own approval, replay, budget, and receipt policy
   // through App Runs. Keep this adapter ahead of the generic native-agent

@@ -78,6 +78,7 @@ import type { ReviewedRuntimeInvoke, ReviewedRuntimeCaller } from './app-runtime
 import type { AppRunTransaction } from './app-run-repository.js';
 
 export type ReviewedRuntimeCapture = Readonly<{
+  agent_employee_id?: string; agent_owner_user_id?: string;
   protocol_version?: string;
   operator_user_id?: string;
   authorization_snapshot: AppRunAuthorizationSnapshot;
@@ -138,6 +139,9 @@ export interface AppRunPreparedAppAuthorizer {
   captureReviewedPublicNativeInTransaction?(tx: AppRunTransaction, input: Readonly<{
     org_id: string; endpoint_id: string; ingress_id: string; capture_input?: boolean;
   }>): Promise<ReviewedPublicNativeCapture>;
+  captureReviewedRuntimeAgentInTransaction?(tx: AppRunTransaction, input: Readonly<{
+    org_id: string; agent_employee_id: string; runtime_binding_id: string;
+  }>): Promise<ReviewedRuntimeCapture>;
   captureReviewedRuntimeForPreparation?(input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
   }>): Promise<ReviewedRuntimeCapture>;
@@ -662,6 +666,7 @@ export class AppRunService {
     request: ReviewedRuntimeInvoke,
     hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
     hostFinalGuard?: (tx: AppRunTransaction) => Promise<void>,
+    existingTx?: AppRunTransaction,
   ): Promise<AppRunSafeView> {
     if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
       || !this.appLiveAuthorization?.captureReviewedRuntimeForPreparation
@@ -739,7 +744,33 @@ export class AppRunService {
     };
     return this.#submit({ org_id: caller.org_id, initiating_actor: actor,
       execution_actor: actor }, submission, null, undefined, undefined, capture,
-      undefined, undefined, hostAdmission, undefined, hostFinalGuard);
+      undefined, existingTx, hostAdmission, undefined, hostFinalGuard);
+  }
+
+  /** Internal hosted-agent intake. Model input cannot choose either actor or policy. */
+  /** Internal metadata lookup primitive; fingerprints never enter a public response. */
+  retainedIdempotencyCandidates(key: string) { return this.secrets.fingerprintTextCandidates('idempotency', key); }
+
+  async submitReviewedRuntimeAgent(caller: {org_id:string;agent_employee_id:string}, request: {runtime_binding_id:string;input:unknown;idempotency_key:string}, existingTx?: AppRunTransaction) {
+    if(!this.appOriginEnabled() || !appRuntimeChannelEnabled() || !this.appLiveAuthorization?.captureReviewedRuntimeAgentInTransaction) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+    const submit = async (tx: AppRunTransaction) => {
+      const capture=await this.appLiveAuthorization!.captureReviewedRuntimeAgentInTransaction!(tx,{...caller,runtime_binding_id:request.runtime_binding_id});
+      if(!capture.agent_employee_id || !capture.agent_owner_user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const binding=capture.binding, input=parseRuntimeObjectInput(RuntimeObjectSchema.parse(capture.action.input_schema),request.input);
+      const initiating_actor={actor_type:'agent_employee' as const,agent_employee_id:capture.agent_employee_id,user_id:capture.agent_owner_user_id};
+      const execution_actor={actor_type:'human' as const,user_id:capture.agent_owner_user_id};
+      return this.#submit({org_id:caller.org_id,initiating_actor,execution_actor},{
+        schema_version:APP_RUN_CONTRACT_VERSIONS.run,org_id:caller.org_id,initiating_actor,execution_actor,
+        origin:{origin_kind:'app',installation_id:binding.app_installation_id,app_version_id:binding.app_version_id,grant_snapshot_id:binding.grant_snapshot_id,runtime_binding_id:binding.id},
+        operation:{provider:{org_id:caller.org_id,provider_kind:'app_runtime',provider_instance_id:binding.provider_instance_id},operation_name:binding.operation_name},
+        provider_snapshot_digest:capture.provider_snapshot_digest,policy:{risk_class:binding.risk_class,review_requirement:'always',review_scope:'per_invocation',retry_class:binding.retry_class},
+        retention_class:binding.retention_class,idempotency_key:request.idempotency_key,input,authorization_snapshot:capture.authorization_snapshot,
+        safe_preview:{schema_version:APP_RUN_CONTRACT_VERSIONS.run,title:binding.action_key,summary:'Agent request requires the owner to approve the exact input.',resource_refs:[],fields:{app_installation_id:binding.app_installation_id,action_key:binding.action_key,runtime_binding_id:binding.id,provider_kind:'app_runtime',app_protocol:'7'}},
+      },null,undefined,undefined,capture,undefined,tx);
+    };
+    const run = existingTx ? await submit(existingTx) : await this.repository.transaction(submit);
+    if(!existingTx && run.state==='pending_approval')await this.projectPendingApproval(run.org_id,run.id);
+    return run;
   }
 
   /** Protocol 7 output is delivered only through the exact current web session;
@@ -868,8 +899,11 @@ export class AppRunService {
       if (locator?.initiating_actor_type === 'app_public') {
         return this.#reviewPublicRuntimeInput(tx, caller, runId, locator);
       }
-      if (!locator || locator.initiating_actor_type !== 'human'
-        || locator.initiating_actor_id !== caller.user_id
+      const ownerMatches = (pin: typeof locator) => !!pin && (pin.initiating_actor_type === 'human'
+        ? pin.initiating_actor_id === caller.user_id
+        : pin.initiating_actor_type === 'agent_employee' && pin.execution_actor_type === 'human'
+          && pin.execution_actor_id === caller.user_id);
+      if (!ownerMatches(locator) || !locator
         || locator.org_id !== caller.org_id
         || locator.origin_kind !== 'app' || locator.provider_kind !== 'app_runtime'
         || !locator.origin_runtime_binding_id) {
@@ -881,18 +915,23 @@ export class AppRunService {
       const locked = await this.repository.lockRun(tx, caller.org_id, runId);
       const pin = await this.repository.findRuntimeReviewPin(tx, caller.org_id, runId);
       if (!locked || !pin || pin.state !== 'pending_approval'
-        || pin.initiating_actor_type !== 'human'
-        || pin.initiating_actor_id !== caller.user_id
+        || !ownerMatches(pin)
         || pin.origin_runtime_binding_id !== locator.origin_runtime_binding_id
         || pin.input_expires_at <= this.now()) {
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       }
       let current: ReviewedRuntimeCapture;
       try {
-        current = await this.appLiveAuthorization!.captureReviewedRuntimeInTransaction!(tx, {
-          org_id: caller.org_id, user_id: caller.user_id,
-          runtime_binding_id: locator.origin_runtime_binding_id,
-        });
+        current = locator.initiating_actor_type === 'agent_employee'
+          ? await this.appLiveAuthorization!.captureReviewedRuntimeAgentInTransaction!(tx, {
+            org_id: caller.org_id, agent_employee_id: locator.initiating_actor_id,
+            runtime_binding_id: locator.origin_runtime_binding_id,
+          })
+          : await this.appLiveAuthorization!.captureReviewedRuntimeInTransaction!(tx, {
+            org_id: caller.org_id, user_id: caller.user_id, runtime_binding_id: locator.origin_runtime_binding_id,
+          });
+        if (current.agent_owner_user_id && current.agent_owner_user_id !== caller.user_id)
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       } catch {
         throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
       }
@@ -905,7 +944,7 @@ export class AppRunService {
       if (!locked || !pin || pin.state !== 'pending_approval'
         || pin.input_expires_at <= this.now()
         || pin.origin_kind !== 'app' || pin.provider_kind !== 'app_runtime'
-        || pin.initiating_actor_type !== 'human' || pin.initiating_actor_id !== caller.user_id
+        || !ownerMatches(pin)
         || pin.execution_actor_type !== 'human' || pin.execution_actor_id !== caller.user_id
         || pin.origin_runtime_binding_id !== locator.origin_runtime_binding_id
         || pin.origin_app_installation_id !== current.binding.app_installation_id
@@ -1123,17 +1162,17 @@ export class AppRunService {
         if (!this.appLiveAuthorization?.captureReviewedRuntimeInTransaction
           || submission.origin.origin_kind !== 'app'
           || !('runtime_binding_id' in submission.origin)
-          || submission.initiating_actor.actor_type !== 'human'
+          || (submission.initiating_actor.actor_type !== 'human'
+            && !(submission.initiating_actor.actor_type === 'agent_employee' && trustedRuntimeCapture.agent_employee_id === submission.initiating_actor.agent_employee_id))
           || submission.execution_actor.actor_type !== 'human') {
           throw new AppRunError('APP_RUN_ACCESS_DENIED');
         }
         let live: ReviewedRuntimeCapture;
         try {
-          live = await this.appLiveAuthorization.captureReviewedRuntimeInTransaction(tx, {
-            org_id: submission.org_id,
-            user_id: submission.initiating_actor.user_id,
-            runtime_binding_id: submission.origin.runtime_binding_id,
-          });
+          live = submission.initiating_actor.actor_type === 'agent_employee'
+            ? await this.appLiveAuthorization.captureReviewedRuntimeAgentInTransaction!(tx, {org_id:submission.org_id,agent_employee_id:submission.initiating_actor.agent_employee_id,runtime_binding_id:submission.origin.runtime_binding_id})
+            : await this.appLiveAuthorization.captureReviewedRuntimeInTransaction(tx, {org_id:submission.org_id,user_id:(submission.initiating_actor as {user_id:string}).user_id,runtime_binding_id:submission.origin.runtime_binding_id});
+          if (live.agent_owner_user_id && live.agent_owner_user_id !== submission.execution_actor.user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
         } catch {
           throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
         }

@@ -8,6 +8,8 @@ import { AppExperienceExposureService } from '../lib/app-experience-exposure.js'
 import { getAppRunRuntime } from '../lib/app-run-runtime.js';
 import { ExperienceExposureError } from '../lib/app-experience-exposure-contract.js';
 import { z } from 'zod';
+import { AppPrivateStateService } from '../lib/app-private-state-service.js';
+import { AppPrivateStateAdoptionService } from '../lib/app-private-state-adoption-service.js';
 
 const MAX_ACTION_BYTES = 65_536;
 const READ_DEADLINE_MS = 10_000;
@@ -88,6 +90,18 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
         c.req.param('sessionId')));
     } catch (error) { return failure(c, error); }
   });
+  routes.get('/sessions/:sessionId/runs/:runId', async (c) => {
+    try {
+      if (new URL(c.req.url).search) throw new Error('APP_EXPERIENCE_BODY_INVALID');
+      return c.json(await service.runStatus(await caller(c), c.req.param('sessionId'), c.req.param('runId'), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.get('/sessions/:sessionId/runs/:runId/review-target', async c => {
+    try {
+      if (new URL(c.req.url).search) throw new Error('APP_EXPERIENCE_BODY_INVALID');
+      return c.json(await service.runReviewTarget(await caller(c), c.req.param('sessionId'), c.req.param('runId'), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
   routes.delete('/sessions/:sessionId', async (c) => {
     try {
       return c.json(await service.revoke(await caller(c),
@@ -123,6 +137,30 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
     c.req.raw.signal.throwIfAborted();
     return boundedJson(c.req.raw.body);
   };
+  routes.post('/sessions/:sessionId/access/acquire', async c => {
+    try { const host = await caller(c); z.strictObject({}).parse(await jsonBody(c));
+      return c.json(await (await exposure()).acquire(host, c.req.param('sessionId'), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post('/sessions/:sessionId/access/review', async c => {
+    try { const host = await caller(c); z.strictObject({}).parse(await jsonBody(c));
+      return c.json(await (await exposure()).reviewAccess(host, c.req.param('sessionId'), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post('/sessions/:sessionId/access/accept', async c => {
+    try { const host = await caller(c); const body = await jsonBody(c);
+      return c.json(await (await exposure()).acceptAccess(host, c.req.param('sessionId'), body, c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post('/sessions/:sessionId/refresh', async c => {
+    try { const host = await caller(c); z.strictObject({}).parse(await jsonBody(c));
+      return c.json(await (await exposure()).refresh(host, c.req.param('sessionId'), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.delete('/sessions/:sessionId/access', async c => {
+    try { noQuery(c); return c.json(await (await exposure()).revokeAccess(await caller(c), c.req.param('sessionId'), c.req.raw.signal)); }
+    catch (error) { return failure(c, error); }
+  });
   routes.post('/sessions/:sessionId/exposure/review', async c => {
     try {
       const host = await caller(c); const consumer = await exposure();
@@ -152,6 +190,27 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
       return c.json(await consumer.read(host, c.req.param('sessionId'), c.req.param('resourceKey'), await jsonBody(c), c.req.raw.signal));
     } catch (error) { return failure(c, error); }
   });
+  routes.post('/sessions/:sessionId/resources/:resourceKey/target', async c => {
+    try {
+      return c.json(await (await exposure()).resourceTarget(await caller(c), c.req.param('sessionId'),
+        c.req.param('resourceKey'), await jsonBody(c), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post('/sessions/:sessionId/state/:stateKey', async c => {
+    try {
+      const consumer = new AppPrivateStateService((await getAppRunRuntime()).keys);
+      return c.json(await consumer.request(await caller(c), c.req.param('sessionId'), c.req.param('stateKey'), await jsonBody(c), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  for (const operation of ['context', 'review', 'activate'] as const) {
+    routes.post(`/sessions/:sessionId/state/:stateKey/adoption/${operation}`, async c => {
+      try {
+        const consumer = new AppPrivateStateAdoptionService((await getAppRunRuntime()).keys);
+        return c.json(await consumer.request(await caller(c), c.req.param('sessionId'), c.req.param('stateKey'),
+          operation, await jsonBody(c), c.req.raw.signal));
+      } catch (error) { return failure(c, error); }
+    });
+  }
   return routes;
 }
 

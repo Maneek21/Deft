@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import type { PrivateStateDeclaration } from '@deft/app-kit';
+import { AppError } from './app-errors.js';
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appExperienceSessions, appExperienceResourceExposures, appExperienceResourceExposureResources,
   appExperienceResourceExposureAudit, appInstallations, appVersions, appGrantSnapshots, appResourceBindings,
-  appRuntimeRegistrations, appSyncCheckpoints, appResourceProjections, users } from '@deft/db/schema';
+  appRuntimeRegistrations, appRuntimeBindings, appSyncCheckpoints, appResourceProjections, users, appExperienceConsentGrants } from '@deft/db/schema';
 import { decodePrivateProjection } from './app-resource-private-projection.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
@@ -12,9 +14,11 @@ import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-au
 import { verifiedExperienceBundle, assertExperienceWeb, type ExperienceCaller } from './app-experience-service.js';
 import { experienceExposureDatabase, type ExperienceExposureTransaction } from './app-experience-exposure-db.js';
 import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, isAppNativeCalendarEnabled,
-  isAppAttachmentBrokerEnabled } from './env.js';
+  isAppAttachmentBrokerEnabled, isAppPrivateStateEnabled } from './env.js';
 import { scanPrivateResourceCheckpoint } from './app-resource-private-search-scan.js';
-import { EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, ExposureSearchCursorSchema, PAYLOAD_VERSION, EXPOSURE_LIMITS, ExposureSnapshotSchema, ExposureAcceptSchema,
+import { ExperienceConsentScopeSchema, ExperienceConsentReviewTokenSchema, ExperienceConsentAcceptSchema,
+  experienceConsentScope, experienceConsentDigest } from './app-experience-consent-contract.js';
+import { EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, STATE_EXPOSURE_VERSION, ExposureSearchCursorSchema, PAYLOAD_VERSION, EXPOSURE_LIMITS, ExposureSnapshotSchema, ExposureAcceptSchema,
   ExposureCursorSchema, ResourceRequestSchema, ExperienceExposureError, exposureUnavailable, exposureStale,
   exposureDigest, sealExposureToken, openExposureToken, exposurePayloadData, type ExposureSnapshot } from './app-experience-exposure-contract.js';
 
@@ -25,6 +29,10 @@ type Repository = Pick<ReturnType<typeof experienceExposureDatabase>, 'transacti
 const uuid = z.string().uuid();
 const resourceKey = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/);
 const label = (value: string) => value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 200);
+export type HumanActionAuthority = Readonly<{ session: typeof appExperienceSessions.$inferSelect;
+  runtime_binding_id: string; action_label: string; current_authority_expires_at: Date;
+  authorization_identity: Readonly<{ consent_grant_id: string | null; consent_epoch: number | null;
+    exposure_id: string; exposure_epoch: number }> }>;
 
 /** Exact host-owned disclosure, never a general private-reader endpoint. Every
  * request rederives App/artifact/resource/session authority in one transaction. */
@@ -40,7 +48,7 @@ export class AppExperienceExposureService {
     if (!Number.isFinite(caller.access_expires_at)) throw exposureUnavailable();
   }
 
-  private async locked(tx: Tx, caller: ExperienceCaller, sessionId: string, write: boolean, signal?: AbortSignal) {
+  private async locked(tx: Tx, caller: ExperienceCaller, sessionId: string, write: boolean, signal?: AbortSignal, allowExpired = false, actionKey?: string) {
     uuid.parse(sessionId); signal?.throwIfAborted();
     const [locator] = await tx.select().from(appExperienceSessions).where(and(
       eq(appExperienceSessions.org_id, caller.org_id), eq(appExperienceSessions.id, sessionId))).limit(1);
@@ -50,14 +58,23 @@ export class AppExperienceExposureService {
       eq(appVersions.id, locator.app_version_id), eq(appVersions.installation_id, locator.app_installation_id))).limit(1);
     if (!versionLocator) throw exposureUnavailable();
     const earlyBundle = await verifiedExperienceBundle(versionLocator, locator.experience_key);
-    if (!['5', '6', '7'].includes(versionLocator.protocol_version) || !earlyBundle.bundle.resource_keys.length) throw exposureUnavailable();
+    if (!['5', '6', '7'].includes(versionLocator.protocol_version) || (!earlyBundle.bundle.resource_keys.length && earlyBundle.bundle.schema_version !== 'deft.experience_bundle.v3')) throw exposureUnavailable();
     const bindingLocators = await tx.select().from(appResourceBindings).where(and(eq(appResourceBindings.org_id, caller.org_id),
       eq(appResourceBindings.app_installation_id, locator.app_installation_id), eq(appResourceBindings.app_version_id, locator.app_version_id),
       eq(appResourceBindings.grant_snapshot_id, locator.grant_snapshot_id), eq(appResourceBindings.owner_user_id, caller.user_id),
       eq(appResourceBindings.state, 'active'), inArray(appResourceBindings.resource_key, [...earlyBundle.bundle.resource_keys])));
     if (bindingLocators.length !== earlyBundle.bundle.resource_keys.length
       || new Set(bindingLocators.map(b => b.resource_key)).size !== bindingLocators.length) throw exposureUnavailable();
-    const registrationIds = [...new Set(bindingLocators.map(b => b.runtime_registration_id))].sort();
+    const actionLocators = actionKey ? await tx.select().from(appRuntimeBindings).where(and(
+      eq(appRuntimeBindings.org_id, caller.org_id), eq(appRuntimeBindings.app_installation_id, locator.app_installation_id),
+      eq(appRuntimeBindings.app_version_id, locator.app_version_id), eq(appRuntimeBindings.grant_snapshot_id, locator.grant_snapshot_id),
+      eq(appRuntimeBindings.action_key, actionKey), eq(appRuntimeBindings.state, 'active'))).limit(2) : [];
+    const runtimeBinding = actionLocators[0];
+    if (actionKey && (actionLocators.length !== 1 || !earlyBundle.bundle.action_keys.includes(actionKey)
+      || earlyBundle.manifest.schema_version !== '7' || !isAppV5RuntimeActionsEnabled()
+      || !earlyBundle.manifest.runtime_actions.some(action => action.key === actionKey))) throw exposureUnavailable();
+    const registrationIds = [...new Set([...bindingLocators.map(b => b.runtime_registration_id),
+      ...(runtimeBinding ? [runtimeBinding.runtime_registration_id] : [])])].sort();
     const registrationLocators = await tx.select().from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, caller.org_id),
       inArray(appRuntimeRegistrations.id, registrationIds)));
     if (registrationLocators.length !== registrationIds.length) throw exposureUnavailable();
@@ -76,6 +93,11 @@ export class AppExperienceExposureService {
     for (const id of registrationIds) await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id=${caller.org_id} AND id=${id} FOR SHARE`);
     const bindingIds = bindingLocators.map(b => b.id).sort();
     for (const id of bindingIds) await tx.execute(sql`SELECT id FROM app_resource_bindings WHERE org_id=${caller.org_id} AND id=${id} FOR SHARE`);
+    if (runtimeBinding) {
+      const [current] = await tx.select().from(appRuntimeBindings).where(and(eq(appRuntimeBindings.org_id, caller.org_id),
+        eq(appRuntimeBindings.id, runtimeBinding.id))).limit(1).for('share');
+      if (!current || exposureDigest(current) !== exposureDigest(runtimeBinding)) throw exposureUnavailable();
+    }
     const checkpointLocators = await tx.select().from(appSyncCheckpoints).where(and(eq(appSyncCheckpoints.org_id, caller.org_id),
       inArray(appSyncCheckpoints.resource_binding_id, bindingIds), eq(appSyncCheckpoints.state, 'active'))).orderBy(asc(appSyncCheckpoints.id));
     if (checkpointLocators.length !== bindingIds.length || new Set(checkpointLocators.map(c => c.resource_binding_id)).size !== bindingIds.length) throw exposureUnavailable();
@@ -83,6 +105,10 @@ export class AppExperienceExposureService {
     const [session] = await tx.select().from(appExperienceSessions).where(and(eq(appExperienceSessions.org_id, caller.org_id),
       eq(appExperienceSessions.id, sessionId))).limit(1).for(write ? 'update' : 'share');
     if (!session || session.revoked_at || exposureDigest(session) !== exposureDigest(locator)) throw exposureUnavailable();
+    const [consentGrant] = session.consent_grant_id ? await tx.select().from(appExperienceConsentGrants).where(and(
+      eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.id, session.consent_grant_id),
+      eq(appExperienceConsentGrants.owner_user_id, caller.user_id))).limit(1).for(write ? 'update' : 'share') : [];
+    if (session.consent_grant_id && (!consentGrant || consentGrant.revoked_at)) throw exposureUnavailable();
     const [exposure] = await tx.select().from(appExperienceResourceExposures).where(and(eq(appExperienceResourceExposures.org_id, caller.org_id),
       eq(appExperienceResourceExposures.experience_session_id, sessionId), isNull(appExperienceResourceExposures.revoked_at))).limit(1).for(write ? 'update' : 'share');
     const children = exposure ? await tx.select().from(appExperienceResourceExposureResources).where(and(
@@ -108,7 +134,8 @@ export class AppExperienceExposureService {
     const authorities: BindingAuthority[] = [];
     for (const binding of [...bindingLocators].sort((a, b) => a.resource_key.localeCompare(b.resource_key))) {
       const authority = version.protocol_version === '7'
-        ? await loadLiveAttachmentSyncBindingAuthority(tx, { org_id: caller.org_id, resource_binding_id: binding.id, clock: this.clock })
+        ? await loadLiveAttachmentSyncBindingAuthority(tx, { org_id: caller.org_id, resource_binding_id: binding.id, clock: this.clock,
+          prelocked_participant_ids: participantIds })
         : await loadLiveResourceSyncBindingAuthority(tx, { org_id: caller.org_id, resource_binding_id: binding.id, clock: this.clock });
       if (!authority || authority.binding.owner_user_id !== caller.user_id || authority.version.id !== session.app_version_id
         || authority.grant.id !== session.grant_snapshot_id
@@ -122,18 +149,36 @@ export class AppExperienceExposureService {
     if (checkpoints.length !== bindingIds.length || checkpoints.some(c => !checkpointLocators.some(old => old.id === c.id))) throw exposureUnavailable();
     const web = await assertExperienceWeb(tx, caller); // exact SID is the LAST new lock
     const [owner] = await tx.select({ name: users.name }).from(users).where(eq(users.id, caller.user_id));
-    const context = { session, installation, version, grant, verified, authorities, checkpoints, exposure, children, web, owner_label: label(owner?.name ?? 'You') };
-    await this.final(tx, caller, context, signal);
+    const context = { session, installation, version, grant, verified, authorities, checkpoints, exposure, children, web, consentGrant,
+      runtimeBinding, participantIds, owner_label: label(owner?.name ?? 'You') };
+    if (consentGrant) this.materializeConsent(caller, context);
+    await this.final(tx, caller, context, signal, allowExpired);
     return context;
   }
 
-  private async final(tx: Tx, caller: ExperienceCaller, context: Context, signal?: AbortSignal) {
+  private materializeConsent(caller: ExperienceCaller, context: Context): void {
+    const grant = context.consentGrant!;
+    const scope = ExperienceConsentScopeSchema.parse(grant.snapshot);
+    const current = this.snapshot(caller, context, this.clock(), new Date(caller.access_expires_at!));
+    if (grant.revoked_at || grant.scope_digest !== experienceConsentDigest(scope)
+      || grant.scope_digest !== experienceConsentDigest(experienceConsentScope(current))) throw exposureUnavailable();
+    context.exposure = { id: grant.id, org_id: caller.org_id, experience_session_id: context.session.id,
+      owner_user_id: caller.user_id, web_session_id: caller.sid, review_digest: grant.scope_digest, snapshot: current,
+      payload_policy_version: PAYLOAD_VERSION, exposure_epoch: grant.epoch, created_at: grant.created_at,
+      expires_at: new Date(current.expires_at), revoked_at: grant.revoked_at };
+    context.children = current.resources.map(resource => ({ org_id: caller.org_id, exposure_id: grant.id,
+      resource_key: resource.resource_key, resource_binding_id: resource.binding_id, runtime_registration_id: resource.registration_id,
+      runtime_epoch: resource.runtime_epoch, descriptor_digest: resource.descriptor_digest, resource_type: resource.resource_type,
+      allowed_operations: resource.allowed_operations, allowed_fields: resource.allowed_fields }));
+  }
+
+  private async final(tx: Tx, caller: ExperienceCaller, context: Context, signal?: AbortSignal, allowExpired = false) {
     this.enabled(caller, signal);
     await assertExperienceWeb(tx, caller);
     this.enabled(caller, signal);
-    for (const a of context.authorities) if (!await resourceSyncParticipantsAreHuman(tx, caller.user_id, a.registration.operator_user_id)) throw exposureUnavailable();
+    for (const participant of context.participantIds) if (!await resourceSyncParticipantsAreHuman(tx, caller.user_id, participant)) throw exposureUnavailable();
     const now = this.clock().getTime();
-    if (!Number.isFinite(now) || context.session.expires_at.getTime() <= now || caller.access_expires_at! <= now
+    if (!Number.isFinite(now) || (!allowExpired && context.session.expires_at.getTime() <= now) || caller.access_expires_at! <= now || context.web.expires_at.getTime() <= now
       || context.authorities.some(a => !a.binding.consent_expires_at || a.binding.consent_expires_at.getTime() <= now)) throw exposureUnavailable();
     this.enabled(caller, signal);
     if (context.verified.manifest.schema_version === '7') {
@@ -153,15 +198,15 @@ export class AppExperienceExposureService {
       if (!fields.length || fields.length > 32 || fields.some(field => field.length > 48)) throw exposureUnavailable();
       return { resource_key: a.binding.resource_key, binding_id: a.binding.id, registration_id: a.registration.id,
         runtime_epoch: a.registration.runtime_epoch, descriptor_digest: a.descriptor_digest, resource_type: a.descriptor.resource_type,
-        label: label(a.descriptor.key), allowed_operations: context.verified.bundle.schema_version === 'deft.experience_bundle.v2'
-          && context.verified.bundle.search_resource_keys.includes(a.binding.resource_key)
+        label: label(a.descriptor.key), allowed_operations: (context.verified.bundle.schema_version === 'deft.experience_bundle.v2' || context.verified.bundle.schema_version === 'deft.experience_bundle.v3')
+          && context.verified.bundle.search_resource_keys?.includes(a.binding.resource_key)
           ? ['list_summary', 'read_one', 'search'] as ['list_summary', 'read_one', 'search']
           : ['list_summary', 'read_one'] as ['list_summary', 'read_one'], allowed_fields: fields,
         consent_expires_at: a.binding.consent_expires_at!.toISOString() };
     });
     const expiry = Math.min(preparedAt.getTime() + EXPOSURE_LIMITS.exposure_ms, accessExpiry.getTime(), context.web.expires_at.getTime(),
       context.session.expires_at.getTime(), ...context.authorities.map(a => a.binding.consent_expires_at!.getTime()));
-    return ExposureSnapshotSchema.parse({ schema_version: context.verified.bundle.schema_version === 'deft.experience_bundle.v2' ? SEARCH_EXPOSURE_VERSION : EXPOSURE_VERSION, payload_policy_version: PAYLOAD_VERSION,
+    return ExposureSnapshotSchema.parse({ schema_version: context.verified.bundle.schema_version === 'deft.experience_bundle.v3' ? STATE_EXPOSURE_VERSION : context.verified.bundle.schema_version === 'deft.experience_bundle.v2' ? SEARCH_EXPOSURE_VERSION : EXPOSURE_VERSION, payload_policy_version: PAYLOAD_VERSION,
       visibility: 'user_private', destination: 'verified_installed_experience_worker', org_id: caller.org_id, owner_user_id: caller.user_id,
       owner_label: context.owner_label, web_session_id: caller.sid, experience_session_id: context.session.id,
       installation_id: context.installation.id, app_version_id: context.version.id, app_name: label(context.verified.manifest.name),
@@ -169,11 +214,155 @@ export class AppExperienceExposureService {
       grant_snapshot_id: context.grant.id, grant_snapshot_digest: context.grant.snapshot_digest,
       lifecycle_epoch: context.installation.lifecycle_epoch, grant_epoch: context.installation.grant_epoch,
       experience_key: context.session.experience_key, experience_label: label(context.verified.reference.label),
+      ...(context.verified.bundle.schema_version === 'deft.experience_bundle.v3' && context.verified.manifest.schema_version === '7'
+        ? { private_state: context.verified.bundle.state_keys.map(key => {
+          const declaration = context.verified.manifest.schema_version === '7' ? context.verified.manifest.private_state?.find(state => state.key === key) : undefined;
+          if (!declaration || !isAppPrivateStateEnabled()) throw exposureUnavailable();
+          const { schema: _schema, ...safe } = declaration;
+          return { ...safe, declaration_digest: exposureDigest(declaration), allowed_operations: ['list', 'read', 'put', 'delete'] };
+        }) } : {}),
       artifact_digest: context.session.artifact_digest, bridge_version: context.verified.reference.bridge_version,
       renderer_version: context.verified.reference.renderer_version, resources,
       limits: { items: 10, fields: 32, string_chars: 4096, envelope_bytes: 61440 }, prepared_at: preparedAt.toISOString(),
       review_expires_at: new Date(Math.min(preparedAt.getTime() + EXPOSURE_LIMITS.review_ms, expiry)).toISOString(),
       web_access_expires_at: accessExpiry.toISOString(), expires_at: new Date(expiry).toISOString() });
+  }
+
+  private accessValue(context: Context) {
+    const grant = context.consentGrant;
+    const private_state_labels = context.verified.manifest.schema_version === '7'
+      ? (context.verified.manifest.private_state ?? []).filter(state => context.verified.bundle.schema_version === 'deft.experience_bundle.v3'
+        && context.verified.bundle.state_keys.includes(state.key)).map(({ key, label }) => ({ key, label })) : [];
+    return grant ? { grant_status: 'active' as const,
+      grant: { id: grant.id, epoch: grant.epoch, scope_digest: grant.scope_digest },
+      exposure: this.statusValue(context.exposure!), private_state_labels }
+      : { grant_status: 'review_required' as const, private_state_labels };
+  }
+
+  async acquire(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
+    this.enabled(caller, signal);
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, true, signal);
+      if (!context.consentGrant) {
+        const scope = experienceConsentScope(this.snapshot(caller, context, this.clock(), new Date(caller.access_expires_at!)));
+        const [grant] = await tx.select().from(appExperienceConsentGrants).where(and(
+          eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.owner_user_id, caller.user_id),
+          eq(appExperienceConsentGrants.app_installation_id, context.installation.id),
+          eq(appExperienceConsentGrants.experience_key, context.session.experience_key),
+          eq(appExperienceConsentGrants.scope_digest, experienceConsentDigest(scope)), isNull(appExperienceConsentGrants.revoked_at))).limit(1).for('share');
+        if (grant) {
+          await tx.update(appExperienceSessions).set({ consent_grant_id: grant.id }).where(and(eq(appExperienceSessions.org_id, caller.org_id), eq(appExperienceSessions.id, sessionId)));
+          context.session.consent_grant_id = grant.id; context.consentGrant = grant;
+          this.materializeConsent(caller, context);
+        }
+      }
+      await this.final(tx, caller, context, signal);
+      return this.accessValue(context);
+    }, signal);
+  }
+
+  async reviewAccess(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
+    this.enabled(caller, signal);
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, false, signal);
+      const display = this.snapshot(caller, context, this.clock(), new Date(caller.access_expires_at!));
+      const scope = experienceConsentScope(display);
+      const review_expires_at = new Date(Math.min(this.clock().getTime() + EXPOSURE_LIMITS.review_ms,
+        caller.access_expires_at!, context.web.expires_at.getTime(), context.session.expires_at.getTime())).toISOString();
+      await this.final(tx, caller, context, signal);
+      return { snapshot: { ...display, review_expires_at }, persistent: true as const, review_digest: experienceConsentDigest(scope), review_expires_at,
+        review_token: sealExposureToken(this.keys, 'durable_review', { scope, web_session_id: caller.sid, experience_session_id: sessionId, prepared_at: display.prepared_at, review_expires_at }) };
+    }, signal);
+  }
+
+  async acceptAccess(caller: ExperienceCaller, sessionId: string, raw: unknown, signal?: AbortSignal) {
+    this.enabled(caller, signal);
+    const input = ExperienceConsentAcceptSchema.parse(raw);
+    const token = ExperienceConsentReviewTokenSchema.parse(openExposureToken(this.keys, 'durable_review', input.review_token));
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, true, signal);
+      const current = experienceConsentScope(this.snapshot(caller, context, this.clock(), new Date(caller.access_expires_at!)));
+      if (token.web_session_id !== caller.sid || token.experience_session_id !== sessionId
+        || Date.parse(token.review_expires_at) <= this.clock().getTime()
+        || input.review_digest !== experienceConsentDigest(token.scope) || input.review_digest !== experienceConsentDigest(current)) throw exposureStale();
+      // A distinct fresh review may restore permission after explicit revocation;
+      // replay of the old acceptance is never an acquisition path.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['experience_consent', caller.org_id, caller.user_id, context.installation.id, context.session.experience_key])},0))`);
+      const [revoked] = await tx.select().from(appExperienceConsentGrants).where(and(
+        eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.owner_user_id, caller.user_id),
+        eq(appExperienceConsentGrants.app_installation_id, context.installation.id),
+        eq(appExperienceConsentGrants.experience_key, context.session.experience_key), eq(appExperienceConsentGrants.scope_digest, input.review_digest),
+        sql`${appExperienceConsentGrants.revoked_at} IS NOT NULL`)).orderBy(sql`${appExperienceConsentGrants.revoked_at} DESC`).limit(1);
+      if (revoked?.revoked_at && Date.parse(token.prepared_at) <= revoked.revoked_at.getTime()) throw exposureStale();
+      const [inserted] = await tx.insert(appExperienceConsentGrants).values({ org_id: caller.org_id, owner_user_id: caller.user_id,
+        app_installation_id: context.installation.id, app_version_id: context.version.id, experience_key: context.session.experience_key,
+        scope_digest: input.review_digest, snapshot: current, created_at: this.clock() }).onConflictDoNothing().returning();
+      const grant = inserted ?? (await tx.select().from(appExperienceConsentGrants).where(and(
+        eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.owner_user_id, caller.user_id),
+        eq(appExperienceConsentGrants.app_installation_id, context.installation.id),
+        eq(appExperienceConsentGrants.experience_key, context.session.experience_key), eq(appExperienceConsentGrants.scope_digest, input.review_digest),
+        isNull(appExperienceConsentGrants.revoked_at))).limit(1).for('share'))[0];
+      if (!grant) throw exposureStale();
+      await tx.update(appExperienceSessions).set({ consent_grant_id: grant.id }).where(and(eq(appExperienceSessions.org_id, caller.org_id), eq(appExperienceSessions.id, sessionId)));
+      context.session.consent_grant_id = grant.id; context.consentGrant = grant;
+      this.materializeConsent(caller, context); await this.final(tx, caller, context, signal);
+      return this.accessValue(context);
+    }, signal);
+  }
+
+  async refresh(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
+    this.enabled(caller, signal);
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, true, signal, true);
+      if (!context.consentGrant) throw exposureUnavailable();
+      const expires_at = new Date(Math.min(this.clock().getTime() + EXPOSURE_LIMITS.exposure_ms,
+        caller.access_expires_at!, context.web.expires_at.getTime(), ...context.authorities.map(a => a.binding.consent_expires_at!.getTime())));
+      if (expires_at <= this.clock()) throw exposureUnavailable();
+      await tx.update(appExperienceSessions).set({ expires_at }).where(and(eq(appExperienceSessions.org_id, caller.org_id), eq(appExperienceSessions.id, sessionId)));
+      context.session.expires_at = expires_at; this.materializeConsent(caller, context);
+      await this.final(tx, caller, context, signal);
+      return { session_expires_at: expires_at.toISOString(), ...this.accessValue(context) };
+    }, signal);
+  }
+
+  async revokeAccess(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
+    this.enabled(caller, signal);
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, true, signal, true);
+      if (!context.consentGrant) throw exposureUnavailable();
+      await tx.update(appExperienceConsentGrants).set({ revoked_at: this.clock(), epoch: context.consentGrant.epoch + 1 })
+        .where(and(eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.id, context.consentGrant.id), isNull(appExperienceConsentGrants.revoked_at)));
+      await this.final(tx, caller, context, signal, true);
+      return { revoked: true as const, grant_id: context.consentGrant.id };
+    }, signal);
+  }
+
+  async withHumanAction<T>(caller: ExperienceCaller, sessionId: string, actionKey: string,
+    run: (tx: Tx, authority: HumanActionAuthority,
+      finalGuard: (tx: Tx, additionalFinalCheck?: () => void) => Promise<void>) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    this.enabled(caller, signal); resourceKey.parse(actionKey);
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, false, signal, false, actionKey);
+      this.assertStored(context);
+      const action = context.verified.manifest.schema_version === '7'
+        ? context.verified.manifest.runtime_actions.find(action => action.key === actionKey) : undefined;
+      if (!action || !context.runtimeBinding) throw exposureUnavailable();
+      let additionalFinalCheck: (() => void) | undefined;
+      const finalGuard = async (_executor: Tx, check?: () => void) => {
+        if (check) additionalFinalCheck = check;
+        await this.final(tx, caller, context, signal); this.assertStored(context);
+        if (!isAppV5RuntimeActionsEnabled()) throw exposureUnavailable();
+        // Caller-owned earlier deadlines remain armed through the outer final
+        // authority wait. This check is synchronous: no new I/O follows it.
+        additionalFinalCheck?.();
+      };
+      const output = await run(tx, { session: context.session, runtime_binding_id: context.runtimeBinding.id,
+        authorization_identity: { consent_grant_id: context.consentGrant?.id ?? null, consent_epoch: context.consentGrant?.epoch ?? null,
+          exposure_id: context.exposure!.id, exposure_epoch: context.exposure!.exposure_epoch },
+        action_label: action.label, current_authority_expires_at: new Date(Math.min(context.session.expires_at.getTime(),
+          context.exposure!.expires_at.getTime(), caller.access_expires_at!, context.web.expires_at.getTime())) }, finalGuard);
+      await finalGuard(tx); return output;
+    }, signal);
   }
 
   async prepare(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
@@ -217,7 +406,7 @@ export class AppExperienceExposureService {
         experience_session_id: sessionId, owner_user_id: caller.user_id, web_session_id: caller.sid,
         review_digest: input.review_digest, snapshot, payload_policy_version: PAYLOAD_VERSION,
         created_at: this.clock(), expires_at: new Date(snapshot.expires_at) }).returning();
-      await tx.insert(appExperienceResourceExposureResources).values(snapshot.resources.map(r => ({ org_id: caller.org_id,
+      if (snapshot.resources.length) await tx.insert(appExperienceResourceExposureResources).values(snapshot.resources.map(r => ({ org_id: caller.org_id,
         exposure_id: id, resource_key: r.resource_key, resource_binding_id: r.binding_id, runtime_registration_id: r.registration_id,
         runtime_epoch: r.runtime_epoch, descriptor_digest: r.descriptor_digest, resource_type: r.resource_type,
         allowed_operations: r.allowed_operations, allowed_fields: r.allowed_fields })));
@@ -239,6 +428,11 @@ export class AppExperienceExposureService {
     const exposure = context.exposure;
     if (!exposure || exposure.revoked_at || exposure.expires_at <= this.clock()) throw exposureUnavailable();
     const snapshot = ExposureSnapshotSchema.parse(exposure.snapshot);
+    if (context.consentGrant) {
+      if (context.consentGrant.revoked_at || exposure.review_digest !== context.consentGrant.scope_digest
+        || experienceConsentDigest(experienceConsentScope(snapshot)) !== context.consentGrant.scope_digest) throw exposureUnavailable();
+      return snapshot;
+    }
     const current = expected ?? this.snapshot({ org_id: context.session.org_id, user_id: context.session.user_id,
       sid: context.session.web_session_id }, context, new Date(snapshot.prepared_at), new Date(snapshot.web_access_expires_at));
     if (exposure.review_digest !== exposureDigest(snapshot) || exposureDigest(current) !== exposure.review_digest
@@ -251,6 +445,43 @@ export class AppExperienceExposureService {
     }
     return snapshot;
   }
+  /** No state authority exists outside the exact accepted owner session. */
+  async withPrivateState<T>(caller: ExperienceCaller, sessionId: string, key: string,
+    run: (tx: Tx, input: { declaration: PrivateStateDeclaration; artifact_digest: string; installation_id: string;
+      session: typeof appExperienceSessions.$inferSelect; exposure: typeof appExperienceResourceExposures.$inferSelect;
+      onFinalCheck(check: () => void | Promise<void>): void; onDeliveryCheck(check: () => void): void }) => Promise<T>,
+    signal?: AbortSignal): Promise<{ output: T; exposure_id: string; exposure_epoch: number }> {
+    if (!isAppPrivateStateEnabled()) throw new AppError('Private App state is disabled', 'APP_FEATURE_DISABLED', 503);
+    uuid.parse(sessionId); resourceKey.parse(key);
+    return this.repository.transaction(async tx => {
+      const [locator] = await tx.select().from(appExperienceSessions).where(and(
+        eq(appExperienceSessions.org_id, caller.org_id), eq(appExperienceSessions.id, sessionId),
+        eq(appExperienceSessions.user_id, caller.user_id), eq(appExperienceSessions.web_session_id, caller.sid))).limit(1);
+      if (!locator) throw exposureUnavailable();
+      // Serialize one owner/key quota before acquiring phased authority locks.
+      // Every state operation follows this order; no other consumer locks state.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['private_state', caller.org_id, caller.user_id, locator.app_installation_id, key])},0))`);
+      const context = await this.locked(tx, caller, sessionId, false, signal);
+      const snapshot = this.assertStored(context);
+      const bundle = context.verified.bundle, manifest = context.verified.manifest;
+      const declaration = manifest.schema_version === '7' ? manifest.private_state?.find(state => state.key === key) : undefined;
+      if (!isAppPrivateStateEnabled() || bundle.schema_version !== 'deft.experience_bundle.v3'
+        || !bundle.state_keys.includes(key) || !declaration || !snapshot.private_state?.some(state =>
+          state.key === key && state.declaration_digest === exposureDigest(declaration))) throw exposureUnavailable();
+      const finalChecks: (() => void | Promise<void>)[] = [];
+      const deliveryChecks: (() => void)[] = [];
+      const result = await run(tx, { declaration, session: context.session, exposure: context.exposure!,
+        onFinalCheck: check => finalChecks.push(check), onDeliveryCheck: check => deliveryChecks.push(check), artifact_digest: context.session.artifact_digest,
+        installation_id: context.session.app_installation_id });
+      for (const check of finalChecks) await check();
+      await this.final(tx, caller, context, signal);
+      this.assertStored(context);
+      if (!isAppPrivateStateEnabled()) throw exposureUnavailable();
+      for (const check of deliveryChecks) check();
+      return { output: result, exposure_id: context.exposure!.id, exposure_epoch: context.exposure!.exposure_epoch };
+    }, signal);
+  }
+
   async status(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
     this.enabled(caller, signal);
     return this.repository.transaction(async tx => {
@@ -272,11 +503,41 @@ export class AppExperienceExposureService {
     this.enabled(caller, signal);
     return this.repository.transaction(async tx => {
       const context = await this.locked(tx, caller, sessionId, true, signal);
-      if (context.exposure) await this.revokeRow(tx, context.exposure);
+      if (context.consentGrant) {
+        await tx.update(appExperienceConsentGrants).set({ revoked_at: this.clock(), epoch: context.consentGrant.epoch + 1 })
+          .where(and(eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.id, context.consentGrant.id),
+            isNull(appExperienceConsentGrants.revoked_at)));
+      } else if (context.exposure) await this.revokeRow(tx, context.exposure);
       await tx.update(appExperienceSessions).set({ revoked_at: this.clock() }).where(and(eq(appExperienceSessions.org_id, caller.org_id),
         eq(appExperienceSessions.id, sessionId), isNull(appExperienceSessions.revoked_at)));
       await this.final(tx, caller, context, signal);
       return { revoked: true as const };
+    }, signal);
+  }
+
+  /** Host-only locator for the existing owner viewer; never a Worker payload. */
+  async resourceTarget(caller: ExperienceCaller, sessionId: string, key: string, raw: unknown, signal?: AbortSignal) {
+    this.enabled(caller, signal); resourceKey.parse(key);
+    const input = z.strictObject({ record_id: uuid }).parse(raw);
+    return this.repository.transaction(async tx => {
+      const context = await this.locked(tx, caller, sessionId, false, signal);
+      const snapshot = this.assertStored(context);
+      const resource = snapshot.resources.find(r => r.resource_key === key);
+      const authority = context.authorities.find(a => a.binding.resource_key === key);
+      const checkpoint = authority && context.checkpoints.find(c => c.resource_binding_id === authority.binding.id);
+      if (!isAppAttachmentBrokerEnabled() || context.verified.manifest.schema_version !== '7'
+        || !resource?.allowed_operations.includes('read_one') || !authority || !checkpoint
+        || authority.descriptor.schema_version !== 'deft.app_sync_descriptor.v2') throw exposureUnavailable();
+      const [projection] = await tx.select({ id: appResourceProjections.id }).from(appResourceProjections).where(and(
+        eq(appResourceProjections.org_id, caller.org_id), eq(appResourceProjections.id, input.record_id),
+        eq(appResourceProjections.resource_binding_id, authority.binding.id), eq(appResourceProjections.checkpoint_id, checkpoint.id),
+        eq(appResourceProjections.generation, checkpoint.generation), eq(appResourceProjections.state, 'live'))).limit(1).for('share');
+      if (!projection) throw exposureUnavailable();
+      await this.final(tx, caller, context, signal); this.assertStored(context);
+      if (!isAppAttachmentBrokerEnabled()) throw exposureUnavailable();
+      return { schema_version: 'deft.experience_resource_target.v1' as const,
+        exposure_id: context.exposure!.id, exposure_epoch: context.exposure!.exposure_epoch,
+        binding_id: authority.binding.id, record_id: projection.id };
     }, signal);
   }
 
@@ -291,15 +552,24 @@ export class AppExperienceExposureService {
       if (!resource || !authority || !checkpoint) throw exposureUnavailable();
       const exposure = context.exposure!;
       if (!resource.allowed_operations.some(operation => operation === input.operation)) throw exposureUnavailable();
+      const cursor = input.operation === 'list_summary' && input.cursor
+        ? ExposureCursorSchema.parse(openExposureToken(this.keys, 'cursor', input.cursor)) : null;
+      const searchCursor = input.operation === 'search' && input.cursor
+        ? ExposureSearchCursorSchema.parse(openExposureToken(this.keys, 'search_cursor', input.cursor)) : null;
+      const continuation = cursor ?? searchCursor;
+      // A renewed durable lease preserves exact permission identity. Continue
+      // only until the original authenticated cursor deadline; never extend it.
+      const cursorExpiry = context.consentGrant && continuation ? continuation.expires_at : exposure.expires_at.toISOString();
+      if (continuation && (Date.parse(continuation.expires_at) <= this.clock().getTime()
+        || Date.parse(continuation.expires_at) > exposure.expires_at.getTime()
+        || (!context.consentGrant && continuation.expires_at !== exposure.expires_at.toISOString()))) throw exposureUnavailable();
       const identity_scope_digest = exposureDigest({ org_id: caller.org_id, owner_user_id: caller.user_id,
         web_session_id: caller.sid, experience_session_id: sessionId, exposure_id: exposure.id,
         exposure_epoch: exposure.exposure_epoch, resource_key: key, binding_id: authority.binding.id,
-        expires_at: exposure.expires_at.toISOString() });
+        expires_at: cursorExpiry });
       const checkpoint_scope_digest = exposureDigest({ checkpoint_id: checkpoint.id,
         generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence });
-      const cursor = input.operation === 'list_summary' && input.cursor
-        ? ExposureCursorSchema.parse(openExposureToken(this.keys, 'cursor', input.cursor)) : null;
-      if (cursor && (cursor.identity_scope_digest !== identity_scope_digest || cursor.expires_at !== exposure.expires_at.toISOString())) throw exposureUnavailable();
+      if (cursor && cursor.identity_scope_digest !== identity_scope_digest) throw exposureUnavailable();
       if (cursor && cursor.checkpoint_scope_digest !== checkpoint_scope_digest) {
         throw new ExperienceExposureError('RESOURCE_CURSOR_STALE', 409);
       }
@@ -324,21 +594,18 @@ export class AppExperienceExposureService {
         output = { schema_version: PAYLOAD_VERSION, operation: 'read_one', item: { ...item,
           data: exposurePayloadData(item.data, resource.allowed_fields), freshness: 'unknown' } };
       } else if (input.operation === 'search') {
-        if (snapshot.schema_version !== SEARCH_EXPOSURE_VERSION || context.verified.bundle.schema_version !== 'deft.experience_bundle.v2'
-          || !context.verified.bundle.search_resource_keys.includes(key)) throw exposureUnavailable();
+        if ((snapshot.schema_version !== SEARCH_EXPOSURE_VERSION && snapshot.schema_version !== STATE_EXPOSURE_VERSION) || context.verified.bundle.schema_version === 'deft.experience_bundle.v1'
+          || !context.verified.bundle.search_resource_keys?.includes(key)) throw exposureUnavailable();
         const fields = [...input.field_keys].sort();
         if (fields.some(field => !resource.allowed_fields.includes(field))) throw exposureUnavailable();
         const query_fields_scope_digest = exposureDigest({ query: input.query, fields });
         const searchIdentity = exposureDigest({ identity_scope_digest, artifact_digest: context.session.artifact_digest, review_digest: exposure.review_digest });
-        const searchCursor = input.cursor ? ExposureSearchCursorSchema.parse(openExposureToken(this.keys, 'search_cursor', input.cursor)) : null;
         if (searchCursor && (searchCursor.identity_scope_digest !== searchIdentity
-          || searchCursor.query_fields_scope_digest !== query_fields_scope_digest
-          || searchCursor.expires_at !== exposure.expires_at.toISOString()
-          || new Date(searchCursor.expires_at) <= this.clock())) throw exposureUnavailable();
+          || searchCursor.query_fields_scope_digest !== query_fields_scope_digest)) throw exposureUnavailable();
         if (searchCursor && searchCursor.checkpoint_scope_digest !== checkpoint_scope_digest)
           throw new ExperienceExposureError('RESOURCE_CURSOR_STALE', 409);
         const needle = input.query.toLowerCase(), deadline = performance.now() + 3000;
-        const check = () => { signal?.throwIfAborted(); if (performance.now() >= deadline || exposure.expires_at <= this.clock()) throw exposureUnavailable(); };
+        const check = () => { signal?.throwIfAborted(); if (performance.now() >= deadline || Date.parse(cursorExpiry) <= this.clock().getTime()) throw exposureUnavailable(); };
         const scan = await scanPrivateResourceCheckpoint(tx,
           { org_id: caller.org_id, binding_id: authority.binding.id, checkpoint_id: checkpoint.id, generation: checkpoint.generation },
           { after: searchCursor?.after, max_items: 10, check, unavailable: exposureUnavailable,
@@ -355,7 +622,7 @@ export class AppExperienceExposureService {
             } });
         const next_cursor = !scan.complete && scan.after ? sealExposureToken(this.keys, 'search_cursor', {
           schema_version: 'deft.experience_resource_search_cursor.v1', identity_scope_digest: searchIdentity, checkpoint_scope_digest,
-          query_fields_scope_digest, after: scan.after, expires_at: exposure.expires_at.toISOString() }) : null;
+          query_fields_scope_digest, after: scan.after, expires_at: cursorExpiry }) : null;
         if (!scan.complete && !next_cursor) throw exposureUnavailable();
         output = { schema_version: 'deft.experience_resource_search_page.v1', operation: 'search', items: scan.items,
           scan: { records_scanned: scan.scanned, complete: scan.complete }, next_cursor, freshness: 'unknown' };
@@ -365,7 +632,7 @@ export class AppExperienceExposureService {
         const last = rows[Math.min(rows.length, limit) - 1];
         const next_cursor = rows.length > limit && last ? sealExposureToken(this.keys, 'cursor', {
           schema_version: 'deft.experience_resource_cursor.v1', identity_scope_digest, checkpoint_scope_digest,
-          after: last.id, expires_at: exposure.expires_at.toISOString() }) : null;
+          after: last.id, expires_at: cursorExpiry }) : null;
         output = { schema_version: PAYLOAD_VERSION, operation: 'list_summary', items, next_cursor, freshness: 'unknown' };
       }
       // Reserve the full bridge overhead with maximal allowed request/session IDs.
@@ -373,7 +640,7 @@ export class AppExperienceExposureService {
         request_id: `request_${'9'.repeat(56)}`, ok: true, output };
       if (Buffer.byteLength(JSON.stringify(envelope), 'utf8') > EXPOSURE_LIMITS.envelope_bytes) throw new ExperienceExposureError('RESOURCE_PAYLOAD_TOO_LARGE', 413);
       await this.final(tx, caller, context, signal);
-      if (exposure.expires_at <= this.clock()) throw exposureUnavailable();
+      if (Date.parse(cursorExpiry) <= this.clock().getTime()) throw exposureUnavailable();
       return { exposure_id: exposure.id, exposure_epoch: exposure.exposure_epoch, output };
     }, signal);
     signal?.throwIfAborted(); return result;

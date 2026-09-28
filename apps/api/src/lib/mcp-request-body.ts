@@ -9,9 +9,9 @@ export class McpRequestBodyError extends Error {
 }
 
 /** Count actual streamed bytes, including absent or dishonest Content-Length. */
-export async function readMcpRequestJson(request: Request): Promise<unknown> {
+export async function readMcpRequestJson(request: Request, maxBytes = MCP_REQUEST_BYTES): Promise<unknown> {
   const declared = request.headers.get('content-length');
-  if (declared && /^\d+$/.test(declared) && Number(declared) > MCP_REQUEST_BYTES) {
+  if (declared && /^\d+$/.test(declared) && Number(declared) > maxBytes) {
     await request.body?.cancel().catch(() => undefined);
     throw new McpRequestBodyError(413, 'MCP request exceeds the transport limit');
   }
@@ -28,7 +28,7 @@ export async function readMcpRequestJson(request: Request): Promise<unknown> {
       request.signal.throwIfAborted();
       if (next.done) break;
       bytes += next.value.byteLength;
-      if (bytes > MCP_REQUEST_BYTES) {
+      if (bytes > maxBytes) {
         await reader.cancel().catch(() => undefined);
         throw new McpRequestBodyError(413, 'MCP request exceeds the transport limit');
       }

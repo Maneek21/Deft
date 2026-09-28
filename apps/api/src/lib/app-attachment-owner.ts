@@ -48,6 +48,7 @@ export class AppAttachmentOwnerService {
       eq(appAttachmentStages.resource_binding_id,target.binding_id),eq(appAttachmentStages.checkpoint_id,checkpoint.id),
       eq(appAttachmentStages.generation,checkpoint.generation),eq(appAttachmentStages.projection_id,parent.id),
       inArray(appAttachmentStages.state,['linked','linked_blocked']),
+      gt(appAttachmentStages.linked_expires_at,new Date()),
       ...(target.attachment_id?[eq(appAttachmentStages.id,target.attachment_id)]:[]))).limit(9).for('share');
     if(rows.length>8||(target.attachment_id&&rows.length!==1))throw attachmentStale();
     const selected=rows.map(row=>{

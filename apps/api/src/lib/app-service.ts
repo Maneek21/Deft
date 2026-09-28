@@ -318,7 +318,7 @@ export async function stageAppUpgrade(
   installationId: string,
   packageJson: string,
   expectedLifecycleEpoch: number,
-  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean; nativeUpgrade?: boolean } = {},
+  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean; nativeUpgrade?: boolean; attachmentCompositionUpgrade?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
@@ -326,7 +326,8 @@ export async function stageAppUpgrade(
   const runtimeUpgrade = options.runtimeUpgrade === true
     && ['3', '4', '5'].includes(inspected.manifest.compatibility.app_protocol);
   const nativeUpgrade = options.nativeUpgrade === true && inspected.manifest.compatibility.app_protocol === '6';
-  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol) && !runtimeUpgrade && !nativeUpgrade) {
+  const attachmentUpgrade = options.attachmentCompositionUpgrade === true && inspected.manifest.compatibility.app_protocol === '7';
+  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol) && !runtimeUpgrade && !nativeUpgrade && !attachmentUpgrade) {
     throw new AppError('Connected App upgrades require App Protocol v1 or v2', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
@@ -356,11 +357,19 @@ export async function stageAppUpgrade(
       eq(appVersions.state, 'active'),
     )).limit(1).for('update');
     if (!activeVersion) throw new AppError('Active App version not found', 'APP_STATE_CONFLICT', 409);
-    if ((runtimeUpgrade || nativeUpgrade) && (installation.state !== 'active'
+    if ((runtimeUpgrade || nativeUpgrade || attachmentUpgrade) && (installation.state !== 'active'
       || activeVersion.protocol_version !== inspected.manifest.compatibility.app_protocol)) {
       throw new AppError('Runtime upgrades require an active App using the same protocol', 'APP_PROTOCOL_UNSUPPORTED', 409);
     }
     if (runtimeUpgrade) options.assertAdmission?.(inspected.manifest as Parameters<NonNullable<RuntimeAppReviewOptions['assertAdmission']>>[0]);
+    if (attachmentUpgrade) {
+      const { loadReviewedAttachmentApp, assertAttachmentManifestAdmission, assertAttachmentCompositionActionsEnabled } = await import('./app-attachment-authority.js');
+      const { parseAttachmentAppManifest } = await import('@deft/app-kit');
+      const current = await loadReviewedAttachmentApp(tx, actor.org_id, installationId);
+      if (!current.composition || current.version.id !== activeVersion.id) throw new AppError('Reviewed composition upgrade required', 'APP_PROTOCOL_UNSUPPORTED', 409);
+      const manifest = parseAttachmentAppManifest(inspected.manifest);
+      assertAttachmentManifestAdmission(manifest, true); assertAttachmentCompositionActionsEnabled(manifest);
+    }
     if (compareAppSemver(activeVersion.version, inspected.manifest.version) >= 0) {
       throw new AppError('App upgrade must use a strictly newer semantic version', 'APP_INVALID_PACKAGE', 409);
     }
@@ -400,7 +409,14 @@ export async function stageAppUpgrade(
       version: version.version,
       package_digest: version.package_digest,
     });
-    if (nativeUpgrade) {
+    if (attachmentUpgrade) {
+      const { attachmentFinalAuthorityIsCurrent } = await import('./app-attachment-authority.js');
+      const guard = options.guard as WebAuthorityGuard | undefined;
+      if (typeof guard?.current_web_session_expires_at !== 'function'
+        || !await attachmentFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard })) {
+        throw new AppError('Current composition manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+    } else if (nativeUpgrade) {
       if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) {
         throw new AppError('Current native manager authority required', 'APP_ACCESS_DENIED', 403);
       }

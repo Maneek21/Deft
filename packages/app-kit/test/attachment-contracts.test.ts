@@ -5,6 +5,7 @@ import {
   parseAttachmentAppManifest, verifyDeftAppPackageJson,
   AttachmentStageHeaderSchema, frameResourceSyncAttachment, parseSyncPageV2,
   SyncDescriptorV2Schema, SyncPageV2Schema,
+  prepareDeftExperienceArtifact,
 } from '../dist/index.js';
 import { SyncDescriptorV1Schema, SyncPageV1Schema } from '../src/resource-sync.js';
 
@@ -25,6 +26,24 @@ const manifest = { schema_version: '7' as const, id: 'community.example.email-at
   name: 'Email attachments', license: 'AGPL-3.0-only', compatibility: { app_protocol: '7' as const },
   modules: [], navigation: [], runtime_requirements: [{ key: 'mail', protocol_version: 'deft.app_runtime_channel.v3' as const }],
   private_capabilities: [], runtime_actions: [], native_actions: [], sync_descriptors: [descriptor], experiences: [], public_actions: [] };
+
+test('optional private state packages and widens reviewed authority without changing legacy packages', async () => {
+  const old = await buildDeftAppPackage({ manifest, artifacts: [] });
+  assert.equal(Object.hasOwn(old.package.manifest, 'private_state'), false);
+  const state = { key: 'drafts', label: 'Private drafts', schema: descriptor.record_schema,
+    max_record_bytes: 16384, max_records: 32, max_total_bytes: 131072, retention_days: 30 };
+  const artifact = await prepareDeftExperienceArtifact('experiences/state.json', {
+    schema_version: 'deft.experience_bundle.v3', worker_source: 'self.onmessage=()=>{};',
+    entry_view: 'main', resource_keys: [], action_keys: [], state_keys: ['drafts'] });
+  const proposed = { ...manifest, private_state: [state], experiences: [{ key: 'main', label: 'Drafts',
+    artifact_path: artifact.path, artifact_digest: artifact.digest,
+    bridge_version: 'deft.experience_bridge.v1' as const, renderer_version: 'deft.trusted_renderer.v1' as const }] };
+  const built = await buildDeftAppPackage({ manifest: proposed, artifacts: [artifact] });
+  assert.deepEqual(await verifyDeftAppPackageJson(built.json), built);
+  assert.ok((await diffDeftAppRequestedAuthority({ prior: manifest, proposed })).changed_atoms.includes('private_state'));
+  await assert.rejects(buildDeftAppPackage({ manifest: { ...proposed, private_state: [{ ...state, key: 'other' }] }, artifacts: [artifact] }), /declared private state/);
+  assert.equal((await buildDeftAppPackage({ manifest, artifacts: [] })).json, old.json);
+});
 
 test('protocol7 attachment-only candidate packs exact descriptor2 policy without old-parser admission', async () => {
   const built = await buildDeftAppPackage({ manifest, artifacts: [] });

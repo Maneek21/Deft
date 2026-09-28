@@ -3,7 +3,7 @@
 export const DEFT_EXPERIENCE_SDK_VERSION = 'deft.experience_bridge.v1' as const;
 
 export type ExperienceSdkPort = Pick<MessagePort, 'postMessage' | 'close' | 'onmessage'>;
-export type ExperienceSdkIntent = 'resource' | 'action' | 'run_status' | 'run_cancel' | 'navigate' | 'dialog';
+export type ExperienceSdkIntent = 'resource' | 'open_resource' | 'action' | 'run_status' | 'run_cancel' | 'navigate' | 'dialog' | 'private_state';
 export type ExperienceResourceSummaryPage = Readonly<{ schema_version: 'deft.experience_resource_payload.v1'; operation: 'list_summary';
   items: readonly Readonly<{ record_id: string; label: string }>[]; next_cursor: string | null; freshness: 'unknown' }>;
 export type ExperienceResourceRecord = Readonly<{ schema_version: 'deft.experience_resource_payload.v1'; operation: 'read_one';
@@ -52,6 +52,9 @@ function resourceReply(value: unknown, operation: 'list_summary' | 'read_one') {
   return value as unknown as ExperienceResourceRecord;
 }
 
+export type ExperiencePrivateStateMeta = Readonly<{ record_id: string; revision: number; updated_at: string; expires_at: string }>;
+export type ExperiencePrivateStateRecord = ExperiencePrivateStateMeta & Readonly<{ value: Readonly<Record<string, string | number | boolean>> }>;
+
 export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: string) {
   if (!/^[a-zA-Z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid Experience session');
   let sequence = 0;
@@ -93,6 +96,23 @@ export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: stri
   return Object.freeze({
     render(view: unknown): void { post({ kind: 'view', view }); },
     request,
+    listPrivateState(key: string): Promise<Readonly<{ operation: 'list'; items: readonly ExperiencePrivateStateMeta[] }>> {
+      resourceKey(key);
+      return request('private_state', key, { operation: 'list' }) as Promise<{ operation: 'list'; items: ExperiencePrivateStateMeta[] }>;
+    },
+    readPrivateState(key: string, recordId: string): Promise<Readonly<{ operation: 'read'; item: ExperiencePrivateStateRecord }>> {
+      resourceKey(key); if (!resourceRecordId(recordId)) throw new Error('Invalid private state record');
+      return request('private_state', key, { operation: 'read', record_id: recordId }) as Promise<{ operation: 'read'; item: ExperiencePrivateStateRecord }>;
+    },
+    putPrivateState(key: string, recordId: string, revision: number, value: Readonly<Record<string, string | number | boolean>>): Promise<Readonly<{ operation: 'put'; item: ExperiencePrivateStateMeta }>> {
+      resourceKey(key); if (!resourceRecordId(recordId) || !Number.isInteger(revision) || revision < 0 || revision > 2147483646
+        || !value || Array.isArray(value) || Object.keys(value).length > 32 || new TextEncoder().encode(JSON.stringify(value)).byteLength > 16384) throw new Error('Invalid private state input');
+      return request('private_state', key, { operation: 'put', record_id: recordId, expected_revision: revision, value }) as Promise<{ operation: 'put'; item: ExperiencePrivateStateMeta }>;
+    },
+    deletePrivateState(key: string, recordId: string, revision: number): Promise<Readonly<{ operation: 'delete'; record_id: string; revision: number }>> {
+      resourceKey(key); if (!resourceRecordId(recordId) || !Number.isInteger(revision) || revision < 0 || revision > 2147483646) throw new Error('Invalid private state revision');
+      return request('private_state', key, { operation: 'delete', record_id: recordId, expected_revision: revision }) as Promise<{ operation: 'delete'; record_id: string; revision: number }>;
+    },
     listResourceSummaries(key: string, options: { limit?: number; cursor?: string } = {}): Promise<ExperienceResourceSummaryPage> {
       resourceKey(key);
       if (Object.keys(options).some(field => !['limit', 'cursor'].includes(field))
@@ -122,6 +142,14 @@ export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: stri
       return request('resource', key, { schema_version: 'deft.experience_resource_request.v2', operation: 'search',
         query: options.query, field_keys: fields, ...(options.cursor === undefined ? {} : { cursor: options.cursor }) })
         .then(value => resourceSearchReply(value, fields));
+    },
+    /** Open the host's owner-checked source and files panel. No URL or file bytes enter App code. */
+    async openResource(key: string, recordId: string): Promise<Readonly<{ opened: true }>> {
+      resourceKey(key); if (!resourceRecordId(recordId)) throw new Error('Invalid record locator');
+      const result = await request('open_resource', key, { record_id: recordId });
+      if (!result || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length !== 1
+        || !('opened' in result) || result.opened !== true) throw new Error('Resource unavailable');
+      return { opened: true };
     },
     onEvent(handler: (event: unknown) => void): void { onUiEvent = handler; },
     close(): void {

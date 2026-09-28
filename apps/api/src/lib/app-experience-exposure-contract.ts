@@ -4,6 +4,7 @@ import { canonicalCapabilityJson } from '@deft/shared';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 
 export const EXPOSURE_VERSION = 'deft.experience_resource_exposure.v1' as const;
+export const STATE_EXPOSURE_VERSION = 'deft.experience_resource_exposure.v3' as const;
 export const SEARCH_EXPOSURE_VERSION = 'deft.experience_resource_exposure.v2' as const;
 export const PAYLOAD_VERSION = 'deft.experience_resource_payload.v1' as const;
 export const EXPOSURE_LIMITS = Object.freeze({ review_ms: 300_000, exposure_ms: 900_000,
@@ -31,7 +32,7 @@ export const ExposureResourceSchema = z.strictObject({ resource_key: key, bindin
   allowed_fields: z.array(z.string().min(1).max(48)).min(1).max(32)
     .refine(v => new Set(v).size === v.length && v.every((s, i) => !i || v[i - 1]! < s)),
   consent_expires_at: timestamp });
-export const ExposureSnapshotSchema = z.strictObject({ schema_version: z.enum([EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION]),
+export const ExposureSnapshotSchema = z.strictObject({ schema_version: z.enum([EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, STATE_EXPOSURE_VERSION]),
   payload_policy_version: z.literal(PAYLOAD_VERSION), visibility: z.literal('user_private'),
   destination: z.literal('verified_installed_experience_worker'),
   org_id: uuid, owner_user_id: uuid, owner_label: z.string().max(200), web_session_id: uuid,
@@ -40,12 +41,18 @@ export const ExposureSnapshotSchema = z.strictObject({ schema_version: z.enum([E
   package_digest: digest, manifest_digest: digest, grant_snapshot_id: uuid, grant_snapshot_digest: digest,
   lifecycle_epoch: epoch, grant_epoch: epoch, experience_key: key, experience_label: z.string().max(200),
   artifact_digest: digest, bridge_version: z.literal('deft.experience_bridge.v1'), renderer_version: z.literal('deft.trusted_renderer.v1'),
-  resources: z.array(ExposureResourceSchema).min(1).max(16)
+  resources: z.array(ExposureResourceSchema).max(16)
     .refine(v => v.every((r, i) => !i || v[i - 1]!.resource_key < r.resource_key)),
+  private_state: z.array(z.strictObject({ key, label: z.string().max(128), declaration_digest: digest,
+    allowed_operations: z.tuple([z.literal('list'), z.literal('read'), z.literal('put'), z.literal('delete')]),
+    max_record_bytes: z.number().int().min(1).max(16384), max_records: z.number().int().min(1).max(32),
+    max_total_bytes: z.number().int().min(1).max(131072), retention_days: z.number().int().min(1).max(30) })).min(1).max(16).optional(),
   limits: z.strictObject({ items: z.literal(10), fields: z.literal(32), string_chars: z.literal(4096), envelope_bytes: z.literal(61440) }),
-  prepared_at: timestamp, review_expires_at: timestamp, web_access_expires_at: timestamp, expires_at: timestamp }).refine(value => value.schema_version === EXPOSURE_VERSION
-  ? value.resources.every(resource => resource.allowed_operations.length === 2)
-  : value.resources.some(resource => resource.allowed_operations.length === 3), 'Exposure operation/version mismatch');
+  prepared_at: timestamp, review_expires_at: timestamp, web_access_expires_at: timestamp, expires_at: timestamp }).refine(value => value.schema_version === STATE_EXPOSURE_VERSION
+  ? !!value.private_state?.length
+  : value.private_state === undefined && value.resources.length > 0 && (value.schema_version === EXPOSURE_VERSION
+    ? value.resources.every(resource => resource.allowed_operations.length === 2)
+    : value.resources.some(resource => resource.allowed_operations.length === 3)), 'Exposure operation/version mismatch');
 export type ExposureSnapshot = z.infer<typeof ExposureSnapshotSchema>;
 export const ExposureAcceptSchema = z.strictObject({ review_token: z.string().min(1).max(EXPOSURE_LIMITS.token_chars),
   review_digest: digest, accept_exposure: z.literal(true) });
@@ -71,19 +78,19 @@ export function exposureDigest(value: unknown): string {
 }
 
 /** Purpose domains are disjoint from resource/Run cursors and credentials. */
-export function sealExposureToken(keys: AppRunKeyProvider, purpose: 'review' | 'cursor' | 'search_cursor', snapshot: unknown): string {
+export function sealExposureToken(keys: AppRunKeyProvider, purpose: 'review' | 'durable_review' | 'cursor' | 'search_cursor', snapshot: unknown): string {
   const ref = keys.current('fingerprint');
   try {
     const payload = Buffer.from(canonicalCapabilityJson({ key_version: ref.key_id, value: snapshot })).toString('base64url');
     const mac = createHmac('sha256', ref.key).update(`deft.experience_exposure.${purpose}.v1\0`).update(payload).digest('base64url');
     const token = `${payload}.${mac}`;
-    if (token.length > (purpose !== 'review' ? 2048 : EXPOSURE_LIMITS.token_chars)) throw exposureUnavailable();
+    if (token.length > (purpose.endsWith('review') ? EXPOSURE_LIMITS.token_chars : 2048)) throw exposureUnavailable();
     return token;
   } finally { ref.key.fill(0); }
 }
-export function openExposureToken(keys: AppRunKeyProvider, purpose: 'review' | 'cursor' | 'search_cursor', token: string): unknown {
+export function openExposureToken(keys: AppRunKeyProvider, purpose: 'review' | 'durable_review' | 'cursor' | 'search_cursor', token: string): unknown {
   try {
-    if (token.length > (purpose !== 'review' ? 2048 : EXPOSURE_LIMITS.token_chars)) throw exposureUnavailable();
+    if (token.length > (purpose.endsWith('review') ? EXPOSURE_LIMITS.token_chars : 2048)) throw exposureUnavailable();
     const parts = token.split('.');
     if (parts.length !== 2 || !parts.every(s => /^[A-Za-z0-9_-]+$/.test(s))) throw exposureUnavailable();
     const bytes = Buffer.from(parts[0]!, 'base64url');

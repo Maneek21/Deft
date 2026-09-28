@@ -165,6 +165,10 @@ async function main() {
       '0.3.0-preview.50-app-attachment-grant-admission.sql',
       '0.3.0-preview.51-app-attachment-composition.sql',
       '0.3.0-preview.52-private-defty-context.sql',
+      '0.3.0-preview.53-app-private-state.sql',
+      '0.3.0-preview.54-app-experience-consent.sql',
+      '0.3.0-preview.55-app-action-batches.sql',
+      '0.3.0-preview.56-app-action-batch-policy-revision.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);

@@ -70,6 +70,14 @@ jobs:
           'src/app/(app)/notes/note-save-coordinator.test.ts'
           'src/app/(app)/notes/protected-note-image.test.ts'
           'src/app/(app)/notes/note-load-state.test.ts'
+      - name: Test installed app session and review contracts
+        run: >-
+          pnpm --filter @deft/web exec tsx --test
+          src/lib/app-experience-*.test.ts
+          src/lib/app-runtime-setup.test.ts
+          src/lib/private-state-adoption.test.ts
+          src/lib/action-batch-review.test.ts
+          src/lib/app-navigation.test.ts
       - name: Type check API
         run: pnpm --filter @deft/api typecheck
       - name: Type check Web

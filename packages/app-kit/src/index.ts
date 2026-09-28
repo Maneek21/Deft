@@ -904,7 +904,7 @@ const V2_HANDLER_MATRIX = handlerMatrix({
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
   '7': Object.freeze({
-    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions', 'sync_descriptors', 'experiences', 'public_actions']),
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions', 'sync_descriptors', 'experiences', 'public_actions', 'private_state']),
     atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'native.calendar_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({ authoring: 'app-kit:v7', inspect: 'app-service:inspect-v7',
       stage: 'app-service:stage-v7', review: 'app-attachment-review:v7', activate: 'app-attachment-review:v7' })),
     private_interfaces: Object.freeze([]),
@@ -1384,6 +1384,7 @@ const DeftAppRequestedAuthorityAtomSchema = z.enum([
   'experiences',
   'public_actions',
   'sync_descriptors',
+  'private_state',
 ]);
 
 export const DeftAppRequestedAuthorityDiffSchema = z.strictObject({
@@ -1465,6 +1466,7 @@ export async function diffDeftAppRequestedAuthority(input: Readonly<{
     if (atom === 'experiences') return 'experiences' in value.requirements ? value.requirements.experiences : [];
     if (atom === 'public_actions') return 'public_actions' in value.requirements ? value.requirements.public_actions : [];
     if (atom === 'sync_descriptors') return 'sync_descriptors' in value.requirements ? value.requirements.sync_descriptors : [];
+    if (atom === 'private_state') return 'private_state' in value.requirements ? value.requirements.private_state ?? [] : [];
     if ('runtime_actions' in value.requirements) return atom === 'capabilities'
       ? value.requirements.private_capabilities : atom === 'connectors'
         ? value.requirements.runtime_requirements : atom === 'actions' ? [...value.requirements.runtime_actions, ...('native_actions' in value.requirements ? value.requirements.native_actions : [])] : [];
@@ -2106,6 +2108,10 @@ async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
       const bundle = await verifyDeftExperienceArtifact({ artifact_path: reference.artifact_path,
         artifact_digest: reference.artifact_digest, bridge_version: reference.bridge_version,
         renderer_version: reference.renderer_version }, artifacts.get(reference.artifact_path));
+      if (bundle.schema_version === 'deft.experience_bundle.v3' && (installedManifest.schema_version !== '7'
+        || bundle.state_keys.some(key => !installedManifest.private_state?.some(state => state.key === key)))) {
+        throw new Error('Experience must use only Protocol v7 declared private state keys');
+      }
       if (bundle.action_keys.some((key) => !installedManifest.runtime_actions.some((action) => action.key === key)
         && !((installedManifest.schema_version === '6' || installedManifest.schema_version === '7') && installedManifest.native_actions.some(action => action.key === key)))) {
         throw new Error('Experience must use only declared actions');
@@ -2256,3 +2262,5 @@ export async function verifyDeftAppPackageJson(
   const json = JSON.stringify(canonicalizeJson(packageValue));
   return { package: packageValue, json, digest: await digestText(json) };
 }
+
+export { PrivateStateDeclarationSchema, PrivateStateDeclarationsSchema, PRIVATE_STATE_LIMITS, type PrivateStateDeclaration } from './private-state.js';

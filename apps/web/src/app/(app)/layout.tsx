@@ -10,6 +10,7 @@ import { CommandPalette } from '@/components/command-palette';
 import { KeyboardShortcuts } from '@/components/keyboard-shortcuts';
 import { AppHeader } from '@/components/app-header';
 import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-context';
+import { ExperienceNavigationProvider } from '@/components/apps/experience-navigation-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useHuddle } from '@/hooks/use-huddle';
@@ -494,6 +495,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }}
     >
       <AppHeaderProvider>
+        <ExperienceNavigationProvider>
         <div className="flex h-dvh overflow-hidden" style={{ background: 'var(--background)' }}>
           <Sidebar
             spaces={spaces}
@@ -535,6 +537,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <HuddleErrorToast error={huddleState.error} onDismiss={huddleState.clearError} />
           )}
         </div>
+        </ExperienceNavigationProvider>
       </AppHeaderProvider>
     </ChatContext.Provider>
   );

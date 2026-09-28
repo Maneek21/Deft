@@ -120,7 +120,14 @@ export class PostgresAppRunApprovalResolver {
     approverUserId: string,
     finalGuard?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunApprovalResolution> {
-    const result = await db.transaction(async (tx): Promise<AppRunApprovalResolution> => {
+    const result = await db.transaction(tx => this.approveInTransaction(tx, actionId, approverUserId, finalGuard));
+    await this.#resolveApprovalAttention(actionId, approverUserId);
+    return result;
+  }
+
+  /** Internal trusted host composition; the caller owns commit and final authority. */
+  async approveInTransaction(tx: AppRunTransaction, actionId: string, approverUserId: string,
+    finalGuard?: (tx: AppRunTransaction) => Promise<void>): Promise<AppRunApprovalResolution> {
       const resolve = async (): Promise<AppRunApprovalResolution> => {
       const action = await this.#lockAction(tx, actionId);
       if (!action?.app_run_id || action.action !== APP_RUN_APPROVAL_ACTION) {
@@ -136,7 +143,7 @@ export class PostgresAppRunApprovalResolver {
         requiresWebGuard = version?.protocol_version === '7';
         if (requiresWebGuard && !finalGuard) throw new AppRunError('APP_RUN_ACCESS_DENIED');
       }
-      if ((run.initiating_actor_type === 'app_public' || run.provider_kind === 'native') && action.user_id !== approverUserId) {
+      if ((run.initiating_actor_type === 'app_public' || run.initiating_actor_type === 'agent_employee' || run.provider_kind === 'native') && action.user_id !== approverUserId) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
 
@@ -227,9 +234,6 @@ export class PostgresAppRunApprovalResolver {
       const resolved = await resolve();
       await finalGuard?.(tx);
       return resolved;
-    });
-    await this.#resolveApprovalAttention(actionId, approverUserId);
-    return result;
   }
 
   async reject(

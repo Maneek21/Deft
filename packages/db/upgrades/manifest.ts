@@ -248,6 +248,10 @@ export const upgradeManifest = {
     { version: '0.3.0-preview.50', file: '0.3.0-preview.50-app-attachment-grant-admission.sql', description: 'Admit closed owner-only protocol7 effective grants and bounded checkpoint custody accounting' },
     { version: '0.3.0-preview.51', file: '0.3.0-preview.51-app-attachment-composition.sql', description: 'Admit separately reviewed protocol7 blob-grant.v2 Runtime and Experience composition without widening v1' },
     { version: '0.3.0-preview.52', file: '0.3.0-preview.52-private-defty-context.sql', description: 'Add permanent exact Defty Space seals, reviewed private-purpose grants and bounded encrypted canonical message history' },
+    { version: '0.3.0-preview.53', file: '0.3.0-preview.53-app-private-state.sql', description: 'Add dormant encrypted artifact-bound owner-private App state with revision CAS and bounded retention' },
+    { version: '0.3.0-preview.54', file: '0.3.0-preview.54-app-experience-consent.sql', description: 'Add revocable exact-scope human Experience consent independent of technical leases and separate bounded agent policies' },
+    { version: '0.3.0-preview.55', file: '0.3.0-preview.55-app-action-batches.sql', description: 'Group bounded immutable Runtime Run inputs under one exact host review with revocable per-effect release fencing' },
+    { version: '0.3.0-preview.56', file: '0.3.0-preview.56-app-action-batch-policy-revision.sql', description: 'Pin every batch to its exact owner policy revision and fail closed for unpinned preview55 batches' },
   ] satisfies UpgradeMigration[],
 } as const;
 

@@ -703,6 +703,7 @@ async function runStaleMaintenance(): Promise<void> {
       // Repair a recurring occurrence after its durable queue settlement.
       await reconcileRecurringJobs();
     })(),
+    import('../lib/app-private-state-retention.js').then(mod => mod.purgeExpiredPrivateAppState()),
     APP_RUNS_ENABLED ? import('../lib/app-run-maintenance.js').then(mod => mod.runAppRunMaintenance('recovery')) : Promise.resolve(),
   ]);
 }

@@ -13,6 +13,7 @@ type Context = {schema_version:'deft.app_blob_review_context.v2';installation_id
   state:string;review_request:Request|null;current_activation:{grant_snapshot_id:string;review_digest:string}|null};
 type Review = {schema_version:'deft.app_blob_review.v2';installation_id:string;request:Request;review_digest:string;
   authority:{sync_descriptors:{key:string;resource_type:string;attachments:{allowed_media_types:string[];max_attachment_bytes:number;retention_days:number}}[];
+    private_state?:{key:string;label:string;max_records:number;max_record_bytes:number;max_total_bytes:number;retention_days:number}[];
     modules:{module_id:string;version:string;manifest_path:string;manifest_digest:string}[];
     runtime_actions:{key:string}[];experiences:{key:string;label:string}[];
     host_policy:{encrypted_custody:boolean;current_parent_required:boolean;provider_url_fetch:boolean;irrecoverable_host_purge:boolean;owner_only:boolean;stage_ceiling_seconds:number}}};
@@ -63,6 +64,7 @@ function Workspace({app}:{app:AppInstallation}){
     {active?<><p>This reviewed App is active. Private resource consent and action operator consent are separate steps.</p><Link className="deft-pill" style={tap} href="/settings/apps/private-resources">Connect private resources</Link></>:review?<>
       <h3 className="font-semibold">Activate {app.name} {app.version}?</h3><p>This exact package declares saved private resources and the actions below. Activation does not grant access to your mailbox or attachments.</p>
       <ul className="space-y-2">{review.authority.sync_descriptors.map(d=><li key={d.key} className="break-words">{d.key} ({d.resource_type}) · declared attachment types: {d.attachments.allowed_media_types.join(', ')} · at most {d.attachments.max_attachment_bytes.toLocaleString()} bytes each, {d.attachments.retention_days} day retention ceiling</li>)}</ul>
+      {review.authority.private_state?.map(state=><p key={state.key}>Private App state: {state.label} · up to {state.max_records} encrypted records, {state.max_record_bytes} bytes each / {state.max_total_bytes} bytes total · {state.retention_days} days from creation. The owner must separately approve each session. Other artifacts cannot automatically adopt these records.</p>)}
       <p>Declared actions: {review.authority.runtime_actions.map(a=>a.key).join(', ')||'None'}. Every effect requires its reviewed operator binding and normal approval.</p>
       <p>Activation installs or re-enables {review.authority.modules.length} declared workspace modules.</p>
       {review.authority.modules.length>0&&<ul>{review.authority.modules.map(m=><li key={m.module_id} className="break-words">{m.module_id} · version {m.version}<code className="block break-all text-xs">{m.manifest_digest}</code></li>)}</ul>}

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PrivateStateDeclarationsSchema } from './private-state.js';
 import { NativeActionSchema, NativeAuthoringShape, refineNativeAuthoring } from './native-authoring.js';
 import { ResourceRuntimeRequirementSchema } from './resource-authoring.js';
 import { SyncDescriptorV2Schema } from './resource-sync-attachments.js';
@@ -9,6 +10,7 @@ const requirementV3 = z.strictObject({
 });
 export const AttachmentAuthoringShape = {
   ...NativeAuthoringShape,
+  private_state: PrivateStateDeclarationsSchema.optional(),
   runtime_requirements: z.array(z.union([ResourceRuntimeRequirementSchema, requirementV3])).min(1).max(8),
   native_actions: z.array(NativeActionSchema).max(8),
   sync_descriptors: z.array(SyncDescriptorV2Schema).min(1).max(8),

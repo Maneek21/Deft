@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appModuleBindings, appDependencyLocks,
   appRuns, appPublicIngress, appPublicEndpoints, moduleInstallations, moduleVersions, users, auditLog, appNativeBindings } from '@deft/db/schema';
-import { AppDigestSchema, parseRuntimeAppManifest, parseResourceAppManifest, parseNativeAppManifest } from '@deft/app-kit';
+import { AppDigestSchema, parseRuntimeAppManifest, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit';
 import { parseSupportedDeftModuleManifest, type ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
@@ -14,6 +14,9 @@ import { acquireModuleInstallLocks, assertCurrentModuleManagerWithExecutor, inst
   upgradeAppOwnedModuleAdditivelyWithExecutor, invalidateModuleCatalogCaches, type ModuleLifecyclePostCommit } from './module-service.js';
 import { buildNativeAppReviewedAuthority, NATIVE_APP_EFFECTIVE_CLASSIFICATION } from './app-native-grant.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
+import { buildAttachmentAppReviewedAuthority, ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION, assertAttachmentManifestAdmission,
+  assertAttachmentCompositionActionsEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 const stale = () => new AppError('Runtime upgrade authority changed', 'APP_STALE', 409);
@@ -36,13 +39,18 @@ export const NativeUpgradeRequestSchema = RuntimeUpgradeRequestSchema.extend({ s
 export const NativeUpgradeActivateSchema = NativeUpgradeRequestSchema.extend({ expected_review_digest: AppDigestSchema, accept_host_policy: z.literal(true) });
 export const NativeUpgradeContextSchema = RuntimeUpgradeContextSchema.extend({ schema_version: z.literal('deft.app_native_upgrade_context.v1'),
   protocol_version: z.literal('6'), review_request: NativeUpgradeRequestSchema.nullable() });
+export const AttachmentUpgradeStageSchema = RuntimeUpgradeStageSchema.extend({ schema_version: z.literal('deft.app_attachment_upgrade_stage.v1') });
+export const AttachmentUpgradeRequestSchema = RuntimeUpgradeRequestSchema.extend({ schema_version: z.literal('deft.app_attachment_upgrade_review_request.v1') });
+export const AttachmentUpgradeActivateSchema = AttachmentUpgradeRequestSchema.extend({ expected_review_digest: AppDigestSchema, accept_host_policy: z.literal(true) });
+export const AttachmentUpgradeContextSchema = RuntimeUpgradeContextSchema.extend({ schema_version: z.literal('deft.app_attachment_upgrade_context.v1'),
+  protocol_version: z.literal('7'), review_request: AttachmentUpgradeRequestSchema.nullable() });
 
-type UpgradeManifest = ReturnType<typeof parseRuntimeAppManifest> | ReturnType<typeof parseResourceAppManifest> | ReturnType<typeof parseNativeAppManifest>;
-type Mode = 'runtime' | 'native';
+type UpgradeManifest = ReturnType<typeof parseRuntimeAppManifest> | ReturnType<typeof parseResourceAppManifest> | ReturnType<typeof parseNativeAppManifest> | ReturnType<typeof parseAttachmentAppManifest>;
+type Mode = 'runtime' | 'native' | 'attachment';
 const upgradeSchema = (mode: Mode, kind: string) => `deft.app_${mode}_upgrade_${kind}.v1`;
 const upgradeAction = (mode: Mode) => `app.${mode}.upgrade_activate`;
 function upgradeManifest(protocol: string, value: unknown, mode: Mode): UpgradeManifest {
-  return mode === 'native' ? parseNativeAppManifest(value) : protocol === '5' ? parseResourceAppManifest(value) : parseRuntimeAppManifest(value);
+  return mode === 'attachment' ? parseAttachmentAppManifest(value) : mode === 'native' ? parseNativeAppManifest(value) : protocol === '5' ? parseResourceAppManifest(value) : parseRuntimeAppManifest(value);
 }
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Actor = Extract<ModuleActor, { kind: 'human' }>;
@@ -52,6 +60,14 @@ function manager(actor: ModuleActor): asserts actor is Actor {
   if (actor.kind !== 'human' || !['owner', 'admin'].includes(actor.role)) throw new AppError('Human manager required', 'APP_ACCESS_DENIED', 403);
 }
 async function final(tx: Tx, actor: Actor, manifest: UpgradeManifest, options: RuntimeAppReviewOptions) {
+  if (manifest.schema_version === '7') {
+    const guard = options.guard as WebAuthorityGuard | undefined;
+    if (typeof guard?.current_web_session_expires_at !== 'function') throw stale();
+    assertAttachmentManifestAdmission(manifest, true); assertAttachmentCompositionActionsEnabled(manifest);
+    if (!await attachmentFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard })) throw stale();
+    assertAttachmentManifestAdmission(manifest, true); assertAttachmentCompositionActionsEnabled(manifest);
+    return;
+  }
   if (manifest.schema_version === '6') {
     if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) throw stale();
     return;
@@ -70,7 +86,7 @@ export async function stageRuntimeAppUpgrade(actor: ModuleActor, installationId:
 function authority(manifest: UpgradeManifest, installation: typeof appInstallations.$inferSelect,
   version: typeof appVersions.$inferSelect) {
   const pins = { lineage_key: installation.lineage_key, package_digest: version.package_digest, manifest_digest: version.manifest_digest };
-  return manifest.schema_version === '6' ? buildNativeAppReviewedAuthority(manifest, pins) : manifest.schema_version === '5' ? buildResourceAppReviewedAuthority(manifest, pins)
+  return manifest.schema_version === '7' ? buildAttachmentAppReviewedAuthority(manifest, pins, true) : manifest.schema_version === '6' ? buildNativeAppReviewedAuthority(manifest, pins) : manifest.schema_version === '5' ? buildResourceAppReviewedAuthority(manifest, pins)
     : { schema: 'deft.app_runtime_grant.v1' as const, ...pins, runtime_actions: runtimeActionDescriptors(manifest),
       ...(manifest.schema_version === '4' ? { modules: manifest.modules, experiences: manifest.experiences, public_actions: manifest.public_actions } : {}) };
 }
@@ -86,13 +102,18 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
     .orderBy(asc(appVersions.id)).for('update');
   const prior = versions.find(version => version.id === installation.active_version_id);
   const target = versions.find(version => version.id === targetId);
-  if (!prior || !target || prior.state !== 'active' || !(mode === 'native' ? ['6'] : ['3', '4', '5']).includes(prior.protocol_version)
+  if (!prior || !target || prior.state !== 'active' || !(mode === 'attachment' ? ['7'] : mode === 'native' ? ['6'] : ['3', '4', '5']).includes(prior.protocol_version)
     || target.protocol_version !== prior.protocol_version || !['staged', 'active'].includes(target.state)) throw stale();
   const inspected = await inspectAppPackageJson(JSON.stringify(target.package));
   if (inspected.package_digest !== target.package_digest || inspected.manifest_digest !== target.manifest_digest
     || digestAppGrantValue(inspected.manifest) !== digestAppGrantValue(target.manifest)) throw stale();
   const manifest = upgradeManifest(target.protocol_version, target.manifest, mode);
-  if (manifest.schema_version !== '6') options.assertAdmission?.(manifest);
+  if (manifest.schema_version === '7') {
+    assertAttachmentManifestAdmission(manifest, true); assertAttachmentCompositionActionsEnabled(manifest);
+    const oldPackage = await inspectAppPackageJson(JSON.stringify(prior.package));
+    if (oldPackage.package_digest !== prior.package_digest || oldPackage.manifest_digest !== prior.manifest_digest
+      || digestAppGrantValue(oldPackage.manifest) !== digestAppGrantValue(prior.manifest)) throw stale();
+  } else if (manifest.schema_version !== '6') options.assertAdmission?.(manifest);
   const grants = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, actor.org_id),
     eq(appGrantSnapshots.app_installation_id, installationId), inArray(appGrantSnapshots.id,
       [installation.active_grant_snapshot_id, target.requested_grant_snapshot_id ?? ''])))
@@ -127,7 +148,7 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
     const after = z.strictObject({ app_version_id: Id, grant_snapshot_id: Id, review_digest: AppDigestSchema }).safeParse(audit?.after_state);
     const metadata = z.object({ schema_version: z.literal(upgradeSchema(mode, 'activation')),
       prior_grant_snapshot_digest: AppDigestSchema,
-      pending_work_policy: mode === 'native' ? z.literal('drain_before_activation') : z.literal('drain_before_activation').optional() }).safeParse(audit?.metadata);
+      pending_work_policy: mode !== 'runtime' ? z.literal('drain_before_activation') : z.literal('drain_before_activation').optional() }).safeParse(audit?.metadata);
     if (!digest.success || !audit || !before.success || !after.success || !metadata.success
       || after.data.review_digest !== digest.data || before.data.grant_snapshot_id !== effective.supersedes_snapshot_id
       || before.data.app_version_id === target.id) throw stale();
@@ -191,7 +212,7 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
     .where(and(eq(appPublicIngress.org_id, actor.org_id), eq(appPublicEndpoints.app_installation_id, installationId),
       eq(appPublicEndpoints.app_version_id, prior.id), eq(appPublicIngress.state, 'confirmed'),
       eq(appPublicIngress.follow_up_state, 'pending')));
-  const request = (mode === 'native' ? NativeUpgradeRequestSchema : RuntimeUpgradeRequestSchema).parse({ schema_version: upgradeSchema(mode, 'review_request'),
+  const request = (mode === 'attachment' ? AttachmentUpgradeRequestSchema : mode === 'native' ? NativeUpgradeRequestSchema : RuntimeUpgradeRequestSchema).parse({ schema_version: upgradeSchema(mode, 'review_request'),
     pending_work_policy: 'drain_before_activation',
     prior_app_version_id: prior.id, expected_prior_package_digest: prior.package_digest,
     expected_prior_grant_snapshot_digest: effective.snapshot_digest, app_version_id: target.id,
@@ -202,7 +223,8 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
     installation_id: installationId, request, prior_authority: priorAuthority, target_authority: targetAuthority,
     modules: modules.map(item => item.effect), blockers: { old_work: Object.fromEntries(counts.map(row => [row.state, row.count])),
       active_dependents: dependencies?.count ?? 0, pending_public_followups: followups?.count ?? 0 }, fresh_runtime_binding_review_required: true,
-    fresh_resource_binding_consent_required: manifest.schema_version === '5' || manifest.schema_version === '6',
+    fresh_resource_binding_consent_required: manifest.schema_version === '5' || manifest.schema_version === '6' || manifest.schema_version === '7',
+    ...(mode === 'attachment' ? { private_state_adoption_required: true } : {}),
     ...(mode === 'native' ? { fresh_native_binding_consent_required: true } : {}), authority_carry_forward: false };
   return { mode: 'review', installation, prior, target, manifest, effective, requested, targetAuthority, modules, request,
     review: { ...review, review_digest: digestAppGrantValue(review) }, recovered: null } as const;
@@ -211,14 +233,14 @@ async function getUpgradeContext(actor: ModuleActor, installationId: string, tar
   manager(actor); installationId = Id.parse(installationId); targetId = Id.parse(targetId);
   return db.transaction(async tx => {
     const current = await context(tx, actor, installationId, targetId, options, mode);
-    const result = (mode === 'native' ? NativeUpgradeContextSchema : RuntimeUpgradeContextSchema).parse({ schema_version: upgradeSchema(mode, 'context'), installation_id: installationId,
+    const result = (mode === 'attachment' ? AttachmentUpgradeContextSchema : mode === 'native' ? NativeUpgradeContextSchema : RuntimeUpgradeContextSchema).parse({ schema_version: upgradeSchema(mode, 'context'), installation_id: installationId,
       app_version_id: targetId, protocol_version: current.target.protocol_version, review_request: current.mode === 'recovered' ? null : current.request,
       current_activation: current.mode === 'recovered' ? { grant_snapshot_id: current.effective.id, review_digest: current.recovered } : null });
     await final(tx, actor, current.manifest, options); return result;
   });
 }
 async function prepareUpgrade(actor: ModuleActor, installationId: string, raw: unknown, options: RuntimeAppReviewOptions, mode: Mode) {
-  manager(actor); installationId = Id.parse(installationId); const request = (mode === 'native' ? NativeUpgradeRequestSchema : RuntimeUpgradeRequestSchema).parse(raw);
+  manager(actor); installationId = Id.parse(installationId); const request = (mode === 'attachment' ? AttachmentUpgradeRequestSchema : mode === 'native' ? NativeUpgradeRequestSchema : RuntimeUpgradeRequestSchema).parse(raw);
   return db.transaction(async tx => {
     const current = await context(tx, actor, installationId, request.app_version_id, options, mode);
     if (current.mode === 'recovered' || digestAppGrantValue(request) !== digestAppGrantValue(current.request)) throw stale();
@@ -228,7 +250,7 @@ async function prepareUpgrade(actor: ModuleActor, installationId: string, raw: u
 type UpgradeOptions = RuntimeAppReviewOptions & { testHooks?: { failAfterModulePreparation?: boolean; failBeforePointerSwap?: boolean } };
 async function activateUpgrade(actor: ModuleActor, installationId: string, raw: unknown, options: UpgradeOptions, mode: Mode) {
   manager(actor); installationId = Id.parse(installationId);
-  const { expected_review_digest, accept_host_policy: _accept, ...request } = (mode === 'native' ? NativeUpgradeActivateSchema : RuntimeUpgradeActivateSchema).parse(raw);
+  const { expected_review_digest, accept_host_policy: _accept, ...request } = (mode === 'attachment' ? AttachmentUpgradeActivateSchema : mode === 'native' ? NativeUpgradeActivateSchema : RuntimeUpgradeActivateSchema).parse(raw);
   const effects: ModuleLifecyclePostCommit[] = [];
   const result = await db.transaction(async tx => {
     const current = await context(tx, actor, installationId, request.app_version_id, options, mode);
@@ -257,7 +279,7 @@ async function activateUpgrade(actor: ModuleActor, installationId: string, raw: 
     }
     if (options.testHooks?.failAfterModulePreparation) throw new Error('Injected runtime upgrade rollback');
     const grantId = randomUUID(); const now = new Date();
-    const classification = mode === 'native' ? NATIVE_APP_EFFECTIVE_CLASSIFICATION : { authority_state: 'effective', executable: false, provider_access: false,
+    const classification = mode === 'attachment' ? ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION : mode === 'native' ? NATIVE_APP_EFFECTIVE_CLASSIFICATION : { authority_state: 'effective', executable: false, provider_access: false,
       runtime_binding_review_required: true, ...(current.manifest.schema_version === '5' ? { resource_binding_consent_required: true } : {}) };
     const canonical = { ...current.targetAuthority, organization_id: actor.org_id, app_installation_id: installationId,
       app_version_id: current.target.id, requested_snapshot_id: current.requested.id, requested_snapshot_digest: current.requested.snapshot_digest,
@@ -313,4 +335,18 @@ export async function stageNativeAppUpgrade(actor: ModuleActor, installationId: 
   const app = await stageAppUpgrade(actor, Id.parse(installationId), request.package_json, request.expected_lifecycle_epoch,
     { ...options, nativeUpgrade: true });
   return { schema_version: 'deft.app_native_upgrade_staged.v1' as const, installation_id: app.id, app_version_id: app.version_id };
+}
+
+type AttachmentUpgradeOptions = Omit<UpgradeOptions, 'guard'> & { guard: WebAuthorityGuard };
+export const getAttachmentUpgradeContext = (actor: ModuleActor, id: string, target: string, options: AttachmentUpgradeOptions) =>
+  getUpgradeContext(actor, id, target, options, 'attachment');
+export const prepareAttachmentUpgrade = (actor: ModuleActor, id: string, raw: unknown, options: AttachmentUpgradeOptions) =>
+  prepareUpgrade(actor, id, raw, options, 'attachment');
+export const activateAttachmentUpgrade = (actor: ModuleActor, id: string, raw: unknown, options: AttachmentUpgradeOptions) =>
+  activateUpgrade(actor, id, raw, options, 'attachment');
+export async function stageAttachmentAppUpgrade(actor: ModuleActor, installationId: string, raw: unknown, options: AttachmentUpgradeOptions) {
+  manager(actor); const request = AttachmentUpgradeStageSchema.parse(raw);
+  const app = await stageAppUpgrade(actor, Id.parse(installationId), request.package_json, request.expected_lifecycle_epoch,
+    { ...options, attachmentCompositionUpgrade: true });
+  return { schema_version: 'deft.app_attachment_upgrade_staged.v1' as const, installation_id: app.id, app_version_id: app.version_id };
 }

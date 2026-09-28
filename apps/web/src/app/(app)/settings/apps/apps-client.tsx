@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/empty-state';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
 import { AttachmentAppReview } from '@/components/apps/attachment-app-review';
+import { RuntimeAppSetup } from '@/components/apps/runtime-app-setup';
 import { PublicCancellationOwnerPanel } from '@/components/apps/public-cancellation-owner-panel';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
@@ -211,6 +212,7 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
     </div>}
     {canManage && APP_RESOURCE_SYNC_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '5' && app.manifest.runtime_actions.length === 0 && app.manifest.sync_descriptors.length > 0 && <ResourceAppReview app={app} />}
     {canManage && APP_ATTACHMENT_BROKER_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '7' && <AttachmentAppReview app={app} />}
+    {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.state === 'active' && app.manifest.schema_version === '7' && app.manifest.runtime_actions.length > 0 && <RuntimeAppSetup app={app} />}
     {showConnectedManagement && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
   </article>;
 }

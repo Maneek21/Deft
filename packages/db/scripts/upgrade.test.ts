@@ -1161,3 +1161,21 @@ test('Agent Channel v2 is the fresh-install default and supported upgrade bounda
   const protocolColumn = table.columns.find((column) => column.name === 'protocol_version');
   assert.equal(protocolColumn?.default, 'deft.agent_channel.v2');
 });
+
+
+test('preview53-56 private state, consent and batches share fresh and upgrade paths', async () => {
+  const schema = await import('../src/schema.ts');
+  const directory=dirname(fileURLToPath(import.meta.url));
+  const extras=readFileSync(resolve(directory,'apply-extras.ts'),'utf8');
+  assert.deepEqual([schema.appPrivateStateRecords,schema.appExperienceConsentGrants,schema.appActionBatches,schema.appActionBatchItems].map(t=>getTableConfig(t).name),['app_private_state_records','app_experience_consent_grants','app_action_batches','app_action_batch_items']);
+  const migrations=upgradeManifest.migrations.filter(m=>/^0\.3\.0-preview\.(53|54|55|56)$/.test(m.version));assert.equal(migrations.length,4);
+  const sql=migrations.map(m=>{assert.ok(extras.includes(m.file));return readFileSync(resolve(directory,'..','upgrades',m.file),'utf8');});
+  assert.match(sql[0]!,/revision BETWEEN 1 AND 2147483647/);
+  assert.match(sql[1]!,/Experience consent is immutable except explicit revocation/);
+  assert.match(sql[1]!,/NEW\.epoch<>OLD\.epoch\+1/);
+  assert.match(sql[2]!,/Action batch membership is immutable/);
+  assert.match(sql[2]!,/FOREIGN KEY\(org_id,run_id\)/);
+  assert.match(sql[2]!,/ordinal>=0 AND ordinal<10/);
+  assert.match(sql[3]!,/policy_revision integer NOT NULL DEFAULT -1/);
+  assert.equal(getTableConfig(schema.appActionBatches).columns.find(c=>c.name==='policy_revision')?.default,-1);
+});

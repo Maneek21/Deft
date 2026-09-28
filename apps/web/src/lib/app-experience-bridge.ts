@@ -15,16 +15,19 @@ export type ExperienceNode =
   | Readonly<{ kind: 'canvas'; id: string;
       strokes: readonly Readonly<{ points: readonly Readonly<{ x: number; y: number }>[] }>[] }>;
 
-export type ExperienceView = Readonly<{ root: ExperienceNode }>;
+export type ExperienceNavigationItem = Extract<ExperienceNode, { kind: 'button' }>;
+export type ExperienceView = Readonly<{ root: ExperienceNode; navigation?: readonly ExperienceNavigationItem[] }>;
 export type ExperienceIntent = Readonly<{
-  kind: 'resource' | 'action' | 'run_status' | 'run_cancel' | 'navigate' | 'dialog';
+  kind: 'resource' | 'open_resource' | 'action' | 'run_status' | 'run_cancel' | 'navigate' | 'dialog' | 'private_state';
   key?: string;
   input?: unknown;
 }>;
 
 export type ExperienceBroker = Readonly<{
   isLive(pin: ExperiencePin): boolean | Promise<boolean>;
+  privateState?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
   resource?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
+  openResource?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal) => Promise<Readonly<{ opened: true }> | undefined>;
   action?: (pin: ExperiencePin, key: string, input: unknown, signal: AbortSignal,
     requestId: string) => Promise<unknown>;
   runStatus?: (pin: ExperiencePin, input: unknown, signal: AbortSignal) => Promise<unknown>;
@@ -165,15 +168,29 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
 }
 
 export function parseExperienceView(value: unknown): ExperienceView | null {
-  if (!record(value) || !exact(value, ['root'])) return null;
-  const root = parseNode(value.root, 0, { nodes: 0, points: 0 });
-  return root ? { root } : null;
+  if (!record(value) || !exact(value, ['root', 'navigation'])) return null;
+  const budget = { nodes: 0, points: 0 };
+  const root = parseNode(value.root, 0, budget);
+  if (!root) return null;
+  if (value.navigation === undefined) return { root };
+  if (!Array.isArray(value.navigation) || value.navigation.length > 16) return null;
+  const ids = new Set<string>();
+  const collect = (node: ExperienceNode) => { ids.add(node.id); if (node.kind === 'stack') node.children.forEach(collect); };
+  collect(root);
+  const navigation: ExperienceNavigationItem[] = [];
+  for (const input of value.navigation) {
+    const item = parseNode(input, 0, budget);
+    if (!item || item.kind !== 'button' || ids.has(item.id)) return null;
+    ids.add(item.id); navigation.push(item);
+  }
+  return { root, navigation };
 }
 
 export function createExperienceBridge(input: Readonly<{
   port: ExperiencePort;
   pin: ExperiencePin;
   resourceKeys: readonly string[];
+  stateKeys?: readonly string[];
   actionKeys: readonly string[];
   navigationKeys?: readonly string[];
   dialogKeys?: readonly string[];
@@ -183,6 +200,7 @@ export function createExperienceBridge(input: Readonly<{
 }>) {
   const pin = Object.freeze({ ...input.pin });
   const resourceKeys = new Set(input.resourceKeys);
+  const stateKeys = new Set(input.stateKeys ?? []);
   const actionKeys = new Set(input.actionKeys);
   const navigationKeys = new Set(input.navigationKeys ?? []);
   const dialogKeys = new Set(input.dialogKeys ?? []);
@@ -238,12 +256,13 @@ export function createExperienceBridge(input: Readonly<{
       || !exact(value, ['version', 'session_id', 'sequence', 'kind', 'request_id', 'operation', 'key', 'input'])
       || !id(value.request_id) || value.request_id !== `request_${value.sequence}`
       || pending >= MAX_PENDING
-      || !['resource', 'action', 'run_status', 'run_cancel', 'navigate', 'dialog'].includes(String(value.operation))
+      || !['resource', 'open_resource', 'action', 'run_status', 'run_cancel', 'navigate', 'dialog', 'private_state'].includes(String(value.operation))
       || (value.input !== undefined && !boundedJson(value.input))) { revoke(); return; }
     const requestId = value.request_id;
     const operation = value.operation;
     const key = value.key;
-    if ((operation === 'resource' && (!id(key) || !resourceKeys.has(key)))
+    if ((operation === 'private_state' && (!id(key) || !stateKeys.has(key)))
+      || ((operation === 'resource' || operation === 'open_resource') && (!id(key) || !resourceKeys.has(key)))
       || (operation === 'action' && (!id(key) || !actionKeys.has(key)))
       || (operation === 'navigate' && (!id(key) || !navigationKeys.has(key)))
       || (operation === 'dialog' && (!id(key) || !dialogKeys.has(key)))
@@ -255,7 +274,9 @@ export function createExperienceBridge(input: Readonly<{
       try {
         if (!await input.broker.isLive(pin) || !active) { revoke(); return; }
         let output: unknown;
-        if (operation === 'resource') output = await input.broker.resource?.(pin, key as string, value.input, controller.signal);
+        if (operation === 'private_state') output = await input.broker.privateState?.(pin, key as string, value.input, controller.signal);
+        else if (operation === 'resource') output = await input.broker.resource?.(pin, key as string, value.input, controller.signal);
+        else if (operation === 'open_resource') output = await input.broker.openResource?.(pin, key as string, value.input, controller.signal);
         else if (operation === 'action') output = await input.broker.action?.(
           pin, key as string, value.input, controller.signal, requestId);
         else if (operation === 'run_status') output = await input.broker.runStatus?.(pin, value.input, controller.signal);

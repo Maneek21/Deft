@@ -13,6 +13,7 @@ import { getAppAttachmentRuntime } from '../lib/app-attachment-runtime.js';
 import { resourceSyncWebAuthority,ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { stageAppPackage } from '../lib/app-service.js';
 import { getAttachmentAppReviewContext,prepareAttachmentAppReview,activateAttachmentApp } from '../lib/app-attachment-review.js';
+import { stageAttachmentAppUpgrade, getAttachmentUpgradeContext, prepareAttachmentUpgrade, activateAttachmentUpgrade } from '../lib/app-runtime-upgrade.js';
 import { listResourceSyncBindings, inspectResourceSyncBinding } from '../lib/app-resource-sync-status.js';
 import { listEligibleResourceSyncOperators, listAssignedResourceSyncBindings,
   listOwnResourceSyncSessions } from '../lib/app-resource-sync-operator.js';
@@ -132,6 +133,11 @@ appAttachmentRoutes.post('/sync/bindings/:bindingId/sync',async c=>{
       undefined,{owner_user_id:actor.actor_id,guard}));
   }catch(error){return failure(c,error);}
 });
+appAttachmentRoutes.post('/sync/bindings/:bindingId/resume-observation',async c=>{
+  try{noQuery(c);const input=z.strictObject({previous_run_id:z.string().uuid()}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await (await getAppAttachmentRuntime()).admission.resumeObservation({org_id:actor.org_id,resource_binding_id:id.parse(c.req.param('bindingId')),previous_run_id:input.previous_run_id},{owner_user_id:actor.actor_id,guard}));
+  }catch(error){return failure(c,error);}
+});
 appAttachmentRoutes.post('/sync/bindings/:bindingId/revoke',async c=>{
   try{noQuery(c);z.strictObject({}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     return c.json(await (await getAppAttachmentRuntime()).management.revokeConsent(actor,id.parse(c.req.param('bindingId')),guard));
@@ -216,6 +222,41 @@ appAttachmentRoutes.post('/composition/:installationId/activate',async c=>{
   try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     return c.json({app:await activateAttachmentApp(actor,id.parse(c.req.param('installationId')),input,{guard,composition:true})});
   }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/composition/:installationId/runtime/context',async c=>{
+  try{const q=z.strictObject({app_version_id:id}).parse(query(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {getRuntimeSetupContext}=await import('../lib/app-runtime-setup.js');
+    return c.json(await getRuntimeSetupContext(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal}));
+  }catch(error){return failure(c,error);}
+});
+
+appAttachmentRoutes.post('/composition/:installationId/upgrade/stage', async c => {
+  try {
+    noQuery(c); const input = await body(c, APP_LIMITS.package_bytes + 16384);
+    const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await stageAttachmentAppUpgrade(actor, id.parse(c.req.param('installationId')), input, { guard }), 201);
+  } catch (error) { return failure(c, error); }
+});
+appAttachmentRoutes.get('/composition/:installationId/upgrade/context', async c => {
+  try {
+    const q = z.strictObject({ app_version_id: id }).parse(query(c));
+    const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await getAttachmentUpgradeContext(actor, id.parse(c.req.param('installationId')), q.app_version_id, { guard }));
+  } catch (error) { return failure(c, error); }
+});
+appAttachmentRoutes.post('/composition/:installationId/upgrade/review', async c => {
+  try {
+    noQuery(c); const input = await body(c);
+    const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json({ review: await prepareAttachmentUpgrade(actor, id.parse(c.req.param('installationId')), input, { guard }) });
+  } catch (error) { return failure(c, error); }
+});
+appAttachmentRoutes.post('/composition/:installationId/upgrade/activate', async c => {
+  try {
+    noQuery(c); const input = await body(c);
+    const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'));
+    return c.json(await activateAttachmentUpgrade(actor, id.parse(c.req.param('installationId')), input, { guard }));
+  } catch (error) { return failure(c, error); }
 });
 appAttachmentRoutes.post('/composition/runtime/reviews/prepare',async c=>{
   try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));

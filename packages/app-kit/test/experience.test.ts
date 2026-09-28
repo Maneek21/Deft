@@ -60,3 +60,18 @@ test('Experience bundle rejects unknown fields, traversal, unsorted keys and ove
     ...bundle, worker_source: 'x'.repeat(65 * 1024),
   }));
 });
+
+
+test('state requires bundle v3 and preserves canonical v1/v2 bytes', async () => {
+  const old = await prepareDeftExperienceArtifact(path, bundle);
+  assert.equal(old.content, JSON.stringify(bundle));
+  const state = { ...bundle, schema_version: 'deft.experience_bundle.v3', state_keys: ['drafts'] };
+  const artifact = await prepareDeftExperienceArtifact(path, state);
+  assert.equal(artifact.content, JSON.stringify(state));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...bundle, state_keys: ['drafts'] }));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...state, state_keys: [] }));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...state, state_keys: ['drafts', 'drafts'] }));
+  const composed = { ...state, search_resource_keys: ['records'] };
+  assert.ok((await prepareDeftExperienceArtifact(path, composed)).content.includes('search_resource_keys'));
+  await assert.rejects(() => prepareDeftExperienceArtifact(path, { ...state, search_resource_keys: ['undeclared'] }));
+});

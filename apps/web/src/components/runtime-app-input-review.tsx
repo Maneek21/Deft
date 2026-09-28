@@ -6,10 +6,11 @@ import { parseRuntimeAppReview, type RuntimeAppReview } from '@/lib/runtime-app-
 
 export type RuntimeReviewIdentity = Readonly<{ runId: string; bindingId: string }>;
 
-export function RuntimeAppInputReview({ runId, bindingId, busy, onReviewed }: {
+export function RuntimeAppInputReview({ runId, bindingId, busy, onReviewed, compact = false }: {
   runId: string | null;
   bindingId: string | null;
   busy: boolean;
+  compact?: boolean;
   onReviewed(identity: RuntimeReviewIdentity | null): void;
 }) {
   const [review, setReview] = useState<RuntimeAppReview | null>(null);
@@ -51,38 +52,42 @@ export function RuntimeAppInputReview({ runId, bindingId, busy, onReviewed }: {
   }
 
   return (
-    <section aria-label="Runtime action input review" className="mt-3 min-w-0 rounded-xl border p-3 text-sm"
-      style={{ borderColor: 'var(--border)' }}>
-      <p className="font-semibold">Review exact Runtime input</p>
+    <section aria-label={compact ? 'Request input review' : 'Runtime action input review'} className={compact ? 'mt-4 min-w-0 border-t pt-4 text-sm' : 'mt-3 min-w-0 rounded-xl border p-3 text-sm'}
+      style={{ borderColor: compact ? 'var(--outline-variant)' : 'var(--border)' }}>
+      <p className="font-semibold">{compact ? 'Request details' : 'Review exact Runtime input'}</p>
       {review ? (
         <>
-          <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
-            External write · approval required for this invocation · unsafe to retry automatically
+          <p className={compact ? 'mt-1 text-xs leading-relaxed' : 'mt-1 text-xs'} style={{ color: compact ? 'var(--on-surface-variant)' : 'var(--muted)' }}>
+            {compact ? 'Approval permits an external change. Deft will not retry this request automatically.'
+              : 'External write · approval required for this invocation · unsafe to retry automatically'}
           </p>
-          <dl className="mt-2 max-h-72 space-y-2 overflow-y-auto break-words [overflow-wrap:anywhere]">
+          <dl className={compact ? 'mt-3 divide-y break-words [overflow-wrap:anywhere]' : 'mt-2 max-h-72 space-y-2 overflow-y-auto break-words [overflow-wrap:anywhere]'}>
             {Object.entries(review.input).map(([key, item]) => (
-              <div key={key}><dt className="text-xs font-medium">{key}</dt>
-                <dd className="whitespace-pre-wrap">{String(item)}</dd></div>
+              <div key={key} className={compact ? 'grid gap-1 py-3 sm:grid-cols-[100px_minmax(0,1fr)] sm:gap-4' : undefined} style={compact ? { borderColor: 'var(--outline-variant)' } : undefined}>
+                <dt className="text-xs font-medium" style={compact ? { color: 'var(--on-surface-variant)' } : undefined}>{key}</dt>
+                <dd className={compact ? 'whitespace-pre-wrap leading-relaxed' : 'whitespace-pre-wrap'}>{String(item)}</dd></div>
             ))}
             {Object.keys(review.input).length === 0 && <div>No input fields</div>}
           </dl>
         </>
       ) : (
-        <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
-          Open the current validated input before approving this external action.
+        <p className={compact ? 'mt-1 text-xs leading-relaxed' : 'mt-1 text-xs'} style={{ color: compact ? 'var(--on-surface-variant)' : 'var(--muted)' }}>
+          {compact ? 'Load the exact request details before approving.' : 'Open the current validated input before approving this external action.'}
         </p>
       )}
       {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--status-red)' }}>
-        Input review is unavailable or authority changed. Refresh the review or dismiss this action.
+        {compact ? 'Request details are unavailable or access changed. Refresh the details or close this request.'
+          : 'Input review is unavailable or authority changed. Refresh the review or dismiss this action.'}
       </p>}
       {!runId || !bindingId ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--status-red)' }}>
-        This action has no verified Runtime review reference. Approval is unavailable.
+        {compact ? 'This request has no verified review reference. Approval is unavailable.'
+          : 'This action has no verified Runtime review reference. Approval is unavailable.'}
       </p> : null}
       <button type="button" onClick={() => { void load(); }}
         disabled={!runId || !bindingId || loading || busy}
         className="mt-2 min-h-11 rounded-md border px-3 py-1 text-xs disabled:opacity-60"
-        style={{ borderColor: 'var(--border)', minHeight: 44 }}>
-        {loading ? 'Loading input…' : review ? 'Refresh exact input' : 'Review exact input'}
+        style={{ borderColor: compact ? 'var(--outline-variant)' : 'var(--border)', minHeight: 44 }}>
+        {loading ? compact ? 'Loading details…' : 'Loading input…' : compact ? review ? 'Refresh details' : 'Load request details' : review ? 'Refresh exact input' : 'Review exact input'}
       </button>
     </section>
   );

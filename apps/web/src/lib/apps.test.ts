@@ -13,6 +13,40 @@ import {
 } from './apps';
 
 const now = '2026-09-01T00:00:00.000Z';
+const privateState = { key: 'drafts', label: 'Drafts',
+  schema: { type: 'object', properties: { body: { type: 'string', maxLength: 4096 } }, required: ['body'], additionalProperties: false },
+  max_record_bytes: 16384, max_records: 32, max_total_bytes: 131072, retention_days: 30 };
+
+function attachmentInstallation(state: unknown = [privateState]) {
+  return { ...installation('0'), manifest: {
+    schema_version: '7', compatibility: { app_protocol: '7' }, id: 'community.deft.mail', version: '1.0.0', name: 'Mail', license: 'AGPL-3.0-only',
+    modules: [], navigation: [], runtime_requirements: [{ key: 'mail', protocol_version: 'deft.app_runtime_channel.v3' }],
+    private_capabilities: [], runtime_actions: [], native_actions: [], experiences: [], public_actions: [],
+    sync_descriptors: [{ schema_version: 'deft.app_sync_descriptor.v2', key: 'mail', runtime_requirement_key: 'mail', resource_type: 'messages',
+      requested_visibility: 'user_private', label_field: 'subject', record_schema: {}, attachments: { max_attachment_bytes: 2097152,
+        max_attachments_per_record: 8, max_attachments_per_run: 32, max_attachment_bytes_per_run: 8388608, retention_days: 30,
+        allowed_media_types: ['text/plain'] } }], ...(state === undefined ? {} : { private_state: state }),
+  } };
+}
+
+test('Settings displays protocol 7 private-state declarations without dropping them', () => {
+  const manifest = normalizeAppInstallation(attachmentInstallation()).manifest;
+  assert.equal(manifest.schema_version, '7');
+  assert.deepEqual((manifest as unknown as { private_state: unknown }).private_state, [privateState]);
+  const legacy = attachmentInstallation(); delete (legacy.manifest as { private_state?: unknown }).private_state;
+  assert.equal('private_state' in normalizeAppInstallation(legacy).manifest, false);
+});
+
+test('Settings rejects malformed private-state display declarations and unrelated unknown fields', () => {
+  for (const value of [[], Array(17).fill(privateState), [privateState, privateState], [{ ...privateState, html: '<script>' }],
+    [{ ...privateState, max_records: 33 }], [{ ...privateState, retention_days: 31 }], [{ ...privateState, max_record_bytes: 16385 }],
+    [{ ...privateState, max_total_bytes: 131073 }], [{ ...privateState, max_total_bytes: 1 }], [{ ...privateState, schema: { ...privateState.schema, additionalProperties: true } }],
+    [{ ...privateState, schema: { ...privateState.schema, required: ['unknown'] } }], [{ ...privateState, schema: { ...privateState.schema, properties: { nested: { type: 'object' } } } }]]) {
+    assert.throws(() => normalizeAppInstallation(attachmentInstallation(value)));
+  }
+  const unknown = attachmentInstallation(); Object.assign(unknown.manifest, { unsafe_css: 'body{}' });
+  assert.throws(() => normalizeAppInstallation(unknown));
+});
 const provenance = {
   source_repository: 'https://example.test/campaigns',
   source_commit: 'abcdef0',

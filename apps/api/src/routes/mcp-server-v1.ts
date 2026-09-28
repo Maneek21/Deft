@@ -67,6 +67,7 @@ import {
 import { getActiveAgentChannelRuntimeCorrelation } from '../lib/agent-channel.js';
 import { McpRequestBodyError, readMcpRequestJson } from '../lib/mcp-request-body.js';
 import { dispatchPrivateMcpTool, isPrivateMcpTool, privateMcpCatalog } from '../lib/app-private-mcp-dispatch.js';
+import { isRuntimeWorkflowTool, runtimeWorkflowHasScopes, RUNTIME_WORKFLOW_SCOPES } from '../lib/app-runtime-workflow-tools.js';
 
 export const mcpServerV1Routes = new Hono();
 const requestBodies = new WeakMap<Request, Promise<unknown>>();
@@ -187,7 +188,9 @@ function tokenBoundAgentCatalog(
   principal: Pick<ResolvedGateway, 'token_id' | 'scopes'>,
 ): typeof toolSchemas {
   return tools.filter((tool) => (
-    !isAgentAppActionTool(tool.name)
+    isRuntimeWorkflowTool(tool.name)
+      ? Boolean(principal.token_id) && runtimeWorkflowHasScopes(tool.name, principal.scopes ?? [])
+      : !isAgentAppActionTool(tool.name)
     || (Boolean(principal.token_id) && agentAppToolHasRequiredScope(principal.scopes ?? [], tool.name))
   )).map((tool) => {
     const inputSchema = { ...tool.inputSchema };
@@ -602,6 +605,9 @@ async function dispatchTool(
 ): Promise<ToolResult> {
   const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
   const handler: ToolHandler | undefined = ALL_TOOLS[canonicalToolName];
+  if (isRuntimeWorkflowTool(canonicalToolName) && (!ctx.token_id || !runtimeWorkflowHasScopes(canonicalToolName, ctx.scopes ?? []))) {
+    return { isError: true, content: [{ type: 'text', text: `Scoped employee credential required: ${RUNTIME_WORKFLOW_SCOPES[canonicalToolName].join(' and ')}` }] };
+  }
   const auditMetadata =
     canonicalToolName === toolName
       ? metadata

@@ -19,6 +19,7 @@ import { appNavigationLinkKey, appNavigationModuleSlug, getAppNavigationItems, g
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
 import { ModuleIcon } from './modules/module-primitives';
+import { useExperienceNavigation } from './apps/experience-navigation-context';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
 import Link from 'next/link';
@@ -638,6 +639,8 @@ function AppSidebarContent({ app, groups, pathname, onNav }: {
   onNav: () => void;
 }) {
   const searchParams = useSearchParams();
+  const { navigation } = useExperienceNavigation();
+  const experienceNavigation = navigation?.installationId === app.installationId ? navigation : null;
   const moduleSlug = appNavigationModuleSlug(pathname);
   const followUpsHref = moduleSlug && getAppNavigationModuleOwner(moduleSlug, groups)?.installationId === app.installationId
     ? `/modules/${encodeURIComponent(moduleSlug)}?workspace=follow-ups`
@@ -648,7 +651,14 @@ function AppSidebarContent({ app, groups, pathname, onNav }: {
       <div className="px-2 mb-2 text-[0.6875rem] font-semibold uppercase tracking-[0.05em]" style={{ color: 'var(--outline)' }}>
         {app.name}
       </div>
-      {app.links.map((link) => {
+      {experienceNavigation?.items.map(item => <button
+        key={item.id} type="button" disabled={item.disabled}
+        onClick={() => { experienceNavigation.select(item.id); onNav(); }}
+        aria-current={item.selected ? 'page' : undefined}
+        className="flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-full px-3 text-left text-[0.8125rem] font-medium hover:bg-[var(--bg-hover)] disabled:cursor-default disabled:opacity-50 md:h-8 md:min-h-0"
+        style={{ background: item.selected ? 'var(--bg-active)' : undefined, color: item.selected ? 'var(--on-surface)' : 'var(--on-surface-variant)' }}
+      ><span className="truncate flex-1">{item.label}</span></button>)}
+      {app.links.filter(link => !experienceNavigation?.items.length || !isAppNavigationLinkActive(pathname, link)).map((link) => {
         const active = isAppNavigationLinkActive(pathname, link, searchParams.get('view'));
         return (
           <Link

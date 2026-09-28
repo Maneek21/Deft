@@ -5,6 +5,7 @@ import { PostgresAppRunAuthorizer } from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
 import { assertAppRunReferencedKeysAvailable, parseEnvironmentAppRunKeyrings,
   type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
+import { listAppPrivateStateKeyReferences } from './app-private-state-key-references.js';
 import { listAppResourceSyncKeyReferences } from './app-resource-sync-key-references.js';
 import { listPrivateDeftyKeyReferences } from './app-private-defty-key-references.js';
 import { privateSearchDatabase } from './app-resource-private-search-db.js';
@@ -121,6 +122,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     // Resource projections survive individual Runs and revoked bindings.
     // Inventory their keys once at bootstrap, outside the submission hot path.
     assertAppRunReferencedKeysAvailable(keys, await listAppResourceSyncKeyReferences());
+    assertAppRunReferencedKeysAvailable(keys, await listAppPrivateStateKeyReferences());
     // Permanent encrypted history retains keys even after its grant ends.
     assertAppRunReferencedKeysAvailable(keys, await privateSearchDatabase().transaction(
       tx => listPrivateDeftyKeyReferences(tx), AbortSignal.timeout(3000), performance.now() + 3000));

@@ -5,9 +5,9 @@ import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js
 import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { appRuns, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
+import { appRuns, appRunAttempts, appAttachmentStages, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
 import { APP_RUN_CONTRACT_VERSIONS, APP_RUN_DEFAULT_ATTEMPT_LIMIT,
   AppRunSafePreviewSchema,
   idempotencyDeadline, retentionDeadline } from '@deft/shared';
@@ -61,7 +61,12 @@ export class AppResourceSyncAdmissionService {
     private readonly internalMode: 'resource_v2' | 'attachment_v3' = 'resource_v2',
   ) {}
 
-  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits, attachmentCaller?: { owner_user_id: string; guard: WebAuthorityGuard }): Promise<ResourceSyncAdmissionResult> {
+  async resumeObservation(raw: unknown, caller: { owner_user_id: string; guard: WebAuthorityGuard }): Promise<ResourceSyncAdmissionResult> {
+    const parsed = HostTargetSchema.extend({ previous_run_id: z.string().uuid() }).parse(raw);
+    return this.admitDue({ org_id: parsed.org_id, resource_binding_id: parsed.resource_binding_id }, undefined, caller, parsed.previous_run_id);
+  }
+
+  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits, attachmentCaller?: { owner_user_id: string; guard: WebAuthorityGuard }, recoveryRunId?: string): Promise<ResourceSyncAdmissionResult> {
     if (!this.enabled()) throw new AppError('Resource sync is disabled', 'APP_FEATURE_DISABLED', 503);
     const target = HostTargetSchema.parse(raw);
     const bounded = limits ? AdmissionLimitsSchema.parse({ lock_timeout_ms: limits.lock_timeout_ms,
@@ -78,6 +83,22 @@ export class AppResourceSyncAdmissionService {
           set_config('statement_timeout', ${String(bounded.statement_timeout_ms)}, true)`);
       }
       assertWithinBudget();
+      // Recovery locks its terminal predecessor before authority and checkpoint.
+      // It never modifies that Run, its receipt, or any cursor/projection.
+      let recoveryIntent: typeof appSyncIntents.$inferSelect | undefined;
+      let recoveryCandidates: ReturnType<AppRunSecretService['fingerprintJsonCandidates']> = [];
+      let recoveryFingerprint: ReturnType<AppRunSecretService['fingerprintJson']> | undefined;
+      if (recoveryRunId) {
+        if (!attachmentCaller || this.internalMode !== 'attachment_v3') throw unavailable();
+        const [predecessor] = await tx.select().from(appRuns).where(and(eq(appRuns.org_id,target.org_id),eq(appRuns.id,recoveryRunId))).limit(1).for('update');
+        if (!predecessor || !['failed','cancelled','unknown_outcome'].includes(predecessor.state)) throw unavailable();
+        [recoveryIntent] = await tx.select().from(appSyncIntents).where(and(eq(appSyncIntents.org_id,target.org_id),eq(appSyncIntents.run_id,recoveryRunId),eq(appSyncIntents.resource_binding_id,target.resource_binding_id))).limit(1);
+        if (!recoveryIntent) throw unavailable();
+        const attempts = await tx.select({state:appRunAttempts.state}).from(appRunAttempts).where(and(eq(appRunAttempts.org_id,target.org_id),eq(appRunAttempts.run_id,recoveryRunId))).for('update');
+        if (attempts.some(a => ['pending','claimed','provider_call_started'].includes(a.state))) throw unavailable();
+        recoveryCandidates = this.runSecrets.fingerprintJsonCandidates('idempotency', {domain:'deft.app_attachment_sync.explicit_recovery.v1',org_id:target.org_id,resource_binding_id:target.resource_binding_id,previous_run_id:recoveryRunId});
+        recoveryFingerprint = this.runSecrets.fingerprintJson('idempotency',{domain:'deft.app_attachment_sync.explicit_recovery.v1',org_id:target.org_id,resource_binding_id:target.resource_binding_id,previous_run_id:recoveryRunId});
+      }
       // A new Run is not visible yet. Lock authority first, then checkpoint;
       // never take an existing Run lock while holding these later locks.
       const authority = await (this.internalMode === 'attachment_v3'
@@ -105,26 +126,27 @@ export class AppResourceSyncAdmissionService {
       // without locking them: completion holds Run before checkpoint, so
       // reversing that order here would deadlock. Returned IDs confer no
       // authority; the channel always rechecks current state and intent.
-      const prior = await tx.select({ run_id: appSyncIntents.run_id,
-        state: appRuns.state, expires_at: appRuns.input_expires_at })
-        .from(appSyncIntents).innerJoin(appRuns, and(eq(appRuns.org_id, appSyncIntents.org_id),
-          eq(appRuns.id, appSyncIntents.run_id))).where(and(
-          eq(appSyncIntents.org_id, target.org_id),
-          eq(appSyncIntents.resource_binding_id, binding.id),
-          eq(appSyncIntents.checkpoint_id, checkpoint.id),
-          eq(appSyncIntents.generation, checkpoint.generation),
-          eq(appSyncIntents.expected_cursor_sequence, checkpoint.cursor_sequence),
-        )).limit(2);
-      if (prior.length) {
-        const existing = prior[0]!;
-        if (prior.length !== 1 || existing.expires_at <= now
-          || !['pending', 'running', 'waiting_external'].includes(existing.state)) {
-          await finalAttachment();
-          return Object.freeze({ state: 'blocked', reason: 'cursor_requires_recovery' });
-        }
-        await finalAttachment([existing.expires_at]);
-        return Object.freeze({ state: 'existing', run_id: existing.run_id });
+      if (recoveryFingerprint) {
+        const [replacement] = await tx.select(safeRunSelection).from(appRuns).where(and(eq(appRuns.org_id,target.org_id),or(...recoveryCandidates.map(f => and(eq(appRuns.idempotency_key_version,f.key_version),eq(appRuns.idempotency_fingerprint,f.fingerprint)))))).limit(1);
+        if (replacement) { await finalAttachment(); return Object.freeze({state:'existing',run_id:replacement.id}); }
+        if (!recoveryIntent || recoveryIntent.checkpoint_id !== checkpoint.id || recoveryIntent.generation !== checkpoint.generation
+          || recoveryIntent.expected_cursor_sequence !== checkpoint.cursor_sequence || recoveryIntent.expected_cursor_hmac !== checkpoint.cursor_hmac
+          || recoveryIntent.expected_cursor_hmac_key_version !== checkpoint.cursor_hmac_key_version) throw unavailable();
+        const stages = await tx.select({id:appAttachmentStages.id}).from(appAttachmentStages).where(and(eq(appAttachmentStages.org_id,target.org_id),eq(appAttachmentStages.run_id,recoveryRunId!))).limit(1);
+        if (stages.length) throw unavailable();
       }
+      const cursorPredicate = and(eq(appSyncIntents.org_id,target.org_id),eq(appSyncIntents.resource_binding_id,binding.id),eq(appSyncIntents.checkpoint_id,checkpoint.id),eq(appSyncIntents.generation,checkpoint.generation),eq(appSyncIntents.expected_cursor_sequence,checkpoint.cursor_sequence));
+      const active = await tx.select({ run_id: appSyncIntents.run_id, state:appRuns.state, expires_at:appRuns.input_expires_at })
+        .from(appSyncIntents).innerJoin(appRuns,and(eq(appRuns.org_id,appSyncIntents.org_id),eq(appRuns.id,appSyncIntents.run_id)))
+        .where(and(cursorPredicate,inArray(appRuns.state,['pending','running','waiting_external']))).limit(2);
+      if (active.length) {
+        if (recoveryRunId) throw unavailable();
+        if (active.length !== 1 || active[0]!.expires_at <= now) { await finalAttachment(); return Object.freeze({state:'blocked',reason:'cursor_requires_recovery'}); }
+        await finalAttachment([active[0]!.expires_at]);
+        return Object.freeze({state:'existing',run_id:active[0]!.run_id});
+      }
+      const prior = await tx.select({id:appSyncIntents.id}).from(appSyncIntents).where(cursorPredicate).limit(1);
+      if (prior.length && !recoveryRunId) { await finalAttachment(); return Object.freeze({state:'blocked',reason:'cursor_requires_recovery'}); }
       const [latest] = await tx.select({ created_at: appSyncIntents.created_at })
         .from(appSyncIntents).where(and(eq(appSyncIntents.org_id, target.org_id),
           eq(appSyncIntents.resource_binding_id, binding.id)))
@@ -154,7 +176,7 @@ export class AppResourceSyncAdmissionService {
         ? SyncRequestV2Schema.parse({ schema_version: 'deft.app_sync_request.v2', cursor, max_items: binding.max_records_per_page,
           attachments: parseAttachmentConsentPolicy(binding.reviewed_descriptor.attachments,binding.attachment_policy) })
         : parseSyncRequest({ schema_version: 'deft.app_sync_request.v1',cursor,max_items:binding.max_records_per_page });
-      const idempotency = this.runSecrets.fingerprintJson('idempotency', {
+      const idempotency = recoveryFingerprint ?? this.runSecrets.fingerprintJson('idempotency', {
         domain: this.internalMode === 'attachment_v3' ? 'deft.app_attachment_sync.admission.v1' : 'deft.app_resource_sync.admission.v1', org_id: target.org_id,
         resource_binding_id: binding.id, checkpoint_id: checkpoint.id,
         generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence,
@@ -203,7 +225,7 @@ export class AppResourceSyncAdmissionService {
       await this.repository.appendEvent(tx, { id: randomUUID(), org_id: target.org_id,
         run_id: runId, event_type: 'run_created', actor, now,
         payload: { resource_binding_id: binding.id, checkpoint_id: checkpoint.id,
-          generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence } });
+          generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence, ...(recoveryRunId ? { previous_run_id: recoveryRunId } : {}) } });
       const attemptId = await this.scheduler.scheduleResourceSyncInTransaction(tx, run, now);
       const completedAt = this.clock();
       assertWithinBudget();

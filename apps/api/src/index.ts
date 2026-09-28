@@ -89,6 +89,11 @@ import { appResourcePrivateReadLimits, appResourceSyncManagementLimits, createAp
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
 import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
 import { appExperienceRoutes } from './routes/app-experiences.js';
+import { createAppActionBatchRoutes } from './routes/app-action-batches.js';
+import { createExperienceHumanActionRoutes } from './lib/app-experience-human-action-routes.js';
+import { AppExperienceHumanActionService } from './lib/app-experience-human-action-service.js';
+import { AppExperienceExposureService } from './lib/app-experience-exposure.js';
+import { getAppRunRuntime } from './lib/app-run-runtime.js';
 import { createAppPublicRoutes } from './routes/app-public.js';
 import { AppPublicClaimService } from './lib/app-public-service.js';
 import { appPublicManagementRoutes } from './routes/app-public-management.js';
@@ -297,6 +302,11 @@ if (APPS_ENABLED) {
   app.route('/api/app-runtime-review', appRuntimeReviewRoutes);
   app.route('/api/app-runtime-actions', appRuntimeActionRoutes);
   app.route('/api/app-experiences', appExperienceRoutes);
+  app.route('/api/app-action-batches', createAppActionBatchRoutes());
+  app.route('/api/app-experiences', createExperienceHumanActionRoutes(async () => {
+    const runtime = await getAppRunRuntime();
+    return new AppExperienceHumanActionService(new AppExperienceExposureService(runtime.keys), runtime);
+  }));
   app.route('/api/apps', appRoutes);
   app.route('/api/app-actions', appActionRoutes);
   app.route('/api/app-runs', appRunRoutes);

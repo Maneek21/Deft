@@ -1,3 +1,5 @@
+import { humanActionReleaseIsCurrent } from './app-experience-human-action-live.js';
+import { actionBatchReleaseIsCurrent } from './app-action-batch-live.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import {
@@ -61,6 +63,8 @@ export async function runtimeRunMatchesAuthority(
     || run.retry_class !== authority.retry_class
     || run.retention_class !== authority.retention_class
     || run.execution_actor_type !== 'human') return null;
+  if (!await humanActionReleaseIsCurrent(tx, run)) return null;
+  if (!await actionBatchReleaseIsCurrent(tx, run)) return null;
   const snapshot = AppRunAuthorizationSnapshotSchema.safeParse(run.authorization_snapshot);
   if (!snapshot.success) return null;
   try {
@@ -90,15 +94,23 @@ export async function runtimeRunMatchesAuthority(
           === canonicalCapabilityJson(current.authorization_snapshot.authority_refs);
       return matches ? current.action : null;
     }
-    if (run.initiating_actor_type !== 'human'
-      || run.initiating_actor_id !== run.execution_actor_id
+    const isAgent = run.initiating_actor_type === 'agent_employee';
+    if ((!isAgent && run.initiating_actor_type !== 'human')
+      || (!isAgent && run.initiating_actor_id !== run.execution_actor_id)
       || run.origin_public_endpoint_id !== null || run.origin_public_ingress_id !== null
-      || snapshot.data.authenticated_subject.actor_type !== 'human'
+      || snapshot.data.authenticated_subject.actor_type !== run.initiating_actor_type) return null;
+    if (isAgent) {
+      if (snapshot.data.authenticated_subject.actor_type !== 'agent_employee'
+        || snapshot.data.authenticated_subject.agent_employee_id !== run.initiating_actor_id
+        || run.budget_reserved_at === null || run.budget_reserved_count !== 1) return null;
+    } else if (snapshot.data.authenticated_subject.actor_type !== 'human'
       || snapshot.data.authenticated_subject.user_id !== run.initiating_actor_id) return null;
-    const current = await runtimeLiveAuthorizer.captureReviewedRuntimeInTransaction(tx, {
-      org_id: orgId, user_id: run.initiating_actor_id,
-      runtime_binding_id: authority.pin.runtime_binding_id,
-    });
+    const current = isAgent
+      ? await runtimeLiveAuthorizer.captureReviewedRuntimeAgentInTransaction(tx, {
+        org_id:orgId,agent_employee_id:run.initiating_actor_id,runtime_binding_id:authority.pin.runtime_binding_id })
+      : await runtimeLiveAuthorizer.captureReviewedRuntimeInTransaction(tx, {
+        org_id:orgId,user_id:run.initiating_actor_id,runtime_binding_id:authority.pin.runtime_binding_id });
+    if ('agent_owner_user_id' in current && current.agent_owner_user_id !== run.execution_actor_id) return null;
     const matches = current.registration.id === authority.pin.runtime_registration_id
       && current.registration.runtime_epoch === authority.pin.runtime_epoch
       && current.binding.provider_instance_id === run.provider_instance_id
@@ -138,6 +150,7 @@ export async function loadLiveRuntimeAuthority(
   // locator is untrusted; its exact actor identity is reread at the boundary.
   const memberIds: string[] = [];
   let prelockedRunActorId: string | undefined;
+  let prelockedAgentId: string | undefined;
   if (runId) {
     const [runLocator] = await tx.select({ actor_type: appRuns.initiating_actor_type,
       actor_id: appRuns.initiating_actor_id,
@@ -147,11 +160,13 @@ export async function loadLiveRuntimeAuthority(
       origin_public_ingress_id: appRuns.origin_public_ingress_id }).from(appRuns).where(and(
       eq(appRuns.org_id, orgId), eq(appRuns.id, runId),
     )).limit(1);
-    if (!runLocator || (runLocator.actor_type !== 'human' && runLocator.actor_type !== 'app_public')) return null;
+    if (!runLocator || !['human','app_public','agent_employee'].includes(runLocator.actor_type)) return null;
+    if(runLocator.actor_type==='agent_employee' && runLocator.execution_actor_type!=='human')return null;
     if (runLocator.actor_type === 'app_public' && (runLocator.execution_actor_type !== 'human'
       || !runLocator.origin_public_endpoint_id || !runLocator.origin_public_ingress_id
       || runLocator.actor_id !== runLocator.origin_public_ingress_id)) return null;
     prelockedRunActorId = runLocator.actor_id;
+    if (runLocator.actor_type === 'agent_employee') prelockedAgentId = runLocator.actor_id;
     memberIds.push(runLocator.actor_type === 'human'
       ? runLocator.actor_id : runLocator.execution_actor_id);
   }
@@ -160,6 +175,8 @@ export async function loadLiveRuntimeAuthority(
     await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${orgId}
       AND user_id = ${userId} FOR SHARE`);
   }
+  if (prelockedAgentId) await tx.execute(sql`SELECT id FROM agent_employees
+    WHERE org_id = ${orgId} AND id = ${prelockedAgentId} FOR SHARE`);
   const [registrationLocator] = await tx.select({
     app_installation_id: appRuntimeRegistrations.app_installation_id,
   }).from(appRuntimeRegistrations).where(and(

@@ -15,7 +15,7 @@ export function assertAttachmentBrokerEnabled(): void {
 export function assertAttachmentManifestAdmission(manifest: DeftAppManifestV7, composition = false): void {
   assertAttachmentBrokerEnabled();
   if (manifest.native_actions.length || manifest.public_actions.length
-    || (!composition && (manifest.runtime_actions.length || manifest.experiences.length || manifest.private_capabilities.length))) {
+    || (!composition && (manifest.runtime_actions.length || manifest.experiences.length || manifest.private_capabilities.length || manifest.private_state?.length))) {
     throw new AppError('Protocol7 action and Experience planes are not yet supported', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
 }
@@ -35,6 +35,7 @@ export function buildAttachmentAppReviewedAuthority(manifest: DeftAppManifestV7,
   assertAttachmentManifestAdmission(manifest, composition);
   return { schema: composition ? 'deft.app_blob_grant.v2' as const : 'deft.app_blob_grant.v1' as const, ...pins,
     sync_descriptors: manifest.sync_descriptors.map(descriptor => ({ ...descriptor, descriptor_digest: digestAppGrantValue(descriptor) })),
+    ...(manifest.private_state ? { private_state: manifest.private_state } : {}),
     modules: manifest.modules, runtime_actions: composition ? runtimeActionDescriptors(manifest) : [],
     native_actions: [], public_actions: [], experiences: composition ? manifest.experiences : [],
     host_policy: { encrypted_custody: true, current_parent_required: true, provider_url_fetch: false,

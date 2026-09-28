@@ -26,6 +26,57 @@ const message = (sequence: number, value: Record<string, unknown>) => ({
 });
 const delay = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+test('sidebar navigation accepts bounded buttons and rejects routes, collisions and other nodes', () => {
+  const root = { kind: 'text', id: 'content', text: 'Content' };
+  const item = { kind: 'button', id: 'inbox', label: 'Inbox', selected: true, disabled: false };
+  assert.deepEqual(parseExperienceView({ root, navigation: [item] }), { root, navigation: [item] });
+  assert.equal(parseExperienceView({ root, navigation: [{ ...item, href: '/settings' }] }), null);
+  assert.equal(parseExperienceView({ root, navigation: [root] }), null);
+  assert.equal(parseExperienceView({ root, navigation: [item, item] }), null);
+  assert.equal(parseExperienceView({ root, navigation: [{ ...item, id: 'content' }] }), null);
+  assert.equal(parseExperienceView({ root, navigation: Array.from({ length: 17 }, (_, i) => ({ ...item, id: `nav_${i}` })) }), null);
+  assert.deepEqual(parseExperienceView({ root }), { root });
+});
+
+test('public SDK sidebar clicks use the existing live session and stop after revocation', async () => {
+  const hostPort = new FakePort(), authorPort = new FakePort();
+  hostPort.postMessage = value => { hostPort.sent.push(value); authorPort.receive(structuredClone(value)); };
+  authorPort.postMessage = value => hostPort.receive(structuredClone(value));
+  let live = true; const views: unknown[] = [], events: unknown[] = [];
+  const bridge = createExperienceBridge({ port: hostPort, pin, resourceKeys: [], actionKeys: [],
+    broker: { isLive: () => live }, onView: view => views.push(view) });
+  const sdk = createDeftExperienceSdk(authorPort, pin.session_id);
+  sdk.onEvent(event => events.push(event));
+  const view = { root: { kind: 'text', id: 'content', text: 'Inbox' }, navigation: [{ kind: 'button', id: 'sent', label: 'Sent' }] };
+  try {
+    sdk.render(view); await delay(); assert.deepEqual(views, [view]);
+    assert.equal(await bridge.sendUiEvent({ kind: 'click', node_id: 'sent' }), true);
+    assert.deepEqual(events, [{ kind: 'click', node_id: 'sent' }]);
+    live = false;
+    assert.equal(await bridge.sendUiEvent({ kind: 'click', node_id: 'sent' }), false);
+    assert.equal(events.length, 1);
+  } finally { sdk.close(); bridge.revoke(); }
+});
+
+test('public SDK opens declared source through host without receiving a locator or file content', async () => {
+  const hostPort = new FakePort(), authorPort = new FakePort();
+  hostPort.postMessage = value => { hostPort.sent.push(value); authorPort.receive(structuredClone(value)); };
+  authorPort.postMessage = value => { authorPort.sent.push(value); hostPort.receive(structuredClone(value)); };
+  const recordId = '12345678-1234-4234-8234-123456789012'; let calls = 0;
+  const bridge = createExperienceBridge({ port: hostPort, pin, resourceKeys: ['inbox'], actionKeys: [],
+    broker: { isLive: () => true, openResource: async (_pin, key, input) => {
+      assert.equal(key, 'inbox'); assert.deepEqual(input, { record_id: recordId }); calls++; return { opened: true };
+    } }, onView: () => undefined });
+  const sdk = createDeftExperienceSdk(authorPort, pin.session_id);
+  try {
+    assert.deepEqual(await sdk.openResource('inbox', recordId), { opened: true }); assert.equal(calls, 1);
+    assert.equal(JSON.stringify(hostPort.sent).includes(recordId), false);
+    await assert.rejects(sdk.openResource('inbox', 'https://example.test/arbitrary'), /Invalid record locator/);
+    hostPort.receive(message(2, { kind: 'request', request_id: 'request_2', operation: 'open_resource', key: 'undeclared', input: { record_id: recordId } }));
+    await delay(); assert.equal(bridge.active, false); assert.equal(calls, 1);
+  } finally { sdk.close(); bridge.revoke(); }
+});
+
 test('public SDK optional undefined request fields preserve Run status and keyed action dispatch', async () => {
   const hostPort = new FakePort(), authorPort = new FakePort();
   hostPort.postMessage = value => { hostPort.sent.push(value); authorPort.receive(structuredClone(value)); };
@@ -269,4 +320,16 @@ test('flat workspace presentation stays symbolic and bounded', () => {
     assert.equal(parseExperienceView({ root: { kind: 'button', id: 'send', label: 'Send', ...extra } }), null);
   }
   assert.equal(parseExperienceView({ root: { kind: 'input', id: 'body', label: 'Body', value: '', appearance: 'html' } }), null);
+});
+
+
+test('private state dispatch requires an explicitly declared key and live pin', async () => {
+  const port = new FakePort(); let calls = 0;
+  const bridge = createExperienceBridge({ port, pin, resourceKeys: [], actionKeys: [], stateKeys: ['drafts'],
+    broker: { isLive: () => true, privateState: async (_pin, key, input) => { calls++; assert.equal(key, 'drafts');
+      assert.deepEqual(input, { operation: 'list' }); return { operation: 'list', items: [] }; } }, onView: () => undefined });
+  port.receive(message(1, { kind: 'request', request_id: 'request_1', operation: 'private_state', key: 'drafts', input: { operation: 'list' } }));
+  await delay(); assert.equal(calls, 1); assert.equal(bridge.active, true);
+  port.receive(message(2, { kind: 'request', request_id: 'request_2', operation: 'private_state', key: 'undeclared', input: { operation: 'list' } }));
+  await delay(); assert.equal(calls, 1); assert.equal(bridge.active, false);
 });

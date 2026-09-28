@@ -96,14 +96,44 @@ test('packed Email7 composition retains separately reviewed sync, scalar and Run
       assert.equal(bytes.status,200);assert.deepEqual(Buffer.from(await bytes.arrayBuffer()),Buffer.from(synced.bytes_b64,'base64'));
       const experience=await call(`/api/app-experiences/${staged.id}/main/sessions`,'POST',{});
       const path=`/api/app-experiences/sessions/${experience.pin.session_id}`;
+      const sourceTarget=path+'/resources/inbox/target',sourceInput={record_id:projection.id};
+      assert.ok((await response(sourceTarget,'POST',sourceInput)).status>=400,'Sync consent is not Experience exposure');
       const exposureReview=await call(path+'/exposure/review','POST',{});
       const accepted=await call(path+'/exposure/accept','POST',{review_token:exposureReview.review_token,
         review_digest:exposureReview.review_digest,accept_exposure:true});assert.ok(accepted.exposure_id);
+      const target=await call(sourceTarget,'POST',sourceInput);
+      assert.deepEqual(target,{schema_version:'deft.experience_resource_target.v1',exposure_id:accepted.exposure_id,
+        exposure_epoch:accepted.exposure_epoch,binding_id:syncBinding.binding_id,record_id:projection.id});
+      assert.equal((await response(sourceTarget+'?extra=1','POST',sourceInput)).status,400);
+      assert.equal((await response(sourceTarget,'POST',{...sourceInput,binding_id:syncBinding.binding_id})).status,400);
+      assert.equal((await response(sourceTarget,'POST',{record_id:randomUUID()})).status,404);
+      assert.equal((await response(path+'/resources/other/target','POST',sourceInput)).status,404);
+      assert.equal((await response(sourceTarget,'POST',sourceInput,operatorSession.accessToken)).status,404);
+      const otherSid=await web.createWebSession({id:owner,org_id:org,email:`owner-${suffix}@example.test`});
+      assert.equal((await response(sourceTarget,'POST',sourceInput,otherSid.accessToken)).status,404);
       const {output:page}=await call(path+'/resources/inbox','POST',{schema_version:'deft.experience_resource_request.v2',
         operation:'search',query:'hostile',field_keys:['subject']});
       assert.equal(page.items.length,1);assert.equal(page.items[0].label,parent.data.subject);
+      await call(path+'/exposure','DELETE');
+      assert.equal((await response(sourceTarget,'POST',sourceInput)).status,404);
       assert.ok((await response(blob+'/composition/runtime/invoke','POST',invoke)).status>=400);
       } finally { process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED='true'; }
+    });
+    await t.test('expired attachment does not hide its current message or Task source before cleanup',async clockTest=>{
+      const [stage]=await db.select().from(s.appAttachmentStages).where(orm.eq(s.appAttachmentStages.id,synced.staging_id));
+      assert.ok(stage?.linked_expires_at);
+      const originalSession=ownerSession;
+      try {
+        clockTest.mock.timers.enable({apis:['Date'],now:stage.linked_expires_at.getTime()+1});
+        ownerSession=await web.createWebSession({id:owner,org_id:org,email:`owner-${suffix}@example.test`});
+        const parent=await call(`/api/private-resources/bindings/${syncBinding.binding_id}/attachment-parents/${projection.id}`);
+        assert.equal(parent.data.subject,'Saved hostile <script>literal</script> Email');
+        assert.deepEqual(parent.attachments.attachments,[],'Expired private file metadata must not be returned');
+        const bytes=await response(`/api/private-resources/bindings/${syncBinding.binding_id}/records/${projection.id}/attachments/${stage.id}/content`);
+        assert.equal(bytes.status,409,'Expired ciphertext remains unavailable before physical cleanup');
+      } finally {
+        clockTest.mock.timers.reset();ownerSession=originalSession;
+      }
     });
     const {ref}=await call(`/api/private-resources/bindings/${syncBinding.binding_id}/attachment-parents/${projection.id}`);
     const personal=await (await import('../src/lib/mcp-token.js')).issuePersonalMcpToken({orgId:org,userId:owner,

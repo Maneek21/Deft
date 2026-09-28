@@ -1,4 +1,7 @@
-export type AppNavigationResponseItem = {
+import type { AppInstallation } from './apps';
+
+export type AppModuleNavigationResponseItem = {
+  kind?: 'module';
   app_installation_id: string;
   app_id: string;
   app_name: string;
@@ -10,6 +13,13 @@ export type AppNavigationResponseItem = {
   navigation_order?: number;
 };
 
+export type AppExperienceNavigationResponseItem = {
+  kind: 'experience'; app_installation_id: string; app_id: string; app_name: string;
+  label: string; experience_key: string; key: string; navigation_order?: number;
+  view_key?: never; module_slug?: never; collection_key?: never;
+};
+export type AppNavigationResponseItem = AppModuleNavigationResponseItem | AppExperienceNavigationResponseItem;
+
 export type AppNavigationLink = AppNavigationResponseItem & { href: string };
 export type AppNavigationItem = {
   kind: 'app'; name: string; href: string; icon: null; installationId: string; links: AppNavigationLink[];
@@ -19,7 +29,8 @@ export function appNavigationLinkKey(link: Pick<AppNavigationLink, 'key' | 'modu
   return link.key ?? `${link.module_slug}:${link.collection_key}`;
 }
 
-export function appNavigationHref(item: Pick<AppNavigationResponseItem, 'module_slug' | 'collection_key' | 'view_key'>): string {
+export function appNavigationHref(item: AppNavigationResponseItem): string {
+  if (item.kind === 'experience') return `/apps/${encodeURIComponent(item.app_installation_id)}/${encodeURIComponent(item.experience_key)}`;
   const path = `/modules/${encodeURIComponent(item.module_slug)}/${encodeURIComponent(item.collection_key)}`;
   return item.view_key ? `${path}?view=${encodeURIComponent(item.view_key)}` : path;
 }
@@ -35,9 +46,23 @@ export function isAppNavigationLinkActive(
   return !link.view_key || link.view_key === selectedViewKey;
 }
 
-export function getAppNavigationItems(items: readonly AppNavigationResponseItem[]): AppNavigationItem[] {
+export function getInstalledExperienceNavigation(apps: readonly AppInstallation[]): AppExperienceNavigationResponseItem[] {
+  return apps.flatMap((app) => app.state === 'active' && app.active_version_id === app.version_id
+    && 'experiences' in app.manifest ? app.manifest.experiences.map((experience) => ({
+      kind: 'experience' as const, app_installation_id: app.id, app_id: app.app_id, app_name: app.name,
+      label: experience.label, experience_key: experience.key,
+      key: `experience:${app.id}:${experience.key}`,
+    })) : []);
+}
+
+export function getAppNavigationItems(items: readonly AppNavigationResponseItem[], apps: readonly AppInstallation[] = []): AppNavigationItem[] {
   const groups = new Map<string, AppNavigationItem>();
-  for (const item of items) {
+  const seenExperiences = new Set<string>();
+  for (const item of [...items, ...getInstalledExperienceNavigation(apps)]) {
+    if (item.kind === 'experience') {
+      if (seenExperiences.has(item.key)) continue;
+      seenExperiences.add(item.key);
+    }
     const link = { ...item, href: appNavigationHref(item) };
     const group = groups.get(item.app_installation_id);
     if (group) group.links.push(link);
@@ -66,7 +91,7 @@ export function appNavigationModuleSlug(pathname: string): string | null {
 }
 
 export function getAppNavigationModuleOwner(moduleSlug: string, groups: readonly AppNavigationItem[]): AppNavigationItem | null {
-  const owners = groups.filter((group) => group.links.some((link) => link.module_slug === moduleSlug));
+  const owners = groups.filter((group) => group.links.some((link) => link.kind !== 'experience' && link.module_slug === moduleSlug));
   return owners.length === 1 ? owners[0]! : null;
 }
 
@@ -86,6 +111,7 @@ export function getVisibleModuleNavigationItems<T extends { href: string }>(
   if (!authoritative) return [...modules];
   const owners = new Map<string, Set<string>>();
   for (const item of appItems) {
+    if (item.kind === 'experience') continue;
     const set = owners.get(item.module_slug) ?? new Set<string>();
     set.add(item.app_installation_id);
     owners.set(item.module_slug, set);

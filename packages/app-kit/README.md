@@ -82,6 +82,57 @@ building a Worker must not depend on a Deft checkout's `node_modules`.
 SDK availability does not grant resource or action authority. The host must
 support the declared protocols and separately authorize each operation.
 
+### App sidebar navigation
+
+Hosts with Experience sidebar support accept `sdk.render({ root, navigation })`.
+The optional `navigation` array contains up to 16 existing `button` nodes, using
+`label`, `selected` and `disabled` for the sidebar presentation. IDs must be
+unique across navigation and content. Do not repeat these buttons in `root`.
+Clicks arrive through the usual `sdk.onEvent` handler as `click` events with the
+same node IDs; they do not navigate away or restart the Worker. No URLs, HTML or
+additional authority are accepted. Navigation is cleared when the app is hidden
+or its session ends. Older hosts reject the field, so deploy supporting hosts
+before upgrading an author that emits it.
+
+### Private state and source panels (Protocol 7)
+
+Hosts that enable private App state accept an optional `private_state` array in
+a Protocol 7 manifest. Each entry declares a key, label, bounded scalar object
+schema, per-record and total byte limits, record limit, and retention. Declare
+the keys used by a Worker in an Experience bundle with
+`schema_version: 'deft.experience_bundle.v3'` and `state_keys`. This bundle also
+supports the existing optional `search_resource_keys`; it does not change older
+bundle bytes or grant search implicitly.
+
+State requires an explicit owner review for the exact installed artifact. It is
+encrypted and scoped to organization, owner, installation and declaration, and
+is excluded from workspace search and AI context. The host ceilings are 16 KiB
+per record, 32 live records, 128 KiB per key and 30 days from creation. Updating
+a record does not extend its expiry. Records use opaque UUIDs and revision
+compare-and-swap; callers must handle conflicts without overwriting another
+edit. Deleted identifiers remain tombstoned until their original expiry.
+
+The browser SDK exposes `listPrivateState`, `readPrivateState`,
+`putPrivateState`, and `deletePrivateState`. An App upgrade does not silently
+give new code access to records sealed for an older artifact. The host offers
+the owner a separate recovery review for compatible declarations, preserving
+the original expiry. Author code cannot approve this recovery itself.
+
+For an attachment-backed declared resource, `sdk.openResource(key, recordId)`
+asks the host to open the selected source's files and follow-ups panel. It
+returns only `{ opened: true }`. The host verifies the current owner, accepted
+Experience exposure, binding and live record; it does not accept an authored
+URL. Downloads and normal Task creation remain host interactions. A Task starts
+with a fixed-label source link, without copying private record fields. A source
+link does not grant another user permission to read it. Unsupported hosts deny
+this optional operation.
+
+Workers run in an isolated browser context. Do not assume APIs restricted to
+secure contexts, such as `crypto.randomUUID`, are present. When allocating
+UUIDs, feature-detect it or construct a valid UUID with `crypto.getRandomValues`;
+never replace cryptographic randomness with `Math.random`. Verify the actual
+sandboxed browser journey as well as a bundled Worker simulation.
+
 ## Host presentation and access
 
 App navigation may select a declared collection and a `view_key` belonging to
@@ -189,3 +240,36 @@ provider.
 See the [connected App author guide](../../docs/connected-app-author-guide.md)
 for the packed-artifact workflow, native operator lifecycle,
 sandbox-provider proof, and current boundaries.
+
+### Trusted human actions and durable private access
+
+A supporting host can retain a revocable, exact-scope private-access grant separately
+from its short-lived Experience session. The host renews technical leases while the
+same authenticated user remains authorized. App code cannot renew or expand consent;
+revocation, changed permissions and changed verified app authority require review.
+Existing session-only grants are not automatically converted to persistent grants.
+
+For a human-authored external action, request the host-owned composer using the
+existing dialog operation with key `compose_action` and this bounded payload:
+
+```ts
+{ action_key: 'declared_action', input: { /* proposed scalar values */ },
+  draft_state_key: 'declared_private_state', draft_id: 'existing-record-uuid' }
+```
+
+The draft must already exist in the declared encrypted private state. The host
+reads the current action schema and draft, owns the editable form, and binds its
+final Send interaction to every exact input field. Same-name draft fields are
+saved with revision CAS. The dialog returns `{ run: { id, state } }`,
+`{ cancelled: true }`, or an uncertain outcome. An interrupted dialog is not
+proof that no effect occurred. Keep the original draft identity and reconcile its
+Run; never automatically create a new send identity after an uncertain outcome.
+The host uses that identity for duplicate prevention across technical sessions.
+
+The author never receives an authorization ticket or a privileged Send operation.
+Ordinary `action` requests retain their governed approval path. Human private
+access does not grant agent execution permission. Agent requests use a separately
+configured owner policy, defaulting to denial; permitted requests still require
+human approval. Provider credentials remain outside the Worker and host form.
+This composer supports the existing closed scalar action contract. Undeclared
+fields, including unsupported attachment inputs, are rejected rather than ignored.

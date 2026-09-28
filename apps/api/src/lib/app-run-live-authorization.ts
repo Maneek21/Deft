@@ -1,3 +1,6 @@
+import { captureRuntimeAgent } from './app-experience-human-action-agent-capture.js';
+import { humanActionReleaseIsCurrent } from './app-experience-human-action-live.js';
+import { actionBatchReleaseIsCurrent } from './app-action-batch-live.js';
 import { createHash } from 'node:crypto';
 import { isAppV5RuntimeActionsEnabled, isAppAttachmentBrokerEnabled } from './env.js';
 import type { z } from 'zod';
@@ -288,6 +291,10 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
    * pins: a reviewed binding and the live effective grant are required. */
   captureReviewedNativeInTransaction = captureReviewedNativeInTransaction;
   captureReviewedPublicNativeInTransaction = captureReviewedPublicNativeInTransaction;
+
+  async captureReviewedRuntimeAgentInTransaction(tx: AppRunTransaction,input:{org_id:string;agent_employee_id:string;runtime_binding_id:string}) {
+    return captureRuntimeAgent(tx,input,(executor,caller)=>this.captureReviewedRuntimeInTransaction(executor,caller));
+  }
 
   async captureReviewedRuntimeForPreparation(input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
@@ -731,8 +738,11 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       const internal = await this.#loadInternalRun(input.tx, input.org_id, input.run.id);
       if (!internal || !await this.#matchesLiveState(input.tx, input.run, internal)) return false;
 
-      const reservesEmployeeBudget = input.run.execution_actor_type === 'agent_employee'
-        && input.run.risk_class !== 'read';
+      const budgetEmployeeId = input.run.execution_actor_type === 'agent_employee'
+        ? input.run.execution_actor_id
+        : input.run.provider_kind === 'app_runtime' && input.run.initiating_actor_type === 'agent_employee'
+          ? input.run.initiating_actor_id : null;
+      const reservesEmployeeBudget = budgetEmployeeId !== null && input.run.risk_class !== 'read';
       if (!reservesEmployeeBudget) {
         return internal.budget_reserved_at === null
           && internal.budget_reserved_count === null
@@ -754,7 +764,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         .set({ daily_action_count: sql`${agentEmployees.daily_action_count} + 1` })
         .where(and(
           eq(agentEmployees.org_id, input.org_id),
-          eq(agentEmployees.id, input.run.execution_actor_id),
+          eq(agentEmployees.id, budgetEmployeeId!),
           eq(agentEmployees.is_active, true),
           eq(agentEmployees.is_deleted, false),
           eq(agentEmployees.unhealthy, false),
@@ -813,6 +823,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     run: AppRunSafeView,
     internal: InternalRunAuthorization,
   ): Promise<boolean> {
+    if (!await humanActionReleaseIsCurrent(tx, run)) return false;
+    if (!await actionBatchReleaseIsCurrent(tx, run)) return false;
     // Resource sync requires its own host-created intent and live consent.
     // The existing action authorization paths cannot authorize that scope.
     if (run.review_scope === 'reviewed_resource_sync') return false;
@@ -895,14 +907,15 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
             && sameAuthorityRefs(stored.authority_refs,
               current.authorization_snapshot.authority_refs);
         }
-        if (run.initiating_actor_type !== 'human'
-          || run.initiating_actor_id !== run.execution_actor_id
+        if (!['human','agent_employee'].includes(run.initiating_actor_type)
+          || run.execution_actor_type !== 'human'
+          || (run.initiating_actor_type === 'human' && run.initiating_actor_id !== run.execution_actor_id)
           || internal.origin_public_endpoint_id !== null
           || internal.origin_public_ingress_id !== null) return false;
-        const current = await this.captureReviewedRuntimeInTransaction(tx, {
-          org_id: run.org_id, user_id: run.initiating_actor_id,
-          runtime_binding_id: internal.origin_runtime_binding_id,
-        });
+        const current = run.initiating_actor_type === 'agent_employee'
+          ? await this.captureReviewedRuntimeAgentInTransaction(tx, {org_id:run.org_id,agent_employee_id:run.initiating_actor_id,runtime_binding_id:internal.origin_runtime_binding_id})
+          : await this.captureReviewedRuntimeInTransaction(tx, {org_id:run.org_id,user_id:run.initiating_actor_id,runtime_binding_id:internal.origin_runtime_binding_id});
+        if ('agent_owner_user_id' in current && current.agent_owner_user_id !== run.execution_actor_id) return false;
         return current.binding.provider_instance_id === run.provider_instance_id
           && current.binding.provider_snapshot_id === internal.provider_snapshot_id
           && current.binding.operation_name === run.operation_name

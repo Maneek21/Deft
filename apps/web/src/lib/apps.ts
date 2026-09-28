@@ -101,7 +101,10 @@ export type AppNativeManifestV6 = Omit<AppResourceManifestV5, 'schema_version' |
 };
 export type AppAttachmentManifestV7 = Omit<AppNativeManifestV6, 'schema_version' | 'compatibility'> & {
   schema_version: '7'; compatibility: { app_protocol: '7' };
+  private_state?: AppPrivateStateDeclaration[];
 };
+export type AppPrivateStateDeclaration = { key: string; label: string; schema: Record<string, unknown>;
+  max_record_bytes: number; max_records: number; max_total_bytes: number; retention_days: number };
 export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
   | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5 | AppNativeManifestV6 | AppAttachmentManifestV7;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
@@ -526,6 +529,51 @@ function normalizeActionInputSource(value: unknown): AppActionInputSource {
   throw new Error('Invalid App action input source.');
 }
 
+/** Bounded display projection; the host Kit parser and review decide authority. */
+function normalizePrivateState(value: unknown): AppPrivateStateDeclaration[] {
+  const rows = recordArray(value, 'private state');
+  const fail = (): never => { throw new Error('Invalid private state display declaration.'); };
+  const exact = (row: Record<string, unknown>, fields: string[]) => {
+    if (Object.keys(row).length !== fields.length || Object.keys(row).some(field => !fields.includes(field))) fail();
+  };
+  const fieldKey = (key: unknown): key is string => typeof key === 'string' && /^[a-z][a-z0-9_]{0,47}$/.test(key)
+    && !['constructor', 'prototype', '__proto__'].includes(key);
+  if (!rows.length || rows.length > 16) fail();
+  return rows.map((row, index) => {
+    exact(row, ['key', 'label', 'schema', 'max_record_bytes', 'max_records', 'max_total_bytes', 'retention_days']);
+    if (typeof row.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(row.key)
+      || index > 0 && String(rows[index - 1]!.key) >= row.key
+      || typeof row.label !== 'string' || !row.label.length || row.label.length > 128) fail();
+    const bounds = { max_record_bytes: 16384, max_records: 32, max_total_bytes: 131072, retention_days: 30 };
+    for (const [key, max] of Object.entries(bounds))
+      if (typeof row[key] !== 'number' || !Number.isSafeInteger(row[key]) || row[key] < 1 || row[key] > max) fail();
+    if (Number(row.max_record_bytes) > Number(row.max_total_bytes)) fail();
+    const schema = object(row.schema, 'Private state schema');
+    exact(schema, ['type', 'properties', 'required', 'additionalProperties']);
+    const properties = object(schema.properties, 'Private state schema fields');
+    if (schema.type !== 'object' || schema.additionalProperties !== false || Object.keys(properties).length > 32
+      || !Array.isArray(schema.required) || schema.required.length > 32
+      || new Set(schema.required).size !== schema.required.length
+      || schema.required.some(key => !fieldKey(key) || !Object.hasOwn(properties, key))) fail();
+    for (const [key, value] of Object.entries(properties)) {
+      if (!fieldKey(key)) fail();
+      const field = object(value, 'Private state scalar field');
+      if (field.type === 'string') {
+        exact(field, ['type', 'maxLength']);
+        if (typeof field.maxLength !== 'number' || !Number.isSafeInteger(field.maxLength) || field.maxLength < 1 || field.maxLength > 16384) fail();
+      } else if (field.type === 'number') {
+        exact(field, ['type', 'minimum', 'maximum']);
+        if (typeof field.minimum !== 'number' || typeof field.maximum !== 'number'
+          || !Number.isFinite(field.minimum) || !Number.isFinite(field.maximum) || field.minimum > field.maximum) fail();
+      } else if (field.type === 'boolean') exact(field, ['type']);
+      else fail();
+    }
+    return { key: row.key as string, label: row.label as string, schema,
+      max_record_bytes: row.max_record_bytes as number, max_records: row.max_records as number,
+      max_total_bytes: row.max_total_bytes as number, retention_days: row.retention_days as number };
+  });
+}
+
 function normalizeManifest(value: unknown): AppManifest {
   const row = object(value, 'App manifest');
   const compatibility = object(row.compatibility, 'App compatibility');
@@ -586,7 +634,7 @@ function normalizeManifest(value: unknown): AppManifest {
       // decide authority; importing the packaging entry point would load Node code.
       const fields = ['schema_version', 'compatibility', 'id', 'version', 'name', 'description', 'license', 'provenance',
         'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions',
-        'sync_descriptors', 'experiences', 'public_actions'];
+        'sync_descriptors', 'experiences', 'public_actions', 'private_state'];
       const sync = recordArray(row.sync_descriptors, 'App attachment sync descriptors');
       const native = recordArray(row.native_actions, 'native actions');
       if (Object.keys(row).some(field => !fields.includes(field)) || Object.keys(compatibility).length !== 1
@@ -614,7 +662,8 @@ function normalizeManifest(value: unknown): AppManifest {
           return requirement.key === descriptor.runtime_requirement_key && requirement.protocol_version === 'deft.app_runtime_channel.v3';
         })) throw new Error('Attachment descriptor requires channel 3.');
       }
-      return { ...installed, schema_version: '7', compatibility: { app_protocol: '7' }, sync_descriptors: sync, native_actions: native };
+      return { ...installed, schema_version: '7', compatibility: { app_protocol: '7' }, sync_descriptors: sync, native_actions: native,
+        ...(Object.hasOwn(row, 'private_state') ? { private_state: normalizePrivateState(row.private_state) } : {}) };
     }
     if (protocol === '6') {
       // Display projection only; the host validates the exact Kit contract.
