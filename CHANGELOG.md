@@ -10,6 +10,41 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Release candidate — publication pending
+
+The `0.3.0-preview.16` host and `@deft/app-kit` `0.1.0-alpha.6`
+are release preparation candidates. No release tag, image, registry package,
+or production certification is implied by this entry. Public installation
+instructions continue to use the latest published release.
+
+### Added
+
+- Governed App Runtime actions, reviewed public ingress, owner private resource
+  sync, and protocol 7 resource and attachment custody with current authority
+  checks and durable Run receipts.
+- App Experiences with responsive controls, artifact bound private state,
+  explicit human consent separate from technical leases, reviewed agent policy,
+  and sealed private Defty context.
+- Shared native Defty and MCP discovery of authorized Runtime actions and
+  bounded immutable action batches, with one exact host review and per effect
+  release checks. CRM personalization uses existing declarative module records.
+- Explicit owner authorized observation recovery for terminal resource sync
+  Runs, retaining the original cursor, projections, and unknown outcome history.
+- A matching portable Author Kit candidate and an Email WIP example. Email is
+  a reference implementation requiring separately reviewed setup and an operator
+  supplied mail account; synthetic SMTP acceptance does not prove delivery.
+
+### Upgrade preparation
+
+- The candidate includes supported schema upgrades through the existing
+  `0.3.0-preview.56` migration identity. Migration names identify schema steps;
+  they do not imply that corresponding product releases were published. Use
+  `pnpm db:upgrade` for an existing supported installation and preserve migration
+  checksums and retained authority data.
+- New App capabilities remain subject to their explicit feature flags and
+  reviewed consent. See [release boundaries](docs/app-release-boundaries.md)
+  for host, Kit, and Email source ownership and candidate packaging.
+
 ## [0.3.0-preview.15] — 2026-09-08
 
 ### Added

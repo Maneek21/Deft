@@ -26,6 +26,28 @@ GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.6
 
 ## Cutting a release
 
+### App host, Author Kit, and Email example
+
+The host and `packages/app-kit` are independently versioned artifacts in this
+repository. Prepare their matching candidate versions and compatibility metadata
+together. The current candidates are host `0.3.0-preview.16` and Kit
+`0.1.0-alpha.6`; publication is pending. The Email source under
+`examples/apps/email` is a WIP reference example, not a separately certified
+product release. See [App release boundaries](docs/app-release-boundaries.md).
+
+Pack the Kit from the exact reviewed candidate source with
+`pnpm --dir packages/app-kit pack --pack-destination /absolute/path/to/artifacts`.
+Record the tarball hash and verify installation, public exports, and the CLI in
+a clean consumer before preparing an Email package. A packed tarball is not
+evidence of npm publication. Do not repack changed contracts under a released
+version or update consumer lockfiles to a different artifact with the same
+identity. No registry publishing workflow is introduced by this preparation.
+
+Keep operator account configuration, Runtime credentials, private fixtures,
+database dumps, generated mail journals, and proof reports outside source and
+release artifacts. Email builds pin the exact Kit artifact; operator setup
+remains separate from authoring and preserves normal host review and consent.
+
 ### 1. Pre-flight
 
 On `master`, confirm required check-runs are green on the latest commit
