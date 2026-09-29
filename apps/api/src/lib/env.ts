@@ -76,10 +76,30 @@ export function resolveEncryptionKey(
   return value || DEVELOPMENT_ENCRYPTION_KEY;
 }
 
+const DEV_JWT_SECRET = 'dev-jwt-secret-change-me';
+const DEV_JWT_REFRESH_SECRET = 'dev-refresh-secret-change-me';
+
+export function resolveJwtSecret(
+  configured: string | undefined,
+  devDefault: string,
+  name: string,
+  nodeEnv = process.env.NODE_ENV,
+): string {
+  const value = configured?.trim();
+  const insecure = !value
+    || value === devDefault
+    || value.includes('CHANGE_ME')
+    || value.length < 32;
+  if (nodeEnv === 'production' && insecure) {
+    throw new Error(`${name} must be a non-default secret of at least 32 characters in production`);
+  }
+  return value || devDefault;
+}
+
 export const env = {
   DATABASE_URL: resolveDatabaseUrl(),
-  JWT_SECRET: process.env.JWT_SECRET || 'dev-jwt-secret-change-me',
-  JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret-change-me',
+  JWT_SECRET: resolveJwtSecret(process.env.JWT_SECRET, DEV_JWT_SECRET, 'JWT_SECRET'),
+  JWT_REFRESH_SECRET: resolveJwtSecret(process.env.JWT_REFRESH_SECRET, DEV_JWT_REFRESH_SECRET, 'JWT_REFRESH_SECRET'),
   RESEND_API_KEY: process.env.RESEND_API_KEY || '',
   API_PORT: parseInt(process.env.API_PORT || '3001'),
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
