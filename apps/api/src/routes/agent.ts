@@ -1,4 +1,5 @@
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
+import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { Hono } from 'hono';
 import {
@@ -129,6 +130,8 @@ async function maybePostApprovalConfirmation(params: {
         space_id: messages.space_id,
         parent_id: messages.parent_id,
         user_id: messages.user_id,
+        content: messages.content,
+        metadata: messages.metadata,
       })
       .from(messages)
       .where(and(
@@ -239,11 +242,26 @@ async function maybePostApprovalConfirmation(params: {
         } as any,
       })
       .returning();
-    return { confirmation, approvalMessage, actor };
+    const originalMetadata = (approvalMessage.metadata ?? {}) as Record<string, unknown>;
+    const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, content);
+    const oldBlocks = Array.isArray(originalMetadata.agent_blocks) ? originalMetadata.agent_blocks : [];
+    const [reconciledMessage] = await tx.update(messages).set({
+      content: reconciledContent,
+      metadata: {
+        ...originalMetadata,
+        approval_proposal_original_content: approvalMessage.content,
+        approval_resolution_message_id: confirmation!.id,
+        agent_blocks: [{ type: 'text', text: reconciledContent },
+          ...oldBlocks.filter((block: any) => block?.type !== 'text')],
+      } as any,
+    }).where(and(eq(messages.id, actionMessageId), eq(messages.org_id, params.orgId),
+      eq(messages.space_id, approvalMessage.space_id))).returning();
+    return { confirmation, approvalMessage, actor, reconciledMessage };
   });
 
   const io = getIO();
   if (io && posted?.confirmation) {
+    if (posted.reconciledMessage) io.to(`space:${posted.approvalMessage.space_id}`).emit('message:edited', posted.reconciledMessage);
     io.to(`space:${posted.approvalMessage.space_id}`).emit('message:new', {
       ...posted.confirmation,
       user_name: posted.actor?.name ?? 'Defty',

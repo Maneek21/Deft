@@ -1,4 +1,5 @@
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
+import { buildDeftAppPackage } from '@deft/app-kit';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
@@ -30,7 +31,12 @@ test('trusted host Send atomically releases exact human input with receipts and 
     const response = await request(path, method, body, token); const result = await response.json() as any;
     assert.ok(response.ok, `${path}: HTTP ${response.status} ${JSON.stringify(result)}`); return result;
   };
-  const packed = (await runtimeSecurityPackage()).json;
+  const fixture = JSON.parse((await runtimeSecurityPackage()).json);
+  const sendContract = fixture.manifest.private_capabilities.find((capability: any) => capability.key === 'send_message').input_schema;
+  Object.assign(sendContract.properties.to, { minLength: 1, format: 'email', title: 'Recipient' });
+  Object.assign(sendContract.properties.subject, { minLength: 1, title: 'Subject' });
+  Object.assign(sendContract.properties.message_id, { title: 'Message identity', readOnly: true });
+  const packed = (await buildDeftAppPackage({ manifest: fixture.manifest, artifacts: fixture.artifacts })).json;
   const parsed = JSON.parse(packed);
   const { app: installed } = await call('/api/apps/blob/composition/stage', 'POST', packed);
   const context = await call(`/api/apps/blob/composition/${installed.id}/context?app_version_id=${installed.version_id}`);
@@ -59,7 +65,19 @@ test('trusted host Send atomically releases exact human input with receipts and 
   assert.ok((await request(policyPath,'PUT',{mode:'autonomous',expected_revision:1})).status>=400);
   assert.ok((await request(policyPath,'PUT',{mode:'deny',expected_revision:1},outsider.accessToken)).status>=400);
   const contextResult=await call(action+'/context');assert.equal(contextResult.action_key,'send_message');
+  assert.deepEqual(contextResult.input_schema.properties.to, sendContract.properties.to);
+  assert.equal(contextResult.input_schema.properties.message_id.readOnly, true);
   const input={to:'recipient@example.test',subject:'Host exact Send',body:'PRIVATE-HUMAN-ACTION',message_id:'<host-probe@example.test>'};
+  for (const invalid of [{ ...input, to: 'not-an-email' }, { ...input, to: '' }, { ...input, subject: '' }]) {
+    const response = await request(action+'/prepare','POST',{input:invalid,idempotency_key:randomUUID()});
+    assert.equal(response.status,400,'declared email/length validation fails before preparing a ticket');
+    const result = await response.json() as any;
+    assert.equal(result.ticket,undefined);
+    assert.equal(JSON.stringify(result).includes(input.body),false);
+    assert.equal((await db.select().from(s.appRuns).where(orm.eq(s.appRuns.org_id,org))).length,0);
+    assert.equal((await db.select().from(s.agentActions).where(orm.eq(s.agentActions.org_id,org))).length,0);
+    assert.equal((await db.select().from(s.appRunAttempts).where(orm.eq(s.appRunAttempts.org_id,org))).length,0);
+  }
   assert.ok((await request(action+'/prepare','POST',{input:{...input,attachments:['undeclared-blob']},idempotency_key:randomUUID()})).status>=400);
   const key=randomUUID();
   const ticket=await call(action+'/prepare','POST',{input,idempotency_key:key});

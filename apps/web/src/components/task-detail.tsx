@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { htmlToText, stripHtml } from '@/lib/strip-html';
 import { api } from '@/lib/api';
+import { hasUnsavedDescription, saveSubtaskStatus, taskActivitySummary } from '@/lib/task-detail-updates';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -565,7 +566,7 @@ function DescriptionDiff({ oldValue, newValue }: { oldValue: string | null; newV
   );
 }
 
-function DescriptionEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
+function DescriptionEditor({ value, onChange, onBlur }: { value: string; onChange: (html: string) => void; onBlur: () => void }) {
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -582,6 +583,7 @@ function DescriptionEditor({ value, onChange }: { value: string; onChange: (html
     ],
     content: value || '',
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
+    onBlur,
     editorProps: {
       attributes: { class: 'deft-editor' },
     },
@@ -766,6 +768,60 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const startDateInputRef = useRef<HTMLInputElement>(null);
   const subtaskCreateIntentRef = useRef<{ projectId: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const descriptionDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pendingDescription = useRef<string | undefined>(undefined);
+  const descriptionSaving = useRef(false);
+  const [saveNotice, setSaveNotice] = useState('');
+  const [subtaskSaving, setSubtaskSaving] = useState<string | null>(null);
+  const descriptionTaskId = useRef(taskId);
+
+  useEffect(() => {
+    descriptionTaskId.current = taskId;
+    pendingDescription.current = undefined;
+    descriptionSaving.current = false;
+    clearTimeout(descriptionDebounce.current);
+    setSaveNotice('');
+  }, [taskId]);
+
+  const flushDescription = async () => {
+    clearTimeout(descriptionDebounce.current);
+    if (descriptionSaving.current || pendingDescription.current === undefined) return;
+    const html = pendingDescription.current;
+    pendingDescription.current = undefined;
+    descriptionSaving.current = true;
+    setSaveNotice('Saving description…');
+    try {
+      const res = await api.patch(`/api/tasks/${taskId}`, { description: html || null });
+      if (!res.ok) throw new Error('Save failed');
+      const saved = await res.json();
+      if (descriptionTaskId.current !== taskId) return;
+      setTask((current) => current ? { ...current, ...saved } : current);
+      if (task) onUpdated({ ...task, ...saved });
+      setSaveNotice('Description saved');
+    } catch {
+      if (descriptionTaskId.current !== taskId) return;
+      if (pendingDescription.current === undefined) pendingDescription.current = html;
+      setSaveNotice('Description not saved. Try again before leaving.');
+      return;
+    } finally {
+      if (descriptionTaskId.current === taskId) descriptionSaving.current = false;
+    }
+    if (pendingDescription.current !== undefined) void flushDescription();
+  };
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (hasUnsavedDescription(pendingDescription.current, descriptionSaving.current)) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+      clearTimeout(descriptionDebounce.current);
+    };
+  }, []);
   const depSearchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Load task
@@ -940,13 +996,19 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     }
   };
 
-  const handleToggleSubtaskStatus = async (subtask: Subtask) => {
-    const newStatus = subtask.status === 'done' ? 'todo' : 'done';
-    // Optimistic update
-    setSubtasks((prev) =>
-      prev.map((s) => (s.id === subtask.id ? { ...s, status: newStatus } : s))
-    );
-    await api.patch(`/api/tasks/${subtask.id}`, { status: newStatus });
+  const handleToggleSubtaskStatus = async (subtask: Subtask, newStatus = subtask.status === 'done' ? 'in_progress' : 'done') => {
+    if (subtaskSaving) return;
+    setSubtaskSaving(subtask.id);
+    try {
+      const status = await saveSubtaskStatus(() => api.patch(`/api/tasks/${subtask.id}`, { status: newStatus }));
+      if (descriptionTaskId.current !== taskId) return;
+      setSubtasks((prev) => prev.map((s) => s.id === subtask.id ? { ...s, status } : s));
+      setSaveNotice('Subtask status saved');
+    } catch (error) {
+      setSaveNotice(error instanceof Error && error.message.startsWith('Subtask status') ? error.message : 'Subtask status was not saved. Check your connection and try again.');
+    } finally {
+      setSubtaskSaving(null);
+    }
   };
 
   // Dependency handlers
@@ -1998,6 +2060,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           </div>
 
           {/* Description tab */}
+          {saveNotice && <p role="status" className="px-5 py-2 text-xs">{saveNotice}</p>}
           {activeTab === 'description' && (
           <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <h3
@@ -2007,24 +2070,19 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               Description
             </h3>
             <DescriptionEditor
+              key={taskId}
               value={descValue}
+              onBlur={flushDescription}
               onChange={(html) => {
                 setDescValue(html);
                 // Auto-save after editing
-                clearTimeout(titleDebounce.current);
-                titleDebounce.current = setTimeout(async () => {
-                  if (task) {
-                    const res = await api.patch(`/api/tasks/${taskId}`, { description: html || null });
-                    if (res.ok) {
-                      const apiResult = await res.json();
-                      const merged = { ...task, ...apiResult };
-                      setTask(merged);
-                      onUpdated(merged);
-                    }
-                  }
-                }, 800);
+                pendingDescription.current = html;
+                setSaveNotice('Description not yet saved');
+                clearTimeout(descriptionDebounce.current);
+                descriptionDebounce.current = setTimeout(() => void flushDescription(), 800);
               }}
             />
+            {['Description not yet saved', 'Description not saved. Try again before leaving.'].includes(saveNotice) && <button onClick={() => void flushDescription()}>Save description</button>}
             {/* Fix 4: quick comment entry point always visible on description tab */}
             <div
               className="mt-4 pt-3"
@@ -2215,6 +2273,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     {/* Checkbox */}
                     <button
                       onClick={() => handleToggleSubtaskStatus(subtask)}
+                      aria-label={subtask.status === 'done' ? `Reopen ${subtask.title}` : `Complete ${subtask.title}`}
+                      title="Use the status menu to follow the task workflow"
+                      disabled={!!subtaskSaving || !(resolvedConfig?.allowed_transitions?.[subtask.status] ?? []).includes(subtask.status === 'done' ? 'in_progress' : 'done')}
                       className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0"
                       style={{
                         border: subtask.status === 'done' ? 'none' : '1.5px solid var(--border)',
@@ -2250,6 +2311,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     />
 
                     {/* Assignee avatar */}
+                    <select aria-label={`Status of ${subtask.title}`} value={subtask.status} disabled={!!subtaskSaving}
+                      onChange={(event) => void handleToggleSubtaskStatus(subtask, event.target.value)}>
+                      {[subtask.status, ...(resolvedConfig?.allowed_transitions?.[subtask.status] ?? [])].map((status) =>
+                        <option key={status} value={status}>{statusLabel(status)}</option>)}
+                    </select>
                     {subtask.assignee_name && (
                       <PersonAvatar
                         name={subtask.assignee_name}
@@ -2858,9 +2924,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                             </span>
                           </>
                         ) : (
-                          <>changed {formatFieldName(a.field)}</>
+                          <>{taskActivitySummary(a.action, a.field) ?? `changed ${formatFieldName(a.field)}`}</>
                         )}
-                        {!isDescription && !isAgentHandoff && !isAgentProgress && (
+                        {!!a.field && !isDescription && !isAgentHandoff && !isAgentProgress && (
                           <>
                             {': '}
                             <span style={{ color: 'var(--muted)', textDecoration: 'line-through', textDecorationColor: 'var(--muted)' }}>

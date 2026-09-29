@@ -1,0 +1,8 @@
+node_modules/
+*.tgz
+app.deft.json
+artifact.json
+build-result.json
+worker.bundle.js
+*-result.json
+private*

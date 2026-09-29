@@ -266,7 +266,7 @@ existing dialog operation with key `compose_action` and this bounded payload:
 The draft must already exist in the declared encrypted private state. The host
 reads the current action schema and draft, owns the editable form, and binds its
 final Send interaction to every exact input field. Same-name draft fields are
-saved with revision CAS. The dialog returns `{ run: { id, state } }`,
+saved with revision CAS. The dialog returns `{ run: { id, state, submitted_input? } }`,
 `{ cancelled: true }`, or an uncertain outcome. An interrupted dialog is not
 proof that no effect occurred. Keep the original draft identity and reconcile its
 Run; never automatically create a new send identity after an uncertain outcome.
@@ -279,3 +279,12 @@ configured owner policy, defaulting to denial; permitted requests still require
 human approval. Provider credentials remain outside the Worker and host form.
 This composer supports the existing closed scalar action contract. Undeclared
 fields, including unsupported attachment inputs, are rejected rather than ignored.
+
+
+Scalar string contracts may declare `minLength`, `format: 'email'`, `title`, and
+`readOnly`. The host enforces declared validation before admitting an action;
+`readOnly` is a presentation hint, not an authorization grant. Source references
+remain inspectable in the trusted form. A fresh successful confirmation includes
+`submitted_input`, the exact authorized scalar values, for accurate app history.
+Recovered Run lookups may omit it; a mutable draft is not evidence of the submitted
+content. These additions require the matching alpha.7 host and Kit candidate.
