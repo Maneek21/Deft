@@ -1,3 +1,40 @@
+/** Availability and authority questions require the runtime inventory, not record bindings. */
+export function requiresRuntimeActionEvidence(request: string): boolean {
+  const inventory = /\b(?:actions?|capabilit(?:y|ies)|runtime\s+tools?)\b/iu;
+  const discovery = /\b(?:discover|which|what|check|list|show|find|whether|can\s+(?:you|I)|are|is)\b/iu;
+  const runtime = /\b(?:apps?|sideloaded|runtime)\b/iu;
+  const authority = /\b(?:can\s+you|can\s+I|whether|do|does)\b[^.!?\n]{0,160}\b(?:autonomously|autonomous|require\s+approval|requires\s+approval|request\s+approval)\b/iu;
+  return request.split(/[.!?\n]+/u).some(sentence => (
+    (inventory.test(sentence) && discovery.test(sentence) && /\bdiscoverable\b/iu.test(sentence))
+    || (runtime.test(sentence) && ((inventory.test(sentence) && discovery.test(sentence)) || authority.test(sentence)))
+  ));
+}
+
+/** Require a complete successful pagination chain for the unfiltered inventory. */
+export function hasRuntimeActionEvidence(reads: readonly { action: string; success: boolean; params?: unknown; result?: unknown }[]): boolean {
+  let expectedCursor: string | null = null;
+  let started = false;
+  for (const read of reads) {
+    if (read.action !== 'app_runtime_action_list' || !read.success) continue;
+    const input = read.params && typeof read.params === 'object' ? read.params as Record<string, unknown> : {};
+    const result = read.result && typeof read.result === 'object' ? read.result as Record<string, unknown> : {};
+    if (input.installation_id !== undefined) continue;
+    if (!Array.isArray(result.actions) || result.authority !== 'discovery_only') continue;
+    if (!input.after) {
+      started = true;
+    } else if (!started || input.after !== expectedCursor) {
+      continue;
+    }
+    if (result.has_more === false && result.next_cursor === null) return true;
+    if (result.has_more !== true || typeof result.next_cursor !== 'string' || !result.next_cursor) {
+      started = false;
+      continue;
+    }
+    expectedCursor = result.next_cursor;
+  }
+  return false;
+}
+
 /** A native link in a reply must come from a read in this turn, not model memory. */
 export function hasUnverifiedNativeLinks(text: string, sources: readonly { url?: string; type?: string; id?: string }[]): boolean {
   const destinations = new Set(sources.flatMap(source => source.url ? [source.url]
@@ -7,7 +44,7 @@ export function hasUnverifiedNativeLinks(text: string, sources: readonly { url?:
       const url = new URL(match[1]!, 'https://deft.invalid');
       const path = `${url.pathname}${url.search}${url.hash}`;
       if (/^\/(modules|tasks|knowledge|calendar|chat|notes)(\/|\?|#|$)/u.test(path)
-        && !destinations.has(path)) return true;
+        && !destinations.has(match[1]!)) return true;
     } catch { /* Invalid links are rejected by the renderer. */ }
   }
   return false;

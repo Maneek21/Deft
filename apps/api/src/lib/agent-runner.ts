@@ -15,7 +15,7 @@ import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js
 import { executeToolCall } from './agent-context.js';
 import { isReadOnlyAgentRequest } from './agent-request-policy.js';
 import { agentToolFailure } from './agent-tool-result.js';
-import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles } from './agent-source-grounding.js';
+import { hasUnverifiedNativeLinks, hasUnresolvedRecipient, requiresWorkspaceEvidence, hasUnverifiedApprovalRoles, requiresRuntimeActionEvidence, hasRuntimeActionEvidence } from './agent-source-grounding.js';
 import {
   createModuleNextReadsResolver,
   nativeAgentToolResult,
@@ -619,17 +619,21 @@ export async function runAgentQuery(params: {
         && !executedActions.some(action => action.readOnly && action.success
           && !['module_list', 'module_get', 'app_list', 'app_get'].includes(action.action));
       const inventedApproval = readOnlyRequest && hasUnverifiedApprovalRoles(newText);
-      if (hasUnverifiedNativeLinks(newText, allCitations) || failedLookup || missingLookup || inventedApproval) {
-        if (!requestedSourceGrounding && iterations < maxIterations) {
+      const missingRuntimeDiscovery = requiresRuntimeActionEvidence(content) && !hasRuntimeActionEvidence(executedActions);
+      const runtimeDiscoveryAvailable = tools.some(tool => tool.name === 'app_runtime_action_list');
+      if (hasUnverifiedNativeLinks(newText, allCitations) || failedLookup || missingLookup || inventedApproval || missingRuntimeDiscovery) {
+        if (!requestedSourceGrounding && iterations < maxIterations && (!missingRuntimeDiscovery || runtimeDiscoveryAvailable)) {
           requestedSourceGrounding = true;
           apiMessages = [
             ...apiMessages,
             { role: 'assistant', content: newText },
-            { role: 'user', content: 'Verify this reply before returning it. Read the requested workspace records in this turn. Review any rejected arguments against the tool schema and fresh Module catalog, using identifiers available there. Use exact returned source URLs. If the target is ambiguous, ask one clarification. If access or evidence is unavailable, say so without claiming records are absent. Do not invent project-lead, account-manager or stakeholder approval requirements: chat proposals require the user to review the exact recipient and final content in Deft’s governed approval flow, under current App and connector permissions. A draft or approval is not delivery. Do not execute or repeat any write.' },
+            { role: 'user', content: (missingRuntimeDiscovery ? 'Call app_runtime_action_list now without an installation_id filter and follow next_cursor using after until has_more is false. Use the actual inventory and agent_policy/review_requirement to answer action availability and authority. capability_list for a record is not runtime inventory evidence. Do not request, propose, or execute an action to check availability. ' : '') + 'Verify this reply before returning it. Read the requested workspace records in this turn. Review any rejected arguments against the tool schema and fresh Module catalog, using identifiers available there. Use exact returned source URLs. If the target is ambiguous, ask one clarification. If access or evidence is unavailable, say so without claiming records are absent. Do not invent project-lead, account-manager or stakeholder approval requirements: chat proposals require the user to review the exact recipient and final content in Deft’s governed approval flow, under current App and connector permissions. A draft or approval is not delivery. Do not execute or repeat any write.' },
           ];
           continue;
         }
-        finalText = 'I could not verify the workspace facts and approval requirements for this reply. Please retry the lookup; this does not mean the records are absent.';
+        finalText = missingRuntimeDiscovery
+          ? 'I could not verify the available App runtime actions or their approval requirements. Runtime discovery was unavailable or incomplete; this does not mean no actions exist.'
+          : 'I could not verify the workspace facts and approval requirements for this reply. Please retry the lookup; this does not mean the records are absent.';
         lastResponseContent = [{ type: 'text', text: finalText, citations: null }];
         break;
       }
@@ -798,6 +802,12 @@ export async function runAgentQuery(params: {
       { role: 'assistant' as const, content: response.content },
       { role: 'user' as const, content: toolResults },
     ];
+  }
+
+  // Exhausting the tool loop must not expose an unverified availability preamble.
+  if (!finalText && requiresRuntimeActionEvidence(content) && !hasRuntimeActionEvidence(executedActions)) {
+    finalText = 'I could not verify the available App runtime actions or their approval requirements. Runtime discovery was unavailable or incomplete; this does not mean no actions exist.';
+    lastResponseContent = [{ type: 'text', text: finalText, citations: null }];
   }
 
   // Use final text if available, fall back to intermediate text from tool-call iterations
