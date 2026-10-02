@@ -30,6 +30,7 @@ jobs:
       API_PORT: '4011'
       NEXT_PUBLIC_APP_URL: http://localhost:4010
       NEXT_PUBLIC_API_URL: http://localhost:4011
+      NEXT_PUBLIC_WS_URL: http://localhost:4011
       DEFT_WEB_URL: http://localhost:4010
     steps:
       - uses: actions/checkout@v7

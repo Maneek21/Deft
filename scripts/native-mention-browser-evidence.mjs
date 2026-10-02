@@ -15,6 +15,13 @@ const page = await context.newPage();
 const errors = [];
 const results = [];
 const extraContexts = [];
+let socketConnected = false;
+page.on('websocket', socket => {
+  if (!socket.url().startsWith('ws://localhost:4011/socket.io/')) return;
+  socket.on('framereceived', frame => {
+    if (typeof frame.payload === 'string' && frame.payload.startsWith('40')) socketConnected = true;
+  });
+});
 const shot = async name => { await page.screenshot({ path: path.join(output, name + '.png'), fullPage: true }); results.push(name); };
 const choose = async (editor, query, label) => {
   await editor.pressSequentially('@' + query, { delay: 90 });
@@ -36,6 +43,7 @@ try {
   await page.waitForURL(url => !url.pathname.includes('login'));
   await page.goto(base + '/chat?space=' + fixture.publicSpaceId, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
+  assert(socketConnected, 'The browser establishes the live workspace socket connection');
   console.log('URL', page.url());
   console.log((await page.locator('body').innerText()).slice(-4500));
   console.log('Editors', await page.locator('[contenteditable=true]').count());
@@ -236,5 +244,5 @@ try {
   for (const extra of extraContexts) await extra.close();
   if (video) await video.saveAs(path.join(output, 'desktop-native-mentions.webm'));
   await browser.close();
-  await writeFile(path.join(output, 'browser-results.json'), JSON.stringify({ results, errors }, null, 2));
+  await writeFile(path.join(output, 'browser-results.json'), JSON.stringify({ results, errors, socketConnected }, null, 2));
 }
