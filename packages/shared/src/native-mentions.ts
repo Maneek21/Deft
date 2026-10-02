@@ -42,35 +42,175 @@ export function nativeMentionPlaceholder(kind: NativeMentionKind): string {
   return kind === 'person' ? '@Person' : kind === 'task' ? '@Task' : '@Wiki';
 }
 
+type ContentRange = { start: number; end: number };
+type HtmlPart = ContentRange & { name: string; closing: boolean; comment: boolean; complete: boolean; bodyStart: number };
+const NATIVE_TOKEN_PATTERN = /\[\[deft:(person|task|wiki_page):([A-Za-z0-9][A-Za-z0-9._:-]{0,255})\]\]/g;
+const LITERAL_TAGS = new Set(['pre', 'code', 'blockquote', 'script', 'style', 'textarea']);
+
+function applyContentRanges(content: string, ranges: ContentRange[], mask: boolean): string {
+  ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+  const chunks: string[] = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.end <= cursor) continue;
+    const start = Math.max(cursor, range.start);
+    chunks.push(content.slice(cursor, start));
+    if (mask) chunks.push(content.slice(start, range.end).replace(/[^\n]/g, ' '));
+    cursor = range.end;
+  }
+  chunks.push(content.slice(cursor));
+  return chunks.join('');
+}
+
+/** Consume each HTML tag once, respecting quotes and incomplete editor input. */
+function* htmlParts(content: string): Generator<HtmlPart> {
+  let cursor = 0;
+  while (cursor < content.length) {
+    const start = content.indexOf('<', cursor);
+    if (start < 0) return;
+    if (content.startsWith('<!--', start)) {
+      const close = content.indexOf('-->', start + 4);
+      const end = close < 0 ? content.length : close + 3;
+      yield { start, end, name: '', closing: false, comment: true, complete: close >= 0, bodyStart: start + 4 };
+      cursor = end; continue;
+    }
+    let i = start + 1;
+    const closing = content[i] === '/';
+    if (closing) i++;
+    const declaration = content[i] === '!' || content[i] === '?';
+    if (!declaration && !/[A-Za-z]/.test(content[i] ?? '')) { cursor = i; continue; }
+    const nameStart = i;
+    if (declaration) i++;
+    else while (/[A-Za-z0-9:-]/.test(content[i] ?? '')) i++;
+    const name = declaration ? '' : content.slice(nameStart, i).toLowerCase();
+    const bodyStart = i;
+    let quote = '', complete = false;
+    while (i < content.length) {
+      const char = content[i]!;
+      if (quote) { if (char === quote) quote = ''; }
+      else if (char === '"' || char === "'") quote = char;
+      else if (char === '>') { i++; complete = true; break; }
+      i++;
+    }
+    yield { start, end: i, name, closing, comment: declaration, complete, bodyStart };
+    cursor = i;
+  }
+}
+
+function identityAttributes(content: string, part: HtmlPart): Map<string, string> {
+  const attrs = new Map<string, string>();
+  const end = part.end - 1;
+  const space = (char: string | undefined) => /[\t\n\f\r ]/.test(char ?? '');
+  let i = part.bodyStart;
+  while (i < end) {
+    while (i < end && (space(content[i]) || content[i] === '/')) i++;
+    const start = i;
+    while (i < end && !space(content[i]) && !['=', '/', '>'].includes(content[i]!)) i++;
+    if (i === start) { i++; continue; }
+    const name = content.slice(start, i).toLowerCase();
+    while (i < end && space(content[i])) i++;
+    if (content[i] !== '=') continue;
+    i++;
+    while (i < end && space(content[i])) i++;
+    const quote = content[i] === '"' || content[i] === "'" ? content[i++]! : '';
+    const valueStart = i;
+    if (quote) while (i < end && content[i] !== quote) i++;
+    else while (i < end && !space(content[i]) && content[i] !== '>') i++;
+    const value = content.slice(valueStart, i);
+    if (quote) i++;
+    if (name !== 'data-deft-ref-kind' && name !== 'data-deft-ref-id') continue;
+    // Only canonical quoted attributes can carry identity; duplicates fail closed.
+    if (!quote || attrs.has(name)) return new Map();
+    attrs.set(name, value);
+  }
+  return attrs;
+}
+
+/** Pair backtick runs by length without searching every possible delimiter again. */
+function markdownLiteralRanges(content: string): ContentRange[] {
+  const ranges: ContentRange[] = [];
+  const runs: Array<ContentRange & { next?: number }> = [];
+  for (let i = 0; i < content.length;) {
+    if (content.charCodeAt(i) !== 96) { i++; continue; }
+    const start = i;
+    while (i < content.length && content.charCodeAt(i) === 96) i++;
+    runs.push({ start, end: i });
+  }
+  const nextByLength = new Map<number, number>();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i]!, length = run.end - run.start;
+    run.next = nextByLength.get(length);
+    nextByLength.set(length, i);
+  }
+  let covered = 0;
+  for (const run of runs) {
+    if (run.start < covered) continue;
+    const newline = run.next === undefined ? content.indexOf('\n', run.start) : -1;
+    covered = run.next === undefined ? (newline < 0 ? content.length : newline) : runs[run.next]!.end;
+    ranges.push({ start: run.start, end: covered });
+  }
+  // Link labels/destinations are literal contexts, including unfinished links.
+  const brackets: number[] = [];
+  let linkStart: number | null = null, depth = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i]!;
+    if (char === '\n') {
+      if (linkStart !== null) ranges.push({ start: linkStart, end: i });
+      linkStart = null; depth = 0; brackets.length = 0; continue;
+    }
+    if (linkStart !== null) {
+      if (char === '(') depth++;
+      else if (char === ')' && --depth === 0) {
+        ranges.push({ start: linkStart, end: i + 1 }); linkStart = null;
+      }
+      continue;
+    }
+    if (char === '[') brackets.push(i);
+    else if (char === ']') {
+      const start = brackets.pop();
+      if (start !== undefined && content[i + 1] === '(') {
+        linkStart = content[start - 1] === '!' ? start - 1 : start;
+        depth = 1; i++;
+      }
+    }
+  }
+  if (linkStart !== null) ranges.push({ start: linkStart, end: content.length });
+  for (const match of content.matchAll(NATIVE_TOKEN_PATTERN)) {
+    if (content[match.index - 1] === '\\') ranges.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return ranges;
+}
+
 /** Ignore literal/quoted contexts, including incomplete code while an editor saves. */
 function visibleNativeContent(content: string): string {
   const mask = (value: string) => value.replace(/[^\n]/g, ' ');
-  let fence: string | null = null;
+  let fence: { char: string; length: number } | null = null;
   const markdown = content.split('\n').map(line => {
-    const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    const delimiter = line.match(/^ {0,3}(\x60{3,}|~{3,})/);
     if (delimiter) {
-      if (!fence) fence = delimiter[1]!;
-      else if (delimiter[1]![0] === fence[0] && delimiter[1]!.length >= fence.length) fence = null;
+      if (!fence) fence = { char: delimiter[1]![0]!, length: delimiter[1]!.length };
+      else if (delimiter[1]![0] === fence.char && delimiter[1]!.length >= fence.length) fence = null;
       return mask(line);
     }
     if (fence || /^\s*>/.test(line) || /^(?: {4}|\t)/.test(line)) return mask(line);
     return line;
   }).join('\n');
-  const literals = markdown.replace(/(`+)[\s\S]*?\1/g, mask).replace(/`[^\n]*$/gm, mask)
-    .replace(/!?\[[^\n]*?\]\([^\n]*?\)/g, mask)
-    .replace(/(?:\\)+\[\[deft:[^\]]+\]\]/g, mask);
-  const stack: string[] = [];
-  return literals.replace(/<!--[\s\S]*?(?:-->|$)|<\/?[a-z][^>]*>|[^<]+|</gi, token => {
-    if (token.startsWith('<!--')) return mask(token);
-    const tag = token.match(/^<(\/?)(pre|code|blockquote|script|style|textarea)\b/i);
-    if (tag) {
-      const name = tag[2]!.toLowerCase();
-      if (!tag[1]) stack.push(name);
-      else { const index = stack.lastIndexOf(name); if (index >= 0) stack.splice(index); }
-      return mask(token);
+  const literals = applyContentRanges(markdown, markdownLiteralRanges(markdown), true);
+  const ranges: ContentRange[] = [];
+  const depths = new Map<string, number>();
+  let blocked = 0, cursor = 0;
+  for (const part of htmlParts(literals)) {
+    if (blocked) ranges.push({ start: cursor, end: part.start });
+    if (part.comment || blocked || LITERAL_TAGS.has(part.name)) ranges.push(part);
+    if (!part.comment && LITERAL_TAGS.has(part.name)) {
+      const count = depths.get(part.name) ?? 0;
+      if (part.closing) { if (count) { depths.set(part.name, count - 1); blocked--; } }
+      else { depths.set(part.name, count + 1); blocked++; }
     }
-    return stack.length ? mask(token) : token;
-  });
+    cursor = part.end;
+  }
+  if (blocked) ranges.push({ start: cursor, end: literals.length });
+  return applyContentRanges(literals, ranges, true);
 }
 
 /** Parse identity-bearing atoms, never resolve names or client-supplied URLs. */
@@ -85,34 +225,53 @@ export function extractNativeMentions(content: string): NativeMentionRef[] {
     refs.set(nativeMentionKey(ref), ref);
     if (refs.size > NATIVE_MENTION_LIMIT) throw new NativeMentionLimitError();
   };
-  for (const match of visible.replace(/<[^>]*>/g, value => value.replace(/[^\n]/g, ' ')).matchAll(/\[\[deft:(person|task|wiki_page):([^\]\s]+)\]\]/g)) {
-    add(match[1], match[2]);
-  }
-  for (const match of visible.matchAll(/<span\b([^>]*)>/gi)) {
-    const attrs = new Map<string, string>();
-    for (const attr of match[1]!.matchAll(/(?:^|\s)(data-deft-ref-kind|data-deft-ref-id)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-      const key = attr[1]!.toLowerCase();
-      // Duplicate identity attributes are malformed, not last-write-wins.
-      if (attrs.has(key)) { attrs.clear(); break; }
-      attrs.set(key, attr[2] ?? attr[3] ?? '');
-    }
+  const parts = [...htmlParts(visible)];
+  const text = applyContentRanges(visible, parts, true);
+  for (const match of text.matchAll(NATIVE_TOKEN_PATTERN)) add(match[1], match[2]);
+  for (const part of parts) {
+    if (part.name !== 'span' || part.closing || !part.complete) continue;
+    const attrs = identityAttributes(visible, part);
     add(attrs.get('data-deft-ref-kind'), attrs.get('data-deft-ref-id'));
   }
   return [...refs.values()];
 }
 
-/** Keep identity atoms out of legacy fuzzy name matching. */
+/** Keep even malformed identity atoms out of legacy fuzzy name matching. */
 export function stripNativeMentionAtoms(content: string): string {
-  return content.replace(/<span\b[^>]*data-deft-ref-kind[^>]*>[\s\S]*?<\/span>/gi, '')
-    .replace(/\[\[deft:(person|task|wiki_page):[^\]]+\]\]/g, '');
+  const ranges: ContentRange[] = [];
+  const spans: Array<{ start: number; native: boolean }> = [];
+  let nativeDepth = 0, nativeStart = 0;
+  for (const part of htmlParts(content)) {
+    if (part.comment || part.name !== 'span') continue;
+    if (!part.closing) {
+      const native = content.slice(part.bodyStart, part.end).toLowerCase().includes('data-deft-ref-kind');
+      spans.push({ start: part.start, native });
+      if (native && nativeDepth++ === 0) nativeStart = part.start;
+    } else {
+      const span = spans.pop();
+      if (span?.native && --nativeDepth === 0) ranges.push({ start: nativeStart, end: part.end });
+    }
+  }
+  if (nativeDepth) ranges.push({ start: nativeStart, end: content.length });
+  let tokenStart: number | null = null;
+  for (let i = 0; i < content.length; i++) {
+    if (tokenStart === null && ['person', 'task', 'wiki_page'].some(kind => content.startsWith('[[deft:' + kind + ':', i))) {
+      tokenStart = i;
+    } else if (tokenStart !== null && content.startsWith(']]', i)) {
+      ranges.push({ start: tokenStart, end: i + 2 }); tokenStart = null; i++;
+    }
+  }
+  if (tokenStart !== null) ranges.push({ start: tokenStart, end: content.length });
+  return applyContentRanges(content, ranges, false);
 }
+
 /** Replace tokens before Markdown rendering; caller must sanitize the result. */
 export function nativeMentionTokensToHtml(content: string): string {
-  const visible = visibleNativeContent(content).replace(/<[^>]*>/g, value => value.replace(/[^\n]/g, ' '));
-  return content.replace(/\[\[deft:(person|task|wiki_page):([^\]\s]+)\]\]/g, (token, kind, id, offset) => {
+  const literals = visibleNativeContent(content);
+  const visible = applyContentRanges(literals, [...htmlParts(literals)], true);
+  return content.replace(NATIVE_TOKEN_PATTERN, (token, kind, id, offset) => {
     if (visible.slice(offset, offset + token.length) !== token) return token;
-    const parsed = ResourceOpaqueIdSchema.safeParse(id);
-    if (!parsed.success) return token;
-    return `<span data-deft-ref-kind="${kind}" data-deft-ref-id="${id}">${nativeMentionPlaceholder(kind)}</span>`;
+    return '<span data-deft-ref-kind="' + kind + '" data-deft-ref-id="' + id + '">'
+      + nativeMentionPlaceholder(kind) + '</span>';
   });
 }

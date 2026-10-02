@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   extractNativeMentions, nativeMentionRef, nativeMentionToken, nativeMentionTokensToHtml,
-  NativeMentionRefSchema, NativeMentionSourceSchema,
+  NativeMentionRefSchema, NativeMentionSourceSchema, stripNativeMentionAtoms,
 } from '../src/native-mentions.js';
 
 test('source scope is limited to chat, tasks and knowledge while notes and calendar are excluded', () => {
@@ -66,4 +66,28 @@ test('HTML rendering preserves literal reference examples and attribute values',
     '```\n[[deft:person:a]]\n```', '> [[deft:person:a]]',
     '<a title="[[deft:person:a]]">Example</a>',
   ]) assert.equal(nativeMentionTokensToHtml(body), body);
+});
+
+test('quoted HTML delimiters and incomplete links stay literal while canonical atoms survive', () => {
+  const body = '<a title="> [[deft:person:hidden]]">Example</a> [[deft:task:visible]]';
+  assert.deepEqual(extractNativeMentions(body), [nativeMentionRef('task', 'visible')]);
+  assert(nativeMentionTokensToHtml(body).includes('title="> [[deft:person:hidden]]"'));
+  assert.deepEqual(extractNativeMentions('[label [[deft:person:hidden]]](unfinished'), []);
+  assert.equal(stripNativeMentionAtoms('<span data-deft-ref-kind="person"><strong>@Stale</strong></span> keep'), ' keep');
+  assert.equal(stripNativeMentionAtoms('[[deft:person:bad @Stale]] keep'), ' keep');
+});
+
+test('large adversarial delimiter and malformed-atom inputs do not cause parser backtracking', () => {
+  const inputs = [
+    'Inline ' + String.fromCharCode(96).repeat(200_000),
+    '<span ' + 'data-deft-ref-kind '.repeat(30_000) + '>unterminated',
+    '[[deft:task:' + '[[deft:task:!'.repeat(30_000),
+  ];
+  const start = performance.now();
+  for (const input of inputs) {
+    assert.deepEqual(extractNativeMentions(input), []);
+    assert.equal(nativeMentionTokensToHtml(input), input);
+    stripNativeMentionAtoms(input);
+  }
+  assert(performance.now() - start < 10_000, 'Adversarial inputs must finish within the conservative CI budget');
 });
