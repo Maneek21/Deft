@@ -13,7 +13,7 @@ import { NATIVE_MENTION_AGENT_GUIDANCE } from '../src/lib/native-mention-agent-c
 import { issueScopedEmployeeMcpToken } from '../src/lib/mcp-token.js';
 import { mcpServerV1Routes } from '../src/routes/mcp-server-v1.js';
 import { nativeMentionBacklinks, reconcileNativeMentions, publishNativeMentions, nativeContentHash, deliverNativeMention } from '../src/lib/native-mentions.js';
-import { createNativeMentionFixture } from './fixtures/native-mentions.js';
+import { createNativeMentionFixture, cleanupNativeMentionFixture } from './fixtures/native-mentions.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 
 const enabled = Boolean(safeTestDatabaseUrl());
@@ -39,24 +39,7 @@ before(async () => {
 after(async () => {
   try {
     if (!f) return;
-    const ids = sql`(${f.orgId}, ${f.otherOrgId})`;
-    await db.transaction(async tx => {
-      for (const table of ['agent_mcp_call_audit', 'mcp_tokens', 'action_receipts', 'agent_cooperative_log',
-        'attention_items', 'notifications', 'native_reference_states', 'agent_channel_events', 'agent_actions',
-        'wiki_ops_log', 'wiki_citations', 'task_activity', 'task_comments',
-        'tasks', 'wiki_pages', 'projects']) {
-        // Closed host-owned table list; only these throwaway organizations.
-        await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE org_id IN ${ids}`);
-      }
-      await tx.execute(sql`DELETE FROM messages WHERE org_id IN ${ids}`);
-      await tx.execute(sql`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id IN ${ids})`);
-      await tx.execute(sql`DELETE FROM spaces WHERE org_id IN ${ids}`);
-      await tx.execute(sql`DELETE FROM agent_employees WHERE org_id IN ${ids}`);
-      await tx.execute(sql`DELETE FROM org_members WHERE org_id IN ${ids}`);
-      await tx.execute(sql`DELETE FROM job_queue WHERE org_id IN ${ids} OR data->>'orgId' IN ${ids}`);
-      await tx.execute(sql`DELETE FROM orgs WHERE id IN ${ids}`);
-      await tx.execute(sql`DELETE FROM users WHERE id IN (${f.ownerId}, ${f.samId}, ${f.agentId}, ${f.agent2Id}, ${f.outsiderId})`);
-    });
+    await cleanupNativeMentionFixture(f);
   } finally { await closeDb(); }
 });
 async function rpc(raw: string, method: string, params: Record<string, unknown> = {}) {
@@ -103,6 +86,8 @@ test('Defty native execution and employee MCP discover, copy and resolve all fou
   assert.deepEqual(new Set(native.result.items.map((i: any) => i.group)), new Set(['People', 'Agents', 'Tasks', 'Wikis']));
   const employee = await call(token, 'native_mentions_search');
   assert.deepEqual(new Set(employee.data.items.map((i: any) => i.group)), new Set(['People', 'Agents', 'Tasks', 'Wikis']));
+  const byKey = await call(token, 'native_mentions_search', { query: 'DEFT-42' });
+  assert(byKey.data.items.some((item: any) => item.ref.resource_id === f.taskId), 'display task keys must be searchable without pretending they are resource IDs');
   for (const item of employee.data.items) assert.deepEqual(extractNativeMentions(item.token), [item.ref]);
   const body = 'Use ' + atom('wiki_page', f.wikiId) + ' reviewed by ' + atom('person', f.samId);
   await db.update(tasks).set({ description: body }).where(eq(tasks.id, f.taskId));

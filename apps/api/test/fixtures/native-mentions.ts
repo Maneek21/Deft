@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../../src/lib/db.js';
+import { sql } from 'drizzle-orm';
 import { orgs, users, orgMembers, spaces, spaceMembers, projects, tasks, wikiPages, agentEmployees } from '@deft/db/schema';
 export async function createNativeMentionFixture() {
   const orgId = randomUUID(), otherOrgId = randomUUID();
@@ -41,4 +42,24 @@ export async function createNativeMentionFixture() {
   ]);
   return { orgId, otherOrgId, ownerId, samId, agentId, agent2Id, outsiderId, employeeId, employee2Id,
     publicSpaceId, privateSpaceId, projectId, taskId, restrictedId, wikiId, privateWikiId };
+}
+
+/** Remove only this UUID-owned synthetic workspace; child rows cascade where declared. */
+export async function cleanupNativeMentionFixture(f: Awaited<ReturnType<typeof createNativeMentionFixture>>) {
+  const ids = sql`(${f.orgId}, ${f.otherOrgId})`;
+  await db.transaction(async tx => {
+    for (const table of ['agent_mcp_call_audit', 'mcp_tokens', 'action_receipts', 'agent_cooperative_log',
+      'attention_items', 'notifications', 'native_reference_states', 'agent_channel_events', 'agent_actions',
+      'wiki_ops_log', 'wiki_citations', 'task_activity', 'task_comments', 'tasks', 'wiki_pages', 'projects']) {
+      await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE org_id IN ${ids}`);
+    }
+    await tx.execute(sql`DELETE FROM messages WHERE org_id IN ${ids}`);
+    await tx.execute(sql`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id IN ${ids})`);
+    await tx.execute(sql`DELETE FROM spaces WHERE org_id IN ${ids}`);
+    await tx.execute(sql`DELETE FROM agent_employees WHERE org_id IN ${ids}`);
+    await tx.execute(sql`DELETE FROM org_members WHERE org_id IN ${ids}`);
+    await tx.execute(sql`DELETE FROM job_queue WHERE org_id IN ${ids} OR data->>'orgId' IN ${ids}`);
+    await tx.execute(sql`DELETE FROM orgs WHERE id IN ${ids}`);
+    await tx.execute(sql`DELETE FROM users WHERE id IN (${f.ownerId}, ${f.samId}, ${f.agentId}, ${f.agent2Id}, ${f.outsiderId})`);
+  });
 }

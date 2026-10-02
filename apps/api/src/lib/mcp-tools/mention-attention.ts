@@ -1,5 +1,6 @@
 import { canonicalDeftyEmployeeCondition } from '../defty-identity.js';
 import { nativeMentionAgentSourceContext } from '../native-mention-agent-reads.js';
+import { NATIVE_MENTION_ATTENTION_GUIDANCE } from '../native-mention-agent-contract.js';
 import { and, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { agentEmployees } from '@deft/db/schema';
@@ -38,7 +39,7 @@ export async function boundMentionAttention(ctx: ToolContext) {
 export async function mentionAttentionList(args: unknown, ctx: ToolContext) {
   const parsed = z.object({ caller_employee_slug: z.string().optional() }).strict().safeParse(args);
   if (!parsed.success) return errorResult('Invalid mention attention arguments');
-  return textResult({ mention_attention: await boundMentionAttention(ctx), passive: true });
+  return textResult({ mention_attention: await boundMentionAttention(ctx), passive: true, usage: NATIVE_MENTION_ATTENTION_GUIDANCE });
 }
 export async function mentionAttentionAcknowledge(args: unknown, ctx: ToolContext) {
   const parsed = z.object({ attention_id: z.string().min(1), caller_employee_slug: z.string().optional() }).strict().safeParse(args);
