@@ -41,7 +41,8 @@ export function createBaseExtensions(opts: EditorConfigOptions): Extensions {
       ...(disable.has('underline') ? { underline: false as const } : {}),
     }),
     Placeholder.configure({ placeholder: opts.placeholder ?? 'Type / for commands…' }),
-    NativeMention.configure({ onMenuStateChange: opts.onMenuStateChange, surface: opts.surface }),
+    ...(['chat', 'task', 'task-comment'].includes(opts.surface)
+      ? [NativeMention.configure({ onMenuStateChange: opts.onMenuStateChange, surface: opts.surface })] : []),
     SlashMenu.configure({
       surface: opts.surface,
       onChatCommand: opts.onChatCommand,

@@ -2,8 +2,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   extractNativeMentions, nativeMentionRef, nativeMentionToken, nativeMentionTokensToHtml,
-  NativeMentionRefSchema,
+  NativeMentionRefSchema, NativeMentionSourceSchema,
 } from '../src/native-mentions.js';
+
+test('source scope is limited to chat, tasks and knowledge while notes and calendar are excluded', () => {
+  for (const kind of ['message', 'task', 'task_comment', 'wiki_page']) {
+    assert(NativeMentionSourceSchema.safeParse({ kind, id: 'source-1' }).success);
+  }
+  for (const kind of ['note', 'calendar', 'calendar_event', 'canvas']) {
+    assert.equal(NativeMentionSourceSchema.safeParse({ kind, id: 'source-1' }).success, false);
+  }
+});
 
 test('HTML and Markdown share lossless native identities and deduplicate occurrences', () => {
   const task = nativeMentionRef('task', 'task-42');

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../../src/lib/db.js';
-import { orgs, users, orgMembers, spaces, spaceMembers, projects, tasks, wikiPages, notes, agentEmployees } from '@deft/db/schema';
+import { orgs, users, orgMembers, spaces, spaceMembers, projects, tasks, wikiPages, agentEmployees } from '@deft/db/schema';
 export async function createNativeMentionFixture() {
   const orgId = randomUUID(), otherOrgId = randomUUID();
   const ownerId = randomUUID(), samId = randomUUID(), agentId = randomUUID(), agent2Id = randomUUID(), outsiderId = randomUUID();
   const employeeId = randomUUID(), employee2Id = randomUUID(), publicSpaceId = randomUUID(), privateSpaceId = randomUUID();
-  const projectId = randomUUID(), taskId = randomUUID(), restrictedId = randomUUID(), wikiId = randomUUID(), privateWikiId = randomUUID(), noteId = randomUUID();
+  const projectId = randomUUID(), taskId = randomUUID(), restrictedId = randomUUID(), wikiId = randomUUID(), privateWikiId = randomUUID();
   await db.insert(orgs).values([{ id: orgId, name: 'Native mention lab', slug: 'mention-lab-' + orgId },
     { id: otherOrgId, name: 'Other workspace', slug: 'other-' + otherOrgId }]);
   await db.insert(users).values([
@@ -37,9 +37,8 @@ export async function createNativeMentionFixture() {
   ]);
   await db.insert(wikiPages).values([
     { id: wikiId, org_id: orgId, title: 'Launch checklist', slug: 'launch-checklist-' + wikiId, content: 'Launch checklist', type: 'procedure', scope: 'org', user_id: ownerId },
-    { id: privateWikiId, org_id: orgId, title: 'Private notes', slug: 'private-' + privateWikiId, content: 'Private', type: 'procedure', scope: 'user', user_id: ownerId },
+    { id: privateWikiId, org_id: orgId, title: 'Private procedure', slug: 'private-' + privateWikiId, content: 'Private', type: 'procedure', scope: 'user', user_id: ownerId },
   ]);
-  await db.insert(notes).values({ id: noteId, org_id: orgId, user_id: ownerId, title: 'Daily launch notes', content: '<p>Daily plan</p>', visibility: 'private' });
   return { orgId, otherOrgId, ownerId, samId, agentId, agent2Id, outsiderId, employeeId, employee2Id,
-    publicSpaceId, privateSpaceId, projectId, taskId, restrictedId, wikiId, privateWikiId, noteId };
+    publicSpaceId, privateSpaceId, projectId, taskId, restrictedId, wikiId, privateWikiId };
 }

@@ -1,5 +1,4 @@
 'use client';
-import { NativeMentionPublish } from '@/components/native-mention-publish';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -209,7 +208,6 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | NoteLoadState>('loading');
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saveStatus, setSaveStatus] = useState<NoteSaveStatus>('idle');
-  const [, setContentRevision] = useState(0);
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<'private' | 'org'>('private');
@@ -223,7 +221,6 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<any>(null);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [shareError, setShareError] = useState<string | null>(null);
   const [shares, setShares] = useState<any[]>([]);
   const [members, setMembers] = useState<any[]>([]);
   // Task 5.1 — inline list of tasks this note references (PREFIX-N chips)
@@ -319,7 +316,6 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     },
     onUpdate: ({ editor: ed }) => {
       if (!initialContentSet.current) return;
-      setContentRevision(revision => revision + 1);
       const revision = saveCoordinator.markDirty('content');
       pendingContentSave.current = { revision, payload: { content: ed.getHTML() } };
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -421,19 +417,14 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     const res = await api.get('/api/members');
     if (res.ok) {
       const data = await res.json();
-      const roster = Array.isArray(data) ? data : data.members || [];
-      setMembers(roster.map((member: { id: string }) => ({ ...member, user_id: member.id })));
+      setMembers(Array.isArray(data) ? data : data.members || []);
     }
   };
 
   const handleShare = async (userId: string) => {
     if (!noteId) return;
-    setShareError(null);
-    try {
-      const response = await api.post(`/api/daily-notes/${noteId}/shares`, { user_id: userId });
-      if (!response.ok) { setShareError('Note could not be shared. Try again.'); return; }
-      await fetchShares();
-    } catch { setShareError('Note could not be shared. Try again.'); }
+    await api.post(`/api/daily-notes/${noteId}/shares`, { user_id: userId });
+    fetchShares();
   };
 
   const handleUnshare = async (userId: string) => {
@@ -799,7 +790,6 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               <div className="w-80 p-4 rounded-xl" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
                 onClick={e => e.stopPropagation()}>
                 <h3 className="text-[14px] font-semibold mb-3" style={{ color: 'var(--foreground)' }}>Share Note</h3>
-                {shareError && <p role="alert" className="mb-2 text-xs">{shareError}</p>}
                 {shares.length > 0 && (
                   <div className="mb-3">
                     <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Shared with</div>
@@ -941,12 +931,6 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           )}
           <div className="min-h-[calc(100vh-350px)] px-3.5 py-3 md:px-4">
             <EditorContent editor={editor} />
-            {isNoteOwner && <NativeMentionPublish source={{ kind: 'note', id: noteId }} content={editor?.getHTML() ?? ''}
-              prepare={async () => {
-                await flushPendingSaves();
-                await saveCoordinator.awaitIdle();
-                if (saveCoordinator.status === 'error') throw new Error('Note could not be saved. Retry before notifying.');
-              }} />}
           </div>
           {/* Word count footer */}
           {editor && (

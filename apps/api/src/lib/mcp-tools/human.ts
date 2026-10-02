@@ -330,8 +330,7 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
     const parsed = z.object({ source: NativeMentionSourceSchema, content_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().safeParse(args);
     if (!parsed.success) return errorResult('Invalid mention publication');
     const source = parsed.data.source;
-    const scope = source.kind === 'message' ? 'write:messages' :
-      source.kind === 'task' || source.kind === 'task_comment' ? 'write:tasks' : source.kind === 'wiki_page' ? 'write:wiki' : 'write:workspace';
+    const scope = source.kind === 'message' ? 'write:messages' : source.kind === 'wiki_page' ? 'write:wiki' : 'write:tasks';
     const scopeError = requireScope(ctx, scope); if (scopeError) return scopeError;
     return textResult(await publishNativeMentions({ orgId: ctx.org_id, userId: ctx.user_id }, source, parsed.data.content_hash));
   },
@@ -3687,7 +3686,7 @@ export type HumanToolScopeRequirement = string | readonly string[];
 
 export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
   native_mentions_search: 'read:workspace',
-  native_mentions_publish: ['write:workspace', 'write:messages', 'write:tasks', 'write:wiki'],
+  native_mentions_publish: ['write:messages', 'write:tasks', 'write:wiki'],
   search: ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'],
   fetch: ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'],
   platform_context: 'read:workspace', attention_digest: 'read:workspace',
@@ -3792,7 +3791,7 @@ function operationalHumanSchemas(): Array<Record<string, unknown>> {
       description: 'Notify newly added people and agents from saved native content. Requires the source write scope and exact SHA-256 content hash. Repeat publication is idempotent.',
       annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: { type: 'object', properties: {
-        source: { type: 'object', properties: { kind: { type: 'string', enum: ['message', 'task', 'task_comment', 'wiki_page', 'note'] }, id: { type: 'string' } }, required: ['kind', 'id'], additionalProperties: false },
+        source: { type: 'object', properties: { kind: { type: 'string', enum: ['message', 'task', 'task_comment', 'wiki_page'] }, id: { type: 'string' } }, required: ['kind', 'id'], additionalProperties: false },
         content_hash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
       }, required: ['source', 'content_hash'], additionalProperties: false } },
     read('note_list', 'List Deft Notes', 'List private notes owned by the connected user plus org/space notes they can see.', { query: { type: 'string' }, limit }),

@@ -15,7 +15,7 @@ Typing `@` opens one searchable picker with People, Agents, Tasks and Wikis. Sel
 | Task | Authorized task reference and a backlink | Referencing a task does not assign it, change its status, subscribe anyone or notify its owner. |
 | Wiki page | Authorized wiki reference and a backlink | Referencing a wiki does not share it or notify its owner. |
 
-V1 supports chat messages and thread replies, task descriptions and comments, wiki bodies, and notes including daily notes. The four target groups above are the initial targets. Calendar descriptions, files and message references, Email, external systems and App Kit content follow later. Titles, settings, code blocks and arbitrary text inputs are not V1 mention surfaces.
+V1 supports only Chat, Tasks and Knowledge: chat messages and thread replies, task descriptions and comments, and wiki bodies. The four target groups above are the initial targets. Notes/daily notes and Calendar are explicitly excluded while their product models change; their current schemas, writers and editors receive no native mention integration. Files and message references, Email, external systems and App Kit content follow later. Titles, settings, code blocks, Canvas and arbitrary text inputs are not V1 mention surfaces.
 
 `#tags`, existing task labels and wiki tags remain a separate classification feature. This work does not unify their taxonomy, redesign the wiki editor, replace the workspace permission model or build an agent workflow engine.
 
@@ -40,7 +40,7 @@ Relevant code inspected across merged source and the candidate:
 | Seam | Paths | Work required |
 | --- | --- | --- |
 | Chat mention UI and serialization | `apps/web/src/components/rich-composer.tsx`, `mention-autocomplete.tsx` | Extract a reusable picker and reference node. Scope roster/search caches to the authenticated organization and session. |
-| Shared editor configuration | `apps/web/src/lib/editor/shared-config.ts`, `task-detail.tsx`, notes page | Add mention support through existing extension hooks. Task comment serialization currently uses plain text; preserve target IDs through its full save and render path. |
+| Shared editor configuration | `apps/web/src/lib/editor/shared-config.ts`, `task-detail.tsx` | Limit the extension to chat, task and task-comment surfaces; exclude note and canvas editors. Task comment serialization currently uses plain text; preserve target IDs through its full save and render path. |
 | Wiki editing | `apps/web/src/app/(app)/knowledge/page.tsx` | Add a compatible Markdown picker/codec adapter to the current editor. |
 | Parsers and message dispatch | `apps/api/src/lib/mentions.ts`, `agent-mention-normalization.ts`, `routes/messages.ts` | Preserve legacy chat readers and direct agent routing; make create/edit processing consistent. |
 | Task mention dispatch | `apps/api/src/routes/tasks.ts` | Replace fuzzy human-name notification routing with validated identities on new writes; reconcile mentions on create and edit. |
@@ -65,7 +65,7 @@ A picker added separately to each screen is insufficient: it cannot guarantee st
 
 ### Identity and editor contracts
 
-1. Keep task identity compatible with `TaskResourceRefV1`. Use the candidate's additive native resource vocabulary for people, wiki pages, notes and messages. Review and land the required native identity subset with its tests, or consume it if it has already merged. Core V1 must not require shipping the full Platform/Email stack.
+1. Keep task identity compatible with `TaskResourceRefV1`. Reuse the candidate's additive resource contract unchanged, while native mention adapters consume only people, wiki pages and task identities. Review and land the required native identity subset with its tests, or consume it if it has already merged. Core V1 must not require shipping the full Platform/Email stack.
 2. Define the mention target as a validated native subset of the resource union. Tasks remain v1; native people/wiki refs use the additive contract. Do not accidentally restrict the union to v2 and exclude tasks, or create a second incompatible resource-addressing scheme.
 3. People and agents both reference their stable `users.id`. Core resolves the current agent employee association and active status. Human/agent grouping is picker and policy metadata, with no parallel agent conversation store.
 4. Define a source descriptor containing the owning resource, field, stable anchor and server revision. A task comment needs its comment ID plus owning task; a thread reply needs its message ID plus space/thread context. Plain document IDs are insufficient for exact navigation.
@@ -82,7 +82,7 @@ Reference reconciliation and mention notification are distinct operations. Every
 | Chat messages and thread replies | Successful Send; an explicit edit save can publish newly added mentions. |
 | Task comments | Successful Post; any supported explicit edit save follows the same rule. |
 | Wiki body | Explicit Notify mentions after Save succeeds. |
-| Autosaved task descriptions and notes | Explicit Notify mentions flushes the latest save and publishes its captured hash. Autosave, blur and navigation do not notify. |
+| Autosaved task descriptions | Explicit Notify mentions flushes the latest save and publishes its captured hash. Autosave, blur and navigation do not notify. |
 | Personal MCP writes | Successful authenticated write with an explicit validated publication intent. Existing supported chat sends retain their semantics. |
 | Agent writes, imports and system maintenance | Reconcile references. Default to passive content with no automatic agent invocation; any human notification policy must be explicit in the authenticated writer contract. |
 
@@ -156,12 +156,12 @@ Primary paths: `task-detail.tsx`, task routes, personal/employee MCP task writer
 
 Exit evidence: a newly created task description can notify eligible people, unrelated edits do not re-ping them, comment refs survive reload, restricted tasks remain undiscoverable, and supported API/MCP/agent writers satisfy their declared behavior.
 
-### Step 4 — Adopt wikis, notes and passive agent attention
+### Step 4 — Adopt wikis and passive agent attention
 
-Primary paths: knowledge and notes pages, note save coordinator, wiki/note routes and writers, attention helpers and employee MCP registry.
+Primary paths: knowledge page, wiki routes and writers, attention helpers and employee MCP registry.
 
-- Add the Markdown adapter to the wiki editor and the shared TipTap adapter to notes/daily notes. Preserve existing save coordination and prevent a response for one document from applying to another.
-- Publish wiki and note mentions through Notify mentions only after the latest save succeeds. Show pending/failure states without claiming delivery.
+- Add the Markdown adapter to the wiki editor. Preserve existing save coordination and prevent a response for one document from applying to another.
+- Publish wiki mentions through Notify mentions only after the latest save succeeds. Show pending/failure states without claiming delivery.
 - Add authorized task/wiki backlink displays for these sources, including exact document/field navigation and deletion cleanup.
 - Expose passive agent attention with employee-bound read/acknowledge operations and the compatible `fetch_unread` addition. Add the explicit Request action through existing chat.
 
@@ -189,7 +189,7 @@ App Kit integration is a follow-up: expose host-owned search, resolution, render
 | UI | Inspect at representative desktop and mobile widths, including a 390 px viewport: keyboard/touch use, screen-reader labels, grouped search, long names, IME, loading, empty/error and unavailable states. |
 | Upgrade and recovery | Fresh creation and supported upgrade produce equivalent feature state. Rolling feature writes off preserves data and does not replay historical notifications. |
 
-Use existing checks and package scripts, updated for the chosen execution baseline. Add behavioral tests where the new contract changes persistence, visibility or delivery. Representative focused entry points already present on reviewed master include `agent-mention-normalization.test.ts`, `agent-mention-detection.test.ts`, `notes-cross-reference.test.ts`, `attention-system.test.ts`, `attention-signal-policy.test.ts`, `agent-channel.test.ts`, `note-save-coordinator.test.ts` and `editor-attribute-security.test.ts`.
+Use existing checks and package scripts, updated for the chosen execution baseline. Add behavioral tests where the new contract changes persistence, visibility or delivery. Representative focused entry points already present on reviewed master include `agent-mention-normalization.test.ts`, `agent-mention-detection.test.ts`, `attention-system.test.ts`, `attention-signal-policy.test.ts`, `agent-channel.test.ts` and `editor-attribute-security.test.ts`. Explicitly test that Notes and Calendar cannot enter native mention publication or backlinks.
 
 The API runner accepts focused test paths and requires a distinct disposable `DEFT_TEST_DATABASE_URL` outside CI. Never seed, upgrade or run database-writing tests against the active application database. Add new mention service/API test files to that runner; illustrative new names are `native-mentions.test.ts` and `native-mentions-http.test.ts`.
 

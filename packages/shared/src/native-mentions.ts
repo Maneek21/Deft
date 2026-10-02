@@ -9,7 +9,7 @@ export type NativeMentionRef = z.infer<typeof NativeMentionRefSchema>;
 export const NativeMentionKindSchema = z.enum(['person', 'task', 'wiki_page']);
 export type NativeMentionKind = z.infer<typeof NativeMentionKindSchema>;
 export const NativeMentionSourceSchema = z.strictObject({
-  kind: z.enum(['message', 'task', 'task_comment', 'wiki_page', 'note']),
+  kind: z.enum(['message', 'task', 'task_comment', 'wiki_page']),
   id: ResourceOpaqueIdSchema,
 });
 export type NativeMentionSource = z.infer<typeof NativeMentionSourceSchema>;

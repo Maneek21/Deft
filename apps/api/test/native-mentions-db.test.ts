@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { nativeMentionRef, nativeMentionToken, type NativeMentionSource } from '@deft/shared';
-import { messages, taskComments, tasks, notes, wikiPages, users, spaceMembers, noteShares,
+import { messages, taskComments, tasks, wikiPages, users, spaceMembers,
   nativeReferenceStates, nativeMentionDeliveries, notifications, attentionItems, agentChannelEvents, taskWatchers, jobQueue, agentEmployees } from '@deft/db/schema';
 import { db, closeDb } from '../src/lib/db.js';
 import { reconcileNativeMentions, handleNativeMentionReconciliation, publishNativeMentions,
@@ -11,7 +11,6 @@ import { reconcileNativeMentions, handleNativeMentionReconciliation, publishNati
 import { enqueueNativeMentionPublication, handleNativeMentionPublication } from '../src/lib/native-mentions.js';
 import { nativeMentionRoutes } from '../src/routes/native-mentions.js';
 import { notificationRoutes } from '../src/routes/notifications.js';
-import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
 import { boundMentionAttention, mentionAttentionAcknowledge } from '../src/lib/mcp-tools/mention-attention.js';
 import { createNativeMentionFixture } from './fixtures/native-mentions.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -27,14 +26,12 @@ after(async () => {
       await tx.execute(sql`DELETE FROM attention_items WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM notifications WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM native_reference_states WHERE org_id IN ${orgIds}`);
-      await tx.execute(sql`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE org_id IN ${orgIds})`);
       await tx.execute(sql`DELETE FROM task_watchers WHERE task_id IN (SELECT id FROM tasks WHERE org_id IN ${orgIds})`);
       await tx.execute(sql`DELETE FROM task_comments WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM messages WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM tasks WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM projects WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM wiki_pages WHERE org_id IN ${orgIds}`);
-      await tx.execute(sql`DELETE FROM notes WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id IN ${orgIds})`);
       await tx.execute(sql`DELETE FROM spaces WHERE org_id IN ${orgIds}`);
       await tx.execute(sql`DELETE FROM agent_employees WHERE org_id IN ${orgIds}`);
@@ -50,7 +47,7 @@ const actor = () => ({ orgId: fixture.orgId, userId: fixture.ownerId });
 const appFor = (userId: string) => {
   const app = new Hono();
   app.use('*', async (c, next) => { c.set('user', { id: userId, org_id: fixture.orgId, email: 'synthetic@example.test' }); await next(); });
-  app.route('/mentions', nativeMentionRoutes); app.route('/notifications', notificationRoutes); app.route('/notes', dailyNoteRoutes);
+  app.route('/mentions', nativeMentionRoutes); app.route('/notifications', notificationRoutes);
   return app;
 };
 
@@ -61,10 +58,9 @@ test('all native writers enqueue identity-only reconciliation; stale jobs use cu
   const [comment] = await db.insert(taskComments).values({ org_id: fixture.orgId, task_id: fixture.taskId, user_id: fixture.ownerId, content: body }).returning();
   await db.update(tasks).set({ description: body }).where(eq(tasks.id, fixture.taskId));
   await db.update(wikiPages).set({ content: body }).where(eq(wikiPages.id, fixture.wikiId));
-  await db.update(notes).set({ content: body }).where(eq(notes.id, fixture.noteId));
   const sources: NativeMentionSource[] = [
     { kind: 'message', id: message!.id }, { kind: 'message', id: reply!.id }, { kind: 'task_comment', id: comment!.id },
-    { kind: 'task', id: fixture.taskId }, { kind: 'wiki_page', id: fixture.wikiId }, { kind: 'note', id: fixture.noteId },
+    { kind: 'task', id: fixture.taskId }, { kind: 'wiki_page', id: fixture.wikiId },
   ];
   const jobs = await db.select().from(jobQueue).where(and(eq(jobQueue.org_id, fixture.orgId), eq(jobQueue.name, 'native-mention-reconcile')));
   for (const source of sources) {
@@ -73,25 +69,26 @@ test('all native writers enqueue identity-only reconciliation; stale jobs use cu
   }
   assert(!JSON.stringify(jobs.map(job => job.data)).includes('Launch checklist'));
   const links = await nativeMentionBacklinks(actor(), nativeMentionRef('task', fixture.taskId));
-  assert.equal(links.count, 6);
+  assert.equal(links.count, 5);
   assert.equal((await nativeMentionBacklinks({ orgId: fixture.orgId, userId: fixture.samId }, nativeMentionRef('task', fixture.taskId))).count, 5);
   await db.update(messages).set({ content: 'Reference removed' }).where(eq(messages.id, message!.id));
   await reconcileNativeMentions(fixture.orgId, { kind: 'message', id: message!.id });
-  assert.equal((await nativeMentionBacklinks(actor(), nativeMentionRef('task', fixture.taskId))).count, 5);
+  assert.equal((await nativeMentionBacklinks(actor(), nativeMentionRef('task', fixture.taskId))).count, 4);
   await db.update(messages).set({ is_deleted: true }).where(eq(messages.id, reply!.id));
   await reconcileNativeMentions(fixture.orgId, { kind: 'message', id: reply!.id });
-  assert.equal((await nativeMentionBacklinks(actor(), nativeMentionRef('task', fixture.taskId))).count, 4);
+  assert.equal((await nativeMentionBacklinks(actor(), nativeMentionRef('task', fixture.taskId))).count, 3);
 });
 
-test('publication uses saved hashes, blocks private recipients and retries after sharing', { skip: !enabled }, async () => {
+test('publication uses saved hashes, blocks private chat recipients and retries after explicit membership', { skip: !enabled }, async () => {
   const body = token('person', fixture.samId);
-  const source = { kind: 'note' as const, id: fixture.noteId };
-  await db.update(notes).set({ content: body }).where(eq(notes.id, source.id));
+  const [message] = await db.insert(messages).values({ org_id: fixture.orgId, space_id: fixture.privateSpaceId,
+    user_id: fixture.ownerId, content: body }).returning();
+  const source = { kind: 'message' as const, id: message!.id };
   await reconcileNativeMentions(fixture.orgId, source);
   assert.equal((await db.select().from(nativeMentionDeliveries).where(eq(nativeMentionDeliveries.org_id, fixture.orgId))).length, 0);
   await assert.rejects(publishNativeMentions(actor(), source, nativeContentHash('stale')), /Content changed/);
   assert.equal((await publishNativeMentions(actor(), source, nativeContentHash(body))).blocked_count, 1);
-  await db.insert(noteShares).values({ note_id: source.id, shared_with_user_id: fixture.samId });
+  await db.insert(spaceMembers).values({ space_id: fixture.privateSpaceId, user_id: fixture.samId });
   const result = await publishNativeMentions(actor(), source, nativeContentHash(body));
   assert.equal(result.queued_count, 1);
   assert.equal((await publishNativeMentions(actor(), source, nativeContentHash(body))).queued_count, 0);
@@ -101,7 +98,7 @@ test('publication uses saved hashes, blocks private recipients and retries after
   assert.equal((await db.select().from(notifications).where(eq(notifications.id, delivery!.id))).length, 1);
   const [attention] = await db.select().from(attentionItems).where(eq(attentionItems.source_id, delivery!.id));
   assert.equal(attention!.event_count, 1);
-  await db.delete(noteShares).where(eq(noteShares.note_id, source.id));
+  await db.delete(spaceMembers).where(and(eq(spaceMembers.space_id, fixture.privateSpaceId), eq(spaceMembers.user_id, fixture.samId)));
   const response = await appFor(fixture.samId).request('/notifications');
   const data = await response.json();
   assert.equal(data.unread_count, 0);
@@ -120,7 +117,7 @@ test('resolver fails closed for restricted, cross-tenant, deleted and watcher-on
   await db.update(wikiPages).set({ is_deleted: true }).where(eq(wikiPages.id, fixture.privateWikiId));
   assert.equal((await resolveNativeMentions(actor(), [nativeMentionRef('wiki_page', fixture.privateWikiId)]))[0]!.state, 'unavailable');
   const invalid = await appFor(fixture.ownerId).request('/mentions/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source: { kind: 'note', id: fixture.noteId, org_id: fixture.otherOrgId }, content_hash: 'a'.repeat(64) }) });
+    body: JSON.stringify({ source: { kind: 'task', id: fixture.taskId, org_id: fixture.otherOrgId }, content_hash: 'a'.repeat(64) }) });
   assert.equal(invalid.status, 400);
 });
 
@@ -228,18 +225,22 @@ test('notification preferences and rollout pause preserve durable effects withou
   } finally { await db.update(users).set({ status_text: null }).where(eq(users.id, fixture.samId)); }
 });
 
-test('explicit note sharing validates the owner, active tenant recipient and payload before mention retry', { skip: !enabled }, async () => {
-  const share = (userId: string, body: unknown) => appFor(userId).request('/notes/' + fixture.noteId + '/shares', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  assert.equal((await share(fixture.ownerId, {})).status, 400);
-  assert.equal((await share(fixture.ownerId, { user_id: fixture.outsiderId })).status, 404);
-  assert.equal((await share(fixture.samId, { user_id: fixture.agentId })).status, 404);
-  assert.equal((await share(fixture.ownerId, { user_id: fixture.samId, permission: 'admin' })).status, 400);
-  assert.equal((await share(fixture.ownerId, { user_id: fixture.samId })).status, 201);
-  const response = await appFor(fixture.ownerId).request('/notes/' + fixture.noteId + '/shares');
-  const { shares } = await response.json();
-  assert(shares.some((item: { user_id: string; permission: string }) => item.user_id === fixture.samId && item.permission === 'view'));
+test('notes and calendar are excluded from native mention publication and backlinks', { skip: !enabled }, async () => {
+  for (const kind of ['note', 'calendar', 'calendar_event']) {
+    const response = await appFor(fixture.ownerId).request('/mentions/publish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: { kind, id: fixture.taskId }, content_hash: 'a'.repeat(64) }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await appFor(fixture.ownerId).request('/mentions/source', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, id: fixture.taskId }),
+    })).status, 400);
+    assert.equal((await appFor(fixture.ownerId).request('/mentions/backlinks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: { resource_type: kind, resource_id: fixture.taskId } }),
+    })).status, 400);
+  }
 });
 
 test('PostgreSQL concurrent publish and retry workers create exactly one durable attention effect', {

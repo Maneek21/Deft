@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, ilike } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { notes, noteFolders, noteVersions, noteShares, users, orgMembers } from '@deft/db/schema';
+import { notes, noteFolders, noteVersions, noteShares, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
@@ -378,7 +378,7 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
   const noteId = c.req.param('id');
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id), eq(notes.org_id, user.org_id), eq(notes.is_deleted, false)))
+    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
 
@@ -401,19 +401,14 @@ dailyNoteRoutes.get('/:id/shares', async (c) => {
 dailyNoteRoutes.post('/:id/shares', async (c) => {
   const user = c.get('user');
   const noteId = c.req.param('id');
-  const parsed = z.object({ user_id: z.string().min(1).max(200), permission: z.enum(['view', 'edit']).default('view') })
-    .strict().safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return c.json({ error: 'Valid user_id and permission required', code: 'VALIDATION_ERROR' }, 400);
-  const { user_id: targetUserId, permission } = parsed.data;
+  const { user_id: targetUserId, permission = 'view' } = await c.req.json();
+
+  if (!targetUserId) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id), eq(notes.org_id, user.org_id), eq(notes.is_deleted, false)))
+    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
-  const [recipient] = await db.select({ id: orgMembers.id }).from(orgMembers).where(and(
-    eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, targetUserId), eq(orgMembers.is_active, true),
-  )).limit(1);
-  if (!recipient) return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
 
   const [share] = await db.insert(noteShares).values({
     note_id: noteId,
@@ -431,7 +426,7 @@ dailyNoteRoutes.delete('/:id/shares/:userId', async (c) => {
   const targetUserId = c.req.param('userId');
 
   const [note] = await db.select({ id: notes.id }).from(notes)
-    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id), eq(notes.org_id, user.org_id), eq(notes.is_deleted, false)))
+    .where(and(eq(notes.id, noteId), eq(notes.user_id, user.id)))
     .limit(1);
   if (!note) return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
 

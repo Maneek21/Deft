@@ -99,6 +99,3 @@ CREATE TRIGGER native_reference_task_comments AFTER INSERT OR UPDATE OF content,
 DROP TRIGGER IF EXISTS native_reference_wiki_pages ON wiki_pages;
 CREATE TRIGGER native_reference_wiki_pages AFTER INSERT OR UPDATE OF content, is_deleted OR DELETE
   ON wiki_pages FOR EACH ROW EXECUTE FUNCTION deft_enqueue_native_reference_reconciliation('wiki_page', 'content');
-DROP TRIGGER IF EXISTS native_reference_notes ON notes;
-CREATE TRIGGER native_reference_notes AFTER INSERT OR UPDATE OF content, is_deleted OR DELETE
-  ON notes FOR EACH ROW EXECUTE FUNCTION deft_enqueue_native_reference_reconciliation('note', 'content');

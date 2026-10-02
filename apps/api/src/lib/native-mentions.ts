@@ -90,12 +90,6 @@ export async function loadNativeSource(
         w.space_id, NULL::text AS project_id, '/knowledge?slug=' || w.slug AS href
         FROM wiki_pages w WHERE w.org_id = ${ctx.orgId} AND w.id = ${src.id} AND w.is_deleted = false
         ${lock ? sql`FOR UPDATE OF w` : sql``}`; break;
-    case 'note':
-      query = sql`SELECT n.id, coalesce(n.content, '') AS content, n.title AS label,
-        n.user_id AS owner_user_id, n.visibility_space_id AS space_id, NULL::text AS project_id,
-        '/notes?id=' || n.id AS href FROM notes n
-        WHERE n.org_id = ${ctx.orgId} AND n.id = ${src.id} AND n.is_deleted = false
-        ${lock ? sql`FOR UPDATE OF n` : sql``}`; break;
   }
   const row = rows<NativeSourceRow>(await executor.execute(query))[0] ?? null;
   if (!row || !('userId' in ctx)) return row;
@@ -143,11 +137,11 @@ export async function publishNativeMentions(ctx: NativeMentionContext, source: N
   return db.transaction(async tx => {
     const current = await loadNativeSource(ctx, source, tx, true);
     if (!current) throw new NativeMentionError('NOT_FOUND', 'Source not found', 404);
-    if ((source.kind === 'message' || source.kind === 'task_comment' || source.kind === 'note')
+    if ((source.kind === 'message' || source.kind === 'task_comment')
       && current.owner_user_id !== ctx.userId) {
       throw new NativeMentionError('FORBIDDEN', 'Only the content author can publish mentions', 403);
     }
-    if (actor.role === 'guest' && source.kind !== 'message' && source.kind !== 'note') {
+    if (actor.role === 'guest' && source.kind !== 'message') {
       throw new NativeMentionError('FORBIDDEN', 'Mention publication is not available for this source', 403);
     }
     if (nativeContentHash(current.content) !== expectedHash) {

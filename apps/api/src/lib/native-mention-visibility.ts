@@ -32,11 +32,6 @@ export function nativeSourceAccessSql(
         SELECT 1 FROM wiki_pages w WHERE w.id = ${sourceId} AND w.org_id = ${orgId} AND w.is_deleted = false
         AND (w.scope = 'org' OR w.user_id = ${userId}
           OR (w.scope = 'space' AND EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = w.space_id AND sm.user_id = ${userId})))))
-      OR (${kind} = 'note' AND EXISTS (
-        SELECT 1 FROM notes n WHERE n.id = ${sourceId} AND n.org_id = ${orgId} AND n.is_deleted = false
-        AND (n.user_id = ${userId} OR n.visibility = 'org'
-          OR EXISTS (SELECT 1 FROM note_shares ns WHERE ns.note_id = n.id AND ns.shared_with_user_id = ${userId})
-          OR (n.visibility = 'space' AND EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = n.visibility_space_id AND sm.user_id = ${userId})))))
     )
   )`;
 }

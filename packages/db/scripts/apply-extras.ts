@@ -354,7 +354,6 @@ async function main() {
       'native_reference_tasks',
       'native_reference_task_comments',
       'native_reference_wiki_pages',
-      'native_reference_notes',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
       'app_run_attempts_state_identity_trigger',
