@@ -31,6 +31,9 @@ const choose = async (editor, query, label) => {
   await page.waitForTimeout(300);
 };
 page.on('pageerror', error => errors.push(error.message));
+page.on('console', message => {
+  if (message.text().includes('flushSync was called from inside a lifecycle')) errors.push(message.text());
+});
 page.on('response', async response => {
   if (response.status() >= 500) errors.push(response.status() + ' ' + response.url());
   if (response.status() >= 400) console.log('HTTP', response.status(), response.url().split('?')[0], (await response.text()).slice(0, 220));
@@ -58,7 +61,9 @@ try {
   assert(desktopMenuBounds && desktopMenuBounds.y >= 0 && desktopMenuBounds.y + desktopMenuBounds.height <= 960,
     'The complete desktop picker fits inside the viewport');
   await shot('01-universal-picker-desktop');
-  await page.getByRole('listbox').getByRole('option').filter({ hasText: /^Sam$/ }).click();
+  await editor.press('ArrowDown');
+  await editor.press('Enter');
+  await editor.getByRole('button', { name: '@Sam', exact: true }).waitFor();
   await editor.pressSequentially(' review ', { delay: 50 });
   await choose(editor, 'DEFT', 'DEFT-42');
   await editor.pressSequentially(' using ', { delay: 50 });
@@ -196,7 +201,7 @@ try {
   assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 391, 'Picker fits the mobile viewport');
   await mobilePage.screenshot({ path: path.join(output, '14-mobile-picker.png'), fullPage: true });
   results.push('14-mobile-picker');
-  await mobileMenu.getByRole('option').filter({ hasText: /^Sam$/ }).click();
+  await mobileMenu.getByRole('option').filter({ hasText: /^Sam$/ }).tap();
   await mobilePage.screenshot({ path: path.join(output, '15-mobile-reference.png'), fullPage: true });
   results.push('15-mobile-reference');
   await mobilePage.goto(base + '/knowledge?slug=' + fixture.wikiSlug);

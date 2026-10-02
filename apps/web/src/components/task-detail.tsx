@@ -591,9 +591,15 @@ function DescriptionEditor({ value, onChange }: { value: string; onChange: (html
   });
 
   useEffect(() => {
-    if (editor && value !== editor.getHTML()) {
-      editor.commands.setContent(value || '', { emitUpdate: false });
-    }
+    if (!editor || value === editor.getHTML()) return;
+    let active = true;
+    // React node views flush on creation; keep that outside React's effect phase.
+    queueMicrotask(() => {
+      if (active && !editor.isDestroyed && value !== editor.getHTML()) {
+        editor.commands.setContent(value || '', { emitUpdate: false });
+      }
+    });
+    return () => { active = false; };
   }, [value, editor]);
 
   return (
