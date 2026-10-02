@@ -528,6 +528,7 @@ can supply its own AI independently of Deft's provider configuration.
 | `TRANSCRIPTION_OPENAI_API_KEY` | No | Key for that endpoint; empty falls back to `OPENAI_API_KEY`, and a keyless custom endpoint is called without one | `OPENAI_API_KEY` |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | No | Browser push notifications; set all three together, subject starting with `mailto:` or `https://`. Generate the keypair once (see `.env.example` section 7); rotating it invalidates existing browser subscriptions. Unset keeps the Inbox but disables Web Push | none |
 
 ### Opt-in Governed App Run keyrings
 
