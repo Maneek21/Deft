@@ -1,3 +1,4 @@
+import { NATIVE_MENTION_AGENT_TOOL_SCHEMAS } from './native-mention-agent-contract.js';
 import { MODULE_OPERATION_DESCRIPTIONS } from './module-tool-descriptions.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import {
@@ -57,6 +58,9 @@ export const APP_ACTION_AGENT_TOOLS: Anthropic.Tool[] = APP_ACTION_OPERATION_NAM
 );
 
 export const AGENT_TOOLS: Anthropic.Tool[] = [
+  ...NATIVE_MENTION_AGENT_TOOL_SCHEMAS.map(tool => ({
+    name: tool.name, description: tool.description, input_schema: tool.inputSchema as Anthropic.Tool['input_schema'],
+  })),
   {
     name: 'search_messages',
     description:

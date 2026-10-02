@@ -1,3 +1,4 @@
+import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
 import { createHash } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import {
@@ -13,6 +14,8 @@ import { explainNotificationPolicy } from './notification-policy.js';
 import { upsertAttentionItem } from './attention.js';
 import { emitToUser } from '../socket.js';
 import { nativeSourceAccessSql, nativeTaskAccessSql, nativeDeliveryAccessSql } from './native-mention-visibility.js';
+
+const canonicalDeftySql = sql`(ae.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} AND ae.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG} AND ae.is_byoa = false)`;
 
 export const nativeMentionsEnabled = () => process.env.DEFT_NATIVE_MENTIONS_ENABLED === 'true';
 export type NativeMentionContext = { orgId: string; userId: string; employeeId?: string };
@@ -34,11 +37,11 @@ const rows = <T extends Record<string, unknown>>(result: unknown): T[] =>
   ((result as { rows?: T[] }).rows ?? []) as T[];
 
 async function activeActor(ctx: NativeMentionContext, executor: Executor = db) {
-  return rows<{ role: string; kind: string; employee_id: string | null; allowed_space_ids: string[] | null; project_ids: string[] | null; runtime_kind: string | null }>(
-    await executor.execute(sql`SELECT om.role, u.kind, ae.id AS employee_id, ae.space_ids AS allowed_space_ids, ae.project_ids, ae.runtime_kind
+  return rows<{ role: string; kind: string; employee_id: string | null; allowed_space_ids: string[] | null; project_ids: string[] | null; is_defty_system: boolean }>(
+    await executor.execute(sql`SELECT om.role, u.kind, ae.id AS employee_id, ae.space_ids AS allowed_space_ids, ae.project_ids, ${canonicalDeftySql} AS is_defty_system
       FROM org_members om JOIN users u ON u.id = om.user_id
       LEFT JOIN agent_employees ae ON ae.user_id = u.id AND ae.org_id = om.org_id
-        AND ae.is_active = true AND (ae.is_deleted = false OR ae.runtime_kind = 'defty_system')
+        AND ae.is_active = true AND (ae.is_deleted = false OR ${canonicalDeftySql})
       WHERE om.org_id = ${ctx.orgId} AND om.user_id = ${ctx.userId} AND om.is_active = true
       LIMIT 1`),
   )[0] ?? null;
@@ -50,7 +53,7 @@ async function employeeBoundary(ctx: NativeMentionContext, source: { project_id:
   if (ctx.employeeId && actor.employee_id !== ctx.employeeId) return false;
   if (actor.kind !== 'agent') return !ctx.employeeId;
   if (!actor.employee_id) return false;
-  if (source.project_id && actor.runtime_kind !== 'defty_system' && actor.project_ids?.length
+  if (source.project_id && !actor.is_defty_system && actor.project_ids?.length
     && !actor.project_ids.includes(source.project_id)) return false;
   return !source.space_id || !actor.allowed_space_ids?.length || actor.allowed_space_ids.includes(source.space_id);
 }
@@ -224,7 +227,7 @@ export async function handleNativeMentionPublication(data: {
 
 export async function resolveNativeMentions(ctx: NativeMentionContext, refs: NativeMentionRef[]): Promise<NativeMentionProjection[]> {
   NativeMentionRefsSchema.parse(refs);
-  if (!(await activeActor(ctx))) return refs.map(ref => ({ ref, state: 'unavailable' }));
+  if (!(await employeeBoundary(ctx, { project_id: null, space_id: null }))) return refs.map(ref => ({ ref, state: 'unavailable' }));
   return Promise.all(refs.map(async ref => {
     let row: Record<string, unknown> | undefined;
     if (ref.resource_type === 'person') {
@@ -232,7 +235,7 @@ export async function resolveNativeMentions(ctx: NativeMentionContext, refs: Nat
         FROM users u JOIN org_members om ON om.user_id = u.id
         LEFT JOIN agent_employees ae ON ae.user_id = u.id AND ae.org_id = om.org_id
         WHERE om.org_id = ${ctx.orgId} AND om.is_active = true AND u.id = ${ref.resource_id}
-          AND (u.kind <> 'agent' OR (ae.is_active = true AND (ae.is_deleted = false OR ae.runtime_kind = 'defty_system'))) LIMIT 1`))[0];
+          AND (u.kind <> 'agent' OR (ae.is_active = true AND (ae.is_deleted = false OR ${canonicalDeftySql}))) LIMIT 1`))[0];
     } else if (ref.resource_type === 'task') {
       row = rows(await db.execute(sql`SELECT p.prefix || '-' || t.number || ' · ' || t.title AS label,
         '/tasks?task=' || t.id AS href, t.project_id
@@ -257,7 +260,7 @@ export async function resolveNativeMentions(ctx: NativeMentionContext, refs: Nat
 }
 
 export async function searchNativeMentions(ctx: NativeMentionContext, query: string) {
-  if (!(await activeActor(ctx))) return [];
+  if (!(await employeeBoundary(ctx, { project_id: null, space_id: null }))) return [];
   const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
   const people = rows<{ id: string }>(await db.execute(sql`SELECT id FROM (
     SELECT u.id, u.kind, u.name, row_number() OVER (PARTITION BY u.kind ORDER BY u.name, u.id) AS ordinal
@@ -266,7 +269,7 @@ export async function searchNativeMentions(ctx: NativeMentionContext, query: str
       AND u.kind IN ('human', 'agent')
       AND (u.kind = 'human' OR EXISTS (SELECT 1 FROM agent_employees ae
         WHERE ae.org_id = om.org_id AND ae.user_id = u.id AND ae.is_active = true
-          AND (ae.is_deleted = false OR ae.runtime_kind = 'defty_system')))
+          AND (ae.is_deleted = false OR ${canonicalDeftySql})))
     ) candidates WHERE ordinal <= 8 ORDER BY kind, name LIMIT 16`));
   const tasks = rows<{ id: string }>(await db.execute(sql`SELECT t.id FROM tasks t
     JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
@@ -373,7 +376,7 @@ async function deliverNativeMentionLocked(orgId: string, deliveryId: string) {
 }
 
 export async function listNativeMentionAttention(ctx: NativeMentionContext) {
-  if (!(await activeActor(ctx))) return [];
+  if (!(await employeeBoundary(ctx, { project_id: null, space_id: null }))) return [];
   const items = await db.select().from(attentionItems).where(and(
     eq(attentionItems.org_id, ctx.orgId), eq(attentionItems.user_id, ctx.userId),
     eq(attentionItems.source_type, 'native_mention'),

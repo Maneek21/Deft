@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { z } from 'zod';
-import { NativeMentionSourceSchema } from '@deft/shared';
+import { NativeMentionSourceSchema, nativeMentionToken } from '@deft/shared';
 import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublication } from '../native-mentions.js';
 import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
 import {
@@ -324,7 +324,7 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
     const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
     const items = await searchNativeMentions({ orgId: ctx.org_id, userId: ctx.user_id }, parsed.data.query);
     return textResult({ items: items.filter(item => item.ref.resource_type === 'person'
-      || ctx.scopes.includes(item.ref.resource_type === 'task' ? 'read:tasks' : 'read:wiki')) });
+      || ctx.scopes.includes(item.ref.resource_type === 'task' ? 'read:tasks' : 'read:wiki')).map(item => ({ ...item, token: nativeMentionToken(item.ref) })) });
   },
   native_mentions_publish: async (args, ctx) => {
     const parsed = z.object({ source: NativeMentionSourceSchema, content_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().safeParse(args);

@@ -20,6 +20,8 @@ import { memoryUpdate } from './memory-update.js';
 import { taskQuery } from './tasks.js';
 import { memberList } from './members.js';
 import { threadFetch, fetchUnread } from './messages.js';
+import { agentNativeMentionsSearch, agentNativeMentionsResolve } from './native-mentions.js';
+import { NATIVE_MENTION_AGENT_TOOL_SCHEMAS } from '../native-mention-agent-contract.js';
 import { mentionAttentionList, mentionAttentionAcknowledge } from './mention-attention.js';
 import { attachmentList, attachmentRead } from './attachments.js';
 import { workspacePlanImport } from './workspace-plan-import.js';
@@ -136,6 +138,8 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   poll_pending_work: pollPendingWork as ToolHandler,
   ping_alive: pingAlive as ToolHandler,
   fetch_unread: fetchUnread as ToolHandler,
+  native_mentions_search: agentNativeMentionsSearch,
+  native_mentions_resolve: agentNativeMentionsResolve,
   mention_attention_list: mentionAttentionList,
   // Own read receipt only; this never authorizes work or writes to a source.
   mention_attention_acknowledge: mentionAttentionAcknowledge,
@@ -194,10 +198,7 @@ const CALLER_SLUG_PROP = {
 };
 
 export const toolSchemas: ToolSchema[] = [
-  { name: 'mention_attention_list', description: 'Read your passive native mention attention. Reading is not a request to execute work.',
-    inputSchema: { type: 'object', properties: { caller_employee_slug: { type: 'string' } } } },
-  { name: 'mention_attention_acknowledge', description: 'Acknowledge your own passive mention without performing work or changing its source.',
-    inputSchema: { type: 'object', properties: { caller_employee_slug: { type: 'string' }, attention_id: { type: 'string' } }, required: ['attention_id'] } },
+  ...NATIVE_MENTION_AGENT_TOOL_SCHEMAS,
   ...(MODULE_MCP_TOOL_SCHEMAS as ToolSchema[]),
   {
     name: 'platform_context',

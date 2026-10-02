@@ -376,7 +376,7 @@ jobs:
           export DATABASE_URL=postgres://postgres:postgres@localhost:5432/deft_mentions_upgrade_test
           export DEFT_TEST_DATABASE_URL="$DATABASE_URL"
           pnpm --filter @deft/app-kit build
-          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts
+          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts test/native-mention-agents-db.test.ts test/native-mention-agent-catalog.test.ts
 
   docker-build:
     name: Production Image + Browser Smoke

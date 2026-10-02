@@ -1,3 +1,5 @@
+import { canonicalDeftyEmployeeCondition } from '../defty-identity.js';
+import { nativeMentionAgentSourceContext } from '../native-mention-agent-reads.js';
 import { and, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { agentEmployees } from '@deft/db/schema';
@@ -12,7 +14,7 @@ export async function boundMentionAttention(ctx: ToolContext) {
   if (ctx.token_id && !ctx.scopes?.includes('read:workspace')) return [];
   const [employee] = await db.select({ user_id: agentEmployees.user_id }).from(agentEmployees).where(and(
     eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id),
-    eq(agentEmployees.is_active, true), or(eq(agentEmployees.is_deleted, false), eq(agentEmployees.runtime_kind, 'defty_system')),
+    eq(agentEmployees.is_active, true), or(eq(agentEmployees.is_deleted, false), canonicalDeftyEmployeeCondition()),
   ));
   if (!employee) return [];
   const context = { orgId: ctx.org_id, userId: employee.user_id, employeeId: ctx.employee_id };
@@ -28,7 +30,7 @@ export async function boundMentionAttention(ctx: ToolContext) {
     if (ctx.token_id && !ctx.scopes?.includes(scope)) continue;
     const current = await loadNativeSource(context, source.data);
     if (current) result.push({ ...item, source: source.data, current_source: {
-      label: current.label, content: current.content.slice(0, 5000), truncated: current.content.length > 5000,
+      label: current.label, ...await nativeMentionAgentSourceContext(context, current.content, ctx.token_id ? ctx.scopes : undefined),
     } });
   }
   return result;

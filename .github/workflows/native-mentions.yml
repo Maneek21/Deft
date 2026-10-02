@@ -32,6 +32,7 @@ jobs:
       NEXT_PUBLIC_API_URL: http://localhost:4011
       NEXT_PUBLIC_WS_URL: http://localhost:4011
       DEFT_WEB_URL: http://localhost:4010
+      DEFT_MENTION_EVIDENCE_DIR: ${{ runner.temp }}/native-mention-evidence
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.1.0
@@ -47,7 +48,9 @@ jobs:
       - name: Fresh schema and concurrent publication/delivery
         run: |
           pnpm db:push-full
-          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts
+          mkdir -p "$DEFT_MENTION_EVIDENCE_DIR"
+          set -o pipefail
+          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts test/native-mention-agents-db.test.ts test/native-mention-agent-catalog.test.ts | tee "$DEFT_MENTION_EVIDENCE_DIR/agent-and-native-tests.log"
       - name: Separate browser fixture database
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE deft_mentions_browser_test"

@@ -78,6 +78,10 @@ export const EMPLOYEE_MCP_APP_SCOPES = [
 ] as const;
 
 export const EMPLOYEE_MCP_RESOURCE_SCOPES = [
+  'read:workspace',
+  'write:workspace',
+  'read:messages',
+  'read:wiki',
   'read:tasks',
   'write:tasks',
   'write:modules',

@@ -140,8 +140,11 @@ test('agent document mentions create two isolated passive feeds and never an exe
   const second = await boundMentionAttention({ ...ctx, employee_id: fixture.employee2Id });
   assert.equal(second.length, 1);
   await db.update(agentEmployees).set({ is_deleted: true, runtime_kind: 'defty_system' }).where(eq(agentEmployees.id, fixture.employee2Id));
-  try { assert.equal((await boundMentionAttention({ ...ctx, employee_id: fixture.employee2Id })).length, 1); }
-  finally { await db.update(agentEmployees).set({ is_deleted: false, runtime_kind: 'custom_mcp' }).where(eq(agentEmployees.id, fixture.employee2Id)); }
+  try {
+    assert.equal((await boundMentionAttention({ ...ctx, employee_id: fixture.employee2Id })).length, 0, 'runtime_kind alone cannot grant the Defty exception');
+    await db.update(agentEmployees).set({ slug: 'defty-system', is_byoa: false }).where(eq(agentEmployees.id, fixture.employee2Id));
+    assert.equal((await boundMentionAttention({ ...ctx, employee_id: fixture.employee2Id })).length, 1);
+  } finally { await db.update(agentEmployees).set({ is_deleted: false, runtime_kind: 'custom_mcp', slug: 'avery-' + fixture.employee2Id, is_byoa: true }).where(eq(agentEmployees.id, fixture.employee2Id)); }
   assert.equal((await mentionAttentionAcknowledge({ attention_id: second[0]!.id }, ctx)).isError, true);
   assert.equal((await mentionAttentionAcknowledge({ attention_id: own[0]!.id }, ctx)).isError, false);
   assert.equal((await boundMentionAttention(ctx)).length, 0);
