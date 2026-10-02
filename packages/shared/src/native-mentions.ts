@@ -269,9 +269,15 @@ export function stripNativeMentionAtoms(content: string): string {
 export function nativeMentionTokensToHtml(content: string): string {
   const literals = visibleNativeContent(content);
   const visible = applyContentRanges(literals, [...htmlParts(literals)], true);
-  return content.replace(NATIVE_TOKEN_PATTERN, (token, kind, id, offset) => {
-    if (visible.slice(offset, offset + token.length) !== token) return token;
-    return '<span data-deft-ref-kind="' + kind + '" data-deft-ref-id="' + id + '">'
+  // Models and pasted Markdown may add @ before the canonical token. The
+  // rendered chip owns that prefix; identity extraction remains unchanged.
+  const renderPattern = new RegExp('@?' + NATIVE_TOKEN_PATTERN.source, 'g');
+  return content.replace(renderPattern, (token, kind, id, offset) => {
+    const prefixed = token.startsWith('@');
+    const atom = prefixed ? token.slice(1) : token;
+    if (visible.slice(offset + (prefixed ? 1 : 0), offset + token.length) !== atom) return token;
+    const literalPrefix = prefixed && (visible[offset] !== '@' || content[offset - 1] === '\\') ? '@' : '';
+    return literalPrefix + '<span data-deft-ref-kind="' + kind + '" data-deft-ref-id="' + id + '">'
       + nativeMentionPlaceholder(kind) + '</span>';
   });
 }

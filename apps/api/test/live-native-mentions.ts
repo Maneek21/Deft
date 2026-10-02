@@ -23,7 +23,7 @@ if (!safeTestDatabaseUrl()) throw new Error('Live acceptance requires matching d
 const { db, closeDb } = await import('../src/lib/db.js');
 const { and, eq, sql } = await import('drizzle-orm');
 const { agentEmployees, messages, tasks, wikiPages, agentActions, nativeMentionDeliveries, agentChannelEvents } = await import('@deft/db/schema');
-const { nativeMentionRef, nativeMentionToken, extractNativeMentions } = await import('@deft/shared');
+const { nativeMentionRef, nativeMentionToken, extractNativeMentions, nativeMentionTokensToHtml } = await import('@deft/shared');
 const { createNativeMentionFixture, cleanupNativeMentionFixture } = await import('./fixtures/native-mentions.js');
 const { issueScopedEmployeeMcpToken } = await import('../src/lib/mcp-token.js');
 const { mcpServerV1Routes } = await import('../src/routes/mcp-server-v1.js');
@@ -131,7 +131,7 @@ try {
     const proposal = result.pendingActions.find(action => action.action === 'post_message'); assert(proposal);
     const found = extractNativeMentions(proposal.params.content).map(nativeMentionToken);
     for (const token of [atom('person', f.samId), atom('person', f.agent2Id), atom('task', f.taskId), atom('wiki_page', f.wikiId)]) assert(found.includes(token));
-    assert(!proposal.params.content.includes('@[[deft:'), 'Native tokens render their own readable labels without an extra @');
+    assert(!nativeMentionTokensToHtml(proposal.params.content).includes('@<span data-deft-ref'), 'Rendered chips must not duplicate the @ label');
     assert.match(proposal.params.content, /PUBLIC-NATIVE-LIVE-2847/); assert.match(proposal.params.content, /TASK-NATIVE-LIVE-7314/);
     assert.equal((await db.select().from(messages).where(eq(messages.org_id, f.orgId))).length, before);
     return result;

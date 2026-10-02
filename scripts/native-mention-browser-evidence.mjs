@@ -47,6 +47,9 @@ try {
   await page.goto(base + '/chat?space=' + fixture.publicSpaceId, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
   assert(socketConnected, 'The browser establishes the live workspace socket connection');
+  await page.getByText('Agent format example:', { exact: false }).first().waitFor();
+  await page.locator('span[data-deft-ref-id="' + fixture.taskId + '"]').first().getByRole('link').waitFor();
+  assert(!(await page.locator('body').innerText()).includes('@@'), 'Agent-format chat tokens render a single @ per chip');
   console.log('URL', page.url());
   console.log((await page.locator('body').innerText()).slice(-4500));
   console.log('Editors', await page.locator('[contenteditable=true]').count());
@@ -150,12 +153,14 @@ try {
   await choose(wiki, 'Rita', 'Rita Research');
   await wiki.pressSequentially(' using ');
   await choose(wiki, 'Launch', 'Launch checklist');
+  await wiki.fill((await wiki.inputValue()).replaceAll('[[deft:', '@[[deft:'));
   await shot('09-wiki-markdown-editor');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
   await page.getByRole('status').filter({ hasText: /notification\(s\) queued|Mentions are up to date/ }).waitFor();
   await page.getByRole('link', { name: /@DEFT-42 · Review release/ }).waitFor();
+  assert(!(await page.locator('body').innerText()).includes('@@'), 'Agent-format Markdown tokens render a single @ per chip');
   await shot('10-wiki-published-and-backlinks');
 
   await page.getByRole('button', { name: 'Request', exact: true }).click();
@@ -207,6 +212,7 @@ try {
   await mobilePage.goto(base + '/knowledge?slug=' + fixture.wikiSlug);
   await mobilePage.getByRole('link', { name: /@DEFT-42 · Review release/ }).waitFor();
   await mobilePage.waitForTimeout(1000);
+  assert(!(await mobilePage.locator('body').innerText()).includes('@@'), 'Mobile renders agent-format Markdown without duplicate prefixes');
   await mobilePage.screenshot({ path: path.join(output, '16-mobile-wiki.png'), fullPage: true });
   results.push('16-mobile-wiki');
   const mobileVideo = mobilePage.video();

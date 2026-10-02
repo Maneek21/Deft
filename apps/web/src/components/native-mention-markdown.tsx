@@ -18,7 +18,7 @@ function nativeReferences() {
           && file.value.slice(start, end) !== child.value) return [child];
         const result: MdNode[] = [];
         let offset = 0;
-        for (const match of child.value.matchAll(/\[\[deft:(person|task|wiki_page):([A-Za-z0-9][A-Za-z0-9._:-]{0,255})\]\]/g)) {
+        for (const match of child.value.matchAll(/@?\[\[deft:(person|task|wiki_page):([A-Za-z0-9][A-Za-z0-9._:-]{0,255})\]\]/g)) {
           if (!ResourceOpaqueIdSchema.safeParse(match[2]).success) continue;
           result.push({ type: 'text', value: child.value.slice(offset, match.index) },
             { type: 'link', url: '/deft-reference/' + match[1] + '/' + match[2],

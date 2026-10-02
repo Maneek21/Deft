@@ -68,6 +68,20 @@ test('HTML rendering preserves literal reference examples and attribute values',
   ]) assert.equal(nativeMentionTokensToHtml(body), body);
 });
 
+test('model-prefixed native tokens render one mention while retaining identity and literal examples', () => {
+  for (const kind of ['person', 'task', 'wiki_page'] as const) {
+    const ref = nativeMentionRef(kind, 'live-target');
+    const token = nativeMentionToken(ref);
+    assert.equal(nativeMentionTokensToHtml('@' + token), nativeMentionTokensToHtml(token), 'the chip supplies its own @ label');
+    assert.equal(nativeMentionTokensToHtml('\\@' + token), '\\@' + nativeMentionTokensToHtml(token), 'an escaped literal prefix retains its existing meaning');
+    assert.deepEqual(extractNativeMentions('@' + token), [ref]);
+    for (const literal of ['`@' + token + '`', '<code>@' + token + '</code>', '> @' + token]) {
+      assert.equal(nativeMentionTokensToHtml(literal), literal);
+      assert.deepEqual(extractNativeMentions(literal), []);
+    }
+  }
+});
+
 test('quoted HTML delimiters and incomplete links stay literal while canonical atoms survive', () => {
   const body = '<a title="> [[deft:person:hidden]]">Example</a> [[deft:task:visible]]';
   assert.deepEqual(extractNativeMentions(body), [nativeMentionRef('task', 'visible')]);

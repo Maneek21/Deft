@@ -1,7 +1,8 @@
 import { writeFile } from 'node:fs/promises';
 import { and, eq } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
-import { users, orgs, orgMembers, onboardingState } from '@deft/db/schema';
+import { users, orgs, orgMembers, onboardingState, messages } from '@deft/db/schema';
+import { nativeMentionRef, nativeMentionToken } from '@deft/shared';
 import { db, closeDb } from '../../src/lib/db.js';
 import { createWebSession } from '../../src/lib/web-sessions.js';
 import { createNativeMentionFixture } from './native-mentions.js';
@@ -11,6 +12,11 @@ const output = process.env.DEFT_MENTION_FIXTURE_PATH;
 if (!output) throw new Error('DEFT_MENTION_FIXTURE_PATH is required');
 try {
   const fixture = await createNativeMentionFixture();
+  // Reproduce the optional @ prefix observed in actual live model output.
+  const modelFormat = [nativeMentionRef('person', fixture.samId), nativeMentionRef('person', fixture.agent2Id),
+    nativeMentionRef('task', fixture.taskId), nativeMentionRef('wiki_page', fixture.wikiId)].map(ref => '@' + nativeMentionToken(ref)).join(' ');
+  await db.insert(messages).values({ org_id: fixture.orgId, space_id: fixture.publicSpaceId,
+    user_id: fixture.agentId, content: 'Agent format example: ' + modelFormat });
   // The browser lab models the supported one-workspace deployment.
   await db.delete(orgMembers).where(eq(orgMembers.org_id, fixture.otherOrgId));
   await db.delete(orgs).where(eq(orgs.id, fixture.otherOrgId));
