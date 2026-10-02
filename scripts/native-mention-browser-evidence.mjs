@@ -89,6 +89,11 @@ try {
   await choose(description, 'Launch', 'Launch checklist');
   await description.pressSequentially(' for ');
   await choose(description, 'DEFT', 'DEFT-42');
+  // A route change inside the debounce must preserve the edit without notifying.
+  await page.getByRole('link', { name: 'Chat', exact: true }).click();
+  await page.locator('[contenteditable=true]').first().waitFor();
+  await page.goto(base + '/tasks?task=' + fixture.taskId);
+  await page.locator('[contenteditable=true]').first().getByRole('button', { name: '@Rita Research', exact: true }).waitFor();
   await shot('05-task-description');
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
   await page.getByRole('status').filter({ hasText: /notification\(s\) queued|Mentions are up to date/ }).waitFor();

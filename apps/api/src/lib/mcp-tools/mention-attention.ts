@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { agentEmployees } from '@deft/db/schema';
 import { NativeMentionSourceSchema } from '@deft/shared';
@@ -12,7 +12,7 @@ export async function boundMentionAttention(ctx: ToolContext) {
   if (ctx.token_id && !ctx.scopes?.includes('read:workspace')) return [];
   const [employee] = await db.select({ user_id: agentEmployees.user_id }).from(agentEmployees).where(and(
     eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id),
-    eq(agentEmployees.is_active, true), eq(agentEmployees.is_deleted, false),
+    eq(agentEmployees.is_active, true), or(eq(agentEmployees.is_deleted, false), eq(agentEmployees.runtime_kind, 'defty_system')),
   ));
   if (!employee) return [];
   const context = { orgId: ctx.org_id, userId: employee.user_id, employeeId: ctx.employee_id };

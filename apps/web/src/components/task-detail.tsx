@@ -772,12 +772,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const descriptionDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const descriptionQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingDescriptionSave = useRef<(() => Promise<void>) | null>(null);
   const descriptionRevision = useRef(0);
   const descriptionDirty = useRef(false);
   const activeTaskId = useRef(taskId);
   useEffect(() => {
     activeTaskId.current = taskId; descriptionDirty.current = false; ++descriptionRevision.current;
-    return () => clearTimeout(descriptionDebounce.current);
+    return () => {
+      clearTimeout(descriptionDebounce.current);
+      const save = pendingDescriptionSave.current; pendingDescriptionSave.current = null;
+      if (save) void save().catch(() => {});
+    };
   }, [taskId]);
   const saveDescription = (html: string) => {
     const targetId = taskId;
@@ -2051,12 +2056,18 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 setDescValue(html);
                 // Auto-save after editing
                 clearTimeout(descriptionDebounce.current);
-                descriptionDebounce.current = setTimeout(() => { void saveDescription(html).catch(() => {}); }, 800);
+                const save = () => saveDescription(html);
+                pendingDescriptionSave.current = save;
+                descriptionDebounce.current = setTimeout(() => {
+                  if (pendingDescriptionSave.current === save) pendingDescriptionSave.current = null;
+                  void save().catch(() => {});
+                }, 800);
               }}
             />
             <NativeMentionPublish source={{ kind: 'task', id: taskId }} content={descValue}
               prepare={async () => {
                 clearTimeout(descriptionDebounce.current);
+                pendingDescriptionSave.current = null;
                 await saveDescription(descValue);
               }} />
             {/* Fix 4: quick comment entry point always visible on description tab */}
