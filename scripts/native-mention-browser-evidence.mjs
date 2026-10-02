@@ -114,6 +114,8 @@ try {
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
   await page.getByRole('status').filter({ hasText: /notification\(s\) queued|Mentions are up to date/ }).waitFor();
   await shot('06-task-description-published');
+  await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Mentions are up to date' }).waitFor();
   await page.getByRole('button', { name: /References/ }).click();
   await page.getByText(/Mentioned in ·/).waitFor();
   await shot('07-task-backlinks');

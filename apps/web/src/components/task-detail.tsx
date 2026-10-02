@@ -772,6 +772,12 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const descriptionDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const descriptionQueue = useRef<Promise<void>>(Promise.resolve());
+  const savedDescriptionContents = useRef(new Map<string, string>());
+  const rememberSavedDescription = useCallback((id: string, html: string) => {
+    const saved = savedDescriptionContents.current;
+    saved.delete(id); saved.set(id, html);
+    if (saved.size > 2) saved.delete(saved.keys().next().value!);
+  }, []);
   const pendingDescriptionSave = useRef<(() => Promise<void>) | null>(null);
   const descriptionRevision = useRef(0);
   const descriptionDirty = useRef(false);
@@ -788,9 +794,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const targetId = taskId;
     const revision = descriptionRevision.current;
     const operation = descriptionQueue.current.then(async () => {
+      if (savedDescriptionContents.current.get(targetId) === html) {
+        if (activeTaskId.current === targetId && descriptionRevision.current === revision) descriptionDirty.current = false;
+        return;
+      }
       const response = await api.patch(`/api/tasks/${targetId}`, { description: html });
       if (!response.ok) throw new Error('Description could not be saved. Retry before notifying.');
       const result = await response.json();
+      rememberSavedDescription(targetId, result.description ?? html);
       if (activeTaskId.current === targetId) {
         if (descriptionRevision.current === revision) descriptionDirty.current = false;
         setTask(previous => previous?.id === targetId ? { ...previous, ...result } : previous);
@@ -813,14 +824,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       const normalized = normalizeTaskDetailPayload(data);
       setTask(normalized);
       setTitleValue(normalized.title);
-      if (!descriptionDirty.current && descriptionRevision.current === revision) setDescValue(normalized.description || '');
+      if (!descriptionDirty.current && descriptionRevision.current === revision) {
+        rememberSavedDescription(taskId, normalized.description || '');
+        setDescValue(normalized.description || '');
+      }
       setSubtasks(data.subtasks || []);
       setParentTask(data.parent_task || null);
       setAgentProgress(data.agent_outcome ? null : data.agent_progress || null);
       setAgentOutcome(data.agent_outcome || null);
     }
     setLoading(false);
-  }, [taskId]);
+  }, [taskId, rememberSavedDescription]);
 
   useEffect(() => {
     loadTask();
