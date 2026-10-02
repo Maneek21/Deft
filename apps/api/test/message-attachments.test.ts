@@ -20,6 +20,8 @@ import {
 import { db } from '../src/lib/db.js';
 import { sweepExpiredStagedAttachments } from '../src/lib/attachment-retention.js';
 import { localFileStore } from '../src/lib/file-store.js';
+import { createWebSession } from '../src/lib/web-sessions.js';
+import { authMiddleware } from '../src/middleware/auth.js';
 
 let app: Hono;
 let orgId: string;
@@ -28,9 +30,15 @@ let userId: string;
 let otherUserId: string;
 let crossOrgUserId: string;
 let spaceId: string;
+let accessToken: string;
 
 const createdFileIds: string[] = [];
 const createdMessageIds: string[] = [];
+
+function request(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers); headers.set('Authorization', `Bearer ${accessToken}`);
+  return app.request(path, { ...init, headers });
+}
 
 async function createUnattachedFile(params: {
   orgId?: string;
@@ -50,7 +58,7 @@ async function createUnattachedFile(params: {
 }
 
 async function postMessage(body: Record<string, unknown>) {
-  return app.request(`/api/messages/${spaceId}`, {
+  return request(`/api/messages/${spaceId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -80,6 +88,7 @@ before(async () => {
     { org_id: orgId, user_id: otherUserId, role: 'member' },
     { org_id: otherOrgId, user_id: crossOrgUserId, role: 'owner' },
   ]);
+  accessToken = (await createWebSession({ id: userId, org_id: orgId, email: user!.email })).accessToken;
 
   const [space] = await db.insert(spaces).values({
     org_id: orgId,
@@ -93,15 +102,7 @@ before(async () => {
   const { messageRoutes } = await import('../src/routes/messages.js');
   const { fileServingRoutes, uploadRoutes } = await import('../src/routes/upload.js');
   app = new Hono();
-  app.use('*', async (c, next) => {
-    c.set('user', {
-      id: userId,
-      org_id: orgId,
-      email: `message-attachment-${stamp}@test.local`,
-      name: 'Attachment Owner',
-    } as never);
-    await next();
-  });
+  app.use('*', authMiddleware);
   app.route('/api/messages', messageRoutes);
   app.route('/api/upload', uploadRoutes);
   app.route('/api/files', fileServingRoutes);
@@ -133,7 +134,7 @@ test('processes uploaded text into a bounded derivative and serves detected byte
   const content = 'project,task\nLaunch,Verify\n';
   const form = new FormData();
   form.append('file', new File([content], 'plan.csv', { type: 'application/vnd.ms-excel' }));
-  const response = await app.request('/api/upload', { method: 'POST', body: form });
+  const response = await request('/api/upload', { method: 'POST', body: form });
   assert.equal(response.status, 201);
   const body = await response.json() as any;
   createdFileIds.push(body.id);
@@ -159,7 +160,7 @@ test('processes uploaded text into a bounded derivative and serves detected byte
     ));
   assert.equal(derivative?.content, content);
 
-  const download = await app.request(`/api/files/${body.id}`);
+  const download = await request(`/api/files/${body.id}`);
   assert.equal(download.status, 200);
   assert.equal(download.headers.get('content-type'), 'text/csv');
   assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
@@ -178,27 +179,27 @@ test('processes uploaded text into a bounded derivative and serves detected byte
 test('persists but never serves an attachment blocked by safety policy', async () => {
   const form = new FormData();
   form.append('file', new File(['harmless-looking text'], 'payload.exe', { type: 'text/plain' }));
-  const response = await app.request('/api/upload', { method: 'POST', body: form });
+  const response = await request('/api/upload', { method: 'POST', body: form });
   assert.equal(response.status, 201);
   const body = await response.json() as any;
   createdFileIds.push(body.id);
   assert.equal(body.processing_status, 'blocked');
   assert.equal(body.processing_error, 'unsafe_executable');
 
-  const download = await app.request(`/api/files/${body.id}`);
+  const download = await request(`/api/files/${body.id}`);
   assert.equal(download.status, 423);
   assert.equal((await download.json() as any).code, 'FILE_BLOCKED');
 
-  const deletion = await app.request(`/api/files/${body.id}`, { method: 'DELETE' });
+  const deletion = await request(`/api/files/${body.id}`, { method: 'DELETE' });
   assert.equal(deletion.status, 200);
   assert.deepEqual(await deletion.json(), { success: true, storage_cleanup: 'complete' });
-  assert.equal((await app.request(`/api/files/${body.id}`)).status, 404);
+  assert.equal((await request(`/api/files/${body.id}`)).status, 404);
 });
 
 test('sweeps only expired uploads that remain unattached', async () => {
   const form = new FormData();
   form.append('file', new File(['temporary'], 'temporary.txt', { type: 'text/plain' }));
-  const response = await app.request('/api/upload', { method: 'POST', body: form });
+  const response = await request('/api/upload', { method: 'POST', body: form });
   assert.equal(response.status, 201);
   const body = await response.json() as any;
   createdFileIds.push(body.id);
@@ -241,7 +242,7 @@ test('claims an uploaded file atomically and returns canonical structured metada
   assert.equal(typedLink?.org_id, orgId);
   assert.equal(typedLink?.position, 0);
 
-  const listResponse = await app.request(`/api/messages/${spaceId}`);
+  const listResponse = await request(`/api/messages/${spaceId}`);
   assert.equal(listResponse.status, 200);
   const listBody = await listResponse.json() as any;
   const listed = listBody.messages.find((message: any) => message.id === body.id);
@@ -265,7 +266,7 @@ test('reads a typed-only attachment without requiring the legacy message column'
     position: 0,
   });
 
-  const response = await app.request(`/api/messages/${spaceId}`);
+  const response = await request(`/api/messages/${spaceId}`);
   assert.equal(response.status, 200);
   const listed = ((await response.json()) as any).messages.find((row: any) => row.id === message!.id);
   assert.deepEqual(listed.file_ids, [file.id]);

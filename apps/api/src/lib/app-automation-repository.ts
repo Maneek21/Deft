@@ -254,6 +254,21 @@ export async function listExpiredClaimedAppAutomationFiresWithExecutor(
   ).limit(Math.min(Math.trunc(input.limit), MAX_AUTOMATION_SCAN_LIMIT));
 }
 
+/** Unsettled delivery repair is independent of definition eligibility. */
+export async function listUnsettledAppAutomationFiresWithExecutor(
+  executor: AutomationExecutor,
+  input: Readonly<{ now: Date; limit: number; after?: AppAutomationFireScanCursor }>,
+): Promise<AppAutomationFireRow[]> {
+  const cursor = input.after ? or(gt(appAutomationFires.org_id, input.after.organization_id), and(
+    eq(appAutomationFires.org_id, input.after.organization_id), gt(appAutomationFires.id, input.after.fire_id),
+  )) : undefined;
+  return executor.select().from(appAutomationFires).where(and(
+    or(eq(appAutomationFires.state, 'pending'), and(eq(appAutomationFires.state, 'claimed'),
+      lte(appAutomationFires.lease_expires_at, input.now))), cursor,
+  )).orderBy(asc(appAutomationFires.org_id), asc(appAutomationFires.id))
+    .limit(Math.max(1, Math.min(Math.trunc(input.limit), MAX_AUTOMATION_SCAN_LIMIT)));
+}
+
 export async function insertAppAutomationFireWithExecutor(
   executor: AutomationExecutor,
   value: AppAutomationFireInsert,

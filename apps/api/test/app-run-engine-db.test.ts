@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import test, { after, before } from 'node:test';
 import pg from 'pg';
 import {
@@ -71,7 +71,8 @@ function retainedKeys(ids: ReadonlySet<string>, seed: number, exclude: ReadonlyS
   // every referenced key ID to remain present.
   return Object.fromEntries([...ids]
     .filter((keyId) => !exclude.has(keyId))
-    .map((keyId) => [keyId, key(seed)]));
+    .map((keyId) => [keyId, createHash('sha256')
+      .update(`app-run-engine-retained:${seed}:${keyId}`).digest('base64')]));
 }
 
 function keyProvider(

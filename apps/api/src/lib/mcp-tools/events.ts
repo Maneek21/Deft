@@ -3,15 +3,15 @@
  *
  * Queries the `events` table (the unified schema where native events,
  * calendar reminders, imported ICS feeds, and connected-tool events land).
- * Lets an agent read the event stream for its org without needing every user
- * to connect a separate MCP server per provider.
+ * Reads only events owned by the authenticated employee's live member user,
+ * including that user's connected accounts.
  *
  * Filtering:
  *   - `type` / `types` narrows by event_type (e.g. 'calendar_event')
  *   - `source` narrows by source enum (e.g. 'ics', 'google_calendar')
  *   - `since` / `until`— ISO8601 window on the event.timestamp field
  *
- * Scoping is strict: every query is filtered by `ctx.org_id`. There is no
+ * Scoping is strict: every query is filtered by current owner and org. There is no
  * `is_deleted` column on `events`, so no soft-delete filter. Results are
  * capped at 200 rows and default to 50.
  */
@@ -19,6 +19,7 @@ import { and, eq, gte, lte, inArray, desc } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { db } from '../db.js';
 import { events } from '@deft/db/schema';
+import { liveEmployeeCalendarEventCondition } from '../calendar-event-visibility.js';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 
@@ -56,7 +57,7 @@ export async function eventsQuery(
   const limit = Math.min(Math.max(1, args.limit ?? 50), 200);
 
   try {
-    const conditions: SQL[] = [eq(events.org_id, ctx.org_id)];
+    const conditions: SQL[] = [liveEmployeeCalendarEventCondition(ctx.org_id, ctx.employee_id)];
 
     // Type filter: prefer `types` (list) if present, else fall back to `type`.
     if (Array.isArray(args.types) && args.types.length > 0) {

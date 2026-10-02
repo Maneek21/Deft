@@ -127,6 +127,45 @@ export const APP_RUN_LEGACY_MCP_CUTOVER_ENABLED =
   process.env.DEFT_APP_RUN_LEGACY_MCP_CUTOVER_ENABLED === 'true';
 export const APP_RUN_APP_ORIGIN_ENABLED =
   process.env.DEFT_APP_RUN_APP_ORIGIN_ENABLED === 'true';
+// Keep the channel's combined rollout decision beside the Run flags. The
+// independent channel switch may be disabled without reopening Run composition.
+export function isAppRuntimeChannelEnabled(): boolean {
+  return APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
+    && process.env.DEFT_APP_RUNTIME_CHANNEL_ENABLED === 'true';
+}
+// Candidate resource sync is a distinct credential audience and rollout.
+// Enabling v1 actions never enables v2 sync work.
+export function isAppResourceSyncChannelEnabled(): boolean {
+  return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
+    && process.env.DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED === 'true';
+}
+// Unattended scheduling requires a separate explicit host opt-in.
+export function isAppResourceSyncSchedulerEnabled(): boolean {
+  return isAppResourceSyncChannelEnabled()
+    && process.env.DEFT_APP_RESOURCE_SYNC_SCHEDULER_ENABLED === 'true';
+}
+// Saved-private-data delivery to independent App author code requires its own
+// explicit consent and separate host opt-in. Existing sync grants never enable it.
+export function isAppExperienceResourceExposureEnabled(): boolean {
+  return isAppResourceSyncChannelEnabled()
+    && process.env.DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED === 'true';
+}
+// Protocol-v5 governed effects require a separate explicit host opt-in.
+export function isAppV5RuntimeActionsEnabled(): boolean {
+  return isAppRuntimeChannelEnabled()
+    && process.env.DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED === 'true';
+}
+// Binary custody is an independent protocol7/channel3 opt-in. Legacy sync,
+// Runtime and Calendar flags never initialize this broker's keyring or storage.
+export function isAppAttachmentBrokerEnabled(): boolean {
+  return isAppResourceSyncChannelEnabled()
+    && process.env.DEFT_APP_ATTACHMENT_BROKER_ENABLED === 'true';
+}
+// Native Calendar uses its own host consent and atomic Run executor.
+export function isAppNativeCalendarEnabled(): boolean {
+  return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED
+    && process.env.DEFT_APP_NATIVE_CALENDAR_ENABLED === 'true';
+}
 // Track A automation is an independent, deny-by-default privileged plane.
 export const APP_AUTOMATIONS_ENABLED =
   process.env.DEFT_APP_AUTOMATIONS_ENABLED === 'true';
@@ -163,3 +202,8 @@ validateAppRunRolloutConfiguration(
   APP_AUTOMATIONS_ENABLED,
 );
 validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYRINGS);
+
+// Private App state is independent, dormant, and never enabled by sync alone.
+export function isAppPrivateStateEnabled(): boolean {
+  return isAppExperienceResourceExposureEnabled() && process.env.DEFT_APP_PRIVATE_STATE_ENABLED === 'true';
+}

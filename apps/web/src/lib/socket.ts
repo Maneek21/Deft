@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import { refreshAccessToken } from './api';
+import { refreshAccessToken, SessionRefreshUnavailableError } from './api';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
 
@@ -45,9 +45,12 @@ export function getSocket(token: string): Socket {
     reconnectionDelayMax: 10000,
   });
   socket = createdSocket;
+  let authRetry: ReturnType<typeof setTimeout> | null = null;
 
   createdSocket.on('connect', () => {
     if (socket !== createdSocket) return;
+    if (authRetry) clearTimeout(authRetry);
+    authRetry = null;
     notifyConnectionChange(true);
   });
 
@@ -70,7 +73,20 @@ export function getSocket(token: string): Socket {
     if (/invalid token|expired|unauthori[sz]ed/i.test(msg)) {
       // Auth-shaped error: attempt a silent token refresh and reconnect once.
       // The server key for socket auth is `token` (confirmed via socket.handshake.auth.token).
-      const fresh = await refreshAccessToken();
+      let fresh: string | null;
+      try {
+        fresh = await refreshAccessToken();
+      } catch (error) {
+        if (socket !== createdSocket) return;
+        if (error instanceof SessionRefreshUnavailableError && !authRetry) {
+          notifyConnectionChange(false);
+          authRetry = setTimeout(() => {
+            authRetry = null;
+            if (socket === createdSocket) createdSocket.connect();
+          }, 5000);
+        }
+        return;
+      }
       // A logout/login may have replaced the singleton while refresh was in
       // flight. Never mutate or disconnect that newer socket from this handler.
       if (socket !== createdSocket) return;

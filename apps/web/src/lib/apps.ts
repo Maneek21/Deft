@@ -75,12 +75,44 @@ export type AppManifestV2 = Omit<AppManifestV1, 'schema_version' | 'compatibilit
   }>;
 };
 
-export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2;
+export type AppRuntimeManifestV3 = AppManifestBase & {
+  schema_version: '3'; compatibility: { app_protocol: '3' };
+  runtime_requirements: unknown[]; private_capabilities: unknown[]; runtime_actions: unknown[];
+};
+
+export type AppExperienceReference = {
+  key: string; label: string; artifact_path: string; artifact_digest: string;
+  bridge_version: 'deft.experience_bridge.v1';
+  renderer_version: 'deft.trusted_renderer.v1';
+};
+
+export type AppInstalledManifestV4 = Omit<AppRuntimeManifestV3, 'schema_version' | 'compatibility'> & {
+  schema_version: '4'; compatibility: { app_protocol: '4' };
+  experiences: AppExperienceReference[]; public_actions: unknown[];
+};
+
+export type AppResourceManifestV5 = Omit<AppInstalledManifestV4, 'schema_version' | 'compatibility'> & {
+  schema_version: '5'; compatibility: { app_protocol: '5' };
+  sync_descriptors: Record<string, unknown>[];
+};
+
+export type AppNativeManifestV6 = Omit<AppResourceManifestV5, 'schema_version' | 'compatibility'> & {
+  schema_version: '6'; compatibility: { app_protocol: '6' }; native_actions: Record<string, unknown>[];
+};
+export type AppAttachmentManifestV7 = Omit<AppNativeManifestV6, 'schema_version' | 'compatibility'> & {
+  schema_version: '7'; compatibility: { app_protocol: '7' };
+  private_state?: AppPrivateStateDeclaration[];
+};
+export type AppPrivateStateDeclaration = { key: string; label: string; schema: Record<string, unknown>;
+  max_record_bytes: number; max_records: number; max_total_bytes: number; retention_days: number };
+export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
+  | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5 | AppNativeManifestV6 | AppAttachmentManifestV7;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
-export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1' | 'deft.app.package.v2';
+export type AppPackageFormat = 'deft.app.package.v0' | 'deft.app.package.v1'
+  | 'deft.app.package.v2' | 'deft.app.package.v3' | 'deft.app.package.v4' | 'deft.app.package.v5' | 'deft.app.package.v6' | 'deft.app.package.v7';
 
 export function isConnectedAppManifest(manifest: AppManifest): manifest is ConnectedAppManifest {
-  return manifest.compatibility.app_protocol !== '0';
+  return manifest.compatibility.app_protocol === '1' || manifest.compatibility.app_protocol === '2';
 }
 
 /** Protocol v0 has no connected controls in its manifest, but an installed
@@ -364,6 +396,15 @@ export type ConnectedAppReview = {
   review_digest: string;
 };
 
+export type ConnectedAppUpgradeReview = {
+  schema_version: 'deft.connected_app_upgrade_review.v1';
+  prior_app_version_id: string;
+  pending_work_policy: 'supersede_pending_work';
+  policy_summary: string;
+  connected_review: ConnectedAppReview;
+  upgrade_review_digest: string;
+};
+
 export type ConnectedAppHealth = {
   status: 'healthy' | 'unhealthy';
   installation_id: string;
@@ -396,7 +437,10 @@ function stringValue(value: unknown, label: string): string {
 function packageFormat(value: unknown): AppPackageFormat {
   if (value !== 'deft.app.package.v0'
     && value !== 'deft.app.package.v1'
-    && value !== 'deft.app.package.v2') {
+    && value !== 'deft.app.package.v2'
+    && value !== 'deft.app.package.v3'
+    && value !== 'deft.app.package.v4'
+    && value !== 'deft.app.package.v5' && value !== 'deft.app.package.v6' && value !== 'deft.app.package.v7') {
     throw new Error('Invalid App package format.');
   }
   return value;
@@ -485,11 +529,57 @@ function normalizeActionInputSource(value: unknown): AppActionInputSource {
   throw new Error('Invalid App action input source.');
 }
 
+/** Bounded display projection; the host Kit parser and review decide authority. */
+function normalizePrivateState(value: unknown): AppPrivateStateDeclaration[] {
+  const rows = recordArray(value, 'private state');
+  const fail = (): never => { throw new Error('Invalid private state display declaration.'); };
+  const exact = (row: Record<string, unknown>, fields: string[]) => {
+    if (Object.keys(row).length !== fields.length || Object.keys(row).some(field => !fields.includes(field))) fail();
+  };
+  const fieldKey = (key: unknown): key is string => typeof key === 'string' && /^[a-z][a-z0-9_]{0,47}$/.test(key)
+    && !['constructor', 'prototype', '__proto__'].includes(key);
+  if (!rows.length || rows.length > 16) fail();
+  return rows.map((row, index) => {
+    exact(row, ['key', 'label', 'schema', 'max_record_bytes', 'max_records', 'max_total_bytes', 'retention_days']);
+    if (typeof row.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(row.key)
+      || index > 0 && String(rows[index - 1]!.key) >= row.key
+      || typeof row.label !== 'string' || !row.label.length || row.label.length > 128) fail();
+    const bounds = { max_record_bytes: 16384, max_records: 32, max_total_bytes: 131072, retention_days: 30 };
+    for (const [key, max] of Object.entries(bounds))
+      if (typeof row[key] !== 'number' || !Number.isSafeInteger(row[key]) || row[key] < 1 || row[key] > max) fail();
+    if (Number(row.max_record_bytes) > Number(row.max_total_bytes)) fail();
+    const schema = object(row.schema, 'Private state schema');
+    exact(schema, ['type', 'properties', 'required', 'additionalProperties']);
+    const properties = object(schema.properties, 'Private state schema fields');
+    if (schema.type !== 'object' || schema.additionalProperties !== false || Object.keys(properties).length > 32
+      || !Array.isArray(schema.required) || schema.required.length > 32
+      || new Set(schema.required).size !== schema.required.length
+      || schema.required.some(key => !fieldKey(key) || !Object.hasOwn(properties, key))) fail();
+    for (const [key, value] of Object.entries(properties)) {
+      if (!fieldKey(key)) fail();
+      const field = object(value, 'Private state scalar field');
+      if (field.type === 'string') {
+        exact(field, ['type', 'maxLength']);
+        if (typeof field.maxLength !== 'number' || !Number.isSafeInteger(field.maxLength) || field.maxLength < 1 || field.maxLength > 16384) fail();
+      } else if (field.type === 'number') {
+        exact(field, ['type', 'minimum', 'maximum']);
+        if (typeof field.minimum !== 'number' || typeof field.maximum !== 'number'
+          || !Number.isFinite(field.minimum) || !Number.isFinite(field.maximum) || field.minimum > field.maximum) fail();
+      } else if (field.type === 'boolean') exact(field, ['type']);
+      else fail();
+    }
+    return { key: row.key as string, label: row.label as string, schema,
+      max_record_bytes: row.max_record_bytes as number, max_records: row.max_records as number,
+      max_total_bytes: row.max_total_bytes as number, retention_days: row.retention_days as number };
+  });
+}
+
 function normalizeManifest(value: unknown): AppManifest {
   const row = object(value, 'App manifest');
   const compatibility = object(row.compatibility, 'App compatibility');
   const protocol = compatibility.app_protocol;
-  if (protocol !== '0' && protocol !== '1' && protocol !== '2') throw new Error('Unsupported App protocol.');
+  if (protocol !== '0' && protocol !== '1' && protocol !== '2'
+    && protocol !== '3' && protocol !== '4' && protocol !== '5' && protocol !== '6' && protocol !== '7') throw new Error('Unsupported App protocol.');
   if (row.schema_version !== protocol) throw new Error('App manifest protocol and schema do not match.');
   const base: AppManifestBase = {
     id: stringValue(row.id, 'App identity'),
@@ -516,6 +606,89 @@ function normalizeManifest(value: unknown): AppManifest {
     } : {}),
   };
   if (protocol === '0') return { ...base, schema_version: '0', compatibility: { app_protocol: '0' } };
+  if (protocol === '3' || protocol === '4' || protocol === '5' || protocol === '6' || protocol === '7') {
+    const runtime = {
+      ...base,
+      runtime_requirements: recordArray(row.runtime_requirements, 'Runtime requirements'),
+      private_capabilities: recordArray(row.private_capabilities, 'private capabilities'),
+      runtime_actions: recordArray(row.runtime_actions, 'Runtime actions'),
+    };
+    if (protocol === '3') return { ...runtime, schema_version: '3', compatibility: { app_protocol: '3' } };
+    const installed = { ...runtime,
+      experiences: recordArray(row.experiences, 'App Experiences').map((item) => {
+        if (item.bridge_version !== 'deft.experience_bridge.v1'
+          || item.renderer_version !== 'deft.trusted_renderer.v1') {
+          throw new Error('Unsupported App Experience bridge or renderer.');
+        }
+        return { key: stringValue(item.key, 'Experience key'),
+          label: stringValue(item.label, 'Experience label'),
+          artifact_path: stringValue(item.artifact_path, 'Experience path'),
+          artifact_digest: stringValue(item.artifact_digest, 'Experience digest'),
+          bridge_version: item.bridge_version as 'deft.experience_bridge.v1', renderer_version: item.renderer_version as 'deft.trusted_renderer.v1' };
+      }),
+      public_actions: recordArray(row.public_actions, 'public actions'),
+    };
+    if (protocol === '4') return { ...installed, schema_version: '4', compatibility: { app_protocol: '4' } };
+    if (protocol === '7') {
+      // Display projection only. The host's closed Kit parser and exact review
+      // decide authority; importing the packaging entry point would load Node code.
+      const fields = ['schema_version', 'compatibility', 'id', 'version', 'name', 'description', 'license', 'provenance',
+        'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions',
+        'sync_descriptors', 'experiences', 'public_actions', 'private_state'];
+      const sync = recordArray(row.sync_descriptors, 'App attachment sync descriptors');
+      const native = recordArray(row.native_actions, 'native actions');
+      if (Object.keys(row).some(field => !fields.includes(field)) || Object.keys(compatibility).length !== 1
+        || !sync.length || sync.length > 8 || !runtime.runtime_requirements.length || runtime.runtime_requirements.length > 8
+        || runtime.private_capabilities.length > 16 || runtime.runtime_actions.length > 16 || native.length > 8
+        || installed.experiences.length > 1 || installed.public_actions.length > 8) throw new Error('Invalid attachment App display fields.');
+      for (const descriptor of sync) {
+        const allowed = ['schema_version', 'key', 'runtime_requirement_key', 'resource_type', 'requested_visibility', 'label_field', 'record_schema', 'attachments'];
+        if (Object.keys(descriptor).some(field => !allowed.includes(field)) || descriptor.schema_version !== 'deft.app_sync_descriptor.v2'
+          || descriptor.requested_visibility !== 'user_private') throw new Error('Invalid attachment descriptor display.');
+        for (const key of ['key', 'runtime_requirement_key', 'resource_type', 'label_field'])
+          if (typeof descriptor[key] !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(descriptor[key])) throw new Error('Invalid attachment descriptor key.');
+        object(descriptor.record_schema, 'Attachment record schema');
+        const policy = object(descriptor.attachments, 'Attachment policy');
+        const bounds = { max_attachment_bytes: 2097152, max_attachments_per_record: 8, max_attachments_per_run: 32,
+          max_attachment_bytes_per_run: 8388608, retention_days: 30 };
+        if (Object.keys(policy).length !== 6 || Object.keys(policy).some(key => ![...Object.keys(bounds), 'allowed_media_types'].includes(key))) throw new Error('Invalid attachment policy display.');
+        for (const [key, max] of Object.entries(bounds))
+          if (typeof policy[key] !== 'number' || !Number.isSafeInteger(policy[key]) || policy[key] < 1 || policy[key] > max) throw new Error('Invalid attachment policy bound.');
+        const media = policy.allowed_media_types;
+        if (!Array.isArray(media) || !media.length || media.length > 7 || new Set(media).size !== media.length
+          || media.some(type => !['text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(type))) throw new Error('Invalid attachment media display.');
+        if (!runtime.runtime_requirements.some(value => {
+          const requirement = object(value, 'Runtime requirement');
+          return requirement.key === descriptor.runtime_requirement_key && requirement.protocol_version === 'deft.app_runtime_channel.v3';
+        })) throw new Error('Attachment descriptor requires channel 3.');
+      }
+      return { ...installed, schema_version: '7', compatibility: { app_protocol: '7' }, sync_descriptors: sync, native_actions: native,
+        ...(Object.hasOwn(row, 'private_state') ? { private_state: normalizePrivateState(row.private_state) } : {}) };
+    }
+    if (protocol === '6') {
+      // Display projection only; the host validates the exact Kit contract.
+      // Importing the packaging entry point would pull Node-only code into Web.
+      const fields = ['schema_version', 'compatibility', 'id', 'version', 'name', 'description', 'license', 'provenance',
+        'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions',
+        'sync_descriptors', 'experiences', 'public_actions'];
+      if (Object.keys(row).some(field => !fields.includes(field)) || Object.keys(compatibility).length !== 1) throw new Error('Invalid native App display fields.');
+      const native = recordArray(row.native_actions, 'native actions');
+      if (native.length < 1 || native.length > 8 || new Set(native.map(item => item.key)).size !== native.length) throw new Error('Invalid native action count.');
+      for (const item of native) {
+        if (Object.keys(item).length !== 4 || Object.keys(item).some(field => !['key', 'label', 'operation', 'capability_key'].includes(field))
+          || typeof item.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(item.key)
+          || typeof item.capability_key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(item.capability_key)
+          || typeof item.label !== 'string' || item.label.length < 1 || item.label.length > 200 || /[\u0000-\u001f\u007f<>]/.test(item.label)
+          || !['calendar.events.create.v1', 'calendar.events.cancel.v1'].includes(String(item.operation))) throw new Error('Invalid native action display.');
+      }
+      const sync = recordArray(row.sync_descriptors, 'App sync descriptors');
+      if (runtime.runtime_requirements.length > 8 || runtime.private_capabilities.length > 16 || runtime.runtime_actions.length > 16
+        || installed.experiences.length > 1 || installed.public_actions.length > 8 || sync.length > 8) throw new Error('Native App display bounds exceeded.');
+      return { ...installed, schema_version: '6', compatibility: { app_protocol: '6' }, sync_descriptors: sync, native_actions: native };
+    }
+    return { ...installed, schema_version: '5', compatibility: { app_protocol: '5' },
+      sync_descriptors: recordArray(row.sync_descriptors, 'App sync descriptors') };
+  }
   const connected = {
     ...base,
     dependencies: recordArray(row.dependencies ?? [], 'App dependencies').map((entry) => ({
@@ -1008,6 +1181,22 @@ export function normalizeConnectedAppReview(value: unknown): ConnectedAppReview 
     }),
     authority_surface_digest: stringValue(row.authority_surface_digest, 'App authority surface digest'),
     review_digest: stringValue(row.review_digest, 'App review digest'),
+  };
+}
+
+export function normalizeConnectedAppUpgradeReview(value: unknown): ConnectedAppUpgradeReview {
+  const row = object(value, 'connected App upgrade review');
+  if (row.schema_version !== 'deft.connected_app_upgrade_review.v1'
+    || row.pending_work_policy !== 'supersede_pending_work') throw new Error('Invalid connected App upgrade policy.');
+  const digest = stringValue(row.upgrade_review_digest, 'connected App upgrade review digest');
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid connected App upgrade review digest.');
+  return {
+    schema_version: 'deft.connected_app_upgrade_review.v1',
+    prior_app_version_id: stringValue(row.prior_app_version_id, 'prior App version identity'),
+    pending_work_policy: 'supersede_pending_work',
+    policy_summary: stringValue(row.policy_summary, 'connected App pending work policy'),
+    connected_review: normalizeConnectedAppReview(row.connected_review),
+    upgrade_review_digest: digest,
   };
 }
 

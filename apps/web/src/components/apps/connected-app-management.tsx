@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
 import { AppRunInspector } from '@/components/apps/app-run-inspector';
@@ -11,11 +11,23 @@ import {
   isConnectedAppManifest,
   normalizeConnectedAppHealth,
   normalizeConnectedAppReview,
+  normalizeConnectedAppUpgradeReview,
   type AppInstallation,
   type ConnectedAppHealth,
   type ConnectedAppReview,
+  type ConnectedAppUpgradeReview,
 } from '@/lib/apps';
 import { refreshApps, useAppConnectors, useAppGrantManagement } from '@/hooks/use-apps';
+
+type ReviewInput = {
+  app_version_id: string; expected_package_digest: string; expected_requested_snapshot_digest: string;
+  expected_lifecycle_epoch: number; expected_grant_epoch: number;
+  connector_selections: Array<{ connector_requirement_key: string; mcp_connection_id: string }>;
+};
+type UpgradeReviewInput = ReviewInput & {
+  schema_version: 'deft.connected_app_upgrade_request.v1'; prior_app_version_id: string;
+  pending_work_policy: 'supersede_pending_work';
+};
 
 export function ConnectedAppManagement({
   app,
@@ -35,8 +47,12 @@ export function ConnectedAppManagement({
   const [acceptedAdoptions, setAcceptedAdoptions] = useState(false);
   const [connectorSelections, setConnectorSelections] = useState<Record<string, string>>({});
   const [review, setReview] = useState<ConnectedAppReview | null>(null);
+  const [upgradeReview, setUpgradeReview] = useState<ConnectedAppUpgradeReview | null>(null);
+  const [reviewedInput, setReviewedInput] = useState<ReviewInput | UpgradeReviewInput | null>(null);
+  const reviewGeneration = useRef(0);
   const [health, setHealth] = useState<ConnectedAppHealth | null>(null);
   const [acceptedPolicy, setAcceptedPolicy] = useState(false);
+  const [acceptedPendingWork, setAcceptedPendingWork] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [working, setWorking] = useState<'review' | 'activate' | 'health' | null>(null);
   const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
@@ -47,7 +63,10 @@ export function ConnectedAppManagement({
   const protocol = manifest?.compatibility.app_protocol ?? '1';
   const effective = grants?.snapshots.find((snapshot) => snapshot.id === grants.installation.active_grant_snapshot_id) ?? null;
   useEffect(() => {
-    if (!target) return;
+    reviewGeneration.current += 1;
+    setReview(null); setUpgradeReview(null); setReviewedInput(null);
+    setAcceptedPolicy(false); setAcceptedPendingWork(false); setAcceptedAdoptions(false);
+    if (!target) return () => { reviewGeneration.current += 1; };
     setConnectorSelections((current) => {
       const next: Record<string, string> = {};
       let changed = false;
@@ -65,10 +84,9 @@ export function ConnectedAppManagement({
       }
       return changed || Object.keys(current).length !== Object.keys(next).length ? next : current;
     });
-    setReview(null);
-    setAcceptedPolicy(false);
-    setAcceptedAdoptions(false);
-  }, [target?.app_version_id, target?.requested_snapshot_digest]);
+    return () => { reviewGeneration.current += 1; };
+  }, [target?.app_version_id, target?.requested_snapshot_digest, target?.activation_kind,
+    grants?.installation.active_version_id, grants?.installation.lifecycle_epoch, grants?.installation.grant_epoch]);
 
   const reviewInput = useMemo(() => {
     if (!grants || !target) return null;
@@ -101,31 +119,62 @@ export function ConnectedAppManagement({
 
   const runReview = async () => {
     if (!reviewInput) return;
-    setWorking('review'); setMessage(null); setReview(null); setAcceptedPolicy(false);
+    const generation = ++reviewGeneration.current;
+    setWorking('review'); setMessage(null); setReview(null); setUpgradeReview(null); setReviewedInput(null);
+    setAcceptedPolicy(false); setAcceptedPendingWork(false);
     setAcceptedAdoptions(false);
     try {
-      const response = await api.post(`/api/apps/${encodeURIComponent(app.id)}/review`, reviewInput);
+      const isUpgrade = target?.activation_kind === 'upgrade';
+      const priorId = grants?.installation.active_version_id;
+      if (isUpgrade && !priorId) throw new Error('Current App version is unavailable; refresh before reviewing the upgrade.');
+      const input: ReviewInput | UpgradeReviewInput = isUpgrade ? { ...reviewInput,
+        schema_version: 'deft.connected_app_upgrade_request.v1', prior_app_version_id: priorId!,
+        pending_work_policy: 'supersede_pending_work' } : reviewInput;
+      const response = await api.post(`/api/apps/${encodeURIComponent(app.id)}/${isUpgrade ? 'upgrade/review' : 'review'}`, input);
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to review connected permissions.'));
-      setReview(normalizeConnectedAppReview(await response.json()));
+      const result = await response.json();
+      if (generation !== reviewGeneration.current) return;
+      if (isUpgrade) {
+        const reviewed = normalizeConnectedAppUpgradeReview(result);
+        if (reviewed.prior_app_version_id !== priorId) throw new Error('Reviewed prior App version changed.');
+        const inner = reviewed.connected_review;
+        if (inner.app_installation_id !== app.id || inner.app_version_id !== input.app_version_id
+          || inner.package_digest !== input.expected_package_digest
+          || inner.requested_snapshot_digest !== input.expected_requested_snapshot_digest
+          || inner.lifecycle_epoch !== input.expected_lifecycle_epoch || inner.grant_epoch !== input.expected_grant_epoch) {
+          throw new Error('Reviewed upgrade authority changed; review the current target again.');
+        }
+        setUpgradeReview(reviewed); setReview(reviewed.connected_review);
+      } else setReview(normalizeConnectedAppReview(result));
+      setReviewedInput(input);
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to review connected permissions.' });
+      if (generation === reviewGeneration.current) setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to review connected permissions.' });
     } finally {
       setWorking(null);
     }
   };
 
   const activate = async () => {
-    if (!reviewInput || !review || !acceptedPolicy) return;
+    const isUpgrade = target?.activation_kind === 'upgrade';
+    if (!reviewInput || !reviewedInput || !review || !acceptedPolicy
+      || (isUpgrade && (!upgradeReview || !acceptedPendingWork))) return;
+    const generation = reviewGeneration.current;
     setWorking('activate'); setMessage(null);
     try {
-      const response = await api.post(`/api/apps/${encodeURIComponent(app.id)}/review/activate`, {
-        ...reviewInput,
+      const response = await api.post(`/api/apps/${encodeURIComponent(app.id)}/${isUpgrade ? 'upgrade/activate' : 'review/activate'}`, {
+        ...reviewedInput,
         expected_review_digest: review.review_digest,
+        ...(isUpgrade ? { expected_upgrade_review_digest: upgradeReview!.upgrade_review_digest } : {}),
         accept_host_policy: true,
         accept_module_adoptions: acceptedAdoptions,
       });
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to activate this connected App.'));
-      setReview(normalizeConnectedAppReview(await response.json()));
+      const result = await response.json();
+      if (generation !== reviewGeneration.current) return;
+      if (isUpgrade) {
+        const accepted = normalizeConnectedAppUpgradeReview(result);
+        setUpgradeReview(accepted); setReview(accepted.connected_review);
+      } else setReview(normalizeConnectedAppReview(result));
       const verb = target?.activation_kind === 'upgrade'
         ? 'upgraded'
         : target?.activation_kind === 'reenable'
@@ -134,7 +183,7 @@ export function ConnectedAppManagement({
       setMessage({ tone: 'success', text: `Connected App ${verb} with freshly reviewed authority.` });
       await Promise.all([refreshApps(), grantsState.mutate()]);
     } catch (error) {
-      setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to activate this connected App.' });
+      if (generation === reviewGeneration.current) setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to activate this connected App.' });
     } finally {
       setWorking(null);
     }
@@ -219,9 +268,10 @@ export function ConnectedAppManagement({
                     style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }}
                     value={connectorSelections[requirement.key] ?? ''}
                     onChange={(event) => {
+                      reviewGeneration.current += 1;
                       setConnectorSelections((current) => ({ ...current, [requirement.key]: event.target.value }));
                       setReview(null); setAcceptedPolicy(false);
-    setAcceptedAdoptions(false);
+                      setAcceptedAdoptions(false); setAcceptedPendingWork(false); setUpgradeReview(null); setReviewedInput(null);
                     }}
                   >
                     <option value="">Select a configured connector</option>
@@ -246,7 +296,12 @@ export function ConnectedAppManagement({
                 <label className="flex min-h-11 items-start gap-2"><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedAdoptions} onChange={(event) => setAcceptedAdoptions(event.target.checked)} /><span>I accept transferring these existing modules to this App.</span></label>
               </div>}
               <label className="flex min-h-11 items-start gap-2 rounded-lg px-2 py-2 text-[11px]" style={{ background: 'var(--surface-container-low)' }}><input type="checkbox" className="mt-0.5 h-4 w-4" checked={acceptedPolicy} onChange={(event) => setAcceptedPolicy(event.target.checked)} /><span>I accept Deft’s host-owned approval, retention, egress, and retry policy for these exact bindings.</span></label>
-              <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={!acceptedPolicy || (review.module_adoptions.length > 0 && !acceptedAdoptions) || working !== null} onClick={() => void activate()}>{working === 'activate' && <Loader2 size={13} className="animate-spin" />} {activationAction(target.activation_kind)} reviewed App</button>
+              {target.activation_kind === 'upgrade' && upgradeReview && <div className="space-y-2 rounded-lg p-3 text-[11px]" style={{ background: 'var(--surface-container-low)' }}>
+                <h3 className="font-semibold">Pending work after this upgrade</h3>
+                <p style={{ color: 'var(--on-surface-variant)' }}>{upgradeReview.policy_summary}</p>
+                <label className="flex min-h-11 items-start gap-2"><input type="checkbox" className="mt-0.5 h-4 w-4 flex-shrink-0" checked={acceptedPendingWork} onChange={event => setAcceptedPendingWork(event.target.checked)} /><span>I accept superseding old pending authority with this upgrade. Existing effects keep their original review and are not automatically cancelled.</span></label>
+              </div>}
+              <button type="button" className="deft-pill min-h-11 text-white" style={{ background: 'var(--primary-container)' }} disabled={!acceptedPolicy || (target.activation_kind === 'upgrade' && (!upgradeReview || !acceptedPendingWork)) || (review.module_adoptions.length > 0 && !acceptedAdoptions) || working !== null} onClick={() => void activate()}>{working === 'activate' && <Loader2 size={13} className="animate-spin" />} {activationAction(target.activation_kind)} reviewed App</button>
             </div>}
 
             {grants.action_bindings.length > 0 && <div><h3 className="text-xs font-semibold">{grants.installation.active_grant_snapshot_id ? 'Effective action bindings' : 'Prior reviewed bindings'}</h3>{!grants.installation.active_grant_snapshot_id && <p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>These bindings are revoked while the App is disabled and are shown only as inputs to a fresh review.</p>}<ul className="mt-2 space-y-1.5">{grants.action_bindings.map((binding) => <li key={binding.id} className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: 'var(--surface-container-high)' }}><span className="font-medium">{binding.action_key.replaceAll('_', ' ')}</span><span className="block" style={{ color: 'var(--outline)' }}>{connectorName(binding.mcp_connection_id, connectorState.connectors)} · {binding.host_policy.review_requirement.replaceAll('_', ' ')} approval</span></li>)}</ul></div>}
@@ -261,7 +316,7 @@ export function ConnectedAppManagement({
               {health.issues.length > 0 && <ul className="mt-1 space-y-1">{health.issues.map((issue) => <li key={`${issue.code}:${issue.subject_id}`}>{issue.message}</li>)}</ul>}
             </div>}
 
-            {installedManifest?.compatibility.app_protocol === '2' && app.state === 'active' && <AppAutomationManagement installationId={app.id} onInspectRun={setSelectedRunId} />}
+            {installedManifest?.compatibility.app_protocol === '2' && (app.state === 'active' || app.state === 'disabled') && <AppAutomationManagement installationId={app.id} onInspectRun={setSelectedRunId} />}
 
             <div><h3 className="text-xs font-semibold">Recent Runs</h3>{grants.recent_runs.length === 0 ? <p className="mt-1 text-[11px]" style={{ color: 'var(--outline)' }}>No App Runs yet.</p> : <ul className="mt-2 space-y-1.5">{grants.recent_runs.slice(0, 5).map((run) => <li key={run.id}><button type="button" className="flex min-h-11 w-full items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[11px]" style={{ background: 'var(--surface-container-high)' }} onClick={() => setSelectedRunId(run.id)}><span className="min-w-0"><span className="block truncate font-medium">{run.title}</span><span className="block truncate" style={{ color: 'var(--outline)' }}>{run.outcome_summary ?? run.summary ?? new Date(run.created_at).toLocaleString()}</span></span><RunState state={run.state} /></button></li>)}</ul>}</div>
           </>}

@@ -1,4 +1,5 @@
 import { MODULE_OPERATION_DESCRIPTIONS } from './module-tool-descriptions.js';
+import { RUNTIME_WORKFLOW_TOOL_SCHEMAS } from './app-runtime-workflow-tools.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import {
   MODULE_OPERATION_NAMES,
@@ -57,6 +58,10 @@ export const APP_ACTION_AGENT_TOOLS: Anthropic.Tool[] = APP_ACTION_OPERATION_NAM
 );
 
 export const AGENT_TOOLS: Anthropic.Tool[] = [
+  ...RUNTIME_WORKFLOW_TOOL_SCHEMAS.map(tool => ({ name: tool.name, description: tool.description,
+    input_schema: tool.inputSchema as Anthropic.Tool['input_schema'] })),
+  {name:'app_runtime_action_request',description:'Request one declared Runtime action for a binding supplied in authorized context. The assigned owner must approve exact input before any external effect. Owner policy can deny requests; installation grants no autonomy. Never invent a binding or actor.',
+    input_schema:{type:'object',additionalProperties:false,properties:{runtime_binding_id:{type:'string',format:'uuid'},idempotency_key:{type:'string',minLength:1,maxLength:80},input:{type:'object',additionalProperties:{anyOf:[{type:'string',maxLength:16384},{type:'number'},{type:'boolean'}]}}},required:['runtime_binding_id','idempotency_key','input']}},
   {
     name: 'search_messages',
     description:

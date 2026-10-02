@@ -3,9 +3,10 @@ import {
   AppRunSafeOutcomeSchema,
   type AppRunSubmission,
 } from '@deft/shared';
-import { agentActions, agentEmployees } from '@deft/db/schema';
+import { agentActions, agentEmployees, appRuns, appVersions } from '@deft/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from './db.js';
+import { AppRunError } from './app-run-errors.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
   PostgresAppRunRepository,
@@ -52,6 +53,14 @@ async function approvalOwnerUserId(
 ): Promise<string> {
   if (submission.initiating_actor.actor_type === 'human') {
     return submission.initiating_actor.user_id;
+  }
+  if (submission.initiating_actor.actor_type === 'app_public'
+    && submission.execution_actor.actor_type === 'human'
+    && submission.origin.origin_kind === 'app'
+    && 'public_endpoint_id' in submission.origin
+    && submission.origin.public_endpoint_id === submission.initiating_actor.endpoint_id
+    && submission.origin.public_ingress_id === submission.initiating_actor.ingress_id) {
+    return submission.execution_actor.user_id;
   }
   if (submission.initiating_actor.actor_type === 'agent_employee') {
     const [employee] = await tx.select({ user_id: agentEmployees.user_id })
@@ -109,15 +118,43 @@ export class PostgresAppRunApprovalResolver {
   async approve(
     actionId: string,
     approverUserId: string,
+    finalGuard?: (tx: AppRunTransaction) => Promise<void>,
   ): Promise<AppRunApprovalResolution> {
-    const result = await db.transaction(async (tx): Promise<AppRunApprovalResolution> => {
+    const result = await db.transaction(tx => this.approveInTransaction(tx, actionId, approverUserId, finalGuard));
+    await this.#resolveApprovalAttention(actionId, approverUserId);
+    return result;
+  }
+
+  /** Internal trusted host composition; the caller owns commit and final authority. */
+  async approveInTransaction(tx: AppRunTransaction, actionId: string, approverUserId: string,
+    finalGuard?: (tx: AppRunTransaction) => Promise<void>): Promise<AppRunApprovalResolution> {
+      const resolve = async (): Promise<AppRunApprovalResolution> => {
       const action = await this.#lockAction(tx, actionId);
       if (!action?.app_run_id || action.action !== APP_RUN_APPROVAL_ACTION) {
         return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      let requiresWebGuard = false;
+      if (run.provider_kind === 'app_runtime') {
+        const [version] = await tx.select({ protocol_version: appVersions.protocol_version }).from(appRuns)
+          .innerJoin(appVersions, and(eq(appVersions.org_id, appRuns.org_id), eq(appVersions.id, appRuns.origin_app_version_id)))
+          .where(and(eq(appRuns.org_id, run.org_id), eq(appRuns.id, run.id))).limit(1);
+        requiresWebGuard = version?.protocol_version === '7';
+        if (requiresWebGuard && !finalGuard) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      }
+      // Reviewed Runtime/native releases belong to their selected human owner.
+      // Generic MCP employee Runs retain the existing workspace approval path.
+      if ((run.initiating_actor_type === 'app_public' || run.provider_kind === 'native'
+        || (run.provider_kind === 'app_runtime' && run.initiating_actor_type === 'agent_employee'))
+        && action.user_id !== approverUserId) {
+        return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      }
 
+      if ((run.provider_kind === 'native' || requiresWebGuard)
+        && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
+        return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
+      }
       if (run.execution_release_kind === 'approved') {
         await this.#markApproved(tx, action.id, approverUserId, run);
         await this.#writeApprovalReceipt(
@@ -197,9 +234,10 @@ export class PostgresAppRunApprovalResolver {
       );
       await this.attemptScheduler.scheduleInTransaction(tx, run, approvalNow);
       return { status: 'approved', result: this.#safeResult(run, true) };
-    });
-    await this.#resolveApprovalAttention(actionId, approverUserId);
-    return result;
+      };
+      const resolved = await resolve();
+      await finalGuard?.(tx);
+      return resolved;
   }
 
   async reject(
@@ -213,6 +251,9 @@ export class PostgresAppRunApprovalResolver {
       }
       let run = await this.repository.lockRun(tx, action.org_id, action.app_run_id);
       if (!run) return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      if (run.initiating_actor_type === 'app_public' && action.user_id !== rejecterUserId) {
+        return { status: 'error', code: 'NOT_FOUND', message: 'App Run approval was not found' };
+      }
 
       if (run.execution_release_kind === 'approved') {
         await this.#markApproved(tx, action.id, action.approved_by_user_id ?? rejecterUserId, run);

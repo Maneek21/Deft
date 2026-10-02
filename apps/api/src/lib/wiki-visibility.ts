@@ -1,11 +1,17 @@
 import { and, eq, or, sql } from 'drizzle-orm';
-import { spaceMembers, wikiPages } from '@deft/db/schema';
+import { spaceMembers, spaces, wikiPages } from '@deft/db/schema';
 
-export function visibleWikiPageCondition(userId: string) {
+export function visibleWikiPageCondition(userId: string, orgId?: string) {
   return or(
     eq(wikiPages.scope, 'org'),
     eq(wikiPages.user_id, userId),
-    sql`exists (
+    orgId ? sql`exists (
+      select 1 from ${spaces}
+      inner join ${spaceMembers} on ${spaceMembers.space_id} = ${spaces.id}
+      where ${spaces.id} = ${wikiPages.space_id}
+        and ${spaces.org_id} = ${orgId}
+        and ${spaceMembers.user_id} = ${userId}
+    )` : sql`exists (
       select 1 from ${spaceMembers}
       where ${spaceMembers.space_id} = ${wikiPages.space_id}
         and ${spaceMembers.user_id} = ${userId}

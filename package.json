@@ -79,6 +79,7 @@
     "typecheck": "pnpm -r --parallel typecheck",
     "crm:package": "tsx scripts/build-crm-app.mts",
     "test:crm-author": "tsx --test scripts/build-crm-app.test.mts scripts/export-crm-author-project.test.mts scripts/crm-packed-author.test.mts",
+    "test:runtime-author": "tsx --test scripts/runtime-packed-author.test.mts",
     "docs:check": "node scripts/check-public-docs.mjs && node --test scripts/docs-operations.test.mjs && pnpm module:check docs/examples/vendor-pilot"
   },
   "engines": {

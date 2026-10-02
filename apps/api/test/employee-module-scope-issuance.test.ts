@@ -75,7 +75,10 @@ test('employee resource scopes are opt-in, persisted, resolved, and route guarde
   assert.equal(rotated.status, 200);
   const rotatedBody = await rotated.json();
   assert.deepEqual(rotatedBody.mcp_scopes, selected);
-  assert.deepEqual((await resolveMcpPrincipal(rotatedBody.api_key)).scopes, selected);
+  const rotatedPrincipal = await resolveMcpPrincipal(rotatedBody.api_key);
+  assert.ok(rotatedPrincipal);
+  assert.deepEqual(rotatedPrincipal.scopes, selected);
+  assert.equal(rotatedBody.mcp_token_id, rotatedPrincipal.token_id);
   const reset = await rotate({});
   assert.equal(reset.status, 200);
   assert.deepEqual((await reset.json()).mcp_scopes, ['read:modules']);

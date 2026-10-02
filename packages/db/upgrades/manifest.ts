@@ -172,6 +172,86 @@ export const upgradeManifest = {
       file: '0.3.0-preview.30-module-record-merges.sql',
       description: 'Preserve tenant-bound original values and link provenance for reviewed Module record merges',
     },
+    {
+      version: '0.3.0-preview.31',
+      file: '0.3.0-preview.31-app-runtime-channel.sql',
+      description: 'Add dormant reviewed Runtime ancestry, sessions and fenced Run attempts',
+    },
+    {
+      version: '0.3.0-preview.32',
+      file: '0.3.0-preview.32-app-public-claims.sql',
+      description: 'Add dormant public endpoints, retained ingress and canonical exclusive claims',
+    },
+    {
+      version: '0.3.0-preview.33',
+      file: '0.3.0-preview.33-app-runtime-authoring.sql',
+      description: 'Permit explicitly reviewed Runtime App protocol v3 with effective grant coherence',
+    },
+    {
+      version: '0.3.0-preview.34',
+      file: '0.3.0-preview.34-app-installed-authoring.sql',
+      description: 'Permit additive installed Runtime App protocol v4 with effective grant coherence',
+    },
+    {
+      version: '0.3.0-preview.35',
+      file: '0.3.0-preview.35-app-public-runtime.sql',
+      description: 'Bind reviewed public ingress principals to one governed Runtime Run',
+    },
+    {
+      version: '0.3.0-preview.36',
+      file: '0.3.0-preview.36-app-experience-sessions.sql',
+      description: 'Pin installed Experience sessions to authenticated web and App authority',
+    },
+    {
+      version: '0.3.0-preview.37',
+      file: '0.3.0-preview.37-app-resource-sync.sql',
+      description: 'Add dormant host-reviewed resource sync bindings, sessions, intent and encrypted projections',
+    },
+    {
+      version: '0.3.0-preview.38',
+      file: '0.3.0-preview.38-app-resource-authoring.sql',
+      description: 'Permit reviewed App Protocol v5 stage and activation with pinned resource descriptors',
+    },
+    {
+      version: '0.3.0-preview.39',
+      file: '0.3.0-preview.39-app-resource-consent.sql',
+      description: 'Prevent duplicate current owner-private resource consent for one reviewed App grant',
+    },
+    {
+      version: '0.3.0-preview.40',
+      file: '0.3.0-preview.40-app-experience-resource-exposure.sql',
+      description: 'Add dormant immutable human session consent for exact Experience private-field disclosure',
+    },
+    {
+      version: '0.3.0-preview.41',
+      file: '0.3.0-preview.41-app-public-availability.sql',
+      description: 'Add optional reviewed scalar public availability and canonical claim deadlines',
+    },
+    {
+      version: '0.3.0-preview.42',
+      file: '0.3.0-preview.42-app-public-budgets.sql',
+      description: 'Add reviewed public endpoint budgets and fresh canonical reservation charge instants',
+    },
+    {
+      version: '0.3.0-preview.43', file: '0.3.0-preview.43-app-public-hmac.sql',
+      description: 'Add reviewed signed public ingress key versions and bounded durable nonce receipts',
+    },
+    {
+      version: '0.3.0-preview.44', file: '0.3.0-preview.44-app-native-calendar.sql',
+      description: 'Add separately consented host-native Calendar bindings and exact protocol 6 Run/public ancestry',
+    },
+    { version: '0.3.0-preview.45', file: '0.3.0-preview.45-app-resource-access.sql', description: 'Add dormant immutable exact-content human private App resource sharing' },
+    { version: '0.3.0-preview.46', file: '0.3.0-preview.46-app-public-control.sql', description: 'Add retained public controls and atomic pre-effect withdrawal identities' },
+    { version: '0.3.0-preview.47', file: '0.3.0-preview.47-app-attachment-custody.sql', description: 'Add dormant protocol7/channel3 encrypted owner-only attachment quarantine and checked parent custody' },
+    { version: '0.3.0-preview.48', file: '0.3.0-preview.48-app-public-cancellation.sql', description: 'Add explicit current-owner public cancellation selection and bounded historical create consent' },
+    { version: '0.3.0-preview.49', file: '0.3.0-preview.49-app-private-mcp.sql', description: 'Add dormant independent exact-purpose first-class MCP private resource grants' },
+    { version: '0.3.0-preview.50', file: '0.3.0-preview.50-app-attachment-grant-admission.sql', description: 'Admit closed owner-only protocol7 effective grants and bounded checkpoint custody accounting' },
+    { version: '0.3.0-preview.51', file: '0.3.0-preview.51-app-attachment-composition.sql', description: 'Admit separately reviewed protocol7 blob-grant.v2 Runtime and Experience composition without widening v1' },
+    { version: '0.3.0-preview.52', file: '0.3.0-preview.52-private-defty-context.sql', description: 'Add permanent exact Defty Space seals, reviewed private-purpose grants and bounded encrypted canonical message history' },
+    { version: '0.3.0-preview.53', file: '0.3.0-preview.53-app-private-state.sql', description: 'Add dormant encrypted artifact-bound owner-private App state with revision CAS and bounded retention' },
+    { version: '0.3.0-preview.54', file: '0.3.0-preview.54-app-experience-consent.sql', description: 'Add revocable exact-scope human Experience consent independent of technical leases and separate bounded agent policies' },
+    { version: '0.3.0-preview.55', file: '0.3.0-preview.55-app-action-batches.sql', description: 'Group bounded immutable Runtime Run inputs under one exact host review with revocable per-effect release fencing' },
+    { version: '0.3.0-preview.56', file: '0.3.0-preview.56-app-action-batch-policy-revision.sql', description: 'Pin every batch to its exact owner policy revision and fail closed for unpinned preview55 batches' },
   ] satisfies UpgradeMigration[],
 } as const;
 

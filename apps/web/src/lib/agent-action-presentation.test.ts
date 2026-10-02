@@ -150,6 +150,23 @@ test('App Run approvals present only the safe preview without raw orchestration 
   assert.equal(JSON.stringify(genericDetails).includes('campaign-secret-id'), true, 'safe_preview remains the only resource presentation');
 });
 
+test('host-marked Runtime action uses Runtime wording and requires exact input review', () => {
+  const presentation = getAgentActionPresentation({
+    action: 'app_run_invoke', source: 'app_run',
+    params: { run_id: 'opaque-run', capability_label: 'create_label',
+      provider_label: 'opaque-registration', safe_preview: {
+        title: 'create_label', summary: 'Generic summary',
+        fields: { provider_kind: 'app_runtime', runtime_binding_id: 'opaque-binding' },
+        resource_refs: [],
+      } },
+  });
+  assert.equal(presentation.eyebrow, 'Runtime App action');
+  assert.equal(presentation.badge, 'Runtime');
+  assert.equal(presentation.approveLabel, 'Approve Runtime action');
+  assert.match(presentation.summary, /exact input/);
+  assert.doesNotMatch(presentation.sourceLabel, /Connected App|opaque-registration/);
+});
+
 test('sandbox email approval keeps human resource identity and sandbox context prominent', () => {
   const presentation = getAgentActionPresentation({
     action: 'app_run_invoke',

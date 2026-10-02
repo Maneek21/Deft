@@ -1,0 +1,360 @@
+{
+  "compatibility": {
+    "app_protocol": "7"
+  },
+  "experiences": [],
+  "id": "community.example.runtime-security",
+  "license": "AGPL-3.0-only",
+  "modules": [],
+  "name": "Synthetic Runtime security fixture",
+  "native_actions": [],
+  "navigation": [],
+  "private_capabilities": [
+    {
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_id": {
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource_id"
+        ],
+        "type": "object"
+      },
+      "key": "archive_message",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "sent_copy_outcome": {
+            "maxLength": 40,
+            "type": "string"
+          },
+          "transport_outcome": {
+            "maxLength": 40,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "transport_outcome",
+          "sent_copy_outcome"
+        ],
+        "type": "object"
+      },
+      "version": "1"
+    },
+    {
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "in_reply_to": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "message_id": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "parent_message_id": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "parent_resource_id": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "references": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "to": {
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body",
+          "message_id",
+          "parent_resource_id",
+          "parent_message_id",
+          "in_reply_to",
+          "references"
+        ],
+        "type": "object"
+      },
+      "key": "reply_message",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "sent_copy_outcome": {
+            "maxLength": 40,
+            "type": "string"
+          },
+          "transport_outcome": {
+            "maxLength": 40,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "transport_outcome",
+          "sent_copy_outcome"
+        ],
+        "type": "object"
+      },
+      "version": "1"
+    },
+    {
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "message_id": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "to": {
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body",
+          "message_id"
+        ],
+        "type": "object"
+      },
+      "key": "send_message",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "sent_copy_outcome": {
+            "maxLength": 40,
+            "type": "string"
+          },
+          "transport_outcome": {
+            "maxLength": 40,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "transport_outcome",
+          "sent_copy_outcome"
+        ],
+        "type": "object"
+      },
+      "version": "1"
+    }
+  ],
+  "private_state": [
+    {
+      "key": "drafts",
+      "label": "Private drafts",
+      "max_record_bytes": 16384,
+      "max_records": 32,
+      "max_total_bytes": 131072,
+      "retention_days": 30,
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "mode": {
+            "maxLength": 16,
+            "type": "string"
+          },
+          "reply_record_id": {
+            "maxLength": 36,
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "to": {
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "to",
+          "subject",
+          "body",
+          "reply_record_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "key": "requests",
+      "label": "Private request history",
+      "max_record_bytes": 16384,
+      "max_records": 10,
+      "max_total_bytes": 131072,
+      "retention_days": 30,
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_key": {
+            "maxLength": 80,
+            "type": "string"
+          },
+          "created_at": {
+            "maxLength": 40,
+            "type": "string"
+          },
+          "draft_record_id": {
+            "maxLength": 36,
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 80,
+            "type": "string"
+          },
+          "run_id": {
+            "maxLength": 36,
+            "type": "string"
+          },
+          "source_record_id": {
+            "maxLength": 36,
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 32,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 400,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action_key",
+          "label",
+          "summary",
+          "source_record_id",
+          "draft_record_id",
+          "run_id",
+          "state",
+          "created_at"
+        ],
+        "type": "object"
+      }
+    }
+  ],
+  "public_actions": [],
+  "runtime_actions": [
+    {
+      "capability_key": "archive_message",
+      "key": "archive_message",
+      "label": "archive message",
+      "runtime_requirement_key": "mail_provider"
+    },
+    {
+      "capability_key": "reply_message",
+      "key": "reply_message",
+      "label": "reply message",
+      "runtime_requirement_key": "mail_provider"
+    },
+    {
+      "capability_key": "send_message",
+      "key": "send_message",
+      "label": "send message",
+      "runtime_requirement_key": "mail_provider"
+    }
+  ],
+  "runtime_requirements": [
+    {
+      "key": "sync_provider",
+      "protocol_version": "deft.app_runtime_channel.v3"
+    },
+    {
+      "key": "mail_provider",
+      "protocol_version": "deft.app_runtime_channel.v1"
+    }
+  ],
+  "schema_version": "7",
+  "sync_descriptors": [
+    {
+      "attachments": {
+        "allowed_media_types": [
+          "text/plain",
+          "text/csv",
+          "application/json",
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp"
+        ],
+        "max_attachment_bytes": 2097152,
+        "max_attachment_bytes_per_run": 8388608,
+        "max_attachments_per_record": 8,
+        "max_attachments_per_run": 32,
+        "retention_days": 1
+      },
+      "key": "inbox",
+      "label_field": "subject",
+      "record_schema": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "subject",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "requested_visibility": "user_private",
+      "resource_type": "mail_message",
+      "runtime_requirement_key": "sync_provider",
+      "schema_version": "deft.app_sync_descriptor.v2"
+    }
+  ],
+  "version": "1.0.0"
+}

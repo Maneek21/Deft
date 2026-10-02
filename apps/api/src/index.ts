@@ -69,10 +69,34 @@ import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
 import { moduleRoutes } from './routes/modules.js';
+import { resourceRoutes } from './routes/resources.js';
 import { appRoutes } from './routes/apps.js';
 import { appActionRoutes } from './routes/app-actions.js';
 import { appRunRoutes } from './routes/app-runs.js';
 import { appDeveloperRoutes } from './routes/app-developer.js';
+import { appRuntimeChannelRoutes } from './routes/app-runtime-channel.js';
+import { appAttachmentSyncChannelRoutes } from './routes/app-attachment-sync-channel.js';
+import { appResourceSyncChannelRoutes } from './routes/app-resource-sync-channel.js';
+import { appResourceSyncLimits } from './middleware/app-resource-sync-limits.js';
+import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
+import { appResourceSyncManagementRoutes } from './routes/app-resource-sync-management.js';
+import { appResourceAccessRoutes } from './routes/app-resource-access.js';
+import { appAttachmentOwnerRoutes } from './routes/app-attachments.js';
+import { appPrivateMcpRoutes } from './routes/app-private-mcp.js';
+import { appPrivateDeftyRoutes } from './routes/app-private-defty.js';
+import { appResourcePrivateReadRoutes } from './routes/app-resource-private-read.js';
+import { appResourcePrivateReadLimits, appResourceSyncManagementLimits, createAppResourcePrivateReadLimits } from './middleware/app-resource-private-limits.js';
+import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
+import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
+import { appExperienceRoutes } from './routes/app-experiences.js';
+import { createAppActionBatchRoutes } from './routes/app-action-batches.js';
+import { createExperienceHumanActionRoutes } from './lib/app-experience-human-action-routes.js';
+import { AppExperienceHumanActionService } from './lib/app-experience-human-action-service.js';
+import { AppExperienceExposureService } from './lib/app-experience-exposure.js';
+import { getAppRunRuntime } from './lib/app-run-runtime.js';
+import { createAppPublicRoutes } from './routes/app-public.js';
+import { AppPublicClaimService } from './lib/app-public-service.js';
+import { appPublicManagementRoutes } from './routes/app-public-management.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -108,6 +132,7 @@ app.use('*', cors({
     'Mcp-Name',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  exposeHeaders: ['Content-Disposition', 'X-Content-Type-Options'],
 }));
 
 // Task 4 (private-alpha): security headers. Browsers loading API responses
@@ -184,6 +209,32 @@ if (APP_DEVELOPER_PAIRING_ENABLED) {
   app.use('/api/app-developer/*', authLimiter);
   app.route('/api/app-developer', appDeveloperRoutes);
 }
+// Runtime credentials have a separate audience; never accept browser cookies.
+if (APPS_ENABLED) {
+  app.use('/api/app-runtime/channel/*', authLimiter);
+  app.route('/api/app-runtime/channel', appRuntimeChannelRoutes);
+  app.use('/api/app-resource-sync/channel/*', appResourceSyncLimits);
+  app.use('/api/app-resource-sync-channel/v3/*',appResourceSyncLimits);
+  app.route('/api/app-resource-sync-channel/v3',appAttachmentSyncChannelRoutes);
+  app.route('/api/app-resource-sync/channel', appResourceSyncChannelRoutes);
+  // Owner controls and private reads verify a live web SID themselves. Employee
+  // and Runtime credentials must never reach these human-only surfaces.
+  app.use('/api/app-resource-sync-management/*', appResourceSyncManagementLimits);
+  app.route('/api/app-resource-sync-management', appResourceSyncManagementRoutes);
+  app.use('/api/app-resource-private/*', appResourcePrivateReadLimits);
+  app.use('/api/private-resources/*',appResourcePrivateReadLimits);
+  app.route('/api/private-resources',appAttachmentOwnerRoutes);
+  app.route('/api/app-resource-private', appResourcePrivateReadRoutes);
+  app.use('/api/app-resource-access/*', createAppResourcePrivateReadLimits());
+  app.route('/api/app-resource-access', appResourceAccessRoutes);
+  app.use('/api/app-private-mcp/*', createAppResourcePrivateReadLimits());
+  app.route('/api/app-private-mcp', appPrivateMcpRoutes);
+  app.use('/api/apps/private-defty/*', createAppResourcePrivateReadLimits());
+  app.route('/api/apps/private-defty', appPrivateDeftyRoutes);
+}
+if (APPS_ENABLED && process.env.DEFT_APP_PUBLIC_INGRESS_ENABLED === 'true') {
+  app.route('/api/public/apps', createAppPublicRoutes(new AppPublicClaimService({ enabled: true })));
+}
 app.use('/api/*', authMiddleware);
 app.use('/api/*', defaultLimiter);
 app.use('/api/agent/*', agentLimiter);
@@ -245,6 +296,17 @@ app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
 if (APPS_ENABLED) {
+  app.route('/api/resources', resourceRoutes);
+  app.route('/api/apps/public', appPublicManagementRoutes);
+  app.route('/api/apps/runtime', appRuntimeManagementRoutes);
+  app.route('/api/app-runtime-review', appRuntimeReviewRoutes);
+  app.route('/api/app-runtime-actions', appRuntimeActionRoutes);
+  app.route('/api/app-experiences', appExperienceRoutes);
+  app.route('/api/app-action-batches', createAppActionBatchRoutes());
+  app.route('/api/app-experiences', createExperienceHumanActionRoutes(async () => {
+    const runtime = await getAppRunRuntime();
+    return new AppExperienceHumanActionService(new AppExperienceExposureService(runtime.keys), runtime);
+  }));
   app.route('/api/apps', appRoutes);
   app.route('/api/app-actions', appActionRoutes);
   app.route('/api/app-runs', appRunRoutes);

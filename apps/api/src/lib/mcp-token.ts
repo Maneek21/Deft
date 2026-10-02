@@ -10,7 +10,7 @@
  * `agent_employees` row and never participates in bearer auth. Every row in
  * `agent_employees` is a BYOA agent.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { eq, and, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from './db.js';
@@ -59,6 +59,44 @@ export type McpAgentPrincipal = {
 
 export type ResolvedMcpPrincipal = McpHumanPrincipal | McpAgentPrincipal;
 
+export type FirstClassMcpAuthentication = Readonly<{
+  token_id: string;
+  org_id: string;
+  principal_kind: 'human' | 'agent';
+  user_id: string;
+  employee_id: string | null;
+  token_authorization_version: number;
+  token_hash_digest: string;
+  scopes: readonly string[];
+  employee_authorization_version: number | null;
+  membership_authorization_version: number;
+}>;
+// Only the successful first-class bcrypt path can populate this map. Plain
+// ToolContext objects, actor strings, cloned principals and OAuth cannot do so.
+const firstClassAuthentications = new WeakMap<ResolvedMcpPrincipal, FirstClassMcpAuthentication>();
+export function firstClassMcpAuthentication(principal: ResolvedMcpPrincipal): FirstClassMcpAuthentication | null {
+  return firstClassAuthentications.get(principal) ?? null;
+}
+
+declare const privateInvocationBrand: unique symbol;
+export type PrivateMcpInvocation = Readonly<{ [privateInvocationBrand]: true }>;
+const privateInvocations = new WeakMap<PrivateMcpInvocation, Readonly<{
+  authentication: FirstClassMcpAuthentication;
+  signal: AbortSignal;
+  deadline: number;
+}>>();
+/** Per-dispatch authority handle; it is neither serializable nor replayable as args. */
+export function createPrivateMcpInvocation(principal: ResolvedMcpPrincipal, signal: AbortSignal): PrivateMcpInvocation | null {
+  const authentication = firstClassMcpAuthentication(principal);
+  if (!authentication || !authentication.scopes.includes('read:app-private-resources')) return null;
+  const invocation = Object.freeze({}) as PrivateMcpInvocation;
+  privateInvocations.set(invocation, Object.freeze({ authentication, signal, deadline: performance.now() + 3000 }));
+  return invocation;
+}
+export function privateMcpInvocationAuthority(invocation: PrivateMcpInvocation) {
+  return privateInvocations.get(invocation) ?? null;
+}
+
 export class McpAuthError extends Error {
   constructor(
     public readonly status: number,
@@ -81,6 +119,7 @@ export const EMPLOYEE_MCP_RESOURCE_SCOPES = [
   'read:tasks',
   'write:tasks',
   'write:modules',
+  'read:app-private-resources',
 ] as const;
 
 export type EmployeeMcpAppScope = typeof EMPLOYEE_MCP_APP_SCOPES[number];
@@ -139,7 +178,10 @@ export async function issueScopedEmployeeMcpToken(params: {
         eq(agentEmployees.id, params.employeeId),
         eq(agentEmployees.is_deleted, false),
       ))
-      .limit(1);
+      .limit(1)
+      // Private-resource readers lock this employee before the exact token.
+      // Rotation must use the same order before revoking or inserting tokens.
+      .for('update');
     if (!employee) {
       throw new Error(
         `issueScopedEmployeeMcpToken: no employee found for org ${params.orgId} id ${params.employeeId}`,
@@ -299,6 +341,7 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
         agent_employee_id: mcpTokens.agent_employee_id,
         principal_kind: mcpTokens.principal_kind,
         token_hash: mcpTokens.token_hash,
+        authorization_version: mcpTokens.app_run_authorization_version,
         scopes: mcpTokens.scopes,
         revoked_at: mcpTokens.revoked_at,
       })
@@ -314,7 +357,7 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
     if (row.revoked_at) throw new McpAuthError(401, 'unauthorized', 'Invalid bearer token');
     if (row.principal_kind === 'human' && row.user_id) {
       const [member] = await db
-        .select({ role: orgMembers.role, is_active: orgMembers.is_active })
+        .select({ role: orgMembers.role, is_active: orgMembers.is_active, authorization_version: orgMembers.app_run_authorization_version })
         .from(orgMembers)
         .where(and(eq(orgMembers.org_id, row.org_id), eq(orgMembers.user_id, row.user_id)))
         .limit(1);
@@ -322,7 +365,7 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
         throw new McpAuthError(403, 'forbidden', 'MCP token owner is not an active org member');
       }
       await db.update(mcpTokens).set({ last_used_at: new Date() }).where(eq(mcpTokens.id, row.id));
-      return {
+      const principal: McpHumanPrincipal = {
         kind: 'human',
         token_id: row.id,
         org_id: row.org_id,
@@ -330,6 +373,14 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
         role: member.role as McpHumanPrincipal['role'],
         scopes: row.scopes ?? [],
       };
+      firstClassAuthentications.set(principal, Object.freeze({
+        token_id: row.id, org_id: row.org_id, principal_kind: 'human', user_id: row.user_id,
+        employee_id: null, token_authorization_version: row.authorization_version,
+        token_hash_digest: createHash('sha256').update(row.token_hash).digest('hex'),
+        scopes: Object.freeze([...(row.scopes ?? [])].sort()), employee_authorization_version: null,
+        membership_authorization_version: member.authorization_version,
+      }));
+      return principal;
     }
     if (row.principal_kind === 'agent' && row.agent_employee_id) {
       const [employee] = await db.select({
@@ -339,6 +390,8 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
         disabled_tools: agentEmployees.disabled_tools,
         unhealthy: agentEmployees.unhealthy,
         unhealthy_reason: agentEmployees.unhealthy_reason,
+        user_id: agentEmployees.user_id,
+        authorization_version: agentEmployees.app_run_authorization_version,
       }).from(agentEmployees).where(and(
         eq(agentEmployees.org_id, row.org_id),
         eq(agentEmployees.id, row.agent_employee_id),
@@ -348,8 +401,10 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
       if (!employee) {
         throw new McpAuthError(403, 'forbidden', 'Agent employee is inactive or unavailable');
       }
+      const [membership] = await db.select({ authorization_version: orgMembers.app_run_authorization_version })
+        .from(orgMembers).where(and(eq(orgMembers.org_id, row.org_id), eq(orgMembers.user_id, employee.user_id))).limit(1);
       await db.update(mcpTokens).set({ last_used_at: new Date() }).where(eq(mcpTokens.id, row.id));
-      return {
+      const principal: McpAgentPrincipal = {
         kind: 'agent',
         token_id: row.id,
         org_id: row.org_id,
@@ -363,6 +418,14 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
           unhealthy_reason: employee.unhealthy_reason,
         }],
       };
+      firstClassAuthentications.set(principal, Object.freeze({
+        token_id: row.id, org_id: row.org_id, principal_kind: 'agent', user_id: employee.user_id,
+        employee_id: employee.id, token_authorization_version: row.authorization_version,
+        token_hash_digest: createHash('sha256').update(row.token_hash).digest('hex'),
+        scopes: Object.freeze([...(row.scopes ?? [])].sort()), employee_authorization_version: employee.authorization_version,
+        membership_authorization_version: membership?.authorization_version ?? -1,
+      }));
+      return principal;
     }
     throw new McpAuthError(403, 'forbidden', 'MCP token principal is invalid');
   }

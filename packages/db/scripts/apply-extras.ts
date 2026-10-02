@@ -140,6 +140,40 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
 
+    // These additive, dormant surfaces must follow the historical App Run
+    // reconciliations, which restore the predecessor's provider/ancestry checks.
+    for (const platformFile of [
+      '0.3.0-preview.31-app-runtime-channel.sql',
+      '0.3.0-preview.32-app-public-claims.sql',
+      '0.3.0-preview.33-app-runtime-authoring.sql',
+      '0.3.0-preview.34-app-installed-authoring.sql',
+      '0.3.0-preview.35-app-public-runtime.sql',
+      '0.3.0-preview.36-app-experience-sessions.sql',
+      '0.3.0-preview.37-app-resource-sync.sql',
+      '0.3.0-preview.38-app-resource-authoring.sql',
+      '0.3.0-preview.39-app-resource-consent.sql',
+      '0.3.0-preview.40-app-experience-resource-exposure.sql',
+      '0.3.0-preview.41-app-public-availability.sql',
+      '0.3.0-preview.42-app-public-budgets.sql',
+      '0.3.0-preview.43-app-public-hmac.sql',
+      '0.3.0-preview.44-app-native-calendar.sql',
+      '0.3.0-preview.45-app-resource-access.sql',
+      '0.3.0-preview.46-app-public-control.sql',
+      '0.3.0-preview.47-app-attachment-custody.sql',
+      '0.3.0-preview.48-app-public-cancellation.sql',
+      '0.3.0-preview.49-app-private-mcp.sql',
+      '0.3.0-preview.50-app-attachment-grant-admission.sql',
+      '0.3.0-preview.51-app-attachment-composition.sql',
+      '0.3.0-preview.52-private-defty-context.sql',
+      '0.3.0-preview.53-app-private-state.sql',
+      '0.3.0-preview.54-app-experience-consent.sql',
+      '0.3.0-preview.55-app-action-batches.sql',
+      '0.3.0-preview.56-app-action-batch-policy-revision.sql',
+    ]) {
+      await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
+      console.log(`[apply-extras] reconciled ${platformFile}`);
+    }
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.
@@ -150,6 +184,12 @@ async function main() {
     console.log('[apply-extras] ensured agent_employee_templates_org_slug_uniq');
 
     const requiredConstraints = [
+      'app_resource_bindings_attachment_policy_check',
+      'app_resource_projections_attachment_identity_unique',
+      'app_attachment_stages_org_id_id_unique', 'app_attachment_stages_retry_unique',
+      'app_attachment_stages_checkpoint_fk', 'app_attachment_stages_attempt_fk',
+      'app_attachment_stages_projection_fk', 'app_attachment_stages_identity_check',
+      'app_attachment_stages_metadata_check', 'app_attachment_stages_state_check',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -265,6 +305,7 @@ async function main() {
     console.log('[apply-extras] verified composite module foreign-key constraints');
 
     const requiredIndexes = [
+      'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_cleanup_idx', 'app_attachment_stages_parent_idx',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -341,6 +382,8 @@ async function main() {
     console.log('[apply-extras] verified module_versions_immutable_fields_trigger');
 
     const requiredAppRunTriggers = [
+      'app_v7_effective_grant_shape_trigger', 'app_v7_effective_grant_shape_trigger', 'app_attachment_binding_policy_guard_trigger',
+      'app_attachment_stage_guard_trigger', 'app_attachment_stage_capacity_trigger',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
       'app_run_attempts_state_identity_trigger',

@@ -1,3 +1,5 @@
+import type { AppRunTransaction } from '../lib/app-run-repository.js';
+import { isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
 import { Hono } from 'hono';
 import {
   authorizedDurableAgentResult,
@@ -19,6 +21,11 @@ import { eq, and, asc, desc, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
+  appRuns,
+  appNativeBindings,
+  appRuntimeBindings,
+  appRuntimeRegistrations,
+  appVersions,
   agentActionApprovers,
   agentMemory,
   agentEmployees,
@@ -1167,6 +1174,12 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
 agentRoutes.post('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
+  const [convoMembership] = await db.select({ space_id: spaceMembers.space_id }).from(spaceMembers)
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
+    .limit(1);
+  if (!convoMembership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
   const body = await c.req.json();
   const { content, agent_employee_id, hidden } = body;
 
@@ -1242,13 +1255,16 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
 
+
   // Verify the current user is a member of this agent_conversation space.
   const [convoMembership] = await db
     .select({ space_id: spaceMembers.space_id })
     .from(spaceMembers)
-    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id)))
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
     .limit(1);
   if (!convoMembership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  if (await isPrivateDeftySpace(user.org_id, convoId)) return c.json({ error: 'Use the reviewed private context turn', code: 'PRIVATE_CONTEXT_REQUIRED' }, 409);
 
   const ctx = await buildStreamContext(user, convoId);
   if (ctx._kind === 'error') {
@@ -1486,7 +1502,8 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
   const [membership] = await db
     .select({ user_id: spaceMembers.user_id })
     .from(spaceMembers)
-    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id)))
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id), eq(spaces.org_id, user.org_id)))
     .limit(1);
   if (!membership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
@@ -1725,7 +1742,76 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   // boundary. Legacy Defty actions (create_task/update_task_status/…) still
   // use the original executeAction path.
   if (isApprovalResolverAction(action.action)) {
-    const result = await resolveApproveAction(actionId, user.id);
+    let nativeGuard: ((tx: AppRunTransaction) => Promise<void>) | undefined;
+    if (action.app_run_id) {
+      // Native proposal participant IDs are immutable. Approval authorization
+      // locks and revalidates this exact set before the final SID fence; carry
+      // its locator here so no membership lock is discovered after App.
+      const [run] = await db.select({ provider_kind: appRuns.provider_kind,
+        owner_user_id: appNativeBindings.owner_user_id, manager_user_id: appNativeBindings.stage_manager_user_id,
+        input_expires_at: appRuns.input_expires_at, result_expires_at: appRuns.result_expires_at }).from(appRuns)
+        .leftJoin(appNativeBindings, and(eq(appNativeBindings.org_id, appRuns.org_id),
+          eq(appNativeBindings.id, appRuns.origin_native_binding_id)))
+        .where(and(eq(appRuns.org_id, user.org_id), eq(appRuns.id, action.app_run_id))).limit(1);
+      if (run?.provider_kind === 'native') {
+        try {
+          const { assertNativeCalendarEnabled } = await import('../lib/app-native-authority.js');
+          const { nativeFinalAuthorityIsCurrent } = await import('../lib/app-native-final-authority.js');
+          const { resourceSyncWebAuthority } = await import('../lib/app-resource-sync-web-authority.js');
+          assertNativeCalendarEnabled();
+          if (!user.sid || !run.owner_user_id || !run.manager_user_id) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+          const participantIds = [run.owner_user_id, run.manager_user_id];
+          const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'), { org_id: user.org_id, user_id: user.id, sid: user.sid });
+          nativeGuard = async tx => {
+            if (!await nativeFinalAuthorityIsCurrent(tx, participantIds, { guard,
+              expires_at: [run.input_expires_at, run.result_expires_at] })) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+          };
+        } catch (error) {
+          if (error && typeof error === 'object' && 'status' in error && 'code' in error
+            && typeof error.status === 'number' && [400, 401, 403, 409, 503].includes(error.status)) {
+            return c.json({ error: 'Native Calendar approval unavailable', code: String(error.code) }, error.status as 400 | 401 | 403 | 409 | 503);
+          }
+          return appHttpFailure(c, error, 'App Run', 'app-runs');
+        }
+      } else if (run?.provider_kind === 'app_runtime') {
+        const [runtime] = await db.select({ protocol_version: appVersions.protocol_version,
+          operator_user_id: appRuntimeRegistrations.operator_user_id,
+          initiating_actor_type: appRuns.initiating_actor_type, initiating_actor_id: appRuns.initiating_actor_id })
+          .from(appRuns).innerJoin(appVersions, and(eq(appVersions.org_id, appRuns.org_id),
+            eq(appVersions.id, appRuns.origin_app_version_id)))
+          .innerJoin(appRuntimeBindings, and(eq(appRuntimeBindings.org_id, appRuns.org_id),
+            eq(appRuntimeBindings.id, appRuns.origin_runtime_binding_id)))
+          .innerJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, appRuntimeBindings.org_id),
+            eq(appRuntimeRegistrations.id, appRuntimeBindings.runtime_registration_id)))
+          .where(and(eq(appRuns.org_id, user.org_id), eq(appRuns.id, action.app_run_id))).limit(1);
+        if (runtime?.protocol_version === '7') {
+          try {
+            if (!user.sid || runtime.initiating_actor_type !== 'human' || runtime.initiating_actor_id !== user.id) {
+              throw new AppRunError('APP_RUN_ACCESS_DENIED');
+            }
+            const { resourceSyncWebAuthority } = await import('../lib/app-resource-sync-web-authority.js');
+            const { attachmentFinalAuthorityIsCurrent } = await import('../lib/app-attachment-authority.js');
+            const { isAppV5RuntimeActionsEnabled } = await import('../lib/env.js');
+            const { guard } = await resourceSyncWebAuthority(c.req.header('authorization'),
+              { org_id: user.org_id, user_id: user.id, sid: user.sid });
+            nativeGuard = async tx => {
+              if (!await attachmentFinalAuthorityIsCurrent(tx, [user.id, runtime.operator_user_id],
+                { guard, expires_at: [run.input_expires_at, run.result_expires_at] })
+                || !isAppV5RuntimeActionsEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+            };
+          } catch (error) {
+            if (error && typeof error === 'object' && 'status' in error && 'code' in error
+              && typeof error.status === 'number' && [401, 403, 409, 503].includes(error.status)) {
+              return c.json({ error: 'Attachment App approval unavailable', code: String(error.code) }, error.status as 401 | 403 | 409 | 503);
+            }
+            return appHttpFailure(c, error, 'App Run', 'app-runs');
+          }
+        }
+      }
+    }
+    let result: Awaited<ReturnType<typeof resolveApproveAction>>;
+    try { result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard }); }
+    catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
     if (result.status === 'error') {
       const statusCode =
         result.code === 'NOT_FOUND' ? 404

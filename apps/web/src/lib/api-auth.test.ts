@@ -103,6 +103,68 @@ test('an invalid login returns its 401 without entering session-expiry handling'
   assert.equal(browser.session.getItem('deft-redirect-after-login'), null);
 });
 
+for (const failure of ['network', 'unavailable', 'invalid-response'] as const) {
+  test(`a ${failure} during token refresh preserves the login and does not replay a write`, async (t) => {
+    const browser = installBrowserGlobals(t, '/apps/inbox');
+    const originalFetch = globalThis.fetch;
+    let writes = 0, refreshes = 0;
+    globalThis.fetch = (async (input) => {
+      if (String(input).endsWith('/api/auth/refresh')) {
+        refreshes++;
+        if (failure === 'network') throw new TypeError('Failed to fetch');
+        return new Response(failure === 'invalid-response' ? '{}' : null, { status: failure === 'unavailable' ? 503 : 200 });
+      }
+      writes++;
+      return new Response(null, { status: 401 });
+    }) as typeof fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+    api.setTokens('existing-access', 'existing-refresh');
+    await assert.rejects(api.post('/api/private-write', { value: 'unsent' }), { name: 'SessionRefreshUnavailableError' });
+    assert.equal(writes, 1);
+    assert.equal(refreshes, 1);
+    assert.equal(browser.local.getItem('deft-refresh-token'), 'existing-refresh');
+    assert.equal(browser.location.href, '/apps/inbox');
+  });
+}
+
+test('an explicitly denied refresh still clears the login and preserves the return route', async (t) => {
+  const browser = installBrowserGlobals(t, '/apps/inbox');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(null, { status: 401 })) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  t.mock.method(console, 'warn', () => {});
+  api.setTokens('existing-access', 'existing-refresh');
+  assert.equal((await api.get('/api/private-read')).status, 401);
+  assert.equal(browser.local.getItem('deft-refresh-token'), null);
+  assert.equal(browser.location.href, '/login?expired=1');
+  assert.equal(browser.session.getItem('deft-redirect-after-login'), '/apps/inbox');
+});
+
+test('cold-start refresh failure dispatches no resource request and a later call recovers the same session', async (t) => {
+  const browser = installBrowserGlobals(t, '/apps/inbox');
+  const token = (jti: string) => `header.${btoa(JSON.stringify({id:'user',org_id:'org',sid:'session',jti}))}.signature`;
+  const refresh = token('refresh'), access = token('access');
+  const originalFetch = globalThis.fetch;
+  let unavailable = true, resources = 0;
+  globalThis.fetch = (async (input) => {
+    if (String(input).endsWith('/api/auth/refresh')) {
+      if (unavailable) return new Response(null, {status:503});
+      return new Response(JSON.stringify({accessToken:access, refreshToken:token('rotated')}));
+    }
+    resources++;
+    return new Response(null, {status:200});
+  }) as typeof fetch;
+  t.after(() => {globalThis.fetch=originalFetch;});
+  api.clearTokens(); browser.local.setItem('deft-refresh-token',refresh);
+  await assert.rejects(api.get('/api/auth/me'), {name:'SessionRefreshUnavailableError'});
+  assert.equal(resources,0);
+  assert.equal(browser.local.getItem('deft-refresh-token'),refresh);
+  unavailable=false;
+  assert.equal((await api.get('/api/auth/me')).status,200);
+  assert.equal(resources,1);
+  assert.equal(browser.location.href,'/apps/inbox');
+});
+
 test('a protected resource still refreshes the session and retries once', async (t) => {
   const browser = installBrowserGlobals(t, '/tasks');
   const token = (jti: string) => {

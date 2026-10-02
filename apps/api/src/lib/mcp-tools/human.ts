@@ -82,6 +82,8 @@ import {
   type AppActionOperationName,
 } from '../app-action-operations.js';
 
+import { RUNTIME_WORKFLOW_NAMES, RUNTIME_WORKFLOW_SCOPES, isRuntimeWorkflowTool, runtimeWorkflowHasScopes, humanRuntimeWorkflowTool } from '../app-runtime-workflow-tools.js';
+
 export type HumanToolContext = {
   org_id: string;
   user_id: string;
@@ -202,6 +204,7 @@ function retrievalResultToSearchResult(row: ContextResult): Record<string, unkno
 }
 
 export const HUMAN_READ_TOOLS = new Set([
+  'app_runtime_action_list', 'app_runtime_action_get', 'app_action_batch_get',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'read'),
   'search',
   'fetch',
@@ -255,6 +258,7 @@ export const HUMAN_READ_TOOLS = new Set([
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
+  'app_action_batch_propose', 'app_action_batch_cancel',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'write'),
   'memory_write',
   'wiki_upsert',
@@ -312,6 +316,8 @@ async function humanAppActionOperation(
 }
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
+  ...Object.fromEntries(RUNTIME_WORKFLOW_NAMES.map(name => [name,
+    (args: unknown, ctx: HumanToolContext) => humanRuntimeWorkflowTool(name, args, ctx)])),
   ...Object.fromEntries(MODULE_OPERATION_NAMES.map((name) => [
     name,
     (args: Record<string, unknown>, ctx: HumanToolContext) => humanModuleOperation(name, args, ctx),
@@ -3689,6 +3695,7 @@ export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
 
 /** Array requirements are alternatives (any one scope is sufficient). */
 export function humanToolHasRequiredScope(scopes: readonly string[], toolName: string): boolean {
+  if (isRuntimeWorkflowTool(toolName)) return runtimeWorkflowHasScopes(toolName, scopes);
   const taskScopes = moduleTaskOperationRequiredScopes(toolName);
   if (taskScopes) return taskScopes.every((scope) => scopes.includes(scope));
   if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
@@ -3706,6 +3713,7 @@ export function humanToolHasRequiredScope(scopes: readonly string[], toolName: s
 }
 
 export function humanToolScopeError(toolName: string): string | null {
+  if (isRuntimeWorkflowTool(toolName)) return `Missing MCP scope: ${RUNTIME_WORKFLOW_SCOPES[toolName].join(' and ')}`;
   const taskScopes = moduleTaskOperationRequiredScopes(toolName);
   if (taskScopes) return `Missing MCP scope: ${taskScopes.join(' and ')}`;
   if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
@@ -3726,6 +3734,7 @@ export function humanToolChallengeScope(
   toolName: string,
   scopes: readonly string[] = [],
 ): string | undefined {
+  if (isRuntimeWorkflowTool(toolName)) return RUNTIME_WORKFLOW_SCOPES[toolName].find(scope => !scopes.includes(scope)) ?? RUNTIME_WORKFLOW_SCOPES[toolName][0];
   const taskScopes = moduleTaskOperationRequiredScopes(toolName);
   if (taskScopes) return taskScopes.find((scope) => !scopes.includes(scope)) ?? taskScopes[0];
   if (APP_ACTION_OPERATION_NAMES.some((name) => name === toolName)) {
@@ -4135,6 +4144,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     })
     .map((schema) => {
       const next = withoutCallerSlug(schema);
+      if (isRuntimeWorkflowTool(String(next.name))) return next;
       if (HUMAN_WRITE_TOOLS.has(String(next.name))) {
         const operationName = String(next.name) as ModuleOperationName;
         const isModuleWrite = MODULE_OPERATION_NAMES.includes(operationName)

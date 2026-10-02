@@ -1,3 +1,11 @@
 scripts/docker-entrypoint.sh text eol=lf
 docs/examples/operations/*.sh text eol=lf
 **/deft.app.lock.json text eol=lf
+# Migration checksums cover physical bytes; pin new files without rewriting history.
+packages/db/upgrades/0.3.0-preview.51-app-attachment-composition.sql text eol=lf
+packages/db/upgrades/0.3.0-preview.52-private-defty-context.sql text eol=lf
+packages/db/upgrades/0.3.0-preview.54-app-experience-consent.sql text eol=lf
+# Preserve the exact mixed line-ending bytes already applied in preview databases.
+packages/db/upgrades/0.3.0-preview.53-app-private-state.sql -text whitespace=cr-at-eol,-blank-at-eof
+packages/db/upgrades/0.3.0-preview.55-app-action-batches.sql -text whitespace=cr-at-eol,-blank-at-eof
+packages/db/upgrades/0.3.0-preview.56-app-action-batch-policy-revision.sql text eol=lf

@@ -3,7 +3,12 @@ import { PostgresAppRunApprovalResolver, postgresAppRunApprovalAdapter } from '.
 import { PostgresAppRunAttentionProjector } from './app-run-attention.js';
 import { PostgresAppRunAuthorizer } from './app-run-authorization.js';
 import { AppRunError } from './app-run-errors.js';
-import { parseEnvironmentAppRunKeyrings, type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
+import { assertAppRunReferencedKeysAvailable, parseEnvironmentAppRunKeyrings,
+  type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
+import { listAppPrivateStateKeyReferences } from './app-private-state-key-references.js';
+import { listAppResourceSyncKeyReferences } from './app-resource-sync-key-references.js';
+import { listPrivateDeftyKeyReferences } from './app-private-defty-key-references.js';
+import { privateSearchDatabase } from './app-resource-private-search-db.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
   AppRunOperationsService,
@@ -17,10 +22,16 @@ import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
 import { AppRunPreparedInputService } from './app-run-prepared-input.js';
 import { AppRunService } from './app-run-service.js';
+import { AppRuntimeChannel } from './app-runtime-channel.js';
+import { AppResourceSyncChannel } from './app-resource-sync-channel.js';
+import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
+import { AppResourceSyncStore } from './app-resource-sync-store.js';
+import { AppResourceSyncAdmissionService } from './app-resource-sync-admission.js';
 import {
   APP_AUTOMATIONS_ENABLED,
   APP_RUN_APP_ORIGIN_ENABLED,
   APP_RUNS_ENABLED,
+  isAppResourceSyncChannelEnabled,
 } from './env.js';
 
 export type AppRunRuntime = Readonly<{
@@ -31,6 +42,9 @@ export type AppRunRuntime = Readonly<{
   liveAuthorization: PostgresAppRunLiveAuthorization;
   service: AppRunService;
   attemptRunner: AppRunAttemptRunner;
+  runtimeChannel: AppRuntimeChannel;
+  resourceSyncChannel: AppResourceSyncChannel;
+  resourceSyncAdmission: AppResourceSyncAdmissionService;
   approvalResolver: PostgresAppRunApprovalResolver;
   receiptReader: PostgresAppRunReceiptReader;
   operations: AppRunOperationsService;
@@ -43,6 +57,8 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
   const secrets = new AppRunSecretService(keys);
   const repository = new PostgresAppRunRepository();
   const secretRepository = new AppRunSecretRepository(secrets);
+  const resourceSyncSecrets = new AppResourceSyncSecretService(keys);
+  const resourceSyncStore = new AppResourceSyncStore(resourceSyncSecrets, secretRepository);
   const inputPreparation = new AppRunPreparedInputService(secrets);
   const liveAuthorization = new PostgresAppRunLiveAuthorization(() => APP_AUTOMATIONS_ENABLED);
   const accessAuthorization = new PostgresAppRunAuthorizer();
@@ -62,6 +78,7 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     receipts,
     attention,
     postgresAppRunAttemptQueue,
+    resourceSyncStore,
   );
   const service = new AppRunService(
     repository,
@@ -79,6 +96,11 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     () => APP_RUN_APP_ORIGIN_ENABLED,
     () => APP_AUTOMATIONS_ENABLED,
   );
+  const runtimeChannel = new AppRuntimeChannel(attemptRunner);
+  const resourceSyncChannel = new AppResourceSyncChannel(attemptRunner);
+  const resourceSyncAdmission = new AppResourceSyncAdmissionService(repository,
+    secretRepository, secrets, resourceSyncSecrets, attemptRunner, clock,
+    isAppResourceSyncChannelEnabled);
   const approvalResolver = new PostgresAppRunApprovalResolver(
     repository,
     liveAuthorization,
@@ -97,6 +119,13 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
 
   try {
     await service.assertReferencedKeysAvailable();
+    // Resource projections survive individual Runs and revoked bindings.
+    // Inventory their keys once at bootstrap, outside the submission hot path.
+    assertAppRunReferencedKeysAvailable(keys, await listAppResourceSyncKeyReferences());
+    assertAppRunReferencedKeysAvailable(keys, await listAppPrivateStateKeyReferences());
+    // Permanent encrypted history retains keys even after its grant ends.
+    assertAppRunReferencedKeysAvailable(keys, await privateSearchDatabase().transaction(
+      tx => listPrivateDeftyKeyReferences(tx), AbortSignal.timeout(3000), performance.now() + 3000));
   } catch (error) {
     keys.destroy();
     throw error;
@@ -110,6 +139,9 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     liveAuthorization,
     service,
     attemptRunner,
+    runtimeChannel,
+    resourceSyncChannel,
+    resourceSyncAdmission,
     approvalResolver,
     receiptReader,
     operations,
@@ -130,6 +162,8 @@ export async function getAppRunRuntime(): Promise<AppRunRuntime> {
 export async function shutdownAppRunRuntime(): Promise<void> {
   const pending = runtimePromise;
   runtimePromise = null;
+  await (await import('./app-attachment-runtime.js')).shutdownAppAttachmentRuntime();
+  await (await import('./app-native-execution-db.js')).closeNativeExecutionDatabase();
   if (!pending) return;
   try {
     const runtime = await pending;

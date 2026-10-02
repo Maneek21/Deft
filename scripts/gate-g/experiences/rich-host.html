@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deft Experience candidate</title>
+<style>
+html,body{margin:0;background:#0b1220;color:#eaf1ff;font:14px system-ui}
+header{padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #334155}
+header strong{font-size:17px;margin-right:auto}
+button{background:#24517f;border:1px solid #6689b6;color:white;border-radius:7px;padding:7px 10px;cursor:pointer}
+#status{color:#a8bdd7;min-width:120px}
+main{max-width:1100px;margin:auto}
+#experience{min-height:520px}
+iframe{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+</style></head>
+<body>
+<header><strong>Parcel Studio · Experience Host</strong><span id="status">Starting</span>
+<button id="reload">Reload</button><button id="version">New version</button><button id="disable">Disable</button><button id="enable">Enable</button></header>
+<main><div id="experience"></div></main><div id="frame"></div>
+<script type="module">
+import { createExperienceBridge } from '/bridge.js';
+import { renderExperienceView, EXPERIENCE_RENDERER_CSS } from '/renderer.js';
+const style = document.createElement('style'); style.textContent = EXPERIENCE_RENDERER_CSS; document.head.append(style);
+const root = document.getElementById('experience');
+const status = document.getElementById('status');
+const frameTarget = document.getElementById('frame');
+const appOrigin = '__APP_ORIGIN__';
+let generation = 0, current;
+let version = 'version_a', disabled = false;
+window.__experienceEvidence = { views: 0, events: [], sessions: [], late: 0 };
+function mount() {
+  current?.bridge?.revoke();
+  frameTarget.replaceChildren();
+  root.replaceChildren();
+  if (disabled) { status.textContent = 'Disabled'; return; }
+  generation++;
+  const sessionId = 'session_' + generation + '_' + crypto.randomUUID();
+  const pin = { org_id:'org_fixture', user_id:'user_fixture', app_installation_id:'app_fixture',
+    app_version_id:version, grant_snapshot_id:'grant_fixture',
+    lifecycle_epoch:generation, grant_epoch:generation, session_id:sessionId, session_epoch:0 };
+  const iframe = document.createElement('iframe');
+  iframe.sandbox = 'allow-scripts';
+  iframe.referrerPolicy = 'no-referrer';
+  iframe.title = 'Credential-free Experience bootstrap';
+  let live = true;
+  const channel = new MessageChannel();
+  const bridge = createExperienceBridge({
+    port: channel.port1, pin, resourceKeys:['records'], actionKeys:['create_label'],
+    broker: { isLive: () => live },
+    onView(view) {
+      window.__experienceEvidence.views++;
+      renderExperienceView(root, view, (event) => {
+        window.__experienceEvidence.events.push(event);
+        bridge.sendUiEvent(event);
+      });
+      status.textContent = 'Active · ' + version;
+    },
+  });
+  current = { iframe, bridge, revoke() { live = false; bridge.revoke(); iframe.remove(); } };
+  window.__experienceEvidence.sessions.push(sessionId);
+  iframe.onload = () => {
+    iframe.onload = null;
+    iframe.contentWindow.postMessage({ kind:'start', session_id:sessionId, version }, '*', [channel.port2]);
+  };
+  iframe.src = appOrigin + '/bootstrap';
+  frameTarget.append(iframe);
+}
+document.getElementById('reload').onclick = mount;
+document.getElementById('version').onclick = () => { version = 'version_' + (generation + 1); mount(); };
+document.getElementById('disable').onclick = () => { disabled = true; current?.revoke(); root.replaceChildren(); status.textContent='Disabled'; };
+document.getElementById('enable').onclick = () => { disabled = false; mount(); };
+mount();
+</script></body></html>

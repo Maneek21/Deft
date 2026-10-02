@@ -6,7 +6,7 @@ import type {
 
 export type AppRunProviderExecutionRequest = Readonly<{
   org_id: string;
-  provider_kind: 'mcp';
+  provider_kind: 'mcp' | 'app_runtime';
   provider_instance_id: string;
   operation_name: string;
   origin_kind?: 'core' | 'legacy_connector' | 'app';

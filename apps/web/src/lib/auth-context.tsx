@@ -170,10 +170,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<Org | null>(null);
   const [loading, setLoading] = useState(true);
+  const [connectionInterrupted, setConnectionInterrupted] = useState(false);
   const [sessionCacheScope, setSessionCacheScope] = useState<string | null>(null);
   const router = useRouter();
   const authGeneration = useRef(new AuthRequestGeneration());
   const sessionCacheEpoch = useRef(0);
+  const identityRequest = useRef<number | null>(null);
 
   const clearSessionCacheScope = useCallback(() => {
     setActiveSessionCacheScope(null);
@@ -182,8 +184,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchMe = useCallback(async () => {
     const generation = authGeneration.current.capture();
+    if (identityRequest.current === generation) return;
+    identityRequest.current = generation;
     try {
-      const res = await api.get('/api/auth/me');
+      const res = await api.fetch('/api/auth/me', { signal: AbortSignal.timeout(10_000) });
       if (!authGeneration.current.isCurrent(generation)) return;
       if (res.ok) {
         const data = await res.json();
@@ -198,29 +202,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSessionCacheScope(cacheScope);
         setUser(data.user);
         setOrg(data.org);
+        setConnectionInterrupted(false);
         // Use browser timezone if DB has default 'UTC' (means not yet auto-detected)
         const storedTz = data.user.timezone;
         const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
         setUserTimezone(storedTz && storedTz !== 'UTC' ? storedTz : browserTz);
-      } else if (res.status === 429) {
-        console.warn('[auth] /me rate limited; preserving current session state');
-      } else {
+      } else if (res.status === 401 || res.status === 403) {
+        setConnectionInterrupted(false);
         clearSessionCacheScope();
         setUser(null);
         setOrg(null);
+      } else {
+        setConnectionInterrupted(true);
       }
     } catch {
       if (!authGeneration.current.isCurrent(generation)) return;
-      clearSessionCacheScope();
-      setUser(null);
-      setOrg(null);
+      // Unavailable identity checks cannot establish either access or logout.
+      // Hide workspace content while retrying, retaining credentials and drafts.
+      setConnectionInterrupted(true);
     } finally {
+      if (identityRequest.current === generation) identityRequest.current = null;
       if (authGeneration.current.isCurrent(generation)) setLoading(false);
     }
   }, [clearSessionCacheScope]);
 
   useEffect(() => {
-    const token = localStorage.getItem('deft-access-token');
+    const token = localStorage.getItem('deft-access-token') ?? localStorage.getItem('deft-refresh-token');
     if (token) {
       fetchMe();
     } else {
@@ -230,10 +237,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearSessionCacheScope, fetchMe]);
 
   useEffect(() => {
+    if (!connectionInterrupted) return;
+    const retry = () => { if (!document.hidden) void fetchMe(); };
+    const timer = setInterval(retry, 5000);
+    window.addEventListener('online', retry);
+    document.addEventListener('visibilitychange', retry);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('online', retry);
+      document.removeEventListener('visibilitychange', retry);
+    };
+  }, [connectionInterrupted, fetchMe]);
+
+  useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.storageArea !== localStorage || event.key !== 'deft-refresh-token') return;
       if (!isCurrentRefreshStorageEvent(event.newValue, localStorage.getItem('deft-refresh-token'))) return;
       if (event.newValue === null) {
+        setConnectionInterrupted(false);
         authGeneration.current.advance();
         sessionCacheEpoch.current += 1;
         api.clearTokens();
@@ -250,6 +271,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       api.setTokens(accessToken, event.newValue);
       if (!isCrossTabSessionReplacement(event.oldValue, event.newValue)) return;
       authGeneration.current.advance();
+      setConnectionInterrupted(false);
       sessionCacheEpoch.current += 1;
       disconnectSocket();
       clearSessionCacheScope();
@@ -263,6 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearSessionCacheScope, fetchMe, router]);
 
   const login = async (email: string, password: string) => {
+    setConnectionInterrupted(false);
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
     api.clearTokens();
@@ -300,6 +323,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signup = async (name: string, email: string, password: string, orgName: string) => {
+    setConnectionInterrupted(false);
     const generation = authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
     api.clearTokens();
@@ -333,6 +357,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async (options: LogoutOptions = {}) => {
+    setConnectionInterrupted(false);
     const refreshToken = localStorage.getItem('deft-refresh-token');
     authGeneration.current.advance();
     sessionCacheEpoch.current += 1;
@@ -356,7 +381,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{ user, org, loading, sessionCacheScope, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
-      {children}
+      {connectionInterrupted ? <main className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-6 text-[var(--on-surface)]">
+        <div className="max-w-sm space-y-4 text-center" role="status">
+          <h1 className="text-xl font-semibold">Reconnecting to Deft</h1>
+          <p className="text-sm text-[var(--on-surface-variant)]">We can’t reach your workspace. We’ll try again automatically when the connection returns.</p>
+          <button type="button" onClick={() => { void fetchMe(); }} className="min-h-11 rounded-full border border-[var(--outline-variant)] px-5 text-sm">Try again</button>
+        </div>
+      </main> : children}
     </AuthContext.Provider>
   );
 }
