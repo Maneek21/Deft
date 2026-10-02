@@ -74,7 +74,8 @@ export const NativeMention = Node.create<{ onMenuStateChange?: (open: boolean) =
               props: { items: props.items, command: props.command, loading: false, error: searchError } });
             if (props.clientRect) popup = tippy('body', { getReferenceClientRect: props.clientRect as () => DOMRect,
               appendTo: () => document.body, content: renderer.element, interactive: true,
-              showOnCreate: true, trigger: 'manual', placement: 'bottom-start', animation: false, arrow: false });
+              showOnCreate: true, trigger: 'manual', placement: 'bottom-start', animation: false, arrow: false,
+              popperOptions: { strategy: 'fixed' } });
           },
           onBeforeUpdate: props => update(props, true),
           onUpdate: props => update(props, false),

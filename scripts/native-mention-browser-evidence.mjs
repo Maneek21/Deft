@@ -44,6 +44,8 @@ try {
   await editor.pressSequentially('@', { delay: 90 });
   await page.getByRole('listbox', { name: 'Mention people, agents, tasks or wikis' }).waitFor();
   await page.waitForTimeout(700);
+  assert(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1),
+    'Mention popup does not extend the document below the chat viewport');
   await shot('01-universal-picker-desktop');
   await page.getByRole('listbox').getByRole('option').filter({ hasText: /^Sam$/ }).click();
   await editor.pressSequentially(' review ', { delay: 50 });
