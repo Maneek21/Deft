@@ -1,5 +1,6 @@
 import { NATIVE_MENTION_AGENT_GUIDANCE } from './native-mention-agent-contract.js';
 import { nativeMentionsEnabled } from './native-mentions.js';
+import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 // Reusable agent reasoning engine — used by @agent mentions in chat and other background jobs.
 // Supports two modes:
 //   'chat_mention' (default): write actions are skipped (safety for @mentions)
@@ -678,6 +679,11 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
+        const referenceError = await validateNativeAgentMentionWrite(tool.name, tool.input as Record<string, unknown>, orgId, userId, params.agentEmployeeId);
+        if (referenceError) {
+          toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ error: referenceError }) });
+          continue;
+        }
         const approvalTier = getApprovalTier(tool.name, actionApprovalTiers.get(tool.name));
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input, approvalTier)) {
           // Background mode: auto-execute if trust level permits

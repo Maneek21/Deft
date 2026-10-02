@@ -7,6 +7,9 @@ import { agentEmployees, agentActions, messages, tasks, wikiPages, nativeMention
 import { db, closeDb } from '../src/lib/db.js';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { runAgentQuery } from '../src/lib/agent-runner.js';
+import { executeAction, executeActionDirect } from '../src/lib/agent-actions.js';
+import { validateNativeAgentMentionWrite } from '../src/lib/native-mention-agent-writes.js';
+import { executeSendMessage } from '../src/lib/mcp-tools/writes.js';
 import { setOrgModelRoute, setOrgOllamaUrl } from '../src/lib/org-ai-config.js';
 import { IMMUTABLE_DEFT_PLATFORM_POLICY } from '../src/lib/agent-system-prompt.js';
 import { NATIVE_MENTION_AGENT_GUIDANCE } from '../src/lib/native-mention-agent-contract.js';
@@ -57,6 +60,45 @@ async function call(raw: string, name: string, args: Record<string, unknown> = {
   return { status, body, result, data };
 }
 const sourceCount = async () => (await db.select().from(nativeMentionDeliveries).where(eq(nativeMentionDeliveries.org_id, f.orgId))).length;
+
+test('invalid agent references are rejected before persistence or approval', { skip: !enabled }, async () => {
+  const before = await db.execute(sql`SELECT (SELECT count(*) FROM messages WHERE org_id = ${f.orgId}) AS messages, (SELECT count(*) FROM agent_actions WHERE org_id = ${f.orgId}) AS actions`);
+  for (const trust of ['autonomous', 'conservative'] as const) {
+    await db.update(agentEmployees).set({ trust_level: trust }).where(eq(agentEmployees.id, f.employeeId));
+    for (const [name, args] of [
+      ['send_message', { space_id: f.publicSpaceId, content: 'Created wiki [[deft:wiki_page:0]]' }],
+      ['task_create', { title: 'Invalid reference', project_id: f.projectId, subtasks: [{ title: 'Child', description: '[[deft:wiki_page:0]]' }] }],
+      ['task_update', { task_id: f.taskId, patch: { comment: '[[deft:wiki_page:0]]' } }],
+      ['wiki_create', { title: 'Invalid wiki', content: '[[deft:wiki_page:0]]' }],
+      ['wiki_update', { page_id: f.wikiId, patch: { content: '[[deft:wiki_page:0]]' } }],
+    ] as const) {
+      const result = await call(token, name, args);
+      assert.equal(result.result.isError, true, name + ' must reject before writing or queuing');
+    }
+  }
+  await assert.rejects(executeActionDirect('post_message', { space_name: 'Launch room', content: '[[deft:wiki_page:0]]' }, f.orgId, f.ownerId, null, 'full'), /Native references/);
+  const executed = await executeAction(crypto.randomUUID(), 'wiki_write', { title: 'Invalid native wiki', content: '[[deft:wiki_page:0]]' }, f.orgId, f.ownerId);
+  assert.equal(executed.success, false);
+  assert.match(executed.error!, /Native references/);
+  const after = await db.execute(sql`SELECT (SELECT count(*) FROM messages WHERE org_id = ${f.orgId}) AS messages, (SELECT count(*) FROM agent_actions WHERE org_id = ${f.orgId}) AS actions`);
+  assert.deepEqual(after.rows, before.rows);
+  await db.update(agentEmployees).set({ trust_level: 'standard' }).where(eq(agentEmployees.id, f.employeeId));
+});
+
+test('write validation preserves literals and rollout behavior, and rechecks execution access', { skip: !enabled }, async () => {
+  const args = { content: atom('wiki_page', f.wikiId) };
+  const ctx = { org_id: f.orgId, employee_id: f.employeeId, employee_slug: 'fixture', trust_level: 'autonomous' as const, token_id: 'fixture', scopes: ['read:workspace', 'read:wiki'] };
+  const run = () => executeSendMessage({ orgId: f.orgId, spaceId: f.publicSpaceId, content: args.content, parentId: null, ctx });
+  assert.equal(await validateNativeAgentMentionWrite('post_message', args, f.orgId, f.ownerId, f.employeeId), null);
+  await db.update(wikiPages).set({ scope: 'space', space_id: f.privateSpaceId }).where(eq(wikiPages.id, f.wikiId));
+  try { assert.equal((await run()).isError, true, 'approved execution must reject newly inaccessible references'); }
+  finally { await db.update(wikiPages).set({ scope: 'org', space_id: null }).where(eq(wikiPages.id, f.wikiId)); }
+  assert.equal((await executeSendMessage({ orgId: f.orgId, spaceId: f.publicSpaceId, content: args.content, parentId: null, ctx: { ...ctx, scopes: ['read:workspace'] } })).isError, true);
+  assert.equal(await validateNativeAgentMentionWrite('post_message', { content: '`[[deft:wiki_page:0]]`' }, f.orgId, f.ownerId), null);
+  process.env.DEFT_NATIVE_MENTIONS_ENABLED = 'false';
+  try { assert.equal(await validateNativeAgentMentionWrite('post_message', { content: '[[deft:wiki_page:0]]' }, f.orgId, f.ownerId), null); }
+  finally { process.env.DEFT_NATIVE_MENTIONS_ENABLED = 'true'; }
+});
 
 test('real scoped employee tokens discover reference tools and cannot broaden their grants through arguments', { skip: !enabled }, async () => {
   const names = (await rpc(token, 'tools/list')).body.result.tools.map((t: any) => t.name);
@@ -237,16 +279,17 @@ test('scripted provider fixture exercises the real Defty and employee runner loo
             assert.equal(data.items[0].current_source.content, content);
             assert.equal(data.items[0].current_source.untrusted, true);
             assert.equal(data.items[0].current_source.references.length, 2);
-            message = tool('post_message', { space_name: 'Launch room', content: 'Please review ' + atom('task', f.taskId) }); break;
+            message = tool('post_message', { space_name: 'Launch room', content: 'Created wiki [[deft:wiki_page:0]]' }); break;
           }
-          case 3: assert.equal(JSON.parse(previousTool.content).status, 'skipped'); message = { role: 'assistant', content: 'The message is proposed and awaits your review.' }; break;
+          case 3: assert.match(JSON.parse(previousTool.content).error, /Native references/); message = tool('post_message', { space_name: 'Launch room', content: 'Please review ' + atom('task', f.taskId) }); break;
+          case 4: assert.equal(JSON.parse(previousTool.content).status, 'skipped'); message = { role: 'assistant', content: 'The message is proposed and awaits your review.' }; break;
           default: throw new Error('Unexpected reasoning iteration');
         }
         return new Response(JSON.stringify({ message, prompt_eval_count: 10, eval_count: 5 }), { status: 200, headers: { 'content-type': 'application/json' } });
       };
       const result = await runAgentQuery({ content: '@', orgId: f.orgId, userId: f.ownerId, orgName: 'Native mention lab',
-        mode: 'chat_mention', agentEmployeeId: employeeId, systemPromptOverride: 'Synthetic runner interface validation.', skipVerification: true, maxIterations: 4 });
-      assert.equal(requests.length, 4);
+        mode: 'chat_mention', agentEmployeeId: employeeId, systemPromptOverride: 'Synthetic runner interface validation.', skipVerification: true, maxIterations: 5 });
+      assert.equal(requests.length, 5);
       assert.equal(result.pendingActions.length, 1);
       assert.equal(result.pendingActions[0].action, 'post_message');
       assert.equal(result.pendingActions[0].params.content, 'Please review ' + atom('task', f.taskId));

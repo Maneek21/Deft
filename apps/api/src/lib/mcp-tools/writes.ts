@@ -20,6 +20,7 @@
  */
 import { sql, eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db.js';
+import { employeeMentionWriteError } from './native-mention-write-guard.js';
 import {
   tasks,
   taskComments,
@@ -306,6 +307,8 @@ export async function executeTaskCreate(
   },
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
+  const referenceError = await employeeMentionWriteError('task_create', args, ctx);
+  if (referenceError) return errorResult(referenceError);
 
   try {
     const projectAccess = await loadEmployeeProjectAccess(ctx);
@@ -573,6 +576,8 @@ export async function executeTaskUpdate(
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('task_update requires a non-empty patch');
   }
+  const referenceError = await employeeMentionWriteError('task_update', args, ctx);
+  if (referenceError) return errorResult(referenceError);
 
   try {
     const patch = args.patch;
@@ -873,6 +878,8 @@ export async function executeMessagePost(
 ): Promise<ToolResult> {
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
+  const referenceError = await employeeMentionWriteError('message_post', args, ctx);
+  if (referenceError) return errorResult(referenceError);
 
   try {
     const shadowUserId = await getShadowUserId(ctx.employee_id);
@@ -1081,6 +1088,8 @@ export async function executeSendMessage(opts: {
   messageId?: string;
 }, execOpts?: { skipReceipt?: boolean }): Promise<ToolResult> {
   const { orgId, spaceId, content, parentId, ctx } = opts;
+  const referenceError = await employeeMentionWriteError('send_message', { content }, ctx);
+  if (referenceError) return errorResult(referenceError);
   try {
     if (!(await employeeCanAccessSpace(ctx.employee_id, orgId, spaceId))) {
       return errorResult(`send_message: space ${spaceId} is not accessible to this employee`);

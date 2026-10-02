@@ -13,6 +13,7 @@
  * the BYOA agent handshake, not to teach the agent every nuance.
  */
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
+import { employeeMentionWriteError } from './native-mention-write-guard.js';
 
 import { platformContext } from './context.js';
 import { memoryRecall, memoryWrite, memoryList } from './memory.js';
@@ -149,7 +150,7 @@ export const TOOL_ALIASES: Record<string, string> = {
   wiki_search: 'memory_recall',
 };
 
-export const WRITE_TOOLS: Record<string, ToolHandler> = {
+const unguardedWriteTools: Record<string, ToolHandler> = {
   ...MODULE_MCP_WRITE_TOOLS,
   memory_write: memoryWrite as ToolHandler,
   memory_update: memoryUpdate as ToolHandler,
@@ -174,6 +175,14 @@ export const WRITE_TOOLS: Record<string, ToolHandler> = {
   // Request for human approval — queues an agent_actions row.
   request_human_approval: requestHumanApproval as ToolHandler,
 };
+
+// Validate before handlers can create pending approval records.
+export const WRITE_TOOLS: Record<string, ToolHandler> = Object.fromEntries(
+  Object.entries(unguardedWriteTools).map(([name, handler]) => [name, async (args: Record<string, unknown>, ctx: ToolContext) => {
+    const error = await employeeMentionWriteError(name, args, ctx);
+    return error ? errorResult(error) : handler(args, ctx);
+  }]),
+);
 
 export const ALL_TOOLS: Record<string, ToolHandler> = {
   ...READ_ONLY_TOOLS,
