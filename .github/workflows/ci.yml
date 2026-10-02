@@ -368,6 +368,15 @@ jobs:
           diff --recursive --unified "$RUNNER_TEMP/upgrade-before" "$RUNNER_TEMP/upgrade-after"
       - name: Run upgrade unit tests
         run: pnpm test:upgrade
+      - name: Verify native mention behavior on the upgraded release schema
+        env:
+          DEFT_NATIVE_MENTION_CONCURRENCY_CERTIFY: 'true'
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE deft_mentions_upgrade_test TEMPLATE deft_upgrade"
+          export DATABASE_URL=postgres://postgres:postgres@localhost:5432/deft_mentions_upgrade_test
+          export DEFT_TEST_DATABASE_URL="$DATABASE_URL"
+          pnpm --filter @deft/app-kit build
+          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts test/native-mention-agents-db.test.ts test/native-mention-agent-catalog.test.ts
 
   docker-build:
     name: Production Image + Browser Smoke

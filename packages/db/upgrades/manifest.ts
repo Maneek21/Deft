@@ -172,6 +172,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.30-module-record-merges.sql',
       description: 'Preserve tenant-bound original values and link provenance for reviewed Module record merges',
     },
+    {
+      version: '0.3.0-preview.61',
+      file: '0.3.0-preview.61-native-mentions.sql',
+      description: 'Add native reference reconciliation and durable passive mention publication',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

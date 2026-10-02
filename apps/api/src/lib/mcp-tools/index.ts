@@ -13,6 +13,7 @@
  * the BYOA agent handshake, not to teach the agent every nuance.
  */
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
+import { employeeMentionWriteError } from './native-mention-write-guard.js';
 
 import { platformContext } from './context.js';
 import { memoryRecall, memoryWrite, memoryList } from './memory.js';
@@ -20,6 +21,9 @@ import { memoryUpdate } from './memory-update.js';
 import { taskQuery } from './tasks.js';
 import { memberList } from './members.js';
 import { threadFetch, fetchUnread } from './messages.js';
+import { agentNativeMentionsSearch, agentNativeMentionsResolve } from './native-mentions.js';
+import { NATIVE_MENTION_AGENT_TOOL_SCHEMAS } from '../native-mention-agent-contract.js';
+import { mentionAttentionList, mentionAttentionAcknowledge } from './mention-attention.js';
 import { attachmentList, attachmentRead } from './attachments.js';
 import { workspacePlanImport } from './workspace-plan-import.js';
 import { documentSend } from './document-send.js';
@@ -135,13 +139,18 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   poll_pending_work: pollPendingWork as ToolHandler,
   ping_alive: pingAlive as ToolHandler,
   fetch_unread: fetchUnread as ToolHandler,
+  native_mentions_search: agentNativeMentionsSearch,
+  native_mentions_resolve: agentNativeMentionsResolve,
+  mention_attention_list: mentionAttentionList,
+  // Own read receipt only; this never authorizes work or writes to a source.
+  mention_attention_acknowledge: mentionAttentionAcknowledge,
 };
 
 export const TOOL_ALIASES: Record<string, string> = {
   wiki_search: 'memory_recall',
 };
 
-export const WRITE_TOOLS: Record<string, ToolHandler> = {
+const unguardedWriteTools: Record<string, ToolHandler> = {
   ...MODULE_MCP_WRITE_TOOLS,
   memory_write: memoryWrite as ToolHandler,
   memory_update: memoryUpdate as ToolHandler,
@@ -167,6 +176,18 @@ export const WRITE_TOOLS: Record<string, ToolHandler> = {
   request_human_approval: requestHumanApproval as ToolHandler,
 };
 
+// Validate before handlers can create pending approval records.
+const nativeMentionWriteTools = new Set(['task_create', 'task_update', 'wiki_create', 'wiki_update', 'message_post', 'send_message']);
+export const WRITE_TOOLS: Record<string, ToolHandler> = Object.fromEntries(
+  Object.entries(unguardedWriteTools).map(([name, handler]) => [
+    name,
+    nativeMentionWriteTools.has(name) ? async (args: Record<string, unknown>, ctx: ToolContext) => {
+      const error = await employeeMentionWriteError(name, args, ctx);
+      return error ? errorResult(error) : handler(args, ctx);
+    } : handler,
+  ]),
+);
+
 export const ALL_TOOLS: Record<string, ToolHandler> = {
   ...READ_ONLY_TOOLS,
   ...WRITE_TOOLS,
@@ -190,6 +211,7 @@ const CALLER_SLUG_PROP = {
 };
 
 export const toolSchemas: ToolSchema[] = [
+  ...NATIVE_MENTION_AGENT_TOOL_SCHEMAS,
   ...(MODULE_MCP_TOOL_SCHEMAS as ToolSchema[]),
   {
     name: 'platform_context',

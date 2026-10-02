@@ -2,9 +2,15 @@
 // Content format: "Hey <@userId|userName> check this out"
 // Returns array of mentioned user IDs
 // Also handle @here and @all
+import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 
 export function parseMentions(content: string): { userIds: string[]; here: boolean; all: boolean } {
   const userIds = new Set<string>();
+  try {
+    for (const ref of process.env.DEFT_NATIVE_MENTIONS_ENABLED === 'true' ? extractNativeMentions(content) : []) {
+      if (ref.resource_type === 'person') userIds.add(ref.resource_id);
+    }
+  } catch (error) { if (!(error instanceof NativeMentionLimitError)) throw error; }
   let here = false;
   let all = false;
 

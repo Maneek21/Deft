@@ -11,6 +11,7 @@ const ALLOWED_ATTR = [
   'href', 'target', 'rel', 'class', 'style', 'src', 'alt', 'title',
   'data-mention-id', 'data-mention-name', 'data-type',
   'colspan', 'rowspan',
+  'data-deft-ref-kind', 'data-deft-ref-id',
 ];
 
 export function sanitizeHtml(dirty: string): string {

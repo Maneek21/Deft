@@ -1,0 +1,83 @@
+name: Native Mentions
+on:
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-mentions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_mentions_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_mentions_test
+      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_mentions_test
+      JWT_SECRET: native-mention-ci-only-secret
+      JWT_REFRESH_SECRET: native-mention-ci-only-refresh
+      DEFT_NATIVE_MENTIONS_ENABLED: 'true'
+      DEFT_NATIVE_MENTION_CONCURRENCY_CERTIFY: 'true'
+      API_PORT: '4011'
+      NEXT_PUBLIC_APP_URL: http://localhost:4010
+      NEXT_PUBLIC_API_URL: http://localhost:4011
+      NEXT_PUBLIC_WS_URL: http://localhost:4011
+      DEFT_WEB_URL: http://localhost:4010
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @deft/app-kit build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Fresh schema and concurrent publication/delivery
+        run: |
+          pnpm db:push-full
+          export DEFT_MENTION_EVIDENCE_DIR="$RUNNER_TEMP/native-mention-evidence"
+          mkdir -p "$DEFT_MENTION_EVIDENCE_DIR"
+          set -o pipefail
+          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts test/native-mention-agents-db.test.ts test/native-mention-agent-catalog.test.ts | tee "$DEFT_MENTION_EVIDENCE_DIR/agent-and-native-tests.log"
+      - name: Separate browser fixture database
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE deft_mentions_browser_test"
+          echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/deft_mentions_browser_test" >> "$GITHUB_ENV"
+          echo "DEFT_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/deft_mentions_browser_test" >> "$GITHUB_ENV"
+          echo "DEFT_MENTION_FIXTURE_PATH=$RUNNER_TEMP/native-mention-fixture.json" >> "$GITHUB_ENV"
+          echo "DEFT_MENTION_EVIDENCE_DIR=$RUNNER_TEMP/native-mention-evidence" >> "$GITHUB_ENV"
+      - name: Run real desktop, recipient and mobile journeys
+        run: |
+          set -euo pipefail
+          pnpm db:push-full
+          pnpm --filter @deft/api exec tsx test/fixtures/seed-native-mention-evidence.ts
+          mkdir -p "$DEFT_MENTION_EVIDENCE_DIR"
+          pnpm --filter @deft/api exec tsx src/server.ts > "$DEFT_MENTION_EVIDENCE_DIR/api.log" 2>&1 &
+          api_pid=$!
+          pnpm --filter @deft/web exec next dev --port 4010 > "$DEFT_MENTION_EVIDENCE_DIR/web.log" 2>&1 &
+          web_pid=$!
+          trap 'kill "$api_pid" "$web_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 90); do
+            if curl -fsS http://localhost:4011/health >/dev/null && curl -fsS http://localhost:4010/login >/dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/native-mention-browser-evidence.mjs
+      - name: Retain screenshots, recordings and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-mention-evidence
+          path: ${{ runner.temp }}/native-mention-evidence
+          if-no-files-found: warn

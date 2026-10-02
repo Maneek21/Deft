@@ -1,3 +1,5 @@
+import { NATIVE_MENTION_AGENT_GUIDANCE } from '../lib/native-mention-agent-contract.js';
+import { nativeMentionsEnabled } from '../lib/native-mentions.js';
 import { Hono } from 'hono';
 import {
   authorizedDurableAgentResult,
@@ -815,6 +817,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
   const untrustedContext = buildUntrustedWorkspaceContext([memoryContext, wikiSection]);
   systemPrompt = ensureImmutablePlatformPolicy(systemPrompt + connectionInfo);
+  if (nativeMentionsEnabled()) systemPrompt += '\n\n' + NATIVE_MENTION_AGENT_GUIDANCE;
   systemPrompt = appendDelegatedSystemInstructions(
     systemPrompt,
     employeePrompt,

@@ -22,6 +22,7 @@ import {
   isModuleWriteActionName,
 } from './module-action-visibility.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
+import { nativeDeliveryAccessSql } from './native-mention-visibility.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
 export type AttentionPriority = 'critical' | 'high' | 'normal' | 'low';
@@ -55,7 +56,9 @@ export type AttentionDraft = {
 
 export function visibleAttentionCondition(userId: string) {
   return sql<boolean>`(
-    ${attentionItems.source_type} NOT IN ('message', 'space', 'agent_action')
+    ${attentionItems.source_type} NOT IN ('message', 'space', 'agent_action', 'native_mention')
+    OR (${attentionItems.source_type} = 'native_mention'
+      AND ${nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`)})
     OR (
       ${attentionItems.source_type} = 'message'
       AND EXISTS (
@@ -151,6 +154,15 @@ function sourceFromLink(link: string | null): { messageId: string | null; spaceI
 
 export function notificationToAttentionDraft(notification: LegacyNotification): AttentionDraft {
   const metadata = objectMetadata(notification.metadata);
+  const nativeDeliveryId = metadataString(metadata, 'native_mention_delivery_id');
+  if (nativeDeliveryId) return {
+    orgId: notification.org_id, userId: notification.user_id, kind: 'mention',
+    lane: 'needs_you', priority: 'normal', dedupeKey: `native-mention:${nativeDeliveryId}`,
+    sourceType: 'native_mention', sourceId: nativeDeliveryId,
+    sourceEventId: `native-mention:${nativeDeliveryId}`, title: notification.title,
+    body: notification.body, link: notification.link, metadata,
+    occurredAt: notification.created_at,
+  };
   const linkedSource = sourceFromLink(notification.link);
   const taskId = metadataString(metadata, 'task_id', 'taskId');
   const messageId = metadataString(metadata, 'message_id', 'messageId', 'source_message_id') ?? linkedSource.messageId;
@@ -567,6 +579,12 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   userId: string,
   rows: T[],
 ): Promise<T[]> {
+  const nativeIds = rows.filter(item => item.source_type === 'native_mention').map(item => item.id);
+  const visibleNative = nativeIds.length ? await db.select({ id: attentionItems.id }).from(attentionItems).where(and(
+    inArray(attentionItems.id, nativeIds),
+    nativeDeliveryAccessSql(userId, sql`${attentionItems.source_id}`, sql`${attentionItems.org_id}`),
+  )) : [];
+  const allowedNative = new Set(visibleNative.map(item => item.id));
   const messageIds = rows.filter((item) => item.source_type === 'message').map((item) => item.source_id);
   const spaceIds = rows.filter((item) => item.source_type === 'space').map((item) => item.source_id);
   const actionIds = rows.filter((item) => item.source_type === 'agent_action').map((item) => item.source_id);
@@ -607,6 +625,8 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
   const allowedSpaces = new Set(visibleSpaces.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
   const allowedActions = new Set(visibleActions.map((row) => row.id));
   const inaccessible = rows.filter((item) =>
+    (item.source_type === 'native_mention' && !allowedNative.has(item.id))
+    ||
     (item.source_type === 'message' && !allowedMessages.has(item.source_id))
     || (item.source_type === 'space' && !allowedSpaces.has(item.source_id))
     || (item.source_type === 'agent_action' && !allowedActions.has(item.source_id)));

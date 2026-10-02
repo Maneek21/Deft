@@ -139,6 +139,9 @@ async function main() {
     const nativeCreateFile = '0.3.0-preview.29-native-create-requests.sql';
     await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
+    const nativeMentionsFile = '0.3.0-preview.61-native-mentions.sql';
+    await client.query(readFileSync(resolve(upgradesDir, nativeMentionsFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${nativeMentionsFile}`);
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
@@ -150,6 +153,7 @@ async function main() {
     console.log('[apply-extras] ensured agent_employee_templates_org_slug_uniq');
 
     const requiredConstraints = [
+      'native_mention_source_org_fk',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -265,6 +269,11 @@ async function main() {
     console.log('[apply-extras] verified composite module foreign-key constraints');
 
     const requiredIndexes = [
+      'native_reference_source_unique',
+      'native_reference_org_id_unique',
+      'native_reference_refs_gin',
+      'native_mention_delivery_unique',
+      'native_mention_recipient_idx',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -341,6 +350,10 @@ async function main() {
     console.log('[apply-extras] verified module_versions_immutable_fields_trigger');
 
     const requiredAppRunTriggers = [
+      'native_reference_messages',
+      'native_reference_tasks',
+      'native_reference_task_comments',
+      'native_reference_wiki_pages',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
       'app_run_attempts_state_identity_trigger',

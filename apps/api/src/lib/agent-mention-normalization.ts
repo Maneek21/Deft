@@ -3,6 +3,7 @@ export type AgentMentionIdentity = {
   name: string;
   slug: string;
 };
+import { stripNativeMentionAtoms } from '@deft/shared';
 
 export type PlainAgentMentionResolution = {
   content: string;
@@ -42,7 +43,8 @@ export function normalizePlainAgentMentions(
     }
   }
 
-  let normalized = content;
+  const segments = content.split(/(<span\b[^>]*data-deft-ref-kind[^>]*>[\s\S]*?<\/span>|\[\[deft:(?:person|task|wiki_page):[^\]]+\]\])/gi);
+  let normalized = segments;
   const resolvedUserIds = new Set<string>();
   const ambiguousAliases = new Set<string>();
   const aliases = Array.from(ownersByAlias.keys()).sort((a, b) => b.length - a.length);
@@ -50,7 +52,10 @@ export function normalizePlainAgentMentions(
   for (const alias of aliases) {
     const aliasPattern = escapeRegex(alias).replace(/\\ /g, '\\s+');
     const pattern = new RegExp(`(^|[^a-z0-9_])@(${aliasPattern})(?=$|[^a-z0-9_-])`, 'gi');
-    if (!pattern.test(normalized)) continue;
+    if (!normalized.some(segment => {
+      pattern.lastIndex = 0;
+      return stripNativeMentionAtoms(segment) !== '' && pattern.test(segment);
+    })) continue;
     pattern.lastIndex = 0;
 
     const owners = ownersByAlias.get(alias) ?? [];
@@ -60,15 +65,18 @@ export function normalizePlainAgentMentions(
     }
 
     const agent = owners[0]!;
-    normalized = normalized.replace(
-      pattern,
-      (_match, prefix) => `${prefix}<@${agent.userId}|${agent.name}>`,
-    );
-    resolvedUserIds.add(agent.userId);
+    normalized = normalized.map(segment => {
+      if (stripNativeMentionAtoms(segment) === '') return segment;
+      pattern.lastIndex = 0;
+      return segment.replace(pattern, (_match, prefix) => {
+        resolvedUserIds.add(agent.userId);
+        return `${prefix}<@${agent.userId}|${agent.name}>`;
+      });
+    });
   }
 
   return {
-    content: normalized,
+    content: normalized.join(''),
     resolvedUserIds: Array.from(resolvedUserIds),
     ambiguousAliases: Array.from(ambiguousAliases),
   };

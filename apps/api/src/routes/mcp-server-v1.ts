@@ -1,3 +1,4 @@
+import { nativeMentionAgentToolScopes } from '../lib/native-mention-agent-contract.js';
 /**
  * Phase 3 — MCP streamable-http server mounted at `/api/mcp/v1`.
  *
@@ -170,10 +171,12 @@ function tokenBoundAgentCatalog(
   tools: typeof toolSchemas,
   principal: Pick<ResolvedGateway, 'token_id' | 'scopes'>,
 ): typeof toolSchemas {
-  return tools.filter((tool) => (
-    !isAgentAppActionTool(tool.name)
-    || (Boolean(principal.token_id) && agentAppToolHasRequiredScope(principal.scopes ?? [], tool.name))
-  )).map((tool) => {
+  return tools.filter((tool) => {
+    const nativeScopes = nativeMentionAgentToolScopes(tool.name);
+    if (principal.token_id && nativeScopes && !nativeScopes.every(scope => principal.scopes?.includes(scope))) return false;
+    return !isAgentAppActionTool(tool.name)
+      || (Boolean(principal.token_id) && agentAppToolHasRequiredScope(principal.scopes ?? [], tool.name));
+  }).map((tool) => {
     const inputSchema = { ...tool.inputSchema };
     const properties = isRecord(inputSchema.properties)
       ? { ...inputSchema.properties }
