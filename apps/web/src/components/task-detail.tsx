@@ -2673,8 +2673,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
                 <Link2 size={12} />
                 {visibleReferenceCount === 0
-                  ? 'No references'
-                  : `${visibleReferenceCount} reference${visibleReferenceCount !== 1 ? 's' : ''}`}
+                  ? 'Other references'
+                  : `${visibleReferenceCount} other reference${visibleReferenceCount !== 1 ? 's' : ''}`}
               </h3>
               {user && user.role !== 'guest' && (
                 <TaskModuleRecordLinks
@@ -2685,7 +2685,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               )}
               {visibleReferenceCount === 0 ? (
                 <p className="mt-2 px-2 text-[12px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                  No messages or notes link to this task yet.
+                  No other references are linked to this task yet.
                 </p>
               ) : (
                 <div className="mt-2 space-y-1.5">

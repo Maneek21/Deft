@@ -50,6 +50,8 @@ try {
   await choose(editor, 'DEFT', 'DEFT-42');
   await editor.pressSequentially(' using ', { delay: 50 });
   await choose(editor, 'Launch', 'Launch checklist');
+  await editor.pressSequentially(' with ');
+  await choose(editor, 'Avery', 'Avery Review');
   await shot('02-chat-composer');
   await editor.press('Enter');
   await page.waitForTimeout(2200);
@@ -64,8 +66,13 @@ try {
   await choose(thread, 'Sam', /^Sam$/);
   await thread.pressSequentially(' using ');
   await choose(thread, 'Launch', 'Launch checklist');
+  await thread.pressSequentially(' for ');
+  await choose(thread, 'DEFT', 'DEFT-42');
+  await thread.pressSequentially(' with ');
+  await choose(thread, 'Avery', 'Avery Review');
   await thread.press('Enter');
   await page.waitForTimeout(1800);
+  await page.locator('span[data-deft-ref-id="' + fixture.wikiId + '"]').last().getByRole('link').waitFor();
   await shot('04-thread-reply');
 
   await page.goto(base + '/tasks?task=' + fixture.taskId, { waitUntil: 'domcontentloaded' });
@@ -78,6 +85,8 @@ try {
   await choose(description, 'Sam', /^Sam$/);
   await description.pressSequentially(' using ');
   await choose(description, 'Launch', 'Launch checklist');
+  await description.pressSequentially(' for ');
+  await choose(description, 'DEFT', 'DEFT-42');
   await shot('05-task-description');
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
   await page.getByRole('status').filter({ hasText: /notification\(s\) queued|Mentions are up to date/ }).waitFor();
@@ -91,6 +100,10 @@ try {
   await choose(comment, 'Sam', /^Sam$/);
   await comment.pressSequentially(' using ');
   await choose(comment, 'Launch', 'Launch checklist');
+  await comment.pressSequentially(' for ');
+  await choose(comment, 'DEFT', 'DEFT-42');
+  await comment.pressSequentially(' with ');
+  await choose(comment, 'Rita', 'Rita Research');
   await page.getByRole('button', { name: 'Comment', exact: true }).click();
   await page.waitForTimeout(1400);
   await shot('08-task-comment');
@@ -103,11 +116,16 @@ try {
   await choose(wiki, 'Sam', /^Sam$/);
   await wiki.pressSequentially(' for ');
   await choose(wiki, 'DEFT', 'DEFT-42');
+  await wiki.pressSequentially(' with ');
+  await choose(wiki, 'Rita', 'Rita Research');
+  await wiki.pressSequentially(' using ');
+  await choose(wiki, 'Launch', 'Launch checklist');
   await shot('09-wiki-markdown-editor');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
   await page.getByRole('status').filter({ hasText: /notification\(s\) queued|Mentions are up to date/ }).waitFor();
+  await page.getByRole('link', { name: /@DEFT-42 · Review release/ }).waitFor();
   await shot('10-wiki-published-and-backlinks');
 
   await page.goto(base + '/notes?id=' + fixture.noteId, { waitUntil: 'domcontentloaded' });
@@ -120,6 +138,8 @@ try {
   await choose(note, 'Rita', 'Rita Research');
   await note.pressSequentially(' using ');
   await choose(note, 'Launch', 'Launch checklist');
+  await note.pressSequentially(' for ');
+  await choose(note, 'DEFT', 'DEFT-42');
   await page.getByRole('button', { name: 'Notify mentions', exact: true }).click();
   await page.getByRole('status').filter({ hasText: 'cannot access this source' }).waitFor();
   await shot('11-private-note-blocked');
@@ -154,7 +174,7 @@ try {
   results.push('15-recipient-inbox');
   await recipientPage.getByText('Jordan mentioned you in note', { exact: true }).first().click();
   await recipientPage.waitForURL(url => url.pathname === '/notes' && url.searchParams.get('id') === fixture.noteId);
-  await recipientPage.locator('[contenteditable=true]').waitFor();
+  await recipientPage.locator('[contenteditable]').first().waitFor();
   await recipientPage.screenshot({ path: path.join(output, '16-notification-exact-note.png'), fullPage: true });
   results.push('16-notification-exact-note');
   const recipientVideo = recipientPage.video();
