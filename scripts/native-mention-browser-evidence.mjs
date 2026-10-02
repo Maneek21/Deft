@@ -105,7 +105,7 @@ try {
     && response.url().endsWith('/api/tasks/' + fixture.taskId));
   await page.getByRole('button', { name: 'Close task', exact: true }).click();
   assert((await descriptionSaved).ok(), 'Closing the task flushes its pending description save');
-  await page.getByRole('link', { name: 'Chat', exact: true }).click();
+  await page.locator('a[href="/chat"]').first().click();
   await page.waitForURL(url => url.pathname === '/chat');
   await page.locator('[contenteditable=true]').first().waitFor();
   await page.goto(base + '/tasks?task=' + fixture.taskId);
