@@ -11,19 +11,46 @@ import { reconcileNativeMentions, handleNativeMentionReconciliation, publishNati
 import { enqueueNativeMentionPublication, handleNativeMentionPublication } from '../src/lib/native-mentions.js';
 import { nativeMentionRoutes } from '../src/routes/native-mentions.js';
 import { notificationRoutes } from '../src/routes/notifications.js';
+import { dailyNoteRoutes } from '../src/routes/daily-notes.js';
 import { boundMentionAttention, mentionAttentionAcknowledge } from '../src/lib/mcp-tools/mention-attention.js';
 import { createNativeMentionFixture } from './fixtures/native-mentions.js';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
 const enabled = Boolean(safeTestDatabaseUrl());
 let fixture: Awaited<ReturnType<typeof createNativeMentionFixture>>;
 before(async () => { if (enabled) { process.env.DEFT_NATIVE_MENTIONS_ENABLED = 'true'; fixture = await createNativeMentionFixture(); } });
-after(closeDb);
+after(async () => {
+  try {
+    if (!fixture) return;
+    // The wider API suite reuses its disposable DB: leave no extra workspaces.
+    await db.transaction(async tx => {
+      const orgIds = sql`(${fixture.orgId}, ${fixture.otherOrgId})`;
+      await tx.execute(sql`DELETE FROM attention_items WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM notifications WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM native_reference_states WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM note_shares WHERE note_id IN (SELECT id FROM notes WHERE org_id IN ${orgIds})`);
+      await tx.execute(sql`DELETE FROM task_watchers WHERE task_id IN (SELECT id FROM tasks WHERE org_id IN ${orgIds})`);
+      await tx.execute(sql`DELETE FROM task_comments WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM messages WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM tasks WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM projects WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM wiki_pages WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM notes WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id IN ${orgIds})`);
+      await tx.execute(sql`DELETE FROM spaces WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM agent_employees WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM org_members WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM job_queue WHERE org_id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM orgs WHERE id IN ${orgIds}`);
+      await tx.execute(sql`DELETE FROM users WHERE id IN (${fixture.ownerId}, ${fixture.samId}, ${fixture.agentId}, ${fixture.agent2Id}, ${fixture.outsiderId})`);
+    });
+  } finally { await closeDb(); }
+});
 const token = (kind: 'person' | 'task' | 'wiki_page', id: string) => nativeMentionToken(nativeMentionRef(kind, id));
 const actor = () => ({ orgId: fixture.orgId, userId: fixture.ownerId });
 const appFor = (userId: string) => {
   const app = new Hono();
   app.use('*', async (c, next) => { c.set('user', { id: userId, org_id: fixture.orgId, email: 'synthetic@example.test' }); await next(); });
-  app.route('/mentions', nativeMentionRoutes); app.route('/notifications', notificationRoutes);
+  app.route('/mentions', nativeMentionRoutes); app.route('/notifications', notificationRoutes); app.route('/notes', dailyNoteRoutes);
   return app;
 };
 
@@ -196,6 +223,20 @@ test('notification preferences and rollout pause preserve durable effects withou
     assert.equal((await db.select().from(nativeMentionDeliveries).where(eq(nativeMentionDeliveries.id, delivery!.id)))[0]!.reason, 'do_not_disturb');
     assert.equal((await db.select().from(notifications).where(eq(notifications.id, delivery!.id))).length, 0);
   } finally { await db.update(users).set({ status_text: null }).where(eq(users.id, fixture.samId)); }
+});
+
+test('explicit note sharing validates the owner, active tenant recipient and payload before mention retry', { skip: !enabled }, async () => {
+  const share = (userId: string, body: unknown) => appFor(userId).request('/notes/' + fixture.noteId + '/shares', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  assert.equal((await share(fixture.ownerId, {})).status, 400);
+  assert.equal((await share(fixture.ownerId, { user_id: fixture.outsiderId })).status, 404);
+  assert.equal((await share(fixture.samId, { user_id: fixture.agentId })).status, 404);
+  assert.equal((await share(fixture.ownerId, { user_id: fixture.samId, permission: 'admin' })).status, 400);
+  assert.equal((await share(fixture.ownerId, { user_id: fixture.samId })).status, 201);
+  const response = await appFor(fixture.ownerId).request('/notes/' + fixture.noteId + '/shares');
+  const { shares } = await response.json();
+  assert(shares.some((item: { user_id: string; permission: string }) => item.user_id === fixture.samId && item.permission === 'view'));
 });
 
 test('PostgreSQL concurrent publish and retry workers create exactly one durable attention effect', {

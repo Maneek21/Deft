@@ -1241,6 +1241,7 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     'bulk creation must not be advertised without write:modules');
 
   const minimalArgs: Record<string, Record<string, unknown>> = {
+    native_mentions_search: { query: '' },
     search: { query: 'salsa tasting', limit: 5 },
     fetch: { id: `wiki:${WIKI_SLUG}` },
     platform_context: {},
