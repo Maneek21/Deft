@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { normalizePlainAgentMentions } from '../src/lib/agent-mention-normalization.js';
+import { parseMentions } from '../src/lib/mentions.js';
+test('native dispatch respects the rollout gate while legacy mentions remain callable', () => {
+  const previous = process.env.DEFT_NATIVE_MENTIONS_ENABLED;
+  const body = '[[deft:person:native-user]] <@legacy-user|Legacy>';
+  try {
+    process.env.DEFT_NATIVE_MENTIONS_ENABLED = 'false';
+    assert.deepEqual(parseMentions(body).userIds, ['legacy-user']);
+    process.env.DEFT_NATIVE_MENTIONS_ENABLED = 'true';
+    assert.deepEqual(parseMentions(body).userIds, ['native-user', 'legacy-user']);
+  } finally {
+    if (previous === undefined) delete process.env.DEFT_NATIVE_MENTIONS_ENABLED;
+    else process.env.DEFT_NATIVE_MENTIONS_ENABLED = previous;
+  }
+});
 test('native identity placeholders never become fuzzy agent handles', () => {
   const content = '<p><span data-deft-ref-kind="person" data-deft-ref-id="sam">@Person</span></p>';
   const result = normalizePlainAgentMentions(content, [{ userId: 'wrong-agent', name: 'Person', slug: 'person' }]);

@@ -7,7 +7,7 @@ import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
 export function parseMentions(content: string): { userIds: string[]; here: boolean; all: boolean } {
   const userIds = new Set<string>();
   try {
-    for (const ref of extractNativeMentions(content)) {
+    for (const ref of process.env.DEFT_NATIVE_MENTIONS_ENABLED === 'true' ? extractNativeMentions(content) : []) {
       if (ref.resource_type === 'person') userIds.add(ref.resource_id);
     }
   } catch (error) { if (!(error instanceof NativeMentionLimitError)) throw error; }
