@@ -46,6 +46,9 @@ try {
   await page.waitForTimeout(700);
   assert(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1),
     'Mention popup does not extend the document below the chat viewport');
+  const desktopMenuBounds = await page.getByRole('listbox').boundingBox();
+  assert(desktopMenuBounds && desktopMenuBounds.y >= 0 && desktopMenuBounds.y + desktopMenuBounds.height <= 960,
+    'The complete desktop picker fits inside the viewport');
   await shot('01-universal-picker-desktop');
   await page.getByRole('listbox').getByRole('option').filter({ hasText: /^Sam$/ }).click();
   await editor.pressSequentially(' review ', { delay: 50 });
@@ -90,7 +93,12 @@ try {
   await description.pressSequentially(' for ');
   await choose(description, 'DEFT', 'DEFT-42');
   // A route change inside the debounce must preserve the edit without notifying.
+  const descriptionSaved = page.waitForResponse(response => response.request().method() === 'PATCH'
+    && response.url().endsWith('/api/tasks/' + fixture.taskId));
+  await page.getByRole('button', { name: 'Close task', exact: true }).click();
+  assert((await descriptionSaved).ok(), 'Closing the task flushes its pending description save');
   await page.getByRole('link', { name: 'Chat', exact: true }).click();
+  await page.waitForURL(url => url.pathname === '/chat');
   await page.locator('[contenteditable=true]').first().waitFor();
   await page.goto(base + '/tasks?task=' + fixture.taskId);
   await page.locator('[contenteditable=true]').first().getByRole('button', { name: '@Rita Research', exact: true }).waitFor();

@@ -62,6 +62,7 @@ export const NativeMention = Node.create<{ onMenuStateChange?: (open: boolean) =
       render: () => {
         let renderer: ReactRenderer<NativeMentionPopupRef, NativeMentionPopupProps> | null = null;
         let popup: Instance[] = [];
+        let sizeObserver: ResizeObserver | null = null;
         const update = (props: SuggestionProps<NativeProjection, NativeProjection>, loading: boolean) => {
           renderer?.updateProps({ items: props.items, command: props.command, loading, error: loading ? undefined : searchError });
           if (props.clientRect) popup[0]?.setProps({ getReferenceClientRect: props.clientRect as () => DOMRect });
@@ -74,8 +75,14 @@ export const NativeMention = Node.create<{ onMenuStateChange?: (open: boolean) =
               props: { items: props.items, command: props.command, loading: false, error: searchError } });
             if (props.clientRect) popup = tippy('body', { getReferenceClientRect: props.clientRect as () => DOMRect,
               appendTo: () => document.body, content: renderer.element, interactive: true,
-              showOnCreate: true, trigger: 'manual', placement: 'bottom-start', animation: false, arrow: false,
-              popperOptions: { strategy: 'fixed' } });
+              showOnCreate: true, trigger: 'manual', placement: 'top-start', animation: false, arrow: false,
+              popperOptions: { strategy: 'fixed', modifiers: [
+                { name: 'preventOverflow', options: { padding: 12 } },
+                { name: 'flip', options: { padding: 12 } },
+              ] } });
+            // React commits search results after Popper's initial measurement.
+            sizeObserver = new ResizeObserver(() => { void popup[0]?.popperInstance?.update(); });
+            sizeObserver.observe(renderer.element);
           },
           onBeforeUpdate: props => update(props, true),
           onUpdate: props => update(props, false),
@@ -83,7 +90,7 @@ export const NativeMention = Node.create<{ onMenuStateChange?: (open: boolean) =
             if (event.key === 'Escape') { exitSuggestion(this.editor.view, pluginKey); return true; }
             return renderer?.ref?.onKeyDown(event) ?? event.key === 'Enter';
           },
-          onExit: () => { onMenuStateChange?.(false); popup[0]?.destroy(); renderer?.destroy(); },
+          onExit: () => { onMenuStateChange?.(false); sizeObserver?.disconnect(); popup[0]?.destroy(); renderer?.destroy(); },
         };
       },
     })];
