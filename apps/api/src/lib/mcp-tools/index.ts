@@ -177,11 +177,15 @@ const unguardedWriteTools: Record<string, ToolHandler> = {
 };
 
 // Validate before handlers can create pending approval records.
+const nativeMentionWriteTools = new Set(['task_create', 'task_update', 'wiki_create', 'wiki_update', 'message_post', 'send_message']);
 export const WRITE_TOOLS: Record<string, ToolHandler> = Object.fromEntries(
-  Object.entries(unguardedWriteTools).map(([name, handler]) => [name, async (args: Record<string, unknown>, ctx: ToolContext) => {
-    const error = await employeeMentionWriteError(name, args, ctx);
-    return error ? errorResult(error) : handler(args, ctx);
-  }]),
+  Object.entries(unguardedWriteTools).map(([name, handler]) => [
+    name,
+    nativeMentionWriteTools.has(name) ? async (args: Record<string, unknown>, ctx: ToolContext) => {
+      const error = await employeeMentionWriteError(name, args, ctx);
+      return error ? errorResult(error) : handler(args, ctx);
+    } : handler,
+  ]),
 );
 
 export const ALL_TOOLS: Record<string, ToolHandler> = {
