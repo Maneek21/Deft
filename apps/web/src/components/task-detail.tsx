@@ -1,4 +1,7 @@
 'use client';
+import { NativeMentionContent } from '@/components/native-mention-content';
+import { NativeMentionPublish } from '@/components/native-mention-publish';
+import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
@@ -589,7 +592,7 @@ function DescriptionEditor({ value, onChange }: { value: string; onChange: (html
 
   useEffect(() => {
     if (editor && value !== editor.getHTML()) {
-      editor.commands.setContent(value || '');
+      editor.commands.setContent(value || '', { emitUpdate: false });
     }
   }, [value, editor]);
 
@@ -633,6 +636,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   ] as const;
   const initialTab = ((): TabKey => {
     if (typeof window === 'undefined') return 'description';
+    if (new URLSearchParams(window.location.search).has('comment')) return 'comments';
     const hash = window.location.hash.replace(/^#/, '') as TabKey;
     return (VALID_TABS as readonly string[]).includes(hash) ? hash : 'description';
   })();
@@ -766,18 +770,45 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const startDateInputRef = useRef<HTMLInputElement>(null);
   const subtaskCreateIntentRef = useRef<{ projectId: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const descriptionDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const descriptionQueue = useRef<Promise<void>>(Promise.resolve());
+  const descriptionRevision = useRef(0);
+  const descriptionDirty = useRef(false);
+  const activeTaskId = useRef(taskId);
+  useEffect(() => {
+    activeTaskId.current = taskId; descriptionDirty.current = false; ++descriptionRevision.current;
+    return () => clearTimeout(descriptionDebounce.current);
+  }, [taskId]);
+  const saveDescription = (html: string) => {
+    const targetId = taskId;
+    const revision = descriptionRevision.current;
+    const operation = descriptionQueue.current.then(async () => {
+      const response = await api.patch(`/api/tasks/${targetId}`, { description: html });
+      if (!response.ok) throw new Error('Description could not be saved. Retry before notifying.');
+      const result = await response.json();
+      if (activeTaskId.current === targetId) {
+        if (descriptionRevision.current === revision) descriptionDirty.current = false;
+        setTask(previous => previous?.id === targetId ? { ...previous, ...result } : previous);
+        if (task?.id === targetId) onUpdated({ ...task, ...result });
+      }
+    });
+    descriptionQueue.current = operation.catch(() => {});
+    return operation;
+  };
   const depSearchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Load task
-  const loadTask = useCallback(async () => {
-    setLoading(true);
+  const loadTask = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
+    const revision = descriptionRevision.current;
     const res = await api.get(`/api/tasks/${taskId}`);
+    if (activeTaskId.current !== taskId) return;
     if (res.ok) {
       const data = await res.json();
       const normalized = normalizeTaskDetailPayload(data);
       setTask(normalized);
       setTitleValue(normalized.title);
-      setDescValue(normalized.description || '');
+      if (!descriptionDirty.current && descriptionRevision.current === revision) setDescValue(normalized.description || '');
       setSubtasks(data.subtasks || []);
       setParentTask(data.parent_task || null);
       setAgentProgress(data.agent_outcome ? null : data.agent_progress || null);
@@ -799,7 +830,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const onUpdated = (payload: { id: string } & Record<string, unknown>) => {
       if (payload.id !== taskId) return;
       // Refetch for canonical shape (includes joined fields like assignee_name, labels, subtasks)
-      loadTask();
+      void loadTask(true);
     };
     const onDeleted = (payload: { id: string }) => {
       if (payload.id !== taskId) return;
@@ -905,6 +936,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const res = await api.get(`/api/tasks/${taskId}/comments`);
     if (res.ok) setComments(await res.json());
   }, [taskId]);
+  useEffect(() => {
+    if (activeTab !== 'comments') return;
+    const id = new URLSearchParams(window.location.search).get('comment');
+    if (id && comments.some(comment => comment.id === id)) {
+      document.getElementById('task-comment-' + id)?.scrollIntoView({ block: 'center' });
+    }
+  }, [activeTab, comments]);
 
   // Load activity
   const loadActivity = useCallback(async () => {
@@ -2009,22 +2047,18 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             <DescriptionEditor
               value={descValue}
               onChange={(html) => {
+                descriptionDirty.current = true; ++descriptionRevision.current;
                 setDescValue(html);
                 // Auto-save after editing
-                clearTimeout(titleDebounce.current);
-                titleDebounce.current = setTimeout(async () => {
-                  if (task) {
-                    const res = await api.patch(`/api/tasks/${taskId}`, { description: html || null });
-                    if (res.ok) {
-                      const apiResult = await res.json();
-                      const merged = { ...task, ...apiResult };
-                      setTask(merged);
-                      onUpdated(merged);
-                    }
-                  }
-                }, 800);
+                clearTimeout(descriptionDebounce.current);
+                descriptionDebounce.current = setTimeout(() => { void saveDescription(html).catch(() => {}); }, 800);
               }}
             />
+            <NativeMentionPublish source={{ kind: 'task', id: taskId }} content={descValue}
+              prepare={async () => {
+                clearTimeout(descriptionDebounce.current);
+                await saveDescription(descValue);
+              }} />
             {/* Fix 4: quick comment entry point always visible on description tab */}
             <div
               className="mt-4 pt-3"
@@ -2634,6 +2668,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           {/* References tab */}
           {activeTab === 'references' && (
             <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
+              <NativeMentionBacklinks kind="task" id={taskId} />
               <h3 className="text-[12px] font-semibold mb-2 uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
                 <Link2 size={12} />
@@ -2746,7 +2781,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     </p>
                   )}
                   {comments.map((c) => (
-                    <div key={c.id} className="flex gap-2.5">
+                    <div key={c.id} id={`task-comment-${c.id}`} className="flex gap-2.5">
                       <PersonAvatar name={c.user_name} avatarUrl={c.user_avatar} size={24} fontSize={10} className="mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
@@ -2765,10 +2800,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                             })}
                           </span>
                         </div>
-                        <div
-                          className="deft-editor text-[13px] mt-0.5"
-                          dangerouslySetInnerHTML={{ __html: sanitizeHtml(c.content) }}
-                        />
+                        <div className="deft-editor text-[13px] mt-0.5"><NativeMentionContent html={c.content} /></div>
                       </div>
                     </div>
                   ))}

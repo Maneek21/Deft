@@ -203,6 +203,45 @@ export const users = pgTable('users', {
 });
 
 // Durable native-create identities; retain tombstones when a resource is deleted.
+export const nativeReferenceStates = pgTable('native_reference_states', {
+  ...id(),
+  ...orgId(),
+  source_kind: text('source_kind').notNull(),
+  source_id: text('source_id').notNull(),
+  content_hash: text('content_hash').notNull(),
+  revision: integer('revision').default(1).notNull(),
+  current_refs: jsonb('current_refs').$type<Array<{
+    schema_version: string; resource_type: string; resource_id: string;
+    provider: { kind: string; provider_instance_id: string };
+  }>>().default([]).notNull(),
+  published_person_ids: jsonb('published_person_ids').$type<string[]>().default([]).notNull(),
+  publication_revision: integer('publication_revision').default(0).notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('native_reference_source_unique').on(t.org_id, t.source_kind, t.source_id),
+  unique('native_reference_org_id_unique').on(t.org_id, t.id),
+  index('native_reference_org_idx').on(t.org_id),
+]);
+
+export const nativeMentionDeliveries = pgTable('native_mention_deliveries', {
+  ...id(),
+  ...orgId(),
+  source_state_id: text('source_state_id').notNull().references(() => nativeReferenceStates.id, { onDelete: 'cascade' }),
+  publication_revision: integer('publication_revision').notNull(),
+  recipient_user_id: text('recipient_user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  actor_user_id: text('actor_user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  status: text('status').default('pending').notNull(),
+  attention_id: text('attention_id'),
+  reason: text('reason'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('native_mention_delivery_unique').on(t.org_id, t.source_state_id, t.publication_revision, t.recipient_user_id),
+  index('native_mention_recipient_idx').on(t.org_id, t.recipient_user_id),
+  foreignKey({ columns: [t.org_id, t.source_state_id], foreignColumns: [nativeReferenceStates.org_id, nativeReferenceStates.id],
+    name: 'native_mention_source_org_fk' }).onDelete('cascade'),
+]);
+
 export const nativeCreateRequests = pgTable('native_create_requests', {
   id: text('id').primaryKey(),
   org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),

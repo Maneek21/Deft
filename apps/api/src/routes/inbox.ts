@@ -1,3 +1,4 @@
+import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
 // apps/api/src/routes/inbox.ts
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gt, inArray } from 'drizzle-orm';
@@ -204,6 +205,7 @@ inboxRoutes.get('/', async (c) => {
     const notificationWhere = and(
       eq(notifications.user_id, user.id),
       eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
       includeRead ? sql`TRUE` : eq(notifications.is_read, false),
       notificationTypes.length > 0 ? inArray(notifications.type, notificationTypes) : sql`FALSE`,
       cursor ? lt(notifications.created_at, new Date(cursor)) : sql`TRUE`,
@@ -211,6 +213,7 @@ inboxRoutes.get('/', async (c) => {
     const unreadNotificationWhere = and(
       eq(notifications.user_id, user.id),
       eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
       eq(notifications.is_read, false),
       notificationTypes.length > 0 ? inArray(notifications.type, notificationTypes) : sql`FALSE`,
     );
@@ -389,6 +392,7 @@ inboxRoutes.post('/read', async (c) => {
         .where(and(
           eq(notifications.user_id, user.id),
           eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
           eq(notifications.is_read, false),
           inArray(notifications.type, notificationTypes),
         ))
@@ -413,6 +417,7 @@ inboxRoutes.post('/read', async (c) => {
         inArray(notifications.id, notifIds),
         eq(notifications.user_id, user.id),
         eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
       ))
       .returning({ id: notifications.id });
 

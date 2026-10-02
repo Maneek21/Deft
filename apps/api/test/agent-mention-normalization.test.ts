@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { normalizePlainAgentMentions } from '../src/lib/agent-mention-normalization.js';
+test('native identity placeholders never become fuzzy agent handles', () => {
+  const content = '<p><span data-deft-ref-kind="person" data-deft-ref-id="sam">@Person</span></p>';
+  const result = normalizePlainAgentMentions(content, [{ userId: 'wrong-agent', name: 'Person', slug: 'person' }]);
+  assert.equal(result.content, content);
+  assert.deepEqual(result.resolvedUserIds, []);
+});
 
 test('resolves exact typed agent names and slugs into structured mentions', () => {
   const agents = [{ userId: 'rita-user', name: 'Rita', slug: 'research-agent' }];

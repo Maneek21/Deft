@@ -6,6 +6,8 @@ import { nativeCreate, nativeCreateKey, NativeCreateError } from '../lib/native-
 import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
+import { extractNativeMentions, NativeMentionLimitError } from '@deft/shared';
+import { nativeMentionsEnabled, enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { resolveReasonProvider } from '../lib/org-ai-config.js';
@@ -475,6 +477,8 @@ messageRoutes.post('/:spaceId', async (c) => {
         parent_id: parsed.data.parent_id,
         }).returning();
         if (!insertedMessage) throw new Error('Message insert returned no row');
+        await enqueueNativeMentionPublication(tx, { orgId: user.org_id, userId: user.id },
+          { kind: 'message', id: insertedMessage.id }, normalizedContent);
 
         if (attachmentIds.length === 0) {
         return insertedMessage;
@@ -573,7 +577,10 @@ messageRoutes.post('/:spaceId', async (c) => {
       ...groupMentionedUserIds,
     ]));
 
+    const nativeRecipients = new Set(nativeMentionsEnabled() ? extractNativeMentions(normalizedContent)
+      .filter(ref => ref.resource_type === 'person').map(ref => ref.resource_id) : []);
     for (const mentionedUserId of mentionedUserIds) {
+      if (nativeRecipients.has(mentionedUserId)) continue; // The durable native publication owns this alert.
       // Don't notify the sender
       if (mentionedUserId === user.id) continue;
 
@@ -846,6 +853,7 @@ messageRoutes.post('/:spaceId', async (c) => {
       return c.json({ error: err.message, code: 'ATTACHMENT_NOT_FOUND' }, 404);
     }
     if (err instanceof NativeCreateError) return c.json({ error: err.message, code: err.code }, err.status);
+    if (err instanceof NativeMentionLimitError) return c.json({ error: err.message, code: 'NATIVE_MENTION_LIMIT' }, 400);
     console.error('Failed to send message:', err);
     return c.json({ error: 'Failed to send message', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -856,10 +864,15 @@ messageRoutes.patch('/:id', async (c) => {
   const user = c.get('user');
   const messageId = c.req.param('id');
   const body = await c.req.json();
-  const { content } = body;
-
-  if (!content) {
-    return c.json({ error: 'Content required', code: 'VALIDATION_ERROR' }, 400);
+  const edit = z.object({ content: z.string().min(1).max(100_000) }).safeParse(body);
+  if (!edit.success) return c.json({ error: 'Valid message content required', code: 'VALIDATION_ERROR' }, 400);
+  const { content } = edit.data;
+  if (nativeMentionsEnabled()) {
+    try { extractNativeMentions(content); }
+    catch (error) {
+      if (error instanceof NativeMentionLimitError) return c.json({ error: error.message, code: 'NATIVE_MENTION_LIMIT' }, 400);
+      throw error;
+    }
   }
 
   const existing = await getVisibleMessage(messageId, user.org_id, user.id);
@@ -877,10 +890,13 @@ messageRoutes.patch('/:id', async (c) => {
     edited_at: existing.edited_at || existing.created_at,
   });
 
-  const [updated] = await db.update(messages)
-    .set({ content, edited_at: new Date() })
-    .where(eq(messages.id, messageId))
-    .returning();
+  const updated = await db.transaction(async tx => {
+    const [row] = await tx.update(messages).set({ content, edited_at: new Date() })
+      .where(and(eq(messages.id, messageId), eq(messages.org_id, user.org_id))).returning();
+    await enqueueNativeMentionPublication(tx, { orgId: user.org_id, userId: user.id },
+      { kind: 'message', id: messageId }, content);
+    return row;
+  });
 
   const io = getIO();
   if (io) {

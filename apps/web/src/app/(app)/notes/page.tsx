@@ -1,4 +1,5 @@
 'use client';
+import { NativeMentionPublish } from '@/components/native-mention-publish';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -208,6 +209,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | NoteLoadState>('loading');
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saveStatus, setSaveStatus] = useState<NoteSaveStatus>('idle');
+  const [, setContentRevision] = useState(0);
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<'private' | 'org'>('private');
@@ -316,6 +318,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     },
     onUpdate: ({ editor: ed }) => {
       if (!initialContentSet.current) return;
+      setContentRevision(revision => revision + 1);
       const revision = saveCoordinator.markDirty('content');
       pendingContentSave.current = { revision, payload: { content: ed.getHTML() } };
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -931,6 +934,12 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           )}
           <div className="min-h-[calc(100vh-350px)] px-3.5 py-3 md:px-4">
             <EditorContent editor={editor} />
+            {isNoteOwner && <NativeMentionPublish source={{ kind: 'note', id: noteId }} content={editor?.getHTML() ?? ''}
+              prepare={async () => {
+                await flushPendingSaves();
+                await saveCoordinator.awaitIdle();
+                if (saveCoordinator.status === 'error') throw new Error('Note could not be saved. Retry before notifying.');
+              }} />}
           </div>
           {/* Word count footer */}
           {editor && (

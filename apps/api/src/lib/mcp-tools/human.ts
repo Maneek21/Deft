@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { z } from 'zod';
+import { NativeMentionSourceSchema } from '@deft/shared';
+import { searchNativeMentions, publishNativeMentions, enqueueNativeMentionPublication } from '../native-mentions.js';
+import { nativeNotificationAccessSql } from '../native-mention-visibility.js';
 import {
   connectedAccounts,
   agentActions,
@@ -202,6 +206,7 @@ function retrievalResultToSearchResult(row: ContextResult): Record<string, unkno
 }
 
 export const HUMAN_READ_TOOLS = new Set([
+  'native_mentions_search',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'read'),
   'search',
   'fetch',
@@ -255,6 +260,7 @@ export const HUMAN_READ_TOOLS = new Set([
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
+  'native_mentions_publish',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'write'),
   'memory_write',
   'wiki_upsert',
@@ -312,6 +318,23 @@ async function humanAppActionOperation(
 }
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
+  native_mentions_search: async (args, ctx) => {
+    const parsed = z.object({ query: z.string().max(120).default('') }).strict().safeParse(args);
+    if (!parsed.success) return errorResult('Invalid mention search');
+    const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
+    const items = await searchNativeMentions({ orgId: ctx.org_id, userId: ctx.user_id }, parsed.data.query);
+    return textResult({ items: items.filter(item => item.ref.resource_type === 'person'
+      || ctx.scopes.includes(item.ref.resource_type === 'task' ? 'read:tasks' : 'read:wiki')) });
+  },
+  native_mentions_publish: async (args, ctx) => {
+    const parsed = z.object({ source: NativeMentionSourceSchema, content_hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().safeParse(args);
+    if (!parsed.success) return errorResult('Invalid mention publication');
+    const source = parsed.data.source;
+    const scope = source.kind === 'message' ? 'write:messages' :
+      source.kind === 'task' || source.kind === 'task_comment' ? 'write:tasks' : source.kind === 'wiki_page' ? 'write:wiki' : 'write:workspace';
+    const scopeError = requireScope(ctx, scope); if (scopeError) return scopeError;
+    return textResult(await publishNativeMentions({ orgId: ctx.org_id, userId: ctx.user_id }, source, parsed.data.content_hash));
+  },
   ...Object.fromEntries(MODULE_OPERATION_NAMES.map((name) => [
     name,
     (args: Record<string, unknown>, ctx: HumanToolContext) => humanModuleOperation(name, args, ctx),
@@ -2335,12 +2358,14 @@ export async function humanCommentOnTask(args: { task_id?: string; content?: str
       .where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false)))
       .limit(1);
     if (!task) return errorResult('comment_on_task: task not found');
-    const [comment] = await db.insert(taskComments).values({
-      org_id: ctx.org_id,
-      task_id: taskId,
-      user_id: ctx.user_id,
-      content,
-    }).returning();
+    const comment = await db.transaction(async tx => {
+      const [inserted] = await tx.insert(taskComments).values({
+        org_id: ctx.org_id, task_id: taskId, user_id: ctx.user_id, content,
+      }).returning();
+      await enqueueNativeMentionPublication(tx, { orgId: ctx.org_id, userId: ctx.user_id },
+        { kind: 'task_comment', id: inserted!.id }, content);
+      return inserted;
+    });
     await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: taskId, user_id: ctx.user_id, action: 'commented' });
     await publishTaskChannelEventForAssignee({
       orgId: ctx.org_id,
@@ -2376,13 +2401,14 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
         .limit(1);
       if (!parent || parent.space_id !== spaceId) return errorResult('message_post: parent message not found in target space');
     }
-    const [row] = await db.insert(messages).values({
-      org_id: ctx.org_id,
-      space_id: spaceId,
-      user_id: ctx.user_id,
-      content,
-      parent_id: args.parent_id ?? null,
-    }).returning();
+    const row = await db.transaction(async tx => {
+      const [inserted] = await tx.insert(messages).values({
+        org_id: ctx.org_id, space_id: spaceId, user_id: ctx.user_id, content, parent_id: args.parent_id ?? null,
+      }).returning();
+      await enqueueNativeMentionPublication(tx, { orgId: ctx.org_id, userId: ctx.user_id },
+        { kind: 'message', id: inserted!.id }, content);
+      return inserted;
+    });
     await dispatchAgentEmployeeMessage({
       messageId: row!.id,
       spaceId,
@@ -2466,13 +2492,14 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       targetKind = 'dm';
     }
 
-    const [row] = await db.insert(messages).values({
-      org_id: ctx.org_id,
-      space_id: spaceId!,
-      user_id: ctx.user_id,
-      content,
-      parent_id: parentId,
-    }).returning();
+    const row = await db.transaction(async tx => {
+      const [inserted] = await tx.insert(messages).values({
+        org_id: ctx.org_id, space_id: spaceId!, user_id: ctx.user_id, content, parent_id: parentId,
+      }).returning();
+      await enqueueNativeMentionPublication(tx, { orgId: ctx.org_id, userId: ctx.user_id },
+        { kind: 'message', id: inserted!.id }, content);
+      return inserted;
+    });
 
     await dispatchAgentEmployeeMessage({
       messageId: row!.id,
@@ -3473,6 +3500,7 @@ export async function humanInboxList(args: { unread_only?: boolean; type?: strin
   if (scopeError) return scopeError;
   const rows = await db.select().from(notifications).where(and(
     eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
+    nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
     args.unread_only === false ? sql`true` : eq(notifications.is_read, false),
     args.type ? eq(notifications.type, args.type as any) : sql`true`,
   )).orderBy(desc(notifications.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
@@ -3482,7 +3510,8 @@ export async function humanInboxList(args: { unread_only?: boolean; type?: strin
 export async function humanInboxGet(args: { notification_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.notification_id) return errorResult('notification_id is required');
-  const [row] = await db.select().from(notifications).where(and(eq(notifications.id, args.notification_id), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id))).limit(1);
+  const [row] = await db.select().from(notifications).where(and(eq(notifications.id, args.notification_id), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
+    nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`))).limit(1);
   return row ? textResult(row) : errorResult('Notification not found');
 }
 
@@ -3490,7 +3519,8 @@ export async function humanInboxMarkRead(args: Record<string, unknown>, ctx: Hum
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.notification_id !== 'string') return errorResult('notification_id is required');
   return withIdempotency('inbox_mark_read', args, ctx, async () => {
-    const [row] = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.id, args.notification_id as string), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id))).returning();
+    const [row] = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.id, args.notification_id as string), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
+      nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`))).returning();
     return row ? textResult({ marked_read: true, notification: row }) : errorResult('Notification not found');
   });
 }
@@ -3498,7 +3528,8 @@ export async function humanInboxMarkRead(args: Record<string, unknown>, ctx: Hum
 export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   return withIdempotency('inbox_mark_all_read', args, ctx, async () => {
-    const rows = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id), eq(notifications.is_read, false))).returning({ id: notifications.id });
+    const rows = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id), eq(notifications.is_read, false),
+      nativeNotificationAccessSql(ctx.user_id, sql`${notifications.metadata}`, sql`${notifications.org_id}`))).returning({ id: notifications.id });
     return textResult({ marked_read: rows.length });
   });
 }
@@ -3655,6 +3686,8 @@ export async function humanAgentEmployeeUpdateState(args: Record<string, unknown
 export type HumanToolScopeRequirement = string | readonly string[];
 
 export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
+  native_mentions_search: 'read:workspace',
+  native_mentions_publish: ['write:workspace', 'write:messages', 'write:tasks', 'write:wiki'],
   search: ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'],
   fetch: ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'],
   platform_context: 'read:workspace', attention_digest: 'read:workspace',
@@ -3754,6 +3787,14 @@ function operationalHumanSchemas(): Array<Record<string, unknown>> {
   const iso = (description: string) => ({ type: 'string', description });
   return [
     read('workspace_capabilities', 'Inspect Deft MCP Capabilities', 'Return granted scopes, available operational tools, usage guidance, and the intentionally UI-only boundary.'),
+    read('native_mentions_search', 'Search Native Mentions', 'Find authorized people, agents, tasks and wikis. Store stable identity tokens, never copy a display label as authority.', { query: { type: 'string', maxLength: 120 } }),
+    { name: 'native_mentions_publish', title: 'Publish Native Mentions',
+      description: 'Notify newly added people and agents from saved native content. Requires the source write scope and exact SHA-256 content hash. Repeat publication is idempotent.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: { type: 'object', properties: {
+        source: { type: 'object', properties: { kind: { type: 'string', enum: ['message', 'task', 'task_comment', 'wiki_page', 'note'] }, id: { type: 'string' } }, required: ['kind', 'id'], additionalProperties: false },
+        content_hash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+      }, required: ['source', 'content_hash'], additionalProperties: false } },
     read('note_list', 'List Deft Notes', 'List private notes owned by the connected user plus org/space notes they can see.', { query: { type: 'string' }, limit }),
     read('note_get', 'Get Deft Note', 'Read one visible note including its full TipTap HTML content.', { note_id: id('Note id') }, ['note_id']),
     write('note_create', 'Create Deft Note', 'Create a private, org, or space-visible note as the connected user.', { title: { type: 'string' }, content: { type: 'string' }, icon: { type: 'string' }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: id('Required for space visibility') }),

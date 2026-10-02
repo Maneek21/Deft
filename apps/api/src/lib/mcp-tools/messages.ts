@@ -12,6 +12,7 @@ import { messages, users, spaces, spaceMembers, agentEmployees, agentActions } f
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { manifestsByMessageId } from '../attachment-manifests.js';
+import { boundMentionAttention } from './mention-attention.js';
 
 /**
  * Phase 12 review fix: before returning any thread content, verify the
@@ -281,6 +282,7 @@ export async function fetchUnread(
     return textResult({
       unread_messages: unreadMessages,
       pending_actions: actionRows,
+      mention_attention: await boundMentionAttention(ctx),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

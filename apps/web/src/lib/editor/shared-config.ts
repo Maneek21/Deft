@@ -2,6 +2,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import type { Extensions } from '@tiptap/core';
 import { SlashMenu } from './slash-menu-extension';
+import { NativeMention } from './native-mention-extension';
 import type { ChatCommandHandler, EditorSurface } from './commands';
 
 type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
@@ -40,6 +41,7 @@ export function createBaseExtensions(opts: EditorConfigOptions): Extensions {
       ...(disable.has('underline') ? { underline: false as const } : {}),
     }),
     Placeholder.configure({ placeholder: opts.placeholder ?? 'Type / for commands…' }),
+    NativeMention.configure({ onMenuStateChange: opts.onMenuStateChange, surface: opts.surface }),
     SlashMenu.configure({
       surface: opts.surface,
       onChatCommand: opts.onChatCommand,

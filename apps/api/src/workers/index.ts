@@ -201,6 +201,18 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/cross-reference.js');
       return mod.handleCrossReference;
     }
+    case 'native-mention-reconcile': {
+      const mod = await import('./handlers/native-mentions.js');
+      return mod.handleNativeMentionReconcile;
+    }
+    case 'native-mention-publish': {
+      const mod = await import('./handlers/native-mentions.js');
+      return mod.handleNativeMentionPublish;
+    }
+    case 'native-mention-deliver': {
+      const mod = await import('./handlers/native-mentions.js');
+      return mod.handleNativeMentionDeliver;
+    }
     case 'embed-content': {
       const mod = await import('./handlers/embed-content.js');
       return mod.handleEmbedContent;
