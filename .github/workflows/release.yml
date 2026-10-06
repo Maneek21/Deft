@@ -352,7 +352,7 @@ jobs:
             "${{ steps.release.outputs.sha }}"
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0.24.2
+        uses: anchore/sbom-action@v0.24.3
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
           format: spdx-json
