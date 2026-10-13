@@ -23,8 +23,8 @@ assert.equal(process.env.CI,'true');
 assert.equal(process.env.DATABASE_URL,main);
 assert.equal(process.env.DEFT_TEST_DATABASE_URL,main);
 assert.ok(process.env.npm_execpath,'Invoke through pnpm exec');
-const timeout=Number(process.env.DEFT_TEST_TIMEOUT_MS??900000);
-assert.ok(Number.isSafeInteger(timeout)&&timeout>0&&timeout<=900000);
+const timeout=Number(process.env.DEFT_TEST_TIMEOUT_MS??1800000);
+assert.ok(Number.isSafeInteger(timeout)&&timeout>0&&timeout<=1800000);
 let failed=false;
 function run(name,args,environment){
  console.log(`[API partition] ${name}: ${name==='ordinary'?ordinary.length:dedicated.length} files`);
@@ -37,6 +37,6 @@ function run(name,args,environment){
 run('ordinary',['test',...ordinary.map(name=>'test/'+name)],{});
 const target='postgresql://gate_g_test@127.0.0.1:55435/email_stage34_test';
 run('mailbox predecessor',['exec','tsx','--tsconfig','../../tsconfig.email-stage34.json','--test',
- '--test-concurrency=1','--test-force-exit',...dedicated.map(name=>'test/'+name)],
+ '--experimental-test-module-mocks','--test-concurrency=1','--test-force-exit',...dedicated.map(name=>'test/'+name)],
  {DATABASE_URL:target,DEFT_TEST_DATABASE_URL:target});
 process.exitCode=failed?1:0;

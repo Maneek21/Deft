@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { HUMAN_EMAIL_TOOLS } from './email.js';
+import { discoverPersonalEmailToolSchemas, isIndependentlyGovernedEmailTool } from './email-discovery-contract.js';
+export { HUMAN_INDEPENDENT_TOOL_AUTHORITIES } from './email-discovery-contract.js';
 import { EMAIL_INTEGRATION_TOOL_NAMES as EMAIL_TOOL_NAMES } from '../email-integration-agent-tools.js';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
@@ -3175,7 +3177,9 @@ function operationalBoundary() {
 export async function humanWorkspaceCapabilities(_args: Record<string, never>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
+  const emailNames = new Set((await discoverPersonalEmailToolSchemas(ctx)).map(schema => schema.name));
   const available = [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS].filter((name) => {
+    if (isIndependentlyGovernedEmailTool(name) && !emailNames.has(name)) return false;
     if (!humanToolHasRequiredScope(ctx.scopes, name)) return false;
     if (name === 'agent_employee_update_state' && !canManageWorkspace(ctx)) return false;
     return true;

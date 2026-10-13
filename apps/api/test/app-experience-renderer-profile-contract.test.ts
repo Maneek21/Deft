@@ -30,13 +30,21 @@ test('renderer capabilities survive signed exposure and durable consent and chan
   const proposedScope = experienceConsentScope(proposed);
   assert.deepEqual(proposedScope.capabilities, ['resource_document.v1']);
   assert.notEqual(experienceConsentDigest(scope), experienceConsentDigest(proposedScope));
+  // SDK32 declares these compose controls in the same closed v2 profile. Each
+  // capability must survive signed exposure, durable consent and digest binding.
+  for (const capability of ['richtext_field.v1', 'file_field.v1']) {
+    const exposed = ExposureSnapshotSchema.parse({ ...snapshot,
+      renderer_version: 'deft.trusted_renderer.v2', capabilities: [capability] });
+    const consent = ExperienceConsentScopeSchema.parse(experienceConsentScope(exposed));
+    assert.deepEqual(consent.capabilities, [capability]);
+    assert.notEqual(experienceConsentDigest(scope), experienceConsentDigest(consent));
+    assert.notEqual(experienceConsentDigest(proposedScope), experienceConsentDigest(consent));
+  }
   for (const profile of [
     { renderer_version: 'deft.trusted_renderer.v2' },
     { renderer_version: 'deft.trusted_renderer.v1', capabilities: ['resource_document.v1'] },
     { renderer_version: 'deft.trusted_renderer.v2', capabilities: [] },
     { renderer_version: 'deft.trusted_renderer.v2', capabilities: ['resource_refresh.v1'] },
-    { renderer_version: 'deft.trusted_renderer.v2', capabilities: ['richtext_field.v1'] },
-    { renderer_version: 'deft.trusted_renderer.v2', capabilities: ['file_field.v1'] },
     { renderer_version: 'deft.trusted_renderer.v99', capabilities: ['resource_document.v1'] },
   ]) {
     assert.equal(ExposureSnapshotSchema.safeParse({ ...snapshot, ...profile }).success, false);

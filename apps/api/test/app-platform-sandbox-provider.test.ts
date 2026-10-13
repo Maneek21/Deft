@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import {
-  DEFT_APP_KIT_VERSION,
   SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS,
   SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT,
 } from '@deft/app-kit';
@@ -70,7 +69,13 @@ test('packed standalone sandbox provider conforms through the official stdio tra
     const proofBundle = JSON.parse(await readFile(proofBundlePath, 'utf8')) as any;
     const providerPin = proofBundle.providers.sandbox_email;
     assert.equal(proofBundle.schema, 'deft.app_platform.connected_proof_bundle.v1');
-    assert.equal(proofBundle.app_kit.version, DEFT_APP_KIT_VERSION);
+    // This historical proof records the original authoring SDK; do not rewrite
+    // its provenance whenever the consumer SDK advances. The discovery schema,
+    // conformance vectors, replay and persisted effect checks below establish
+    // compatibility with the current imported SDK against these exact bytes.
+    assert.equal(proofBundle.app_kit.package, '@deft/app-kit');
+    assert.equal(proofBundle.app_kit.version, '0.1.0-alpha.3');
+    assert.equal(proofBundle.app_kit.source_path, 'packages/app-kit');
     assert.equal(archives[0], providerPin.artifact.filename);
     const contactsLock = JSON.parse(await readFile(
       resolve(repositoryRoot, proofBundle.dependencies.contacts.lock_path),

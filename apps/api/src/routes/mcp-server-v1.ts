@@ -45,6 +45,7 @@ import {
   type ToolHandler,
 } from '../lib/mcp-tools/index.js';
 import type { ToolContext, ToolResult } from '../lib/mcp-tools/types.js';
+import { discoverPersonalEmailToolSchemas } from '../lib/mcp-tools/email-discovery-contract.js';
 import {
   HUMAN_TOOLS,
   buildHumanToolSchemas,
@@ -676,8 +677,7 @@ async function dispatchTool(
 }
 
 async function humanCatalog(scopes: string[], principal?: {kind:string;org_id:string;user_id:string;token_id:string}) {
-  const {emailIntegrationToolSchemas}=await import('../lib/email-integration-agent-tools.js');
-  const emailSchemas=principal?.kind==='human'?await emailIntegrationToolSchemas({kind:'personal_mcp',org_id:principal.org_id,user_id:principal.user_id,token_id:principal.token_id}):[];
+  const emailSchemas=principal ? await discoverPersonalEmailToolSchemas({principal_kind:principal.kind,org_id:principal.org_id,user_id:principal.user_id,token_id:principal.token_id}) : [];
   const emailNames=new Set(emailSchemas.map(tool=>tool.name));
   return buildHumanToolSchemas([...(toolSchemas as unknown as Array<Record<string, unknown>>).filter(tool=>!String(tool.name).startsWith('email_')),...emailSchemas])
     .filter((schema) => {

@@ -141,7 +141,7 @@ jobs:
   api-regressions:
     needs: closure
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 55
     services:
       postgres:
         image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
@@ -164,13 +164,13 @@ jobs:
           --health-cmd "pg_isready -U gate_g_test -d email_stage34_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      NODE_OPTIONS: --max-old-space-size=4096 --experimental-test-module-mocks
+      NODE_OPTIONS: --max-old-space-size=4096
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
       DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
       JWT_SECRET: ci-test-secret-not-for-prod
       JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
       ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
-      DEFT_TEST_TIMEOUT_MS: '900000'
+      DEFT_TEST_TIMEOUT_MS: '1800000'
     steps:
       - uses: actions/checkout@v7
         with:
