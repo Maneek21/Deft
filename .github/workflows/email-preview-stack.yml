@@ -188,7 +188,7 @@ jobs:
           set -o pipefail
           pnpm --filter @deft/app-kit build 2>&1 | tee .ci-api-diagnostics/kit-build.log
           pnpm db:push-full 2>&1 | tee .ci-api-diagnostics/fresh-schema.log
-          pnpm db:seed:demo 2>&1 | tee .ci-api-diagnostics/seed-demo.log
+          pnpm db:seed 2>&1 | tee .ci-api-diagnostics/seed-platform.log
       - name: Preserve disposable catalog after schema success or refusal
         if: always() && steps.api_install.outcome == 'success'
         run: |
