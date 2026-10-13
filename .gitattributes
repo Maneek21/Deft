@@ -16,3 +16,5 @@ packages/db/upgrades/manifest.ts -text whitespace=-blank-at-eof
 packages/db/upgrades/lineages/demo61/manifest-at112.ts -text whitespace=-blank-at-eof
 packages/db/upgrades/lineages/public61/manifest.ts -text whitespace=cr-at-eol
 packages/db/upgrades/lineages/public61/crlf-export/manifest.ts -text whitespace=cr-at-eol
+# This retained standalone test configuration is restored byte-for-byte.
+tsconfig.email-stage34.json -text whitespace=cr-at-eol
