@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { digestResourceSyncDescriptorV2 } from '@deft/app-kit';
-import { appOwnerConnectionAdmissions, appResourceBindings, appRuntimeBindings, appRuntimeRegistrations, appRuntimeSessions, appRuns, auditLog, users } from '@deft/db/schema';
+import { appInstallations, appOwnerConnectionAdmissions, appResourceBindings, appRuntimeBindings, appRuntimeRegistrations, appRuntimeSessions, appRuns, auditLog, users } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
@@ -176,7 +176,12 @@ export class AppOwnerConnectionService {
   }
   async context(actor: ModuleActor, installationId: string, guard: WebAuthorityGuard): Promise<OwnerConnectionContext> {
     human(actor); z.string().uuid().parse(installationId);
-    const locators = await db.select().from(appOwnerConnectionAdmissions).where(and(eq(appOwnerConnectionAdmissions.org_id, actor.org_id),
+    const locators = await db.select(getTableColumns(appOwnerConnectionAdmissions)).from(appOwnerConnectionAdmissions)
+      .innerJoin(appInstallations, and(eq(appInstallations.org_id, appOwnerConnectionAdmissions.org_id),
+        eq(appInstallations.id, appOwnerConnectionAdmissions.app_installation_id),
+        eq(appInstallations.active_version_id, appOwnerConnectionAdmissions.app_version_id),
+        eq(appInstallations.active_grant_snapshot_id, appOwnerConnectionAdmissions.grant_snapshot_id)))
+      .where(and(eq(appOwnerConnectionAdmissions.org_id, actor.org_id),
       eq(appOwnerConnectionAdmissions.app_installation_id, installationId), eq(appOwnerConnectionAdmissions.state, 'active'))).limit(16);
     let afterCommit = () => {};
     const result = await db.transaction(async tx => {
