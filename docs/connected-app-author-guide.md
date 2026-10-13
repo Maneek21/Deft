@@ -15,6 +15,59 @@ import private Deft packages.
 
 For the real external Email App, use [deft-email PR #1](https://github.com/Maneek21/deft-email/pull/1) and the [current independent setup](https://github.com/Maneek21/deft-email/blob/015e60ae0fd500ab3bf5f8df4140a93572d65671/docs/setup.md), not the sandbox Campaign provider below. Current App `1.8.0-preview.2` uses alpha.30 and Runtime `0.3.1-e5.11` uses alpha.32; the frozen preview.1/E5.9 proof and sealed artifacts remain historical evidence, as documented in the Kit README. The runtime transport is connection protocol v2 at `/v1/connections`; `/api/app-runtime/channel` is the governed protocol7 Host channel and is not the provider connection endpoint. Owner admission, resource/action review, finite channel sessions, private store consent and ordinary OAuth are separate steps. No native Email adapter, copied database rows, private Host imports or inherited account custody are required. Fresh schema/seed and isolated file preparation were verified; the fresh public sideload/OAuth/visible journey remains a separate acceptance gate.
 
+### Email source-to-Task readiness
+
+Foreground mailbox reads, Refresh and private draft consent do **not** publish
+the signed Host resource projections required by **Create task**. A newly
+enrolled account can read mail while source review remains denied. Old-version
+or old-grant projections are not substitutes for the current binding. Enable
+this separate publication lane explicitly before claiming the Task/backlink
+journey works:
+
+1. Read `GET /api/app-resource-observations/installations/{installation_id}/context`
+   as the current owner. Derive the connection session, resource binding,
+   registration and scope from this response. Review finite observation through
+   `POST /api/app-resource-observations/consent/review` with
+   `connection_session_id`, a fresh `request_id`, `interval_seconds` and an ISO
+   `expires_at`; activate the returned `consent_id` and exact `review_digest`
+   through `/consent/activate`. Use the
+   [Kit observation contracts](../packages/app-kit/src/resource-observation.ts),
+   and keep expiry within the resource consent ceiling. Observation v1 admits
+   scalar metadata only (`attachment_mode: "unsupported"`); it grants neither
+   attachment transfer, Knowledge capture, OAuth scopes nor provider actions.
+2. Once the operator's Runtime is ready, issue its v3 sync session through
+   `POST /api/apps/blob/sync/bindings/{resource_binding_id}/sessions` with `{}`.
+   The current prototype grants at most **15 minutes**, clipped to resource
+   consent expiry. This session has no action-channel technical-renewal option;
+   do not treat action credentials or a long-lived resource consent as an
+   indefinitely running observer.
+3. Configure the external Email Runtime's `resource_sync_channel_files` with a
+   private absolute filename. Its JSON contains `channel_url` pointing to
+   `/api/app-resource-sync-channel/v3`, `observation_authority_url` pointing to
+   `/api/app-resource-observations/runtime`, the issued
+   `credential:{session_id,session_token}`, and the exact current
+   `registration:{org_id,runtime_registration_id,operator_user_id,runtime_epoch,
+   profile_digest,target_key,resource_key}`. Both URLs use the same trusted Host
+   origin. Keep credentials/config outside the App package and public source.
+4. The Host operator must enable the existing resource sync channel/scheduler,
+   attachment broker and owner-connection gates. Let the scheduler admit the
+   first **observed** Run; an ordinary `/sync` request with `{}` does not replace
+   its observation pin. Inspect `GET /api/apps/blob/sync/bindings/{binding_id}`
+   for a successful committed checkpoint and current signed projections. If
+   the desired message is not yet published, use supported `/sync` with
+   `{"continue":true}` only after a succeeded, committed predecessor, within
+   the original authority window. Stop on failed or uncertain outcomes; retain
+   truthful partial coverage. Never copy old projections or reset a cursor to
+   bypass source checks.
+5. Review the exact published source and project audience in the reader, create
+   one source-link Task, then verify its access-checked backlink resolves the
+   same Email source. Finish the finite prototype by settling observed Runs and
+   revoking the separately issued observation consent/operator session through
+   `/api/app-resource-observations/consent/revoke` and
+   `/api/apps/blob/sync/sessions/{session_id}/revoke`; do not revoke the underlying
+   mailbox binding as cleanup. A sustained deployment needs an explicitly
+   supported operator lifecycle, not a promise inferred from this short lease.
+
 ## 1. Build against the example provider
 
 The
