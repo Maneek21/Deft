@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
+import { freshBootstrapSql } from './fresh-bootstrap-sql.mjs';
 
 const { Client } = pg;
 
@@ -33,9 +34,13 @@ async function main() {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    const ledgerExists = (await client.query<{ installed: boolean }>(`
+      SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS installed
+    `)).rows[0]?.installed === true;
+    const freshInitialization = !ledgerExists && process.argv.includes('--fresh-init');
     for (const file of files) {
       const sql = readFileSync(resolve(drizzleDir, file), 'utf8');
-      await client.query(sql);
+      await client.query(freshInitialization ? freshBootstrapSql(file,sql) : sql);
       console.log(`[apply-extras] applied ${file}`);
     }
 
@@ -52,9 +57,6 @@ async function main() {
          WHERE tgname = 'app_grant_snapshots_lineage_trigger'
            AND NOT tgisinternal
       ) AS installed
-    `)).rows[0]?.installed === true;
-    const ledgerExists = (await client.query<{ installed: boolean }>(`
-      SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS installed
     `)).rows[0]?.installed === true;
     const connectedLifecycleRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
       SELECT EXISTS (

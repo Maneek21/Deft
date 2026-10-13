@@ -10,10 +10,16 @@ export function parseExperienceConfirmationRequest(value:unknown,actions:readonl
  if(!object(value)||Object.keys(value).sort().join(',')!=='action_key,input'||typeof value.action_key!=='string'||!actions.includes(value.action_key)||!object(value.input)||Object.keys(value.input).length>32||Object.values(value.input).some(v=>typeof v==='string'?!text(v,16384):typeof v==='number'?!Number.isFinite(v):typeof v!=='boolean')||new TextEncoder().encode(JSON.stringify(value)).byteLength>60*1024)throw Error('Action unavailable');
  return Object.freeze({action_key:value.action_key,input:Object.freeze({...value.input} as Record<string,Scalar>)});
 }
-export async function boundedConfirmationJson(response:Response){
+async function boundedJson(response:Response){
  if(!response.ok){await response.body?.cancel();throw Error('Action unavailable');}const reader=response.body?.getReader();if(!reader)throw Error('Action unavailable');
  const chunks:Uint8Array[]=[];let size=0;try{for(;;){const row=await reader.read();if(row.done)break;size+=row.value.byteLength;if(size>131072)throw Error('Action response limit');chunks.push(row.value);}}catch(e){await reader.cancel().catch(()=>undefined);throw e;}finally{reader.releaseLock();}
- const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}const value:unknown=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));if(!object(value))throw Error('Action unavailable');return value;
+ const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}const value:unknown=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));return value;
+}
+export async function boundedConfirmationJson(response:Response){
+ const value=await boundedJson(response);if(!object(value))throw Error('Action unavailable');return value;
+}
+export async function boundedChoiceListJson(response:Response){
+ const value=await boundedJson(response);if(!Array.isArray(value))throw Error('Choices unavailable');return value;
 }
 export function createExperienceActionConfirmation({request,sessionId,pins,call,current,uuid=()=>crypto.randomUUID(),now=Date.now}:{request:ExperienceConfirmationRequest;sessionId:string;pins:{app_version_id:string;grant_snapshot_id:string};call:(path:string,body?:unknown)=>Promise<Record<string,unknown>>;current:()=>boolean;uuid?:()=>string;now?:()=>number}){
  const base='/api/app-experiences/sessions/'+encodeURIComponent(sessionId),idempotency=uuid();let context:Record<string,unknown>|null=null,ticket:Record<string,unknown>|null=null,input:Record<string,Scalar>|null=null,dispatched=false;

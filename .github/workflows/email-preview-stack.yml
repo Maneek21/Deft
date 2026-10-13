@@ -95,9 +95,10 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
-          node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
+          node --test apps/api/test/app-owner-context-history.test.mjs 2>&1 | tee .ci-diagnostics/owner-context-history.log
+          node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
-          pnpm --filter @deft/web exec tsx --test src/lib/email-native-navigation.test.ts 2>&1 | tee .ci-diagnostics/native-email-navigation.log
+          pnpm --filter @deft/web exec tsx --test src/lib/email-native-navigation.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/native-email-navigation.log
           node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log
       - name: Compile production Web
         id: build
@@ -140,7 +141,7 @@ jobs:
     timeout-minutes: 35
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
