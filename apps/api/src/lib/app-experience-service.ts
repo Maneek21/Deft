@@ -241,7 +241,7 @@ export class AppExperienceService {
         const resources = rows.filter(row => row.target === target);
         return resources.length === bundle.resource_keys.length && new Set(resources.map(row => row.key)).size === resources.length;
       }).sort().map(target => ({ key: target, label: target === 'primary' ? 'Primary source' : target.replaceAll('_', ' ') }));
-      if(version.protocol_version==='7'&&bundle.record_store_keys?.length&&targets.length){
+      if(version.protocol_version==='7'&&'record_store_keys' in bundle&&bundle.record_store_keys?.length&&targets.length){
         const connected=await currentConnectionSessionLocators(tx,caller,installation.id).limit(33);
         if(connected.length<=32)targets=experienceTargetAccountLabels(targets,connected.map(row=>row.session.record),rows,{
           org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:installation.id,app_version_id:version.id,

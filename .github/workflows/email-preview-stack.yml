@@ -80,7 +80,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          pnpm --filter @deft/api exec tsc --noEmit --incremental false 2>&1 | tee .ci-diagnostics/api-typecheck.log
+          pnpm --filter @deft/api exec tsc -p tsconfig.typecheck.json --incremental false 2>&1 | tee .ci-diagnostics/api-typecheck.log
       - name: Full candidate Web typecheck
         id: web
         if: always() && steps.install.outcome == 'success'
@@ -96,6 +96,9 @@ jobs:
           set -o pipefail
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
           node --test packages/db/scripts/fresh-schema-contracts.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
+          pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
+          pnpm --filter @deft/web exec tsx --test src/lib/email-native-navigation.test.ts 2>&1 | tee .ci-diagnostics/native-email-navigation.log
+          node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log
       - name: Compile production Web
         id: build
         if: always() && steps.install.outcome == 'success'
@@ -128,4 +131,5 @@ jobs:
           name: email-preview-stack-${{ github.run_id }}
           path: .ci-diagnostics/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
