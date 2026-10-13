@@ -1204,7 +1204,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, identity.run_id);
       if (!run || (runtime ? run.provider_kind !== 'app_runtime' : run.provider_kind !== 'mcp'))return false;
-      if(runtime&&(run.cancel_requested_at||!run.execution_released_at||!['pending','running'].includes(run.state)||run.input_expires_at<=this.now()||run.result_expires_at<=this.now()))return false;
+      if(runtime&&(run.cancel_requested_at||!run.execution_released_at||!['pending','pending_approval','running'].includes(run.state)||run.input_expires_at<=this.now()||run.result_expires_at<=this.now()))return false;
       const authority = runtime ? await loadLiveRuntimeAuthority(tx, orgId,
         runtime.session_id, runtime.token_hash, this.now, identity.run_id) : null;
       if (runtime && !authority) return false;

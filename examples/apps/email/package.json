@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.33.1",
   "dependencies": {
-    "@deft/app-kit": "file:deft-app-kit-0.1.0-alpha.9.tgz",
+    "@deft/app-kit": "link:../../../packages/app-kit",
     "esbuild": "0.28.2",
     "imapflow": "2.0.7",
     "mailparser": "3.9.28",

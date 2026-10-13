@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@deft/app-kit':
-        specifier: file:deft-app-kit-0.1.0-alpha.9.tgz
-        version: file:deft-app-kit-0.1.0-alpha.9.tgz
+        specifier: link:../../../packages/app-kit
+        version: link:../../../packages/app-kit
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
@@ -25,11 +25,6 @@ importers:
         version: 10.0.10
 
 packages:
-
-  '@deft/app-kit@file:deft-app-kit-0.1.0-alpha.9.tgz':
-    resolution: {integrity: sha512-Eyu1Abs2ctIm+t8zWPGK7Nn5I3KbH2uJ8BQEzbF3hGvG/CTONeJof81UrnZUvBSMyX02ReHhZd5vRzAvk5O6pA==, tarball: file:deft-app-kit-0.1.0-alpha.9.tgz}
-    version: 0.1.0-alpha.9
-    hasBin: true
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -355,14 +350,7 @@ packages:
   uc.micro@2.1.0:
     resolution: {integrity: sha512-ARDJmphmdvUk6Glw7y9DQ2bFkKBHwQHLi2lsaH6PPmz/Ka9sFOBsBluozhDltWmnv9u/cF6Rt87znRTPV+yp/A==}
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
-
 snapshots:
-
-  '@deft/app-kit@file:deft-app-kit-0.1.0-alpha.9.tgz':
-    dependencies:
-      zod: 4.6.5
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
@@ -646,5 +634,3 @@ snapshots:
   tlds@1.261.0: {}
 
   uc.micro@2.1.0: {}
-
-  zod@4.6.5: {}

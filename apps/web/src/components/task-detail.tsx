@@ -1,4 +1,7 @@
 'use client';
+import { NativeMentionContent } from '@/components/native-mention-content';
+import { NativeMentionPublish } from '@/components/native-mention-publish';
+import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { appIntegrationTaskSourceHref } from '@/lib/app-integration-task-source';
@@ -591,9 +594,15 @@ function DescriptionEditor({ value, onChange, onBlur }: { value: string; onChang
   });
 
   useEffect(() => {
-    if (editor && value !== editor.getHTML()) {
-      editor.commands.setContent(value || '');
-    }
+    if (!editor || value === editor.getHTML()) return;
+    let active = true;
+    // React node views flush on creation; keep that outside React's effect phase.
+    queueMicrotask(() => {
+      if (active && !editor.isDestroyed && value !== editor.getHTML()) {
+        editor.commands.setContent(value || '', { emitUpdate: false });
+      }
+    });
+    return () => { active = false; };
   }, [value, editor]);
 
   return (
@@ -636,6 +645,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   ] as const;
   const initialTab = ((): TabKey => {
     if (typeof window === 'undefined') return 'description';
+    if (new URLSearchParams(window.location.search).has('comment')) return 'comments';
     const hash = window.location.hash.replace(/^#/, '') as TabKey;
     return (VALID_TABS as readonly string[]).includes(hash) ? hash : 'description';
   })();
@@ -965,6 +975,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }, [taskId]);
 
   // Load activity
+  useEffect(() => {
+    if (activeTab !== 'comments') return;
+    const id = new URLSearchParams(window.location.search).get('comment');
+    if (id && comments.some(comment => comment.id === id)) {
+      document.getElementById('task-comment-' + id)?.scrollIntoView({ block: 'center' });
+    }
+  }, [activeTab, comments]);
+
   const loadActivity = useCallback(async () => {
     const res = await api.get(`/api/tasks/${taskId}/activity`);
     if (res.ok) setActivity(await res.json());
@@ -2086,6 +2104,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               }}
             />
             {['Description not yet saved', 'Description not saved. Try again before leaving.'].includes(saveNotice) && <button onClick={() => void flushDescription()}>Save description</button>}
+            <NativeMentionPublish source={{ kind: 'task', id: taskId }} content={descValue}
+              prepare={async () => {
+                await flushDescription();
+                if (hasUnsavedDescription(pendingDescription.current, descriptionSaving.current)) {
+                  throw new Error('Save the description and retry before notifying mentions.');
+                }
+              }} />
             {/* Fix 4: quick comment entry point always visible on description tab */}
             <div
               className="mt-4 pt-3"
@@ -2703,12 +2728,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           {/* References tab */}
           {activeTab === 'references' && (
             <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
+              <NativeMentionBacklinks kind="task" id={taskId} />
               <h3 className="text-[12px] font-semibold mb-2 uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
                 <Link2 size={12} />
                 {visibleReferenceCount === 0
-                  ? 'No references'
-                  : `${visibleReferenceCount} reference${visibleReferenceCount !== 1 ? 's' : ''}`}
+                  ? 'Other references'
+                  : `${visibleReferenceCount} other reference${visibleReferenceCount !== 1 ? 's' : ''}`}
               </h3>
               {user && user.role !== 'guest' && (
                 <TaskModuleRecordLinks
@@ -2719,7 +2745,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               )}
               {visibleReferenceCount === 0 ? (
                 <p className="mt-2 px-2 text-[12px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                  No messages or notes link to this task yet.
+                  No other references are linked to this task yet.
                 </p>
               ) : (
                 <div className="mt-2 space-y-1.5">
@@ -2815,7 +2841,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     </p>
                   )}
                   {comments.map((c) => (
-                    <div key={c.id} className="flex gap-2.5">
+                    <div key={c.id} id={`task-comment-${c.id}`} className="flex gap-2.5">
                       <PersonAvatar name={c.user_name} avatarUrl={c.user_avatar} size={24} fontSize={10} className="mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
@@ -2834,10 +2860,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                             })}
                           </span>
                         </div>
-                        <div
-                          className="deft-editor text-[13px] mt-0.5"
-                          dangerouslySetInnerHTML={{ __html: sanitizeHtml(c.content) }}
-                        />
+                        <div className="deft-editor text-[13px] mt-0.5"><NativeMentionContent html={c.content} /></div>
                       </div>
                     </div>
                   ))}

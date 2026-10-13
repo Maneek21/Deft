@@ -1,3 +1,5 @@
+import { executeNativeMentionRuntimeTool } from './native-mention-runtime-tools.js';
+import { NATIVE_MENTION_AGENT_TOOL_SCHEMAS } from './native-mention-agent-contract.js';
 import { executeModuleReadOperation, isModuleReadOperation } from './module-read-operations.js';
 import { executeRuntimeWorkflowTool, isRuntimeWorkflowTool } from './app-runtime-workflow-tools.js';
 import { loadAuthorizedAppDiscovery } from './app-discovery.js';
@@ -135,6 +137,15 @@ export async function executeToolCall(
     const {requestRuntimeActionForAgent}=await import('./app-experience-human-action-agent-tool.js');
     try{return {result:await requestRuntimeActionForAgent(orgId,agentEmployeeId,params),citations:[]};}
     catch(error){return {result:{error:'Runtime action unavailable or requires different input.',code:error instanceof Error && 'code' in error?error.code:'APP_RUN_INPUT_INVALID'},citations:[]};}
+  }
+
+  if (NATIVE_MENTION_AGENT_TOOL_SCHEMAS.some(tool => tool.name === toolName)) {
+    const result = await executeNativeMentionRuntimeTool(toolName, params, orgId, _userId, agentEmployeeId);
+    const items = 'items' in result && Array.isArray(result.items) ? result.items : [];
+    const citations = items.filter(item => item.state === 'available' && item.href).map(item => ({
+      type: item.ref.resource_type, id: item.ref.resource_id, title: item.label!, url: item.href!,
+    }));
+    return { result, citations };
   }
 
   // App operations already own approval, replay, budget, and receipt policy

@@ -1,20 +1,30 @@
-# Email WIP example 1.5.9
+# Email legacy provider workspace consumer
 
-This AGPL-3.0-only source example consumes the packed `@deft/app-kit` 0.1.0-alpha.9 candidate. It requires the matching unpublished Deft host source, including schema upgrades preview.57 through preview.60. Neither release is published by this change. The example remains a work in progress.
+This AGPL-3.0-only work-in-progress example is used by current Host provider
+integration tests. All of its parent and provider modules resolve the real built
+`@deft/app-kit` alpha32 workspace dependency. It is not an independent packed
+consumer or the separately sideloaded Email preview release.
 
-From the repository root, pack the Kit without publishing. Copy this example source and that tarball into a fresh directory outside the monorepo before installing:
+From the repository root, install the frozen workspace graph and build the SDK,
+then install this example's frozen pnpm10 graph for its mail dependencies:
 
 ```sh
-pnpm --dir packages/app-kit pack --pack-destination examples/apps/email
-# In the independent directory containing source and tarball:
 pnpm install --frozen-lockfile
-pnpm test
-pnpm run build
-pnpm run smoke:mailbox
-pnpm run smoke:activity
+pnpm --filter @deft/app-kit build
+npm exec --yes --package=pnpm@10.33.1 -- pnpm --dir examples/apps/email install --ignore-workspace --frozen-lockfile
+# Run focused Host/legacy tests normally, without a resolver override.
 ```
 
-The lockfile pins the local `deft-app-kit-0.1.0-alpha.9.tgz` dependency and its integrity. For an independent consumer, copy this source directory and that exact packed artifact into a fresh directory outside the repository, then run the same install, checks, and build there. The tarball, installed dependencies, bundles, package JSON output, and local reports are intentionally excluded from source control. `app.deft.json` is the resulting installable package; the build also writes its artifact and digest evidence locally.
+The active lock links the built workspace SDK and retains the existing mail,
+IMAP and MIME dependency pins. The original alpha9 manifest, lock and exact
+packed artifact are sealed byte-for-byte in [the historical consumer receipt](fixtures/sdk9-consumer/SEALED-HISTORICAL-CONSUMER.json), with original paths and
+SHA256 values. Its [SDK corresponding source and provenance](fixtures/SDK9-PROVENANCE.json)
+remain preserved. Those historical dependency bytes are evidence, not a supported
+current application consumer: alpha9 lacks the current raster and compose exports.
+Current packed SDK compatibility is tested separately by the App Kit package.
+Generated bundles, installed dependencies and private configuration stay outside
+source control; any App package built from this example requires its own exact
+artifact/source review and gives no authority merely by being built.
 
 Install through the normal authenticated App host interface. The operator must enable the relevant default-off App flags, consent to requested capabilities, bind the current mail and sync providers, and configure host-owned action policy. The package requests authority; installation alone grants no mailbox access or external writes. See [host and release boundaries](../../../docs/app-release-boundaries.md).
 

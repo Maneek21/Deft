@@ -48,6 +48,7 @@ import {
   isAgentToolDisabled,
 } from './agent-tool-policy.js';
 import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
+import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   ModuleIdSchema,
@@ -1451,6 +1452,10 @@ export async function executeAction(
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
   try {
+    if (!options?.trustedHumanMcpPrincipal) {
+      const referenceError = await validateNativeAgentMentionWrite(action, params, orgId, userId, agentEmployeeId ?? undefined);
+      if (referenceError) return { success: false, result: null, error: referenceError };
+    }
     const taskScopeError = await employeeTaskWriteScopeError(
       action,
       params,
@@ -3663,6 +3668,9 @@ async function executeActionDirectLocked(
   params = normalizeAgentModuleBulkCreateParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
   if (humanPrincipal) params = { ...params, [HUMAN_MCP_PRINCIPAL_KEY]: humanPrincipal };
+
+  const referenceError = await validateNativeAgentMentionWrite(action, params, orgId, userId, options?.agentEmployeeId);
+  if (referenceError) throw new Error(referenceError);
 
   const taskScopeError = await employeeTaskWriteScopeError(
     action,

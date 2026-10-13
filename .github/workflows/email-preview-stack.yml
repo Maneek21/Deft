@@ -97,6 +97,7 @@ jobs:
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/native-mention-agent-catalog.test.ts test/app-attachment-default-off.test.ts test/app-runtime-action-discovery.test.ts 2>&1 | tee .ci-diagnostics/host-cold-native.log
           node --test apps/api/test/app-owner-context-history.test.mjs 2>&1 | tee .ci-diagnostics/owner-context-history.log
+          node --test scripts/email-preview-test-databases.test.mjs 2>&1 | tee .ci-diagnostics/api-isolation-guards.log
           node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           node --test packages/db/scripts/reviewed-lineage-artifacts.test.mjs 2>&1 | tee .ci-diagnostics/reviewed-lineage-artifacts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
@@ -153,6 +154,8 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
+          --label deft.test_fixture=email-preview-api
+          --label deft.test_run=${{ github.run_id }} --label deft.test_attempt=${{ github.run_attempt }}
     env:
       NODE_OPTIONS: --max-old-space-size=4096
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
@@ -184,12 +187,12 @@ jobs:
         run: |
           set -o pipefail
           pnpm install --frozen-lockfile 2>&1 | tee .ci-api-diagnostics/install.log
-      - name: Install locked standalone legacy Email test dependencies
+      - name: Build current SDK and install locked active Email test dependencies
         id: api_legacy
-        working-directory: examples/apps/email
         run: |
           set -o pipefail
-          npm exec --yes --package=pnpm@10.33.1 -- pnpm install --ignore-workspace --frozen-lockfile 2>&1 | tee "$GITHUB_WORKSPACE/.ci-api-diagnostics/legacy-email-install.log"
+          pnpm --filter @deft/app-kit build 2>&1 | tee .ci-api-diagnostics/kit-build.log
+          npm exec --yes --package=pnpm@10.33.1 -- pnpm --dir examples/apps/email install --ignore-workspace --frozen-lockfile 2>&1 | tee .ci-api-diagnostics/legacy-email-install.log
       - name: Start exact loopback mailbox predecessor and verify server identity
         id: api_predecessor
         run: |
@@ -220,7 +223,6 @@ jobs:
         id: api_schema
         run: |
           set -o pipefail
-          pnpm --filter @deft/app-kit build 2>&1 | tee .ci-api-diagnostics/kit-build.log
           pnpm db:push-full 2>&1 | tee .ci-api-diagnostics/fresh-schema.log
           pnpm db:seed 2>&1 | tee .ci-api-diagnostics/seed-platform.log
       - name: Preserve disposable catalog after schema success or refusal
@@ -246,6 +248,8 @@ jobs:
           NODE
       - name: Full API regression suite
         id: api_suite
+        env:
+          DEFT_PREVIEW_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           set -o pipefail
           pnpm run test:email-preview-api 2>&1 | tee .ci-api-diagnostics/api-suite.log
@@ -285,7 +289,7 @@ jobs:
           retention-days: 7
 
   security:
-    needs: [closure, api-regressions]
+    needs: closure
     if: always() && needs.closure.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30

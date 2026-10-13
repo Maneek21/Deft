@@ -1,5 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { employeeMentionWriteError } from './native-mention-write-guard.js';
 import {
   agentActions,
   agentEmployees,
@@ -173,6 +174,8 @@ export async function executeWikiCreate(
   const content = String(args.content ?? '').trim();
   if (!title) return errorResult('wiki_create requires title');
   if (!content) return errorResult('wiki_create requires content');
+  const referenceError = await employeeMentionWriteError('wiki_create', args, ctx);
+  if (referenceError) return errorResult(referenceError);
 
   try {
     const shadowUserId = await getShadowUserId(ctx.employee_id);
@@ -464,6 +467,8 @@ export async function executeWikiUpdate(
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('wiki_update requires a non-empty patch');
   }
+  const referenceError = await employeeMentionWriteError('wiki_update', args, ctx);
+  if (referenceError) return errorResult(referenceError);
 
   try {
     const shadowUserId = await getShadowUserId(ctx.employee_id);

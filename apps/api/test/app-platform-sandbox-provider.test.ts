@@ -14,6 +14,7 @@ import { MCPClientManager } from '@deft/mcp';
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
 const providerSource = resolve(repositoryRoot, 'examples', 'app-platform-sandbox-email-provider');
 const proofBundlePath = resolve(repositoryRoot, 'examples', 'app-platform-connected-proof-bundle.json');
+const currentPayloadPath = resolve(repositoryRoot, 'examples', 'app-platform-current-consumer-payload.json');
 const packedPayloadFiles = ['README.md', 'package.json', 'server.mjs'] as const;
 
 async function packedPayloadProof(root: string) {
@@ -102,7 +103,14 @@ test('packed standalone sandbox provider conforms through the official stdio tra
       '@deft',
       'app-platform-sandbox-email-provider',
     );
-    assert.deepEqual(await packedPayloadProof(installedProviderRoot), providerPin.artifact.content);
+    // Keep the historical authoring proof immutable; pin the separately packed
+    // current payload whose stdio behavior is exercised below.
+    const currentPayload = JSON.parse(await readFile(currentPayloadPath, 'utf8'));
+    assert.equal(currentPayload.schema, 'deft.app_platform.current_provider_payload.v1');
+    assert.equal(currentPayload.historical_proof_path, 'examples/app-platform-connected-proof-bundle.json');
+    assert.equal(currentPayload.provider_package, providerPin.package);
+    assert.equal(currentPayload.provider_version, providerPin.version);
+    assert.deepEqual(await packedPayloadProof(installedProviderRoot), currentPayload.content);
     const serverPath = resolve(installedProviderRoot, 'server.mjs');
     const outboxPath = resolve(temporaryRoot, 'sandbox-outbox.jsonl');
     assert.match(await readFile(serverPath, 'utf8'), /server\/discover/);
