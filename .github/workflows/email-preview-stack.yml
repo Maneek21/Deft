@@ -95,7 +95,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
-          node --test packages/db/scripts/fresh-schema-contracts.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
+          node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
           pnpm --filter @deft/web exec tsx --test src/lib/email-native-navigation.test.ts 2>&1 | tee .ci-diagnostics/native-email-navigation.log
           node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log

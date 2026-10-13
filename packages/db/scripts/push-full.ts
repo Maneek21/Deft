@@ -52,7 +52,7 @@ export async function main() {
 
       await run(['pnpm', 'exec', 'tsx', 'scripts/ensure-pgvector.ts']);
       await run(['pnpm', 'exec', 'drizzle-kit', 'push', '--force']);
-      await run(['pnpm', 'exec', 'tsx', 'scripts/apply-extras.ts']);
+      await run(['pnpm', 'exec', 'tsx', 'scripts/apply-extras.ts', '--fresh-init']);
 
       // Only this verified-empty invocation, after every schema step succeeds,
       // may assert that the complete current manifest is present. A crash

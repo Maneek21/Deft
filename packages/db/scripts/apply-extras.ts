@@ -140,6 +140,20 @@ async function main() {
     await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
 
+    // Drizzle declares the native tables but cannot declare their GIN index
+    // or trigger function. Bootstrap only empty, unledgered fresh tables;
+    // retained databases must pass the unchanged migration114 shape guard.
+    if (!ledgerExists && process.argv.includes('--fresh-init')) {
+      const nativeRows = await client.query<{ present: boolean }>(`
+        SELECT EXISTS (SELECT 1 FROM native_reference_states LIMIT 1)
+          OR EXISTS (SELECT 1 FROM native_mention_deliveries LIMIT 1) AS present
+      `);
+      if (nativeRows.rows[0]?.present !== false) throw new Error('E5_FRESH_NATIVE_TABLE_NOT_EMPTY');
+      const nativeMentionsFile = '0.3.0-preview.61-native-mentions.sql';
+      await client.query(readFileSync(resolve(upgradesDir, nativeMentionsFile), 'utf8'));
+      console.log(`[apply-extras] reconciled ${nativeMentionsFile}`);
+    }
+
     // These additive, dormant surfaces must follow the historical App Run
     // reconciliations, which restore the predecessor's provider/ancestry checks.
     for (const platformFile of [
