@@ -28,6 +28,25 @@ import { NATIVE_MICROSOFT_STATE_KEY } from '../../../examples/apps/email/provide
 const safe = process.env.DATABASE_URL === EMAIL_MAILBOX_TEST_DATABASE_URL && process.env.DEFT_TEST_DATABASE_URL === EMAIL_MAILBOX_TEST_DATABASE_URL;
 const copy = <T>(value: T): T => structuredClone(value);
 const reply = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+const fixtureOAuthClient = (provider: 'gmail' | 'microsoft') => ({ client_id: 'joint-client', client_secret: 'synthetic-fixture-client-secret',
+  redirect_uri: 'https://fixture.invalid/email/connections/callback', ...(provider === 'microsoft' ? { tenant: 'common' } : {}) });
+
+test('registered native adapter accepts the same supported OAuth fixture clients and rejects a legacy callback', async () => {
+  const unexpected = () => assert.fail('constructor must not request provider, Host authority or custody');
+  const host = { resolveContext: unexpected, assertCurrent: unexpected };
+  const custody = { withAccount: unexpected, storeState: unexpected, takeState: unexpected };
+  for (const provider of ['gmail', 'microsoft'] as const) {
+    const options = { origin: 'https://fixture.invalid', provider, account_id: 'fixture-account', connection_target: provider + '_connection',
+      resource_binding_id: 'fixture-binding', action_binding_id: null, authority_epoch: 1, capabilities: ['read'], clients: { [provider]: fixtureOAuthClient(provider) } };
+    const adapter = await createAppConnectionAdapter({ host, options, custody, fetch: unexpected });
+    assert.equal(typeof adapter.nativeEmailAccount, 'function');
+    assert.equal(typeof adapter.nativeEmailConnectionProfile, 'function');
+    await assert.rejects(createAppConnectionAdapter({ host, custody, fetch: unexpected,
+      options: { ...options, clients: { [provider]: { ...fixtureOAuthClient(provider), redirect_uri: 'https://fixture.invalid/callback' } } } }),
+    (error: { code?: string }) => error.code === 'EMAIL_OAUTH_CLIENT_CONFIG_INVALID');
+  }
+});
+
 function memoryCiphertextStore() {
   const rows = new Map<string, { revision: number; value: unknown }>(), queues = new Map<string, Promise<void>>();
   return { async withLock({ key }: { key: string }, callback: (transaction: unknown) => Promise<unknown>) {
@@ -65,7 +84,7 @@ test('actual PG public sync + registered OAuth bridge converges across restart a
     const provider_subject = 'fixture-principal-' + account_id;
     const principal = createHash('sha256').update(JSON.stringify([org, owner, provider, provider_subject])).digest('hex');
     await db.insert(emailAccounts).values({ ...scope, provider, resource_binding_id: binding_id, principal_digest: principal, state: 'active', authority_revision: 1, consented_at: new Date() });
-    const client = { client_id: 'joint-client', client_secret: 'synthetic-fixture-client-secret', redirect_uri: 'https://fixture.invalid/callback', ...(provider === 'microsoft' ? { tenant: 'common' } : {}) };
+    const client = fixtureOAuthClient(provider);
     const binding = { scope: { org_id: org, owner_id: owner, installation_id: installation }, account_id, provider, connection_target: provider + '_connection', resource_binding_id: binding_id, action_binding_id: null, authority_epoch: 1, capabilities: ['read'] };
     const fetch = async (url: string, init: RequestInit) => {
       network.calls!.push(url); assert.equal(init.method, 'GET'); assert.ok(new Headers(init.headers).get('Authorization')?.startsWith('Bearer '));

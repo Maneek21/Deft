@@ -563,16 +563,23 @@ test('owner-private Experience targets route reviewed resources and Send authori
       const held = new Promise<void>(resolve => { release = resolve; });
       current.secretRepository.readInput = async (...args) => {
         const exactRun = args[0] === org && args[1] === queued.run.id;
-        if (exactRun && boundary === 'retained input') { entered(); await held; }
+        const [dispatch] = exactRun ? await args[2]!.select({ state: s.appRunAttempts.state })
+          .from(s.appRunAttempts).where(and(eq(s.appRunAttempts.org_id, org),
+            eq(s.appRunAttempts.id, claim.attempt_id))).limit(1) : [];
+        const deliveryRead = exactRun && dispatch?.state === 'provider_call_started';
+        // The earlier payload preflight must finish before the durable marker.
+        // Hold only this attempt's subsequent plaintext-delivery read.
+        if (deliveryRead && boundary === 'retained input') { entered(); await held; }
         const value = await readInput(...args);
-        if (exactRun) { exactInput = value; inputWasRead = true; }
+        if (deliveryRead) { exactInput = value; inputWasRead = true; }
         return value;
       };
       if (boundary === 'committed transaction') current.repository.transaction = async work => {
         // The real transaction resolves only after COMMIT. Hold only the exact
         // plaintext return, never an earlier claim or authority transaction.
         const value = await transaction(work);
-        if (inputWasRead && value === exactInput) { entered(); await held; }
+        if (inputWasRead && value && typeof value === 'object' && 'exact' in value
+          && value.exact === exactInput) { entered(); await held; }
         return value;
       };
       const pending = request('/api/app-runtime/channel/start', 'POST', { ...identity, run_id: claim.run_id,
