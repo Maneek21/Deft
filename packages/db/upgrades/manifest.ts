@@ -323,3 +323,4 @@ export const upgradeManifest = {
 } as const;
 
 export type UpgradeManifest = typeof upgradeManifest;
+
