@@ -5,9 +5,21 @@ on:
     paths:
       - '.github/workflows/**'
   workflow_dispatch:
+    inputs:
+      build_email_host:
+        description: Build a downloadable Actions artifact (no publication or deployment)
+        type: boolean
+        default: false
+      source_commit:
+        description: Exact checked 40-character Host source commit
+        type: string
+      checks_run_id:
+        description: Matching Email preview stack run with successful closure and API jobs
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   round-trip:
@@ -41,3 +53,91 @@ jobs:
           cd restored
           sha256sum -c SHA256SUMS
           tar -xOf dist/bundle.tar.gz bundle.txt | cmp - dist/hermes-integration/bundle.txt
+
+  host-image:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_email_host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      REQUESTED_COMMIT: ${{ inputs.source_commit }}
+      CHECKS_RUN_ID: ${{ inputs.checks_run_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Require matching successful source checks and runner capacity
+        run: |
+          set -euo pipefail
+          mkdir -p .host-artifact
+          [[ "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CHECKS_RUN_ID" =~ ^[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$REQUESTED_COMMIT"
+          free -m > .host-artifact/memory-before.txt
+          df -m . > .host-artifact/disk-before.txt
+          test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 8388608
+          test "$(df -Pk . | awk 'NR==2 {print $4}')" -ge 12582912
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKS_RUN_ID" > .host-artifact/checks-run.json
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKS_RUN_ID/jobs?per_page=100" > .host-artifact/checks-jobs.json
+          python3 - <<'PY'
+          import json, os
+          run = json.load(open('.host-artifact/checks-run.json'))
+          assert run['head_sha'] == os.environ['REQUESTED_COMMIT']
+          assert run['path'] == '.github/workflows/email-preview-stack.yml'
+          jobs = [job for page in json.load(open('.host-artifact/checks-jobs.json')) for job in page['jobs']]
+          for name in ('closure', 'api-regressions'):
+              matches = [job for job in jobs if job['name'] == name]
+              assert len(matches) == 1 and matches[0]['conclusion'] == 'success', name
+          PY
+      - name: Build the locked production recipe without publishing
+        run: |
+          set -euo pipefail
+          image="deft-email-host:$REQUESTED_COMMIT"
+          git archive --format=tar "$REQUESTED_COMMIT" | docker build --platform linux/amd64 --progress plain \
+            --build-arg VCS_REF="$REQUESTED_COMMIT" \
+            --build-arg SOURCE_URL="https://github.com/$GITHUB_REPOSITORY" \
+            --build-arg NEXT_PUBLIC_FEATURE_APPS=true \
+            --build-arg NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC=true \
+            --build-arg NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER=true \
+            --build-arg NEXT_PUBLIC_DEFT_SELF_HOSTED=true \
+            --tag "$image" - 2>&1 | tee .host-artifact/docker-build.log
+          docker image inspect "$image" > .host-artifact/image-inspect.json
+      - name: Archive exact image, corresponding source and recipe pins
+        run: |
+          set -euo pipefail
+          docker save "deft-email-host:$REQUESTED_COMMIT" | gzip -n > .host-artifact/host-image.tar.gz
+          git archive --format=tar --prefix=deft/ "$REQUESTED_COMMIT" | gzip -n > .host-artifact/host-source.tar.gz
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path('.host-artifact')
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          image = json.load(open(root / 'image-inspect.json'))[0]
+          commit = os.environ['REQUESTED_COMMIT']
+          assert image['Os'] == 'linux' and image['Architecture'] == 'amd64'
+          assert image['Config']['Labels']['org.opencontainers.image.revision'] == commit
+          manifest = {
+              'schema_version': 'deft.host_build_artifact.v1',
+              'source_commit': commit, 'source_url': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/tree/{commit}',
+              'checks_run_id': os.environ['CHECKS_RUN_ID'], 'image_id': image['Id'],
+              'image_uncompressed_bytes': image['Size'], 'platform': 'linux/amd64',
+              'recipe_pins': {name: digest(pathlib.Path(name)) for name in ('Dockerfile', 'pnpm-lock.yaml', 'package.json')},
+              'archives': {name: {'sha256': digest(root / name), 'bytes': (root / name).stat().st_size}
+                           for name in ('host-image.tar.gz', 'host-source.tar.gz')},
+              'security_gate': 'Independent review required; this build does not waive findings.',
+              'published': False, 'deployed': False,
+          }
+          (root / 'BUILD.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+          cd .host-artifact
+          sha256sum host-image.tar.gz host-source.tar.gz BUILD.json image-inspect.json checks-run.json checks-jobs.json > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Preserve build evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: email-host-image-${{ inputs.source_commit }}
+          path: .host-artifact/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
