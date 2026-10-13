@@ -35,3 +35,17 @@ test('full settings retains every reviewed store row and an unavailable notice s
  const full=flatten(render({showEnabled:true,onOpenSettings:()=>{}})).filter(node=>node.type.displayName==='RecordAccessStatusRow');assert.equal(full.length,11);assert.equal(full[0].props.active,true);assert.equal(full[1].props.active,false);assert.equal(typeof full[1].props.onReview,'function');
  const compact=flatten(render({onOpenSettings:()=>{},notice:'Access status is unavailable.'}));assert.ok(compact.find(node=>node.type==='p').props.children.includes('Access status is unavailable.'));
 });
+test('partial record access does not claim all saves require permission',()=>{
+ const compact=flatten(render({onOpenSettings:()=>{}}));
+ assert.equal(compact.find(node=>node.type==='p').props.children[0],'Some features need access.');
+ assert.equal(compact.find(node=>node.type==='button').props.children[0],'Review access');
+});
+test('changing account scope clears an old notice and pending review state',()=>{
+ let cursor=0,effect;const updates=[],states=[[],null,true,'Old account denial',true];
+ const Component=compile(find(consent,node=>ts.isFunctionDeclaration(node)&&node.name?.text==='ExperienceDataConsent'),{React,useState:()=>{const index=cursor++;return [states[index],value=>updates.push([index,value])];},useRef:current=>({current}),useEffect:callback=>{effect=callback;},RecordAccessStatusRow:marker('RecordAccessStatusRow'),AppDialog:marker('AppDialog'),AbortController,Date,api:{fetch:()=>new Promise(()=>{})}});
+ Component({installationId:'app',targetKey:'recipient',storeKeys:['drafts'],scopeKey:'new-session',onOpenSettings:()=>{}});
+ const cleanup=effect();
+ assert.ok(updates.some(([index,value])=>index===2&&value===false),'new scope must not inherit an old pending review');
+ assert.ok(updates.some(([index,value])=>index===3&&value===''),'new scope must not inherit an old account denial');
+ cleanup();
+});
