@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';import test from 'node:test';import {createElement} from 'react';import {renderToStaticMarkup} from 'react-dom/server';
+import {NativeEmailUnreadBadge,NativeEmailNotificationsInfo} from './native-email-unread';
+import {readFileSync} from 'node:fs';import {runInNewContext} from 'node:vm';import ts from 'typescript';
+import {nativeMailboxRefreshBudget} from '@/lib/email-native-mailbox-refresh';
+import {createNativeEmailUnread,nativeUnreadStateDisplay,nativeUnreadScopeKey} from '@/lib/email-native-unread';
+test('actual unread effect publishes checking during an unresolved initial read to navigation',async()=>{
+ const tree=ts.createSourceFile('unread.tsx',readFileSync(new URL('./native-email-unread.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let effect:ts.Expression|undefined;
+ const visit=(node:ts.Node)=>{if(ts.isCallExpression(node)&&node.expression.getText(tree)==='useEffect'&&node.arguments[0]?.getText(tree).includes('createNativeEmailUnread'))effect=node.arguments[0];ts.forEachChild(node,visit);};visit(tree);assert.ok(effect);
+ const displays:Array<{text:string;label:string}>=[],client:{current:ReturnType<typeof createNativeEmailUnread>|null}={current:null};let release!:(response:Response)=>void;
+ const context={key:nativeUnreadScopeKey(['one']),sessionScope:'same',client,callbacks:{current:{onChange:(value:{text:string;label:string})=>displays.push(value)}},api:{getAccessToken:()=> 'token',fetch:async()=>new Promise<Response>(resolve=>{release=resolve;})},getActiveSessionCacheScope:()=> 'same',isSameWebSession:()=>true,createNativeEmailUnread,nativeUnreadStateDisplay,setState:()=>{},NATIVE_UNREAD_POLL_MS:60000,setInterval:()=>1,clearInterval:()=>{},document:{visibilityState:'visible',addEventListener:()=>{},removeEventListener:()=>{}}};
+ const cleanup=runInNewContext(ts.transpileModule('('+effect.getText(tree)+')',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText,{viewScope:{current:'view'},folderProjection:{current:null},...context})();
+ const pending=client.current!.load();assert.match(displays.at(-1)!.label,/Checking unread/i);assert.doesNotMatch(displays.at(-1)!.label,/unavailable/);cleanup();release(new Response(null,{status:503}));await pending;
+});
+test('actual unread render hides an old account or session snapshot before replacement effects run',()=>{
+ const tree=ts.createSourceFile('unread.tsx',readFileSync(new URL('./native-email-unread.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);const component=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='NativeEmailUnread');assert.ok(component);
+ const snapshot={folder:'inbox',unread_count:12,cached_unread_count:12,coverage:'complete',accounts:[{account_id:'one',coverage:'complete',sync_state:'idle',checkpoint_revision:1,observed_at:'2026-10-04T00:00:00Z',fresh_until:'2026-10-04T00:01:00Z'}]},state={scope:'old-session',value:{key:nativeUnreadScopeKey(['one']),snapshot,busy:false,denied:false,notice:''}};
+ const javascript=ts.transpileModule('('+component.getText(tree).replace(/^export /,'' )+')',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None,jsx:ts.JsxEmit.React}}).outputText;
+ const render=runInNewContext(javascript,{React:{createElement},nativeUnreadScopeKey,nativeUnreadStateDisplay,useState:()=>[state,()=>{}],useRef:()=>({current:null}),useEffect:()=>{}});
+ for(const props of [{accountIds:['one'],sessionScope:'new-session'},{accountIds:['two'],sessionScope:'old-session'}]){const html=renderToStaticMarkup(render(props));assert.match(html,/Checking unread/);assert.doesNotMatch(html,/12|unavailable/);}
+});
+test('native Inbox badges expose fresh exact counts only and bound the visual number',()=>{
+ const label='120 unread messages in the synced Inbox';assert.match(renderToStaticMarkup(createElement(NativeEmailUnreadBadge,{value:{count:120,text:'120 unread',label}})),/99\+/);assert.match(renderToStaticMarkup(createElement(NativeEmailUnreadBadge,{value:{count:120,text:'120 unread',label}})),/aria-label="120 unread/);
+ for(const count of [null,0,-1,NaN])assert.equal(renderToStaticMarkup(createElement(NativeEmailUnreadBadge,{value:{count,text:'12 cached unread',label:'Partial'}})),'');
+});
+test('Email notification information reuses Updates and the opt-in browser settings without claiming registration',()=>{const markup=renderToStaticMarkup(createElement(NativeEmailNotificationsInfo));assert.match(markup,/href="\/inbox\?lane=updates"/);assert.match(markup,/href="\/settings\/profile"/);assert.match(markup,/Browser alerts for Email are off by default/);assert.doesNotMatch(markup,/checkbox|requestPermission|private-account|Browser notifications enabled/);});
+test('actual host callbacks invalidate unread for confirmed mutations in local views and snooze changes',async()=>{
+ const tree=ts.createSourceFile('page.tsx',readFileSync(new URL('../../app/(app)/email/page.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),nodes:Record<string,ts.Expression>={};const visit=(n:ts.Node)=>{if(ts.isVariableDeclaration(n)&&['refreshMailbox','timersChanged'].includes(n.name.getText(tree)))nodes[n.name.getText(tree)]=n.initializer!;ts.forEachChild(n,visit);};visit(tree);
+ let unread=0,drafts=0,timers=0,reads=0;const context={triage:{current:null},AbortController,ids:['a'],folder:'drafts',localView:()=>true,selectedRef:{current:null},searchState:null,refresh:{current:null},pending:{current:null},setBusy:()=>{},api:{getAccessToken:()=> 'same-session'},isSameWebSession:()=>true,nativeMailboxRefreshBudget,setRefreshing:()=>{},setNotice:()=>{},setUnreadRevision:(f:(v:number)=>number)=>{unread=f(unread);},setDraftRevision:(f:(v:number)=>number)=>{drafts=f(drafts);},setTimerRevision:(f:(v:number)=>number)=>{timers=f(timers);},load:async()=>{reads++;}};
+ const actual=(name:string)=>runInNewContext(ts.transpileModule('('+nodes[name]!.getText(tree)+')',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText,{viewScope:{current:'view'},folderProjection:{current:null},...context});
+ await actual('refreshMailbox')(true);assert.equal(unread,2);assert.equal(drafts,1);assert.equal(timers,1);actual('timersChanged')();assert.equal(unread,3);assert.equal(reads,0);
+ context.localView=()=>false;actual('timersChanged')();assert.equal(unread,4);assert.equal(reads,1);
+});

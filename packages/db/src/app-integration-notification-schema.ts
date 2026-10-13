@@ -1,0 +1,5 @@
+import {pgTable,text,boolean,integer,timestamp,primaryKey,check} from 'drizzle-orm/pg-core';import {sql} from 'drizzle-orm';import {orgs,users} from './schema.js';
+/** Per-owned account opt-in; absent row is disabled. No new source registry. */
+export const appIntegrationNotificationPolicies=pgTable('app_integration_notification_policies',{
+ id:text('id').notNull().unique(),org_id:text('org_id').notNull().references(()=>orgs.id,{onDelete:'cascade'}),owner_user_id:text('owner_user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),installation_id:text('installation_id').notNull(),account_ref:text('account_ref').notNull(),store_key:text('store_key').notNull(),enabled:boolean('enabled').notNull().default(false),revision:integer('revision').notNull().default(1),created_at:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),updated_at:timestamp('updated_at',{withTimezone:true}).notNull().defaultNow(),
+},t=>[primaryKey({columns:[t.org_id,t.owner_user_id,t.installation_id,t.account_ref,t.store_key]}),check('app_integration_notification_revision',sql`${t.revision} BETWEEN 1 AND 2147483647`)]);

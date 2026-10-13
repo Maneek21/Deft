@@ -2,6 +2,147 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createExperienceBridge, parseExperienceView, type ExperiencePin, type ExperiencePort } from './app-experience-bridge';
 import { createDeftExperienceSdk } from '../../../../packages/app-kit/src/experience-sdk';
+import {createExperienceConnection} from './app-experience-connection';
+
+test('app-data mailbox read SDK call expires while live authority is unavailable without later dispatch', async () => {
+  let available=false,calls=0;
+  const connection=createExperienceConnection({current:()=>true,valid:()=>true,read:async()=>available?'available':'unavailable',change:()=>{}});
+  const host=new FakePort();
+  const worker={onmessage:null as ((event:MessageEvent)=>void)|null,postMessage:(message:unknown)=>host.receive(message),close:()=>{}};
+  host.postMessage=(message:unknown)=>{host.sent.push(message);worker.onmessage?.({data:message} as MessageEvent);};
+  const bridge=createExperienceBridge({port:host,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],readTimeoutMs:20,
+    broker:{isLive:(_pin,signal)=>connection.ensure(signal),appData:async()=>{calls++;return {outcome:'completed'};}},onView:()=>{}});
+  const sdk=createDeftExperienceSdk(worker,pin.session_id);
+  const result=sdk.listRecords('drafts').then(()=> 'disclosed',error=>error.message);
+  assert.equal(await Promise.race([result,new Promise(resolve=>setTimeout(()=>resolve('hung'),100))]),'UNAVAILABLE');
+  assert.equal(calls,0);assert.equal(bridge.active,true);
+  available=true;await connection.check();await delay();assert.equal(calls,0);
+  assert.equal(host.sent.length,1);sdk.close();bridge.revoke();connection.dispose();
+});
+
+test('mailbox refresh timeout aborts its one call, discards late data and permits a later explicit read', async () => {
+  const port=new FakePort();let release!:(value:unknown)=>void,signal!:AbortSignal,calls=0;
+  const bridge=createExperienceBridge({port,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],readTimeoutMs:20,
+    broker:{isLive:()=>true,appData:async(_pin,_key,_input,activeSignal)=>{calls++;signal=activeSignal;return calls===1?new Promise(resolve=>{release=resolve;}):{outcome:'completed'};}},onView:()=>{}});
+  port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'resource_refresh',input:{store_key:'drafts',resource_key:'inbox'}}}));
+  await new Promise(resolve=>setTimeout(resolve,35));assert.equal(signal.aborted,true);
+  assert.equal((port.sent[0] as {code:string}).code,'UNAVAILABLE');assert.equal(calls,1);
+  release({secret:'late private data'});await delay();assert.equal(port.sent.length,1);
+  port.receive(message(2,{kind:'request',request_id:'request_2',operation:'app_data',key:'drafts',input:{operation:'record_list',input:{store_key:'drafts',cursor:null,limit:10}}}));
+  await delay();assert.equal((port.sent[1] as {ok:boolean}).ok,true);assert.equal(calls,2);bridge.revoke();
+});
+
+test('mailbox read deadline covers final authority check and never reveals returned stale data', async () => {
+  const port=new FakePort();let checks=0,release!:(value:boolean)=>void;
+  const bridge=createExperienceBridge({port,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],readTimeoutMs:20,
+    broker:{isLive:()=>++checks===1?true:new Promise(resolve=>{release=resolve;}),appData:async()=>({secret:'protected'})},onView:()=>{}});
+  port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'record_read',input:{store_key:'drafts',record_id:'11111111-1111-4111-8111-111111111111'}}}));
+  await new Promise(resolve=>setTimeout(resolve,35));assert.equal((port.sent[0] as {code:string}).code,'UNAVAILABLE');
+  release(true);await delay();assert.equal(port.sent.length,1);assert.equal(JSON.stringify(port.sent).includes('protected'),false);bridge.revoke();
+});
+
+test('replaced read port gets no timeout reply and write/action requests retain existing lifetime', async () => {
+  const port=new FakePort();const bridge=createExperienceBridge({port,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],readTimeoutMs:10,
+    broker:{isLive:()=>new Promise(()=>{})},onView:()=>{}});
+  port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'record_list',input:{store_key:'drafts',cursor:null,limit:10}}}));
+  bridge.revoke();await new Promise(resolve=>setTimeout(resolve,25));assert.equal(port.sent.length,0);
+  for(const operation of ['app_data','action']){
+    const target=new FakePort();let release!:(value:unknown)=>void,calls=0;
+    const own=createExperienceBridge({port:target,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:['send_message'],readTimeoutMs:10,
+      broker:{isLive:()=>true,appData:async()=>{calls++;return new Promise(resolve=>{release=resolve;});},action:async()=>{calls++;return new Promise(resolve=>{release=resolve;});}},onView:()=>{}});
+    target.receive(message(1,{kind:'request',request_id:'request_1',operation,key:operation==='action'?'send_message':'drafts',input:operation==='action'?{}:{operation:'record_create',input:{store_key:'drafts'}}}));
+    await new Promise(resolve=>setTimeout(resolve,25));assert.equal(target.sent.length,0);assert.equal(calls,1);
+    release({completed:true});await delay();assert.equal((target.sent[0] as {ok:boolean}).ok,true);own.revoke();
+  }
+});
+
+test('resource-document views require an explicit version, negotiated capability and declared key', () => {
+  const root = { kind: 'resource_document', id: 'body', profile_version: 'deft.resource_document.v1',
+    resource_key: 'messages', record_id: '11111111-1111-4111-8111-111111111111' };
+  const view = { schema_version: 'deft.experience_view.v2', capabilities: ['resource_document.v1'], root };
+  const options = { capabilities: ['resource_document.v1'] as const, resourceKeys: ['messages'] };
+  assert.deepEqual(parseExperienceView(view, options), view);
+  assert.equal(parseExperienceView(view), null);
+  assert.equal(parseExperienceView({ root }, options), null);
+  assert.equal(parseExperienceView(view, { ...options, resourceKeys: ['other'] }), null);
+  assert.equal(parseExperienceView({ ...view, schema_version: 'deft.experience_view.v99' }, options), null);
+  for (const extra of [{ record_id: 'provider-id' }, { url: 'https://mail.test' }, { content: 'raw body' }])
+    assert.equal(parseExperienceView({ ...view, root: { ...root, ...extra } }, options), null);
+  const legacy = { root: { kind: 'document', id: 'body', format: 'plain', content: 'Legacy' } };
+  assert.deepEqual(parseExperienceView(legacy), legacy);
+});
+
+test('bridge revokes resource-document references outside its trusted declaration', async () => {
+  const root = { kind: 'resource_document', id: 'body', profile_version: 'deft.resource_document.v1',
+    resource_key: 'messages', record_id: '11111111-1111-4111-8111-111111111111' };
+  const view = { schema_version: 'deft.experience_view.v2', capabilities: ['resource_document.v1'], root };
+  for (const capabilities of [[], ['resource_document.v1']] as const) {
+    const port = new FakePort();
+    const bridge = createExperienceBridge({ port, pin, resourceKeys: ['other'], capabilities, actionKeys: [],
+      broker: { isLive: () => true }, onView: () => assert.fail('Unreviewed resource was mounted') });
+    port.receive(message(1, { kind: 'view', view })); await delay();
+    assert.equal(bridge.active, false);
+  }
+});
+
+const nestedView = (depth: number) => {
+  let node: unknown = { kind: 'canvas', id: 'canvas', strokes: [{ points: [{ x: 0, y: 1 }] }] };
+  for (let i = 0; i < depth; i++) node = { kind: 'stack', id: `stack_${i}`, children: [node] };
+  return { root: node };
+};
+
+test('view transport accepts the full depth-eight grammar without increasing request depth', async () => {
+  const port = new FakePort(), views: unknown[] = [];
+  const bridge = createExperienceBridge({ port, pin, resourceKeys: [], actionKeys: [],
+    broker: { isLive: () => true }, onView: view => views.push(view) });
+  const deepest = nestedView(8);
+  assert.ok(parseExperienceView(deepest));
+  port.receive(message(1, { kind: 'view', view: deepest }));
+  await delay();
+  assert.deepEqual(views, [deepest]);
+  assert.equal(bridge.active, true);
+  bridge.revoke();
+});
+
+test('view transport rejects excess node depth, malformed deep views and unknown envelope fields', async () => {
+  let deep: unknown = null;
+  for (let i = 0; i < 24; i++) deep = { child: deep };
+  for (const envelope of [
+    { kind: 'view', view: nestedView(9) },
+    { kind: 'view', view: { root: deep } },
+    { kind: 'view', view: nestedView(8), extra: true },
+  ]) {
+    const port = new FakePort(), views: unknown[] = [];
+    const bridge = createExperienceBridge({ port, pin, resourceKeys: [], actionKeys: [],
+      broker: { isLive: () => true }, onView: view => views.push(view) });
+    port.receive(message(1, envelope));
+    await delay();
+    assert.equal(bridge.active, false);
+    assert.equal(port.closed, true);
+    assert.deepEqual(views, []);
+  }
+});
+
+test('non-view request transport retains its depth-twelve bound', async () => {
+  let deep: unknown = null;
+  for (let i = 0; i < 13; i++) deep = { child: deep };
+  const port = new FakePort(); let calls = 0;
+  const bridge = createExperienceBridge({ port, pin, resourceKeys: ['inbox'], actionKeys: [],
+    broker: { isLive: () => true, resource: async () => { calls++; return {}; } }, onView: () => undefined });
+  port.receive(message(1, { kind: 'request', request_id: 'request_1', operation: 'resource', key: 'inbox', input: deep }));
+  await delay();
+  assert.equal(bridge.active, false);
+  assert.equal(calls, 0);
+});
+
+test('preferences uses the shared view budget and cannot collide with content or navigation IDs',()=>{
+ const root={kind:'stack',id:'root',children:[{kind:'text',id:'main_text',text:'Mail'}]};
+ const preferences={kind:'stack',id:'preferences',children:[{kind:'input',id:'signature',label:'Signature',value:'Regards'}]};
+ assert.ok(parseExperienceView({root,preferences}));
+ assert.equal(parseExperienceView({root,preferences:{...preferences,id:'root'}}),null);
+ assert.equal(parseExperienceView({root,preferences,navigation:[{kind:'button',id:'signature',label:'Intercept'}]}),null);
+ assert.equal(parseExperienceView({root,preferences:{...preferences,children:[{kind:'html',id:'raw',html:'<script>bad</script>'}]}}),null);
+});
 
 const pin: ExperiencePin = Object.freeze({
   org_id: 'org_a', user_id: 'user_a', app_installation_id: 'installation_a',
@@ -25,6 +166,32 @@ const message = (sequence: number, value: Record<string, unknown>) => ({
   version:'deft.experience_bridge.v1', session_id:pin.session_id, sequence, ...value,
 });
 const delay = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+test('document views transport bounded hostile plain or HTML for independent host sanitization',()=>{
+ const document={kind:'document',id:'body',format:'plain',content:'<img src="https://tracker.example.test/pixel" onerror="alert(1)"><script>alert(1)</script>',truncated:false};
+ assert.deepEqual(parseExperienceView({root:document}),{root:document});assert.ok(parseExperienceView({root:{...document,content:'x'.repeat(16384)}}));
+ const html={...document,format:'html',printable:true,title:'Message'};assert.deepEqual(parseExperienceView({root:html}),{root:html});
+ for(const root of [{...document,format:'markdown'},{...document,source_print:true},{...document,content:'x'.repeat(16385)},{...document,truncated:'false'},{...document,content:'a\0b'},{...document,printable:'true'},{...document,title:'x'.repeat(201)}])assert.equal(parseExperienceView({root}),null);
+});
+
+test('native print controls reference exactly one same-view button and a printable current document', () => {
+ const document={kind:'document',id:'body',format:'plain',content:'Body',printable:true,print_control_id:'print_body'};
+ const button={kind:'button',id:'print_body',label:'Print'};
+ const root={kind:'stack',id:'root',children:[button,document]};
+ assert.ok(parseExperienceView({root}));
+ for(const children of [[document],[{kind:'text',id:'print_body',text:'Print'},document],[button,{...document,printable:false}],[button,document,{...document,id:'second_body'}],[button,button,document]])assert.equal(parseExperienceView({root:{...root,children}}),null);
+ assert.equal(parseExperienceView({root:document,navigation:[button]}),null,'navigation cannot impersonate a document-local print button');
+});
+
+test('document bridge returns bounded plain content through the public SDK and drops late revoked reads',async()=>{
+ const hostPort=new FakePort(),authorPort=new FakePort();hostPort.postMessage=value=>{hostPort.sent.push(value);authorPort.receive(structuredClone(value));};authorPort.postMessage=value=>hostPort.receive(structuredClone(value));
+ const recordId='12345678-1234-4234-8234-123456789012',document={format:'plain',content:'x'.repeat(16384),truncated:false,metadata:{account_id:'account',verified_sender_identities:'x'.repeat(8192)}};
+ let live=true,release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});let calls=0;
+ const bridge=createExperienceBridge({port:hostPort,pin,resourceKeys:['inbox'],actionKeys:[],broker:{isLive:()=>live,resource:async(_pin,key,input)=>{assert.equal(key,'inbox');assert.deepEqual(input,{operation:'read_document',record_id:recordId});if(++calls===2)await held;return document;}},onView:()=>undefined});
+ const sdk=createDeftExperienceSdk(authorPort,pin.session_id);
+ try{assert.deepEqual(await sdk.readResourceDocument('inbox',recordId),document);const reading=sdk.readResourceDocument('inbox',recordId).catch(()=>undefined);await delay();live=false;release();await delay();assert.equal(hostPort.sent.filter(value=>(value as {kind?:string}).kind==='response').length,1);assert.equal(bridge.active,false);sdk.close();await reading;}
+ finally{sdk.close();bridge.revoke();}
+});
 
 test('sidebar navigation accepts bounded buttons and rejects routes, collisions and other nodes', () => {
   const root = { kind: 'text', id: 'content', text: 'Content' };
@@ -333,3 +500,16 @@ test('private state dispatch requires an explicitly declared key and live pin', 
   port.receive(message(2, { kind: 'request', request_id: 'request_2', operation: 'private_state', key: 'undeclared', input: { operation: 'list' } }));
   await delay(); assert.equal(calls, 1); assert.equal(bridge.active, false);
 });
+
+
+test('document print headers are bounded literal text and closed rows', () => {
+ const root = {kind:'document',id:'mail_body',format:'html',content:'<p>Body</p>',printable:true,title:'Subject',metadata:[{label:'From',value:'<sender@example.test>'},{label:'Subject',value:'<script>literal</script>'}]};
+ assert.deepEqual(parseExperienceView({root}),{root});
+ for(const metadata of [Array(17).fill({label:'From',value:'a'}),[{label:'x'.repeat(201),value:'a'}],[{label:'From',value:'x'.repeat(2001)}],[{label:'From',value:'x\0'}],[{label:'From',value:'a',html:'<b>a</b>'}]]) assert.equal(parseExperienceView({root:{...root,metadata}}),null);
+});
+
+test('actual SDK account catalog and readonly target nominations reach the bridge without permitting target writes',async()=>{const host=new FakePort(),calls:unknown[]=[];const worker={onmessage:null as ((event:MessageEvent)=>void)|null,postMessage:(value:unknown)=>host.receive(value),close:()=>{}};host.postMessage=(value:unknown)=>{host.sent.push(value);worker.onmessage?.({data:value} as MessageEvent);};const bridge=createExperienceBridge({port:host,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],broker:{isLive:()=>true,appData:async(_pin,_key,input)=>{calls.push(input);return {targets:[{key:'personal',label:'Primary'}],selected_target_key:'personal'};}},onView:()=>{}});const sdk=createDeftExperienceSdk(worker,pin.session_id);const catalog=await Promise.race([sdk.listAccountTargets('drafts'),new Promise<never>((_,reject)=>setTimeout(()=>reject(Error('catalog not dispatched')),100))]).catch(error=>{sdk.close();bridge.revoke();throw error;});assert.equal(catalog.targets[0]?.key,'personal');assert.equal(bridge.active,true);await sdk.listDataResources('drafts','inbox',null,'in:inbox','secondary');assert.equal((calls[1] as {target_key:string}).target_key,'secondary');await sdk.request('app_data','drafts',{operation:'record_list',input:{store_key:'drafts',cursor:null,limit:10},target_key:'secondary'});assert.equal((calls[2] as {target_key:string}).target_key,'secondary');assert.equal(calls.length,3);sdk.close();bridge.revoke();});
+
+test('actual bridge denies target nominations on record writes before dispatch',async()=>{const port=new FakePort();let calls=0;const bridge=createExperienceBridge({port,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],broker:{isLive:()=>true,appData:async()=>{calls++;return {}; }},onView:()=>{}});port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'record_create',target_key:'secondary',input:{store_key:'drafts',record_id:'11111111-1111-4111-8111-111111111111',value:{}}}}));await delay();assert.equal(bridge.active,false);assert.equal(calls,0);});
+
+test('generic original Run inspection dispatch is bounded and passes only its UUID', async()=>{const host=new FakePort(),author=new FakePort();host.postMessage=value=>author.receive(structuredClone(value));author.postMessage=value=>host.receive(structuredClone(value));let calls=0;const bridge=createExperienceBridge({port:host,pin,resourceKeys:[],actionKeys:[],readTimeoutMs:20,broker:{isLive:()=>true,runInspect:async(_pin,input,signal)=>{calls++;assert.deepEqual(input,{run_id:'original_run'});return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted')),{once:true}));}},onView:()=>{}});const sdk=createDeftExperienceSdk(author,pin.session_id);try{await assert.rejects(sdk.request('run_inspect',undefined,{run_id:'original_run'}));assert.equal(calls,1);}finally{sdk.close();bridge.revoke();}});

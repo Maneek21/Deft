@@ -19,3 +19,23 @@ export async function createAttachmentSyncDiscoverySnapshot(input: {
       output_schema: schemaJson(SyncPageV2Schema) }],
   });
 }
+
+/** Exact reviewed discovery shape before preview58 added PDF. Only private
+ * Sync administrative closure uses this reconstruction; it grants no delivery. */
+export async function createLegacyPrePdfAttachmentSyncDiscoverySnapshot(input: Parameters<typeof createAttachmentSyncDiscoverySnapshot>[0]) {
+  const current = await createAttachmentSyncDiscoverySnapshot(input);
+  const operation = current.operations[0]!;
+  const schema = structuredClone(operation.input_schema) as {
+    properties: { attachments: { properties: { allowed_media_types: { items: { enum: string[] }; maxItems: number } } } };
+  };
+  const media = schema.properties.attachments.properties.allowed_media_types;
+  if (media.maxItems !== 8 || media.items.enum.length !== 8 || media.items.enum[7] !== 'application/pdf') {
+    throw new Error('Legacy private Sync discovery shape unavailable');
+  }
+  media.items.enum.pop(); media.maxItems = 7;
+  return createCapabilityProviderDiscoverySnapshot({ adapter_contract_version: current.adapter_contract_version,
+    provider: current.provider, captured_at: current.captured_at, operations: [{
+      identity: operation.identity, title: operation.title, description: operation.description,
+      input_schema: schema, output_schema: operation.output_schema,
+    }] });
+}

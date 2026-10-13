@@ -4,6 +4,7 @@ import { appRunEvents, appRunReceipts, appRuns, appRunSecretPayloads } from '@de
 import { canonicalCapabilityJson, type CapabilityJsonValue } from '@deft/shared';
 import { db } from './db.js';
 import type { AppRunTransaction } from './app-run-repository.js';
+import {AppRuntimeActionResourceSnapshotSchema,type AppRuntimeActionResourceSnapshot} from './app-runtime-action-resource-snapshot.js';
 import {
   AppRunSecretService,
   type AppRunSecretEnvelope,
@@ -90,6 +91,18 @@ export class AppRunSecretRepository {
     });
   }
 
+  async retainActionResources(tx:AppRunTransaction,input:{org_id:string;run_id:string;value:AppRuntimeActionResourceSnapshot;expires_at:Date}):Promise<void>{
+    const value=AppRuntimeActionResourceSnapshotSchema.parse(input.value);
+    if(value.org_id!==input.org_id)throw new Error('Invalid action source scope');
+    const prior=await this.readActionResources(input.org_id,input.run_id,tx);
+    if(prior){if(canonicalCapabilityJson(prior)!==canonicalCapabilityJson(value))throw new Error('Action source is immutable');return;}
+    const envelope=this.secrets.sealJson(value,{org_id:input.org_id,run_id:input.run_id,payload_kind:'action_resources'});
+    await tx.insert(appRunSecretPayloads).values({id:crypto.randomUUID(),org_id:input.org_id,run_id:input.run_id,payload_kind:'action_resources',envelope_version:envelope.schema_version,algorithm:envelope.algorithm,key_version:envelope.key_version,nonce_b64:envelope.nonce_b64,ciphertext_b64:envelope.ciphertext_b64,auth_tag_b64:envelope.auth_tag_b64,payload_bytes:payloadBytes(envelope),expires_at:input.expires_at});
+  }
+  async readActionResources(orgId:string,runId:string,tx:AppRunTransaction|typeof db=db,now=new Date()):Promise<AppRuntimeActionResourceSnapshot|null>{
+    const [row]=await tx.select().from(appRunSecretPayloads).where(and(eq(appRunSecretPayloads.org_id,orgId),eq(appRunSecretPayloads.run_id,runId),eq(appRunSecretPayloads.payload_kind,'action_resources'))).limit(1);
+    if(!row)return null;if(row.expires_at<=now)throw Error('Action source expired');return AppRuntimeActionResourceSnapshotSchema.parse(this.secrets.openJson(envelopeFromRow(row),{org_id:orgId,run_id:runId,payload_kind:'action_resources'}));
+  }
   async readInput(orgId: string, runId: string, tx: AppRunTransaction | typeof db = db): Promise<CapabilityJsonValue | null> {
     const [row] = await tx.select().from(appRunSecretPayloads).where(and(
       eq(appRunSecretPayloads.org_id, orgId),
@@ -118,6 +131,18 @@ export class AppRunSecretRepository {
       attempt_id: attemptId,
       payload_kind: 'output',
     });
+  }
+
+  /** Owner status may read only a retained exact attempt output. Callers must
+   * first prove owner/account authority and a terminal acknowledged Runtime Run. */
+  async readRetainedOutput(orgId:string,runId:string,attemptId:string,current:()=>Date,tx:AppRunTransaction|typeof db=db){
+    const [row]=await tx.select().from(appRunSecretPayloads).where(and(eq(appRunSecretPayloads.org_id,orgId),
+      eq(appRunSecretPayloads.run_id,runId),eq(appRunSecretPayloads.attempt_id,attemptId),eq(appRunSecretPayloads.payload_kind,'output'))).limit(1);
+    if(!row||row.org_id!==orgId||row.run_id!==runId||row.attempt_id!==attemptId||row.payload_kind!=='output'
+      ||!Number.isFinite(row.expires_at.getTime())||row.expires_at<=current()||row.payload_bytes<1||row.payload_bytes>65_536)return null;
+    const value=this.secrets.openJson(envelopeFromRow(row),{org_id:orgId,run_id:runId,attempt_id:attemptId,payload_kind:'output'});
+    if(row.expires_at<=current())return null;
+    return{value,expires_at:row.expires_at};
   }
 
   async outputEnvelopeDigest(

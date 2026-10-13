@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appRuntimeBindings, appRuntimeRegistrations, orgMembers } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
@@ -30,11 +30,18 @@ export async function getRuntimeSetupContext(actor: ModuleActor, installationId:
     const [locator] = await tx.select({ version: appInstallations.active_version_id, grant: appInstallations.active_grant_snapshot_id })
       .from(appInstallations).where(and(eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installationId))).limit(1);
     if (!locator || locator.version !== versionId || !locator.grant) throw stale();
+    // Legacy setup presents the primary source only; named targets use exact
+    // reviewed owner_resource_binding_id in the activation request.
+    const primaryTarget = or(isNull(appRuntimeBindings.owner_resource_binding_id), sql`EXISTS (
+      SELECT 1 FROM app_resource_bindings target WHERE target.org_id=${actor.org_id}
+      AND target.id=${appRuntimeBindings.owner_resource_binding_id} AND target.owner_user_id=${actor.actor_id}
+      AND target.target_key='primary')`);
     const locators = await tx.select({ id: appRuntimeBindings.id, registration: appRuntimeBindings.runtime_registration_id,
       operator: appRuntimeRegistrations.operator_user_id }).from(appRuntimeBindings)
       .innerJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, appRuntimeBindings.org_id), eq(appRuntimeRegistrations.id, appRuntimeBindings.runtime_registration_id)))
       .where(and(eq(appRuntimeBindings.org_id, actor.org_id), eq(appRuntimeBindings.app_installation_id, installationId),
         eq(appRuntimeBindings.app_version_id, versionId), eq(appRuntimeBindings.grant_snapshot_id, locator.grant),
+        primaryTarget,
         inArray(appRuntimeBindings.state, ['active','disabled']))).limit(17);
     if (locators.length > 16) throw stale();
     const participants = [...new Set([actor.actor_id, ...locators.map(row => row.operator)])].sort();
@@ -45,6 +52,7 @@ export async function getRuntimeSetupContext(actor: ModuleActor, installationId:
     const currentSet = await tx.select({ id: appRuntimeBindings.id }).from(appRuntimeBindings).where(and(
       eq(appRuntimeBindings.org_id, actor.org_id), eq(appRuntimeBindings.app_installation_id, installationId),
       eq(appRuntimeBindings.app_version_id, versionId), eq(appRuntimeBindings.grant_snapshot_id, parent.grant.id),
+      primaryTarget,
       inArray(appRuntimeBindings.state, ['active','disabled']))).limit(17);
     if (currentSet.length !== locators.length || currentSet.some(row => !locators.some(old => old.id === row.id))) throw stale();
     const descriptors = runtimeActionDescriptors(parent.manifest);

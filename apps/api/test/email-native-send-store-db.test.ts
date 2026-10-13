@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import test from 'node:test';
+import pg from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { emailAccounts, emailDrafts, emailSendOperations, emailProviderDraftMirrors } from '@deft/db/schema';
+import { EmailMailboxCrypto } from '../src/lib/email-mailbox-crypto.js';
+import type { EmailDraftContent } from '../src/lib/email-draft-service.js';
+import { EmailDraftStore } from '../src/lib/email-draft-store.js';
+import { EmailSendStore } from '../src/lib/email-send-store.js';
+import { EmailNativeSendService } from '../src/lib/email-native-send-service.js';
+import { createHash } from 'node:crypto';
+import {sql} from 'drizzle-orm';
+
+const target = 'postgresql://gate_g_test@127.0.0.1:55435/email_stage34_upgrade';
+const safe = process.env.DATABASE_URL === target && process.env.DEFT_TEST_DATABASE_URL === target;
+const draftId = () => randomUUID();
+const content: EmailDraftContent = { mode:'compose',to:'person@example.test',cc:'',bcc:'',subject:'Synthetic only',body:'Test body',body_html:'',reply_record_id:'',attachments:[] };
+
+test('native send reservation pins one exact draft revision and never replays provider effects', { skip: !safe, timeout: 45000 }, async t => {
+  const admin = new pg.Pool({ connectionString: target, max: 1 });
+  const fixtureSchema = 'email_send_' + randomUUID().replaceAll('-', '');
+  await admin.query(`CREATE SCHEMA ${fixtureSchema}`);
+  const pool = new pg.Pool({ connectionString: target, max: 6, options: `-c search_path=${fixtureSchema},public` });
+  const db = drizzle(pool, { schema: { emailAccounts, emailDrafts, emailSendOperations, emailProviderDraftMirrors } });
+  await pool.query(`CREATE TABLE email_accounts(org_id text NOT NULL,owner_user_id text NOT NULL,account_id text NOT NULL,PRIMARY KEY(org_id,owner_user_id,account_id))`);
+  await pool.query(readFileSync(resolve(process.cwd(),'packages/db/upgrades/0.3.0-preview.66-email-native-drafts.sql'),'utf8'));
+  await pool.query(readFileSync(resolve(process.cwd(),'packages/db/upgrades/0.3.0-preview.70-email-provider-draft-mirrors.sql'),'utf8'));
+  const migration=readFileSync(resolve(process.cwd(),'packages/db/upgrades/0.3.0-preview.68-email-native-send.sql'),'utf8');
+  await pool.query(migration); await pool.query(migration);
+  await pool.query(readFileSync(resolve(process.cwd(),'packages/db/upgrades/0.3.0-preview.72-email-outbox.sql'),'utf8'));
+  const org='send-fixture-'+randomUUID(),owner='owner-'+randomUUID(),scope={org_id:org,owner_user_id:owner,account_id:'account-'+randomUUID()};
+  await pool.query('INSERT INTO email_accounts(org_id,owner_user_id,account_id) VALUES($1,$2,$3)',[org,owner,scope.account_id]);
+  t.after(async()=>{await pool.end();await admin.query(`DROP SCHEMA ${fixtureSchema} CASCADE`);await admin.end();});
+  const keys={current:()=>({key_id:'email-send-test',key:Buffer.alloc(32,43)}),read:(_purpose:unknown,key:string)=>key==='email-send-test'?{key_id:key,key:Buffer.alloc(32,43)}:null,keyIds:()=>['email-send-test']};
+  const crypto=new EmailMailboxCrypto(keys),drafts=new EmailDraftStore(db,crypto),sends=new EmailSendStore(db,crypto);
+  const guard=async(transaction:unknown)=>{await (transaction as typeof db).execute(sql`SELECT 1 FROM email_accounts WHERE org_id=${scope.org_id} AND owner_user_id=${scope.owner_user_id} AND account_id=${scope.account_id} FOR SHARE`);}; const digest='a'.repeat(64);
+  await t.test('first reservation is atomic, repeat returns same operation without authorizing a second send',async()=>{
+    const id=draftId(); await drafts.create(scope,id,content,{kind:'human',created_by_user_id:owner,originating_run_id:null},guard);
+    const operation=randomUUID(),first=await sends.reserve(scope,id,1,owner,operation,digest,guard);
+    assert.equal(first.replay,false);assert.equal(first.operation.state,'reserved');
+    const retry=await sends.reserve(scope,id,1,owner,randomUUID(),digest,guard);
+    assert.equal(retry.replay,true);assert.equal(retry.operation.operation_id,operation);
+    assert.equal((await drafts.read(scope,id,guard))?.status,'submitted');
+    assert.equal((await drafts.read(scope,id,guard))?.revision,2);
+    assert.ok(Array.isArray(await drafts.list(scope,guard)));
+    await assert.rejects(sends.reserve(scope,id,1,owner,randomUUID(),'b'.repeat(64),guard),/EMAIL_SEND_CONFLICT/);
+    assert.equal((await sends.status(scope,id,1,guard))?.operation.state,'reserved');
+  });
+  await t.test('provider acknowledgement is encrypted and status recovery reveals no provider receipt',async()=>{
+    const id=draftId();await drafts.create(scope,id,content,{kind:'human',created_by_user_id:owner,originating_run_id:null},guard);
+    const reserved=await sends.reserve(scope,id,1,owner,randomUUID(),digest,guard);
+    const accepted=await sends.finish(scope,reserved.operation.operation_id,'accepted','private-provider-id',guard);
+    assert.equal(accepted.state,'accepted');
+    const row=await pool.query('SELECT state,receipt_envelope FROM email_send_operations WHERE operation_id=$1',[accepted.operation_id]);
+    assert.equal(JSON.stringify(row.rows).includes('private-provider-id'),false);
+    const status=await sends.status(scope,id,1,guard);
+    assert.equal(status?.receipt.provider_message_id,'private-provider-id');
+    assert.equal(await sends.verifyReservation(scope,accepted.operation_id,digest,guard),true);
+  });
+  await t.test('loss after reservation remains non-replayable unknown; final authority loss rolls back reservation',async()=>{
+    const id=draftId();await drafts.create(scope,id,content,{kind:'human',created_by_user_id:owner,originating_run_id:null},guard);
+    const reserved=await sends.reserve(scope,id,1,owner,randomUUID(),digest,guard);
+    const unknown=await sends.finish(scope,reserved.operation.operation_id,'unknown',null,guard);
+    assert.equal(unknown.state,'unknown');
+    const deny=async()=>{throw new Error('revoke');};
+    const other=draftId();await drafts.create(scope,other,content,{kind:'human',created_by_user_id:owner,originating_run_id:null},guard);
+    await assert.rejects(sends.reserve(scope,other,1,owner,randomUUID(),digest,deny),/revoke/);
+    assert.equal((await drafts.read(scope,other,guard))?.status,'draft');
+    const count=await pool.query('SELECT count(*)::int AS n FROM email_send_operations WHERE draft_id=$1',[other]);
+    assert.equal(count.rows[0].n,0);
+  });
+  await t.test('public send service composes a trusted prepared MIME snapshot once and status/retry never resends',async()=>{
+    const id=draftId(),actor={user_id:owner,web_session_id:'sid-'+randomUUID(),access_expires_at:Date.now()+120000};
+    await drafts.create(scope,id,content,{kind:'human',created_by_user_id:owner,originating_run_id:null},guard);
+    const binding='binding-'+randomUUID();let providerCalls=0,builderCalls=0;
+    const authority={async current(actual:typeof actor,selected:typeof scope,operation:string){assert.deepEqual(actual,actor);assert.deepEqual(selected,scope);assert.equal(operation,'human_send');return {scope,resource_binding_id:binding,authority_version:'native-authority-digest',expires_at:actor.access_expires_at};}};
+    const bytes=Buffer.from('Subject: hello\r\n\r\nserver-compiled body');const mimeDigest=createHash('sha256').update(bytes).digest('hex');
+    const snapshots={async prepareAndBind(input:any){builderCalls++;const identity={operation_id:input.operation_id,snapshot_id:'snapshot-'+randomUUID(),snapshot_digest:'d'.repeat(64),mime_digest:mimeDigest,
+        scope:{org_id:scope.org_id,owner_id:scope.owner_user_id,installation_id:'install-'+randomUUID()},account_id:scope.account_id,authority_epoch:3,draft_id:id,draft_revision:1};
+      const state=await input.reserve(identity);if(state==='replay')return {state:'replay'};
+      return {state:'reserved',transport:{...identity,from_address:'owner@example.test',transport_kind:'gmail_raw'},mime_bytes:Buffer.from(bytes),mime_digest:mimeDigest};}};
+    const provider={async send(input:any,context:any){providerCalls++;assert.equal(input.mime_digest,mimeDigest);assert.equal(await context.send_before_reserve({operation_id:input.operation_id,account_id:scope.account_id,authority_epoch:3,mime_digest:mimeDigest}),true);
+      return {schema_version:'deft.email_send_result.v1',account_id:scope.account_id,provider:'gmail',operation_id:input.operation_id,provider_message_id:'private-provider-message-id',transport_outcome:'provider_accepted',sent_copy_outcome:'pending',delivery_status:'unknown'};}};
+    const service=new EmailNativeSendService(authority as any,drafts,sends,snapshots as any,provider as any);
+    const first=await service.send(actor,scope,id,1);assert.equal(first.state,'accepted');assert.equal(builderCalls,1);assert.equal(providerCalls,1);
+    assert.equal(JSON.stringify(first).includes('private-provider-message-id'),false);
+    const recovery=await service.status(actor,scope,id,1);assert.equal(recovery?.operation_id,first.operation_id);assert.equal(recovery?.state,'accepted');
+    const retry=await service.send(actor,scope,id,1);assert.deepEqual(retry,first);assert.equal(builderCalls,1);assert.equal(providerCalls,1);
+  });
+});

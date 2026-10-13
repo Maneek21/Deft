@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appPrivateStateRecords } from '@deft/db/schema';
 import { canonicalCapabilityJson } from '@deft/shared';
@@ -9,7 +9,7 @@ import { verifiedExperienceBundle, type ExperienceCaller } from './app-experienc
 import { exposureDigest } from './app-experience-exposure-contract.js';
 import { buildAttachmentAppReviewedAuthority, ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION } from './app-attachment-authority.js';
 import { buildRequestedAppGrantProjection, digestAppGrantValue } from './app-grant-service.js';
-import { AppPrivateStateSecrets } from './app-private-state-secrets.js';
+import { AppPrivateStateSecrets, privateStateStoredBytes, type StoredPrivateSource } from './app-private-state-secrets.js';
 import { privateStateValue, assertPrivateStateQuota } from './app-private-state-contract.js';
 import { samplePrivateAccessClock } from './app-private-access-clock.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
@@ -41,7 +41,8 @@ export class AppPrivateStateAdoptionService {
       const initialClock = await samplePrivateAccessClock(tx, this.clock), now = initialClock.current();
       const declarationDigest = exposureDigest(authority.declaration);
       const scope = and(eq(appPrivateStateRecords.org_id, caller.org_id), eq(appPrivateStateRecords.owner_user_id, caller.user_id),
-        eq(appPrivateStateRecords.installation_id, authority.installation_id), eq(appPrivateStateRecords.state_key, stateKey));
+        eq(appPrivateStateRecords.installation_id, authority.installation_id), eq(appPrivateStateRecords.state_key, stateKey),
+        eq(appPrivateStateRecords.resource_target_key, authority.session.resource_target_key));
       const rows = await tx.select().from(appPrivateStateRecords).where(and(scope,
         sql`${appPrivateStateRecords.deleted_at} IS NULL AND ${appPrivateStateRecords.expires_at}>${now}`))
         .orderBy(asc(appPrivateStateRecords.record_id)).limit(33);
@@ -99,6 +100,7 @@ export class AppPrivateStateAdoptionService {
       const group = groups.find(item => item.source_artifact_digest === request.source_artifact_digest);
       if (!group) throw stale();
       const pins = { organization_id: caller.org_id, owner_user_id: caller.user_id, web_session_id: caller.sid,
+        ...(session.resource_target_key === 'primary' ? {} : { resource_target_key: session.resource_target_key }),
         experience_session_id: sessionId, installation_id: authority.installation_id, state_key: stateKey,
         app_version_id: session.app_version_id, grant_snapshot_id: session.grant_snapshot_id,
         exposure_id: exposure.id, exposure_epoch: exposure.exposure_epoch, exposure_review_digest: exposure.review_digest,
@@ -122,21 +124,27 @@ export class AppPrivateStateAdoptionService {
         || exposureDigest(token.value.pins) !== exposureDigest(pins)) throw stale();
       deadline = Math.min(deadline, Date.parse(token.value.expires_at), ...group.records.map(item => Date.parse(item.expires_at)));
       if (now.getTime() >= deadline) throw stale();
-      let totalBytes = rows.reduce((total, row) => total + row.byte_length, 0);
+      const quotaRows = await tx.select({ byte_length: appPrivateStateRecords.byte_length }).from(appPrivateStateRecords).where(and(
+        eq(appPrivateStateRecords.org_id, caller.org_id), eq(appPrivateStateRecords.owner_user_id, caller.user_id),
+        eq(appPrivateStateRecords.installation_id, authority.installation_id), eq(appPrivateStateRecords.state_key, stateKey),
+        isNull(appPrivateStateRecords.deleted_at), gt(appPrivateStateRecords.expires_at, now))).limit(33);
+      let totalBytes = quotaRows.reduce((total, row) => total + row.byte_length, 0);
       for (const metadata of group.records) {
         const row = rows.find(item => item.record_id === metadata.record_id)!;
         const context = { org_id: caller.org_id, owner_user_id: caller.user_id, installation_id: authority.installation_id,
+          ...(row.resource_target_key === 'primary' ? {} : { resource_target_key: row.resource_target_key }),
           state_key: stateKey, record_id: row.record_id, artifact_digest: row.artifact_digest,
           declaration_digest: declarationDigest, revision: row.revision };
-        let checked: ReturnType<typeof privateStateValue>;
-        try { checked = privateStateValue(authority.declaration, this.secrets.open(context, row.body)); } catch { throw stale(); }
+        let checked: ReturnType<typeof privateStateValue>; let sources: StoredPrivateSource[];
+        try { const opened=this.secrets.openState(context,row.body);checked=privateStateValue(authority.declaration,opened.value);sources=opened.sources; } catch { throw stale(); }
+        const bytes=privateStateStoredBytes(checked.value,sources);if(bytes>authority.declaration.max_record_bytes)throw stale();
         if (row.revision >= 2147483647) throw stale();
-        totalBytes = totalBytes - row.byte_length + checked.bytes;
-        assertPrivateStateQuota(rows.length, totalBytes, authority.declaration);
+        totalBytes = totalBytes - row.byte_length + bytes;
+        assertPrivateStateQuota(quotaRows.length, totalBytes, authority.declaration);
         const revision = row.revision + 1;
-        const body = this.secrets.seal({ ...context, artifact_digest: authority.artifact_digest, revision }, checked.value);
+        const body = this.secrets.seal({ ...context, artifact_digest: authority.artifact_digest, revision }, checked.value,sources);
         await tx.update(appPrivateStateRecords).set({ artifact_digest: authority.artifact_digest, revision, body,
-          key_version: body.key_version, byte_length: checked.bytes, updated_at: now })
+          key_version: body.key_version, byte_length: bytes, updated_at: now })
           .where(and(scope, eq(appPrivateStateRecords.record_id, row.record_id), eq(appPrivateStateRecords.revision, row.revision)));
       }
       return { schema_version: 'deft.private_state.adoption_activated.v1', adopted_count: group.count };

@@ -1,3 +1,4 @@
+import { nativeEmailSendPendingAction } from './email-agent-tools.js';
 /**
  * Shared streaming agent loop used by POST /messages (initial send) and
  * POST /continue (resume after action approval).
@@ -357,6 +358,12 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
           const { result, citations } = await executeToolCall(
             tool.name, tool.input as any, p.orgId, p.userId, p.convoId, p.agentEmployeeId,
           );
+          if(tool.name==='email_send'&&result?.state==='pending_review'&&typeof result.action_id==='string'){
+            pendingActions.push(nativeEmailSendPendingAction(result,tool.id,p.agentEmployeeId));
+            await p.write({type:'pending_action',id:result.action_id,action:'email_send',params:result});
+            await db.update(agentActions).set({tool_use_id:tool.id}).where(and(eq(agentActions.id,result.action_id),eq(agentActions.org_id,p.orgId),eq(agentActions.user_id,p.userId)));
+            haltAfterThisIteration=true;
+          }
           await p.write({ type: 'tool_result', tool: tool.name, count: Array.isArray(result) ? result.length : 1 });
           const formatted = await nativeAgentToolResult({
             resolver: moduleNextReads,

@@ -7,15 +7,94 @@ import {
   isConnectedAppManifest,
   normalizeAppGrantManagement,
   normalizeAppInstallation,
+  normalizeAppsResponse,
   normalizeAppRunReceiptBundle,
   normalizeConnectedAppHealth,
   normalizeConnectedAppReview,
+  normalizeAppResourceContent,
+  normalizeAppResourceContentReview,
 } from './apps';
+import { getAppNavigationItems, getInstalledExperienceNavigation, isAppNavigationGroupActive } from './app-navigation';
+import { nativeEmailAppNavigation } from './email-native-navigation';
+
+const observedNavigation = JSON.parse(readFileSync(new URL('./fixtures/email-e2-2-app-navigation.json', import.meta.url), 'utf8'));
+test('public source fixture contains only the observed Email installation and declarations', () => {
+  assert.deepEqual(Object.keys(observedNavigation), ['/api/apps', '/api/apps/navigation']);
+  assert.equal(observedNavigation['/api/apps'].status, 200);
+  assert.deepEqual(Object.keys(observedNavigation['/api/apps'].response), ['apps']);
+  assert.deepEqual(observedNavigation['/api/apps'].response.apps.map((app: { app_id: string }) => app.app_id), ['io.deft.email']);
+  assert.equal(observedNavigation['/api/apps/navigation'].status, 200);
+  assert.deepEqual(observedNavigation['/api/apps/navigation'].response, { navigation: [] });
+  assert.deepEqual(Object.keys(observedNavigation['/api/apps'].response.apps[0]).sort(), [
+    'active_version_id', 'app_id', 'created_at', 'grant_epoch', 'id', 'lifecycle_epoch', 'manifest',
+    'manifest_digest', 'name', 'package_digest', 'state', 'updated_at', 'version', 'version_id',
+  ].sort());
+});
+
+test('Email-only observed E2.2 public Apps response reaches the active Experience sidebar with retained native Email', () => {
+  const apps = normalizeAppsResponse(observedNavigation['/api/apps'].response);
+  const experiences = getInstalledExperienceNavigation(apps);
+  const groups = nativeEmailAppNavigation(getAppNavigationItems([
+    ...observedNavigation['/api/apps/navigation'].response.navigation, ...experiences,
+  ]), { available: true, legacy_installation_ids: ['bbc68de7-94ae-4674-a527-abfdc4324054'] });
+  const active = groups.find(group => isAppNavigationGroupActive('/apps/bbc68de7-94ae-4674-a527-abfdc4324054/main', group, groups));
+  assert.equal(active?.name, 'Email');
+  assert.equal(active?.links.some(link => link.kind === 'experience' && link.experience_key === 'main'), true);
+  const manifest = apps.find(app => app.app_id === 'io.deft.email')!.manifest;
+  assert.equal(manifest.schema_version, '7');
+  if (manifest.schema_version !== '7') throw Error('Wrong protocol');
+  assert.equal(manifest.experiences[0]!.renderer_version, 'deft.trusted_renderer.v2');
+  assert.deepEqual((manifest as unknown as {record_stores:unknown}).record_stores,
+    observedNavigation['/api/apps'].response.apps[0].manifest.record_stores);
+  assert.deepEqual(manifest.owner_connections, observedNavigation['/api/apps'].response.apps[0].manifest.owner_connections);
+  assert.deepEqual(manifest.experiences[0]!.capabilities, ['record_document.v1', 'record_form.v1']);
+});
+test('E2 display rejects unsupported renderer profiles, store budgets and foreign declaration bindings', () => {
+  const source = observedNavigation['/api/apps'].response.apps[0];
+  const changes = [
+    (row: typeof source) => { delete row.manifest.experiences[0].capabilities; },
+    (row: typeof source) => { row.manifest.experiences[0].renderer_version = 'deft.trusted_renderer.v1'; },
+    (row: typeof source) => { row.manifest.experiences[0].capabilities = ['record_form.v1', 'record_form.v1']; },
+    (row: typeof source) => { row.manifest.experiences[0].capabilities = ['unsupported.v1']; },
+    (row: typeof source) => { row.manifest.record_stores[0].max_record_bytes = 491521; },
+    (row: typeof source) => { row.manifest.record_stores[0].runtime_requirement_key = 'foreign'; },
+    (row: typeof source) => { row.manifest.record_stores[0].resource_key = 'foreign'; },
+    (row: typeof source) => { row.manifest.record_stores[0].host_authority = true; },
+    (row: typeof source) => { row.manifest.record_stores.push(row.manifest.record_stores[0]); },
+    (row: typeof source) => { delete row.manifest.owner_connections[0].provider_profile_key; },
+    (row: typeof source) => { row.manifest.owner_connections[0].runtime_requirement_key = 'foreign'; },
+    (row: typeof source) => { delete row.manifest.owner_connections[0].provider_profile_key; delete row.manifest.owner_connections[0].runtime_requirement_key; },
+    (row: typeof source) => { row.manifest.unknown_authority = true; },
+  ];
+  for (const change of changes) { const fixture = structuredClone(source); change(fixture); assert.throws(() => normalizeAppInstallation(fixture)); }
+});
 
 const now = '2026-09-01T00:00:00.000Z';
 const privateState = { key: 'drafts', label: 'Drafts',
   schema: { type: 'object', properties: { body: { type: 'string', maxLength: 4096 } }, required: ['body'], additionalProperties: false },
   max_record_bytes: 16384, max_records: 32, max_total_bytes: 131072, retention_days: 30 };
+const documentMetadata={type:'object',additionalProperties:false,required:['account_id','subject'],properties:{account_id:{type:'string',maxLength:200},subject:{type:'string',maxLength:200,format:'single_line'}}};
+const documentAccess=[{resource_key:'mail',document:{max_characters:16384,metadata_schema:documentMetadata}}];
+
+test('document activation review preserves exact policy and rejects changed or omitted metadata authority',()=>{
+ const fixture=attachmentInstallation();Object.assign(fixture.manifest,{resource_content:documentAccess});const parsed=normalizeAppInstallation(fixture).manifest;
+ assert.equal(parsed.schema_version,'7');if(parsed.schema_version!=='7')throw Error('Wrong protocol');assert.deepEqual(parsed.resource_content,documentAccess);
+ assert.deepEqual(normalizeAppResourceContentReview(documentAccess,parsed.resource_content,[{key:'mail'}]),documentAccess);
+ assert.equal(normalizeAppResourceContentReview(undefined,undefined,[{key:'mail'}]),undefined);
+ for(const changed of [undefined,[{resource_key:'mail',document:{max_characters:16383,metadata_schema:documentMetadata}}],[{resource_key:'mail',document:{max_characters:16384}}],
+  [{resource_key:'mail',document:{max_characters:16384,metadata_schema:{...documentMetadata,required:['subject']}}}]])assert.throws(()=>normalizeAppResourceContentReview(changed,parsed.resource_content,[{key:'mail'}]));
+ assert.throws(()=>normalizeAppResourceContentReview(documentAccess,undefined,[{key:'mail'}]));
+});
+
+test('document review rejects unknown keys at every schema level and unsupported resources or bounds',()=>{
+ const doc=documentAccess[0]!;
+ const badSchemas=[{...documentMetadata,unknown:true},{...documentMetadata,required:['missing']},{...documentMetadata,required:['account_id','account_id']},
+  {...documentMetadata,properties:{account_id:{type:'string',maxLength:200,pattern:'.*'}}},
+  {...documentMetadata,properties:{account_id:{type:'string',maxLength:200,title:'<script>'}}},
+  {...documentMetadata,properties:{account_id:{type:'object'}}}];
+ for(const value of [[],[doc,doc],[{...doc,unknown:true}],[{...doc,resource_key:'unknown'}],[{...doc,document:{...doc.document,html:true}}],
+  ...[0,16385,1.5].map(max_characters=>[{...doc,document:{max_characters}}]),...badSchemas.map(metadata_schema=>[{...doc,document:{...doc.document,metadata_schema}}])])assert.throws(()=>normalizeAppResourceContent(value,[{key:'mail'}]));
+});
 
 function attachmentInstallation(state: unknown = [privateState]) {
   return { ...installation('0'), manifest: {
@@ -46,6 +125,43 @@ test('Settings rejects malformed private-state display declarations and unrelate
   }
   const unknown = attachmentInstallation(); Object.assign(unknown.manifest, { unsafe_css: 'body{}' });
   assert.throws(() => normalizeAppInstallation(unknown));
+});
+
+test('Settings preserves exact reviewed file/payload declarations and admits supported PDF display policy', () => {
+  const files = { max_file_bytes: 2_097_152, max_files_per_record: 1, max_total_bytes_per_record: 2_097_152, allowed_media_types: ['application/pdf'] };
+  const action_payloads = [{ action_key: 'send_message', max_payload_bytes: 4_194_304 }];
+  const declaration = { ...privateState, files, action_payloads };
+  const fixture = attachmentInstallation([declaration]);
+  (fixture.manifest as Record<string, unknown>).runtime_actions = [{ key: 'send_message', label: 'Send', capability_key: 'send', runtime_requirement_key: 'mail' }];
+  fixture.manifest.sync_descriptors[0].attachments.allowed_media_types = ['application/pdf'];
+  const parsed = normalizeAppInstallation(fixture).manifest;
+  assert.equal(parsed.schema_version, '7');
+  if (parsed.schema_version !== '7') throw Error('Wrong protocol');
+  assert.deepEqual(parsed.private_state, [declaration]);
+  assert.deepEqual((parsed.sync_descriptors[0].attachments as { allowed_media_types: string[] }).allowed_media_types, ['application/pdf']);
+  for (const state of [{ ...declaration, files: { ...files, max_file_bytes: 2_097_153 } },
+    { ...declaration, action_payloads: [{ ...action_payloads[0], max_payload_bytes: 8_388_609 }] },
+    { ...declaration, action_payloads: [{ ...action_payloads[0], action_key: 'unknown' }] }]) {
+    assert.throws(() => normalizeAppInstallation({ ...fixture, manifest: { ...fixture.manifest, private_state: [state] } }));
+  }
+  assert.throws(() => normalizeAppInstallation({ ...fixture, manifest: { ...fixture.manifest,
+    private_state: [declaration, { ...declaration, key: 'other' }] } }));
+});
+
+test('Settings retains the exact personal account setup policy and rejects hidden authority fields', () => {
+  const policy = { key: 'personal', resource_key: 'mail', action_keys: [], max_consent_seconds: 86400 };
+  const fixture = attachmentInstallation();
+  const withPolicy = { ...fixture, manifest: { ...fixture.manifest, owner_connections: [policy] } };
+  const parsed = normalizeAppInstallation(withPolicy).manifest;
+  assert.equal(parsed.schema_version, '7');
+  if (parsed.schema_version !== '7') throw Error('Wrong protocol');
+  assert.deepEqual(parsed.owner_connections, [policy]);
+  assert.equal('owner_connections' in normalizeAppInstallation(fixture).manifest, false);
+  for (const policies of [[], [policy, policy], [{ ...policy, resource_key: 'other' }],
+    [{ ...policy, action_keys: ['unknown'] }], [{ ...policy, max_consent_seconds: 90 * 86400 + 1 }],
+    [{ ...policy, operator_user_id: 'arbitrary' }], [{ ...policy, eligible_roles: ['guest'] }]]) {
+    assert.throws(() => normalizeAppInstallation({ ...withPolicy, manifest: { ...withPolicy.manifest, owner_connections: policies } }));
+  }
 });
 const provenance = {
   source_repository: 'https://example.test/campaigns',

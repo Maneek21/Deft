@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@deft/app-kit':
-        specifier: file:deft-app-kit-0.1.0-alpha.7.tgz
-        version: file:deft-app-kit-0.1.0-alpha.7.tgz
+        specifier: file:deft-app-kit-0.1.0-alpha.9.tgz
+        version: file:deft-app-kit-0.1.0-alpha.9.tgz
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
@@ -26,9 +26,9 @@ importers:
 
 packages:
 
-  '@deft/app-kit@file:deft-app-kit-0.1.0-alpha.7.tgz':
-    resolution: {integrity: sha512-B2acB/CSsehaS1PxkYVp4t/IHxMV0cv1sUCBjFPSX4UeI9wwXnjrXRcrXOMxOKmaihdh6a7QmVdx6IUKvPw1OA==, tarball: file:deft-app-kit-0.1.0-alpha.7.tgz}
-    version: 0.1.0-alpha.7
+  '@deft/app-kit@file:deft-app-kit-0.1.0-alpha.9.tgz':
+    resolution: {integrity: sha512-Eyu1Abs2ctIm+t8zWPGK7Nn5I3KbH2uJ8BQEzbF3hGvG/CTONeJof81UrnZUvBSMyX02ReHhZd5vRzAvk5O6pA==, tarball: file:deft-app-kit-0.1.0-alpha.9.tgz}
+    version: 0.1.0-alpha.9
     hasBin: true
 
   '@esbuild/aix-ppc64@0.28.2':
@@ -360,7 +360,7 @@ packages:
 
 snapshots:
 
-  '@deft/app-kit@file:deft-app-kit-0.1.0-alpha.7.tgz':
+  '@deft/app-kit@file:deft-app-kit-0.1.0-alpha.9.tgz':
     dependencies:
       zod: 4.6.5
 

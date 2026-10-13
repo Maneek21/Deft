@@ -108,6 +108,15 @@ export async function executeToolCall(
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
 
+  if (toolName.startsWith('email_')) {
+    const { EMAIL_INTEGRATION_TOOL_NAMES,executeEmailIntegrationTool } = await import('./email-integration-agent-tools.js');
+    if (EMAIL_INTEGRATION_TOOL_NAMES.includes(toolName as typeof EMAIL_INTEGRATION_TOOL_NAMES[number])) {
+      try {
+        return { result: await executeEmailIntegrationTool(toolName, params, {kind:'defty',org_id:orgId,user_id:_userId,conversation_id:conversationId,employee_id:agentEmployeeId}), citations:[] };
+      } catch(error) { return {result:{error:error instanceof Error ? error.message : 'EMAIL_TOOL_UNAVAILABLE'},citations:[]}; }
+    }
+  }
+
   if (isRuntimeWorkflowTool(toolName)) {
     try {
       const actor = await buildModuleReadActor(orgId, _userId, { conversationId, agentEmployeeId });
@@ -578,16 +587,47 @@ export async function executeToolCall(
         .orderBy(desc(taskActivity.created_at))
         .limit(5);
 
+      // Use the same live read boundary for children as for the parent.
+      // Descriptions and old comments are not an authoritative subtask list.
+      const subtasks = await db
+        .select({
+          id: tasks.id,
+          number: tasks.number,
+          title: tasks.title,
+          status: tasks.status,
+          due_date: tasks.due_date,
+          assignee_name: users.name,
+          project_prefix: projects.prefix,
+        })
+        .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
+        .leftJoin(users, eq(tasks.assignee_id, users.id))
+        .where(and(
+          eq(tasks.parent_task_id, task.id),
+          eq(tasks.org_id, orgId),
+          eq(tasks.is_deleted, false),
+          ...(await taskReadConditions()),
+        ))
+        .orderBy(tasks.sort_order, tasks.number);
+
+      const taskUrl = `/tasks?task=${encodeURIComponent(`${task.project_prefix}-${task.number}`)}`;
       citations.push({
         type: 'task',
         id: task.id,
         title: `${task.project_prefix}-${task.number}: ${task.title}`,
+        url: taskUrl,
       });
 
       const resolvedConfig = await getProjectResolvedConfig(task.project_id);
       return {
         result: {
           ...task,
+          url: taskUrl,
+          subtasks: subtasks.map((child) => ({
+            ...child,
+            identifier: `${child.project_prefix}-${child.number}`,
+            url: `/tasks?task=${encodeURIComponent(`${child.project_prefix}-${child.number}`)}`,
+          })),
           allowed_next_statuses: allowedNextStatuses(task.status, resolvedConfig),
           comments,
           activity,
@@ -1129,6 +1169,8 @@ export async function executeToolCall(
       const contextResults = await retrieveContext({
         query: params.query,
         org_id: orgId,
+        user_id: _userId,
+        conversation_id: conversationId,
         agent_employee_id: agentEmployeeId,
         types: ['decisions'],
         limit: 20,
@@ -1550,6 +1592,8 @@ export async function executeToolCall(
       const contextResults = await retrieveContext({
         query,
         org_id: orgId,
+        user_id: _userId,
+        conversation_id: conversationId,
         agent_employee_id: agentEmployeeId,
         types: retrieveTypes,
         limit,
@@ -2077,7 +2121,7 @@ export async function executeToolCall(
 
     case 'wiki_search': {
       const reader = await resolveNativeWikiReader({ orgId, userId: _userId,
-        agentEmployeeId });
+        agentEmployeeId, conversationId });
       const pages = reader ? await searchNativeWiki(reader, params) : [];
       const citations: Citation[] = pages.map((p) => ({
         type: 'wiki',
@@ -2090,7 +2134,7 @@ export async function executeToolCall(
     case 'wiki_read': {
       const { slug } = params;
       const reader = await resolveNativeWikiReader({ orgId, userId: _userId,
-        agentEmployeeId });
+        agentEmployeeId, conversationId });
       const read = reader && typeof slug === 'string' ? await readNativeWiki(reader, slug) : null;
       if (!read) {
         return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
@@ -2099,6 +2143,7 @@ export async function executeToolCall(
         result: {
           title: read.page.title,
           slug: read.page.slug,
+          url: `/knowledge?slug=${encodeURIComponent(read.page.slug)}`,
           type: read.page.type,
           scope: read.page.scope,
           content: read.page.content,
@@ -2110,7 +2155,7 @@ export async function executeToolCall(
           backlinks: read.backlinks,
           citations: read.citations,
         },
-        citations: [{ type: 'wiki', id: read.page.id, title: read.page.title }],
+        citations: [{ type: 'wiki', id: read.page.id, title: read.page.title, url: `/knowledge?slug=${encodeURIComponent(read.page.slug)}` }],
       };
     }
 

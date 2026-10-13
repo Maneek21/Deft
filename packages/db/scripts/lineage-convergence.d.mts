@@ -1,0 +1,11 @@
+export type ReviewedLedgerIdentity = { version: string; description: string; checksum: string; kind: 'baseline' | 'migration' };
+export type ReviewedMigration = ReviewedLedgerIdentity & { file: string };
+export type ReviewedVariant = { lineage: 'public61' | 'demo61'; stage: 'original' | 'current'; catalog_digest: string; ledger: ReviewedLedgerIdentity[]; append: ReviewedMigration[] };
+export type ReviewedPlan = { schema_version: 'deft.reviewed_release_lineages.v1'; variants: ReviewedVariant[]; files: {file: string; checksum: string}[] };
+export function canonical(value: unknown): string;
+export function hash(value: string | Buffer): string;
+export function sameLedger(actual: unknown, expected: unknown): boolean;
+export function selectReviewedHistory(snapshot: {ledger: unknown; digest: string}, plan: ReviewedPlan): ReviewedVariant;
+export function loadReviewedPlan(): ReviewedPlan;
+export function assertReviewedCurrent(client: {query: (...args: any[]) => Promise<any>}): Promise<ReviewedVariant>;
+export function convergeReviewedRelease(client: {query: (...args: any[]) => Promise<any>}, options?: {status?: boolean; dryRun?: boolean}): Promise<ReviewedVariant>;

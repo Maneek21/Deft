@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { loadRuntimeOwnerTarget } from './app-runtime-owner-target.js';
 import { z } from 'zod';
 import {
   appRuns,
@@ -12,6 +13,8 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { isModuleError } from './module-errors.js';
 import { assertCurrentModuleManagerWithExecutor } from './module-service.js';
+import { loadOwnerConnectionAdmission, assertOwnerConnectionMember } from './app-owner-connection-authority.js';
+import type { OwnerConnectionAdmissionReference } from './app-owner-connection-contract.js';
 import { persistCapabilityProviderSnapshotWithExecutor } from './capability-provider-snapshot-repository.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { loadReviewedRuntimeAction } from './app-runtime-review.js';
@@ -21,7 +24,7 @@ import { issueAppRuntimeSession } from './app-runtime-authority.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { isAppV5RuntimeActionsEnabled } from './env.js';
 
-type RuntimeManagementOptions = Readonly<{ guard?: WebAuthorityGuard }>;
+type RuntimeManagementOptions = Readonly<{ guard?: WebAuthorityGuard; ownerAdmission?: OwnerConnectionAdmissionReference;technical_renewal?:Readonly<{requested_until:Date;sid:string}> }>;
 async function finalComposition(tx: Parameters<Parameters<typeof db.transaction>[0]>[0],protocol:string,
   participants:readonly string[],options:RuntimeManagementOptions) {
   if(protocol!=='7')return;
@@ -36,6 +39,7 @@ const ActionKey = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
   .refine((value) => !/^(deft|core|system)(_|$)/.test(value));
 
 export const RuntimeReviewInputSchema = z.strictObject({
+  owner_resource_binding_id: Id.optional(),
   installation_id: Id,
   action_key: ActionKey,
   operator_user_id: Id,
@@ -53,8 +57,8 @@ export type RuntimeReviewInput = z.infer<typeof RuntimeReviewInputSchema>;
 export type RuntimeActivateInput = z.infer<typeof RuntimeActivateInputSchema>;
 
 type Manager = Extract<ModuleActor, { kind: 'human' }>;
-function manager(actor: ModuleActor): asserts actor is Manager {
-  if (actor.kind !== 'human' || (actor.role !== 'owner' && actor.role !== 'admin')
+function manager(actor: ModuleActor, ownerAdmission = false): asserts actor is Manager {
+  if (actor.kind !== 'human' || !(ownerAdmission ? ['owner', 'admin', 'member'] : ['owner', 'admin']).includes(actor.role)
     || (actor.source !== 'ui' && actor.source !== 'rest')) {
     throw new AppError('Only interactive workspace owners and admins can review App runtimes',
       'APP_ACCESS_DENIED', 403);
@@ -76,7 +80,7 @@ async function assertManager(tx: Parameters<Parameters<typeof db.transaction>[0]
 }
 
 async function reviewContext(tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  actor: Manager, input: RuntimeReviewInput) {
+  actor: Manager, input: RuntimeReviewInput, ownerAdmission?: OwnerConnectionAdmissionReference) {
   // All Runtime management paths lock member rows before App. Sorting these
   // two identities also avoids owner A / operator B review racing with owner
   // B / operator A review in the opposite row order.
@@ -84,7 +88,7 @@ async function reviewContext(tx: Parameters<Parameters<typeof db.transaction>[0]
     await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${actor.org_id}
       AND user_id = ${userId} FOR UPDATE`);
   }
-  await assertManager(tx, actor);
+  if (ownerAdmission) await assertOwnerConnectionMember(tx, actor.org_id, actor.actor_id); else await assertManager(tx, actor);
   const [operator] = await tx.select({ is_active: orgMembers.is_active,
     role: orgMembers.role }).from(orgMembers).where(and(
       eq(orgMembers.org_id, actor.org_id), eq(orgMembers.user_id, input.operator_user_id),
@@ -95,6 +99,9 @@ async function reviewContext(tx: Parameters<Parameters<typeof db.transaction>[0]
   const reviewed = await loadReviewedRuntimeAction(tx, actor.org_id,
     input.installation_id, input.action_key);
   const { installation, version, grant, action } = reviewed;
+  const admission = ownerAdmission ? await loadOwnerConnectionAdmission(tx, actor.org_id, ownerAdmission) : null;
+  if (admission && (!input.owner_resource_binding_id || admission.row.app_installation_id !== installation.id
+    || admission.row.operator_user_id !== input.operator_user_id || !admission.policy.action_keys.includes(action.action_key))) denied();
   if (installation.state !== 'active'
     || installation.active_version_id !== version.id
     || installation.active_grant_snapshot_id !== grant.id
@@ -111,6 +118,13 @@ async function reviewContext(tx: Parameters<Parameters<typeof db.transaction>[0]
     || action.host_policy.review_scope !== 'per_invocation'
     || action.host_policy.retry_class !== 'unsafe_or_unknown'
     || action.host_policy.retention_class !== 'standard') stale();
+  const target = input.owner_resource_binding_id ? await loadRuntimeOwnerTarget(tx, {
+    org_id: actor.org_id, owner_user_id: actor.actor_id, resource_binding_id: input.owner_resource_binding_id,
+    installation_id: installation.id, app_version_id: version.id, grant_snapshot_id: grant.id,
+    operator_user_id: input.operator_user_id, prelocked_participant_ids: [actor.actor_id, input.operator_user_id],
+  }) : null;
+  if (admission && (!target || target.registration.owner_connection_admission_id !== ownerAdmission!.admission_id
+    || target.registration.owner_connection_admission_digest !== ownerAdmission!.admission_digest)) denied();
   const review = Object.freeze({
     schema_version: 'deft.app_runtime_management_review.v1' as const,
     org_id: actor.org_id,
@@ -126,34 +140,46 @@ async function reviewContext(tx: Parameters<Parameters<typeof db.transaction>[0]
     operation_name: action.operation_name,
     contract_digest: action.contract_digest,
     host_policy: action.host_policy,
+    ...(ownerAdmission ? { owner_connection_admission: ownerAdmission } : {}),
+    ...(target ? { owner_resource_binding_id: target.binding.id, target_key: target.binding.target_key,
+      target_descriptor_digest: target.binding.descriptor_digest, target_runtime_epoch: target.registration.runtime_epoch } : {}),
   });
-  return { ...reviewed, review: { ...review, review_digest: digestAppGrantValue(review) } };
+  return { ...reviewed, target, review: { ...review, review_digest: digestAppGrantValue(review) } };
 }
 
 export async function prepareRuntimeBindingReview(actor: ModuleActor, value: unknown, options:RuntimeManagementOptions={}) {
-  manager(actor);
+  manager(actor, Boolean(options.ownerAdmission));
   const input = RuntimeReviewInputSchema.parse(value);
   return db.transaction(async (tx) => {
-    const { review,version } = await reviewContext(tx, actor, input);
+    const { review,version } = await reviewContext(tx, actor, input, options.ownerAdmission);
     await finalComposition(tx,version.protocol_version,[actor.actor_id,input.operator_user_id],options);
     return review;
   });
 }
 
 export async function activateRuntimeBinding(actor: ModuleActor, value: unknown, options:RuntimeManagementOptions={}) {
-  manager(actor);
+  manager(actor, Boolean(options.ownerAdmission));
   const input = RuntimeActivateInputSchema.parse(value);
   return db.transaction(async (tx) => {
-    const { installation, version, grant, action, review } = await reviewContext(tx, actor, input);
+    const { installation, version, grant, action, review, target } = await reviewContext(tx, actor, input, options.ownerAdmission);
     if (review.review_digest !== input.expected_review_digest) stale();
-    // One live binding for an action/version/grant. Historical revoked rows
-    // remain immutable and may coexist with a later reviewed registration.
+    // Account actions are unique by owner and target, even when two resource
+    // descriptors anchor the same target. Legacy unanchored actions cover the
+    // primary source, so they also conflict with any anchored primary action.
+    const anchoredTarget = sql`EXISTS (SELECT 1 FROM app_resource_bindings target
+      WHERE target.org_id=${actor.org_id} AND target.id=${appRuntimeBindings.owner_resource_binding_id}
+        AND target.app_installation_id=${installation.id}
+        AND target.target_key=${target?.binding.target_key ?? 'primary'}
+        ${target ? sql`AND target.owner_user_id=${actor.actor_id}` : sql``})`;
+    const competingTarget = !target || target.binding.target_key === 'primary'
+      ? or(isNull(appRuntimeBindings.owner_resource_binding_id), anchoredTarget) : anchoredTarget;
     const [existing] = await tx.select({ id: appRuntimeBindings.id }).from(appRuntimeBindings)
       .where(and(eq(appRuntimeBindings.org_id, actor.org_id),
         eq(appRuntimeBindings.app_installation_id, installation.id),
         eq(appRuntimeBindings.app_version_id, version.id),
         eq(appRuntimeBindings.grant_snapshot_id, grant.id),
         eq(appRuntimeBindings.action_key, action.action_key),
+        competingTarget,
         inArray(appRuntimeBindings.state, ['disabled', 'active']))).limit(1);
     if (existing) throw new AppError('App Runtime action is already registered', 'APP_STATE_CONFLICT', 409);
     const now = new Date();
@@ -163,6 +189,8 @@ export async function activateRuntimeBinding(actor: ModuleActor, value: unknown,
       id: registrationId, org_id: actor.org_id,
       app_installation_id: installation.id, app_version_id: version.id,
       grant_snapshot_id: grant.id, operator_user_id: input.operator_user_id,
+      ...(options.ownerAdmission ? { owner_connection_admission_id: options.ownerAdmission.admission_id,
+        owner_connection_admission_digest: options.ownerAdmission.admission_digest } : {}),
       contract_version: APP_RUNTIME_CHANNEL_VERSION, state: 'disabled',
       created_at: now, updated_at: now,
     });
@@ -183,6 +211,7 @@ export async function activateRuntimeBinding(actor: ModuleActor, value: unknown,
       app_installation_id: installation.id, app_version_id: version.id,
       grant_snapshot_id: grant.id, runtime_registration_id: registrationId,
       action_key: action.action_key,
+      owner_resource_binding_id: input.owner_resource_binding_id ?? null,
       interface_identity: `deft.runtime.v1:${actor.org_id.toLowerCase()}:${installation.id.toLowerCase()}:${action.action_key}`,
       provider_kind: 'app_runtime', provider_instance_id: registrationId,
       provider_snapshot_id: providerSnapshotId, operation_name: action.operation_name,
@@ -222,7 +251,8 @@ export async function issueRuntimeOperatorSession(actor: ModuleActor, bindingId:
     throw new AppError('App Runtime channel is disabled', 'APP_FEATURE_DISABLED', 503);
   }
   const issued = await issueAppRuntimeSession({ org_id: actor.org_id,
-    runtime_binding_id: Id.parse(bindingId), operator_user_id: actor.actor_id, guard:options.guard });
+    runtime_binding_id: Id.parse(bindingId), operator_user_id: actor.actor_id, guard:options.guard,
+    ...(options.technical_renewal?{technical_renewal:{...options.technical_renewal,role:actor.role}}:{}) });
   if (!issued) denied();
   return issued;
 }

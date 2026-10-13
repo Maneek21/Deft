@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+test('native Email sync resolves through the scheduled leased worker registry',async()=>{
+  const workers=await import('../src/workers/index.js');
+  assert.equal(typeof await workers._getScheduledJobHandlerForTest('native-email-sync'),'function');
+});
+
 test('scheduled chat-knowledge-batch resolves to a real handler', async () => {
   const workers = await import('../src/workers/index.js');
   const handler = await workers._getScheduledJobHandlerForTest('chat-knowledge-batch');

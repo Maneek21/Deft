@@ -127,7 +127,7 @@ export { sanitizeModuleActionParamsForReceipt };
  * record through this resolver. App Runs remain outside MCP action catalogs
  * and budgets; this predicate only owns the human approval handoff. */
 export function isApprovalResolverAction(action: string): boolean {
-  return action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+  return action === 'email_send' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
 }
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
@@ -821,7 +821,7 @@ async function dispatchAction(
 export async function approveAction(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> } = {},
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; emailReviewActor?: import('./email-mailbox-service.js').EmailActor } = {},
 ): Promise<ApprovalResolverResult> {
   const result = await withDbAdvisoryLock(
     `agent-approval:${actionId}`,
@@ -836,7 +836,7 @@ export async function approveAction(
 async function approveActionLocked(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> },
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void>; emailReviewActor?: import('./email-mailbox-service.js').EmailActor },
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -926,7 +926,18 @@ async function approveActionLocked(
     };
   }
 
-  if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
+  if (row.action === 'email_send' && approverUserId !== row.user_id) {
+    return {status:'error',code:'FORBIDDEN',message:'Only the mailbox owner may review Email Send'};
+  }
+  if(row.action==='email_send'){
+    try{if(!options.emailReviewActor||options.internal)throw Error('EMAIL_HUMAN_REVIEW_REQUIRED');
+      const {emailSendReviewPreview}=await import('./email-agent-tool-runtime.js');
+      const preview=await emailSendReviewPreview(row.id,row.org_id,row.user_id);
+      const {getEmailMailboxAuthority}=await import('./email-account-authority-router.js');
+      await(await getEmailMailboxAuthority(db)).current(options.emailReviewActor,{org_id:row.org_id,owner_user_id:row.user_id,account_id:preview.account_id},'human_send');
+    }catch{return {status:'error',code:'FORBIDDEN',message:'Exact current mailbox-owner review is required; draft or access may have changed'};}
+  }
+  if (row.action !== 'email_send' && !MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
     return {
       status: 'error',
       code: 'UNSUPPORTED_ACTION',
@@ -1133,7 +1144,10 @@ async function approveActionLocked(
             ? actionParams.origin_user_id
             : null
         : null;
-    if (
+    if (row.action === 'email_send') {
+      const { executeReviewedEmailSend } = await import('./email-agent-tool-runtime.js');
+      toolResult = {content:[{type:'text',text:JSON.stringify(await executeReviewedEmailSend(row.id,row.org_id,row.user_id,options.emailReviewActor))}]};
+    } else if (
       ACTION_TOOLS.has(row.action)
       && (!MCP_ACTION_KINDS.has(row.action) || (isModuleMutation && !ctx))
     ) {

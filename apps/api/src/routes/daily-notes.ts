@@ -7,6 +7,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { createNativeNote } from '../lib/native-context-create.js';
 
 const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
 
@@ -200,17 +201,11 @@ dailyNoteRoutes.post('/', async (c) => {
     }
   }
 
-  const [note] = await db.insert(notes).values({
-    org_id: user.org_id,
-    user_id: user.id,
-    title: parsed.success && parsed.data.title ? parsed.data.title : '',
-    content: parsed.success && parsed.data.content ? parsed.data.content : '',
-    icon: parsed.success && parsed.data.icon ? parsed.data.icon : null,
-    folder_id: parsed.success && parsed.data.folder_id ? parsed.data.folder_id : null,
-    is_template: parsed.success && parsed.data.is_template ? parsed.data.is_template : false,
+  const note = await createNativeNote(db, user, {
+    ...(parsed.success ? parsed.data : {}),
     visibility,
     visibility_space_id: visibility === 'space' ? visibilitySpaceId : null,
-  }).returning();
+  });
 
   // Task 5.1 — scan note content for PREFIX-N task refs on create
   if (note && note.content) {

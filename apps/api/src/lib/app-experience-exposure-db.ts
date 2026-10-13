@@ -9,6 +9,7 @@ export const APP_EXPERIENCE_EXPOSURE_DB_LIMITS = Object.freeze({
   lock_ms: 250,
   statement_ms: 2_000,
   operation_ms: 3_000,
+  confirmation_operation_ms: 15_000,
 });
 
 type ExposureDatabase = ReturnType<typeof drizzle<typeof schema>>;
@@ -34,8 +35,13 @@ export function createExperienceExposureDatabase(connectionString: string) {
       run: (tx: ExperienceExposureTransaction) => Promise<T>,
       signal?: AbortSignal,
       sliceDeadline?: number,
+      observeQuery?: (sample: Readonly<{ kind: 'query' | 'acquisition'; elapsed_ms: number }>) => void,
+      purpose?: 'human_action_confirmation',
     ): Promise<T> {
-      const deadline = Math.min(performance.now() + APP_EXPERIENCE_EXPOSURE_DB_LIMITS.operation_ms,
+      const operationLimit = purpose === 'human_action_confirmation'
+        ? APP_EXPERIENCE_EXPOSURE_DB_LIMITS.confirmation_operation_ms
+        : APP_EXPERIENCE_EXPOSURE_DB_LIMITS.operation_ms;
+      const deadline = Math.min(performance.now() + operationLimit,
         sliceDeadline ?? Infinity);
       const check = () => {
         signal?.throwIfAborted();
@@ -44,10 +50,21 @@ export function createExperienceExposureDatabase(connectionString: string) {
       check();
       // pg removes timed-out pending acquisitions from its queue. We always
       // await acquisition settlement, including cancellation while queued.
+      const observe = (kind: 'query' | 'acquisition', elapsed_ms: number) => {
+        try { observeQuery?.({ kind, elapsed_ms: Math.max(0, elapsed_ms) }); } catch { /* Diagnostics never affect SQL authority. */ }
+      };
+      const acquisitionAt = performance.now();
       const client = await pool.connect().catch((error: unknown) => {
+        observe('acquisition', performance.now() - acquisitionAt);
         signal?.throwIfAborted();
         throw error;
       });
+      observe('acquisition', performance.now() - acquisitionAt);
+      const observedQuery = async (query: string | pg.QueryConfig, values?: unknown[]) => {
+        const at = performance.now();
+        try { return await client.query(query, values); }
+        finally { observe('query', performance.now() - at); }
+      };
       let broken = false;
       let settled = false;
       let discarded: Promise<void> | undefined;
@@ -72,7 +89,7 @@ export function createExperienceExposureDatabase(connectionString: string) {
               // Rollback must remain possible after abort/deadline/SQL errors.
               if (text.toLowerCase() === 'rollback') {
                 if (broken) throw new Error('Experience exposure database connection discarded');
-                try { const result = await client.query(query, values); settled = true; return result; }
+                try { const result = await observedQuery(query, values); settled = true; return result; }
                 catch (error) { discard(); throw error; }
               }
               check();
@@ -84,7 +101,7 @@ export function createExperienceExposureDatabase(connectionString: string) {
                 // round trip at every SQL boundary until the deadline actually
                 // requires a stricter transaction-local server limit.
                 if (statement < statementLimit || lock < lockLimit) {
-                  await client.query("SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", [
+                  await observedQuery("SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", [
                     String(statement), String(lock),
                   ]);
                   statementLimit = statement; lockLimit = lock;
@@ -92,7 +109,7 @@ export function createExperienceExposureDatabase(connectionString: string) {
                 check();
               }
               let result;
-              try { result = await client.query(query, values); }
+              try { result = await observedQuery(query, values); }
               catch (error) { discard(); throw error; }
               if (text.toLowerCase() === 'commit') settled = true;
               // COMMIT has already settled and cannot be undone. All earlier
@@ -113,7 +130,7 @@ export function createExperienceExposureDatabase(connectionString: string) {
         // BEGIN can succeed immediately before cancellation, outside Drizzle's
         // transaction callback. Cover that path as well before reusing the slot.
         if (!settled && !broken) {
-          try { await client.query('ROLLBACK'); }
+          try { await observedQuery('ROLLBACK'); }
           catch { discard(); }
         }
         await discarded;

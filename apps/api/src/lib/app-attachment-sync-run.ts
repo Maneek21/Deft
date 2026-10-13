@@ -7,6 +7,7 @@ import { buildResourceSyncAuthorizationSnapshot } from './app-resource-sync-auth
 import { loadLiveAttachmentSyncAuthority, type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { attachmentFinalAuthorityIsCurrent, attachmentStale } from './app-attachment-authority.js';
 import { digestAppGrantValue } from './app-grant-service.js';
+import {requireCurrentResourceObservationRun,observedResourceAuthorization,hasResourceObservationPin} from './app-resource-observation-authority.js';
 import { appAttachmentClaimMatches } from './app-attachment-policy.js';
 
 /** Existing Run authorization carrier; channel3 separately binds owner-selected
@@ -35,6 +36,9 @@ export async function loadAttachmentStageAuthority(tx: AppRunTransaction, input:
     token_hash: input.token_hash, clock: input.clock });
   if (!authority) throw attachmentStale();
   const { binding, registration, installation, version, grant } = authority;
+  // Observation v1 is scalar metadata only; it cannot stage host file bytes.
+  if(hasResourceObservationPin(run.authorization_snapshot,binding.id))throw attachmentStale();
+  const base=buildAttachmentSyncAuthorizationSnapshot(authority);
   if (run.origin_kind !== 'app' || run.provider_kind !== 'app_runtime' || run.origin_resource_binding_id !== binding.id
     || run.origin_runtime_binding_id !== null || run.origin_app_installation_id !== installation.id
     || run.origin_app_version_id !== version.id || run.origin_app_grant_snapshot_id !== grant.id
@@ -44,7 +48,7 @@ export async function loadAttachmentStageAuthority(tx: AppRunTransaction, input:
     || run.operation_name !== binding.operation_name || run.review_scope !== binding.review_scope
     || run.risk_class !== binding.risk_class || run.review_requirement !== binding.review_requirement
     || run.retry_class !== binding.retry_class || run.retention_class !== binding.retention_class
-    || canonicalCapabilityJson(run.authorization_snapshot) !== canonicalCapabilityJson(buildAttachmentSyncAuthorizationSnapshot(authority))) throw attachmentStale();
+    || canonicalCapabilityJson(run.authorization_snapshot) !== canonicalCapabilityJson(base)) throw attachmentStale();
   const [intent] = await tx.select().from(appSyncIntents).where(and(eq(appSyncIntents.org_id,input.org_id),eq(appSyncIntents.run_id,run.id))).limit(1);
   if (!intent || intent.resource_binding_id !== binding.id || intent.app_installation_id !== installation.id
     || intent.app_version_id !== version.id || intent.grant_snapshot_id !== grant.id
@@ -71,6 +75,8 @@ export async function assertAttachmentStageFinalAuthority(tx: AppRunTransaction,
   authority: Awaited<ReturnType<typeof loadLiveAttachmentSyncAuthority>>;
 }, clock: () => Date, signal?: AbortSignal, extraDeadlines: readonly Date[] = []) {
   const { run, attempt, authority } = context;
+  if(authority&&hasResourceObservationPin(run.authorization_snapshot,authority.binding.id)
+    &&!await requireCurrentResourceObservationRun(tx,run.org_id,run.id,authority,clock))throw attachmentStale();
   if (!authority || !attempt.lease_expires_at || !authority.binding.consent_expires_at
     || !await attachmentFinalAuthorityIsCurrent(tx, [authority.binding.owner_user_id,authority.registration.operator_user_id],
       { clock, signal, expires_at: [run.input_expires_at,run.result_expires_at,attempt.lease_expires_at,

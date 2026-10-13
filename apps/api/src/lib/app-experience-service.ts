@@ -1,11 +1,15 @@
+import {inspectionStoreLineage} from './app-run-inspection-lineage.js';
 import { APP_RUN_TERMINAL_STATES } from '@deft/shared';
 import { experienceRunState } from './app-experience-run-presentation.js';
-import { randomUUID } from 'node:crypto';
-import { and, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import {experienceTerminalOutput} from './app-experience-run-output.js';
+import {samplePrivateAccessClock,type PrivateAccessClock} from './app-private-access-clock.js';
+import { randomUUID,createHash } from 'node:crypto';
+import {canonicalAppDataJson} from '@deft/app-kit';
+import { and, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { appExperienceSessions, appGrantSnapshots, appInstallations, appRuntimeBindings, appRuntimeRegistrations,
-  appVersions, appNativeBindings, appRuns, agentActions, orgMembers, users, webSessions, appExperienceConsentGrants } from '@deft/db/schema';
-import { parseRuntimeAppManifest, verifyDeftAppPackageJson,
+import { appExperienceSessions, appGrantSnapshots, appInstallations, appRuntimeBindings, appRuntimeRegistrations, appResourceBindings,
+  appVersions, appNativeBindings, appRuns, appRunAttempts, appRunSecretPayloads, agentActions, orgMembers, users, webSessions, appExperienceConsentGrants } from '@deft/db/schema';
+import { parseRuntimeAppManifest,
   verifyDeftExperienceArtifact, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
@@ -15,11 +19,15 @@ import { isAppExperienceResourceExposureEnabled, isAppV5RuntimeActionsEnabled, i
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 import { experienceExposureDatabase } from './app-experience-exposure-db.js';
 import { ExperienceConsentScopeSchema, experienceConsentDigest } from './app-experience-consent-contract.js';
+import { verifiedPublicPackageJson } from './app-public-package-validation-memo.js';
+import {currentConnectionSessionLocators} from './app-connection-current-locators.js';
+import {experienceTargetAccountLabels} from './app-experience-target-labels.js';
 
 const SESSION_MS = 15 * 60_000;
 const MAX_ACTIVE_PER_WEB_APP = 8;
 const uuid = z.string().uuid();
 const key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/);
+export const ExperienceSessionTargetSchema = z.strictObject({ resource_target_key: key.optional() });
 const actionRequest = z.strictObject({
   request_id: z.string().regex(/^request_[1-9][0-9]{0,8}$/),
   input: z.unknown(),
@@ -28,6 +36,16 @@ export type ExperienceCaller = Readonly<{ org_id: string; user_id: string; sid: 
 type Executor = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'execute'>;
 const denied = () => new AppError('Experience access denied', 'APP_ACCESS_DENIED', 403);
 const stale = () => new AppError('Experience session is no longer current', 'APP_STALE', 409);
+
+// The selector nominates reviewed owner custody; it never grants authority.
+function runtimeTargetScope(caller: ExperienceCaller, session: typeof appExperienceSessions.$inferSelect) {
+  const ownedTarget = sql`EXISTS (SELECT 1 FROM app_resource_bindings target
+    WHERE target.org_id=${caller.org_id} AND target.id=${appRuntimeBindings.owner_resource_binding_id}
+      AND target.owner_user_id=${caller.user_id} AND target.app_installation_id=${session.app_installation_id}
+      AND target.target_key=${session.resource_target_key})`;
+  return session.resource_target_key === 'primary'
+    ? or(isNull(appRuntimeBindings.owner_resource_binding_id), ownedTarget) : ownedTarget;
+}
 
 export async function assertExperienceMember(tx: Executor, caller: ExperienceCaller) {
   const [member] = await tx.select({ is_active: orgMembers.is_active }).from(orgMembers)
@@ -62,7 +80,7 @@ export async function verifiedExperienceBundle(version: typeof appVersions.$infe
   if (manifest.schema_version !== (attachment ? '7' : native ? '6' : resource ? '5' : '4')) throw stale();
   const reference = manifest.experiences.find((item) => item.key === experienceKey);
   if (!reference) throw denied();
-  const verified = await verifyDeftAppPackageJson(JSON.stringify(version.package));
+  const verified = await verifiedPublicPackageJson(JSON.stringify(version.package));
   if (verified.digest !== version.package_digest
     || verified.package.manifest_digest !== version.manifest_digest
     || verified.package.manifest.schema_version !== (attachment ? '7' : native ? '6' : resource ? '5' : '4')) throw stale();
@@ -73,9 +91,10 @@ export async function verifiedExperienceBundle(version: typeof appVersions.$infe
     artifact_digest: reference.artifact_digest,
     bridge_version: reference.bridge_version,
     renderer_version: reference.renderer_version,
+    ...(reference.capabilities === undefined ? {} : { capabilities: reference.capabilities }),
   }, artifact);
   if (attachment) {
-    if (manifest.schema_version !== '7' || !['deft.experience_bundle.v2', 'deft.experience_bundle.v3'].includes(bundle.schema_version)
+    if (manifest.schema_version !== '7' || !['deft.experience_bundle.v2', 'deft.experience_bundle.v3','deft.experience_bundle.v4'].includes(bundle.schema_version)
       || manifest.native_actions.length || manifest.public_actions.length
       || bundle.resource_keys.some(key => !manifest.sync_descriptors.some(item => item.key === key))
       || bundle.action_keys.some(key => !manifest.runtime_actions.some(item => item.key === key))) throw stale();
@@ -91,17 +110,19 @@ export async function verifiedExperienceBundle(version: typeof appVersions.$infe
     || bundle.action_keys.some((action) => !manifest.runtime_actions.some((item) => item.key === action))) {
     throw stale();
   }
-  if (bundle.schema_version === 'deft.experience_bundle.v3'
-    && (manifest.schema_version !== '7' || !isAppPrivateStateEnabled()
-      || bundle.state_keys.some(key => !manifest.private_state?.some(state => state.key === key)))) throw stale();
+  if ((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4')
+    && (manifest.schema_version !== '7' || (bundle.state_keys.length > 0 && !isAppPrivateStateEnabled())
+      || bundle.state_keys.some(key => !manifest.private_state?.some(state => state.key === key))
+      || bundle.record_store_keys?.some(key => !manifest.record_stores?.some(store => store.key === key)))) throw stale();
   return { manifest, reference, bundle };
 }
 
 export class AppExperienceService {
   constructor(private readonly runtime: AppRuntimeActionService = appRuntimeActionService) {}
 
-  async create(caller: ExperienceCaller, installationId: string, experienceKey: string) {
+  async create(caller: ExperienceCaller, installationId: string, experienceKey: string, options: unknown = {}) {
     uuid.parse(installationId); key.parse(experienceKey);
+    const targetKey = ExperienceSessionTargetSchema.parse(options).resource_target_key ?? 'primary';
     return db.transaction(async (tx) => {
       await assertExperienceMember(tx, caller);
       // The cap is serialized across API processes, including parallel tabs.
@@ -130,7 +151,17 @@ export class AppExperienceService {
         const current = await loadReviewedAttachmentApp(tx, caller.org_id, installationId);
         if (!current.composition || current.version.id !== version.id || current.grant.id !== grant.id) throw stale();
       }
-      const { reference, bundle } = await verifiedExperienceBundle(version, experienceKey);
+      const { manifest, reference, bundle } = await verifiedExperienceBundle(version, experienceKey);
+      if (targetKey !== 'primary') {
+        if (version.protocol_version !== '7' || !bundle.resource_keys.length) throw denied();
+        const resources = await tx.select({ key: appResourceBindings.resource_key }).from(appResourceBindings).where(and(
+          eq(appResourceBindings.org_id, caller.org_id), eq(appResourceBindings.owner_user_id, caller.user_id),
+          eq(appResourceBindings.app_installation_id, installation.id), eq(appResourceBindings.app_version_id, version.id),
+          eq(appResourceBindings.grant_snapshot_id, grant.id), eq(appResourceBindings.target_key, targetKey),
+          eq(appResourceBindings.state, 'active'), gt(appResourceBindings.consent_expires_at, new Date()),
+          inArray(appResourceBindings.resource_key, [...bundle.resource_keys])));
+        if (resources.length !== bundle.resource_keys.length || new Set(resources.map(row => row.key)).size !== resources.length) throw denied();
+      }
       const now = new Date();
       await tx.delete(appExperienceSessions).where(and(
         eq(appExperienceSessions.org_id, caller.org_id),
@@ -161,6 +192,7 @@ export class AppExperienceService {
         web_session_id: caller.sid, app_installation_id: installation.id,
         app_version_id: version.id, grant_snapshot_id: grant.id,
         experience_key: experienceKey, artifact_digest: reference.artifact_digest,
+        resource_target_key: targetKey,
         lifecycle_epoch: installation.lifecycle_epoch, grant_epoch: installation.grant_epoch,
         created_at: now, expires_at: expiresAt,
       });
@@ -177,8 +209,46 @@ export class AppExperienceService {
         grant_epoch: installation.grant_epoch, session_id: sessionId, session_epoch: 0 },
         experience: { key: experienceKey, label: reference.label,
           artifact_digest: reference.artifact_digest,
-          bridge_version: reference.bridge_version, renderer_version: reference.renderer_version },
-        bundle, ...(version.protocol_version === '7' ? { protocol_version: '7' as const } : {}), expires_at: expiresAt.toISOString() };
+          bridge_version: reference.bridge_version, renderer_version: reference.renderer_version,
+          ...(reference.capabilities === undefined ? {} : { capabilities: reference.capabilities }) },
+        bundle, resource_target_key: targetKey, app_name: manifest.name,
+        ...(version.protocol_version === '7' ? { protocol_version: '7' as const } : {}), expires_at: expiresAt.toISOString() };
+    });
+  }
+
+  async targets(caller: ExperienceCaller, installationId: string, experienceKey: string) {
+    uuid.parse(installationId); key.parse(experienceKey);
+    return db.transaction(async tx => {
+      await assertExperienceWeb(tx, caller);
+      const [installation] = await tx.select().from(appInstallations).where(and(
+        eq(appInstallations.org_id, caller.org_id), eq(appInstallations.id, installationId), eq(appInstallations.state, 'active'))).limit(1).for('share');
+      if (!installation?.active_version_id || !installation.active_grant_snapshot_id) throw stale();
+      const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, caller.org_id),
+        eq(appVersions.id, installation.active_version_id), eq(appVersions.installation_id, installation.id), eq(appVersions.state, 'active'))).limit(1).for('share');
+      if (!version) throw stale();
+      const [grant] = await tx.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id, caller.org_id),
+        eq(appGrantSnapshots.id, installation.active_grant_snapshot_id), eq(appGrantSnapshots.app_installation_id, installation.id),
+        eq(appGrantSnapshots.app_version_id, version.id), eq(appGrantSnapshots.snapshot_kind, 'effective'))).limit(1).for('share');
+      if (!grant) throw stale();
+      const { bundle } = await verifiedExperienceBundle(version, experienceKey);
+      const rows = bundle.resource_keys.length ? await tx.select({ id: appResourceBindings.id, key: appResourceBindings.resource_key, target: appResourceBindings.target_key })
+        .from(appResourceBindings).where(and(eq(appResourceBindings.org_id, caller.org_id), eq(appResourceBindings.owner_user_id, caller.user_id),
+          eq(appResourceBindings.app_installation_id, installation.id), eq(appResourceBindings.app_version_id, version.id),
+          eq(appResourceBindings.grant_snapshot_id, installation.active_grant_snapshot_id), eq(appResourceBindings.state, 'active'),
+          gt(appResourceBindings.consent_expires_at, new Date()), inArray(appResourceBindings.resource_key, [...bundle.resource_keys]))).limit(65) : [];
+      if (rows.length > 64) throw stale();
+      let targets = [...new Set(rows.map(row => row.target))].filter(target => {
+        const resources = rows.filter(row => row.target === target);
+        return resources.length === bundle.resource_keys.length && new Set(resources.map(row => row.key)).size === resources.length;
+      }).sort().map(target => ({ key: target, label: target === 'primary' ? 'Primary source' : target.replaceAll('_', ' ') }));
+      if(version.protocol_version==='7'&&bundle.record_store_keys?.length&&targets.length){
+        const connected=await currentConnectionSessionLocators(tx,caller,installation.id).limit(33);
+        if(connected.length<=32)targets=experienceTargetAccountLabels(targets,connected.map(row=>row.session.record),rows,{
+          org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:installation.id,app_version_id:version.id,
+          grant_snapshot_id:grant.id,lifecycle_epoch:installation.lifecycle_epoch,grant_epoch:installation.grant_epoch});
+      }
+      await assertExperienceWeb(tx, caller);
+      return { schema_version: 'deft.experience_targets.v1' as const, targets };
     });
   }
 
@@ -275,9 +345,12 @@ export class AppExperienceService {
   /** A restored private ID discloses only metadata under the current reviewed App. */
   async runStatus(caller: ExperienceCaller, sessionId: string, runId: string, signal?: AbortSignal) {
     const { run } = await this.readRunContext(caller, sessionId, runId, false, signal);
+    if(run.output?.transport_outcome==='provider_accepted'&&run.output?.sent_copy_outcome==='unknown'){try{const {AppRunInspectionService}=await import('./app-run-inspection-service.js');const receipt=await new AppRunInspectionService(caller,()=>this.runInspectionContext(caller,sessionId,runId,signal),sessionId).invoke('run_inspection_status',signal);return {run:{...run,output:receipt.run.output,inspection_available:receipt.run.output.sent_copy_outcome==='unknown'}};}catch{signal?.throwIfAborted();}}
     return { run };
   }
 
+  async runInspectionContext(caller:ExperienceCaller,sessionId:string,runId:string,signal?:AbortSignal){const result=await this.readRunContext(caller,sessionId,runId,false,signal,true);if(!result.inspection)throw denied();return result.inspection;}
+  async inspectRun(caller:ExperienceCaller,sessionId:string,runId:string,signal?:AbortSignal){const {AppRunInspectionService}=await import('./app-run-inspection-service.js');return new AppRunInspectionService(caller,()=>this.runInspectionContext(caller,sessionId,runId,signal),sessionId).invoke('run_inspect',signal);}
   /** Host-only navigation metadata; never released through the author status broker. */
   async runReviewTarget(caller: ExperienceCaller, sessionId: string, runId: string, signal?: AbortSignal) {
     const { target } = await this.readRunContext(caller, sessionId, runId, true, signal);
@@ -285,9 +358,10 @@ export class AppExperienceService {
     return target;
   }
 
-  private async readRunContext(caller: ExperienceCaller, sessionId: string, runId: string, includeTarget: boolean, signal?: AbortSignal) {
+  private async readRunContext(caller: ExperienceCaller, sessionId: string, runId: string, includeTarget: boolean, signal?: AbortSignal, includeInspection=false) {
     uuid.parse(runId);
-    return experienceExposureDatabase().transaction(async tx => {
+    let finalDisclosure=()=>{};
+    const response=await experienceExposureDatabase().transaction(async tx => {
       signal?.throwIfAborted();
       const current = await this.lockedLiveContext(tx, caller, sessionId);
       if (current.manifest.schema_version !== '7' || !isAppV5RuntimeActionsEnabled()) throw denied();
@@ -300,6 +374,9 @@ export class AppExperienceService {
       ) : undefined;
       const [run] = await tx.select({ id: appRuns.id, state: appRuns.state, execution_release_kind: appRuns.execution_release_kind, created_at: appRuns.created_at,
         updated_at: appRuns.updated_at, started_at: appRuns.started_at, terminal_at: appRuns.terminal_at,
+        result_purged_at: appRuns.result_purged_at, result_expires_at: appRuns.result_expires_at, input_expires_at:appRuns.input_expires_at,input_purged_at:appRuns.input_purged_at, operation_name:appRuns.operation_name,
+        origin_app_version_id: appRuns.origin_app_version_id, origin_app_grant_snapshot_id: appRuns.origin_app_grant_snapshot_id,
+        origin_runtime_binding_id: appRuns.origin_runtime_binding_id,
         action_key: appRuntimeBindings.action_key, binding_id: appRuntimeBindings.id }).from(appRuns).innerJoin(appRuntimeBindings, and(
           eq(appRuntimeBindings.org_id, appRuns.org_id), eq(appRuntimeBindings.id, appRuns.origin_runtime_binding_id),
           eq(appRuntimeBindings.app_installation_id, appRuns.origin_app_installation_id),
@@ -313,6 +390,7 @@ export class AppExperienceService {
           eq(appRuns.execution_actor_type, 'human'), eq(appRuns.execution_actor_id, caller.user_id),
           eq(appRuns.provider_kind, 'app_runtime'), eq(appRuns.origin_kind, 'app'),
           eq(appRuns.origin_app_installation_id, current.session.app_installation_id),
+          runtimeTargetScope(caller, current.session),
           or(and(eq(appRuns.origin_app_version_id, current.session.app_version_id),
             eq(appRuns.origin_app_grant_snapshot_id, current.session.grant_snapshot_id)), historicalTerminal),
           isNull(appRuns.origin_app_binding_key), isNull(appRuns.origin_resource_binding_id),
@@ -328,14 +406,44 @@ export class AppExperienceService {
       const target = includeTarget ? { schema_version: 'deft.experience_run_review_target.v1' as const,
         run_id: run.id, run_state: publicState, runtime_binding_id: run.binding_id,
         approval_id: publicState === 'pending_approval' ? approvals[0]!.id : null } : undefined;
+      let output:Readonly<Record<string,string|number|boolean>>|undefined,outputClock:PrivateAccessClock|undefined,retainedOutputExpiry:number|undefined;
+      // Historical version metadata stays available. Payload disclosure requires
+      // the same current reviewed version/grant and exact owner account scope.
+      if(!includeTarget&&(run.state==='succeeded'||run.state==='failed')&&run.result_purged_at===null
+        &&run.origin_app_version_id===current.session.app_version_id&&run.origin_app_grant_snapshot_id===current.session.grant_snapshot_id){
+        const clock=await samplePrivateAccessClock(tx,()=>new Date());
+        clock.bindDeadline(current.current_authority_expires_at);clock.bindDeadline(run.result_expires_at);
+        if(!clock.expired()){
+          const [attempt]=await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id,caller.org_id),
+            eq(appRunAttempts.run_id,run.id))).orderBy(desc(appRunAttempts.attempt_number)).limit(1);
+          if(attempt&&attempt.state===run.state&&attempt.runtime_binding_id===run.origin_runtime_binding_id
+            &&attempt.runtime_result_hmac&&attempt.provider_call_finished_at&&attempt.safe_outcome?.result_status==='retained'){
+            const {getAppRunRuntime}=await import('./app-run-runtime.js');
+            const retained=await(await getAppRunRuntime()).secretRepository.readRetainedOutput(caller.org_id,run.id,attempt.id,clock.current,tx);
+            if(retained){
+              clock.bindDeadline(retained.expires_at);retainedOutputExpiry=retained.expires_at.getTime();
+              const action=current.manifest.runtime_actions.find(action=>action.key===run.action_key)!;
+              const capability=current.manifest.private_capabilities.find(capability=>capability.key===action.capability_key);
+              // Malformed/corrupt output does not replace safe Run metadata or
+              // invent a receipt. Provider effects are never retried here.
+              try{if(capability)output=experienceTerminalOutput(retained.value,capability.output_schema,run.state);}catch{}
+              if(output){outputClock=clock;finalDisclosure=()=>{signal?.throwIfAborted();if(clock.expired())throw stale();};}
+            }
+          }
+        }
+      }
+      let inspection:undefined|{run_id:string;attempt_id:string;input_digest:string;original_input:Record<string,string|number|boolean>;retained_expires_at:string;installation_id:string;app_version_id:string;grant_snapshot_id:string;target_key:string};
+      if(includeInspection){if(run.state!=='succeeded'||run.input_purged_at||run.result_purged_at||run.origin_app_version_id!==current.session.app_version_id||run.origin_app_grant_snapshot_id!==current.session.grant_snapshot_id||!output||output.operation_id!==run.id||output.transport_outcome!=='provider_accepted'||!['unknown','copied','server_managed'].includes(String(output.sent_copy_outcome)))throw denied();const [inputPayload]=await tx.select({expires_at:appRunSecretPayloads.expires_at}).from(appRunSecretPayloads).where(and(eq(appRunSecretPayloads.org_id,caller.org_id),eq(appRunSecretPayloads.run_id,run.id),eq(appRunSecretPayloads.payload_kind,'input'))).limit(1);if(!inputPayload)throw denied();const expiry=Math.min(run.input_expires_at.getTime(),run.result_expires_at.getTime(),inputPayload.expires_at.getTime(),current.session.expires_at.getTime(),retainedOutputExpiry??0);if(expiry<=(outputClock?.current().getTime()??Date.now()))throw stale();outputClock?.bindDeadline(new Date(expiry));const [attempt]=await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id,caller.org_id),eq(appRunAttempts.run_id,run.id))).orderBy(desc(appRunAttempts.attempt_number)).limit(1);if(!attempt||attempt.state!==run.state||attempt.runtime_binding_id!==run.origin_runtime_binding_id||!attempt.runtime_result_hmac||!attempt.provider_call_finished_at)throw denied();const {getAppRunRuntime}=await import('./app-run-runtime.js');const input=await(await getAppRunRuntime()).secretRepository.readInput(caller.org_id,run.id,tx);if(!input||Array.isArray(input)||typeof input!=='object'||Object.keys(input).length>32||Object.values(input).some(value=>!['string','number','boolean'].includes(typeof value)))throw denied();if(!inspectionStoreLineage(input as Record<string,unknown>,run.action_key,current.bundle,current.manifest))throw denied();inspection={run_id:run.id,attempt_id:attempt.id,input_digest:`sha256:${createHash('sha256').update(canonicalAppDataJson(input)).digest('hex')}`,original_input:input as Record<string,string|number|boolean>,retained_expires_at:new Date(expiry).toISOString(),installation_id:current.session.app_installation_id,app_version_id:current.session.app_version_id,grant_snapshot_id:current.session.grant_snapshot_id,target_key:current.session.resource_target_key??'personal'};}
       signal?.throwIfAborted();
       const final = await this.lockedLiveContext(tx, caller, sessionId);
       if (final.manifest.schema_version !== '7' || !final.bundle.action_keys.includes(run.action_key)
         || !isAppV5RuntimeActionsEnabled()) throw stale();
+      outputClock?.bindDeadline(final.current_authority_expires_at);
       signal?.throwIfAborted();
       return { run: { id: run.id, state: publicState, created_at: run.created_at.toISOString(), updated_at: run.updated_at.toISOString(),
-        started_at: run.started_at?.toISOString() ?? null, terminal_at: run.terminal_at?.toISOString() ?? null }, target };
+        started_at: run.started_at?.toISOString() ?? null, terminal_at: run.terminal_at?.toISOString() ?? null,...(output?{output}: {}) }, target,inspection };
     }, signal);
+    finalDisclosure();return response;
   }
 
   async revoke(caller: ExperienceCaller, sessionId: string) {
@@ -358,6 +466,11 @@ export class AppExperienceService {
     const request = actionRequest.parse(raw);
     const { session, bundle, manifest } = await this.liveContext(caller, sessionId);
     if (!bundle.action_keys.includes(actionKey)) throw denied();
+    const action = manifest.runtime_actions.find(item => item.key === actionKey);
+    const capability = action && manifest.private_capabilities.find(item => item.key === action.capability_key);
+    // App-owned record actions require the full trusted host preview. A Worker
+    // cannot substitute a scalar-only generic approval for that review.
+    if (capability && Object.hasOwn(capability.input_schema.properties, 'record_action_version')) throw denied();
     const [nativeBinding] = await db.select().from(appNativeBindings).where(and(eq(appNativeBindings.org_id, caller.org_id),
       eq(appNativeBindings.app_installation_id, session.app_installation_id), eq(appNativeBindings.app_version_id, session.app_version_id),
       eq(appNativeBindings.grant_snapshot_id, session.grant_snapshot_id), eq(appNativeBindings.owner_user_id, caller.user_id),
@@ -381,15 +494,17 @@ export class AppExperienceService {
       await this.liveContext(caller, sessionId);
       return { run };
     }
-    const [binding] = await db.select().from(appRuntimeBindings).where(and(
+    const bindings = await db.select().from(appRuntimeBindings).where(and(
       eq(appRuntimeBindings.org_id, caller.org_id),
       eq(appRuntimeBindings.app_installation_id, session.app_installation_id),
       eq(appRuntimeBindings.app_version_id, session.app_version_id),
       eq(appRuntimeBindings.grant_snapshot_id, session.grant_snapshot_id),
       eq(appRuntimeBindings.action_key, actionKey),
       eq(appRuntimeBindings.state, 'active'),
-    )).limit(1);
-    if (!binding) throw new AppError('Experience action unavailable', 'APP_ACTION_UNAVAILABLE', 409);
+      runtimeTargetScope(caller, session),
+    )).limit(2);
+    if (bindings.length !== 1) throw new AppError('Experience action unavailable', 'APP_ACTION_UNAVAILABLE', 409);
+    const binding = bindings[0]!;
     const run = await this.runtime.invokeFromExperience({ org_id: caller.org_id, user_id: caller.user_id }, {
       runtime_binding_id: binding.id,
       idempotency_key: `experience:${session.id}:${request.request_id}`,
@@ -435,6 +550,7 @@ export class AppExperienceService {
         eq(appRuntimeBindings.grant_snapshot_id, current.session.grant_snapshot_id),
         eq(appRuntimeBindings.action_key, actionKey),
         eq(appRuntimeBindings.state, 'active'),
+        runtimeTargetScope(caller, current.session),
       )).limit(1).for('share');
       if (!lockedBinding) throw stale();
     },manifest.schema_version==='7'?async(tx:AppRunTransaction)=>{

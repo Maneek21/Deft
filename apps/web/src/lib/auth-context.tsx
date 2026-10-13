@@ -18,6 +18,7 @@ type NotificationPreferences = {
   };
   push?: {
     enabled: boolean;
+    email: boolean;
     chat: boolean;
     tasks: boolean;
     approvals: boolean;

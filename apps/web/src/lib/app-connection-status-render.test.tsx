@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {ExperienceConnectionStatus} from '../components/apps/experience-connection-status';
+const render=(change:Partial<Parameters<typeof ExperienceConnectionStatus>[0]>={})=>renderToStaticMarkup(createElement(ExperienceConnectionStatus,{label:'Synthetic account',state:'indeterminate',reviewAvailable:false,reusePending:true,working:null,...change}));
+test('a validated ready or closed review is Review needed, never previous uncertain attempt',()=>{const html=render({reviewAvailable:true});assert.match(html,/Review needed/u);assert.doesNotMatch(html,/Outcome uncertain|previous attempt/u);});
+test('explicit activation pending renders Connecting and suppresses uncertain recovery copy',()=>{const html=render({working:'activate'});assert.match(html,/Connecting/u);assert.doesNotMatch(html,/uncertain/u);});
+test('actual lost or indeterminate outcome retains uncertainty with no false connecting state',()=>{const html=render();assert.match(html,/Outcome uncertain/u);assert.match(html,/previous attempt/u);assert.doesNotMatch(html,/Connecting|Review needed/u);});
+test('review/status requests and ordinary connected/awaiting sessions keep distinct labels',()=>{assert.match(render({working:'review'}),/Reviewing account/u);assert.match(render({working:'status'}),/Checking status/u);assert.match(render({state:'connected',reusePending:false}),/Connected/u);assert.match(render({state:'awaiting_callback',reusePending:false}),/Setup pending/u);});

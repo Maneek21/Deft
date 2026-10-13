@@ -2,6 +2,8 @@ import type { Context } from 'hono';
 import { z } from 'zod';
 import { isAppError } from '../lib/app-errors.js';
 import { AppRunError } from '../lib/app-run-errors.js';
+import { ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
+import { ExperienceExposureError } from '../lib/app-experience-exposure-contract.js';
 
 function runErrorStatus(error: AppRunError): 400 | 403 | 409 | 410 | 503 {
   switch (error.code) {
@@ -29,6 +31,12 @@ export function appHttpFailure(
   requestLabel: 'App action' | 'App Run',
   logLabel: 'app-actions' | 'app-runs',
 ) {
+  if (error instanceof ExperienceExposureError) {
+    return c.json({ error: error.message, code: error.code }, error.status);
+  }
+  if (error instanceof ResourceSyncWebAuthenticationError) {
+    return c.json({ error: error.message, code: error.code }, error.status);
+  }
   if (isAppError(error)) {
     return c.json({
       error: error.message,

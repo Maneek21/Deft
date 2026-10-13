@@ -1,8 +1,10 @@
 import { captureRuntimeAgent } from './app-experience-human-action-agent-capture.js';
+import { loadRuntimeOwnerTarget,loadConsentContinuationOwnerTarget } from './app-runtime-owner-target.js';
+import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
 import { humanActionReleaseIsCurrent } from './app-experience-human-action-live.js';
 import { actionBatchReleaseIsCurrent } from './app-action-batch-live.js';
 import { createHash } from 'node:crypto';
-import { isAppV5RuntimeActionsEnabled, isAppAttachmentBrokerEnabled } from './env.js';
+import { isAppV5RuntimeActionsEnabled, isAppAttachmentBrokerEnabled, isAppOwnerConnectionsEnabled } from './env.js';
 import type { z } from 'zod';
 import {
   APP_RUN_CONTRACT_VERSIONS,
@@ -256,6 +258,33 @@ function automationRunPolicyMatches(policy: AppRunPolicySnapshot): boolean {
  * Runs. Callers receive only opaque versions; live rows remain authoritative.
  */
 export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorizer {
+  private readonly preparedBatchCaptures=new WeakMap<AppRunTransaction,{
+    key:string;expires_at:number;signal?:AbortSignal;participants:string[];
+    capture?:Awaited<ReturnType<PostgresAppRunLiveAuthorization['captureReviewedRuntimeFreshInTransaction']>>;
+  }>();
+  /** Server-only lexical reuse of the exact authority rows already locked by
+   * this transaction. No nomination or reuse survives the callback/commit. */
+  async withPreparedResourceBatchCapture<T>(tx:AppRunTransaction,input:{org_id:string;user_id:string;runtime_binding_id:string;expires_at:number},run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{
+    if(this.preparedBatchCaptures.has(tx)||!Number.isFinite(input.expires_at)||input.expires_at<=Date.now())throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    signal?.throwIfAborted();
+    const people=await tx.execute(sql<{id:string;kind:string;is_agent:boolean}>`SELECT u.id,u.kind,u.is_agent FROM users u
+      WHERE u.id=${input.user_id} OR u.id=(SELECT registration.operator_user_id FROM app_runtime_bindings binding JOIN app_runtime_registrations registration ON registration.org_id=binding.org_id AND registration.id=binding.runtime_registration_id WHERE binding.org_id=${input.org_id} AND binding.id=${input.runtime_binding_id}) ORDER BY u.id FOR SHARE`);
+    const rows=people.rows as {id:string;kind:string;is_agent:boolean}[];const participants=rows.map(person=>person.id);if(!participants.includes(input.user_id)||rows.some(person=>person.kind!=='human'||person.is_agent!==false))throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    this.preparedBatchCaptures.set(tx,{key:JSON.stringify([input.org_id,input.user_id,input.runtime_binding_id]),expires_at:input.expires_at,signal,participants});
+    try{return await run();}finally{this.preparedBatchCaptures.delete(tx);}
+  }
+  async captureReviewedRuntimeInTransaction(tx:AppRunTransaction,input:Readonly<{org_id:string;user_id:string;runtime_binding_id:string}>){
+    const scope=this.preparedBatchCaptures.get(tx);
+    if(!scope)return this.captureReviewedRuntimeFreshInTransaction(tx,input);
+    scope.signal?.throwIfAborted();
+    if(scope.key!==JSON.stringify([input.org_id,input.user_id,input.runtime_binding_id])||scope.expires_at<=Date.now())throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const capture=scope.capture??await this.captureReviewedRuntimeFreshInTransaction(tx,input);
+    if(!scope.participants.includes(capture.operator_user_id)||!isAppV5RuntimeActionsEnabled()||!isAppAttachmentBrokerEnabled()
+      ||capture.registration.owner_connection_admission_id&&!isAppOwnerConnectionsEnabled()
+      ||capture.owner_target_consent_expires_at&&capture.owner_target_consent_expires_at.getTime()<=Date.now())throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    scope.capture=capture;return capture;
+  }
+
   constructor(
     private readonly appAutomationsEnabled: () => boolean = () => false,
   ) {}
@@ -302,15 +331,20 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     return db.transaction((tx) => this.captureReviewedRuntimeInTransaction(tx, input));
   }
 
-  async captureReviewedRuntimeInTransaction(tx: AppRunTransaction, input: Readonly<{
+  /** Fresh independent consent-only capture; no Run dispatch uses this entrance. */
+  async captureConsentContinuationPurposes(tx:AppRunTransaction,input:{org_id:string;user_id:string;runtime_binding_id:string},expiry:Date){
+    return this.captureReviewedRuntimeFreshInTransaction(tx,input,expiry);
+  }
+  private async captureReviewedRuntimeFreshInTransaction(tx: AppRunTransaction, input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
-  }>) {
+  }>, continuationExpiry?:Date) {
     const [locator] = await tx.select({
       app_installation_id: appRuntimeBindings.app_installation_id,
       app_version_id: appRuntimeBindings.app_version_id,
       grant_snapshot_id: appRuntimeBindings.grant_snapshot_id,
       runtime_registration_id: appRuntimeBindings.runtime_registration_id,
       action_key: appRuntimeBindings.action_key,
+      owner_resource_binding_id: appRuntimeBindings.owner_resource_binding_id,
     }).from(appRuntimeBindings).where(and(
       eq(appRuntimeBindings.org_id, input.org_id),
       eq(appRuntimeBindings.id, input.runtime_binding_id),
@@ -323,6 +357,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(appRuntimeRegistrations.id, locator.runtime_registration_id),
     )).limit(1);
     if (!registrationLocator) throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    const participants = [...new Set([input.user_id, registrationLocator.operator_user_id])].sort();
     for (const userId of [...new Set([input.user_id,
       registrationLocator.operator_user_id])].sort()) {
       await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${input.org_id}
@@ -361,6 +396,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       eq(appRuntimeBindings.org_id, input.org_id),
       eq(appRuntimeBindings.id, input.runtime_binding_id),
     )).limit(1);
+    if (binding?.owner_resource_binding_id !== locator.owner_resource_binding_id) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     if (!registration || !binding || registration.state !== 'active'
       || registration.contract_version !== APP_RUNTIME_CHANNEL_VERSION
       || binding.state !== 'active'
@@ -388,6 +424,17 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || action.host_policy.review_scope !== 'per_invocation'
       || grant.snapshot_digest !== digestAppGrantValue(grant.canonical_snapshot)) {
       throw new Error('APP_RUN_AUTHORIZATION_STALE');
+    }
+    const ownerTarget = binding.owner_resource_binding_id ? await (continuationExpiry?((tx:AppRunTransaction,input:Parameters<typeof loadRuntimeOwnerTarget>[1])=>loadConsentContinuationOwnerTarget(tx,input,continuationExpiry)):loadRuntimeOwnerTarget)(tx, {
+      org_id: input.org_id, owner_user_id: input.user_id, resource_binding_id: binding.owner_resource_binding_id,
+      installation_id: installation.id, app_version_id: version.id, grant_snapshot_id: grant.id,
+      operator_user_id: registration.operator_user_id, prelocked_participant_ids: participants,
+    }) : null;
+    if (registration.owner_connection_admission_id) {
+      await assertOwnerConnectionRegistration(tx, registration, { owner_user_id: input.user_id, action_key: binding.action_key, lockedReviewed: reviewed });
+      if (!ownerTarget || ownerTarget.registration.owner_connection_admission_id !== registration.owner_connection_admission_id
+        || ownerTarget.registration.owner_connection_admission_digest !== registration.owner_connection_admission_digest
+        || binding.reviewed_by_user_id !== input.user_id) throw new Error('APP_RUN_AUTHORIZATION_STALE');
     }
     const [providerRow] = await tx.select().from(capabilityProviderSnapshots).where(and(
       eq(capabilityProviderSnapshots.org_id, input.org_id),
@@ -454,7 +501,13 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     const authorization_snapshot = AppRunAuthorizationSnapshotSchema.parse({
       schema_version: APP_RUN_CONTRACT_VERSIONS.run,
       authenticated_subject: { actor_type: 'human', user_id: input.user_id },
-      authority_refs: refs.sort((a, b) => `${a.authority_kind}\0${a.authority_id}`
+      authority_refs: [...refs, ...(ownerTarget ? [{ authority_kind: 'app_binding' as const,
+        authority_id: ownerTarget.binding.id, version: authorityVersion('app_binding', {
+          target_key: ownerTarget.binding.target_key, owner: ownerTarget.binding.owner_user_id,
+          descriptor_digest: ownerTarget.binding.descriptor_digest, state: ownerTarget.binding.state,
+          consent_expires_at: ownerTarget.binding.consent_expires_at?.toISOString(),
+          registration_id: ownerTarget.registration.id, runtime_epoch: ownerTarget.registration.runtime_epoch,
+        }) }] : [])].sort((a, b) => `${a.authority_kind}\0${a.authority_id}`
         .localeCompare(`${b.authority_kind}\0${b.authority_id}`)),
     });
     if (version.protocol_version === '5' && !isAppV5RuntimeActionsEnabled()) throw new Error('APP_RUN_AUTHORIZATION_STALE');
@@ -463,6 +516,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     }
     return Object.freeze({ authorization_snapshot, binding, registration, action, protocol_version:version.protocol_version,
       operator_user_id:registration.operator_user_id,
+      ...(ownerTarget ? { owner_target_consent_expires_at: ownerTarget.binding.consent_expires_at! } : {}),
       provider_snapshot_digest: providerRow.snapshot_digest,
       review_contract_digest: action.contract_digest,
       installation_lifecycle_epoch: installation.lifecycle_epoch,
@@ -736,7 +790,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     try {
       if (input.org_id !== input.run.org_id) return false;
       const internal = await this.#loadInternalRun(input.tx, input.org_id, input.run.id);
-      if (!internal || !await this.#matchesLiveState(input.tx, input.run, internal)) return false;
+      if (!internal || !await this.#matchesLiveState(input.tx, input.run, internal,input.stage==='prepare'?'prepared_resource_approval':undefined)) return false;
 
       const budgetEmployeeId = input.run.execution_actor_type === 'agent_employee'
         ? input.run.execution_actor_id
@@ -822,9 +876,22 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     tx: AppRunTransaction,
     run: AppRunSafeView,
     internal: InternalRunAuthorization,
+    phase?: 'prepared_resource_approval',
   ): Promise<boolean> {
     if (!await humanActionReleaseIsCurrent(tx, run)) return false;
-    if (!await actionBatchReleaseIsCurrent(tx, run)) return false;
+    let preparedResourceApprovalPhase=false;
+    if(phase==='prepared_resource_approval'){
+      const scope=this.preparedBatchCaptures.get(tx);
+      if(scope){
+        scope.signal?.throwIfAborted();
+        if(scope.expires_at<=Date.now()||scope.key!==JSON.stringify([run.org_id,run.execution_actor_id,internal.origin_runtime_binding_id])
+          ||run.state!=='pending_approval'||run.provider_kind!=='app_runtime'
+          ||run.initiating_actor_type!=='human'||run.execution_actor_type!=='human'
+          ||run.initiating_actor_id!==run.execution_actor_id)return false;
+        preparedResourceApprovalPhase=true;
+      }
+    }
+    if (!await actionBatchReleaseIsCurrent(tx, run,preparedResourceApprovalPhase)) return false;
     // Resource sync requires its own host-created intent and live consent.
     // The existing action authorization paths cannot authorize that scope.
     if (run.review_scope === 'reviewed_resource_sync') return false;

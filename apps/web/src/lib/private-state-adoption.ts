@@ -26,12 +26,17 @@ function group(value: unknown): GroupValue {
 export const PrivateStateAdoptionContext = { parse(value: unknown) { const context = object(value); exact(context,['schema_version','groups']);
   if (context.schema_version !== 'deft.private_state.adoption_context.v1' || !Array.isArray(context.groups) || context.groups.length > 32) return fail();
   return { schema_version: 'deft.private_state.adoption_context.v1' as const, groups: context.groups.map(group) }; } };
-export function reviewOutput(value: unknown) {
+export function reviewOutput(value: unknown, currentTarget: string) {
   const output = object(object(value).output);
+  string(currentTarget,/^[a-z][a-z0-9_]{0,47}$/,48);
+  const hasTarget = Object.hasOwn(output,'resource_target_key');
   const ids = ['organization_id','owner_user_id','web_session_id','experience_session_id','installation_id','app_version_id','grant_snapshot_id','exposure_id'];
   const digests = ['exposure_review_digest','target_artifact_digest','declaration_digest'];
   const epochs = ['exposure_epoch','lifecycle_epoch','grant_epoch'];
-  exact(output,[...groupKeys,...ids,...digests,...epochs,'schema_version','state_key','expires_at','review_token']);
+  exact(output,[...groupKeys,...ids,...digests,...epochs,'schema_version','state_key','expires_at','review_token',...(hasTarget ? ['resource_target_key'] : [])]);
+  if (hasTarget) {
+    if (string(output.resource_target_key,/^[a-z][a-z0-9_]{0,47}$/,48) !== currentTarget) fail();
+  } else if (currentTarget !== 'primary') fail();
   if (output.schema_version !== 'deft.private_state.adoption_review.v1') fail();
   ids.forEach(key => uuid(output[key])); digests.forEach(key => digest(output[key])); epochs.forEach(key => integer(output[key],0,2147483647));
   string(output.state_key,/^[a-z][a-z0-9_]{0,47}$/,48); date(output.expires_at);

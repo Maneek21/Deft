@@ -133,6 +133,7 @@ describe('profile settings', () => {
       },
       push: {
         enabled: false,
+        email: false,
         chat: true,
         tasks: true,
         approvals: true,
@@ -154,6 +155,13 @@ describe('profile settings', () => {
     assert.equal(me.user.timezone, 'America/Los_Angeles');
     assert.equal(me.user.avatar_url, '/avatars/avatar-08-elf.png');
     assert.equal(me.user.notification_preferences.channels.tasks, false);
+
+    const emailPush = await authed('/api/auth/me', { method: 'PATCH', body: JSON.stringify({ notification_preferences: { push: { email: true } } }) });
+    const emailPushBody = await emailPush.json() as any;
+    assert.equal(emailPush.status, 200, JSON.stringify(emailPushBody));
+    assert.equal(emailPushBody.user.notification_preferences.push.email, true);
+    assert.equal(emailPushBody.user.notification_preferences.push.enabled, false,
+      'email category opt-in does not enroll a browser or globally enable push');
   });
 
   test('chat message responses include the saved profile avatar', async () => {

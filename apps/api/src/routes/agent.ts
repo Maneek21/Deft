@@ -670,6 +670,10 @@ async function buildStreamContext(
 
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS, ...MANAGER_TOOLS];
+  const {emailIntegrationToolSchemas,EMAIL_INTEGRATION_GUIDANCE:EMAIL_AGENT_GUIDANCE}=await import('../lib/email-integration-agent-tools.js');
+  const emailSchemas=await emailIntegrationToolSchemas({kind:'defty',org_id:user.org_id,user_id:user.id,conversation_id:convoId,employee_id:agentEmployeeId}).catch(()=>[]);
+  const emailNames=new Set(emailSchemas.map(tool=>tool.name));
+  tools=[...tools.filter(tool=>!tool.name.startsWith('email_')),...emailSchemas.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.inputSchema as Anthropic.Tool['input_schema']}))];
   const allActionTools = new Set([...ACTION_TOOLS]);
   const actionApprovalTiers = new Map<string, ApprovalTier>();
 
@@ -788,6 +792,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     '{{DATE}}',
     new Date().toISOString().split('T')[0]!,
   ).replace('{{ORG}}', org?.name || 'Unknown');
+  if(emailNames.has('email_draft_save'))systemPrompt+='\n'+EMAIL_AGENT_GUIDANCE;
   let wikiSection = '';
 
   // Auto-load relevant wiki context using the last user message as the search query
@@ -799,6 +804,8 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
       const wikiResults = await retrieveContext({
         query: searchQuery,
         org_id: user.org_id,
+        user_id: user.id,
+        conversation_id: convoId,
         agent_employee_id: agentEmployeeId,
         types: ['wiki'],
         limit: 5,
@@ -1828,7 +1835,15 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       }
     }
     let result: Awaited<ReturnType<typeof resolveApproveAction>>;
-    try { result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard }); }
+    try {
+      let emailReviewActor:import('../lib/email-mailbox-service.js').EmailActor|undefined;
+      if(action.action==='email_send'){
+        const {verifyWebAccess}=await import('../lib/web-sessions.js');
+        const session=await verifyWebAccess((c.req.header('authorization')??'').replace(/^Bearer /,''));
+        emailReviewActor={user_id:session.id,web_session_id:session.sid,access_expires_at:session.exp*1000};
+      }
+      result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard,emailReviewActor });
+    }
     catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
     if (result.status === 'error') {
       const statusCode =

@@ -1,5 +1,7 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
-import { agentActions, messages, orgs, projects } from '@deft/db/schema';
+import { agentActions, messages, orgs, projects, emailDrafts } from '@deft/db/schema';
+import { isNativeEmailSendPendingAction } from './email-agent-tools.js';
+import { EmailAgentActorSchema } from './email-agent-actor.js';
 import { getApprovalTier } from './agent-approval.js';
 import { db } from './db.js';
 import { getOrgAIConfig } from './org-ai-config.js';
@@ -82,6 +84,7 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   if (action === DOCUMENT_SEND_ACTION) {
     return sanitizeDocumentSendParams(actionParams);
   }
+  if(action==='email_send')return {account_id:actionParams.account_id,draft_id:actionParams.draft_id,draft_revision:actionParams.draft_revision,content_digest:actionParams.content_digest,review_url:actionParams.review_url};
   return actionParams;
 }
 
@@ -111,6 +114,12 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
   const rejectedModuleActions: string[] = [];
   for (const proposal of params.pendingActions) {
     if (proposal.existing_action_id) {
+      if(proposal.action==='email_send'){
+        if(!isNativeEmailSendPendingAction(proposal))throw Error('EMAIL_SEND_REFERENCE_INVALID');
+        const {emailSendReviewPreview}=await import('./email-agent-tool-runtime.js');
+        const preview=await emailSendReviewPreview(proposal.existing_action_id,params.orgId,params.userId);
+        for(const key of ['account_id','draft_id','draft_revision','content_digest'] as const)if(preview[key]!==proposal.params[key])throw Error('EMAIL_SEND_REFERENCE_INVALID');
+      }
       preparedPendingActions.push(proposal);
       continue;
     }
@@ -305,6 +314,18 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     const linkedActions: Array<typeof agentActions.$inferSelect> = [];
     for (const proposal of readyActions) {
       if (!proposal.existing_action_id) continue;
+      if(proposal.action==='email_send'){
+        const [native]=await tx.select().from(agentActions).where(and(eq(agentActions.id,proposal.existing_action_id),eq(agentActions.org_id,params.orgId),eq(agentActions.user_id,params.userId),eq(agentActions.action,'email_send'),eq(agentActions.source,'native_email'),eq(agentActions.approval_status,'pending'),eq(agentActions.conversation_id,params.spaceId))).limit(1).for('update');
+        if(!native)throw Error('EMAIL_SEND_REFERENCE_INVALID');
+        const stored=native.params as Record<string,any>;
+        for(const key of ['account_id','draft_id','draft_revision','content_digest','review_url'])if(stored[key]!==proposal.params[key])throw Error('EMAIL_SEND_REFERENCE_INVALID');
+        const actor=EmailAgentActorSchema.parse({...stored.actor,access_expires_at:Date.now()+5*60_000});
+        const scope={org_id:params.orgId,owner_user_id:params.userId,account_id:stored.account_id};
+        const {getEmailMailboxAuthority}=await import('./email-account-authority-router.js');
+        await(await getEmailMailboxAuthority(db)).current(actor,scope,'human_send',tx);
+        const [draft]=await tx.select({revision:emailDrafts.revision,status:emailDrafts.status}).from(emailDrafts).where(and(eq(emailDrafts.org_id,params.orgId),eq(emailDrafts.owner_user_id,params.userId),eq(emailDrafts.account_id,stored.account_id),eq(emailDrafts.draft_id,stored.draft_id))).limit(1).for('share');
+        if(draft?.status!=='draft'||draft.revision!==stored.draft_revision)throw Error('EMAIL_SEND_REVIEW_STALE');
+      }
       const [linked] = await tx
         .update(agentActions)
         .set({
@@ -712,8 +733,11 @@ function inferRequestedWikiWriteMode(promptContent: string): 'create' | 'update'
 export function validateRegisteredProposalAction(action: {
   action?: unknown;
   params?: unknown;
+  existing_action_id?:unknown;
+  source?:unknown;
 }): { ok: true } | { ok: false; message: string } {
   const name = typeof action.action === 'string' ? action.action : '';
+  if(name==='email_send')return isNativeEmailSendPendingAction(action)?{ok:true}:{ok:false,message:'Call the native email_send tool directly with account_id, the saved draft_id and its current expected_revision. It creates the exact pending owner review itself; do not wrap it in a generic approval proposal.'};
   if (name.startsWith('mcp__')) {
     return isRecord(action.params)
       ? { ok: true }

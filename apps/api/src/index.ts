@@ -1,3 +1,9 @@
+import {createNativeAdoptionSourceRoutes} from './routes/email-native-adoption-source.js';
+import {appIntegrationToolRoutes} from './routes/app-integration-tools.js';
+import {appLocalJobRoutes} from './routes/app-local-jobs.js';
+import { createEmailDeftyContextRoutes } from './routes/email-defty-context.js';
+import { createEmailAgentAccessRoutes } from './routes/email-agent-access.js';
+import { createEmailKnowledgeRoutes } from './routes/email-knowledge.js';
 import 'dotenv/config';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -79,6 +85,11 @@ import { appAttachmentSyncChannelRoutes } from './routes/app-attachment-sync-cha
 import { appResourceSyncChannelRoutes } from './routes/app-resource-sync-channel.js';
 import { appResourceSyncLimits } from './middleware/app-resource-sync-limits.js';
 import { appRuntimeManagementRoutes } from './routes/app-runtime-management.js';
+import { appConnectionSessionRoutes } from './routes/app-connection-sessions.js';
+import {createAppConnectionFormRoutes} from './routes/app-connection-forms.js';
+import { appDataRoutes } from './routes/app-data.js';
+import { appResourceObservationRoutes } from './routes/app-resource-observations.js';
+import { appDataActionRoutes } from './routes/app-data-actions.js';
 import { appResourceSyncManagementRoutes } from './routes/app-resource-sync-management.js';
 import { appResourceAccessRoutes } from './routes/app-resource-access.js';
 import { appAttachmentOwnerRoutes } from './routes/app-attachments.js';
@@ -89,19 +100,52 @@ import { appResourcePrivateReadLimits, appResourceSyncManagementLimits, createAp
 import { appRuntimeReviewRoutes } from './routes/app-runtime-review.js';
 import { appRuntimeActionRoutes } from './routes/app-runtime-actions.js';
 import { appExperienceRoutes } from './routes/app-experiences.js';
+import {appIntegrationDestinationRoutes} from './routes/app-integration-destinations.js';
+import {appIntegrationNotificationRoutes} from './routes/app-integration-notifications.js';
+import {appIntegrationPreparationRoutes} from './routes/app-integration-preparations.js';
+import {appIntegrationRecipientRoutes} from './routes/app-integration-recipients.js';
+import {appIntegrationPermissionRoutes} from './routes/app-integration-permissions.js';
+import {resourceSyncWebAuthority} from './lib/app-resource-sync-web-authority.js';
+import { createEmailMailboxRoutes } from './routes/email-mailbox.js';
+import {createEmailProviderDraftSettingsRoutes} from './routes/email-provider-draft-settings.js';
+import {createEmailImapSetupRoutes} from './routes/email-imap-setup.js';
+import {createEmailProviderDraftStatusRoutes} from './routes/email-provider-draft-status.js';
+import {createEmailOutboxRoutes} from './routes/email-outbox.js';
+import {createEmailSentCopyRoutes} from './routes/email-sent-copy.js';
+import {createEmailAccountLifecycleRoutes} from './routes/email-account-lifecycle.js';
+import {createEmailTemplateRoutes} from './routes/email-templates.js';
+import {createEmailSignatureRoutes} from './routes/email-signatures.js';
+import {createEmailAvailabilityRoutes} from './routes/email-availability.js';
+import {createEmailImapSetupTargetRoutes} from './routes/email-imap-setup-targets.js';
+import { createEmailDraftRoutes } from './routes/email-drafts.js';
+import { createEmailTriageRoutes } from './routes/email-triage.js';
+import { createEmailAttachmentRoutes } from './routes/email-attachments.js';
+import { createEmailSendRoutes } from './routes/email-send.js';
+import { createEmailTimerRoutes } from './routes/email-timers.js';
+import { createEmailRuleRoutes } from './routes/email-rules.js';
+import { createEmailRecipientRoutes } from './routes/email-recipients.js';
+import { createEmailMessageSummaryRoutes } from './routes/email-message-summary.js';
+import { createEmailContextTransferRoutes } from './routes/email-context-transfer.js';
+import { createEmailCalendarInvitationRoutes } from './routes/email-calendar-invitations.js';
+import { createEmailUnreadRoutes } from './routes/email-unread.js';
+import { createNativeEmailConnectionRoutes } from './lib/email-native-connection-routes.js';
+import { appOwnerConnectionRoutes } from './routes/app-owner-connections.js';
 import { createAppActionBatchRoutes } from './routes/app-action-batches.js';
 import { createExperienceHumanActionRoutes } from './lib/app-experience-human-action-routes.js';
+import { AppActionPayloadCapture } from './lib/app-action-payload-capture.js';
 import { AppExperienceHumanActionService } from './lib/app-experience-human-action-service.js';
 import { AppExperienceExposureService } from './lib/app-experience-exposure.js';
 import { getAppRunRuntime } from './lib/app-run-runtime.js';
 import { createAppPublicRoutes } from './routes/app-public.js';
 import { AppPublicClaimService } from './lib/app-public-service.js';
 import { appPublicManagementRoutes } from './routes/app-public-management.js';
+import {createMountedAppIntegrationCaptureRoutes} from './routes/app-integration-capture-mounted.js';
 import { APPS_ENABLED, APP_DEVELOPER_PAIRING_ENABLED } from './lib/env.js';
 import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
 import {
   authLimiter,
+  appRuntimeLimiter,
   loginIpLimiter,
   agentLimiter,
   agentChannelLimiter,
@@ -123,6 +167,8 @@ app.use('*', cors({
   ],
   credentials: true,
   allowHeaders: [
+    'X-Email-Filename',
+    'X-Email-Draft-Revision',
     'Idempotency-Key',
     'Content-Type',
     'Authorization',
@@ -211,7 +257,7 @@ if (APP_DEVELOPER_PAIRING_ENABLED) {
 }
 // Runtime credentials have a separate audience; never accept browser cookies.
 if (APPS_ENABLED) {
-  app.use('/api/app-runtime/channel/*', authLimiter);
+  app.use('/api/app-runtime/channel/*', appRuntimeLimiter);
   app.route('/api/app-runtime/channel', appRuntimeChannelRoutes);
   app.use('/api/app-resource-sync/channel/*', appResourceSyncLimits);
   app.use('/api/app-resource-sync-channel/v3/*',appResourceSyncLimits);
@@ -235,6 +281,15 @@ if (APPS_ENABLED) {
 if (APPS_ENABLED && process.env.DEFT_APP_PUBLIC_INGRESS_ENABLED === 'true') {
   app.route('/api/public/apps', createAppPublicRoutes(new AppPublicClaimService({ enabled: true })));
 }
+// Each connection route authenticates its own purpose: exact human web SID for
+// owner operations, distinct admitted operator credential for introspection.
+app.route('/api/app-connection-sessions', appConnectionSessionRoutes);
+app.route('/api/app-connection-forms', createAppConnectionFormRoutes());
+app.route('/api/app-local-jobs',appLocalJobRoutes);
+app.route('/api/app-data', appDataRoutes);
+app.route('/api/app-integration-tools',appIntegrationToolRoutes);
+app.route('/api/app-resource-observations', appResourceObservationRoutes);
+app.route('/api/app-data', appDataActionRoutes);
 app.use('/api/*', authMiddleware);
 app.use('/api/*', defaultLimiter);
 app.use('/api/agent/*', agentLimiter);
@@ -295,6 +350,160 @@ app.route('/api/projects', taskTemplateRoutes);
 app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
+// Per-account enrollment remains required even when the native route is enabled.
+app.route('/api/email',createEmailAvailabilityRoutes({
+  enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',
+  verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+  legacyInstallations:async(orgId,ownerId)=>(await import('./lib/email-availability.js')).getCurrentLegacyEmailInstallationIds(orgId,ownerId),
+  connectionTargets:async(actor,orgId,signal)=>(await import('./lib/email-availability.js')).getEmailConnectionTargets(actor,orgId,signal),
+}));
+if (process.env.DEFT_NATIVE_EMAIL_ENABLED === 'true') {
+  app.route('/api/email', createEmailDeftyContextRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    open: async (actor, scope, messageId) => (await import('./lib/email-defty-context.js')).openEmailDeftyContext(actor, scope, messageId),
+  }));
+  app.route('/api/email', createEmailAgentAccessRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async () => new (await import('./lib/email-agent-access.js')).EmailAgentAccessService(),
+  }));
+  app.route('/api/email', createEmailKnowledgeRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+  }));
+  app.route('/api/email', createNativeEmailConnectionRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async () => (await import('./lib/email-native-connection-runtime.js')).getNativeEmailConnectionService(),
+  }));
+  app.route('/api/email', createEmailUnreadRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async actor => (await import('./lib/email-unread-runtime.js')).getEmailUnreadService(actor),
+  }));
+  app.route('/api/email', createEmailMessageSummaryRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async actor => (await import('./lib/email-message-summary-runtime.js')).getEmailMessageSummaryService(actor),
+  }));
+  app.route('/api/email', createEmailCalendarInvitationRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async actor => (await import('./lib/email-calendar-invitation-runtime.js')).getEmailCalendarInvitationService(actor),
+  }));
+  app.route('/api/email', createEmailContextTransferRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async actor => (await import('./lib/email-context-transfer-runtime.js')).getEmailContextTransferService(actor),
+  }));
+  app.route('/api/email', createEmailRuleRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    rules: async actor => (await import('./lib/email-rule-runtime.js')).getEmailRuleRuntime(actor).then(value => value.rules),
+    execution: async actor => (await import('./lib/email-rule-runtime.js')).getEmailRuleRuntime(actor).then(value => value.execution),
+  }));
+  app.route('/api/email', createEmailRecipientRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async actor => (await import('./lib/email-recipient-runtime.js')).getEmailRecipientAssistance(actor),
+  }));
+  app.route('/api/email',createEmailAccountLifecycleRoutes({verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),service:async()=>(await import('./lib/email-account-lifecycle-runtime.js')).getEmailAccountLifecycleService()}));
+  app.route('/api/email', createEmailTimerRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    timers: async actor => (await import('./lib/email-timer-runtime.js')).getEmailTimerService(actor),
+  }));
+  app.route('/api/email',createEmailSignatureRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    signatures:async actor=>(await import('./lib/email-signature-runtime.js')).getEmailSignatureService(actor),
+  }));
+  app.route('/api/email',createEmailTemplateRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    templates:async actor=>(await import('./lib/email-template-runtime.js')).getEmailTemplateService(actor),
+  }));
+  app.route('/api/email',createEmailImapSetupTargetRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    list:async(actor,orgId,signal)=>{
+      const [{PostgresEmailImapSetupTargets},{db}]=await Promise.all([import('./lib/email-imap-setup-targets.js'),import('./lib/db.js')]);
+      return new PostgresEmailImapSetupTargets(db).list(actor,orgId,signal);
+    },
+  }));
+  app.route('/api/email',createEmailOutboxRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service:async actor=>(await import('./lib/email-outbox-runtime.js')).getEmailOutboxService(actor),
+  }));
+  app.route('/api/email',createEmailSentCopyRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    controls:async actor=>(await import('./lib/email-sent-copy-runtime.js')).getEmailSentCopyControls(actor),
+  }));
+  app.route('/api/email',createEmailProviderDraftStatusRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    read:async(actor,orgId,accountId,draftId,signal)=>(await(await import('./lib/email-provider-draft-controls-runtime.js')).getEmailProviderDraftControls(actor))
+      .status(actor,{org_id:orgId,owner_user_id:actor.user_id,account_id:accountId},draftId,signal),
+    recover:async(actor,orgId,accountId,draftId,input,signal)=>(await(await import('./lib/email-provider-draft-controls-runtime.js')).getEmailProviderDraftControls(actor))
+      .recover(actor,{org_id:orgId,owner_user_id:actor.user_id,account_id:accountId},draftId,input,signal),
+  }));
+  app.route('/api/email',createEmailImapSetupRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    setup:async(actor,orgId,input,signal)=>{
+      const [{PostgresEmailMailboxEnrollment},{db},{getAppRunRuntime}]=await Promise.all([
+        import('./lib/email-mailbox-enrollment.js'),import('./lib/db.js'),import('./lib/app-run-runtime.js')]);
+      const result=await new PostgresEmailMailboxEnrollment(db).setupImap(actor,orgId,input,input.profile,input.expected_revision,(await getAppRunRuntime()).keys,signal);
+      try{await(await import('./lib/email-mailbox-scheduler-runtime.js')).scheduleNativeEmailAccount({org_id:orgId,owner_user_id:actor.user_id,
+        account_id:result.account_id,authority_revision:result.authority_revision});}catch{/* periodic scheduling repairs wake failures */}
+      return result;
+    },
+  }));
+  app.route('/api/email',createEmailProviderDraftSettingsRoutes({
+    verify:async token=>(await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    settings:async()=>{const [{PostgresEmailProviderDraftSettings},{db}]=await Promise.all([
+      import('./lib/email-provider-draft-settings.js'),import('./lib/db.js')]);return new PostgresEmailProviderDraftSettings(db);},
+  }));
+  const reconcileEmail=async(actor:import('./lib/email-mailbox-service.js').EmailActor,scope:import('./lib/email-mailbox-service.js').EmailScope)=>{
+    const [{PostgresEmailMailboxRefresh},{db}]=await Promise.all([import('./lib/email-mailbox-refresh.js'),import('./lib/db.js')]);
+    return new PostgresEmailMailboxRefresh(db).request(actor,scope.org_id,scope.account_id);
+  };
+  app.route('/api/email', createEmailSendRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    send: async actor => (await import('./lib/email-send-runtime.js')).getEmailNativeSendService(actor),
+    reconcile:reconcileEmail,
+  }));
+  app.route('/api/email', createEmailAttachmentRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    files: async actor => (await import('./lib/email-attachment-runtime.js')).getEmailAttachmentService(actor),
+  }));
+  app.route('/api/email', createEmailDraftRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    drafts: async actor => (await import('./lib/email-draft-runtime.js')).getEmailDraftRuntime(actor),
+  }));
+  app.route('/api/email', createEmailTriageRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    triage: async actor => (await import('./lib/email-mailbox-runtime.js')).getEmailNativeTriageService(actor),
+    reconcile:reconcileEmail,
+  }));
+  app.route('/api/email', createEmailMailboxRoutes({
+    verify: async token => (await import('./lib/web-sessions.js')).verifyWebAccess(token),
+    service: async actor => (await import('./lib/email-timer-runtime.js')).getEmailTimerAwareMailboxService(actor),
+    unified:async actor=>(await import('./lib/email-mailbox-runtime.js')).getEmailMailboxUnifiedService(actor),
+    content:async actor=>(await import('./lib/email-mailbox-runtime.js')).getEmailMessageContentService(actor),
+    accounts:async actor=>(await import('./lib/email-mailbox-runtime.js')).getEmailAccountCatalogService(actor),
+    search:async actor=>(await import('./lib/email-mailbox-runtime.js')).getEmailMailboxSearchService(actor),
+    conversation:async actor=>(await import('./lib/email-mailbox-runtime.js')).getEmailMailboxConversationService(actor),
+    folders:async actor=>(await import('./lib/email-mailbox-runtime.js')).getEmailNativeFolderService(actor),
+    refresh:async(...args)=>{
+      const [{PostgresEmailMailboxRefresh},{db}]=await Promise.all([import('./lib/email-mailbox-refresh.js'),import('./lib/db.js')]);
+      return new PostgresEmailMailboxRefresh(db).request(...args);
+    },
+    readingPreferences:{
+      get:async(...args)=>{
+        const [{PostgresEmailReadingPreferences},{db}]=await Promise.all([import('./lib/email-reading-preferences.js'),import('./lib/db.js')]);
+        return new PostgresEmailReadingPreferences(db).get(...args);
+      },
+      update:async(...args)=>{
+        const [{PostgresEmailReadingPreferences},{db}]=await Promise.all([import('./lib/email-reading-preferences.js'),import('./lib/db.js')]);
+        return new PostgresEmailReadingPreferences(db).update(...args);
+      },
+    },
+    enroll: async (actor,orgId,input,signal) => {
+      const {PostgresEmailMailboxEnrollment}=await import('./lib/email-mailbox-enrollment.js');
+      const {db}=await import('./lib/db.js');
+      const adopted=await new PostgresEmailMailboxEnrollment(db).adopt(actor,orgId,input,signal);
+      await (await import('./lib/email-mailbox-scheduler-runtime.js')).scheduleNativeEmailAccount({org_id:orgId,
+        owner_user_id:actor.user_id,account_id:adopted.account_id,authority_revision:adopted.authority_revision});
+      return adopted;
+    },
+  }));
+}
 if (APPS_ENABLED) {
   app.route('/api/resources', resourceRoutes);
   app.route('/api/apps/public', appPublicManagementRoutes);
@@ -302,10 +511,20 @@ if (APPS_ENABLED) {
   app.route('/api/app-runtime-review', appRuntimeReviewRoutes);
   app.route('/api/app-runtime-actions', appRuntimeActionRoutes);
   app.route('/api/app-experiences', appExperienceRoutes);
+  const integrationHuman=async(c:import('hono').Context)=>{const auth=await resourceSyncWebAuthority(c.req.header('authorization'));return {kind:'human' as const,org_id:auth.actor.org_id,user_id:auth.actor.actor_id,principal_id:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};};
+  app.route('/api/app-integrations/destinations',appIntegrationDestinationRoutes(integrationHuman));
+  app.route('/api/app-integrations/notifications',appIntegrationNotificationRoutes(integrationHuman));
+  app.route('/api/app-integrations/recipients',appIntegrationRecipientRoutes());
+  app.route('/api/app-integrations/permissions',appIntegrationPermissionRoutes(async c=>{const caller=await integrationHuman(c);return {org_id:caller.org_id,user_id:caller.user_id,sid:caller.principal_id,access_expires_at:caller.access_expires_at};}));
+  app.route('/api/app-integrations/preparations',appIntegrationPreparationRoutes(async c=>{const caller=await integrationHuman(c);return {org_id:caller.org_id,user_id:caller.user_id,sid:caller.principal_id,access_expires_at:caller.access_expires_at};}));
+  app.route('/api/app-owner-connections', appOwnerConnectionRoutes);
   app.route('/api/app-action-batches', createAppActionBatchRoutes());
+  app.route('/api/app-integrations/knowledge', createMountedAppIntegrationCaptureRoutes());
+  app.route('/api/email-adoption',createNativeAdoptionSourceRoutes());
   app.route('/api/app-experiences', createExperienceHumanActionRoutes(async () => {
     const runtime = await getAppRunRuntime();
-    return new AppExperienceHumanActionService(new AppExperienceExposureService(runtime.keys), runtime);
+    return new AppExperienceHumanActionService(new AppExperienceExposureService(runtime.keys), runtime,
+      () => new Date(), new AppActionPayloadCapture(runtime.keys));
   }));
   app.route('/api/apps', appRoutes);
   app.route('/api/app-actions', appActionRoutes);

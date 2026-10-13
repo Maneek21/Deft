@@ -1,0 +1,22 @@
+ 'use client';
+import {useEffect,useRef,useState} from 'react';
+import {api} from '@/lib/api';
+import {boundedConfirmationJson} from '@/lib/app-experience-action-confirmation';
+import {AppIntegrationDestinationReviewInputSchema,type AppIntegrationDestinationReviewInput} from '../../../../../../packages/app-kit/src/app-integration-destination';
+type Review={schema_version:'deft.app_integration_destination_review.v1';review_digest:string;audience:{label:string;visibility:string;member_count:number};observed_at:string;partial:boolean;expires_at:string};
+type Result={destination_url:string;destination_id:string;replayed:boolean};
+/** Trusted Host control. Input nominates a source/destination; Host resolves all
+ * current authority and shows the exact audience before any native write. */
+export function ReviewedDestination({input,current,onClose,journal}:{input:AppIntegrationDestinationReviewInput;current:()=>boolean;onClose:()=>void;journal:{read:()=>string|undefined;save:(id:string)=>void;clear:()=>void}}){
+ const [review,setReview]=useState<Review>(),[result,setResult]=useState<Result>(),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false);
+ const request=useRef<string|undefined>(undefined),commit=useRef<unknown>(undefined);
+ useEffect(()=>{const abort=new AbortController();setReview(undefined);setResult(undefined);try{request.current=journal.read();}catch{setNotice('Request recovery is unavailable in this browser.');return;}commit.current=undefined;
+  if(!current())return;setBusy(true);void api.fetch('/api/app-integrations/destinations/review',{method:'POST',signal:abort.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(AppIntegrationDestinationReviewInputSchema.parse(input))})
+  .then(async response=>{const value=await boundedConfirmationJson(response) as Review;if(abort.signal.aborted||!current())return;if(value.schema_version!=='deft.app_integration_destination_review.v1'||!/^sha256:[a-f0-9]{64}$/.test(value.review_digest)||!Number.isFinite(Date.parse(value.expires_at))||Date.parse(value.expires_at)<=Date.now())throw Error();setReview(value);})
+  .catch(()=>{if(!abort.signal.aborted)setNotice('Source or destination is unavailable.');}).finally(()=>{if(!abort.signal.aborted)setBusy(false)});return()=>abort.abort();
+ },[input,current,journal]);
+ const recover=async()=>{if(!request.current||!current())return;setBusy(true);try{const value=await boundedConfirmationJson(await api.fetch('/api/app-integrations/destinations/status/'+request.current)) as Result;if(!current())return;setResult(value);setNotice('');}catch{setNotice('The result is not confirmed. Keep this review open and check again.');}finally{setBusy(false)}};
+ const create=async()=>{if(!review||busy||!current()||Date.parse(review.expires_at)<=Date.now())return;if(request.current){await recover();return;}const id=crypto.randomUUID();try{journal.save(id);}catch{setNotice('Request recovery is unavailable in this browser.');return;}request.current=id;commit.current={...input,request_id:id,review_digest:review.review_digest};setBusy(true);
+ try{const value=await boundedConfirmationJson(await api.fetch('/api/app-integrations/destinations/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(commit.current)})) as Result;if(current())setResult(value);}catch{setNotice('The result is not confirmed. Check the original request before creating another copy.');}finally{setBusy(false)}};
+ return <section className="space-y-3 rounded-lg border p-4" aria-label="Review native destination"><h3 className="font-medium">Create {input.destination.kind}</h3><p>{input.title}</p>{review&&<><p>Visible to: {review.audience.label} ({review.audience.member_count})</p><p className="text-sm" style={{color:'var(--text-secondary)'}}>Source observed {review.observed_at}. {review.partial?'This is a partial observed snapshot.':''}</p><p>{input.mode==='excerpt'?'The selected excerpt and an access-controlled source link will be copied.':'An access-controlled source link will be copied.'}</p></>}{notice&&<p role="status">{notice}</p>}{result?<a href={result.destination_url}>Open created {input.destination.kind}</a>:<button className="rounded border px-3 py-2" disabled={busy||!review||!current()} onClick={()=>void create()}>{request.current?'Check original request':'Create '+input.destination.kind}</button>}<button className="ml-3 px-3 py-2" disabled={busy||!!request.current&&!result} onClick={()=>{if(result)journal.clear();onClose();}}>Close</button></section>;
+}

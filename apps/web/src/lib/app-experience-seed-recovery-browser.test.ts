@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {createRequire} from 'node:module';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+const web=fileURLToPath(new URL('../..',import.meta.url)),require=createRequire(path.join(web,'package.json')),{chromium}=require('playwright'),{build}=require('esbuild');
+test('persisted seed resolving a saved revision retires only its locator; genuine unsaved seeds survive reopening',async()=>{
+ const clientPath=path.join(web,'src/lib/app-experience-data-client.ts');
+ const bundled=await build({stdin:{contents:`import {createExperienceDataClient,appDataInputDigest} from ${JSON.stringify(clientPath)};
+ const installation='33333333-3333-4333-8333-333333333333',account='44444444-4444-4444-8444-444444444444',oldId='55555555-5555-4555-8555-555555555555',newId='66666666-6666-4666-8666-666666666666',hash='sha256:'+'a'.repeat(64),calls=[];
+ const value={to:'',subject:'',body:'',body_html:'',attachments:[]};
+ const profile={schema_version:'deft.record_form_profile.v1',max_record_bytes:491520,addresses:[{field:'to',label:'To',optional:false}],subject:{field:'subject',label:'Subject',max_characters:998},richtext:{html_field:'body_html',plain_field:'body',label:'Message',max_characters:262144,links:'host_validated',inline_images:'host_files'},files:{field:'attachments',max_files:32,max_file_bytes:26214400,max_total_bytes:26214400}};
+ const store={schema_version:'deft.app_record_store.v1',key:'drafts',resource_key:'inbox',runtime_requirement_key:'sync_provider',max_record_bytes:491520,max_files:32,max_file_bytes:26214400,max_total_file_bytes:26214400};
+ const node=(id,form)=>({kind:'record_form',id:form,label:'Draft',store_key:'drafts',record_id:id,expected_revision:0,content_digest:'sha256:'+'0'.repeat(64),seed:{schema_version:'deft.record_form_seed.v1',value},profile});
+ const context={schema_version:'deft.app_data_context.v1',installation_id:installation,targets:[{session_id:'22222222-2222-4222-8222-222222222222',target_key:'mailbox',account:{account_ref:account,label:'Fixture'},resource_key:'inbox',identities:[],stores:[{declaration:store,consent:{consent_id:account,consent_digest:hash,expires_at:new Date(Date.now()+600000).toISOString()}}]}]};
+ const json=value=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
+ window.Probe=async saved=>{calls.length=0;const form=saved?'saved_form':'unsaved_form',signal=new AbortController().signal;
+ const options={installationId:installation,targetKey:'mailbox',principal:{orgId:'11111111-1111-4111-8111-111111111111',userId:'77777777-7777-4777-8777-777777777777'},current:()=>true,fetch:async(path,options)=>{if(path.endsWith('/resolve')||path.endsWith('/context'))return json(context);const request=JSON.parse(options.body);calls.push(request.operation);const base={schema_version:'deft.app_data_result.v1',request_id:request.request_id,operation:request.operation,input_digest:await appDataInputDigest(request.operation,request.input),outcome:'completed'};if(request.operation==='connection_metadata')return json({...base,identities:[]});if(request.operation==='record_read'){if(!saved)return json({...base,outcome:'not_found'});return json({...base,record:{schema_version:'deft.app_record.v1',store_key:'drafts',record_id:oldId,revision:6,content_revision:6,content_digest:hash,status:'draft',value:{...value,subject:'Original saved revision six'},files:[],created_at:new Date().toISOString(),updated_at:new Date().toISOString()}});}throw Error('Unexpected effect '+request.operation);}};
+ const first=createExperienceDataClient(options);const reserved=await first.ports.resolveSeed(node(oldId,form),signal);
+ const reopened=createExperienceDataClient(options);const restored=await reopened.ports.resolveSeed(node(newId,form),signal);const loaded=await reopened.ports.load(restored,signal);
+ const afterClose=createExperienceDataClient(options);const following=await afterClose.ports.resolveSeed(node(newId,form),signal);
+ return {reserved:reserved.record_id,restored:restored.record_id,following:following.record_id,revision:loaded.record.revision,subject:loaded.record.value.subject,calls};};`,resolveDir:web,loader:'ts'},bundle:true,write:false,platform:'browser',format:'iife',alias:{'@':path.join(web,'src')},define:{'process.env.NODE_ENV':'"test"'}});
+ const browser=await chromium.launch({headless:true,...(process.env.DEFT_TEST_BROWSER_EXECUTABLE?{executablePath:process.env.DEFT_TEST_BROWSER_EXECUTABLE}:{})});
+ try{const page=await browser.newPage();await page.route('**/*',(route:any)=>route.request().url().startsWith('http://127.0.0.1/')?route.fulfill({contentType:'text/html',body:'Fixture'}):route.abort());await page.goto('http://127.0.0.1/');await page.addScriptTag({content:bundled.outputFiles[0].text});
+  for(const saved of [false,true]){const result=await page.evaluate((saved:boolean)=>(window as any).Probe(saved),saved);assert.equal(result.reserved,'55555555-5555-4555-8555-555555555555');assert.equal(result.restored,result.reserved,'original recovery identity must be opened first');assert.equal(result.revision,saved?6:0);assert.equal(result.following,saved?'66666666-6666-4666-8666-666666666666':result.reserved,'saved identity must release its locator while unsaved recovery retains it');assert.ok(result.calls.every((operation:string)=>['connection_metadata','record_read'].includes(operation)),'opening and retiring locator must not save or send');}
+ }finally{await browser.close();}
+});

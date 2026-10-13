@@ -17,6 +17,7 @@ import { stageAttachmentAppUpgrade, getAttachmentUpgradeContext, prepareAttachme
 import { listResourceSyncBindings, inspectResourceSyncBinding } from '../lib/app-resource-sync-status.js';
 import { listEligibleResourceSyncOperators, listAssignedResourceSyncBindings,
   listOwnResourceSyncSessions } from '../lib/app-resource-sync-operator.js';
+import { AppResourceSyncClosureService } from '../lib/app-resource-sync-closure.js';
 const READ_DEADLINE_MS=10_000;
 const id=z.string().uuid();
 function query(c:Context){const entries=[...new URL(c.req.url).searchParams.entries()];
@@ -128,9 +129,9 @@ appAttachmentRoutes.post('/sync/bindings/:bindingId/sessions',async c=>{
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/sync/bindings/:bindingId/sync',async c=>{
-  try{noQuery(c);z.strictObject({}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+  try{noQuery(c);const input=z.strictObject({continue:z.literal(true).optional()}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     return c.json(await (await getAppAttachmentRuntime()).admission.admitDue({org_id:actor.org_id,resource_binding_id:id.parse(c.req.param('bindingId'))},
-      undefined,{owner_user_id:actor.actor_id,guard}));
+      undefined,{owner_user_id:actor.actor_id,guard,...(input.continue?{continue_committed_cursor:true as const}:{})}));
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/sync/bindings/:bindingId/resume-observation',async c=>{
@@ -141,6 +142,18 @@ appAttachmentRoutes.post('/sync/bindings/:bindingId/resume-observation',async c=
 appAttachmentRoutes.post('/sync/bindings/:bindingId/revoke',async c=>{
   try{noQuery(c);z.strictObject({}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     return c.json(await (await getAppAttachmentRuntime()).management.revokeConsent(actor,id.parse(c.req.param('bindingId')),guard));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/sync/unknown-runs/review',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const runtime=await getAppAttachmentRuntime();
+    return c.json({review:await new AppResourceSyncClosureService(runtime.keys,runtime.repository).review(actor,input,guard)});
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/sync/unknown-runs/activate',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const runtime=await getAppAttachmentRuntime();
+    return c.json({closure:await new AppResourceSyncClosureService(runtime.keys,runtime.repository).activate(actor,input,guard)});
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/sync/sessions/:sessionId/revoke',async c=>{
@@ -271,9 +284,9 @@ appAttachmentRoutes.post('/composition/runtime/bindings/activate',async c=>{
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/composition/runtime/bindings/:bindingId/sessions',async c=>{
-  try{noQuery(c);z.strictObject({}).parse(await body(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+  try{noQuery(c);const {AppRuntimeSessionIssueInputSchema}=await import('../lib/app-runtime-contract.js');const input=AppRuntimeSessionIssueInputSchema.parse(await body(c));const {actor,guard,web_session}=await resourceSyncWebAuthority(c.req.header('authorization'));
     const {issueRuntimeOperatorSession}=await import('../lib/app-runtime-management.js');
-    return c.json({session:await issueRuntimeOperatorSession(actor,id.parse(c.req.param('bindingId')),{guard})},201);
+    return c.json({session:await issueRuntimeOperatorSession(actor,id.parse(c.req.param('bindingId')),{guard,...(input.technical_renewal?{technical_renewal:{requested_until:new Date(input.technical_renewal.requested_until),sid:web_session.sid}}:{})})},201);
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/composition/runtime/invoke',async c=>{

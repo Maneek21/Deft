@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { HUMAN_EMAIL_TOOLS } from './email.js';
+import { EMAIL_INTEGRATION_TOOL_NAMES as EMAIL_TOOL_NAMES } from '../email-integration-agent-tools.js';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
@@ -204,6 +206,7 @@ function retrievalResultToSearchResult(row: ContextResult): Record<string, unkno
 }
 
 export const HUMAN_READ_TOOLS = new Set([
+  ...EMAIL_TOOL_NAMES.filter(name=>!['email_draft_save','email_triage','email_send'].includes(name)),
   'app_runtime_action_list', 'app_runtime_action_get', 'app_action_batch_get',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'read'),
   'search',
@@ -258,6 +261,7 @@ export const HUMAN_READ_TOOLS = new Set([
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
+  'email_draft_save','email_triage','email_send',
   'app_action_batch_propose', 'app_action_batch_cancel',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'write'),
   'memory_write',
@@ -316,6 +320,7 @@ async function humanAppActionOperation(
 }
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
+  ...HUMAN_EMAIL_TOOLS,
   ...Object.fromEntries(RUNTIME_WORKFLOW_NAMES.map(name => [name,
     (args: unknown, ctx: HumanToolContext) => humanRuntimeWorkflowTool(name, args, ctx)])),
   ...Object.fromEntries(MODULE_OPERATION_NAMES.map((name) => [
@@ -4137,7 +4142,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
   ];
-  const existing = agentSchemas
+  const existing = [...agentSchemas]
     .filter((schema) => {
       const name = String(schema.name ?? '');
       return HUMAN_READ_TOOLS.has(name) || HUMAN_WRITE_TOOLS.has(name);

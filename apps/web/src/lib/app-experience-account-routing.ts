@@ -1,0 +1,43 @@
+/** Trusted readonly fanout. Public target keys never nominate connection handles.
+ * Every child keeps its own signed exposure; references retain their source owner. */
+export type AccountReference=Readonly<{resource_key:string;record_id:string;content_digest:string}>;
+export type AccountChild<T>=Readonly<{targetKey:string;accountRef:string;label:string;value:T}>;
+export function createExperienceAccountRouting<T>(ports:{current:()=>boolean;
+ catalog:(signal:AbortSignal)=>Promise<readonly {key:string;label:string}[]>;
+ open:(key:string,signal:AbortSignal)=>Promise<AccountChild<T>>;
+ validate:(child:AccountChild<T>,signal:AbortSignal)=>Promise<boolean>;
+ retire:(child:AccountChild<T>)=>void;}){
+ const children=new Map<string,AccountChild<T>>(),opening=new Map<string,Promise<AccountChild<T>>>(),owners=new Map<string,{child:AccountChild<T>;digest:string}>();
+ let ended=false,active=0;const waiting:Array<()=>void>=[];
+ const check=(signal:AbortSignal)=>{signal.throwIfAborted();if(ended||!ports.current())throw Error('Account visibility ended');};
+ const forget=(key:string)=>{const child=children.get(key);children.delete(key);for(const [id,owner]of owners)if(owner.child.targetKey===key)owners.delete(id);if(child)ports.retire(child);};
+ const catalog=async(signal:AbortSignal)=>{check(signal);const rows=await ports.catalog(signal);check(signal);if(rows.length>32||new Set(rows.map(row=>row.key)).size!==rows.length||rows.some(row=>!(/^[a-z][a-z0-9_]{0,47}$/u.test(row.key))||typeof row.label!=='string'||row.label.length>80))throw Error('Account catalog invalid');for(const key of children.keys())if(!rows.some(row=>row.key===key))forget(key);return rows;};
+ const limited=async<R>(signal:AbortSignal,work:()=>Promise<R>)=>{if(active>=2)await new Promise<void>(resolve=>waiting.push(resolve));active++;try{check(signal);return await work();}finally{active--;waiting.shift()?.();}};
+ const acquire=async(key:string,signal:AbortSignal)=>{check(signal);if(!(await catalog(signal)).some(row=>row.key===key))throw Error('Account not in current catalog');let value=children.get(key);if(!value){let pending=opening.get(key);if(!pending){pending=limited(signal,async()=>{const next=await ports.open(key,signal);try{check(signal);if(next.targetKey!==key||!next.accountRef)throw Error('Account child changed');children.set(key,next);return next;}catch(error){ports.retire(next);throw error;}}).finally(()=>opening.delete(key));opening.set(key,pending);}value=await pending;}check(signal);return value;};
+ const child=async(key:string,signal:AbortSignal)=>{const value=await acquire(key,signal);if(!await ports.validate(value,signal)){forget(key);throw Error('Account visibility ended');}check(signal);return value;};
+ // A nominated list needs one fresh check at dispatch and one at disclosure.
+ // Opening happens outside the execution slot because it has its own limit.
+ const listTarget=async<R>(key:string,signal:AbortSignal,work:(owner:AccountChild<T>)=>Promise<R>)=>{
+  const owner=await acquire(key,signal),accountRef=owner.accountRef;
+  const registered=()=>{check(signal);if(children.get(key)!==owner||owner.targetKey!==key||owner.accountRef!==accountRef)throw Error('Account visibility ended');};
+  const validate=async()=>{registered();const valid=await ports.validate(owner,signal);registered();if(!valid){forget(key);throw Error('Account visibility ended');}};
+  return limited(signal,async()=>{
+   registered();if(!(await catalog(signal)).some(row=>row.key===key))throw Error('Account visibility ended');registered();
+   await validate();registered();const result=await work(owner);registered();await validate();registered();
+   return {owner,result};
+  });
+ };
+ const retain=(value:AccountChild<T>,refs:readonly AccountReference[])=>{if(ended||!ports.current())throw Error('Account visibility ended');for(const ref of refs){const id=ref.resource_key+'/'+ref.record_id,prior=owners.get(id);if(prior&&prior.child.targetKey!==value.targetKey){forget(prior.child.targetKey);forget(value.targetKey);throw Error('Account reference collision');}owners.set(id,{child:value,digest:ref.content_digest});}if(owners.size>3200){owners.clear();throw Error('Account reference limit');}};
+ const source=async(refs:readonly AccountReference[],signal:AbortSignal)=>{check(signal);if(!refs.length)throw Error('Source account required');let value:AccountChild<T>|undefined;for(const ref of refs){const owner=owners.get(ref.resource_key+'/'+ref.record_id);if(!owner||owner.digest!==ref.content_digest||value&&value.targetKey!==owner.child.targetKey)throw Error('Source account changed or mixed');value=owner.child;}const next=await child(value!.targetKey,signal);if(next.accountRef!==value!.accountRef)throw Error('Source account changed');return next;};
+ return {catalog,child,listTarget,retain,source,async execute<R>(value:AccountChild<T>,signal:AbortSignal,work:()=>Promise<R>){await child(value.targetKey,signal);return limited(signal,async()=>{if(!await ports.validate(value,signal)){forget(value.targetKey);throw Error('Account visibility ended');}const result=await work();if(!await ports.validate(value,signal)){forget(value.targetKey);throw Error('Account visibility ended');}check(signal);return result;});},async sweep(signal:AbortSignal){check(signal);const ended:string[]=[];await Promise.all([...children.values()].map(value=>limited(signal,async()=>{try{if(!await ports.validate(value,signal)){ended.push(value.targetKey);forget(value.targetKey);}}catch{check(signal);ended.push(value.targetKey);forget(value.targetKey);}})));check(signal);return ended;},reference(resource_key:string,record_id:string){const owner=owners.get(resource_key+'/'+record_id);if(!owner)throw Error('Source account unavailable');return {resource_key,record_id,content_digest:owner.digest};},forget,close(){ended=true;for(const key of [...children.keys()])forget(key);owners.clear();for(const wake of waiting.splice(0))wake();}};
+}
+
+/** Resource-less actions still belong to the account that owns their typed
+ * records. URL/current-account choices never override retained record custody. */
+export async function resolveExperienceActionAccount<T>(input:{sources:readonly AccountReference[];recordRefs:readonly {record_id:string}[];fallbackTarget:string},ports:{current:()=>boolean;recordOwner:(id:string)=>AccountChild<T>|undefined;source:(refs:readonly AccountReference[],signal:AbortSignal)=>Promise<AccountChild<T>>;child:(key:string,signal:AbortSignal)=>Promise<AccountChild<T>>},signal:AbortSignal):Promise<AccountChild<T>>{
+ const check=()=>{signal.throwIfAborted();if(!ports.current())throw Error('Account visibility ended');};
+ const retained=()=>{check();const values=input.recordRefs.map(ref=>ports.recordOwner(ref.record_id));if(values.some(value=>!value))throw Error('Action record account unavailable');const first=values[0];if(first&&values.some(value=>value!.targetKey!==first.targetKey||value!.accountRef!==first.accountRef))throw Error('Mixed account action denied');return first;};
+ const original=retained();const source=input.sources.length?await ports.source(input.sources,signal):await ports.child(original?.targetKey??input.fallbackTarget,signal);check();
+ const current=retained();if(original&&(!current||current.targetKey!==original.targetKey||current.accountRef!==original.accountRef)||current&&(current.targetKey!==source.targetKey||current.accountRef!==source.accountRef))throw Error('Mixed or changed account action denied');
+ return source;
+}

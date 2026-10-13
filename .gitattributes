@@ -1,6 +1,8 @@
 scripts/docker-entrypoint.sh text eol=lf
 docs/examples/operations/*.sh text eol=lf
 **/deft.app.lock.json text eol=lf
+# Keep lineage migration checksums independent of checkout line endings.
+packages/db/upgrades/**/*.sql -text whitespace=cr-at-eol,-blank-at-eof,-trailing-space
 # Migration checksums cover physical bytes; pin new files without rewriting history.
 packages/db/upgrades/0.3.0-preview.51-app-attachment-composition.sql text eol=lf
 packages/db/upgrades/0.3.0-preview.52-private-defty-context.sql text eol=lf

@@ -15,6 +15,9 @@ import {
 } from '@/lib/module-navigation';
 import { useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
 import { useAppNavigation, useAppRealtime } from '@/hooks/use-apps';
+import { useNativeEmailAvailability } from '@/hooks/use-native-email-availability';
+import { NativeEmailUnreadBadge } from '@/components/email/native-email-unread';
+import { nativeEmailAppNavigation, showNativeEmailNavigation } from '@/lib/email-native-navigation';
 import { appNavigationLinkKey, appNavigationModuleSlug, getAppNavigationItems, getAppNavigationModuleOwner, getVisibleModuleNavigationItems, isAppNavigationGroupActive, isAppNavigationLinkActive, type AppNavigationItem } from '@/lib/app-navigation';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
@@ -50,6 +53,7 @@ import {
   BookOpen,
   Smile,
   Inbox,
+  Mail,
   ChevronDown,
   AppWindow,
   type LucideIcon,
@@ -801,6 +805,20 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
 }
 
 // ── Main Sidebar ─────────────────────────────────────────────────────
+function NativeEmailSidebarContent({onNav}:{onNav:()=>void}){
+  const {nativeEmailNavigation:navigation}=useExperienceNavigation();
+  if(!navigation)return null;
+  return <nav aria-label="Email navigation" className="px-3 pt-4 pb-1">
+    <div className="mb-2 px-2 text-[0.6875rem] font-semibold uppercase tracking-[0.05em] text-[var(--outline)]">Email</div>
+    {navigation.items.map(item=><button key={item.id} type="button" disabled={item.disabled}
+      onClick={()=>{navigation.select(item.id);onNav();}} aria-current={item.selected?'page':undefined}
+      className="flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-full px-3 text-left text-[0.8125rem] font-medium hover:bg-[var(--bg-hover)] disabled:opacity-50 md:h-8 md:min-h-0"
+      style={{background:item.selected?'var(--bg-active)':undefined,color:item.selected?'var(--on-surface)':'var(--on-surface-variant)'}}>
+      <span className="truncate flex-1">{item.label}</span>
+      <NativeEmailUnreadBadge value={navigation.unread?.[item.id]}/>
+    </button>)}
+  </nav>;
+}
 export function Sidebar({
   spaces,
   activeSpaceId,
@@ -823,14 +841,16 @@ export function Sidebar({
   const router = useRouter();
   const installedModules = useInstalledModules(Boolean(user && user.role !== 'guest'));
   const appNavigation = useAppNavigation(Boolean(user && user.role !== 'guest'));
+  const nativeEmailAvailability = useNativeEmailAvailability(Boolean(user && user.role !== 'guest'));
   useModuleRealtime();
   useAppRealtime();
-  const appNavItems = APPS_ENABLED ? getAppNavigationItems(appNavigation.navigation) : [];
+  const appNavItems = nativeEmailAppNavigation(APPS_ENABLED ? getAppNavigationItems(appNavigation.navigation) : [], nativeEmailAvailability);
   const moduleNavItems = getModuleNavigationItems(installedModules.modules, user?.role);
   const appNavigationAuthoritative = !appNavigation.isLoading && !appNavigation.error;
   const standaloneModuleNavItems = getVisibleModuleNavigationItems(moduleNavItems, appNavigation.navigation, appNavigationAuthoritative);
   const visibleNavItems: PrimaryNavigationItem[] = [
     ...navItems.slice(0, -1),
+    ...(showNativeEmailNavigation(appNavItems, nativeEmailAvailability) ? [{kind:'core' as const,name:'Email',href:'/email',icon:Mail}] : []),
     ...appNavItems,
     ...standaloneModuleNavItems,
     navItems[navItems.length - 1],
@@ -942,6 +962,7 @@ export function Sidebar({
 
   // Determine which content section to render
   const renderContent = () => {
+    if(pathname==='/email')return <NativeEmailSidebarContent onNav={handleNav}/>;
     const activeApp = appNavItems.find((item) => isAppNavigationGroupActive(pathname, item, appNavItems));
     if (activeApp) {
       return <AppSidebarContent app={activeApp} groups={appNavItems} pathname={pathname} onNav={handleNav} />;

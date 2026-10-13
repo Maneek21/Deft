@@ -8,6 +8,7 @@ import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 import { TemplatePickerModal } from './template-picker-modal';
 import { PersonAvatar } from './person-avatar';
+import { taskDescriptionWithSource, type TaskSourceLink } from '@/lib/task-source-link';
 
 type Props = {
   projectId: string;
@@ -16,6 +17,8 @@ type Props = {
   initialDescription?: string;
   defaultDueDate?: string;
   sourceMessageId?: string;
+  sourceLink?: TaskSourceLink;
+  beforeCreate?: () => Promise<void>;
   onClose: () => void;
   onCreated: () => void;
 };
@@ -34,7 +37,7 @@ const PRIORITY_OPTIONS = [
   { value: 'p3', label: 'P3', color: '#6B7280' },
 ];
 
-export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initialDescription, defaultDueDate, sourceMessageId, onClose, onCreated }: Props) {
+export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initialDescription, defaultDueDate, sourceMessageId, sourceLink, beforeCreate, onClose, onCreated }: Props) {
   const [title, setTitle] = useState(initialTitle || '');
   const [status, setStatus] = useState(defaultStatus || 'backlog');
   const [priority, setPriority] = useState('p2');
@@ -70,10 +73,13 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
 
   const titleRef = useRef<HTMLInputElement>(null);
   const createIntentRef = useRef(createNativeCreateIntent(`task:${projectId}:quick-create`));
+  const sourceCreateAttempted = useRef(false);
   const handleClose = useCallback(() => {
-    createIntentRef.current.cancel();
+    if (submitting) return;
+    // Keep the same Email transfer key when a create response was lost.
+    if (!sourceLink || !sourceCreateAttempted.current) createIntentRef.current.cancel();
     onClose();
-  }, [onClose]);
+  }, [onClose, submitting, sourceLink]);
 
   useEffect(() => {
     titleRef.current?.focus();
@@ -105,6 +111,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
     try {
       const body: Record<string, any> = { title: title.trim() };
       if (description.trim()) body.description = description.trim();
+      if (sourceLink) body.description = taskDescriptionWithSource(description, sourceLink);
       if (status && status !== 'backlog') body.status = status;
       if (priority && priority !== 'p2') body.priority = priority;
       if (assigneeId) body.assignee_id = assigneeId;
@@ -123,6 +130,8 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
         }
       }
       const intentKey = await createIntentRef.current.keyFor(body);
+      await beforeCreate?.();
+      sourceCreateAttempted.current = Boolean(sourceLink);
       const res = await api.post(`/api/projects/${projectId}/tasks`, body, {
         headers: { 'Idempotency-Key': intentKey },
       });
@@ -213,6 +222,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                   fontFamily: 'var(--font-body)',
                 }}
               />
+              {sourceLink && <a href={sourceLink.href} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-xs underline" style={{color:'var(--primary)'}}>{sourceLink.label}</a>}
             </div>
 
             {/* Fields row */}

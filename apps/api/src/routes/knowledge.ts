@@ -7,6 +7,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { createNativeKnowledge } from '../lib/native-context-create.js';
 
 export const knowledgeRoutes = new Hono();
 export const knowledgeAggRoutes = new Hono();
@@ -22,15 +23,6 @@ const LEGACY_TO_WIKI: Record<string, WikiType> = {
   action_item: 'procedure',
   note: 'fact',
 };
-
-function slugify(title: string): string {
-  return title.toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80);
-}
 
 // Map a wiki page row to the knowledge entry shape the panel expects
 function toKnowledgeEntry(row: any) {
@@ -329,33 +321,9 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
       sourceMessageExcerpt = toPlainText(sourceMessage.content).slice(0, 200);
     }
 
-    let slug = slugify(title);
-
-    // Ensure unique slug within org
-    const [existingSlug] = await db.select({ id: wikiPages.id })
-      .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug)))
-      .limit(1);
-    if (existingSlug) {
-      slug = `${slug}-${Date.now().toString(36)}`;
-    }
-
-    const [entry] = await db.insert(wikiPages).values({
-      org_id: user.org_id,
-      space_id: spaceId,
-      origin_space_id: sourceSpaceId ?? spaceId,
-      origin_message_id: sourceMessageId,
-      origin_user_id: user.id,
-      created_via: 'space_knowledge_panel',
-      user_id: user.id,
-      scope: 'space',
-      type: wikiType,
-      title,
-      slug,
-      content: content || '',
-      metadata,
-      confidence: 0.9,
-    }).returning();
+    const entry = await createNativeKnowledge(db, user, { space_id: spaceId,
+      source_space_id: sourceSpaceId, source_message_id: sourceMessageId,
+      type: wikiType, title, content: content || '', metadata });
 
     if (!entry) {
       return c.json({ error: 'Failed to create entry', code: 'INTERNAL_ERROR' }, 500);

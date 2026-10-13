@@ -1,8 +1,11 @@
 node_modules/
 *.tgz
 app.deft.json
+app-indexed.deft.json
 artifact.json
 build-result.json
 worker.bundle.js
+metadata-worker.bundle.js
+metadata-artifact.json
 *-result.json
 private*

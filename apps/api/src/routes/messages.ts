@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { hasReservedPrivateDeftyMetadata, isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
+import { createNativeChatForward, nativeChatForwardBroadcast, NativeChatForwardError } from '../lib/native-chat-forward.js';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -199,35 +200,22 @@ messageRoutes.post('/forward', async (c) => {
 
     const forwardedContent = `<blockquote>${original.content}</blockquote><p><em>Forwarded from #${sourceSpace?.name || 'unknown'} by ${author?.name || 'unknown'}</em></p>`;
 
-    const [forwarded] = await db.insert(messages).values({
-      org_id: user.org_id,
-      space_id: target_space_id,
-      user_id: user.id,
-      content: forwardedContent,
+    const forwarded = await db.transaction(tx => createNativeChatForward(tx, user, {
+      space_id: target_space_id, content: forwardedContent,
       metadata: { forwarded_from: { message_id, space_id: original.space_id, space_name: sourceSpace?.name } },
-    }).returning();
+    }));
 
     const io = getIO();
     if (io && forwarded) {
-      const [full] = await db.select({
-        id: messages.id,
-        content: messages.content,
-        user_id: messages.user_id,
-        space_id: messages.space_id,
-        created_at: messages.created_at,
-        user_name: users.name,
-        user_avatar: users.avatar_url,
-        metadata: messages.metadata,
-      }).from(messages)
-        .innerJoin(users, eq(messages.user_id, users.id))
-        .where(eq(messages.id, forwarded.id))
-        .limit(1);
+      const full = await nativeChatForwardBroadcast(db, forwarded.id);
 
       io.to(`space:${target_space_id}`).emit('message:new', full);
     }
 
     return c.json(forwarded, 201);
   } catch (err) {
+    if (err instanceof NativeChatForwardError) return c.json({ error: 'No access to target space', code: err.code },
+      err.code === 'PRIVATE_CONTEXT_REQUIRED' ? 409 : 403);
     console.error('Failed to forward message:', err);
     return c.json({ error: 'Failed to forward', code: 'INTERNAL_ERROR' }, 500);
   }

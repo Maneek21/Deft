@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {createHash} from 'node:crypto';
+import {get as httpGet,type IncomingMessage,type ServerResponse} from 'node:http';
+import {serve} from '@hono/node-server';
+import {createEmailMailboxRoutes} from '../src/routes/email-mailbox.js';
+const tick=()=>new Promise<void>(resolve=>setImmediate(resolve));
+/** Separate serial process from the other socket fixture: no shared budget interference. */
+test('actual Node outgoing deadline closes a held response, zeroes its exact clone and restores raw capacity',{timeout:20000},async()=>{
+ const size=35*1024*1024,logical='mail_'+'e'.repeat(64),copies:Uint8Array[]=[],originals:Uint8Array[]=[],outgoings:ServerResponse[]=[],finished:boolean[]=[];let allocations=0;const startedAt=Date.now(),events:Record<string,unknown>[]=[];
+ let expires=Math.ceil((Date.now()+3000)/1000);const initialDeadline=expires*1000;
+ const app=createEmailMailboxRoutes({verify:async()=>({id:'deadline-owner',org_id:'deadline-org',sid:'deadline-session',exp:expires}),service:async()=>{throw Error('unused');},content:async()=>({readSource:async()=>{allocations++;const bytes=new Uint8Array(size).fill(73);originals.push(bytes);return {account_id:'deadline-account',logical_message_id:logical,media_type:'message/rfc822',byte_length:size,digest:createHash('sha256').update(bytes).digest('hex'),mime_bytes:bytes};}})});
+ const server=serve({hostname:'127.0.0.1',port:0,fetch:(request,env)=>{const out=env.outgoing as ServerResponse,end=out.end.bind(out);const index=outgoings.length;outgoings.push(out);finished.push(false);const observe=(event:string,cause?:Error)=>{events.push({event,index,elapsed_ms:Date.now()-startedAt,destroyed:out.destroyed,writableFinished:out.writableFinished,writableLength:out.writableLength,socketBytesWritten:out.socket?.bytesWritten,clone_first:copies[index]?.[0],cause_name:cause?.name,cause_message:cause?.message});};const destroy=out.destroy.bind(out);out.destroy=(cause?:Error)=>{observe('destroy',cause);return destroy(cause);};out.once('finish',()=>{finished[index]=true;observe('finish');});out.once('close',()=>observe('close'));out.end=((...args:any[])=>{if(args[0] instanceof Uint8Array)copies.push(args[0]);observe('end-before');const result=end(...args);observe('end-after');return result;}) as typeof out.end;return app.fetch(request,env);}});
+ await new Promise<void>(resolve=>server.once('listening',resolve));const address=server.address();assert.ok(address&&typeof address==='object');const url=`http://127.0.0.1:${address.port}/accounts/deadline-account/messages/${logical}/source`,clients:Array<ReturnType<typeof httpGet>>=[];
+ const request=()=>new Promise<IncomingMessage>((resolve,reject)=>{const client=httpGet(url,{headers:{authorization:'Bearer synthetic'}},res=>{res.pause();res.on('error',()=>{});resolve(res);});clients.push(client);client.on('error',reject);});
+ const consume=(res:IncomingMessage)=>new Promise<Buffer>((resolve,reject)=>{const chunks:Buffer[]=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve(Buffer.concat(chunks)));res.on('error',reject);res.resume();});
+ try{
+  const held=await request();assert.equal(held.statusCode,200);assert.equal(allocations,1);assert.equal(copies.length,1);assert.ok(originals[0].every(byte=>byte===0));assert.equal(outgoings[0].writableFinished,false,'fixture must hold actual transport backpressure');assert.equal(copies[0][0],73);
+  await new Promise<void>(resolve=>outgoings[0].once('close',resolve));await tick();
+  console.log(JSON.stringify({deadline_telemetry:true,events,initial_deadline_ms:initialDeadline-startedAt,client_buffered_bytes:held.readableLength,client_socket_bytes_read:held.socket?.bytesRead,owned_zero:copies[0].every(byte=>byte===0)}));assert.equal(outgoings[0].destroyed,true);const cause=events.find(event=>event.index===0&&event.event==='destroy');assert.equal(cause?.cause_name,'TimeoutError');assert.equal(cause?.cause_message,'Incoming response deadline expired');assert.ok(Number(cause?.elapsed_ms)>=initialDeadline-startedAt-20,'actual deadline caused destroy, not an early finish');assert.ok(copies[0].every(byte=>byte===0));held.destroy();
+  expires=Math.floor(Date.now()/1000)+60;const recovered=await request(),body=await consume(recovered);assert.equal(recovered.statusCode,200);assert.equal(body.length,size);assert.equal(body[0],73);assert.equal(body[size-1],73);assert.equal(createHash('sha256').update(body).digest('hex'),createHash('sha256').update(new Uint8Array(size).fill(73)).digest('hex'));body.fill(0);await tick();
+  assert.equal(allocations,2);assert.ok(copies.every(bytes=>bytes.every(byte=>byte===0)));console.log(JSON.stringify({actual_node_deadline:true,bytes:size,allocations,all_clones_zero:true}));
+ }finally{for(const client of clients)client.destroy();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+});

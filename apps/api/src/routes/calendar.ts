@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
-import { eq, and, between, desc, inArray } from 'drizzle-orm';
+import { eq, and, between, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns } from '@deft/db/schema';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
+import {readEmailCalendarOccurrences} from '../lib/email-calendar-projection.js';
 
 export const calendarRoutes = new Hono();
 
@@ -40,7 +41,7 @@ calendarRoutes.get('/', async (c) => {
   const { end: to } = getDayBoundaries(orgTz, 0, toWC);
 
   // Run three queries in parallel
-  const [taskRows, eventRows, noteRows, reminderRows] = await Promise.all([
+  const [taskRows, eventRows, noteRows, reminderRows, invitationOccurrences] = await Promise.all([
     // Tasks assigned to this user with due dates in range
     db.select({
       id: tasks.id,
@@ -76,6 +77,7 @@ calendarRoutes.get('/', async (c) => {
         eq(events.org_id, user.org_id),
         eq(events.user_id, user.id),
         between(events.timestamp, from, to),
+        sql`${events.metadata}->'email_invitation'->>'schema_version' IS DISTINCT FROM 'deft.email_calendar_event.v1'`,
       ))
       .orderBy(events.timestamp),
 
@@ -107,11 +109,12 @@ calendarRoutes.get('/', async (c) => {
         between(reminders.remind_at, from, to),
       ))
       .orderBy(reminders.remind_at),
+    readEmailCalendarOccurrences(db,{org_id:user.org_id,owner_user_id:user.id,from,to}),
   ]);
 
   return c.json({
     tasks: taskRows,
-    events: eventRows,
+    events: [...eventRows,...invitationOccurrences].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime()),
     notes: noteRows,
     reminders: reminderRows,
   });

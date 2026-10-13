@@ -34,6 +34,7 @@ export const AppResourceSyncConsentLimitsSchema = z.strictObject({
 });
 
 export const AppResourceSyncConsentRequestSchema = z.strictObject({
+  target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).optional(),
   installation_id: identity,
   resource_key: resourceKey,
   operator_user_id: identity,

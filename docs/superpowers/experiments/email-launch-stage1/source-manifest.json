@@ -1,0 +1,1465 @@
+{
+  "schema_version": "deft.email_stage1_source_manifest.v1",
+  "date": "2026-09-30",
+  "worktree": "C:\\tmp\\deft-gate-g-integration-20260924",
+  "base_head": "0c611bb4b1a000e8b4a066f71974137e5c0f31cd",
+  "branch": "codex/email-wip-example",
+  "uncommitted": true,
+  "scope": "All public Email source/fixtures and changed/new apps/packages files; excludes documentation ledgers, generated ignored outputs and pre-existing next-env.d.ts",
+  "source_file_count": 137,
+  "files": [
+    {
+      "path": "apps/api/src/lib/app-attachment-media.ts",
+      "bytes": 2357,
+      "sha256": "c77272ec930f0eff124f53f5b154f954ee532a84043b134407152a32afb0f559",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-attachment-sync-authority.ts",
+      "bytes": 14531,
+      "sha256": "934bb83a7543278aad5732dda84a6627c3bf18d9f0c345fd6fe6de0c41df67d7",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-connection-contract.ts",
+      "bytes": 1936,
+      "sha256": "59eb18b88d7e900f219ab9d86dbcaa7161588758b107e5907690aa883b4b3061",
+      "kind": "new"
+    },
+    {
+      "path": "apps/api/src/lib/app-connection-registry.ts",
+      "bytes": 3856,
+      "sha256": "b265d4490bf41e8d18afa1779e5910d27105dc3fda94b75383429f6035f2ab3d",
+      "kind": "new"
+    },
+    {
+      "path": "apps/api/src/lib/app-connection-service.ts",
+      "bytes": 7451,
+      "sha256": "42e4b8a27bbd653deb416a16641e5fd29db6fcf3affe24200e19923b9f384d80",
+      "kind": "new"
+    },
+    {
+      "path": "apps/api/src/lib/app-experience-exposure.ts",
+      "bytes": 61148,
+      "sha256": "99f37440f8a663b7c644d9675f449e1a6f2eeca8c7443f0c8192be902d4e4df9",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-experience-human-action-contract.ts",
+      "bytes": 4637,
+      "sha256": "459559fa03bf69ee888dd75d946d7533a0cf44620d720786630d83b78350b37e",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-experience-human-action-service.ts",
+      "bytes": 16309,
+      "sha256": "0d265dc75f47a0142449c316bd7f66a737b99d838634965838ce45c34602d80b",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-experience-service.ts",
+      "bytes": 37878,
+      "sha256": "d01e10a79b51726d192482e7aa407d1f49a66b5268489119ed6ac48f6f5e2548",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-private-state-adoption-service.ts",
+      "bytes": 13105,
+      "sha256": "9a99f5bb5e4a9513703102f3101bc705b1eda8293b1092ff9b351aa5dfcaa483",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-private-state-contract.ts",
+      "bytes": 2276,
+      "sha256": "3e196578df85bd7b22b0556b9cedd3b186b4e14826244b0b19d51537294a4f61",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-private-state-service.ts",
+      "bytes": 9470,
+      "sha256": "7115d39d40c05857b61405fbbf613e4a6ce7aac0308f72ba2f78b4790707f6e3",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-resource-sync-management.ts",
+      "bytes": 37955,
+      "sha256": "cca407a80cb5a3d04e5c264e247d51d628c89c9917b0a0f80e74f376d41b90bb",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-resource-sync-policy.ts",
+      "bytes": 3633,
+      "sha256": "b4e35b88eb228eeb2d2c5cfb9bb416b4401bb3ae2a6dd9457bdadc94955fe812",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-run-attempt-runner.ts",
+      "bytes": 84372,
+      "sha256": "620ed87b500a3012e796d0af58f528aee07cd21f85a4a0b7eec7aa5a77e44b93",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-run-live-authorization.ts",
+      "bytes": 95742,
+      "sha256": "889aec185c7a11ce74e77b06c99bddb3694ffb271d88c3a24b05e5c9c293e860",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-runtime-authority.ts",
+      "bytes": 21997,
+      "sha256": "9afd624984c9a85bf87e6b0b2ec4c1073f29dbef7957d5f7baf91872abbdf99d",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-runtime-management.ts",
+      "bytes": 25169,
+      "sha256": "08c17cd73fd7e11c19e2de7911d0e88b06c08b3b732e850060a5781dd9edfcbf",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/lib/app-runtime-owner-target.ts",
+      "bytes": 1281,
+      "sha256": "0a84e91a1e09ef18f7444d5326a726311b8d035ad99a9b21d420a1c5481cf15c",
+      "kind": "new"
+    },
+    {
+      "path": "apps/api/src/lib/app-runtime-setup.ts",
+      "bytes": 9536,
+      "sha256": "3120e9dd39c0ebded562162ae4d7be0bc341ecf46ba1f06ab01d3eaaf89e5d49",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/src/routes/app-experiences.ts",
+      "bytes": 13280,
+      "sha256": "8d8d0d279a664604090f004882b3003b8ede0cf40f2681dfaa6d7e2b21fc3af0",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/test/app-attachment-pdf-http-db.test.ts",
+      "bytes": 16668,
+      "sha256": "2e6fe60555ac59688cbec18d05c5ec0f3d7ffe9ea94a102301d7dc5d1eb44d58",
+      "kind": "new"
+    },
+    {
+      "path": "apps/api/test/app-connection-service.test.ts",
+      "bytes": 17476,
+      "sha256": "1718eee5c0d348a20c9e800d113f4e8306c4fb704f14b608dcea7ca022d3258d",
+      "kind": "new"
+    },
+    {
+      "path": "apps/api/test/app-experience-human-action-contract.test.ts",
+      "bytes": 10429,
+      "sha256": "8c7fe6d20959ffdaf683b38f8ea4ba455242d95182c1c5b92bb8f1a76f2621a7",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/api/test/app-experience-targets-http-db.test.ts",
+      "bytes": 52693,
+      "sha256": "5361b31ee9c185a9f29b4c76744b0e31e9cfbb47e208ad121a0f5771098f4dba",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/app/(app)/apps/connections/callback/page.tsx",
+      "bytes": 2883,
+      "sha256": "dfc90a265100b1ef598fc35b80888668ea20556da867f33a354167b488c566f2",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-action-composer.tsx",
+      "bytes": 25122,
+      "sha256": "4426346f91823cf6fc4c971e01b77ccd2fd895fb39cea70bc5aeee6bb99059e2",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls.tsx",
+      "bytes": 13006,
+      "sha256": "946cd593395b46c31893ffbfe74b89dac43f805e68dbe961d7a7562079ba9797",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-connection-settings.tsx",
+      "bytes": 5191,
+      "sha256": "b4048948bc5f865d4f791fdbf894de15b69d8e913d35ff8ff4cb53e075c921a4",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-settings.tsx",
+      "bytes": 10043,
+      "sha256": "f5b7b1028a5e671fe2b9682d1b12511c29d225be217b961abfb2bf65e887d81e",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/components/apps/installed-app-experience.tsx",
+      "bytes": 56838,
+      "sha256": "c6112bc3003bf83a79c37e252aa0dc6dadeb86a29dc356a257284e2b614d0d10",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/web/src/lib/app-connection-flow.test.ts",
+      "bytes": 2038,
+      "sha256": "4f22999e0e8b6962a5159cd30323a0ec88290bbfd00b3a4f5da5eaf94209bd62",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/lib/app-connection-flow.ts",
+      "bytes": 2782,
+      "sha256": "417cdcbcceac5ad01b90cb4a710a3d910a864c3e556c0102b4a12a7c4f412bcc",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.test.ts",
+      "bytes": 9077,
+      "sha256": "f2a3fc6410ca415b5ac9848d291dfe5d285e7657e0a8e0c7f511d52007706740",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "bytes": 6835,
+      "sha256": "0a9a864503dea2f77c8c5303fcb73595d64ada676727b4cd2491ce3093370dc8",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-compose-controls.test.ts",
+      "bytes": 9801,
+      "sha256": "3050332be5e320c3a0b2fb5716573e27dea755f7b587e774ba56837654d0b368",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-compose-controls.ts",
+      "bytes": 15666,
+      "sha256": "38d830b5aa8b6fc878ae0f7e5b579eabe614e05d013c3e8c0acef04dc59ac2a3",
+      "kind": "new"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-draft-recovery.ts",
+      "bytes": 7764,
+      "sha256": "2c8f40329a09e57d0a72c22b509f6cc49e8790d4b58cc8d5ed6712ebe2ea4642",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-session.ts",
+      "bytes": 12292,
+      "sha256": "9368fa850647bbcfc8c7499dfcba8373b6741fc2387bf80a9c773615e86b09f0",
+      "kind": "modified"
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-settings.ts",
+      "bytes": 587,
+      "sha256": "00845cfadafca7f2e7ed0e2a9312546ae353c0e60a435bb884e8698af99f1e9c",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/.gitignore",
+      "bytes": 183,
+      "sha256": "b44e28a8d089b7c95670f4c4c148dec6675e76575bdc221285610fdcfb1d9ec3",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/README.md",
+      "bytes": 5299,
+      "sha256": "b35ce4dfc67da44171c07432b95b4339cec96b1366eb2bcd3f1b802f1fea216e",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/account-config.mjs",
+      "bytes": 3065,
+      "sha256": "da3f948128fadd3968e7653072a824e4cdc7619cc4958570262e2e790d183a59",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/account-registry.mjs",
+      "bytes": 5087,
+      "sha256": "f3fbc7e4af549322d1e29b962660bf3f63c6c66c025d326b00dbfb5379dfd167",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/account-registry.test.mjs",
+      "bytes": 3922,
+      "sha256": "b05568a8155961fb5a13c273148924be214976cb224854624debe36675aec943",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/activity-recovery-smoke.mjs",
+      "bytes": 2993,
+      "sha256": "5828fc99cf435a6d86d502b2936f7d390ea62dd9d1f2bd1a22c8bcfcbe00ccef",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/build.mjs",
+      "bytes": 6940,
+      "sha256": "e3e25cbdced02a523ca24baf027d213cb2f005c3cad2af0bb8ae04389ad550df",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/draft-controller.mjs",
+      "bytes": 4582,
+      "sha256": "7567ad656d13016af796fa8d284098b100e99003a0643c04171f583dee2a68e3",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/draft-controller.test.mjs",
+      "bytes": 8065,
+      "sha256": "796809998bbf7d081f7f647ab41a6f328cb0bb8a2d0a284368279fdd906d2df0",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/email-attachments.mjs",
+      "bytes": 4857,
+      "sha256": "db77600e9c6917ff1351112c1a430c5b328b2d61fe275e72faa3dd27743553ed",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/.gitattributes",
+      "bytes": 25,
+      "sha256": "70e659d5e64fd8baf606de924626b1fea2eabb8c9679eb9eebe9f56de4265fba",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/.gitignore",
+      "bytes": 21,
+      "sha256": "9f5c592c515b3cad4d5bc9d271f19a70541d93b79601999e7afd2aa637e2540e",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/README.md",
+      "bytes": 2567,
+      "sha256": "0ad0a58e973f7b676faa20a3a54ca2a49d0d4c45754db290ed40bae418c5cee5",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/fixtures.json",
+      "bytes": 5532,
+      "sha256": "720d32bb4c8bab7b477c266e8195ddf50ae2633960f885d06561bc266d0aa24d",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/gmail-personal-followup.eml",
+      "bytes": 549,
+      "sha256": "2233f8a8c3eb1fb85735ec3f657c8be8b92c43e0466917feff792d6543e6efc7",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/gmail-personal-inbox.eml",
+      "bytes": 3314,
+      "sha256": "14c255f91a5991cef8d0cf5599cd83d83a369d13dab947e9e9b278998bef3568",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/gmail-personal-sent.eml",
+      "bytes": 589,
+      "sha256": "eed431e8097cc2c6a6c96202cdfe7b6a3482e1ce9a05d6d9039ba5d6ddb7ea15",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/gmail-work-inbox.eml",
+      "bytes": 363,
+      "sha256": "a2a30d64fc6aa48d60a7f4858be97439bde90cb164869a36296c9a75a517e80d",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/imap-locator-change.eml",
+      "bytes": 375,
+      "sha256": "76171a22af2a773a1c2a457c52c832a44080b917ed21947a7e34bb5e78b95a2b",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/interrupted-operations.json",
+      "bytes": 1469,
+      "sha256": "02b23e67b6922994c4e4034a09d85ab258685c9da2d7be1e7bea883ee100525f",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/malformed-message.eml",
+      "bytes": 347,
+      "sha256": "55aa86bdef422108222334e7b9eb2858d4ffa5829270ffc800d67ef317467be7",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/microsoft-inbox.eml",
+      "bytes": 375,
+      "sha256": "12dff82d6a10a4f0fdae7f30179384314e4b9ee0f96f4c7985479faa5101afe0",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/synthetic-brief.pdf",
+      "bytes": 1840,
+      "sha256": "7dcd3e988227137bbea91d996b903482a80f1f49ca3fdebd5ad6db9242b6669f",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/untrusted-html.eml",
+      "bytes": 1007,
+      "sha256": "b4eab519c94af690741379c8ee8fbf2af45aee03aac5e58491b403907d683f9f",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/fixtures/launch-stage0/verify.test.mjs",
+      "bytes": 13601,
+      "sha256": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/gmail-delivery-milestone.test.mjs",
+      "bytes": 16521,
+      "sha256": "4d1561cc2e733e04dfcf6dbdb446d5a25f4ad8b320ce8072a2612fb8de2cd66b",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/logical-mail-index.mjs",
+      "bytes": 11954,
+      "sha256": "5f83dc97b0c21f307bb61ee661dec47abbf035648abcbcbbb2fac366033cb3ca",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/logical-mail-index.test.mjs",
+      "bytes": 6380,
+      "sha256": "c24746ab7e783a0e54961721fd58bb2bf36cf3a020c96d46bea5b850f35410d6",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/mail-inventory.mjs",
+      "bytes": 8253,
+      "sha256": "abf01e969666c3c659df7c0224c5cb77b80e57603b4e50247cdb7f6acfe50d00",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/mail-preflight.test.mjs",
+      "bytes": 1338,
+      "sha256": "023dbcef32bd3efd88ee8ec36646ca465acb65a2836b9724993cbae7cfa3e696",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/mail.mjs",
+      "bytes": 11742,
+      "sha256": "cae8e0d00656efbb6d1e611d0b4c521e92a6ef19c1b3df9b5d380d0305c32c7b",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/mailbox-lifecycle.mjs",
+      "bytes": 9699,
+      "sha256": "988c723478a157bfcdd362e6867f541648d9220d2dc0b6cc1482258e8b8568e4",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/mailbox-navigation-smoke.mjs",
+      "bytes": 2117,
+      "sha256": "c98e5b6300903aa183c89c62f82bb2ffd74cdf8f5978c6045e8a1452d46cdebb",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/mailbox-sync.mjs",
+      "bytes": 11171,
+      "sha256": "c7f9fb869051ecaa6f14123d3a80e422ce4bfe496ed5e92c7222ba9484a4d279",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/mailbox-sync.test.mjs",
+      "bytes": 3108,
+      "sha256": "1344ed38f8b22f1ef72a9e280a86dda3e80e8748046c7bcfb404c536b74eec4a",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-fixtures.mjs",
+      "bytes": 3247,
+      "sha256": "4d4a503acd0f3383f5037aa49dbdffc3bc5eb90c52e86aa612fd068e2dbcb0a0",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-integration.md",
+      "bytes": 3880,
+      "sha256": "913cf1c227c3065d57a2da7319e6c48fd1e86b26f0eac94056ac1d7b128c5c10",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-resource.mjs",
+      "bytes": 5416,
+      "sha256": "da237aafa8813ed85910bdd13fb08ee013a06492223e301cff6cf65df8178283",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-resource.test.mjs",
+      "bytes": 5684,
+      "sha256": "700f3eb0e0e2ee50091e1de4ad3724e2b13a917b6047cd720979e61dfbf8633d",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-ui.mjs",
+      "bytes": 3175,
+      "sha256": "1ad83f93616fdd63d348fbb2c1a13fef6bdaf192e934f8f94a1913d19447ea65",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-worker.mjs",
+      "bytes": 12475,
+      "sha256": "16dbd2fc981235021f9f3fa24465b7e9329798640a348ba1894d39d98b2f2922",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/metadata-worker.test.mjs",
+      "bytes": 10758,
+      "sha256": "3d5c4b280e3e725b3bc815ee48da2eba86cb79a482f93fb1e4087330c8ae3fc4",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/mime-provider.mjs",
+      "bytes": 5505,
+      "sha256": "73e0a4984622a5d29b0de8c7fc5780372aac0c1f44a986b76a8a2faf3964e498",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/outgoing-send-runtime.mjs",
+      "bytes": 8928,
+      "sha256": "a989eb3a23b41bdb5dec27645e0ce25a0fba63c1f0a9684370e73af6e3c5b9d4",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/outgoing-send-runtime.test.mjs",
+      "bytes": 12688,
+      "sha256": "1234256c74b860ee571a18bf94e2a50afb87be92ba5b5a671eaddf8fd4a24d90",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/outgoing-snapshot.mjs",
+      "bytes": 14318,
+      "sha256": "46c2091eba0e663cab558bdc4717f8b6d467d879f31e291090798685d4996356",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/outgoing-snapshot.test.mjs",
+      "bytes": 21292,
+      "sha256": "59292e3558b8277cff7ee8985da99aa5e1d9da043e69d14604b1c79c9a1c8dee",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/package.json",
+      "bytes": 1228,
+      "sha256": "602d6a71560037f0b31dd7d86d132ae4872b181ea2ce34cfad9711d914ae6d5f",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/pnpm-lock.yaml",
+      "bytes": 20122,
+      "sha256": "0375866e54cc160ab11c077cc6d2a749c2a0b38213265c982968a729320b1ba5",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/provider-cli.mjs",
+      "bytes": 3000,
+      "sha256": "a59be396a6596dd62c61b443199d3cb6d4fca40e69ce7f5b411410502f521ff5",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/provider-runner.mjs",
+      "bytes": 1734,
+      "sha256": "8a21a90ee5995fd93a8531abeedecd379500353fa1be476aa0c76a2e647e161b",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/providers/README.md",
+      "bytes": 7094,
+      "sha256": "e0a356604f3176d678b6970a4fd0726c79d4fed991e721ec184ee542bb7c086d",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/SUPERVISED-CONFIG.md",
+      "bytes": 6208,
+      "sha256": "4084c7c548a94f8b1c43ed63add8d1605ee6c5e06a043a0ca8218b70306b9ece",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/account-runtime.mjs",
+      "bytes": 4148,
+      "sha256": "79c08f1e5f30c585796885f9f4520b86a83738a8c253fc95ded91417c4b273ef",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/account-runtime.test.mjs",
+      "bytes": 10488,
+      "sha256": "30728ef61439fa6bbf87540d4032faeb15472e654a4d399562f95e6a7533330f",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/connection-http.mjs",
+      "bytes": 15656,
+      "sha256": "419ecabc58c7456ac73c26dfd981d6cd1415e7c9a08666db7cc81499688331fb",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/connection-http.test.mjs",
+      "bytes": 24802,
+      "sha256": "60aa65b401450af4812834c4c29bc2abec14c16bf3edda5771151254355247e0",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/connection-integration.md",
+      "bytes": 6947,
+      "sha256": "80f0f996e33fefa64806b7cdf063cf865e92da69fe284de1bb63ad336cf8d65f",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/contract.mjs",
+      "bytes": 8155,
+      "sha256": "c374d5113e9d9b13d55ac8a1ba1b0c16732301484952f2f8e520fc462283c84f",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/custody-encrypted.mjs",
+      "bytes": 9315,
+      "sha256": "dd3b60d0024f31ae316188f5b36175d7660abd15ed9d2133fbb58d8a74fbe022",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/custody-file-store.mjs",
+      "bytes": 10364,
+      "sha256": "37403973977d070cd4fa238e420bb4b5b41b70154b5c07226e290b7daf8e7c1a",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/custody-file-store.test.mjs",
+      "bytes": 14336,
+      "sha256": "d222d1d34fe3c80e24b5a5a253e3e201d6c7b974b761fd26cb3011456bdcc22a",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/gmail.mjs",
+      "bytes": 6518,
+      "sha256": "b93939c0481f5bd1d80afa4dd08c1b0442e6f549f3f0ca28bd6cf4ac05718f25",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/imap-metadata.mjs",
+      "bytes": 6601,
+      "sha256": "e2d94b038e0eb92f2257fc7362da275999e4512c40868245e535dc2cb9be75af",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/imap-metadata.test.mjs",
+      "bytes": 5857,
+      "sha256": "a67234b1df3920f25531c499561a8c8c5c06abe272331b54b93968d88f082a86",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/imap.mjs",
+      "bytes": 5085,
+      "sha256": "8f897da2b69fb37fcd3033f3e5625a83b58c967170a083250212b95701d12500",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/microsoft.mjs",
+      "bytes": 5149,
+      "sha256": "9f94a2c73da4d6df909767bb535ee5dea5bd0559dab703d8d12859efcb868606",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/oauth-account.mjs",
+      "bytes": 11022,
+      "sha256": "5c5a6b96ef096aa3c60f7ae8d34250ad4991fdb72187f88aaac95621d063a62d",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/oauth-account.test.mjs",
+      "bytes": 27587,
+      "sha256": "d4f7d65606f76c105b0a52941a994c0c10dfa64bb6ab4cc889396c421834d5f8",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/oauth-contract.mjs",
+      "bytes": 2764,
+      "sha256": "e365997941f599dbac22fc37c2248c5da6b7b17fd7fb2676d6722933e8808e41",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/oauth-custody.md",
+      "bytes": 16692,
+      "sha256": "f85a62b4dd706edc0dcebc53ec6134e59efdd9c82d2127b361656fb2965d8644",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/oauth-provider.mjs",
+      "bytes": 11046,
+      "sha256": "d99da9982ec0a7fbceaf5887576d687410d988e6b629e4fd487117c8e3977955",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/providers.test.mjs",
+      "bytes": 17787,
+      "sha256": "4e5636ec35ba63ebf48ab4db2ab15058d20eb3101a557f2593b8e808cd7be687",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/recipient-verification.mjs",
+      "bytes": 13149,
+      "sha256": "f1a922b3290613e635cdd93241dc683c8e23f31cf4b64375d29f90fb5ae884f0",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/recipient-verification.test.mjs",
+      "bytes": 14861,
+      "sha256": "dd3c72da345dffd26efc86108a0d28646b3e3999089bb28d95e25e98613d3be9",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/service.mjs",
+      "bytes": 10042,
+      "sha256": "34f7f09f1579092c95e10f003402f986157dae43d42f6b4c683357fbbca9758b",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/providers/test-custody-posix.mjs",
+      "bytes": 560,
+      "sha256": "6e74a6ce3592b79cefe22971a993bded41bfc467abb19d5b7631141fcdd4da55",
+      "kind": "new"
+    },
+    {
+      "path": "examples/apps/email/request-capacity.test.mjs",
+      "bytes": 13898,
+      "sha256": "214a91003f1cea7722b692d8ad65df26b4db1e4957737605c2864efd4a9c0cd6",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/request-journal.mjs",
+      "bytes": 4544,
+      "sha256": "7d7ff38ce0791a29647a31aa1e8fff5be7f03c604d6d8dbf90f388750e7d5255",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/request-journal.test.mjs",
+      "bytes": 5092,
+      "sha256": "a036e36c6e7769cb63ac9082f6d54c9368b90cd45155fae362a6058a07f2c384",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/runtime-effect.mjs",
+      "bytes": 1073,
+      "sha256": "26ae9c01536c84e8f823cacdbd41a6ea20c669ba275cee1f09190be6533bbef8",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/runtime-effect.test.mjs",
+      "bytes": 2142,
+      "sha256": "84d62b65cc3257eb51dd722612ac8f976de8bc65f2003bf6268904425eee2fd8",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/sent-copy.mjs",
+      "bytes": 1879,
+      "sha256": "8687a405350a16cfe920a8ba2c7072b3cec08e195b185ebc7b109b0e93dbbf5a",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/sync-daemon.mjs",
+      "bytes": 5627,
+      "sha256": "b347d5e54ff08a60ce42d8b1ebfcdb8ca0be04399db7fe3ce176d5fa82bafea3",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/transport-identity.mjs",
+      "bytes": 1345,
+      "sha256": "61c4aeb65cd0a64409aa18836ffb68ecc2a849cd3826592a1b2281f0aeb8f28a",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/transport-identity.test.mjs",
+      "bytes": 3338,
+      "sha256": "f98b5a6a1b83838574e4469d6fc68f83898aa5c0a8ac8697e772ec6d6bd24038",
+      "kind": "unchanged_public_example"
+    },
+    {
+      "path": "examples/apps/email/worker-ui.test.mjs",
+      "bytes": 12922,
+      "sha256": "5f1e34036fe1e52097815d1de8a3de122ebc5d03092087d7a26af9498255dc24",
+      "kind": "modified"
+    },
+    {
+      "path": "examples/apps/email/worker.mjs",
+      "bytes": 31154,
+      "sha256": "ddff6b1e4cbf1805fd547e987810c029e392ecaceaf9de3631ec0c166a2b2445",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/app-kit/package.json",
+      "bytes": 1151,
+      "sha256": "95380cd80afe7a676c1509d994d9f16befc08fba2767cc62c46b467c80033618",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/app-kit/src/resource-sync-attachments.ts",
+      "bytes": 9044,
+      "sha256": "98044f9456d4084a799a8d896aaa74e0c76da196d71b44574a8ab4535cf72fad",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "bytes": 5149,
+      "sha256": "2a4669d75794e53fd1abd4201c1a3571c11e2975a11e4bc289f09141c368d43b",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/app-kit/test/runtime-authoring.test.ts",
+      "bytes": 5488,
+      "sha256": "4b3e9a63bdbf42c66defbecbeaa83f8e7c1b7fde0f43882b2869227fbfb6c5e4",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/db/scripts/apply-extras.ts",
+      "bytes": 22154,
+      "sha256": "e2aa353483a53b7035f9e7b6c31d1d47419ee92a516eceb19cc389cc2426f04b",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/db/src/schema.ts",
+      "bytes": 321767,
+      "sha256": "3d247d06b61ab23c55c4e9d8231a656b13873a72060eb0fa0ffdcc627ef4da23",
+      "kind": "modified"
+    },
+    {
+      "path": "packages/db/upgrades/0.3.0-preview.57-app-owner-targets.sql",
+      "bytes": 3612,
+      "sha256": "c8a34eba984e59c6389887b91b808cc4d314c6645f6885c98f458aeddada42a0",
+      "kind": "new"
+    },
+    {
+      "path": "packages/db/upgrades/0.3.0-preview.58-app-pdf-media.sql",
+      "bytes": 18792,
+      "sha256": "a4aa4bc241edd6da50d08266a8344d41830ed452dd63d18fae97ad1c9197b3c5",
+      "kind": "new"
+    },
+    {
+      "path": "packages/db/upgrades/manifest.ts",
+      "bytes": 12913,
+      "sha256": "0bf3e104ddd0b2118963cf7b61a2ae86125d7247338e221f095a3b278f6997cd",
+      "kind": "modified"
+    }
+  ],
+  "consumer": "C:\\tmp\\deft-email-launch-stage0-consumer-20260930",
+  "email_public_file_count": 88,
+  "runtime_and_test_bytes_match": true,
+  "parity": [
+    {
+      "path": "account-registry.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "f3fbc7e4af549322d1e29b962660bf3f63c6c66c025d326b00dbfb5379dfd167",
+      "consumer_sha256": "f3fbc7e4af549322d1e29b962660bf3f63c6c66c025d326b00dbfb5379dfd167"
+    },
+    {
+      "path": "account-registry.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "b05568a8155961fb5a13c273148924be214976cb224854624debe36675aec943",
+      "consumer_sha256": "b05568a8155961fb5a13c273148924be214976cb224854624debe36675aec943"
+    },
+    {
+      "path": "fixtures/launch-stage0/.gitattributes",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "70e659d5e64fd8baf606de924626b1fea2eabb8c9679eb9eebe9f56de4265fba",
+      "consumer_sha256": "70e659d5e64fd8baf606de924626b1fea2eabb8c9679eb9eebe9f56de4265fba"
+    },
+    {
+      "path": "fixtures/launch-stage0/.gitignore",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "9f5c592c515b3cad4d5bc9d271f19a70541d93b79601999e7afd2aa637e2540e",
+      "consumer_sha256": "9f5c592c515b3cad4d5bc9d271f19a70541d93b79601999e7afd2aa637e2540e"
+    },
+    {
+      "path": "fixtures/launch-stage0/README.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "0ad0a58e973f7b676faa20a3a54ca2a49d0d4c45754db290ed40bae418c5cee5",
+      "consumer_sha256": "0ad0a58e973f7b676faa20a3a54ca2a49d0d4c45754db290ed40bae418c5cee5"
+    },
+    {
+      "path": "fixtures/launch-stage0/fixtures.json",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "720d32bb4c8bab7b477c266e8195ddf50ae2633960f885d06561bc266d0aa24d",
+      "consumer_sha256": "720d32bb4c8bab7b477c266e8195ddf50ae2633960f885d06561bc266d0aa24d"
+    },
+    {
+      "path": "fixtures/launch-stage0/gmail-personal-followup.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "2233f8a8c3eb1fb85735ec3f657c8be8b92c43e0466917feff792d6543e6efc7",
+      "consumer_sha256": "2233f8a8c3eb1fb85735ec3f657c8be8b92c43e0466917feff792d6543e6efc7"
+    },
+    {
+      "path": "fixtures/launch-stage0/gmail-personal-inbox.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "14c255f91a5991cef8d0cf5599cd83d83a369d13dab947e9e9b278998bef3568",
+      "consumer_sha256": "14c255f91a5991cef8d0cf5599cd83d83a369d13dab947e9e9b278998bef3568"
+    },
+    {
+      "path": "fixtures/launch-stage0/gmail-personal-sent.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "eed431e8097cc2c6a6c96202cdfe7b6a3482e1ce9a05d6d9039ba5d6ddb7ea15",
+      "consumer_sha256": "eed431e8097cc2c6a6c96202cdfe7b6a3482e1ce9a05d6d9039ba5d6ddb7ea15"
+    },
+    {
+      "path": "fixtures/launch-stage0/gmail-work-inbox.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "a2a30d64fc6aa48d60a7f4858be97439bde90cb164869a36296c9a75a517e80d",
+      "consumer_sha256": "a2a30d64fc6aa48d60a7f4858be97439bde90cb164869a36296c9a75a517e80d"
+    },
+    {
+      "path": "fixtures/launch-stage0/imap-locator-change.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "76171a22af2a773a1c2a457c52c832a44080b917ed21947a7e34bb5e78b95a2b",
+      "consumer_sha256": "76171a22af2a773a1c2a457c52c832a44080b917ed21947a7e34bb5e78b95a2b"
+    },
+    {
+      "path": "fixtures/launch-stage0/interrupted-operations.json",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "02b23e67b6922994c4e4034a09d85ab258685c9da2d7be1e7bea883ee100525f",
+      "consumer_sha256": "02b23e67b6922994c4e4034a09d85ab258685c9da2d7be1e7bea883ee100525f"
+    },
+    {
+      "path": "fixtures/launch-stage0/malformed-message.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "55aa86bdef422108222334e7b9eb2858d4ffa5829270ffc800d67ef317467be7",
+      "consumer_sha256": "55aa86bdef422108222334e7b9eb2858d4ffa5829270ffc800d67ef317467be7"
+    },
+    {
+      "path": "fixtures/launch-stage0/microsoft-inbox.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "12dff82d6a10a4f0fdae7f30179384314e4b9ee0f96f4c7985479faa5101afe0",
+      "consumer_sha256": "12dff82d6a10a4f0fdae7f30179384314e4b9ee0f96f4c7985479faa5101afe0"
+    },
+    {
+      "path": "fixtures/launch-stage0/synthetic-brief.pdf",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "7dcd3e988227137bbea91d996b903482a80f1f49ca3fdebd5ad6db9242b6669f",
+      "consumer_sha256": "7dcd3e988227137bbea91d996b903482a80f1f49ca3fdebd5ad6db9242b6669f"
+    },
+    {
+      "path": "fixtures/launch-stage0/untrusted-html.eml",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "b4eab519c94af690741379c8ee8fbf2af45aee03aac5e58491b403907d683f9f",
+      "consumer_sha256": "b4eab519c94af690741379c8ee8fbf2af45aee03aac5e58491b403907d683f9f"
+    },
+    {
+      "path": "fixtures/launch-stage0/verify.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
+      "consumer_sha256": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322"
+    },
+    {
+      "path": "gmail-delivery-milestone.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "4d1561cc2e733e04dfcf6dbdb446d5a25f4ad8b320ce8072a2612fb8de2cd66b",
+      "consumer_sha256": "4d1561cc2e733e04dfcf6dbdb446d5a25f4ad8b320ce8072a2612fb8de2cd66b"
+    },
+    {
+      "path": "logical-mail-index.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "5f83dc97b0c21f307bb61ee661dec47abbf035648abcbcbbb2fac366033cb3ca",
+      "consumer_sha256": "5f83dc97b0c21f307bb61ee661dec47abbf035648abcbcbbb2fac366033cb3ca"
+    },
+    {
+      "path": "logical-mail-index.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "c24746ab7e783a0e54961721fd58bb2bf36cf3a020c96d46bea5b850f35410d6",
+      "consumer_sha256": "c24746ab7e783a0e54961721fd58bb2bf36cf3a020c96d46bea5b850f35410d6"
+    },
+    {
+      "path": "mailbox-sync.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "1344ed38f8b22f1ef72a9e280a86dda3e80e8748046c7bcfb404c536b74eec4a",
+      "consumer_sha256": "1344ed38f8b22f1ef72a9e280a86dda3e80e8748046c7bcfb404c536b74eec4a"
+    },
+    {
+      "path": "metadata-fixtures.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "4d4a503acd0f3383f5037aa49dbdffc3bc5eb90c52e86aa612fd068e2dbcb0a0",
+      "consumer_sha256": "4d4a503acd0f3383f5037aa49dbdffc3bc5eb90c52e86aa612fd068e2dbcb0a0"
+    },
+    {
+      "path": "metadata-integration.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "913cf1c227c3065d57a2da7319e6c48fd1e86b26f0eac94056ac1d7b128c5c10",
+      "consumer_sha256": "913cf1c227c3065d57a2da7319e6c48fd1e86b26f0eac94056ac1d7b128c5c10"
+    },
+    {
+      "path": "metadata-resource.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "da237aafa8813ed85910bdd13fb08ee013a06492223e301cff6cf65df8178283",
+      "consumer_sha256": "da237aafa8813ed85910bdd13fb08ee013a06492223e301cff6cf65df8178283"
+    },
+    {
+      "path": "metadata-resource.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "700f3eb0e0e2ee50091e1de4ad3724e2b13a917b6047cd720979e61dfbf8633d",
+      "consumer_sha256": "700f3eb0e0e2ee50091e1de4ad3724e2b13a917b6047cd720979e61dfbf8633d"
+    },
+    {
+      "path": "metadata-ui.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "1ad83f93616fdd63d348fbb2c1a13fef6bdaf192e934f8f94a1913d19447ea65",
+      "consumer_sha256": "1ad83f93616fdd63d348fbb2c1a13fef6bdaf192e934f8f94a1913d19447ea65"
+    },
+    {
+      "path": "metadata-worker.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "16dbd2fc981235021f9f3fa24465b7e9329798640a348ba1894d39d98b2f2922",
+      "consumer_sha256": "16dbd2fc981235021f9f3fa24465b7e9329798640a348ba1894d39d98b2f2922"
+    },
+    {
+      "path": "metadata-worker.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "3d5c4b280e3e725b3bc815ee48da2eba86cb79a482f93fb1e4087330c8ae3fc4",
+      "consumer_sha256": "3d5c4b280e3e725b3bc815ee48da2eba86cb79a482f93fb1e4087330c8ae3fc4"
+    },
+    {
+      "path": "outgoing-send-runtime.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "a989eb3a23b41bdb5dec27645e0ce25a0fba63c1f0a9684370e73af6e3c5b9d4",
+      "consumer_sha256": "a989eb3a23b41bdb5dec27645e0ce25a0fba63c1f0a9684370e73af6e3c5b9d4"
+    },
+    {
+      "path": "outgoing-send-runtime.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "1234256c74b860ee571a18bf94e2a50afb87be92ba5b5a671eaddf8fd4a24d90",
+      "consumer_sha256": "1234256c74b860ee571a18bf94e2a50afb87be92ba5b5a671eaddf8fd4a24d90"
+    },
+    {
+      "path": "outgoing-snapshot.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "46c2091eba0e663cab558bdc4717f8b6d467d879f31e291090798685d4996356",
+      "consumer_sha256": "46c2091eba0e663cab558bdc4717f8b6d467d879f31e291090798685d4996356"
+    },
+    {
+      "path": "outgoing-snapshot.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "59292e3558b8277cff7ee8985da99aa5e1d9da043e69d14604b1c79c9a1c8dee",
+      "consumer_sha256": "59292e3558b8277cff7ee8985da99aa5e1d9da043e69d14604b1c79c9a1c8dee"
+    },
+    {
+      "path": "providers/README.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "e0a356604f3176d678b6970a4fd0726c79d4fed991e721ec184ee542bb7c086d",
+      "consumer_sha256": "e0a356604f3176d678b6970a4fd0726c79d4fed991e721ec184ee542bb7c086d"
+    },
+    {
+      "path": "providers/SUPERVISED-CONFIG.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "4084c7c548a94f8b1c43ed63add8d1605ee6c5e06a043a0ca8218b70306b9ece",
+      "consumer_sha256": "4084c7c548a94f8b1c43ed63add8d1605ee6c5e06a043a0ca8218b70306b9ece"
+    },
+    {
+      "path": "providers/account-runtime.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "79c08f1e5f30c585796885f9f4520b86a83738a8c253fc95ded91417c4b273ef",
+      "consumer_sha256": "79c08f1e5f30c585796885f9f4520b86a83738a8c253fc95ded91417c4b273ef"
+    },
+    {
+      "path": "providers/account-runtime.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "30728ef61439fa6bbf87540d4032faeb15472e654a4d399562f95e6a7533330f",
+      "consumer_sha256": "30728ef61439fa6bbf87540d4032faeb15472e654a4d399562f95e6a7533330f"
+    },
+    {
+      "path": "providers/connection-http.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "419ecabc58c7456ac73c26dfd981d6cd1415e7c9a08666db7cc81499688331fb",
+      "consumer_sha256": "419ecabc58c7456ac73c26dfd981d6cd1415e7c9a08666db7cc81499688331fb"
+    },
+    {
+      "path": "providers/connection-http.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "60aa65b401450af4812834c4c29bc2abec14c16bf3edda5771151254355247e0",
+      "consumer_sha256": "60aa65b401450af4812834c4c29bc2abec14c16bf3edda5771151254355247e0"
+    },
+    {
+      "path": "providers/connection-integration.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "80f0f996e33fefa64806b7cdf063cf865e92da69fe284de1bb63ad336cf8d65f",
+      "consumer_sha256": "80f0f996e33fefa64806b7cdf063cf865e92da69fe284de1bb63ad336cf8d65f"
+    },
+    {
+      "path": "providers/contract.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "c374d5113e9d9b13d55ac8a1ba1b0c16732301484952f2f8e520fc462283c84f",
+      "consumer_sha256": "c374d5113e9d9b13d55ac8a1ba1b0c16732301484952f2f8e520fc462283c84f"
+    },
+    {
+      "path": "providers/custody-encrypted.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "dd3b60d0024f31ae316188f5b36175d7660abd15ed9d2133fbb58d8a74fbe022",
+      "consumer_sha256": "dd3b60d0024f31ae316188f5b36175d7660abd15ed9d2133fbb58d8a74fbe022"
+    },
+    {
+      "path": "providers/custody-file-store.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "37403973977d070cd4fa238e420bb4b5b41b70154b5c07226e290b7daf8e7c1a",
+      "consumer_sha256": "37403973977d070cd4fa238e420bb4b5b41b70154b5c07226e290b7daf8e7c1a"
+    },
+    {
+      "path": "providers/custody-file-store.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "d222d1d34fe3c80e24b5a5a253e3e201d6c7b974b761fd26cb3011456bdcc22a",
+      "consumer_sha256": "d222d1d34fe3c80e24b5a5a253e3e201d6c7b974b761fd26cb3011456bdcc22a"
+    },
+    {
+      "path": "providers/gmail.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "b93939c0481f5bd1d80afa4dd08c1b0442e6f549f3f0ca28bd6cf4ac05718f25",
+      "consumer_sha256": "b93939c0481f5bd1d80afa4dd08c1b0442e6f549f3f0ca28bd6cf4ac05718f25"
+    },
+    {
+      "path": "providers/imap-metadata.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "e2d94b038e0eb92f2257fc7362da275999e4512c40868245e535dc2cb9be75af",
+      "consumer_sha256": "e2d94b038e0eb92f2257fc7362da275999e4512c40868245e535dc2cb9be75af"
+    },
+    {
+      "path": "providers/imap-metadata.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "a67234b1df3920f25531c499561a8c8c5c06abe272331b54b93968d88f082a86",
+      "consumer_sha256": "a67234b1df3920f25531c499561a8c8c5c06abe272331b54b93968d88f082a86"
+    },
+    {
+      "path": "providers/imap.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "8f897da2b69fb37fcd3033f3e5625a83b58c967170a083250212b95701d12500",
+      "consumer_sha256": "8f897da2b69fb37fcd3033f3e5625a83b58c967170a083250212b95701d12500"
+    },
+    {
+      "path": "providers/microsoft.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "9f94a2c73da4d6df909767bb535ee5dea5bd0559dab703d8d12859efcb868606",
+      "consumer_sha256": "9f94a2c73da4d6df909767bb535ee5dea5bd0559dab703d8d12859efcb868606"
+    },
+    {
+      "path": "providers/oauth-account.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "5c5a6b96ef096aa3c60f7ae8d34250ad4991fdb72187f88aaac95621d063a62d",
+      "consumer_sha256": "5c5a6b96ef096aa3c60f7ae8d34250ad4991fdb72187f88aaac95621d063a62d"
+    },
+    {
+      "path": "providers/oauth-account.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "d4f7d65606f76c105b0a52941a994c0c10dfa64bb6ab4cc889396c421834d5f8",
+      "consumer_sha256": "d4f7d65606f76c105b0a52941a994c0c10dfa64bb6ab4cc889396c421834d5f8"
+    },
+    {
+      "path": "providers/oauth-contract.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "e365997941f599dbac22fc37c2248c5da6b7b17fd7fb2676d6722933e8808e41",
+      "consumer_sha256": "e365997941f599dbac22fc37c2248c5da6b7b17fd7fb2676d6722933e8808e41"
+    },
+    {
+      "path": "providers/oauth-custody.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "f85a62b4dd706edc0dcebc53ec6134e59efdd9c82d2127b361656fb2965d8644",
+      "consumer_sha256": "f85a62b4dd706edc0dcebc53ec6134e59efdd9c82d2127b361656fb2965d8644"
+    },
+    {
+      "path": "providers/oauth-provider.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "d99da9982ec0a7fbceaf5887576d687410d988e6b629e4fd487117c8e3977955",
+      "consumer_sha256": "d99da9982ec0a7fbceaf5887576d687410d988e6b629e4fd487117c8e3977955"
+    },
+    {
+      "path": "providers/providers.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "4e5636ec35ba63ebf48ab4db2ab15058d20eb3101a557f2593b8e808cd7be687",
+      "consumer_sha256": "4e5636ec35ba63ebf48ab4db2ab15058d20eb3101a557f2593b8e808cd7be687"
+    },
+    {
+      "path": "providers/recipient-verification.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "f1a922b3290613e635cdd93241dc683c8e23f31cf4b64375d29f90fb5ae884f0",
+      "consumer_sha256": "f1a922b3290613e635cdd93241dc683c8e23f31cf4b64375d29f90fb5ae884f0"
+    },
+    {
+      "path": "providers/recipient-verification.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "dd3c72da345dffd26efc86108a0d28646b3e3999089bb28d95e25e98613d3be9",
+      "consumer_sha256": "dd3c72da345dffd26efc86108a0d28646b3e3999089bb28d95e25e98613d3be9"
+    },
+    {
+      "path": "providers/service.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "34f7f09f1579092c95e10f003402f986157dae43d42f6b4c683357fbbca9758b",
+      "consumer_sha256": "34f7f09f1579092c95e10f003402f986157dae43d42f6b4c683357fbbca9758b"
+    },
+    {
+      "path": "providers/test-custody-posix.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "6e74a6ce3592b79cefe22971a993bded41bfc467abb19d5b7631141fcdd4da55",
+      "consumer_sha256": "6e74a6ce3592b79cefe22971a993bded41bfc467abb19d5b7631141fcdd4da55"
+    },
+    {
+      "path": ".gitignore",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "b44e28a8d089b7c95670f4c4c148dec6675e76575bdc221285610fdcfb1d9ec3",
+      "consumer_sha256": "b44e28a8d089b7c95670f4c4c148dec6675e76575bdc221285610fdcfb1d9ec3"
+    },
+    {
+      "path": "README.md",
+      "bytes_identical": true,
+      "runtime_or_test": false,
+      "source_sha256": "b35ce4dfc67da44171c07432b95b4339cec96b1366eb2bcd3f1b802f1fea216e",
+      "consumer_sha256": "b35ce4dfc67da44171c07432b95b4339cec96b1366eb2bcd3f1b802f1fea216e"
+    },
+    {
+      "path": "account-config.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "da3f948128fadd3968e7653072a824e4cdc7619cc4958570262e2e790d183a59",
+      "consumer_sha256": "da3f948128fadd3968e7653072a824e4cdc7619cc4958570262e2e790d183a59"
+    },
+    {
+      "path": "activity-recovery-smoke.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "5828fc99cf435a6d86d502b2936f7d390ea62dd9d1f2bd1a22c8bcfcbe00ccef",
+      "consumer_sha256": "5828fc99cf435a6d86d502b2936f7d390ea62dd9d1f2bd1a22c8bcfcbe00ccef"
+    },
+    {
+      "path": "build.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "e3e25cbdced02a523ca24baf027d213cb2f005c3cad2af0bb8ae04389ad550df",
+      "consumer_sha256": "e3e25cbdced02a523ca24baf027d213cb2f005c3cad2af0bb8ae04389ad550df"
+    },
+    {
+      "path": "draft-controller.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "7567ad656d13016af796fa8d284098b100e99003a0643c04171f583dee2a68e3",
+      "consumer_sha256": "7567ad656d13016af796fa8d284098b100e99003a0643c04171f583dee2a68e3"
+    },
+    {
+      "path": "draft-controller.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "796809998bbf7d081f7f647ab41a6f328cb0bb8a2d0a284368279fdd906d2df0",
+      "consumer_sha256": "796809998bbf7d081f7f647ab41a6f328cb0bb8a2d0a284368279fdd906d2df0"
+    },
+    {
+      "path": "email-attachments.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "db77600e9c6917ff1351112c1a430c5b328b2d61fe275e72faa3dd27743553ed",
+      "consumer_sha256": "db77600e9c6917ff1351112c1a430c5b328b2d61fe275e72faa3dd27743553ed"
+    },
+    {
+      "path": "mail-inventory.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "abf01e969666c3c659df7c0224c5cb77b80e57603b4e50247cdb7f6acfe50d00",
+      "consumer_sha256": "abf01e969666c3c659df7c0224c5cb77b80e57603b4e50247cdb7f6acfe50d00"
+    },
+    {
+      "path": "mail-preflight.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "023dbcef32bd3efd88ee8ec36646ca465acb65a2836b9724993cbae7cfa3e696",
+      "consumer_sha256": "023dbcef32bd3efd88ee8ec36646ca465acb65a2836b9724993cbae7cfa3e696"
+    },
+    {
+      "path": "mail.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "cae8e0d00656efbb6d1e611d0b4c521e92a6ef19c1b3df9b5d380d0305c32c7b",
+      "consumer_sha256": "cae8e0d00656efbb6d1e611d0b4c521e92a6ef19c1b3df9b5d380d0305c32c7b"
+    },
+    {
+      "path": "mailbox-lifecycle.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "988c723478a157bfcdd362e6867f541648d9220d2dc0b6cc1482258e8b8568e4",
+      "consumer_sha256": "988c723478a157bfcdd362e6867f541648d9220d2dc0b6cc1482258e8b8568e4"
+    },
+    {
+      "path": "mailbox-navigation-smoke.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "c98e5b6300903aa183c89c62f82bb2ffd74cdf8f5978c6045e8a1452d46cdebb",
+      "consumer_sha256": "c98e5b6300903aa183c89c62f82bb2ffd74cdf8f5978c6045e8a1452d46cdebb"
+    },
+    {
+      "path": "mailbox-sync.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "c7f9fb869051ecaa6f14123d3a80e422ce4bfe496ed5e92c7222ba9484a4d279",
+      "consumer_sha256": "c7f9fb869051ecaa6f14123d3a80e422ce4bfe496ed5e92c7222ba9484a4d279"
+    },
+    {
+      "path": "mime-provider.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "73e0a4984622a5d29b0de8c7fc5780372aac0c1f44a986b76a8a2faf3964e498",
+      "consumer_sha256": "73e0a4984622a5d29b0de8c7fc5780372aac0c1f44a986b76a8a2faf3964e498"
+    },
+    {
+      "path": "package.json",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "602d6a71560037f0b31dd7d86d132ae4872b181ea2ce34cfad9711d914ae6d5f",
+      "consumer_sha256": "602d6a71560037f0b31dd7d86d132ae4872b181ea2ce34cfad9711d914ae6d5f"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "0375866e54cc160ab11c077cc6d2a749c2a0b38213265c982968a729320b1ba5",
+      "consumer_sha256": "0375866e54cc160ab11c077cc6d2a749c2a0b38213265c982968a729320b1ba5"
+    },
+    {
+      "path": "provider-cli.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "a59be396a6596dd62c61b443199d3cb6d4fca40e69ce7f5b411410502f521ff5",
+      "consumer_sha256": "a59be396a6596dd62c61b443199d3cb6d4fca40e69ce7f5b411410502f521ff5"
+    },
+    {
+      "path": "provider-runner.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "8a21a90ee5995fd93a8531abeedecd379500353fa1be476aa0c76a2e647e161b",
+      "consumer_sha256": "8a21a90ee5995fd93a8531abeedecd379500353fa1be476aa0c76a2e647e161b"
+    },
+    {
+      "path": "request-capacity.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "214a91003f1cea7722b692d8ad65df26b4db1e4957737605c2864efd4a9c0cd6",
+      "consumer_sha256": "214a91003f1cea7722b692d8ad65df26b4db1e4957737605c2864efd4a9c0cd6"
+    },
+    {
+      "path": "request-journal.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "7d7ff38ce0791a29647a31aa1e8fff5be7f03c604d6d8dbf90f388750e7d5255",
+      "consumer_sha256": "7d7ff38ce0791a29647a31aa1e8fff5be7f03c604d6d8dbf90f388750e7d5255"
+    },
+    {
+      "path": "request-journal.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "a036e36c6e7769cb63ac9082f6d54c9368b90cd45155fae362a6058a07f2c384",
+      "consumer_sha256": "a036e36c6e7769cb63ac9082f6d54c9368b90cd45155fae362a6058a07f2c384"
+    },
+    {
+      "path": "runtime-effect.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "26ae9c01536c84e8f823cacdbd41a6ea20c669ba275cee1f09190be6533bbef8",
+      "consumer_sha256": "26ae9c01536c84e8f823cacdbd41a6ea20c669ba275cee1f09190be6533bbef8"
+    },
+    {
+      "path": "runtime-effect.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "84d62b65cc3257eb51dd722612ac8f976de8bc65f2003bf6268904425eee2fd8",
+      "consumer_sha256": "84d62b65cc3257eb51dd722612ac8f976de8bc65f2003bf6268904425eee2fd8"
+    },
+    {
+      "path": "sent-copy.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "8687a405350a16cfe920a8ba2c7072b3cec08e195b185ebc7b109b0e93dbbf5a",
+      "consumer_sha256": "8687a405350a16cfe920a8ba2c7072b3cec08e195b185ebc7b109b0e93dbbf5a"
+    },
+    {
+      "path": "sync-daemon.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "b347d5e54ff08a60ce42d8b1ebfcdb8ca0be04399db7fe3ce176d5fa82bafea3",
+      "consumer_sha256": "b347d5e54ff08a60ce42d8b1ebfcdb8ca0be04399db7fe3ce176d5fa82bafea3"
+    },
+    {
+      "path": "transport-identity.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "61c4aeb65cd0a64409aa18836ffb68ecc2a849cd3826592a1b2281f0aeb8f28a",
+      "consumer_sha256": "61c4aeb65cd0a64409aa18836ffb68ecc2a849cd3826592a1b2281f0aeb8f28a"
+    },
+    {
+      "path": "transport-identity.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "f98b5a6a1b83838574e4469d6fc68f83898aa5c0a8ac8697e772ec6d6bd24038",
+      "consumer_sha256": "f98b5a6a1b83838574e4469d6fc68f83898aa5c0a8ac8697e772ec6d6bd24038"
+    },
+    {
+      "path": "worker-ui.test.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "5f1e34036fe1e52097815d1de8a3de122ebc5d03092087d7a26af9498255dc24",
+      "consumer_sha256": "5f1e34036fe1e52097815d1de8a3de122ebc5d03092087d7a26af9498255dc24"
+    },
+    {
+      "path": "worker.mjs",
+      "bytes_identical": true,
+      "runtime_or_test": true,
+      "source_sha256": "ddff6b1e4cbf1805fd547e987810c029e392ecaceaf9de3631ec0c166a2b2445",
+      "consumer_sha256": "ddff6b1e4cbf1805fd547e987810c029e392ecaceaf9de3631ec0c166a2b2445"
+    }
+  ],
+  "preserved_preexisting_file": {
+    "path": "apps/web/next-env.d.ts",
+    "sha256_at_final_review": "b8b3a344484b959af5e4e3fc1a1609dac3cb9ece0cdeb6c145be29bc4c491000",
+    "excluded_from_task_changes": true
+  },
+  "limitations": [
+    "No commit or release publication",
+    "Kit packed tarball/build artifact identity recorded separately in ledger",
+    "Hashes are source identity, not live provider acceptance"
+  ]
+}

@@ -5,6 +5,7 @@ import { getAppAttachmentRuntime } from '../lib/app-attachment-runtime.js';
 import { readAttachmentFrame } from '../lib/app-attachment-frame.js';
 import { AppError } from '../lib/app-errors.js';
 import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 } from '@deft/app-kit';
+import { markAuthenticatedResourceSyncHeartbeat } from '../middleware/app-resource-sync-limits.js';
 const APP_RESOURCE_SYNC_AUDIENCE='app_resource_sync' as const;
 const APP_RESOURCE_SYNC_CHANNEL_VERSION=APP_RESOURCE_SYNC_CHANNEL_VERSION_V3;
 
@@ -112,8 +113,11 @@ appAttachmentSyncChannelRoutes.post('/heartbeat', async (c) => {
   try {
     const payload = await request(c, 4096);
     const renewed = await (await getAppAttachmentRuntime()).channel.heartbeat(payload);
-    return renewed ? c.json({ ...identity, work_kind: 'sync_page', ...renewed, renewed: true })
-      : c.json({ error: 'Resource sync credential required',
+    if (renewed) {
+      markAuthenticatedResourceSyncHeartbeat(c);
+      return c.json({ ...identity, work_kind: 'sync_page', ...renewed, renewed: true });
+    }
+    return c.json({ error: 'Resource sync credential required',
         code: 'APP_RESOURCE_SYNC_ACCESS_DENIED' }, 403);
   } catch (error) { return failure(c, error); }
 });

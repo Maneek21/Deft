@@ -4,16 +4,18 @@
   "type": "module",
   "packageManager": "pnpm@10.33.1",
   "dependencies": {
-    "@deft/app-kit": "file:deft-app-kit-0.1.0-alpha.7.tgz",
+    "@deft/app-kit": "file:deft-app-kit-0.1.0-alpha.9.tgz",
     "esbuild": "0.28.2",
     "imapflow": "2.0.7",
     "mailparser": "3.9.28",
     "nodemailer": "10.0.10"
   },
-  "version": "1.5.5",
+  "version": "1.6.0-stage1.1",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test draft-controller.test.mjs request-capacity.test.mjs request-journal.test.mjs transport-identity.test.mjs mail-preflight.test.mjs runtime-effect.test.mjs worker-ui.test.mjs",
+    "test": "node --test --test-concurrency=4 draft-controller.test.mjs request-capacity.test.mjs request-journal.test.mjs transport-identity.test.mjs mail-preflight.test.mjs runtime-effect.test.mjs worker-ui.test.mjs mailbox-sync.test.mjs account-registry.test.mjs logical-mail-index.test.mjs providers/providers.test.mjs providers/account-runtime.test.mjs outgoing-snapshot.test.mjs metadata-resource.test.mjs providers/imap-metadata.test.mjs metadata-worker.test.mjs providers/oauth-account.test.mjs providers/connection-http.test.mjs outgoing-send-runtime.test.mjs outgoing-payload-builder.test.mjs outgoing-operation-store.test.mjs outgoing-runtime-service.test.mjs providers/recipient-verification.test.mjs gmail-delivery-milestone.test.mjs worker-mail.test.mjs compose-intents.test.mjs providers/resource-reader.test.mjs providers/private-sync-bootstrap.test.mjs providers/conversation-reconciliation.test.mjs providers/service.test.mjs",
+    "test:custody:posix": "node providers/test-custody-posix.mjs",
+    "test:outgoing:process": "node --test outgoing-service-process.test.mjs",
     "smoke:mailbox": "node mailbox-navigation-smoke.mjs",
     "smoke:activity": "node activity-recovery-smoke.mjs"
   }

@@ -3,7 +3,8 @@
 # ═══════════════════════════════════════════════
 
 # Stage 1: Dependencies
-FROM node:22-alpine AS deps
+ARG NODE_IMAGE=node:22-alpine@sha256:2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8
+FROM ${NODE_IMAGE} AS deps
 RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
@@ -17,7 +18,7 @@ RUN --mount=type=cache,id=deft-pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm --fetch-timeout 300000 install --frozen-lockfile
 
 # Stage 2: Build
-FROM node:22-alpine AS builder
+FROM ${NODE_IMAGE} AS builder
 RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 WORKDIR /app
 
@@ -33,7 +34,7 @@ ARG NEXT_PUBLIC_FEATURE_APPS=false
 ARG NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC=false
 ARG NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER=false
 ARG NEXT_PUBLIC_DEFT_SELF_HOSTED=false
-ARG DEFT_RELEASE_VERSION=0.3.0-preview.14
+ARG DEFT_RELEASE_VERSION=0.3.0-preview.16
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
@@ -43,6 +44,10 @@ ENV NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC=$NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC
 ENV NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER=$NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER
 ENV NEXT_PUBLIC_DEFT_SELF_HOSTED=$NEXT_PUBLIC_DEFT_SELF_HOSTED
 ENV DEFT_RELEASE_VERSION=$DEFT_RELEASE_VERSION
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_OPTIONS=--max-old-space-size=4096
+ENV RAYON_NUM_THREADS=1
+ENV UV_THREADPOOL_SIZE=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
@@ -52,11 +57,13 @@ COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY --from=deps /app/packages/mcp/node_modules ./packages/mcp/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
-RUN pnpm --filter @deft/app-kit build && pnpm --filter @deft/web build
+RUN pnpm --filter @deft/app-kit build \
+    && pnpm --filter @deft/web exec tsc --noEmit --incremental false \
+    && pnpm --filter @deft/web exec next build --webpack
 
 # Stage 3: Production
-FROM node:22-alpine AS runner
-ARG DEFT_RELEASE_VERSION=0.3.0-preview.14
+FROM ${NODE_IMAGE} AS runner
+ARG DEFT_RELEASE_VERSION=0.3.0-preview.16
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/Maneek21/Deft
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \

@@ -45,6 +45,8 @@ const CRON_DELAYS: Record<string, number> = {
   'ics-sync': 60_000,
   'chat-observation-backfill': 5 * 60_000,
   'chat-knowledge-batch': 30 * 60_000,
+  'email-knowledge-repair': 60_000,
+  'app-integration-knowledge-repair': 60_000,
   'attention-maintenance': 15 * 60_000,
   'app-automation-scan': 60_000,
 };
@@ -65,6 +67,8 @@ const CRON_KEYS: Record<string, string> = {
   'ics-sync': 'cron:ics-sync',
   'chat-observation-backfill': 'cron:chat-observation-backfill',
   'chat-knowledge-batch': 'cron:chat-knowledge-batch',
+  'email-knowledge-repair': 'cron:email-knowledge-repair',
+  'app-integration-knowledge-repair': 'cron:app-integration-knowledge-repair',
   'attention-maintenance': 'cron:attention-maintenance',
   'app-automation-scan': 'cron:app-automation-scan',
 };
@@ -296,6 +300,60 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
 
 async function getScheduledJobHandler(jobName: string): Promise<JobHandler | null> {
   switch (jobName) {
+    case 'native-email-notification-dispatch': {
+      const [{ createEmailNotificationJobHandler }, { getEmailNotificationDispatcher }] = await Promise.all([
+        import('../lib/email-notification.js'), import('../lib/email-notification-runtime.js'),
+      ]);
+      const dispatcher = await getEmailNotificationDispatcher();
+      return createEmailNotificationJobHandler({ enabled: () => process.env.DEFT_NATIVE_EMAIL_ENABLED === 'true',
+        run: (scope, payload, lease, signal) => dispatcher.dispatch(scope, payload, lease, signal),
+        defer: (message, delayMs) => new RetryLaterJobError(message, delayMs) });
+    }
+    case 'native-email-draft-cleanup': {
+      const [{createEmailProviderDraftCleanupJobHandler},{runEmailProviderDraftCleanup}]=await Promise.all([
+        import('../lib/email-provider-draft-cleanup-job.js'),import('../lib/email-provider-draft-cleanup-runtime.js')]);
+      return createEmailProviderDraftCleanupJobHandler({enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',
+        run:runEmailProviderDraftCleanup,reconcile:runEmailProviderDraftCleanup,
+        defer:(message,delay)=>new RetryLaterJobError(message,delay)});
+    }
+    case 'native-email-outbox': {
+      const [{createEmailOutboxJobHandler},{dispatchEmailOutbox}]=await Promise.all([
+        import('../lib/email-outbox-job.js'),import('../lib/email-outbox-runtime.js')]);
+      return createEmailOutboxJobHandler({enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',dispatch:dispatchEmailOutbox,
+        defer:(message,delay)=>new RetryLaterJobError(message,delay)});
+    }
+    case 'native-email-timers': {
+      const [{createEmailTimerJobHandler},{dispatchNativeEmailTimer}]=await Promise.all([
+        import('../lib/email-timer-job.js'),import('../lib/email-timer-worker-runtime.js')]);
+      return createEmailTimerJobHandler({enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',run:dispatchNativeEmailTimer,
+        defer:(message,delayMs)=>new RetryLaterJobError(message,delayMs)});
+    }
+    case 'native-email-sent-copy': {
+      const [{createEmailSentCopyJobHandler},{dispatchEmailSentCopy}]=await Promise.all([
+        import('../lib/email-sent-copy-job.js'),import('../lib/email-sent-copy-runtime.js')]);
+      return createEmailSentCopyJobHandler({enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',dispatch:dispatchEmailSentCopy,
+        defer:(message,delay)=>new RetryLaterJobError(message,delay)});
+    }
+    case 'native-email-draft-sync': {
+      const [{createEmailProviderDraftJobHandler},{runEmailProviderDraftSync}]=await Promise.all([
+        import('../lib/email-provider-draft-job.js'),import('../lib/email-provider-draft-runtime.js')]);
+      return createEmailProviderDraftJobHandler({enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',run:runEmailProviderDraftSync,
+        defer:(message,delayMs)=>new RetryLaterJobError(message,delayMs)});
+    }
+    case 'app-integration-knowledge':
+    case 'app-integration-knowledge-repair': {
+      return (await import('../lib/app-integration-capture-service.js')).handleAppIntegrationKnowledge;
+    }
+    case 'native-email-knowledge':
+    case 'email-knowledge-repair': {
+      return (await import('../lib/email-knowledge-runtime.js')).handleEmailKnowledge;
+    }
+    case 'native-email-sync': {
+      const [{createEmailMailboxJobHandler},{runNativeEmailSyncPage}]=await Promise.all([
+        import('../lib/email-mailbox-job.js'),import('../lib/email-mailbox-service-runtime.js')]);
+      return createEmailMailboxJobHandler({enabled:()=>process.env.DEFT_NATIVE_EMAIL_ENABLED==='true',runPage:runNativeEmailSyncPage,
+        defer:(message,delayMs)=>new RetryLaterJobError(message,delayMs)});
+    }
     case 'app-resource-sync-scan': {
       const mod = await import('./handlers/app-resource-sync-scan.js');
       return mod.handleAppResourceSyncScan;
@@ -386,6 +444,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     case 'attention-maintenance': {
       const mod = await import('./handlers/attention-maintenance.js');
       return mod.handleAttentionMaintenance;
+    }
+    case 'app-integration-notification': {
+      const mod = await import('../lib/app-integration-notification-service.js');
+      return mod.handleAppIntegrationNotification;
     }
     case 'attention-delivery': {
       const mod = await import('./handlers/attention-delivery.js');
@@ -673,6 +735,11 @@ let startingPromise: Promise<void> | null = null;
 let stoppingPromise: Promise<void> | null = null;
 const pollInFlight = new Map<QueueName, Promise<void>>();
 const backgroundInFlight = new Set<Promise<unknown>>();
+let nativeEmailTimerRepairCursor: import('../lib/email-timer-scheduler.js').EmailTimerCursor | null = null;
+let nativeEmailNotificationRepairCursor: import('../lib/email-notification-scheduler.js').EmailNotificationRepairCursor | null = null;
+let nativeEmailRepairCursor:import('../lib/email-mailbox-scheduler.js').EmailMailboxScheduleCursor|null=null;
+let nativeEmailDraftRepairCursor:import('../lib/email-provider-draft-scheduler.js').EmailProviderDraftRepairCursor|null=null;
+let nativeEmailDraftCleanupCursor:import('../lib/email-provider-draft-cleanup-scheduler.js').EmailProviderDraftCleanupCursor|null=null;
 
 function trackBackground<T>(promise: Promise<T>): Promise<T> {
   backgroundInFlight.add(promise);
@@ -683,6 +750,18 @@ function trackBackground<T>(promise: Promise<T>): Promise<T> {
 async function reconcileRecurringJobs(): Promise<void> {
   await ensureAppResourceSyncScan();
   await ensureAppAutomationScan({ mode: 'startup' });
+  if(process.env.DEFT_NATIVE_EMAIL_ENABLED==='true') {
+    const timers = await (await import('../lib/email-timer-scheduler-runtime.js')).repairNativeEmailTimersBatch(nativeEmailTimerRepairCursor, 100);
+    nativeEmailTimerRepairCursor = timers.next;
+    const notifications = await (await import('../lib/email-notification-scheduler-runtime.js')).repairNativeEmailNotificationsBatch(nativeEmailNotificationRepairCursor, 100);
+    nativeEmailNotificationRepairCursor = notifications.next;
+    const result=await (await import('../lib/email-mailbox-scheduler-runtime.js')).repairNativeEmailSyncBatch(nativeEmailRepairCursor,100);
+    nativeEmailRepairCursor=result.next;
+    const drafts=await (await import('../lib/email-provider-draft-scheduler-runtime.js')).repairNativeEmailDraftBatch(nativeEmailDraftRepairCursor,50);
+    nativeEmailDraftRepairCursor=drafts.next;
+    const cleanup=await (await import('../lib/email-provider-draft-cleanup-scheduler-runtime.js')).repairNativeEmailDraftCleanupBatch(nativeEmailDraftCleanupCursor,50);
+    nativeEmailDraftCleanupCursor=cleanup.next;
+  }
   await Promise.all(Object.entries(CRON_KEYS)
     .filter(([jobName]) => jobName !== 'agent-heartbeat'
       && jobName !== 'app-automation-scan')

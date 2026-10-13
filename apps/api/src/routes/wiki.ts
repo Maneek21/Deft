@@ -10,6 +10,9 @@ import { retrieveContext } from '../lib/retrieve-context.js';
 import { llm } from '../lib/llm.js';
 import { getOrgAIConfig, hasUsableReasonProvider } from '../lib/org-ai-config.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { decorateEmailKnowledgeCitations } from '../lib/email-knowledge-citations.js';
+import {getAppIntegrationCaptureRuntime} from '../lib/app-integration-capture-service.js';
+import {resourceSyncWebAuthority} from '../lib/app-resource-sync-web-authority.js';
 
 /** Notify all org members about a wiki change (except the actor) */
 async function notifyWikiChange(orgId: string, actorId: string, title: string, body: string, slug: string) {
@@ -826,11 +829,16 @@ wikiRoutes.get('/:slug', async (c) => {
       ))
       .orderBy(desc(wikiCitations.created_at));
 
+    let sourceCitations = await decorateEmailKnowledgeCitations(user.org_id, user.id, citations);
+    if (citations.some(row => row.source_type === 'app_integration')) {
+      const auth = await resourceSyncWebAuthority(c.req.header('authorization'));
+      sourceCitations = await (await getAppIntegrationCaptureRuntime()).citations({org_id:auth.actor.org_id,user_id:auth.actor.actor_id,kind:'human',principal_id:auth.web_session.sid,access_expires_at:auth.web_session.expires_at}, sourceCitations);
+    }
     return c.json({
       ...page,
       linked_pages: linkedPages,
       backlinks,
-      citations,
+      citations: sourceCitations,
     });
   } catch (err) {
     console.error('Failed to fetch wiki page:', err);

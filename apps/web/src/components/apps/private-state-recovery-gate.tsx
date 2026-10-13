@@ -5,17 +5,20 @@ import { experienceAuthorityResponse, ExperienceAuthorityUnavailable } from '@/l
 import { api, isSameWebSession, SessionRefreshUnavailableError } from '@/lib/api';
 import { PrivateStateAdoption, PrivateStateAdoptionContext } from './private-state-adoption';
 import type { ExperienceExposureStatus } from '@/lib/app-experience-session';
+import { recoveryDismissalKey, type RecoveryDismissalScope } from '@/lib/private-state-recovery-dismissal';
 
 type Recovery = { key: string; label: string; context: ReturnType<typeof PrivateStateAdoptionContext.parse> };
 
 /** Runs before App code can mistake prior-artifact state for an empty collection. */
-export function PrivateStateRecoveryGate({ sessionId, exposure, states, onContinue, suspended = false }: {
-  sessionId: string; exposure: ExperienceExposureStatus; states: readonly { key: string; label: string }[];
-  onContinue: () => void; suspended?: boolean;
+export function PrivateStateRecoveryGate({ sessionId, exposure, states, currentTarget, dismissalScope, onContinue, suspended = false }: {
+  sessionId: string; exposure: ExperienceExposureStatus; states: readonly { key: string; label: string }[]; currentTarget: string;
+  dismissalScope: RecoveryDismissalScope; onContinue: () => void; suspended?: boolean;
 }) {
   const [recovery, setRecovery] = useState<Recovery[]>([]), [busy, setBusy] = useState(true), [error, setError] = useState('');
   const retryable = useRef(false);
   const controller = useRef<AbortController | null>(null), generation = useRef(0);
+  const dismissal = useRef('');
+  const dismissalOwnerToken = useRef<string | null>(null);
   const request = useCallback(async (key: string, operation: 'context' | 'review' | 'activate', body: unknown) => {
     const signal = controller.current?.signal, token = api.getAccessToken(), stamp = generation.current;
     const live = () => !!token && isSameWebSession(token, api.getAccessToken()) && !document.hidden
@@ -35,7 +38,8 @@ export function PrivateStateRecoveryGate({ sessionId, exposure, states, onContin
   const load = useCallback(async () => {
     controller.current?.abort(); controller.current = new AbortController(); const stamp = ++generation.current;
     if (document.hidden || suspended) return;
-    retryable.current = false; setBusy(true); setError(''); setRecovery([]);
+    const ownerToken = api.getAccessToken();
+    retryable.current = false; dismissal.current = ''; dismissalOwnerToken.current = null; setBusy(true); setError(''); setRecovery([]);
     try {
       const found: Recovery[] = [];
       for (const state of states) {
@@ -44,13 +48,18 @@ export function PrivateStateRecoveryGate({ sessionId, exposure, states, onContin
         if (context.groups.length) found.push({ ...state, context });
       }
       if (stamp !== generation.current) return;
-      setRecovery(found); if (!found.length) onContinue();
+      const key = found.length ? await recoveryDismissalKey(dismissalScope, currentTarget, found) : '';
+      if (!ownerToken || !isSameWebSession(ownerToken, api.getAccessToken()) || stamp !== generation.current || controller.current?.signal.aborted || document.hidden || Date.parse(exposure.expires_at) <= Date.now()) return;
+      dismissal.current = key;
+      dismissalOwnerToken.current = ownerToken;
+      let dismissed = false; try { dismissed = !!key && sessionStorage.getItem(key) === '1'; } catch { /* Storage unavailable: show the review. */ }
+      setRecovery(found); if (!found.length || dismissed) onContinue();
     } catch (cause) { if (stamp === generation.current) {
       retryable.current = cause instanceof ExperienceAuthorityUnavailable || cause instanceof SessionRefreshUnavailableError || cause instanceof TypeError;
       setError(retryable.current ? 'Connection interrupted. Reconnecting...' : 'Saved-state recovery could not be checked. Retry before opening this app.');
     } }
     finally { if (stamp === generation.current) setBusy(false); }
-  }, [request, states, onContinue, suspended]);
+  }, [request, states, onContinue, suspended, dismissalScope, currentTarget, exposure.expires_at]);
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => { if (active) void load(); });
@@ -66,9 +75,13 @@ export function PrivateStateRecoveryGate({ sessionId, exposure, states, onContin
   return <div className="min-h-0 overflow-y-auto" aria-label="Private App state recovery">
     {busy && <p role="status" className="px-5 py-4 text-sm">Checking your saved app state…</p>}
     {error && <div className="px-5 py-4"><p role="alert" className="text-sm">{error}</p><button className="deft-pill mt-3 min-h-11" onClick={() => void load()}>Retry recovery check</button></div>}
-    {!busy && !error && recovery.map(state => <PrivateStateAdoption key={state.key} label={state.label} groups={state.context.groups}
+    {!busy && !error && recovery.map(state => <PrivateStateAdoption key={state.key} label={state.label} groups={state.context.groups} currentTarget={currentTarget}
       request={(operation, body) => request(state.key, operation, body)} onAdopted={() => void load()} />)}
     {!busy && !error && recovery.length > 0 && <div className="px-5 py-4"><p className="text-sm">You can continue without recovery. Previous records stay private to their old version until they expire.</p>
-      <button className="deft-pill mt-3 min-h-11" onClick={onContinue}>Continue without recovery</button></div>}
+      <button className="deft-pill mt-3 min-h-11" onClick={() => {
+        if (!dismissalOwnerToken.current || !isSameWebSession(dismissalOwnerToken.current, api.getAccessToken()) || suspended || document.hidden || Date.parse(exposure.expires_at) <= Date.now()) return;
+        try { if (dismissal.current) sessionStorage.setItem(dismissal.current, '1'); } catch { /* Continue still works without storage. */ }
+        onContinue();
+      }}>Continue without recovery</button></div>}
   </div>;
 }

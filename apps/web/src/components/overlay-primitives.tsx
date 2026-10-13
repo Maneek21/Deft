@@ -144,6 +144,7 @@ export function AppDialog({
   title,
   description,
   children,
+  headerActions,
   footer,
   width = 420,
   presentation = 'dialog',
@@ -156,6 +157,7 @@ export function AppDialog({
   title?: string;
   description?: string;
   children: ReactNode;
+  headerActions?: ReactNode;
   footer?: ReactNode;
   width?: number;
   presentation?: 'dialog' | 'editor';
@@ -215,13 +217,16 @@ export function AppDialog({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => handleFocusTrap(event, panelRef.current)}
       >
-        {(title || description) && (
-          <div className="flex-shrink-0 px-5 pt-5">
+        {(title || description || headerActions) && (
+          <div className="relative flex-shrink-0 px-5 pt-5">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
             {title && (
-              <h2 id={titleId} className="text-[0.9375rem] font-semibold" style={{ color: danger ? 'var(--danger)' : 'var(--on-surface)' }}>
+              <h2 id={titleId} className="min-w-0 text-[0.9375rem] font-semibold" style={{ color: danger ? 'var(--danger)' : 'var(--on-surface)' }}>
                 {title}
               </h2>
             )}
+            {headerActions && <div className="ml-auto flex min-w-0 items-center gap-1">{headerActions}</div>}
+            </div>
             {description && (
               <p id={descriptionId} className="mt-2 text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
                 {description}

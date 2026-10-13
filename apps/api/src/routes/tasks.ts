@@ -1,3 +1,4 @@
+import {createNativeTask} from '../lib/native-task-create.js';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
@@ -1115,6 +1116,7 @@ taskRoutes.get('/:id', async (c) => {
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
       parent_task_id: tasks.parent_task_id,
+      metadata: tasks.metadata,
       // Task 4.12 — surface recurrence on GET so the detail UI can
       // render the Repeats dropdown without a second fetch.
       recurrence: tasks.recurrence,
@@ -1799,35 +1801,7 @@ async function createTaskForProject(
     orgId, userId, operation: `task:${projectId}`, key: requestKey, payload: data,
     replay: async (tx, id) => (await tx.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.org_id, orgId), eq(tasks.project_id, projectId), eq(tasks.created_by, userId), eq(tasks.is_deleted, false))).limit(1))[0],
     create: async (tx) => {
-    const taskNumber = await reserveNextTaskNumber({ projectId, orgId, executor: tx });
-
-    const [task] = await tx.insert(tasks).values({
-      org_id: orgId,
-      project_id: projectId,
-      number: taskNumber,
-      title: data.title,
-      description: data.description || undefined,
-      status: (data.status || 'backlog') as any,
-      priority: (data.priority || 'p2') as any,
-      assignee_id: assigneeId ?? undefined,
-      created_by: userId,
-      due_date: data.due_date ? new Date(data.due_date) : undefined,
-      sort_order: data.sort_order ?? 0,
-      source_message_id: data.source_message_id || undefined,
-      parent_task_id: data.parent_task_id || undefined,
-      // Task 4.11 — skill-defined custom fields.
-      metadata: data.metadata ?? undefined,
-    }).returning();
-
-    // Create activity log entry
-    await tx.insert(taskActivity).values({
-      org_id: orgId,
-      task_id: task!.id,
-      user_id: userId,
-      action: 'created',
-    });
-
-      return task!;
+    return createNativeTask(tx,{...data,org_id:orgId,project_id:projectId,user_id:userId,assignee_id:assigneeId});
   } });
   if (replayed) return { task, project };
   const taskNumber = task.number;

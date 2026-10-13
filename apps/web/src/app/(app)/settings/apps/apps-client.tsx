@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { AppWindow, Check, Copy, FileUp, KeyRound, Loader2, Power, ShieldCheck, X } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
+import { AttachmentAppUpgrade } from '@/components/apps/attachment-app-upgrade';
+import { attachmentUpgradeInspectionTarget,attachmentUpgradeStageRequest,parseAttachmentUpgradeStaged,type AttachmentUpgradeTarget } from '@/lib/app-attachment-upgrade';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
 import { AttachmentAppReview } from '@/components/apps/attachment-app-review';
@@ -31,6 +33,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   const uploadTargetRef = useRef<AppInstallation | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
+  const [attachmentUpgrade,setAttachmentUpgrade]=useState<{installation_id:string;target:AttachmentUpgradeTarget}|null>(null);
   const [pairing, setPairing] = useState<{ code: string; expires_at: string } | null>(null);
   const [query, setQuery] = useState('');
   const selectedApp = apps.find((app) => app.id === selectedId);
@@ -44,7 +47,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
   };
   const inspect = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
-    const upgradeTarget = uploadTargetRef.current;
+    let upgradeTarget = uploadTargetRef.current;
     uploadTargetRef.current = null;
     event.currentTarget.value = '';
     if (!file) return;
@@ -56,6 +59,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
       const response = await api.fetch('/api/apps/inspect', { method: 'POST', headers: { 'Content-Type': 'application/vnd.deft.app.package+json' }, body: source });
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to inspect this App package.'));
       const inspection = normalizeAppInspection(await response.json());
+      upgradeTarget = attachmentUpgradeInspectionTarget(inspection,apps,upgradeTarget);
       if (upgradeTarget && inspection.manifest.id !== upgradeTarget.app_id) {
         throw new Error(`This package is ${inspection.manifest.id}; choose an upgrade for ${upgradeTarget.app_id}.`);
       }
@@ -72,12 +76,13 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
     try {
       const attachment = pending.inspection.manifest.schema_version === '7';
       if (attachment && !APP_ATTACHMENT_BROKER_ENABLED) throw new Error('Attachment Apps are disabled on this host.');
-      if (attachment && pending.upgradeTarget) throw new Error('Attachment App upgrades require a separately supported review.');
-      const path = attachment ? '/api/apps/blob/composition/stage' : pending.upgradeTarget
+      const attachmentUpgradeRequest = attachment && pending.upgradeTarget ? attachmentUpgradeStageRequest(pending.source,pending.inspection,pending.upgradeTarget) : null;
+      const path = attachmentUpgradeRequest?.path ?? (attachment ? '/api/apps/blob/composition/stage' : pending.upgradeTarget
         ? `/api/apps/${encodeURIComponent(pending.upgradeTarget.id)}/upgrades/stage?expected_lifecycle_epoch=${pending.upgradeTarget.lifecycle_epoch}`
-        : '/api/apps/stage';
-      const response = await api.fetch(path, { method: 'POST', headers: { 'Content-Type': attachment ? 'application/json' : 'application/vnd.deft.app.package+json' }, body: pending.source });
+        : '/api/apps/stage');
+      const response = await api.fetch(path, { method: 'POST', headers: { 'Content-Type': attachment ? 'application/json' : 'application/vnd.deft.app.package+json' }, body: attachmentUpgradeRequest ? JSON.stringify(attachmentUpgradeRequest.body) : pending.source });
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to stage this App.'));
+      if (attachmentUpgradeRequest && pending.upgradeTarget) {const versionId=parseAttachmentUpgradeStaged(await response.json(),pending.upgradeTarget.id);setAttachmentUpgrade({installation_id:pending.upgradeTarget.id,target:{version_id:versionId,package_digest:pending.inspection.package_digest,version:pending.inspection.manifest.version}});}
       await refreshApps();
       const connected = pending.inspection.manifest.compatibility.app_protocol !== '0';
       setPending(null);
@@ -86,7 +91,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
         : connected
           ? 'Connected App staged for explicit authority review.'
           : 'App staged with no permissions and no workspace navigation.' });
-    } catch (reason) { setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : 'Unable to stage App.' }); }
+    } catch (reason) { if(pending.upgradeTarget&&pending.inspection.manifest.schema_version==='7'){setPending(null);setMessage({tone:'error',text:'Upgrade staging was not confirmed. Check staged versions before staging again.'});}else setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : 'Unable to stage App.' }); }
     finally { setBusy(null); }
   };
 
@@ -155,7 +160,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           : apps.length === 0 ? <EmptyState icon={<AppWindow size={20} />} title="No Apps installed" description="Inspect a Deft App package to review what it adds to your workspace." action={canManage ? { label: 'Inspect a package', onClick: () => choosePackage() } : undefined} />
           : selectedApp ? <>
             <Link href="/settings/apps" className="deft-pill min-h-11">← All Apps</Link>
-            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} />
+            <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} attachmentUpgrade={attachmentUpgrade?.installation_id===selectedApp.id?attachmentUpgrade.target:undefined} />
             {selectedApp.manifest.schema_version === '6' && <PublicCancellationOwnerPanel installationId={selectedApp.id} />}
           </> : <section aria-label="Installed Apps" className="space-y-3">
             <label className="block text-xs font-medium">
@@ -191,7 +196,7 @@ function InspectionCard({ pending, upgradeTarget, busy, onCancel, onStage }: { p
   </section>;
 }
 
-function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChooseUpgrade }: { app: AppInstallation; canManage: boolean; busy: boolean; onActivate: () => void; onEnable: () => void; onDisable: () => void; onChooseUpgrade: () => void }) {
+function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChooseUpgrade, attachmentUpgrade }: { attachmentUpgrade?:AttachmentUpgradeTarget; app: AppInstallation; canManage: boolean; busy: boolean; onActivate: () => void; onEnable: () => void; onDisable: () => void; onChooseUpgrade: () => void }) {
   const connected = isConnectedAppManifest(app.manifest);
   const runtime = app.manifest.compatibility.app_protocol === '3'
     || app.manifest.compatibility.app_protocol === '4'
@@ -208,11 +213,13 @@ function AppCard({ app, canManage, busy, onActivate, onEnable, onDisable, onChoo
       {app.state === 'active' && (app.manifest.schema_version === '4' || app.manifest.schema_version === '5' || app.manifest.schema_version === '6' || app.manifest.schema_version === '7') && app.manifest.experiences.map((experience) =>
         <Link key={experience.key} className="deft-pill min-h-11" href={`/apps/${encodeURIComponent(app.id)}/${encodeURIComponent(experience.key)}`}>Open {experience.label}</Link>)}
       {canManage && APP_RESOURCE_SYNC_ENABLED && app.state === 'active' && (app.manifest.schema_version === '5' || app.manifest.schema_version === '7') && app.manifest.sync_descriptors.length > 0 && <Link className="deft-pill min-h-11" style={{ minHeight: 44 }} href="/settings/apps/private-resources">Connect private resources</Link>}
+      {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.manifest.schema_version==='7' && app.state==='active' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onChooseUpgrade}><FileUp size={13}/> Stage upgrade</button>}
       {canManage && app.state === 'active' && <button type="button" className="deft-pill min-h-11" disabled={busy} onClick={onDisable}><Power size={13} /> Disable</button>}
     </div>}
     {canManage && APP_RESOURCE_SYNC_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '5' && app.manifest.runtime_actions.length === 0 && app.manifest.sync_descriptors.length > 0 && <ResourceAppReview app={app} />}
     {canManage && APP_ATTACHMENT_BROKER_ENABLED && ['staged', 'disabled'].includes(app.state) && app.manifest.schema_version === '7' && <AttachmentAppReview app={app} />}
     {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.state === 'active' && app.manifest.schema_version === '7' && app.manifest.runtime_actions.length > 0 && <RuntimeAppSetup app={app} />}
+    {canManage && APP_ATTACHMENT_BROKER_ENABLED && app.state==='active' && app.manifest.schema_version==='7' && <AttachmentAppUpgrade app={app} seed={attachmentUpgrade}/>}
     {showConnectedManagement && <ConnectedAppManagement app={app} canManage={canManage} busy={busy} onDisable={onDisable} onChooseUpgrade={onChooseUpgrade} />}
   </article>;
 }

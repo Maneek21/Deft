@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { assertReviewedCurrent } from './lineage-convergence.mjs';
+import { reconcileFreshSchemaContracts } from './fresh-schema-contracts.mjs';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
 import { LOCK_ID, baselineChecksum, sha256 } from './upgrade.ts';
 import { upgradeManifest } from '../upgrades/manifest.ts';
@@ -68,6 +70,7 @@ export async function main() {
           kind text NOT NULL CHECK (kind IN ('baseline', 'migration')),
           applied_at timestamptz NOT NULL DEFAULT now()
         )`);
+        await reconcileFreshSchemaContracts(client);
         await client.query(`INSERT INTO deft_schema_migrations
           (version, description, checksum, kind) VALUES ($1,$2,$3,'baseline')`,
         [upgradeManifest.baseline.version,
@@ -79,6 +82,7 @@ export async function main() {
           [migration.version, migration.description,
             sha256(readFileSync(resolve(upgradesDir, migration.file), 'utf8'))]);
         }
+        await assertReviewedCurrent(client);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');

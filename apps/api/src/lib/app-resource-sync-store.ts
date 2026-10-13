@@ -307,6 +307,10 @@ export class AppResourceSyncStore {
       eq(appSyncCheckpoints.cursor_sequence, intent.expected_cursor_sequence),
     )).returning({ id: appSyncCheckpoints.id });
     if (!applied) throw new Error('APP_RESOURCE_SYNC_CURSOR_CAS_FAILED');
+    // Independent notification opt-in queues only signed UUID/digest metadata
+    // within the same publication transaction; final expiry rolls both back.
+    const {enqueueAppIntegrationPublishedNotifications}=await import('./app-integration-notification-publication.js');
+    await enqueueAppIntegrationPublishedNotifications(tx,{org_id:input.org_id,resource_binding_id:binding.id,upserts:page.upserts,clock:input.clock});
     // A bounded page can still outlive its lease while writing many rows.
     // The caller performs its own final settlement check after this helper;
     // this last local check rolls back the entire page if time ran out here.

@@ -21,6 +21,8 @@ import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { isModuleError } from './module-errors.js';
 import { assertCurrentModuleManagerWithExecutor } from './module-service.js';
+import { loadOwnerConnectionAdmission, assertOwnerConnectionMember } from './app-owner-connection-authority.js';
+import { ownerConnectionLimitsWithin, type OwnerConnectionAdmissionReference } from './app-owner-connection-contract.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { persistCapabilityProviderSnapshotWithExecutor } from './capability-provider-snapshot-repository.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
@@ -56,8 +58,8 @@ function assertBeforeDeadline(deadline: Date, clock: () => Date) {
 }
 const conflict = () => new AppError('Private resource sync already has current consent', 'APP_STATE_CONFLICT', 409);
 
-function reviewer(actor: ModuleActor): asserts actor is Human {
-  if (actor.kind !== 'human' || !['owner', 'admin'].includes(actor.role)
+function reviewer(actor: ModuleActor, ownerAdmission = false): asserts actor is Human {
+  if (actor.kind !== 'human' || !(ownerAdmission ? ['owner', 'admin', 'member'] : ['owner', 'admin']).includes(actor.role)
     || !['ui', 'rest'].includes(actor.source)) throw denied();
 }
 function operator(actor: ModuleActor): asserts actor is Human {
@@ -140,6 +142,7 @@ export class AppResourceSyncManagement {
           eq(appResourceBindings.app_installation_id, installation.id),
           eq(appResourceBindings.grant_snapshot_id, grant.id),
           eq(appResourceBindings.owner_user_id, actor.actor_id),
+          eq(appResourceBindings.target_key, 'primary'),
           inArray(appResourceBindings.state, ['active', 'disabled'])))
         // Advisory locator only: registration/binding authority is rechecked by
         // every operation. Joined rowmarks can lock binding before registration.
@@ -197,9 +200,9 @@ export class AppResourceSyncManagement {
   }
 
   async #reviewContext(tx: Tx, actor: Human, input: AppResourceSyncConsentRequest | AppAttachmentConsentRequest,
-    activation: boolean) {
+    activation: boolean, ownerAdmission?: OwnerConnectionAdmissionReference) {
     await lockMembers(tx, actor.org_id, [actor.actor_id, input.operator_user_id], 'UPDATE');
-    await assertManager(tx, actor);
+    if (ownerAdmission) await assertOwnerConnectionMember(tx, actor.org_id, actor.actor_id); else await assertManager(tx, actor);
     const [operatorMember] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind })
       .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id))
       .where(and(eq(orgMembers.org_id, actor.org_id),
@@ -210,6 +213,11 @@ export class AppResourceSyncManagement {
     const reviewed = await this.#loadReviewed(tx, actor.org_id,
       input.installation_id, input.resource_key);
     const { installation, version, grant, descriptor, descriptor_digest } = reviewed;
+    const admission = ownerAdmission ? await loadOwnerConnectionAdmission(tx, actor.org_id, ownerAdmission) : null;
+    if (admission && (this.internalMode !== 'attachment_v3' || admission.row.app_installation_id !== installation.id
+      || admission.policy.resource_key !== descriptor.key || admission.row.operator_user_id !== input.operator_user_id
+      || !ownerConnectionLimitsWithin(input.limits, admission.snapshot.limits)
+      || Date.parse(input.consent_expires_at) - this.clock().getTime() > admission.policy.max_consent_seconds * 1000)) throw denied();
     if (version.id !== input.expected_app_version_id
       || version.package_digest !== input.expected_package_digest
       || grant.snapshot_digest !== input.expected_grant_snapshot_digest
@@ -228,21 +236,23 @@ export class AppResourceSyncManagement {
       resource_key: descriptor.key, descriptor_digest,
       consent_expires_at: expiresAt.toISOString(), limits: input.limits,
       host_policy: APP_RESOURCE_SYNC_HOST_POLICY };
-    const review = this.internalMode === 'attachment_v3'
+    const baseReview = this.internalMode === 'attachment_v3'
       ? attachmentSyncConsentReview({ org_id: actor.org_id, owner_user_id: actor.actor_id,
         operator_user_id: input.operator_user_id, reviewed: await loadReviewedAttachmentSyncDescriptor(tx,
           actor.org_id, input.installation_id, input.resource_key), consent_expires_at: expiresAt,
-        limits: input.limits, attachment_policy: AppAttachmentConsentRequestSchema.shape.attachment_policy.parse('attachment_policy' in input ? input.attachment_policy : undefined) })
+        limits: input.limits, attachment_policy: AppAttachmentConsentRequestSchema.shape.attachment_policy.parse('attachment_policy' in input ? input.attachment_policy : undefined),
+        ...(ownerAdmission ? { owner_connection_admission: ownerAdmission } : {}) })
       : legacyReview;
+    const review = { ...baseReview, ...(!input.target_key || input.target_key === 'primary' ? {} : { target_key: input.target_key }) };
     return { ...reviewed, expiresAt,
       review: Object.freeze({ ...review, review_digest: digestAppGrantValue(review) }) };
   }
 
-  async prepareConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
-    reviewer(actor);
+  async prepareConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard, ownerAdmission?: OwnerConnectionAdmissionReference) {
+    reviewer(actor, Boolean(ownerAdmission));
     const input = this.internalMode === 'attachment_v3'
       ? AppAttachmentConsentRequestSchema.parse(value) : AppResourceSyncConsentRequestSchema.parse(value);
-    return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false)).review,
+    return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false, ownerAdmission)).review,
       async (_result, tx) => {
         if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
         await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at)]);
@@ -250,13 +260,13 @@ export class AppResourceSyncManagement {
       });
   }
 
-  async activateConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard) {
-    reviewer(actor);
+  async activateConsent(actor: ModuleActor, value: unknown, guard?: ResourceSyncManagementGuard, ownerAdmission?: OwnerConnectionAdmissionReference) {
+    reviewer(actor, Boolean(ownerAdmission));
     const input = this.internalMode === 'attachment_v3'
       ? AppAttachmentConsentActivationSchema.parse(value) : AppResourceSyncConsentActivationSchema.parse(value);
     return managementTransaction(guard, async (tx) => {
       const { installation, version, grant, descriptor, descriptor_digest, expiresAt, review } =
-        await this.#reviewContext(tx, actor, input, true);
+        await this.#reviewContext(tx, actor, input, true, ownerAdmission);
       if (review.review_digest !== input.expected_review_digest) throw stale();
       const [existing] = await tx.select({ id: appResourceBindings.id }).from(appResourceBindings)
         .where(and(eq(appResourceBindings.org_id, actor.org_id),
@@ -264,6 +274,7 @@ export class AppResourceSyncManagement {
           eq(appResourceBindings.grant_snapshot_id, grant.id),
           eq(appResourceBindings.owner_user_id, actor.actor_id),
           eq(appResourceBindings.resource_key, descriptor.key),
+          eq(appResourceBindings.target_key, input.target_key ?? 'primary'),
           inArray(appResourceBindings.state, ['disabled', 'active']))).limit(1);
       if (existing) throw conflict();
       const now = this.clock();
@@ -278,6 +289,7 @@ export class AppResourceSyncManagement {
       await tx.insert(appRuntimeRegistrations).values({ id: registrationId, org_id: actor.org_id,
         app_installation_id: installation.id, app_version_id: version.id,
         grant_snapshot_id: grant.id, operator_user_id: input.operator_user_id,
+        ...(ownerAdmission ? { owner_connection_admission_id: ownerAdmission.admission_id, owner_connection_admission_digest: ownerAdmission.admission_digest } : {}),
         contract_version: this.#contract, state: 'disabled',
         created_at: now, updated_at: now });
       const providerSnapshotId = await persistCapabilityProviderSnapshotWithExecutor(tx, providerSnapshot);
@@ -287,7 +299,7 @@ export class AppResourceSyncManagement {
         registration_contract_version: this.#contract,
         provider_kind: 'app_runtime', provider_instance_id: registrationId,
         provider_snapshot_id: providerSnapshotId,
-        resource_key: descriptor.key, resource_family: descriptor.resource_type,
+        resource_key: descriptor.key, target_key: input.target_key ?? 'primary', resource_family: descriptor.resource_type,
         operation_name: `sync_${descriptor.key}`,
         interface_identity: `deft.resource_sync.${this.internalMode === 'attachment_v3' ? 'v3' : 'v2'}:${actor.org_id.toLowerCase()}:${installation.id.toLowerCase()}:${descriptor.key}`,
         reviewed_descriptor: descriptor, descriptor_digest,
@@ -379,7 +391,7 @@ export class AppResourceSyncManagement {
 
   /** The private owner can end consent without retaining a live App grant. */
   async revokeConsent(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
-    reviewer(actor);
+    reviewer(actor, true);
     bindingId = Id.parse(bindingId);
     let finalParticipants: string[] = [];
     return managementTransaction(guard, async (tx) => {
@@ -390,13 +402,15 @@ export class AppResourceSyncManagement {
           eq(appResourceBindings.id, bindingId),
           eq(appResourceBindings.registration_contract_version, this.#contract))).limit(1);
       if (!locator || locator.owner_user_id !== actor.actor_id) throw denied();
-      const [registrationLocator] = await tx.select({ operator_user_id: appRuntimeRegistrations.operator_user_id })
+      const [registrationLocator] = await tx.select({ operator_user_id: appRuntimeRegistrations.operator_user_id,
+        owner_connection_admission_id: appRuntimeRegistrations.owner_connection_admission_id })
         .from(appRuntimeRegistrations).where(and(eq(appRuntimeRegistrations.org_id, actor.org_id),
           eq(appRuntimeRegistrations.id, locator.registration_id))).limit(1);
       if (!registrationLocator) throw stale();
       finalParticipants = [actor.actor_id, registrationLocator.operator_user_id];
       await lockMembers(tx, actor.org_id, [actor.actor_id, registrationLocator.operator_user_id], 'UPDATE');
-      await assertManager(tx, actor);
+      if (registrationLocator.owner_connection_admission_id) await assertOwnerConnectionMember(tx, actor.org_id, actor.actor_id);
+      else await assertManager(tx, actor);
       await tx.execute(sql`SELECT id FROM app_installations WHERE org_id = ${actor.org_id}
         AND id = ${locator.installation_id} FOR UPDATE`);
       await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${actor.org_id}

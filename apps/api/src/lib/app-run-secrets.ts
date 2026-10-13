@@ -35,10 +35,10 @@ const ExactContextIdSchema = z
 export const AppRunSecretContextSchema = z.object({
   org_id: ExactContextIdSchema,
   run_id: ExactContextIdSchema,
-  payload_kind: z.enum(['input', 'output']),
+  payload_kind: z.enum(['input', 'output','action_resources']),
   attempt_id: ExactContextIdSchema.optional(),
 }).strict().superRefine((value, ctx) => {
-  if (value.payload_kind === 'input' && value.attempt_id !== undefined) {
+  if (value.payload_kind !== 'output' && value.attempt_id !== undefined) {
     ctx.addIssue({ code: 'custom', path: ['attempt_id'], message: 'Input payload cannot be attempt-scoped' });
   }
   if (value.payload_kind === 'output' && value.attempt_id === undefined) {
@@ -125,7 +125,7 @@ export class AppRunSecretService {
 
   sealJson(value: unknown, rawContext: AppRunSecretContext): AppRunSecretEnvelope {
     const context = AppRunSecretContextSchema.parse(rawContext);
-    const limit = context.payload_kind === 'input'
+    const limit = context.payload_kind !== 'output'
       ? APP_RUN_LIMITS.input_bytes
       : APP_RUN_LIMITS.output_bytes;
     assertCapabilityJsonWithinBudget(value, limit);
@@ -173,7 +173,7 @@ export class AppRunSecretService {
       decipher.setAuthTag(tag);
       plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
       const value = CapabilityJsonValueSchema.parse(JSON.parse(plaintext.toString('utf8')));
-      const limit = context.payload_kind === 'input'
+      const limit = context.payload_kind !== 'output'
         ? APP_RUN_LIMITS.input_bytes
         : APP_RUN_LIMITS.output_bytes;
       assertCapabilityJsonWithinBudget(value, limit);

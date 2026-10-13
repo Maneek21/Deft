@@ -675,11 +675,14 @@ async function dispatchTool(
   }
 }
 
-function humanCatalog(scopes: string[]) {
-  return buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
+async function humanCatalog(scopes: string[], principal?: {kind:string;org_id:string;user_id:string;token_id:string}) {
+  const {emailIntegrationToolSchemas}=await import('../lib/email-integration-agent-tools.js');
+  const emailSchemas=principal?.kind==='human'?await emailIntegrationToolSchemas({kind:'personal_mcp',org_id:principal.org_id,user_id:principal.user_id,token_id:principal.token_id}):[];
+  const emailNames=new Set(emailSchemas.map(tool=>tool.name));
+  return buildHumanToolSchemas([...(toolSchemas as unknown as Array<Record<string, unknown>>).filter(tool=>!String(tool.name).startsWith('email_')),...emailSchemas])
     .filter((schema) => {
       const name = String(schema.name ?? '');
-      return humanToolHasRequiredScope(scopes, name);
+      return (!name.startsWith('email_') || emailNames.has(name)) && humanToolHasRequiredScope(scopes, name);
     });
 }
 
@@ -828,7 +831,7 @@ mcpServerV1Routes.post('/', async (c) => {
       const principal = await resolveMcpPrincipal(bearer);
       if (principal.kind === 'human' || principal.kind === 'oauth') {
         return {
-          tools: sortedCatalog([...humanCatalog(principal.scopes), ...privateMcpCatalog(principal)]),
+          tools: sortedCatalog([...await humanCatalog(principal.scopes,principal), ...privateMcpCatalog(principal)]),
           ...(requestMetadata.era === 'modern'
             ? { ttlMs: 0, cacheScope: 'private' as const }
             : {}),
@@ -1070,7 +1073,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   }
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {
-    return c.json({ tools: sortedCatalog([...humanCatalog(principal.scopes), ...privateMcpCatalog(principal)]) });
+    return c.json({ tools: sortedCatalog([...await humanCatalog(principal.scopes,principal), ...privateMcpCatalog(principal)]) });
   }
 
   const resolved = principal as ResolvedGateway;

@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {emailSearchInput} from './search-ui.mjs';
+test('typed search form drops empty fields and refuses raw operators or caller authority',()=>{assert.deepEqual(emailSearchInput({from:' x@example.test ',subject:'',has_attachments:false}),{from:'x@example.test',has_attachments:false});for(const value of [{},{account_id:'outside'},{from:'x" OR in:anywhere'},{from:'x\n'},{unread:'true'}])assert.throws(()=>emailSearchInput(value));});

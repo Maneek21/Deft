@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { appIntegrationTaskSourceHref } from '@/lib/app-integration-task-source';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
@@ -753,6 +754,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }[]>([]);
   const [moduleReferenceCount, setModuleReferenceCount] = useState(0);
   const sourceMessage = task?.source_message ?? null;
+  const appSourceHref = appIntegrationTaskSourceHref(task?.metadata);
   const sourceMessageHref = sourceMessage
     ? `/chat?space=${sourceMessage.space_id}&message=${sourceMessage.id}`
     : null;
@@ -2069,6 +2071,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             >
               Description
             </h3>
+            {appSourceHref && <p className="mb-3 text-sm"><a href={appSourceHref} className="font-medium hover:underline">Open original source (requires access)</a></p>}
             <DescriptionEditor
               key={taskId}
               value={descValue}

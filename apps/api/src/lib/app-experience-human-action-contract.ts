@@ -1,24 +1,53 @@
+import {AppIntegrationPreparedProvenanceSchema} from './app-integration-prepared-provenance.js';
+import {ReviewedFutureRecordActionTicketSchema} from './app-future-record-action-review.js';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalCapabilityJson } from '@deft/shared';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppRunError } from './app-run-errors.js';
+import { ActionPayloadReferenceSchema, PrivateFileReferenceSchema } from './app-private-file-contract.js';
 
 const scalar = z.union([z.string().max(16_384), z.number().finite(), z.boolean()]);
-export const HumanActionPrepareSchema = z.strictObject({
+export const HumanActionDraftReferenceSchema = z.strictObject({
+  draft_state_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/), draft_id: z.string().uuid(),
+  expected_revision: z.number().int().min(1).max(2147483646),
+});
+export type HumanActionDraftReference = z.infer<typeof HumanActionDraftReferenceSchema>;
+const HumanActionPrepareBaseSchema = z.strictObject({
   input: z.record(z.string().min(1).max(64), scalar),
   idempotency_key: z.string().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/),
+  draft_ref: HumanActionDraftReferenceSchema.optional(),
+  snapshot_ref: ActionPayloadReferenceSchema.optional(),
 });
+export const HumanActionPrepareSchema = HumanActionPrepareBaseSchema.refine(value => !value.snapshot_ref || Boolean(value.draft_ref));
+export const HumanActionSnapshotRequestSchema = z.strictObject({
+  input: HumanActionPrepareBaseSchema.shape.input, draft_ref: HumanActionDraftReferenceSchema,
+});
+export const HumanActionSnapshotPreviewSchema = z.strictObject({
+  items: z.array(z.strictObject({ key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/),
+    label: z.string().min(1).max(200).refine(value => !/[\u0000-\u001f\u007f]/u.test(value)),
+    value: z.string().max(16384) })).max(32)
+    .refine(items => new Set(items.map(item => item.key)).size === items.length),
+  files: z.array(PrivateFileReferenceSchema).max(8),
+});
+export type HumanActionSnapshotPreview = z.infer<typeof HumanActionSnapshotPreviewSchema>;
 export const HumanActionConfirmSchema = z.strictObject({
   ticket: z.string().min(1).max(100_000),
   expected_input_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  expected_snapshot_digest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
-export const HumanActionTicketSchema = HumanActionPrepareSchema.extend({
+export const HumanActionTicketSchema = HumanActionPrepareBaseSchema.extend({
   org_id: z.string().uuid(), user_id: z.string().uuid(), sid: z.string().uuid(),
   session_id: z.string().uuid(), action_key: z.string().min(1).max(64),
   runtime_binding_id: z.string().uuid(), authority_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   input_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/), expires_at: z.string().datetime(),
-}).strict();
+  draft_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  resources_digest:z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  future_record_action:ReviewedFutureRecordActionTicketSchema.optional(),
+  integration_prepared_action:AppIntegrationPreparedProvenanceSchema.optional(),
+}).strict().refine(value => Boolean(value.draft_ref) === Boolean(value.draft_digest), 'Draft reference and digest must be paired')
+  .refine(value => !value.snapshot_ref || Boolean(value.draft_ref))
+  .refine(value => !value.integration_prepared_action || !value.future_record_action && !value.draft_ref && !value.snapshot_ref && value.integration_prepared_action.action_key===value.action_key && Date.parse(value.expires_at)<=Date.parse(value.integration_prepared_action.expires_at));
 export type HumanActionTicket = z.infer<typeof HumanActionTicketSchema>;
 export function humanActionDigest(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalCapabilityJson(JSON.parse(JSON.stringify(value)))).digest('hex')}`;

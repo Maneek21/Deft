@@ -3,7 +3,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { PrivateStateDeclarationSchema } from '@deft/app-kit';
 import { PrivateStateRequestSchema, privateStateValue, assertPrivateStateCas, assertPrivateStateQuota } from '../src/lib/app-private-state-contract.js';
-import { AppPrivateStateSecrets } from '../src/lib/app-private-state-secrets.js';
+import { AppPrivateStateSecrets, privateStateStoredBytes } from '../src/lib/app-private-state-secrets.js';
 import type { AppRunKeyProvider } from '../src/lib/app-run-keyrings.js';
 
 const declaration = PrivateStateDeclarationSchema.parse({ key: 'drafts', label: 'Drafts', schema: {
@@ -49,4 +49,22 @@ test('revision and quota checks fence lost updates and tombstone recreation', ()
   assertPrivateStateQuota(32, 131072, declaration);
   assert.throws(() => assertPrivateStateQuota(33, 100, declaration));
   assert.throws(() => assertPrivateStateQuota(1, 131073, declaration));
+});
+
+test('durable source custody has an authenticated v2 boundary, exact pins and counted bytes', () => {
+  const secrets = new AppPrivateStateSecrets(keys), record_id = randomUUID(), value = {subject:'Saved reply',body:'exact',reply_record_id:record_id};
+  const source = {field:'reply_record_id',action_key:'send_message',input_field:'parent_record_id',resource_key:'inbox',record_id,
+    scope:`sha256:${'7'.repeat(64)}`,record:{revision:'one',label:'Parent',data:{subject:'Parent'},provider_source:{locator:{id:'private-parent'}}}};
+  const envelope=secrets.seal(context,value,[source]);
+  assert.equal(envelope.schema_version,'deft.private_state.secret.v2');assert.equal(JSON.stringify(envelope).includes('private-parent'),false);
+  assert.deepEqual(secrets.openState(context,envelope),{value,sources:[source]});assert.deepEqual(secrets.open(context,envelope),value);
+  assert.ok(privateStateStoredBytes(value,[source])>Buffer.byteLength(JSON.stringify(value)));
+  assert.throws(()=>secrets.openState({...context,revision:2},envelope));
+  assert.throws(()=>secrets.openState(context,{...envelope,schema_version:'deft.private_state.secret.v1'}));
+  const collision={schema_version:'deft.private_state.secret.v2',value:'Worker string',sources:'not host custody'};
+  assert.deepEqual(secrets.openState(context,secrets.seal(context,collision)),{value:collision,sources:[]});
+  assert.throws(()=>secrets.seal(context,{body:'x'.repeat(16200)},[source]));
+  assert.throws(()=>secrets.seal(context,value,[{...source,org_id:randomUUID()}] as never));
+  assert.equal(PrivateStateRequestSchema.safeParse({operation:'put',record_id:context.record_id,expected_revision:0,value,
+    source_refs:[{field:'reply_record_id',action_key:'send_message',input_field:'parent_record_id',record_id,provider_source:{}}]}).success,false);
 });

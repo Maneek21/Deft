@@ -1,0 +1,20 @@
+import type {AppIntegrationSourceIdentity} from '../../../../packages/app-kit/src/app-integration-source.js';
+import {appIntegrationSourceDigest,type AppIntegrationSourceSnapshot} from './app-integration-source.js';
+export type AppIntegrationNotificationCaller=Readonly<{org_id:string;user_id:string;kind:'notification_policy';principal_id:string;notification_delivery:{job_id:string;lock_token:string;policy_revision:number}}>;
+export type AppIntegrationNotificationPolicy=Readonly<{id:string;org_id:string;owner_user_id:string;installation_id:string;account_ref:string;store_key:string;enabled:boolean;revision:number}>;
+export type NotificationSnapshot=AppIntegrationSourceSnapshot;
+export function appIntegrationNotificationDraft(caller:AppIntegrationNotificationCaller,source:AppIntegrationSourceIdentity,snapshot:NotificationSnapshot,revision:number){
+ const id=appIntegrationSourceDigest(source),event=appIntegrationSourceDigest([id,revision,snapshot.publication.checkpoint_id,snapshot.publication.generation,source.ref.content_digest]);
+ return {orgId:caller.org_id,userId:caller.user_id,kind:'app_integration_source',lane:'updates' as const,priority:'normal' as const,dedupeKey:'app-integration-source:'+id,sourceType:'app_integration_source',sourceId:id,sourceEventId:'app-integration-source:'+event,title:'New app activity',body:null,link:null,metadata:{app_integration_source:source,policy_id:caller.principal_id,policy_revision:revision,observed_at:snapshot.publication.observed_at,partial:snapshot.publication.partial},occurredAt:new Date(snapshot.publication.observed_at)};
+}
+export function createAppIntegrationNotifications<Tx>(ports:{transaction<T>(fn:(tx:Tx)=>Promise<T>):Promise<T>;policy(tx:Tx,caller:AppIntegrationNotificationCaller,source:AppIntegrationSourceIdentity):Promise<AppIntegrationNotificationPolicy|null>;source:{read(caller:AppIntegrationNotificationCaller,identity:AppIntegrationSourceIdentity,signal?:AbortSignal):Promise<NotificationSnapshot>;guard(tx:Tx,caller:AppIntegrationNotificationCaller,snapshot:NotificationSnapshot):Promise<void>};eligible(snapshot:NotificationSnapshot):boolean;project(tx:Tx,draft:ReturnType<typeof appIntegrationNotificationDraft>):Promise<{id:string;created:boolean}>;afterCommit?(id:string):Promise<void>;clock?:()=>number}){
+ const now=ports.clock??Date.now,deny=()=>new Error('APP_INTEGRATION_NOTIFICATION_CHANGED_OR_DENIED');
+ const current=(caller:AppIntegrationNotificationCaller,source:AppIntegrationSourceIdentity,p:AppIntegrationNotificationPolicy|null)=>{if(!p||!p.enabled||caller.kind!=='notification_policy'||p.id!==caller.principal_id||p.org_id!==caller.org_id||p.owner_user_id!==caller.user_id||p.installation_id!==source.installation_id||p.account_ref!==source.account_ref||p.store_key!==source.store_key||p.revision!==caller.notification_delivery.policy_revision)throw deny();return p;};
+ return {async project(caller:AppIntegrationNotificationCaller,source:AppIntegrationSourceIdentity,signal?:AbortSignal){
+  signal?.throwIfAborted();const initial=await ports.transaction(tx=>ports.policy(tx,caller,source));if(!initial?.enabled)return {state:'disabled' as const};current(caller,source,initial);
+  const snapshot=await ports.source.read(caller,source,signal);if(snapshot.caller.kind!=='notification_policy'||snapshot.purpose!=='notification_projection')throw deny();if(!ports.eligible(snapshot))return {state:'suppressed' as const};
+  const result=await ports.transaction(async tx=>{await ports.source.guard(tx,caller,snapshot);const p=current(caller,source,await ports.policy(tx,caller,source));if(p.revision!==initial.revision)throw deny();
+   const value=await ports.project(tx,appIntegrationNotificationDraft(caller,source,snapshot,p.revision));await ports.source.guard(tx,caller,snapshot);current(caller,source,await ports.policy(tx,caller,source));signal?.throwIfAborted();if(!Number.isFinite(snapshot.authority.expires_at)||snapshot.authority.expires_at<=now())throw deny();return value;});
+  if(result.created&&ports.afterCommit)await ports.afterCommit(result.id).catch(()=>undefined);return {state:'projected' as const,id:result.id};
+ }};
+}

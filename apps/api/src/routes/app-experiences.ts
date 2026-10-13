@@ -9,7 +9,18 @@ import { getAppRunRuntime } from '../lib/app-run-runtime.js';
 import { ExperienceExposureError } from '../lib/app-experience-exposure-contract.js';
 import { z } from 'zod';
 import { AppPrivateStateService } from '../lib/app-private-state-service.js';
+import { AppPrivateFileService } from '../lib/app-private-file-service.js';
+import { parsePrivateFileUpload, withPrivateFileUpload } from '../lib/app-private-file-upload.js';
 import { AppPrivateStateAdoptionService } from '../lib/app-private-state-adoption-service.js';
+import { AppConnectionService } from '../lib/app-connection-service.js';
+import { getAppConnectionRegistry, type AppConnectionRegistry } from '../lib/app-connection-registry.js';
+import { db } from '../lib/db.js';
+import { appExperienceSessions } from '@deft/db/schema';
+import { and, eq } from 'drizzle-orm';
+import { AppError } from '../lib/app-errors.js';
+import { AppExperienceResourceContentService } from '../lib/app-experience-resource-content.js';
+import { AppExperienceProviderBrowseService } from '../lib/app-experience-provider-browse.js';
+import { getNativeEmailMailboxExperiencePage } from '../lib/email-mailbox-experience-cache.js';
 
 const MAX_ACTION_BYTES = 65_536;
 const READ_DEADLINE_MS = 10_000;
@@ -71,7 +82,8 @@ function failure(c: Context, error: unknown) {
 }
 
 /** Mount behind the existing web Bearer-authenticated API group. */
-export function createAppExperienceRoutes(service: AppExperienceService = appExperienceService) {
+export function createAppExperienceRoutes(service: AppExperienceService = appExperienceService,
+  options: { connectionRegistry?: AppConnectionRegistry } = {}) {
   const routes = new Hono();
   routes.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
@@ -81,7 +93,7 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
   routes.post('/:installationId/:experienceKey/sessions', async (c) => {
     try {
       return c.json(await service.create(await caller(c),
-        c.req.param('installationId'), c.req.param('experienceKey')));
+        c.req.param('installationId'), c.req.param('experienceKey'), c.req.raw.body ? await boundedJson(c.req.raw.body) : {}));
     } catch (error) { return failure(c, error); }
   });
   routes.get('/sessions/:sessionId/live', async (c) => {
@@ -90,12 +102,17 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
         c.req.param('sessionId')));
     } catch (error) { return failure(c, error); }
   });
+  routes.get('/:installationId/:experienceKey/targets', async c => {
+    try { return c.json(await service.targets(await caller(c), c.req.param('installationId'), c.req.param('experienceKey'))); }
+    catch (error) { return failure(c, error); }
+  });
   routes.get('/sessions/:sessionId/runs/:runId', async (c) => {
     try {
       if (new URL(c.req.url).search) throw new Error('APP_EXPERIENCE_BODY_INVALID');
       return c.json(await service.runStatus(await caller(c), c.req.param('sessionId'), c.req.param('runId'), c.req.raw.signal));
     } catch (error) { return failure(c, error); }
   });
+  routes.post('/sessions/:sessionId/runs/:runId/inspect',async c=>{try{if(new URL(c.req.url).search||!/^application\/json(?:\s*;|$)/iu.test(c.req.header('content-type')??''))throw new Error('APP_EXPERIENCE_BODY_INVALID');const body=await c.req.text();if(new TextEncoder().encode(body).length>64)throw new Error('APP_EXPERIENCE_BODY_INVALID');z.strictObject({}).parse(JSON.parse(body));return c.json(await service.inspectRun(await caller(c),c.req.param('sessionId'),c.req.param('runId'),c.req.raw.signal));}catch(error){return failure(c,error);}});
   routes.get('/sessions/:sessionId/runs/:runId/review-target', async c => {
     try {
       if (new URL(c.req.url).search) throw new Error('APP_EXPERIENCE_BODY_INVALID');
@@ -137,6 +154,24 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
     c.req.raw.signal.throwIfAborted();
     return boundedJson(c.req.raw.body);
   };
+  for (const operation of ['begin', 'callback', 'manage'] as const) {
+    routes.post(`/sessions/:sessionId/connections/${operation}`, async c => {
+      try {
+        const host = await caller(c), raw = await jsonBody(c);
+        const sessionId = z.string().uuid().parse(c.req.param('sessionId'));
+        // This lookup only nominates configuration; connectionSetup rederives
+        // the exact current session/source/action under authority locks.
+        const [session] = await db.select({ installation_id: appExperienceSessions.app_installation_id,
+          target_key: appExperienceSessions.resource_target_key }).from(appExperienceSessions).where(and(
+          eq(appExperienceSessions.org_id, host.org_id), eq(appExperienceSessions.user_id, host.user_id),
+          eq(appExperienceSessions.web_session_id, host.sid), eq(appExperienceSessions.id, sessionId))).limit(1);
+        if (!session) throw new AppError('Account connection access denied', 'APP_ACCESS_DENIED', 403);
+        const registry = options.connectionRegistry ?? await getAppConnectionRegistry();
+        return c.json(await new AppConnectionService(registry, await exposure()).invoke(host, sessionId, session,
+          operation, raw, c.req.header('origin'), c.req.raw.signal));
+      } catch (error) { return failure(c, error); }
+    });
+  }
   routes.post('/sessions/:sessionId/access/acquire', async c => {
     try { const host = await caller(c); z.strictObject({}).parse(await jsonBody(c));
       return c.json(await (await exposure()).acquire(host, c.req.param('sessionId'), c.req.raw.signal));
@@ -196,10 +231,59 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
         c.req.param('resourceKey'), await jsonBody(c), c.req.raw.signal));
     } catch (error) { return failure(c, error); }
   });
+  routes.post('/sessions/:sessionId/resources/:resourceKey/content', async c => {
+    try {
+      noQuery(c);
+      const consumer = new AppExperienceResourceContentService(await exposure(),
+        async () => options.connectionRegistry ?? await getAppConnectionRegistry());
+      const output = await consumer.read(await caller(c), c.req.param('sessionId'), c.req.param('resourceKey'), await jsonBody(c), c.req.raw.signal);
+      c.req.raw.signal.throwIfAborted(); c.header('Cache-Control', 'no-store');
+      if(output.kind==='document')return c.json({ exposure_id: output.exposure_id, exposure_epoch: output.exposure_epoch, output: output.document });
+      if(output.kind==='options')return c.json({exposure_id:output.exposure_id,exposure_epoch:output.exposure_epoch,output:output.options});
+      if(output.kind==='files')return c.json({exposure_id:output.exposure_id,exposure_epoch:output.exposure_epoch,expires_at:output.expires_at,files:output.files,...(output.omitted_file_count===undefined?{}:{omitted_file_count:output.omitted_file_count})});
+      if(output.kind==='presentation')return c.json({exposure_id:output.exposure_id,exposure_epoch:output.exposure_epoch,expires_at:output.expires_at,presentation:output.presentation});
+      const bytes=new Uint8Array(output.bytes);output.bytes.fill(0);
+      if(output.kind==='file'||output.kind==='image')return new Response(bytes,{headers:{'Content-Type':output.media_type,'Content-Length':String(bytes.byteLength),'Content-Disposition':`attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(output.filename)}`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Deft-Exposure-Id':output.exposure_id,'X-Deft-Exposure-Epoch':String(output.exposure_epoch)}});
+      return new Response(bytes,{headers:{'Content-Type':output.media_type,'Content-Length':String(bytes.byteLength),'Content-Disposition':`attachment; filename="${output.filename}"`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Deft-Exposure-Id':output.exposure_id,'X-Deft-Exposure-Epoch':String(output.exposure_epoch)}});
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post('/sessions/:sessionId/resources/:resourceKey/browse', async c => {
+    try {
+      const service = new AppExperienceProviderBrowseService((await getAppRunRuntime()).keys, await exposure(),
+        async () => options.connectionRegistry ?? await getAppConnectionRegistry(),undefined,undefined,undefined,undefined,getNativeEmailMailboxExperiencePage());
+      const output = await service.read(await caller(c), c.req.param('sessionId'), c.req.param('resourceKey'), await jsonBody(c), c.req.raw.signal);
+      c.req.raw.signal.throwIfAborted(); c.header('Cache-Control', 'no-store'); return c.json(output);
+    } catch (error) { return failure(c, error); }
+  });
   routes.post('/sessions/:sessionId/state/:stateKey', async c => {
     try {
       const consumer = new AppPrivateStateService((await getAppRunRuntime()).keys);
       return c.json(await consumer.request(await caller(c), c.req.param('sessionId'), c.req.param('stateKey'), await jsonBody(c), c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  const filesPath = '/sessions/:sessionId/state/:stateKey/:draftId/files';
+  routes.get(filesPath, async c => {
+    try {
+      noQuery(c); const host = await caller(c);
+      return c.json(await new AppPrivateFileService((await getAppRunRuntime()).keys).request(host,
+        c.req.param('sessionId'), c.req.param('stateKey'), c.req.param('draftId'), { kind: 'list' }, c.req.raw.signal));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.post(filesPath, async c => {
+    try {
+      const host = await caller(c), input = parsePrivateFileUpload(c.req.raw);
+      return await withPrivateFileUpload(`${host.org_id}:${host.user_id}`, c.req.raw, async bytes =>
+        c.json(await new AppPrivateFileService((await getAppRunRuntime()).keys).request(host,
+          c.req.param('sessionId'), c.req.param('stateKey'), c.req.param('draftId'),
+          { kind: 'upload', input, bytes }, c.req.raw.signal)));
+    } catch (error) { return failure(c, error); }
+  });
+  routes.delete(`${filesPath}/:fileId`, async c => {
+    try {
+      const host = await caller(c), input = await jsonBody(c);
+      return c.json(await new AppPrivateFileService((await getAppRunRuntime()).keys).request(host,
+        c.req.param('sessionId'), c.req.param('stateKey'), c.req.param('draftId'),
+        { kind: 'remove', fileId: c.req.param('fileId'), input }, c.req.raw.signal));
     } catch (error) { return failure(c, error); }
   });
   for (const operation of ['context', 'review', 'activate'] as const) {

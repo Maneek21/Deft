@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { X } from 'lucide-react';
+import { AppDialog } from './overlay-primitives';
 
 const SHORTCUT_GROUPS = [
   {
@@ -42,59 +43,21 @@ const SHORTCUT_GROUPS = [
   },
 ];
 
-export function KeyboardShortcuts({ open, onClose }: { open: boolean; onClose: () => void }) {
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+const EMAIL_SHORTCUTS = {
+  title: 'Email',
+  shortcuts: [
+    { keys: ['C'], description: 'Compose a new email' },
+    { keys: ['/'], description: 'Focus mail search' },
+    { keys: ['J', '/', 'K'], description: 'Focus next / previous message' },
+    { keys: ['Enter'], description: 'Open focused message' },
+    { keys: ['R'], description: 'Reply to the open message' },
+    { keys: ['Esc'], description: 'Close reader More menu' },
+  ],
+};
 
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      onClick={onClose}
-    >
-      {/* Backdrop */}
-      <div className="absolute inset-0" style={{ background: 'rgba(0, 0, 0, 0.5)' }} />
-
-      {/* Modal */}
-      <div
-        className="relative w-[calc(100vw-2rem)] max-w-[560px] max-h-[90vh] overflow-y-auto rounded-2xl p-6"
-        style={{
-          background: 'var(--surface-container-highest)',
-          boxShadow: 'var(--glass-shadow)',
-          border: '1px solid var(--outline-variant)',
-          borderRadius: 'var(--radius-xl)',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between mb-5">
-          <h2
-            className="text-[16px] font-semibold"
-            style={{ color: 'var(--on-surface)' }}
-          >
-            Keyboard Shortcuts
-          </h2>
-          <button
-            onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-md"
-            style={{ color: 'var(--on-surface-variant)' }}
-          >
-            <X size={16} strokeWidth={1.5} />
-          </button>
-        </div>
-
-        {/* Shortcut groups — two-column grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {SHORTCUT_GROUPS.map((group) => (
+export function KeyboardShortcutList({ email = false }: { email?: boolean }) {
+  return <><div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          {(email ? [...SHORTCUT_GROUPS, EMAIL_SHORTCUTS] : SHORTCUT_GROUPS).map((group) => (
             <div key={group.title}>
               <h3
                 className="text-[11px] font-semibold uppercase tracking-wider mb-3"
@@ -132,8 +95,13 @@ export function KeyboardShortcuts({ open, onClose }: { open: boolean; onClose: (
               </div>
             </div>
           ))}
-        </div>
-      </div>
-    </div>
-  );
+        </div>{email && <p className="mt-5 text-xs leading-5 text-[var(--muted)]">Email shortcuts pause while typing or using a dialog. Use Tab and Shift+Tab to move through controls, then Enter or Space to activate them.</p>}</>;
+}
+
+export function KeyboardShortcuts({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const pathname = usePathname();
+  return <AppDialog open={open} onClose={onClose} title="Keyboard Shortcuts" width={560}
+    headerActions={<button type="button" aria-label="Close keyboard shortcuts" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[var(--hover-tint)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"><X size={16} strokeWidth={1.5}/></button>}>
+    <KeyboardShortcutList email={pathname === '/email'}/>
+  </AppDialog>;
 }

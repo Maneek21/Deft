@@ -30,6 +30,8 @@ import { ReceiptViewer } from './receipt-viewer';
 import { AppRunInspector } from './apps/app-run-inspector';
 import { RuntimeAppInputReview, type RuntimeReviewIdentity } from './runtime-app-input-review';
 import { NativeAppInputReview, type NativeReviewIdentity } from './native-app-input-review';
+import { NativeEmailSendReview, type EmailSendReviewIdentity } from './email/native-email-send-review';
+import { getActiveSessionCacheScope } from '@/lib/session-cache';
 import { useAuth } from '@/lib/auth-context';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
@@ -79,6 +81,7 @@ const ACTION_LABELS: Record<string, string> = {
   update_task_status: 'Update status',
   assign_task: 'Assign task',
   post_message: 'Post message',
+  email_send: 'Send email',
 };
 
 const CAPTURE_LABELS: Record<string, string> = {
@@ -504,6 +507,11 @@ export function AgentActionCard({
   const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const { user, org, sessionCacheScope } = useAuth();
+  const [emailReviewed,setEmailReviewed] = useState<EmailSendReviewIdentity|null>(null);
+  const needsEmailReview=action.action==='email_send';
+  const emailTarget={actionId:action.id,accountId:String(action.params.account_id??''),draftId:String(action.params.draft_id??''),draftRevision:Number(action.params.draft_revision),contentDigest:String(action.params.content_digest??'')};
+  const emailReviewReady=needsEmailReview&&emailReviewed?.actionId===action.id&&emailReviewed.accountId===emailTarget.accountId&&emailReviewed.draftId===emailTarget.draftId&&emailReviewed.draftRevision===emailTarget.draftRevision&&emailReviewed.contentDigest===emailTarget.contentDigest&&emailReviewed.scope===sessionCacheScope&&Date.now()<emailReviewed.expiresAt;
+  const onEmailReviewed=useCallback((identity:EmailSendReviewIdentity|null)=>setEmailReviewed(identity),[action.id]);
   const [nativeReviewed, setNativeReviewed] = useState<(NativeReviewIdentity & { actionId: string }) | null>(null);
   const [runtimeReviewed, setRuntimeReviewed] = useState<(RuntimeReviewIdentity & { actionId: string }) | null>(null);
   // Only the supported App-origin email contract has this message presenter.
@@ -684,6 +692,7 @@ export function AgentActionCard({
 
   const nativeReviewPanel = needsNativeReview ? <NativeAppInputReview runId={runtimeRunId} bindingId={nativeBindingId}
     operation={nativeOperation} ownerId={user?.id ?? null} scope={nativeScope} busy={isBusy} onReviewed={onNativeReviewed} /> : null;
+  const emailReviewPanel=needsEmailReview?<NativeEmailSendReview target={emailTarget} scope={sessionCacheScope} busy={isBusy} onReviewed={onEmailReviewed}/>:null;
 
   const appRunInspectorButton = isAppRunAction && appRunReference ? (
     <button
@@ -704,6 +713,7 @@ export function AgentActionCard({
   ) : null;
 
   async function handleApprove() {
+    if(needsEmailReview&&(!emailReviewReady||!emailReviewed||Date.now()>=emailReviewed.expiresAt||emailReviewed.scope!==getActiveSessionCacheScope()||document.visibilityState!=='visible'))return;
     if (isBusy || (needsMessageReview && !reviewedMessage)
       || (needsTaskLinkReview && !reviewedTaskLink)
       || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && (!nativeReviewReady
@@ -1062,12 +1072,12 @@ export function AgentActionCard({
           )}
         </div>
 
-        {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}
+        {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}{emailReviewPanel}
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleApprove}
-            disabled={isBusy || (needsMessageReview && !reviewedMessage)
+            disabled={isBusy || (needsEmailReview && !emailReviewReady) || (needsMessageReview && !reviewedMessage)
               || (needsTaskLinkReview && !reviewedTaskLink)
               || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
             className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm disabled:opacity-60"
@@ -1319,11 +1329,11 @@ export function AgentActionCard({
         )}
       </div>
 
-      {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}
+      {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}{emailReviewPanel}
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
         <button
           onClick={handleApprove}
-          disabled={isBusy || (needsMessageReview && !reviewedMessage)
+          disabled={isBusy || (needsEmailReview && !emailReviewReady) || (needsMessageReview && !reviewedMessage)
             || (needsTaskLinkReview && !reviewedTaskLink)
             || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"

@@ -1,0 +1,12 @@
+MIME-Version: 1.0
+From: Synthetic Reviewer <reviewer@example.test>
+To: Synthetic Personal <personal@example.test>
+Cc: Synthetic Collaborator <collaborator@example.test>
+Subject: Re: Synthetic launch review
+Date: Tue, 29 Sep 2026 09:30:00 +0000
+Message-ID: <stage0-review-003@example.test>
+In-Reply-To: <stage0-review-002@example.test>
+References: <stage0-review-001@example.test> <stage0-review-002@example.test>
+Content-Type: text/plain; charset=utf-8
+
+Synthetic acknowledgement. The Inbox and Sent messages belong to one conversation.

@@ -1,5 +1,6 @@
 // In-memory store — fine for single-instance self-host. If we ever ship
 // multi-instance, swap to the hono-rate-limiter Redis store.
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { rateLimiter } from 'hono-rate-limiter';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
@@ -16,6 +17,10 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 const AUTH_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AUTH_RATE_LIMIT_PER_MINUTE',
   isProduction ? 10 : 120,
+);
+const APP_RUNTIME_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_APP_RUNTIME_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 90 : 600,
 );
 const LOGIN_IP_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_LOGIN_IP_RATE_LIMIT_PER_MINUTE',
@@ -113,6 +118,20 @@ export const authLimiter = withAuditBypass(rateLimiter({
     error: 'Too many requests. Try again in a minute.',
     code: 'RATE_LIMITED',
   }, 429),
+}));
+
+// A normal Runtime action performs repeated fenced payload reads before its
+// durable result. Give it a separate peer budget; never key unauthenticated
+// traffic by nominated session IDs, credentials, or forwarding headers.
+export const appRuntimeLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: APP_RUNTIME_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: (c) => {
+    try { return getConnInfo(c).remote.address ?? 'unknown'; }
+    catch { return 'unknown'; }
+  },
+  handler: (c) => c.json({ error: 'Too many requests. Try again in a minute.', code: 'RATE_LIMITED' }, 429),
 }));
 
 // A whole office can reauthenticate after a restart from one NAT IP. Keep a

@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {createAppConnectionAdapter} from './native-imap-connection.mjs';
+import {createNativeImapBridge} from './native-imap.mjs';
+import {LogicalMailIndex} from '../logical-mail-index.mjs';
+import {providerSourceForParent} from './provider-browser.mjs';
+const message=(uid,{subject='café exact phrase',from='alice@example.test',flags=[],size=1024,body='exact phrase résumé',id=`<message-${uid}@example.test>`,references=[],reply=''}={})=>({uid,flags:new Set(flags),size,internalDate:new Date('2026-10-04T10:00:00Z'),body,envelope:{subject,from:[{address:from}],to:[{address:'owner@example.test'}],cc:[{address:'copy@example.test'}],messageId:id,inReplyTo:reply},headers:Buffer.from(`Message-ID: ${id}\r\n${references.length?'References: '+references.join(' ')+'\r\n':''}${reply?'In-Reply-To: '+reply+'\r\n':''}\r\n`)});
+function matches(query,row){
+ return Object.entries(query).every(([field,value])=>{
+  if(field==='all')return value===true;
+  if(field==='uid'){const [lo,hi]=value.split(':').map(Number);return row.uid>=lo&&row.uid<=hi;}
+  if(field==='not')return !matches(value,row);if(field==='or')return value.some(child=>matches(child,row));
+  if(field==='header')return Object.entries(value).every(([name,needle])=>{const line=row.headers.toString().split('\r\n').find(line=>line.toLowerCase().startsWith(name.toLowerCase()+':'));return line?.includes(needle);});
+  if(field==='seen')return row.flags.has('\\Seen')===value;if(field==='flagged')return row.flags.has('\\Flagged')===value;
+  if(field==='larger')return row.size>value;if(field==='smaller')return row.size<value;
+  const content=field==='text'?row.headers.toString()+' '+row.body+' '+row.envelope.subject:field==='subject'?row.envelope.subject:row.envelope[field]?.map(mailbox=>mailbox.address).join(' ')??'';return content.toLowerCase().includes(String(value).toLowerCase());
+ });
+}
+export async function fixture(){
+ const boxes=new Map([['INBOX',{validity:'7',next:20002,rows:[message(1),message(5,{from:'excluded@example.test'}),message(20001,{flags:['\\Seen','\\Flagged']})]}],['Localized Sent',{validity:'8',next:3,specialUse:'\\Sent',rows:[message(1,{id:'<parent@example.test>',subject:'Different subject'}),message(2,{reply:'<message-1@example.test>',subject:'Completely different subject'})]}],['Projects',{validity:'9',next:3,rows:[message(1,{id:'<unrelated@example.test>',subject:'café exact phrase'}),message(2,{references:['<parent@example.test>','<message-1@example.test>'],subject:'Another subject'})]}]]);
+ const account={org_id:'query-org',owner_user_id:'query-owner',installation_id:'query-install',account_id:'query-account',provider:'imap_smtp',resource_binding_id:'query-binding',authority_epoch:1,connection_revision:1,principal_digest:'a'.repeat(64),health:'connected',capabilities:['read'],primary_address:'owner@example.test',display_label:'Configured IMAP',connection_target:'query-target',action_binding_id:null,verified_sender_identities:[]};
+ const calls={connections:0,cleanup:0,search:[],fetch:[],locks:[],released:0,list:0},context={org_id:account.org_id,owner_user_id:account.owner_user_id,installation_id:account.installation_id,account_id:account.account_id,resource_binding_id:account.resource_binding_id,authority_version:'fresh-v1',expires_at:Date.now()+60000,recheck:async()=>{}};let afterSearch,afterFetch,live=true,fetching=false,omit=false;
+ const client={secureConnection:true,authenticated:'trusted',capabilities:new Set(),enabled:new Set(),mailbox:null,close(){},async list(){calls.list++;return [...boxes].map(([path,box])=>({path,specialUse:box.specialUse,flags:new Set()}));},async getMailboxLock(path,options){assert.deepEqual(options,{readOnly:true});assert.equal(fetching,false);calls.locks.push(path);const box=boxes.get(path);this.mailbox={path,uidValidity:BigInt(box.validity),uidNext:box.next,readOnly:true};return {release(){calls.released++;}};},async search(query,options){assert.equal(fetching,false);assert.deepEqual(options,{uid:true});assert.match(query.uid,/^\d+:\d+$/u);const [lo,hi]=query.uid.split(':').map(Number);assert.ok(hi-lo<4096);calls.search.push({path:this.mailbox.path,query:structuredClone(query)});
+  const result=boxes.get(this.mailbox.path).rows.filter(row=>matches(query,row)).map(row=>row.uid);await afterSearch?.();return result;},async *fetch(ids,query,options){assert.equal(fetching,false);assert.deepEqual(options,{uid:true});assert.equal(Object.hasOwn(query,'source'),false);const selected=ids.split(',').map(Number);calls.fetch.push({path:this.mailbox.path,ids:selected,query});assert.ok(selected.length<=100);fetching=true;
+  try{for(const row of boxes.get(this.mailbox.path).rows.filter(row=>selected.includes(row.uid))){if(omit){omit=false;continue;}yield {...structuredClone(row),headers:query.headers?Buffer.from(row.headers):undefined};}}finally{fetching=false;await afterFetch?.();}
+ }};
+ const host={async current(){if(!live)throw Error('REVOKED');return structuredClone(account);},async withAuthorizedClient(_context,expected,work){assert.equal(Object.hasOwn(expected,'org_id'),false);assert.equal(Object.hasOwn(expected,'verified_sender_identities'),false);assert.equal(expected.principal_digest,account.principal_digest);calls.connections++;try{return await work(client);}finally{calls.cleanup++;}},async withAuthorizedSmtp(){assert.fail('Read never uses SMTP');}};
+ const adapter=await createAppConnectionAdapter({host:{nativeEmailImapHost:async()=>host}}),scope={org_id:account.org_id,owner_id:account.owner_user_id,installation_id:account.installation_id};
+ const anchorRow=boxes.get('INBOX').rows[0],parent=new LogicalMailIndex(scope).upsert(scope,{account_id:account.account_id,provider:'imap_smtp',locator:{kind:'imap_smtp',mailbox:'INBOX',uidvalidity:'7',uid:1}}),source=providerSourceForParent(account,parent);
+ return {adapter,host,context,account,scope,boxes,calls,client,source,anchorRow,get afterSearch(){return afterSearch;},set afterSearch(value){afterSearch=value;},set afterFetch(value){afterFetch=value;},deny(){live=false;},omit(){omit=true;},restart(){return createNativeImapBridge({host});}};
+}

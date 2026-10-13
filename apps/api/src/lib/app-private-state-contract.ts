@@ -4,14 +4,18 @@ import { parseRuntimeObjectInput } from '@deft/app-kit';
 import { AppError } from './app-errors.js';
 
 const identity = z.string().uuid();
+export const PrivateStateSourceReferenceSchema = z.strictObject({ field: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/),
+  action_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/), input_field: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/), record_id: identity });
+export type PrivateStateSourceReference = z.infer<typeof PrivateStateSourceReferenceSchema>;
 const revision = z.number().int().min(0).max(2147483646);
 export const PrivateStateRequestSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('list') }),
   z.strictObject({ operation: z.literal('read'), record_id: identity }),
-  z.strictObject({ operation: z.literal('put'), record_id: identity, expected_revision: revision, value: z.unknown() }),
+  z.strictObject({ operation: z.literal('put'), record_id: identity, expected_revision: revision, value: z.unknown(), source_refs: z.array(PrivateStateSourceReferenceSchema).min(1).max(4).refine(refs => new Set(refs.map(ref => ref.field)).size === refs.length).optional() }),
   z.strictObject({ operation: z.literal('delete'), record_id: identity, expected_revision: revision }),
 ]);
 export const PrivateStateContextSchema = z.strictObject({ org_id: identity, owner_user_id: identity,
+  resource_target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).optional(),
   installation_id: identity, artifact_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   declaration_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), state_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/),
   record_id: identity, revision: z.number().int().positive().max(2147483647) });
