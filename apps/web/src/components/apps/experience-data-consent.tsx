@@ -16,7 +16,7 @@ export function ExperienceDataConsent({installationId,targetKey,storeKeys,scopeK
   if(!current(request)||value.installation_id!==installationId)return;const selected=value.targets.filter(target=>target.target_key===targetKey);
   setTargets(selected);return value;
  }
- useEffect(()=>{const request=++generation.current,abort=new AbortController();lifetime.current=abort;setTargets([]);setReview(null);setBlocked(false);
+ useEffect(()=>{const request=++generation.current,abort=new AbortController();lifetime.current=abort;setTargets([]);setReview(null);setBusy(false);setNotice('');setBlocked(false);
   void load(request).catch(()=>{if(current(request))setNotice('Connect an account to use private records.');});return()=>{abort.abort();generation.current++;};},[installationId,targetKey,scopeKey]);
  async function begin(target:Target,storeKey:string){if(busy)return;const request=generation.current;setBusy(true);setNotice('');setBlocked(false);
   try{const expires_at=new Date(Date.now()+24*60*60*1000).toISOString();const response=await api.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/consent/review`,{
@@ -38,7 +38,7 @@ export function ExperienceDataConsent({installationId,targetKey,storeKeys,scopeK
  const visibleNotice=showEnabled||notice!=='Private record access enabled.'?notice:'';
  if(!review&&!visibleNotice&&!visibleTargets.some(row=>showEnabled||!row.active))return null;
  if(!showEnabled&&onOpenSettings&&!review)return <section aria-label="Private record access" className="flex shrink-0 flex-wrap items-center gap-2 px-5 py-2 text-xs text-[var(--foreground-secondary)]">
-  <p role="status">{visibleNotice||'Review private access to save your changes.'}</p>
+  <p role="status">{visibleNotice||'Some features need access.'}</p>
   <button type="button" className="deft-pill" disabled={busy} onClick={onOpenSettings}>Review access</button>
  </section>;
  return <section aria-label="Private record access" className="mb-3 rounded-xl bg-[var(--surface-container-low)] px-3 py-2 text-xs">

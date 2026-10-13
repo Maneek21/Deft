@@ -850,7 +850,7 @@ export function Sidebar({
   const standaloneModuleNavItems = getVisibleModuleNavigationItems(moduleNavItems, appNavigation.navigation, appNavigationAuthoritative);
   const visibleNavItems: PrimaryNavigationItem[] = [
     ...navItems.slice(0, -1),
-    ...(showNativeEmailNavigation(appNavItems, nativeEmailAvailability) ? [{kind:'core' as const,name:'Email',href:'/email',icon:Mail}] : []),
+    ...(showNativeEmailNavigation(appNavItems, nativeEmailAvailability) ? [{kind:'core' as const,name:'Built-in Email',href:'/email',icon:Mail}] : []),
     ...appNavItems,
     ...standaloneModuleNavItems,
     navItems[navItems.length - 1],
