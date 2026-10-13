@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { stripNativeMentionAtoms, NativeMentionLimitError } from '@deft/shared';
+import { enqueueNativeMentionPublication } from '../lib/native-mentions.js';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -181,6 +183,7 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
  */
 async function resolveMentions(content: string | null | undefined, orgId: string, authorId: string): Promise<string[]> {
   if (!content) return [];
+  content = stripNativeMentionAtoms(content);
   // Strip HTML tags so `@name` mentions inside TipTap paragraph markup still
   // match the raw regex. TipTap wraps content in <p> / <span> / etc.
   const plain = toPlainText(content);
@@ -1397,12 +1400,14 @@ taskRoutes.post('/:id/comments', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const [comment] = await db.insert(taskComments).values({
-      org_id: user.org_id,
-      task_id: taskId,
-      user_id: user.id,
-      content: parsed.data.content,
-    }).returning();
+    const comment = await db.transaction(async tx => {
+      const [inserted] = await tx.insert(taskComments).values({
+        org_id: user.org_id, task_id: taskId, user_id: user.id, content: parsed.data.content,
+      }).returning();
+      await enqueueNativeMentionPublication(tx, { orgId: user.org_id, userId: user.id },
+        { kind: 'task_comment', id: inserted!.id }, parsed.data.content);
+      return inserted;
+    });
 
     // Create activity log entry
     await db.insert(taskActivity).values({
@@ -1482,6 +1487,7 @@ taskRoutes.post('/:id/comments', async (c) => {
       user_avatar: userData?.avatar_url ?? null,
     }, 201);
   } catch (err) {
+    if (err instanceof NativeMentionLimitError) return c.json({ error: err.message, code: 'NATIVE_MENTION_LIMIT' }, 400);
     console.error('Failed to create task comment:', err);
     return c.json({ error: 'Failed to create comment', code: 'INTERNAL_ERROR' }, 500);
   }

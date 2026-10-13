@@ -1,3 +1,6 @@
+import { NATIVE_MENTION_AGENT_GUIDANCE } from './native-mention-agent-contract.js';
+import { nativeMentionsEnabled } from './native-mentions.js';
+import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
 // Reusable agent reasoning engine — used by @agent mentions in chat and other background jobs.
 // Supports two modes:
 //   'chat_mention' (default): write actions are skipped (safety for @mentions)
@@ -367,6 +370,7 @@ export async function runAgentQuery(params: {
   }
 
   systemPrompt = ensureImmutablePlatformPolicy(systemPrompt);
+  if (nativeMentionsEnabled()) systemPrompt += '\n\n' + NATIVE_MENTION_AGENT_GUIDANCE;
   systemPrompt += '\nTool responses include result and sources. Use the exact local URLs in sources as Markdown links; never invent a host. A failed tool call is not evidence that records are absent. Inspect the module schema, use module_record_incoming for incoming relations and module_record_latest_related for declared latest summaries. Use the read-only module_record_task_links tool for linked task states.';
   if (readOnlyRequest) systemPrompt += '\nThis request is read-only. Do not propose or execute writes.';
 
@@ -675,6 +679,11 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
+        const referenceError = await validateNativeAgentMentionWrite(tool.name, tool.input as Record<string, unknown>, orgId, userId, params.agentEmployeeId);
+        if (referenceError) {
+          toolResults.push({ type: 'tool_result', tool_use_id: tool.id, is_error: true, content: JSON.stringify({ error: referenceError }) });
+          continue;
+        }
         const approvalTier = getApprovalTier(tool.name, actionApprovalTiers.get(tool.name));
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input, approvalTier)) {
           // Background mode: auto-execute if trust level permits
