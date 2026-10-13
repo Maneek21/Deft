@@ -187,6 +187,27 @@ jobs:
           pnpm --filter @deft/app-kit build 2>&1 | tee .ci-api-diagnostics/kit-build.log
           pnpm db:push-full 2>&1 | tee .ci-api-diagnostics/fresh-schema.log
           pnpm db:seed:demo 2>&1 | tee .ci-api-diagnostics/seed-demo.log
+      - name: Preserve disposable catalog after schema success or refusal
+        if: always() && steps.api_install.outcome == 'success'
+        run: |
+          pnpm --filter @deft/db exec node --input-type=module <<'NODE'
+          import pg from 'pg';
+          import {writeFileSync} from 'node:fs';
+          import {readCatalog} from './scripts/lineage-catalog.mjs';
+          const client=new pg.Client({connectionString:process.env.DATABASE_URL});
+          await client.connect();
+          try{
+            await client.query('BEGIN');
+            const present=(await client.query("SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS present")).rows[0].present;
+            if(!present)await client.query(`CREATE TABLE deft_schema_migrations (
+              version text PRIMARY KEY, description text NOT NULL, checksum text NOT NULL,
+              kind text NOT NULL CHECK (kind IN ('baseline', 'migration')),
+              applied_at timestamptz NOT NULL DEFAULT now())`);
+            const value={...(await readCatalog(client)),temporary_ledger_shell:!present};
+            writeFileSync(process.env.GITHUB_WORKSPACE+'/.ci-api-diagnostics/catalog-after-schema.json',JSON.stringify(value,null,2)+'\n');
+            console.log('Disposable structural catalog:',value.digest);
+          }finally{await client.query('ROLLBACK');await client.end();}
+          NODE
       - name: Full API regression suite
         id: api_suite
         run: |
