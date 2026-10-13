@@ -59,21 +59,28 @@ async function transcribeLocal(audioPath: string): Promise<TranscriptionResult> 
   };
 }
 
-// ─── OpenAI Whisper API ───
+// ─── OpenAI Whisper API (or any OpenAI-compatible transcription endpoint) ───
+const OPENAI_TRANSCRIPTION_BASE_URL = 'https://api.openai.com/v1';
+
 async function transcribeOpenAI(audioPath: string): Promise<TranscriptionResult> {
-  const apiKey = env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not set for transcription');
+  const baseUrl = (env.TRANSCRIPTION_OPENAI_BASE_URL || OPENAI_TRANSCRIPTION_BASE_URL).replace(/\/+$/, '');
+  const model = env.TRANSCRIPTION_OPENAI_MODEL || 'whisper-1';
+  const apiKey = env.TRANSCRIPTION_OPENAI_API_KEY || env.OPENAI_API_KEY;
+  // OpenAI itself always needs a key; a self-hosted compatible endpoint may not.
+  if (!apiKey && baseUrl === OPENAI_TRANSCRIPTION_BASE_URL) {
+    throw new Error('OPENAI_API_KEY not set for transcription');
+  }
 
   const fileBuffer = await readFile(audioPath);
   const formData = new FormData();
   formData.append('file', new Blob([fileBuffer]), 'audio.webm');
-  formData.append('model', 'whisper-1');
+  formData.append('model', model);
   formData.append('response_format', 'verbose_json');
   formData.append('timestamp_granularities[]', 'segment');
 
-  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+  const res = await fetch(`${baseUrl}/audio/transcriptions`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     body: formData,
   });
 
@@ -97,7 +104,7 @@ async function transcribeOpenAI(audioPath: string): Promise<TranscriptionResult>
       text: s.text.trim(),
     })),
     language: data.language,
-    model: 'whisper-1',
+    model,
     duration_s: data.duration || 0,
   };
 }

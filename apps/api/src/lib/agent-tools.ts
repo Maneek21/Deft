@@ -1,3 +1,4 @@
+import { NATIVE_MENTION_AGENT_TOOL_SCHEMAS, NATIVE_MENTION_CONTENT_GUIDANCE } from './native-mention-agent-contract.js';
 import { MODULE_OPERATION_DESCRIPTIONS } from './module-tool-descriptions.js';
 import { RUNTIME_WORKFLOW_TOOL_SCHEMAS } from './app-runtime-workflow-tools.js';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -62,6 +63,9 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     input_schema: tool.inputSchema as Anthropic.Tool['input_schema'] })),
   {name:'app_runtime_action_request',description:'Request one declared Runtime action for a binding supplied in authorized context. The assigned owner must approve exact input before any external effect. Owner policy can deny requests; installation grants no autonomy. Never invent a binding or actor.',
     input_schema:{type:'object',additionalProperties:false,properties:{runtime_binding_id:{type:'string',format:'uuid'},idempotency_key:{type:'string',minLength:1,maxLength:80},input:{type:'object',additionalProperties:{anyOf:[{type:'string',maxLength:16384},{type:'number'},{type:'boolean'}]}}},required:['runtime_binding_id','idempotency_key','input']}},
+  ...NATIVE_MENTION_AGENT_TOOL_SCHEMAS.map(tool => ({
+    name: tool.name, description: tool.description, input_schema: tool.inputSchema as Anthropic.Tool['input_schema'],
+  })),
   {
     name: 'search_messages',
     description:
@@ -141,7 +145,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
         },
         assignee_name: { type: 'string', description: 'Assignee name' },
         due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format' },
-        description: { type: 'string', description: 'Task description' },
+        description: { type: 'string', description: 'Task description. ' + NATIVE_MENTION_CONTENT_GUIDANCE },
         subtasks: {
           type: 'array',
           description:
@@ -150,7 +154,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
             type: 'object',
             properties: {
               title: { type: 'string', description: 'Subtask title' },
-              description: { type: 'string', description: 'Optional subtask description' },
+              description: { type: 'string', description: 'Optional subtask description. ' + NATIVE_MENTION_CONTENT_GUIDANCE },
               assignee_name: { type: 'string', description: 'Optional subtask assignee name' },
               due_date: { type: 'string', description: 'Optional due date in YYYY-MM-DD format' },
               priority: {
@@ -244,7 +248,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       type: 'object' as const,
       properties: {
         task_identifier: { type: 'string', description: 'Task ID like DEFT-5 or the task UUID' },
-        content: { type: 'string', description: 'Comment body (markdown)' },
+        content: { type: 'string', description: 'Comment body (markdown). ' + NATIVE_MENTION_CONTENT_GUIDANCE },
       },
       required: ['task_identifier', 'content'],
     },
@@ -377,7 +381,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
           type: 'string',
           description: 'Name of the space (e.g., "general", "engineering")',
         },
-        content: { type: 'string', description: 'Message content' },
+        content: { type: 'string', description: 'Message content. ' + NATIVE_MENTION_CONTENT_GUIDANCE },
       },
       required: ['space_name', 'content'],
     },
@@ -648,7 +652,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       properties: {
         slug: { type: 'string', description: 'Optional: slug of existing page to update. Omit to create new.' },
         title: { type: 'string', description: 'Page title (required for new pages)' },
-        content: { type: 'string', description: 'Page content in markdown' },
+        content: { type: 'string', description: 'Page content in markdown. ' + NATIVE_MENTION_CONTENT_GUIDANCE },
         type: { type: 'string', enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'], description: 'Page type (required for new pages)' },
         summary: { type: 'string', description: 'One-sentence summary' },
         related_slugs: {

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { notifications } from '@deft/db/schema';
+import { nativeNotificationAccessSql } from '../lib/native-mention-visibility.js';
 
 export const notificationRoutes = new Hono();
 
@@ -16,6 +17,7 @@ notificationRoutes.get('/', async (c) => {
         and(
           eq(notifications.user_id, user.id),
           eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
         )
       )
       .orderBy(desc(notifications.created_at))
@@ -29,6 +31,7 @@ notificationRoutes.get('/', async (c) => {
         and(
           eq(notifications.user_id, user.id),
           eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
           eq(notifications.is_read, false),
         )
       );
@@ -55,6 +58,8 @@ notificationRoutes.patch('/:id/read', async (c) => {
         and(
           eq(notifications.id, notificationId),
           eq(notifications.user_id, user.id),
+          eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
         )
       )
       .limit(1);
@@ -86,6 +91,7 @@ notificationRoutes.post('/read-all', async (c) => {
         and(
           eq(notifications.user_id, user.id),
           eq(notifications.org_id, user.org_id),
+          nativeNotificationAccessSql(user.id, sql`${notifications.metadata}`, sql`${notifications.org_id}`),
           eq(notifications.is_read, false),
         )
       );

@@ -95,11 +95,13 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/native-mention-agent-catalog.test.ts test/app-attachment-default-off.test.ts test/app-runtime-action-discovery.test.ts 2>&1 | tee .ci-diagnostics/host-cold-native.log
           node --test apps/api/test/app-owner-context-history.test.mjs 2>&1 | tee .ci-diagnostics/owner-context-history.log
           node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           node --test packages/db/scripts/reviewed-lineage-artifacts.test.mjs 2>&1 | tee .ci-diagnostics/reviewed-lineage-artifacts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
           pnpm --filter @deft/web exec tsx --test src/lib/email-native-navigation.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/native-email-navigation.log
+          pnpm --filter @deft/web exec tsx --test src/lib/app-experience-source-image-queue.test.ts src/lib/app-experience-source-presentation.test.ts src/lib/app-experience-source-policy.test.ts src/lib/app-experience-source-view.test.ts 2>&1 | tee .ci-diagnostics/source-image-queue.log
           node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log
       - name: Compile production Web
         id: build
@@ -146,15 +148,25 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: deft_preview_test
+          POSTGRES_DB: deft_test
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      mailbox-predecessor:
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: gate_g_test
+          POSTGRES_DB: email_stage34_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --publish 127.0.0.1:55435:5432
+          --health-cmd "pg_isready -U gate_g_test -d email_stage34_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      NODE_OPTIONS: --max-old-space-size=4096
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_preview_test
-      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_preview_test
+      NODE_OPTIONS: --max-old-space-size=4096 --experimental-test-module-mocks
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
+      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
       JWT_SECRET: ci-test-secret-not-for-prod
       JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
       ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
@@ -182,6 +194,12 @@ jobs:
         run: |
           set -o pipefail
           pnpm install --frozen-lockfile 2>&1 | tee .ci-api-diagnostics/install.log
+      - name: Install locked standalone legacy Email test dependencies
+        id: api_legacy
+        working-directory: examples/apps/email
+        run: |
+          set -o pipefail
+          npm exec --yes --package=pnpm@10.33.1 -- pnpm install --ignore-workspace --frozen-lockfile 2>&1 | tee "$GITHUB_WORKSPACE/.ci-api-diagnostics/legacy-email-install.log"
       - name: Initialize disposable reviewed schema and fixtures
         id: api_schema
         run: |
@@ -214,18 +232,19 @@ jobs:
         id: api_suite
         run: |
           set -o pipefail
-          pnpm --filter @deft/api test 2>&1 | tee .ci-api-diagnostics/api-suite.log
+          pnpm exec node scripts/email-preview-api-tests.mjs 2>&1 | tee .ci-api-diagnostics/api-suite.log
       - name: Preserve actual API gate outcomes
         if: always()
         env:
           INSTALL: ${{ steps.api_install.outcome }}
+          LEGACY: ${{ steps.api_legacy.outcome }}
           SCHEMA: ${{ steps.api_schema.outcome }}
           API: ${{ steps.api_suite.outcome }}
         run: |
           mkdir -p .ci-api-diagnostics
           node --input-type=module <<'NODE'
           import {writeFileSync} from 'node:fs';
-          const gates=Object.fromEntries(['INSTALL','SCHEMA','API'].map(key=>[key,process.env[key]]));
+          const gates=Object.fromEntries(['INSTALL','LEGACY','SCHEMA','API'].map(key=>[key,process.env[key]]));
           writeFileSync('.ci-api-diagnostics/gates.json',JSON.stringify(gates,null,2)+'\n');
           console.log(gates);
           if(Object.values(gates).some(value=>value!=='success'))process.exitCode=1;

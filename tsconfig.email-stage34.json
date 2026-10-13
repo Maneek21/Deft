@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@deft/db/schema": ["./packages/db/src/schema.ts"],
+      "@deft/db": ["./packages/db/src/index.ts"]
+    }
+  }
+}

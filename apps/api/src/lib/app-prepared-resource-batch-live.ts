@@ -1,7 +1,6 @@
 import {sql} from 'drizzle-orm';
 import {samplePrivateAccessClock} from './app-private-access-clock.js';
 import type {AppRunSafeView,AppRunTransaction} from './app-run-repository.js';
-import {getAppRunRuntime} from './app-run-runtime.js';
 import {knownPreparedResourceBatchReceipt} from './app-prepared-resource-batch-receipt.js';
 /** Approval may atomically queue the complete exact group. Queue membership is
  * not claim/effect authority: those phases require every predecessor receipt. */
@@ -24,6 +23,6 @@ export async function preparedResourceBatchReleaseIsCurrent(tx:AppRunTransaction
  FROM app_action_batch_items i JOIN app_runs r ON r.org_id=i.org_id AND r.id=i.run_id LEFT JOIN LATERAL (SELECT * FROM app_run_attempts a WHERE a.org_id=r.org_id AND a.run_id=r.id ORDER BY a.attempt_number DESC LIMIT 1) a ON true
  WHERE i.org_id=${run.org_id} AND i.batch_id=${membership.batch_id} AND i.ordinal<${membership.ordinal} ORDER BY i.ordinal FOR SHARE OF r`);
  if(previous.rows.length!==membership.ordinal)return false;
- const runtime=await getAppRunRuntime();for(const child of previous.rows as {run_id:string;state:string;source_refs:unknown;attempt_id:string;attempt_state:string;safe_outcome:Record<string,unknown>|null;runtime_result_hmac:string|null;provider_call_finished_at:Date|null}[]){if(!['succeeded','failed'].includes(child.state)||child.attempt_state!==child.state||!child.attempt_id||!child.runtime_result_hmac||!child.provider_call_finished_at||child.safe_outcome?.result_status!=='retained')return false;const retained=await runtime.secretRepository.readRetainedOutput(run.org_id,child.run_id,child.attempt_id,clock.current,tx);if(!retained||retained.expires_at<=now)return false;const value=retained.value as {schema_version?:unknown;output?:unknown};if(value?.schema_version!=='deft.app_run_provider_result.v1'||!knownPreparedResourceBatchReceipt(value.output,child.run_id,membership.operation_key,child.source_refs))return false;}
+ const {getAppRunRuntime}=await import('./app-run-runtime.js');const runtime=await getAppRunRuntime();for(const child of previous.rows as {run_id:string;state:string;source_refs:unknown;attempt_id:string;attempt_state:string;safe_outcome:Record<string,unknown>|null;runtime_result_hmac:string|null;provider_call_finished_at:Date|null}[]){if(!['succeeded','failed'].includes(child.state)||child.attempt_state!==child.state||!child.attempt_id||!child.runtime_result_hmac||!child.provider_call_finished_at||child.safe_outcome?.result_status!=='retained')return false;const retained=await runtime.secretRepository.readRetainedOutput(run.org_id,child.run_id,child.attempt_id,clock.current,tx);if(!retained||retained.expires_at<=now)return false;const value=retained.value as {schema_version?:unknown;output?:unknown};if(value?.schema_version!=='deft.app_run_provider_result.v1'||!knownPreparedResourceBatchReceipt(value.output,child.run_id,membership.operation_key,child.source_refs))return false;}
  return new Date(membership.execution_expires_at).getTime()>clock.current().getTime();
 }
