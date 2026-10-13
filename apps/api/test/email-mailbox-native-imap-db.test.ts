@@ -10,14 +10,14 @@ import { PostgresEmailMailboxStore } from '../src/lib/email-mailbox-store.js';
 import { EmailMailboxCrypto } from '../src/lib/email-mailbox-crypto.js';
 import { ConnectedEmailMailboxAuthority } from '../src/lib/email-mailbox-connected-authority.js';
 import { RegisteredEmailMailboxProvider } from '../src/lib/email-mailbox-provider.js';
-import { openPreparedEmailMailboxTestDatabase, EMAIL_MAILBOX_TEST_DATABASE_URL } from './fixtures/email-mailbox-database.js';
+import { openPreparedCurrentEmailMailboxTestDatabase, EMAIL_MAILBOX_TEST_DATABASE_URL } from './fixtures/email-mailbox-database.js';
 // Existing executable provider modules have no TypeScript declarations.
 // @ts-ignore
 import { createNativeImapBridge, NATIVE_IMAP_STATE_KEY } from '../../../examples/apps/email/providers/native-imap.mjs';
 
 const safe = process.env.DATABASE_URL === EMAIL_MAILBOX_TEST_DATABASE_URL && process.env.DEFT_TEST_DATABASE_URL === EMAIL_MAILBOX_TEST_DATABASE_URL;
 test('actual PG public IMAP sync persists encrypted folder/UID state across restart and denies revoked host custody', { skip: !safe, timeout: 120000 }, async t => {
-  const prepared = await openPreparedEmailMailboxTestDatabase(); await prepared.end();
+  const prepared = await openPreparedCurrentEmailMailboxTestDatabase(); await prepared.end();
   const pool = new pg.Pool({ connectionString: EMAIL_MAILBOX_TEST_DATABASE_URL, max: 5 });
   const db = drizzle(pool, { schema: { emailAccounts, emailCheckpoints, emailMessages, emailMemberships, emailProviderStates, emailSyncReceipts } });
   const org = 'imap-native-db-' + randomUUID(), owner = 'owner-' + randomUUID(), installation = 'install-' + randomUUID();
@@ -28,7 +28,7 @@ test('actual PG public IMAP sync persists encrypted folder/UID state across rest
   await pool.query('INSERT INTO app_resource_bindings(org_id,id,owner_user_id) VALUES($1,$2,$3)', [org, binding, owner]);
   await db.insert(emailAccounts).values([scope, other].map(value => ({ ...value, provider: 'imap_smtp' as const, resource_binding_id: binding, principal_digest: principal, state: 'active' as const, authority_revision: 1, consented_at: new Date() })));
   t.after(async () => {
-    for (const table of ['email_sync_receipts', 'email_provider_states', 'email_memberships', 'email_messages', 'email_checkpoints', 'email_accounts']) await pool.query(`DELETE FROM ${table} WHERE org_id=$1 AND owner_user_id=$2`, [org, owner]);
+    for (const table of ['email_notification_events', 'email_notification_states', 'email_sync_receipts', 'email_provider_states', 'email_memberships', 'email_messages', 'email_checkpoints', 'email_accounts']) await pool.query(`DELETE FROM ${table} WHERE org_id=$1 AND owner_user_id=$2`, [org, owner]);
     await pool.query('DELETE FROM app_resource_bindings WHERE org_id=$1 AND owner_user_id=$2', [org, owner]);
     await pool.query('DELETE FROM org_members WHERE org_id=$1 AND user_id=$2', [org, owner]); await pool.end();
   });

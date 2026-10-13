@@ -153,16 +153,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
-      mailbox-predecessor:
-        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
-        env:
-          POSTGRES_USER: gate_g_test
-          POSTGRES_DB: email_stage34_test
-          POSTGRES_HOST_AUTH_METHOD: trust
-        options: >-
-          --publish 127.0.0.1:55435:5432
-          --health-cmd "pg_isready -U gate_g_test -d email_stage34_test"
-          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       NODE_OPTIONS: --max-old-space-size=4096
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
@@ -200,6 +190,32 @@ jobs:
         run: |
           set -o pipefail
           npm exec --yes --package=pnpm@10.33.1 -- pnpm install --ignore-workspace --frozen-lockfile 2>&1 | tee "$GITHUB_WORKSPACE/.ci-api-diagnostics/legacy-email-install.log"
+      - name: Start exact loopback mailbox predecessor and verify server identity
+        id: api_predecessor
+        run: |
+          set -euo pipefail
+          name="email-mailbox-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach --name "$name" --network host \
+            --label deft.test_fixture=email-mailbox-predecessor --label deft.test_run="$GITHUB_RUN_ID" --label deft.test_attempt="$GITHUB_RUN_ATTEMPT" \
+            --env POSTGRES_USER=gate_g_test --env POSTGRES_DB=email_stage34_test \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b \
+            postgres -c listen_addresses=127.0.0.1 -p 55435
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec "$name" pg_isready -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -AtF '|' \
+            -c 'SELECT current_database(),current_user,inet_server_port(),host(inet_server_addr())' \
+            | tee .ci-api-diagnostics/mailbox-predecessor-identity.txt
+          test "$(cat .ci-api-diagnostics/mailbox-predecessor-identity.txt)" = 'email_stage34_test|gate_g_test|55435|127.0.0.1'
+          test "$(docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -At \
+            -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")" = '0'
       - name: Initialize disposable reviewed schema and fixtures
         id: api_schema
         run: |
@@ -232,23 +248,32 @@ jobs:
         id: api_suite
         run: |
           set -o pipefail
-          pnpm exec node scripts/email-preview-api-tests.mjs 2>&1 | tee .ci-api-diagnostics/api-suite.log
+          pnpm run test:email-preview-api 2>&1 | tee .ci-api-diagnostics/api-suite.log
       - name: Preserve actual API gate outcomes
         if: always()
         env:
           INSTALL: ${{ steps.api_install.outcome }}
           LEGACY: ${{ steps.api_legacy.outcome }}
+          PREDECESSOR: ${{ steps.api_predecessor.outcome }}
           SCHEMA: ${{ steps.api_schema.outcome }}
           API: ${{ steps.api_suite.outcome }}
         run: |
           mkdir -p .ci-api-diagnostics
           node --input-type=module <<'NODE'
           import {writeFileSync} from 'node:fs';
-          const gates=Object.fromEntries(['INSTALL','LEGACY','SCHEMA','API'].map(key=>[key,process.env[key]]));
+          const gates=Object.fromEntries(['INSTALL','LEGACY','PREDECESSOR','SCHEMA','API'].map(key=>[key,process.env[key]]));
           writeFileSync('.ci-api-diagnostics/gates.json',JSON.stringify(gates,null,2)+'\n');
           console.log(gates);
           if(Object.values(gates).some(value=>value!=='success'))process.exitCode=1;
           NODE
+      - name: Preserve predecessor logs and stop only this ephemeral runner container
+        if: always()
+        run: |
+          name="email-mailbox-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker inspect "$name" >/dev/null 2>&1; then
+            docker logs "$name" > .ci-api-diagnostics/mailbox-predecessor-server.log 2>&1
+            docker rm --force "$name"
+          fi
       - name: Preserve API diagnostics
         if: always()
         uses: actions/upload-artifact@v6

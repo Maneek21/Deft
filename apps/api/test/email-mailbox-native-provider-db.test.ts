@@ -12,7 +12,7 @@ import { ConnectedEmailMailboxAuthority } from '../src/lib/email-mailbox-connect
 import { RegisteredEmailMailboxProvider } from '../src/lib/email-mailbox-provider.js';
 import { EmailMailboxSearchService } from '../src/lib/email-mailbox-search.js';
 import { EmailMessageContentService } from '../src/lib/email-message-content.js';
-import { openPreparedEmailMailboxTestDatabase, EMAIL_MAILBOX_TEST_DATABASE_URL } from './fixtures/email-mailbox-database.js';
+import { openPreparedCurrentEmailMailboxTestDatabase, EMAIL_MAILBOX_TEST_DATABASE_URL } from './fixtures/email-mailbox-database.js';
 // Existing executable provider modules have no TypeScript declaration files.
 // @ts-ignore
 import { createAppConnectionAdapter } from '../../../examples/apps/email/providers/connection-http.mjs';
@@ -41,14 +41,14 @@ function memoryCiphertextStore() {
 }
 
 test('actual PG public sync + registered OAuth bridge converges across restart and denies revoked custody cache reads', { skip: !safe, timeout: 60000 }, async t => {
-  const prepared = await openPreparedEmailMailboxTestDatabase(); await prepared.end();
+  const prepared = await openPreparedCurrentEmailMailboxTestDatabase(); await prepared.end();
   const pool = new pg.Pool({ connectionString: EMAIL_MAILBOX_TEST_DATABASE_URL, max: 6 });
   const db = drizzle(pool, { schema: { emailAccounts, emailCheckpoints, emailMessages, emailMemberships, emailProviderStates, emailSyncReceipts } });
   const org = 'email-provider-db-' + randomUUID(), owner = 'owner-' + randomUUID(), installation = 'installation-' + randomUUID();
   const actor: EmailActor = { user_id: owner, web_session_id: 'fixture-sid-' + randomUUID(), access_expires_at: Date.now() + 60000 };
   await pool.query('INSERT INTO org_members(org_id,user_id) VALUES($1,$2)', [org, owner]);
   t.after(async () => {
-    for (const table of ['email_sync_receipts', 'email_provider_states', 'email_memberships', 'email_messages', 'email_checkpoints', 'email_accounts']) await pool.query(`DELETE FROM ${table} WHERE org_id=$1 AND owner_user_id=$2`, [org, owner]);
+    for (const table of ['email_notification_events', 'email_notification_states', 'email_sync_receipts', 'email_provider_states', 'email_memberships', 'email_messages', 'email_checkpoints', 'email_accounts']) await pool.query(`DELETE FROM ${table} WHERE org_id=$1 AND owner_user_id=$2`, [org, owner]);
     await pool.query('DELETE FROM app_resource_bindings WHERE org_id=$1 AND owner_user_id=$2', [org, owner]);
     await pool.query('DELETE FROM org_members WHERE org_id=$1 AND user_id=$2', [org, owner]); await pool.end();
   });
