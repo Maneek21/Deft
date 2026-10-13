@@ -133,3 +133,131 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
+
+  api-regressions:
+    needs: closure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_preview_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_preview_test
+      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_preview_test
+      JWT_SECRET: ci-test-secret-not-for-prod
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
+      ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
+      DEFT_TEST_TIMEOUT_MS: '900000'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Record exact source and initialize test diagnostics
+        run: |
+          mkdir -p .ci-api-diagnostics
+          git rev-parse HEAD > .ci-api-diagnostics/source-commit.txt
+          free -m > .ci-api-diagnostics/memory-before.txt
+          test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 8388608
+      - name: Install exact dependency graph
+        id: api_install
+        run: |
+          set -o pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee .ci-api-diagnostics/install.log
+      - name: Initialize disposable reviewed schema and fixtures
+        id: api_schema
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/app-kit build 2>&1 | tee .ci-api-diagnostics/kit-build.log
+          pnpm db:push-full 2>&1 | tee .ci-api-diagnostics/fresh-schema.log
+          pnpm db:seed:demo 2>&1 | tee .ci-api-diagnostics/seed-demo.log
+      - name: Full API regression suite
+        id: api_suite
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/api test 2>&1 | tee .ci-api-diagnostics/api-suite.log
+      - name: Preserve actual API gate outcomes
+        if: always()
+        env:
+          INSTALL: ${{ steps.api_install.outcome }}
+          SCHEMA: ${{ steps.api_schema.outcome }}
+          API: ${{ steps.api_suite.outcome }}
+        run: |
+          mkdir -p .ci-api-diagnostics
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          const gates=Object.fromEntries(['INSTALL','SCHEMA','API'].map(key=>[key,process.env[key]]));
+          writeFileSync('.ci-api-diagnostics/gates.json',JSON.stringify(gates,null,2)+'\n');
+          console.log(gates);
+          if(Object.values(gates).some(value=>value!=='success'))process.exitCode=1;
+          NODE
+      - name: Preserve API diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: email-preview-api-${{ github.run_id }}
+          path: .ci-api-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  security:
+    needs: [closure, api-regressions]
+    if: always() && needs.closure.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4.38.1
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v4.38.1
+        with:
+          output: .ci-security-diagnostics
+          upload: never
+          upload-database: false
+      - name: Fail unresolved security findings and preserve their locations
+        run: |
+          node --input-type=module <<'NODE'
+          import {readdirSync,readFileSync,writeFileSync} from 'node:fs';
+          const directory='.ci-security-diagnostics';
+          const findings=[];
+          const files=readdirSync(directory).filter(name=>name.endsWith('.sarif'));
+          if(!files.length)throw Error('CodeQL produced no SARIF evidence');
+          for(const file of files){
+            for(const run of JSON.parse(readFileSync(directory+'/'+file,'utf8')).runs){
+              for(const result of run.results??[])findings.push({rule:result.ruleId,level:result.level??'warning',locations:result.locations});
+            }
+          }
+          writeFileSync(directory+'/findings.json',JSON.stringify(findings,null,2)+'\n');
+          console.log('Unresolved CodeQL findings:',findings.length);
+          if(findings.length)process.exitCode=1;
+          NODE
+      - name: Preserve full security findings without suppressions
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: email-preview-security-${{ github.run_id }}
+          path: .ci-security-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
