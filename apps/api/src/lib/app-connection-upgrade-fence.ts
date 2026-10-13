@@ -30,6 +30,7 @@ export async function appConnectionUpgradeSourceIsAvailable(tx:AppRunTransaction
  if(!resource&&input.session_id){const [source]=await tx.select({record:appConnectionSessions.record}).from(appConnectionSessions).where(and(
   eq(appConnectionSessions.org_id,input.org_id),eq(appConnectionSessions.session_id,input.session_id))).limit(1);
   resource=(source?.record as {scope?:{resource_binding_id?:string}}|undefined)?.scope?.resource_binding_id;}
- return !row&&!!resource&&await appConnectionCredentialRepairPurposeIsAvailable(tx,{org_id:input.org_id,resource_binding_id:resource,purpose:input.purpose??'effect'})
+ return !row&&!!resource&&await appConnectionCredentialRepairPurposeIsAvailable(tx,{org_id:input.org_id,resource_binding_id:resource,
+  owner_user_id:input.owner_user_id,session_id:input.session_id,purpose:input.purpose??'effect'})
   &&await appConnectionFormSourceIsAvailable(tx,input)&&await continuationSourceIsAvailable(tx,input);
 }

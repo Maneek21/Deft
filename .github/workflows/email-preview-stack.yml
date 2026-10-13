@@ -98,6 +98,7 @@ jobs:
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/native-mention-agent-catalog.test.ts test/app-attachment-default-off.test.ts test/app-runtime-action-discovery.test.ts 2>&1 | tee .ci-diagnostics/host-cold-native.log
           node --test apps/api/test/app-owner-context-history.test.mjs 2>&1 | tee .ci-diagnostics/owner-context-history.log
           node --test scripts/email-preview-test-databases.test.mjs 2>&1 | tee .ci-diagnostics/api-isolation-guards.log
+          pnpm --filter @deft/api exec tsx --experimental-test-module-mocks --test --test-concurrency=1 test/app-connection-custody-classification.test.ts 2>&1 | tee .ci-diagnostics/custody-classification.log
           node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           node --test packages/db/scripts/reviewed-lineage-artifacts.test.mjs 2>&1 | tee .ci-diagnostics/reviewed-lineage-artifacts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log

@@ -128,7 +128,7 @@ export class AppResourceSyncAdmissionService {
       if (!authority || (attachmentCaller && (this.internalMode !== 'attachment_v3'
         || authority.binding.owner_user_id !== attachmentCaller.owner_user_id))) throw unavailable();
       const { binding, installation, version, grant, registration } = authority;
-      if(this.internalMode==='attachment_v3'&&registration.owner_connection_admission_id&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:target.org_id,resource_binding_id:binding.id}))throw unavailable();
+      if(this.internalMode==='attachment_v3'&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:target.org_id,resource_binding_id:binding.id}))throw unavailable();
       if(observationMode&&(this.internalMode!=='attachment_v3'||attachmentCaller))throw unavailable();
       if(recoveryPredecessor&&!observationMode&&hasResourceObservationPin(recoveryPredecessor.authorization_snapshot,binding.id))throw unavailable();
       const continuation = attachmentCaller?.continue_committed_cursor === true;

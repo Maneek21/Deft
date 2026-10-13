@@ -22,6 +22,7 @@ type ProviderSnapshot = typeof capabilityProviderSnapshots.$inferSelect;
 type Reviewed = Awaited<ReturnType<typeof loadReviewedAttachmentSyncDescriptor>>;
 
 export type LiveAttachmentSyncBindingAuthority = Readonly<Reviewed & {
+  connection_profile_required: boolean;
   registration: Registration;
   binding: Binding;
   provider_snapshot: ProviderSnapshot;
@@ -200,6 +201,7 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   if (!checkedAt || !continuationIdentityOnly && binding.consent_expires_at <= checkedAt
     || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: continuationIdentityOnly ? [] : [binding.consent_expires_at] })) return null;
   return Object.freeze({ ...reviewed, registration, binding, provider_snapshot: providerSnapshot,
+    connection_profile_required: ownerAdmission?.snapshot.connection_profile !== undefined,
     checked_at: checkedAt });
 }
 

@@ -5,10 +5,12 @@ export const TEST_POSTGRES_IMAGE='pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5
 const identity='SELECT current_database(),current_user,inet_server_port(),host(inet_server_addr())';
 const ledger="SELECT version,checksum,kind FROM deft_schema_migrations ORDER BY version";
 const fingerprint=value=>createHash('sha256').update(value).digest('hex');
+const waitBuffer=new Int32Array(new SharedArrayBuffer(4));
 
 /** Destructive operations are confined to named ephemeral databases in the
  * exact GitHub service container. Never disconnect clients or disable guards. */
-export function testDatabaseIsolation({docker,mainContainer,predecessorContainer,runId,attempt,record=()=>{}}){
+export function testDatabaseIsolation({docker,mainContainer,predecessorContainer,runId,attempt,record=()=>{},
+ now=Date.now,pause=ms=>Atomics.wait(waitBuffer,0,0,ms)}){
  assert.match(mainContainer??'',/^[a-f0-9]{64}$/);
  assert.match(runId??'',/^\d+$/);assert.match(attempt??'',/^\d+$/);
  assert.equal(predecessorContainer,`email-mailbox-predecessor-${runId}-${attempt}`);
@@ -18,7 +20,7 @@ export function testDatabaseIsolation({docker,mainContainer,predecessorContainer
   '-U',user,'-d',database,'--set','ON_ERROR_STOP=1','-AtF','|','-c',sql]);
  const main=(database,sql)=>query(mainContainer,'postgres','5432',database,sql);
  let ledgerDigest;
- function assertMain(){
+ function assertMainIdentity(){
   const [current]=JSON.parse(docker(['inspect',mainContainer]));
   assert.equal(current.Id,mainContainer);assert.equal(current.State.Running,true);
   assert.equal(current.Config.Image,TEST_POSTGRES_IMAGE);
@@ -28,8 +30,19 @@ export function testDatabaseIsolation({docker,mainContainer,predecessorContainer
   assert.equal(current.Config.Labels['deft.test_attempt'],attempt);
   assert.deepEqual(current.HostConfig.PortBindings['5432/tcp'],[{HostIp:'',HostPort:'5432'}]);
   assert.equal(main('deft_test',identity),'deft_test|postgres|5432|127.0.0.1');
-  assert.equal(main('postgres',`SELECT count(*) FROM pg_stat_activity WHERE datname IN ('deft_test','${template}')`),'0',
-   'never force-disconnect another client during CI isolation');
+ }
+ function assertMain(){
+  const deadline=now()+5000;
+  while(true){
+   assertMainIdentity();
+   // Every Docker call also checks the runner's unchanged aggregate deadline.
+   const clients=main('postgres',`SELECT count(*) FROM pg_stat_activity WHERE datname IN ('deft_test','${template}')`);
+   assert.match(clients,/^\d+$/,'invalid active-client count');
+   if(clients==='0')return;
+   const remaining=deadline-now();
+   assert.ok(remaining>0,'never force-disconnect another client during CI isolation');
+   pause(Math.min(100,remaining));
+  }
  }
  function verifyLedger(database){
   const actual=fingerprint(main(database,ledger));

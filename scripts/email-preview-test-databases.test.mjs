@@ -5,7 +5,8 @@ import {TEST_POSTGRES_IMAGE,testDatabaseIsolation} from './email-preview-test-da
 const id='a'.repeat(64),runId='1234',attempt='2';
 function fixture(overrides={}){
  const commands=[];
- let template=false,automation=false;
+ let template=false,automation=false,time=0;
+ const pauses=[];
  const main={Id:id,State:{Running:true},Config:{Image:TEST_POSTGRES_IMAGE,Env:['POSTGRES_USER=postgres','POSTGRES_PASSWORD=postgres','POSTGRES_DB=deft_test'],Labels:{
   'deft.test_fixture':'email-preview-api','deft.test_run':runId,'deft.test_attempt':attempt}},
   HostConfig:{PortBindings:{'5432/tcp':[{HostIp:'',HostPort:'5432'}]}}};
@@ -22,7 +23,7 @@ function fixture(overrides={}){
   if(isMain)assert.deepEqual(args.slice(0,4),['exec','--env','PGPASSWORD=postgres',id]);
   else assert.ok(!args.includes('PGPASSWORD=postgres'));
   if(sql.startsWith('SELECT current_database'))return overrides.identity??`${database}|${isMain?'postgres':'gate_g_test'}|${isMain?'5432':'55435'}|127.0.0.1`;
-  if(sql.includes('pg_stat_activity'))return String(overrides.clients??0);
+  if(sql.includes('pg_stat_activity'))return String(typeof overrides.clients==='function'?overrides.clients():overrides.clients??0);
   if(sql.includes('pg_database WHERE'))return sql.includes('automation_renewal')?String(overrides.automationExisting??Number(automation)):String(overrides.templateExisting??Number(template));
   if(sql==='SELECT count(*) FROM deft_schema_migrations')return'113';
   if(sql.includes('app_run_secret_payloads'))return String(overrides.retained??0);
@@ -33,8 +34,9 @@ function fixture(overrides={}){
   else assert.ok(sql==='DROP DATABASE deft_test'||sql==='CREATE DATABASE deft_test TEMPLATE deft_preview_template_1234_2 OWNER postgres',sql);
   return'';
  };
- return {commands,instance:testDatabaseIsolation({docker,mainContainer:id,
-  predecessorContainer:`email-mailbox-predecessor-${runId}-${attempt}`,runId,attempt})};
+ return {commands,pauses,instance:testDatabaseIsolation({docker,mainContainer:id,
+  predecessorContainer:`email-mailbox-predecessor-${runId}-${attempt}`,runId,attempt,
+  now:()=>time,pause:ms=>{pauses.push(ms);time+=ms;overrides.onPause?.(main);}})};
 }
 const destructive=commands=>commands.filter(({args})=>/^(?:DROP|CREATE) DATABASE/.test(args.at(-1)));
 
@@ -71,4 +73,51 @@ test('existing automation target is not overwritten',()=>{
  assert.throws(()=>instance.prepareAutomation());
  assert.equal(commands.filter(({args})=>args.at(-1).startsWith('CREATE DATABASE gate_g_')).length,0);
  assert.equal(commands.filter(({args})=>args.includes('pg_dump')).length,0);
+});
+
+test('a transient client exits before the guarded database reset',()=>{
+ const overrides={},state=fixture(overrides);state.instance.createTemplate();
+ let observations=0;overrides.clients=()=>++observations===1?1:0;
+ const start=state.commands.length;
+ state.instance.restoreMain('next.test.ts','before');
+ const commands=state.commands.slice(start);
+ assert.equal(observations,2);assert.deepEqual(state.pauses,[100]);
+ assert.equal(commands.filter(({args})=>args[0]==='inspect').length,2);
+ const drop=commands.findIndex(({args})=>args.at(-1)==='DROP DATABASE deft_test');
+ const counts=commands.map(({args},index)=>args.at(-1).includes('pg_stat_activity')?index:-1).filter(index=>index>=0);
+ assert.ok(counts.every(index=>index<drop));
+});
+
+test('persistent clients exhaust the bounded wait without a reset or forced disconnect',()=>{
+ const overrides={},state=fixture(overrides);state.instance.createTemplate();overrides.clients=1;
+ const start=state.commands.length;
+ assert.throws(()=>state.instance.restoreMain('next.test.ts','before'),/never force-disconnect/);
+ assert.equal(state.pauses.reduce((sum,ms)=>sum+ms,0),5000);
+ assert.equal(destructive(state.commands.slice(start)).length,0);
+ assert.ok(state.commands.every(({args})=>!args.some(value=>/FORCE|pg_terminate_backend/.test(value))));
+});
+
+test('identity drift while waiting refuses reset even if the client subsequently exits',()=>{
+ const overrides={},state=fixture(overrides);state.instance.createTemplate();
+ overrides.clients=1;overrides.onPause=main=>{main.Config.Labels['deft.test_run']='999';overrides.clients=0;};
+ const start=state.commands.length;
+ assert.throws(()=>state.instance.restoreMain('next.test.ts','before'));
+ assert.deepEqual(state.pauses,[100]);assert.equal(destructive(state.commands.slice(start)).length,0);
+});
+
+test('a client query failure or aggregate deadline expiry never proceeds to reset',()=>{
+ for(const message of ['psql failed','Aggregate API test budget expired']){
+  const overrides={},state=fixture(overrides);state.instance.createTemplate();
+  let observations=0;overrides.clients=()=>{if(++observations===1)return 1;throw new Error(message);};
+  const start=state.commands.length;
+  assert.throws(()=>state.instance.restoreMain('next.test.ts','before'),{message});
+  assert.deepEqual(state.pauses,[100]);assert.equal(destructive(state.commands.slice(start)).length,0);
+ }
+});
+
+test('an invalid active-client response fails closed before reset',()=>{
+ const overrides={},state=fixture(overrides);state.instance.createTemplate();overrides.clients='not a count';
+ const start=state.commands.length;
+ assert.throws(()=>state.instance.restoreMain('next.test.ts','before'),/invalid active-client count/);
+ assert.equal(destructive(state.commands.slice(start)).length,0);
 });
