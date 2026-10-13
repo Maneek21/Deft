@@ -1,5 +1,6 @@
 node_modules/
 *.tgz
+!deft-app-kit-0.1.0-alpha.9.tgz
 app.deft.json
 app-indexed.deft.json
 artifact.json

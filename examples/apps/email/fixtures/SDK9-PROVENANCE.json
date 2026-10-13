@@ -1,0 +1,30 @@
+{
+  "schema_version": "deft.historical_email_sdk_fixture.v1",
+  "sdk_archive": {
+    "path": "deft-app-kit-0.1.0-alpha.9.tgz",
+    "bytes": 154511,
+    "sha256": "ac324a4906c4fade1e463a0808dc111cfa71dcd41901272c519cf6c4a73925bc",
+    "sha512_integrity": "sha512-Eyu1Abs2ctIm+t8zWPGK7Nn5I3KbH2uJ8BQEzbF3hGvG/CTONeJof81UrnZUvBSMyX02ReHhZd5vRzAvk5O6pA=="
+  },
+  "corresponding_source": {
+    "path": "fixtures/app-kit-alpha9-corresponding-source.tar.gz",
+    "bytes": 94699,
+    "sha256": "9607b7280fd2a89a6761d64d351cfa03cafcf81f637dce0ac6dc71b704b9d858",
+    "files": 41,
+    "javascript_modules": 27,
+    "byte_exact_javascript_modules": 27
+  },
+  "original_identity": {
+    "package_metadata": "0.1.0-alpha.9",
+    "exported_contract": "0.1.0-alpha.7",
+    "advertised_supported": false
+  },
+  "legacy_local_lock_references": 1,
+  "original_manifest_and_lock_unchanged": true,
+  "clean_install": {
+    "package_manager": "pnpm@10.33.1",
+    "dependencies": 50,
+    "successful": true
+  },
+  "scope": "Immutable historical regression fixture only; production Docker has no dependency on the standalone legacy example."
+}
