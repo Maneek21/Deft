@@ -1,9 +1,15 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const packageIdentity = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));
+const declaredIdentity = (await readFile(resolve(packageRoot, 'src/index.ts'), 'utf8'))
+  .match(/export const DEFT_APP_KIT_VERSION = '([^']+)' as const;/)?.[1];
+if (declaredIdentity !== packageIdentity.version) {
+  throw new Error('App Kit package and public compatibility versions must match');
+}
 const sharedSourceRoot = resolve(packageRoot, '..', 'shared', 'src');
 const outputRoot = resolve(packageRoot, 'dist', 'module-contract');
 
@@ -53,3 +59,9 @@ async function transpileAuthoritativeSource(name) {
 await transpileAuthoritativeSource('schemas');
 await transpileAuthoritativeSource('zod-compat');
 await transpileAuthoritativeSource('modules');
+
+// Keep the packed distribution's license and attribution identical to the
+// repository notices. These generated copies are included by package.json.
+for (const name of ['LICENSE', 'NOTICE']) {
+  await copyFile(resolve(packageRoot, '..', '..', name), resolve(packageRoot, name));
+}

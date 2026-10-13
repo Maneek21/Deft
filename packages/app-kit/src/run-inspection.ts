@@ -1,0 +1,9 @@
+import {z} from 'zod';
+import {AppConnectionSessionScopeSchema} from './connection-session.js';
+import {AppDataConnectionSchema,AppDataAuthorityPinsSchema} from './app-data.js';
+import {AppCompoundSendReceiptSchema} from './prepared-copy-effect.js';
+const id=z.string().uuid(),hash=z.string().regex(/^sha256:[a-f0-9]{64}$/u),scalar=z.union([z.string().max(2048),z.number().finite(),z.boolean()]);
+export const AppRunInspectionInputSchema=z.strictObject({store_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u).refine(value=>!['constructor','prototype','__proto__'].includes(value)),run_id:id,attempt_id:id,input_digest:hash,original_input:z.record(z.string(),scalar).refine(row=>Object.keys(row).length<=32),retained_expires_at:z.iso.datetime()});
+export const AppRunInspectionRuntimeRequestSchema=z.strictObject({schema_version:z.literal('deft.app_run_inspection.v1'),request_id:id,scope:AppConnectionSessionScopeSchema,connection:AppDataConnectionSchema,authority:AppDataAuthorityPinsSchema,operation:z.enum(['run_inspect','run_inspection_status']),expires_at:z.iso.datetime(),input:AppRunInspectionInputSchema}).refine(row=>Date.parse(row.expires_at)<=Date.parse(row.scope.consent_expires_at)&&Date.parse(row.expires_at)<=Date.parse(row.input.retained_expires_at));
+export type AppRunInspectionRuntimeRequest=z.infer<typeof AppRunInspectionRuntimeRequestSchema>;
+export const AppRunInspectionRuntimeResultSchema=z.strictObject({schema_version:z.literal('deft.app_run_inspection_result.v1'),request_id:id,run_id:id,receipt:AppCompoundSendReceiptSchema.nullable()});

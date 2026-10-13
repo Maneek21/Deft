@@ -1,17 +1,19 @@
 # Connected App author guide
 
-> **Experimental:** connected Apps and bounded automation were introduced in published `v0.3.0-preview.15` and remain disabled by default. This checkout describes the unreleased App Kit `0.1.0-alpha.3` candidate; preview.15 uses `0.1.0-alpha.2` and its matching release guide.
+> **Review candidate:** this checkout contains Author Kit `0.1.0-alpha.32`. The matching Host changes remain a separate stacked PR and connected App gates remain disabled by default. Published preview.15 uses alpha.2; its guide and frozen artifacts remain unchanged.
 
-For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings → Modules; this guide packages resources in a separate `deft.app.json` and uses Settings → Apps. [Compare the two paths](modules-and-apps.md).
+For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
 This guide shows how to build a connected App, check that it matches the host,
 and submit it for workspace review. It supports App Protocol v1 connected Apps
 and the bounded scheduling requests in Protocol v2. The workspace operator
 reviews access, chooses provider bindings and activates the App.
 
-The current candidate authoring artifact is `@deft/app-kit@0.1.0-alpha.3`. Use a packed
+The current candidate authoring artifact is `@deft/app-kit@0.1.0-alpha.32`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
+
+For the real external Email App, use [deft-email PR #1](https://github.com/Maneek21/deft-email/pull/1) and its `docs/setup.md`, not the sandbox Campaign provider below. Email's frozen browser package uses alpha.30 and its E5.9 Runtime uses alpha.32. The runtime transport is connection protocol v2 at `/v1/connections`; `/api/app-runtime/channel` is the governed protocol7 Host channel and is not the provider connection endpoint. Owner admission, resource/action review, finite channel sessions, private store consent and ordinary OAuth are separate steps. No native Email adapter, copied database rows, private Host imports or inherited account custody are required. Fresh schema/seed and isolated file preparation were verified; the fresh public sideload/OAuth/visible journey remains a separate acceptance gate.
 
 ## 1. Build against the example provider
 
@@ -38,7 +40,7 @@ Then install it in a clean directory outside the repository:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.3.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.32.tgz
 ```
 
 When a release or proof bundle already supplies the tarball, install that exact
@@ -182,7 +184,7 @@ contract. A compatible current host retains the legacy fields
 | v1 | `deft.app.package.v1` | `stage_only` |
 
 The additive compatibility object must include `@deft/app-kit` version
-`0.1.0-alpha.3` (with `0.1.0-alpha.2` and `0.1.0-alpha.1` retained as compatible predecessors on this host).
+`0.1.0-alpha.32` (with `0.1.0-alpha.2` and `0.1.0-alpha.1` retained as compatible predecessors on this host).
 The legacy `app_protocol: "0"` scalar remains `"0"` even when
 the additive object advertises v1; do not use that scalar alone to infer v1
 support.
@@ -234,7 +236,7 @@ report.
 
 ## 6. Complete the native operator lifecycle
 
-In **Settings → Apps**, an active owner or admin can inspect the exact staged
+In **Settings â†’ Apps**, an active owner or admin can inspect the exact staged
 version and package digest, requested resource reads, dependency status,
 lineage-private capability requirement, eligible connector candidates, and
 missing bindings. The screen labels local packages as unsigned and treats any

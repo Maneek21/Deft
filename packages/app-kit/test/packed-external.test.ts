@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from '
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { seedPackedConsumerLock } from './fixtures/packed-consumer-lock.js';
 
 const packageRoot = resolve(import.meta.dirname, '..');
 const repositoryRoot = resolve(packageRoot, '..', '..');
@@ -52,12 +53,17 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
       private: true,
       dependencies: { '@deft/app-kit': `file:${archive.replace(/\\/g, '/')}` },
     }, null, 2)}\n`, 'utf8');
-    runPnpm(['--dir', consumer, 'install', '--ignore-workspace', '--offline'], repositoryRoot);
+    await seedPackedConsumerLock({ packageRoot, consumerDir: consumer, archive });
+    runPnpm(['--dir', consumer, 'install', '--ignore-workspace', '--offline', '--frozen-lockfile'], repositoryRoot);
 
     const installedRoot = await realpath(resolve(consumer, 'node_modules', '@deft', 'app-kit'));
     assert.equal(installedRoot.startsWith(await realpath(consumer)), true);
     const installedPackage = JSON.parse(await readFile(resolve(installedRoot, 'package.json'), 'utf8')) as any;
-    assert.equal(installedPackage.version, '0.1.0-alpha.7');
+    assert.equal(installedPackage.version, '0.1.0-alpha.32');
+    for (const notice of ['LICENSE', 'NOTICE']) {
+      assert.equal(await readFile(resolve(installedRoot, notice), 'utf8'),
+        await readFile(resolve(repositoryRoot, notice), 'utf8'));
+    }
     assert.equal(installedPackage.bin.deft, './dist/cli.js');
     const installedFiles = await readdir(installedRoot, { recursive: true });
     assert.equal(installedFiles.some((entry) => /^src(?:[\\/]|$)/.test(entry)), false);

@@ -28,7 +28,7 @@ const result = validateDeftModuleManifest(moduleManifest, {
 if (!result.success) console.error(result.issues);
 ```
 
-The published package contains a build-time copy of the authoritative pure
+The packed package contains a build-time copy of the authoritative pure
 contract from `@deft/shared`; it has no runtime workspace link or private host
 import. Static validity does not imply that a particular host supports the App,
 that required dependencies are installed, or that a caller has permission to
@@ -49,23 +49,47 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.6.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.32.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This checkout contains the unreleased `0.1.0-alpha.6` contract. Use its exact
-packed artifact with a host advertising that version; published preview.15
-uses `0.1.0-alpha.2`. A version identifies a released contract: do not distribute
-changed contracts under an existing version. Preserve the supplied artifact and
-the consumer lockfile for reproducible installs instead of repacking a different
-checkout under the same package version.
+This review candidate is `0.1.0-alpha.32`. Package metadata,
+`DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.32
+includes connection v2 sessions and independent action consents, reviewed
+same-account upgrade/reattachment, consent continuation and credential repair,
+resource data/content contracts, attachments, safe compose HTML, and generic
+source/Task integration. These are contracts; a compatible Host must advertise
+and authorize the corresponding operations.
 
-The matching host `0.3.0-preview.16` is a release preparation candidate;
-publication is pending. No npm package publication is claimed by these pack
-instructions. Email under `examples/apps/email` is a WIP reference example,
-with separate operator setup and validation limits. See
-[release boundaries](../../docs/app-release-boundaries.md).
+The matching external Email review is
+[deft-email PR #1](https://github.com/Maneek21/deft-email/pull/1). Its
+[setup instructions](https://github.com/Maneek21/deft-email/blob/4c33dca127f799ff43a318625319808266799366/docs/setup.md)
+are pinned to that exact reviewed source commit.
+The frozen Email browser package `1.8.0-preview.1` uses **alpha.30**, while its
+independent Runtime `0.3.1-e5.9` uses **alpha.32**. Do not replace the browser
+Kit or regenerate its accepted App package merely to make both versions equal.
+The recorded alpha.32 tarball SHA256 is
+`44a4419d6f40320650f20f89d6a99ee3ee0631e613843439fc349849f5a35ddb`;
+retain its hash and the external consumer lockfile. This PR corrects author
+documentation; rebuilding a tarball from this PR does not reproduce the old
+README bytes and must not overwrite that frozen archive.
+
+The matching Host review follows this Author Kit PR in the Deft review stack.
+The tested Host image metadata is `0.3.0-preview.16`, while database schema and
+runtime readiness report `0.3.0-preview.117`; those versions are distinct.
+Public `master` and a Kit install alone do not provide the required Host gates,
+owner admission/resource/action reviews, operator registry, keyring, or OAuth
+connection authority. Check the host's public developer compatibility before
+staging. New accounts use ordinary public connection begin/callback; existing
+account continuity uses the separately reviewed current-authority flow.
+
+Packing includes repository `LICENSE` and `NOTICE`; the package remains
+`AGPL-3.0-only`. No npm publication, tag, release, merge or automatic merge is
+part of this review. Historical package archives remain unchanged. Alpha.8 and
+alpha.9 are not advertised because their recorded compatibility identity was
+not reconciled; use the exported compatibility list rather than assuming
+all lower numbers are supported.
 
 ## Browser Experience SDK
 
@@ -287,4 +311,5 @@ Scalar string contracts may declare `minLength`, `format: 'email'`, `title`, and
 remain inspectable in the trusted form. A fresh successful confirmation includes
 `submitted_input`, the exact authorized scalar values, for accurate app history.
 Recovered Run lookups may omit it; a mutable draft is not evidence of the submitted
-content. These additions require the matching alpha.7 host and Kit candidate.
+content. These additions require a host supporting the alpha.7-era contract or
+a host advertising the matching packed contract.

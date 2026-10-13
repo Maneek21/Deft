@@ -1,11 +1,26 @@
 import { z } from 'zod';
+import { parseMailboxList } from './mailbox-list.js';
+import { parseSafeComposeHtml } from './safe-compose-html.js';
+import { parseResourceRecordList } from './resource-record-list.js';
 
 const key = z.string().min(1).max(48).regex(/^[a-z][a-z0-9_]*$/)
   .refine((value) => !['constructor', 'prototype', '__proto__'].includes(value));
 const field = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('string'), maxLength: z.number().int().min(1).max(16_384),
-    minLength: z.number().int().min(0).max(16_384).optional(), format: z.literal('email').optional(),
-    title: z.string().min(1).max(80).regex(/^[^\u0000-\u001f\u007f<>]+$/).optional(), readOnly: z.boolean().optional() }),
+    minLength: z.number().int().min(0).max(16_384).optional(), format: z.enum(['email', 'single_line', 'mailbox_list', 'safe_html', 'resource_record_list', 'opaque_account_reference']).optional(),
+    maxItems: z.number().int().min(1).max(32).optional(),
+    plainTextKey: key.optional(), resourceKey: key.optional(),
+    title: z.string().min(1).max(80).regex(/^[^\u0000-\u001f\u007f<>]+$/).optional(), readOnly: z.boolean().optional() }).refine(
+      value => value.format === 'mailbox_list' ? value.maxItems !== undefined && value.maxLength <= 2048
+        : value.format === 'resource_record_list' ? value.maxItems !== undefined && value.maxItems <= 25 && value.maxLength <= 925
+          : value.maxItems === undefined,
+      { message: 'maxItems must match the reviewed list format', path: ['maxItems'] })
+      .refine(value => value.format === 'safe_html' ? value.plainTextKey !== undefined : value.plainTextKey === undefined,
+        { message: 'plainTextKey is required only for safe_html fields', path: ['plainTextKey'] })
+      .refine(value => value.format === 'resource_record_list' ? value.resourceKey !== undefined : value.resourceKey === undefined,
+        { message: 'resourceKey is required only for resource_record_list fields', path: ['resourceKey'] })
+      .refine(value => value.format !== 'opaque_account_reference' || value.minLength === 1 && value.maxLength === 512,
+        { message: 'Opaque account references require exact bounds 1 through 512', path: ['format'] }),
   z.strictObject({ type: z.literal('number'), minimum: z.number().finite(), maximum: z.number().finite() })
     .refine((value) => value.minimum <= value.maximum),
   z.strictObject({ type: z.literal('boolean') }),
@@ -21,6 +36,15 @@ export const RuntimeObjectSchema = z.strictObject({
   for (const [name, definition] of Object.entries(value.properties)) if (definition.type === 'string' && (definition.minLength ?? 0) > definition.maxLength) {
     ctx.addIssue({code:'custom',path:['properties',name,'minLength'],message:'Minimum length exceeds maximum length'});
   }
+  const plainKeys = new Set<string>();
+  for (const [name, definition] of Object.entries(value.properties)) if (definition.type === 'string' && definition.format === 'safe_html') {
+    const plainKey = definition.plainTextKey!, plain = value.properties[plainKey];
+    if (name === plainKey || plainKeys.has(plainKey) || plain?.type !== 'string' || plain.format !== undefined
+      || plain.readOnly !== true || (value.required.includes(name) && !value.required.includes(plainKey))) {
+      ctx.addIssue({ code: 'custom', path: ['properties', name, 'plainTextKey'], message: 'Rich input must pair with a distinct declared read-only plain string' });
+    }
+    plainKeys.add(plainKey);
+  }
   if (Object.keys(value.properties).length > 32 || new Set(value.required).size !== value.required.length
     || value.required.some((name) => !Object.hasOwn(value.properties, name))) {
     ctx.addIssue({ code: 'custom', message: 'Runtime object fields must be bounded, unique and declared' });
@@ -35,10 +59,36 @@ export function parseRuntimeObjectInput(contract: RuntimeObjectContract, value: 
     let validator: z.ZodType = definition.type === 'string' ? z.string().min(definition.minLength ?? 0).max(definition.maxLength)
       : definition.type === 'number' ? z.number().finite().min(definition.minimum).max(definition.maximum)
         : z.boolean();
+    if (definition.type === 'string' && definition.format === 'opaque_account_reference') validator = z.string()
+      .min(1).max(512).regex(/^[A-Za-z0-9_-]+$/u);
     if (definition.type === 'string' && definition.format === 'email') validator = z.string().min(definition.minLength ?? 0).max(definition.maxLength).email();
+    if (definition.type === 'string' && definition.format === 'single_line') validator = z.string()
+      .min(definition.minLength ?? 0).max(definition.maxLength).regex(/^[^\r\n\0]*$/u);
+    if (definition.type === 'string' && definition.format === 'mailbox_list') validator = z.string()
+      .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
+        try { parseMailboxList(text, { maxItems: definition.maxItems, allowEmpty: (definition.minLength ?? 0) === 0 }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a valid bounded mailbox list' }); }
+      });
+    if (definition.type === 'string' && definition.format === 'safe_html') validator = z.string()
+      .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
+        try { parseSafeComposeHtml(text, { maxCharacters: definition.maxLength }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a canonical bounded compose document' }); }
+      });
+    if (definition.type === 'string' && definition.format === 'resource_record_list') validator = z.string()
+      .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
+        try { parseResourceRecordList(text, { maxItems: definition.maxItems, allowEmpty: (definition.minLength ?? 0) === 0 }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a distinct bounded record list' }); }
+      });
     shape[name] = schema.required.includes(name) ? validator : validator.optional();
   }
-  return z.strictObject(shape).parse(value) as Record<string, string | number | boolean>;
+  return z.strictObject(shape).superRefine((input, ctx) => {
+    for (const [name, definition] of Object.entries(schema.properties)) if (definition.type === 'string' && definition.format === 'safe_html'
+      && typeof input[name] === 'string' && input[name] !== '') {
+      try { if (parseSafeComposeHtml(input[name] as string).plainText !== input[definition.plainTextKey!])
+        ctx.addIssue({ code: 'custom', path: [definition.plainTextKey!], message: 'Plain input must exactly match the compose document' }); }
+      catch { /* The field validator reports malformed HTML. */ }
+    }
+  }).parse(value) as Record<string, string | number | boolean>;
 }
 
 export const RuntimeRequirementSchema = z.strictObject({

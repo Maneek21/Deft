@@ -1,14 +1,17 @@
 import { z } from 'zod';
+import {DeftExperienceRecordIntakeSchema} from './record-intake.js';
+import {DeftImplementedExperienceCapabilitySchema} from './experience-capabilities.js';
 
 /** Closed, candidate App Protocol v3 Experience artifact. The Kit dispatcher
  * owns package integration; this leaf never executes author bytes on install. */
 export const DEFT_EXPERIENCE_BUNDLE_VERSION = 'deft.experience_bundle.v1' as const;
 export const DEFT_EXPERIENCE_BRIDGE_VERSION = 'deft.experience_bridge.v1' as const;
 export const DEFT_EXPERIENCE_RENDERER_VERSION = 'deft.trusted_renderer.v1' as const;
+export const DEFT_EXPERIENCE_RENDERER_V2_VERSION = 'deft.trusted_renderer.v2' as const;
 export const DEFT_EXPERIENCE_MEDIA_TYPE = 'application/vnd.deft.experience+json' as const;
 
 const MAX_BUNDLE_BYTES = 128 * 1024;
-const MAX_WORKER_BYTES = 64 * 1024;
+const MAX_WORKER_BYTES = 96 * 1024;
 const MAX_REFERENCES = 16;
 const encoder = new TextEncoder();
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -24,12 +27,24 @@ const uniqueKeys = z.array(keySchema).max(MAX_REFERENCES)
   .refine((items) => items.every((item, index) => index === 0 || items[index - 1]! < item),
     'Keys must be sorted');
 
+/** Only implemented host profiles may be pinned in an installed reference.
+ * Other public profile schemas remain declarations until their adapters ship. */
+export const DeftExperienceRendererProfileSchema = z.strictObject({
+  renderer_version: z.enum([DEFT_EXPERIENCE_RENDERER_VERSION, DEFT_EXPERIENCE_RENDERER_V2_VERSION]),
+  capabilities: z.array(DeftImplementedExperienceCapabilitySchema)
+    .min(1).max(DeftImplementedExperienceCapabilitySchema.options.length).refine(values => new Set(values).size === values.length, 'Capabilities must be unique').optional(),
+}).refine(value => value.renderer_version === DEFT_EXPERIENCE_RENDERER_VERSION
+  ? value.capabilities === undefined : value.capabilities !== undefined,
+  'Renderer v2 requires implemented capabilities; v1 cannot declare capabilities');
+export type DeftExperienceRendererProfile = z.infer<typeof DeftExperienceRendererProfileSchema>;
 export const DeftExperienceReferenceSchema = z.strictObject({
   artifact_path: experiencePathSchema,
   artifact_digest: digestSchema,
   bridge_version: z.literal(DEFT_EXPERIENCE_BRIDGE_VERSION),
-  renderer_version: z.literal(DEFT_EXPERIENCE_RENDERER_VERSION),
-});
+  ...DeftExperienceRendererProfileSchema.shape,
+}).refine(value => DeftExperienceRendererProfileSchema.safeParse({ renderer_version: value.renderer_version,
+  ...(value.capabilities === undefined ? {} : { capabilities: value.capabilities }) }).success,
+  'Unsupported Experience renderer profile');
 export type DeftExperienceReference = z.infer<typeof DeftExperienceReferenceSchema>;
 
 const bundleFields = {
@@ -42,13 +57,18 @@ const bundleV2 = z.strictObject({ schema_version: z.literal('deft.experience_bun
 }).refine(value => value.search_resource_keys.every(key => value.resource_keys.includes(key)),
   'Search keys must be declared resource keys');
 const bundleV3 = z.strictObject({ schema_version: z.literal('deft.experience_bundle.v3'), ...bundleFields,
-  state_keys: uniqueKeys.refine(keys => keys.length > 0),
+  state_keys: uniqueKeys, record_store_keys:uniqueKeys.refine(keys=>keys.length>0).optional(),
   search_resource_keys: uniqueKeys.refine(keys => keys.length > 0).optional(),
 }).refine(value => !value.search_resource_keys || value.search_resource_keys.every(key => value.resource_keys.includes(key)),
-  'Search keys must be declared resource keys');
-export const DeftExperienceBundleSchema = z.union([bundleV1, bundleV2, bundleV3]).superRefine((value, ctx) => {
+  'Search keys must be declared resource keys').refine(value=>value.state_keys.length>0||Boolean(value.record_store_keys?.length),
+  'Bundle v3 requires private state or app-owned record stores');
+const bundleV4=z.strictObject({...bundleV3.shape,schema_version:z.literal('deft.experience_bundle.v4'),record_intakes:z.array(DeftExperienceRecordIntakeSchema).length(1)})
+ .refine(value=>!value.search_resource_keys||value.search_resource_keys.every(key=>value.resource_keys.includes(key)),'Search keys must be declared resource keys')
+ .refine(value=>value.state_keys.length>0||Boolean(value.record_store_keys?.length),'Bundle v4 requires app-owned records')
+ .refine(value=>value.record_intakes.every(intake=>value.record_store_keys?.includes(intake.store_key)),'Intake stores must be declared');
+export const DeftExperienceBundleSchema = z.union([bundleV1, bundleV2, bundleV3,bundleV4]).superRefine((value, ctx) => {
   if (encoder.encode(value.worker_source).byteLength > MAX_WORKER_BYTES) {
-    ctx.addIssue({ code: 'custom', path: ['worker_source'], message: 'Worker source exceeds 64 KiB' });
+    ctx.addIssue({ code: 'custom', path: ['worker_source'], message: 'Worker source exceeds 96 KiB' });
   }
 });
 export type DeftExperienceBundle = z.infer<typeof DeftExperienceBundleSchema>;
@@ -70,8 +90,10 @@ function canonicalBundleJson(input: unknown): string {
     entry_view: bundle.entry_view,
     resource_keys: bundle.resource_keys,
     action_keys: bundle.action_keys,
-    ...((bundle.schema_version === 'deft.experience_bundle.v2' || bundle.schema_version === 'deft.experience_bundle.v3' && bundle.search_resource_keys) ? { search_resource_keys: bundle.search_resource_keys } : {}),
-    ...(bundle.schema_version === 'deft.experience_bundle.v3' ? { state_keys: bundle.state_keys } : {}),
+    ...((bundle.schema_version === 'deft.experience_bundle.v2' || (bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && bundle.search_resource_keys) ? { search_resource_keys: bundle.search_resource_keys } : {}),
+    ...((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') ? { state_keys: bundle.state_keys } : {}),
+    ...((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && bundle.record_store_keys ? {record_store_keys:bundle.record_store_keys} : {}),
+    ...(bundle.schema_version==='deft.experience_bundle.v4'?{record_intakes:bundle.record_intakes}:{}),
   });
   if (encoder.encode(content).byteLength > MAX_BUNDLE_BYTES) {
     throw new Error('Experience bundle exceeds 128 KiB');
@@ -114,5 +136,7 @@ export async function verifyDeftExperienceArtifact(
   if (canonical !== artifact.content || await sha256(canonical) !== artifact.digest) {
     throw new Error('Experience artifact digest or canonical bytes mismatch');
   }
-  return DeftExperienceBundleSchema.parse(raw);
+  const bundle=DeftExperienceBundleSchema.parse(raw);
+  if(bundle.schema_version==='deft.experience_bundle.v4'&&!reference.capabilities?.includes('record_intake.mailto.v1'))throw Error('EXPERIENCE_CAPABILITY_UNAVAILABLE');
+  return bundle;
 }

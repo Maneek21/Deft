@@ -10,6 +10,54 @@ class Port {
   close() { this.closed = true; }
   receive(value: unknown) { this.onmessage?.({ data:value } as MessageEvent); }
 }
+test('SDK named triage options and typed search nominate only the exact reviewed resource',async()=>{
+ const port=new Port(),sdk=createDeftExperienceSdk(port,'session_12345678'),id='00000000-0000-4000-8000-000000000001';
+ const output={schema_version:'deft.experience_triage_options.v1',account_id:'a',provider:'gmail',destinations:[{id:'INBOX',label:'Inbox',kind:'folder'}],labels:[{id:'Label_1',label:'Review queue'}],complete:true,labels_supported:true};
+ const read=sdk.readTriageOptions('inbox',id);assert.deepEqual((port.sent[0] as {input:unknown}).input,{operation:'triage_options',record_id:id});
+ port.receive({version:'deft.experience_bridge.v1',kind:'response',session_id:'session_12345678',request_id:'request_1',ok:true,output});assert.deepEqual(await read,output);
+ const page={schema_version:'deft.experience_provider_page.v1',items:[],next_cursor:null,complete:false,observed_at:'2026-10-03T00:00:00.000Z',count:{returned:0,exact_total:null},failure_count:0};
+ const pending=sdk.browseResourceRecords('inbox',{operation:'search',folder:'inbox',filters:{from:'x@example.test',has_attachments:true}});
+ assert.deepEqual((port.sent[1] as {input:unknown}).input,{operation:'browse',kind:'search',folder:'inbox',filters:{from:'x@example.test',has_attachments:true}});
+ port.receive({version:'deft.experience_bridge.v1',kind:'response',session_id:'session_12345678',request_id:'request_2',ok:true,output:page});assert.deepEqual(await pending,page);
+ for(const options of [{operation:'search',folder:'all',query:'x',filters:{from:'x'}},{operation:'search',folder:'all',filters:{provider_query:'in:anywhere'}},{operation:'search',folder:'all',filters:{from:'x" OR in:anywhere'}}])assert.throws(()=>sdk.browseResourceRecords('inbox',options as never));
+});
+
+test('SDK provider page uses one bounded browse operation and only UUID sources/cursors', async () => {
+  const port = new Port(), sdk = createDeftExperienceSdk(port, 'session_12345678'), id = '00000000-0000-4000-8000-000000000001';
+  const page = { schema_version: 'deft.experience_provider_page.v1', items: [{ record_id: id, label: 'Subject', data: { subject: 'Subject' } }],
+    next_cursor: id, complete: false, observed_at: '2026-10-02T00:00:00.000Z', count: { returned: 1, exact_total: null }, failure_count: 0 };
+  const pending = sdk.browseResourceRecords('inbox', { operation: 'search', folder: 'all', query: 'subject' });
+  assert.deepEqual((port.sent[0] as { input: unknown }).input, { operation: 'browse', kind: 'search', folder: 'all', query: 'subject' });
+  port.receive({ version: 'deft.experience_bridge.v1', kind: 'response', session_id: 'session_12345678', request_id: 'request_1', ok: true, output: page });
+  assert.deepEqual(await pending, page);
+  for (const output of [{ ...page, provider_id: 'private' }, { ...page, next_cursor: 'provider-native-cursor' },
+    { ...page, complete: true }, { ...page, items: [{ ...page.items[0], provider_source: {} }] },
+    { ...page, count: { returned: 1, exact_total: 10000 } }]) {
+    const reading = sdk.browseResourceRecords('inbox', { operation: 'list', folder: 'all' });
+    port.receive({ version: 'deft.experience_bridge.v1', kind: 'response', session_id: 'session_12345678',
+      request_id: (port.sent.at(-1) as { request_id: string }).request_id, ok: true, output });
+    await assert.rejects(reading);
+  }
+  for (const input of [{ operation: 'list', folder: 'all', account_id: 'forged' }, { operation: 'list', folder: 'all', cursor: 'provider-native-cursor' },
+    { operation: 'conversation', folder: 'all', record_id: 'provider-id' }, { operation: 'search', folder: 'all', query: ' ' }])
+    assert.throws(() => sdk.browseResourceRecords('inbox', input as never));
+});
+
+test('SDK lazy document uses only a host UUID and rejects source bytes, HTML and unbounded metadata',async()=>{
+  const port=new Port(),sdk=createDeftExperienceSdk(port,'session_12345678'),id='00000000-0000-4000-8000-000000000001';
+  const output={format:'plain',content:'private body'.repeat(800),truncated:false,metadata:{title:'Reviewed title'}};
+  const read=sdk.readResourceDocument('documents',id);
+  assert.deepEqual((port.sent[0] as {input:unknown}).input,{operation:'read_document',record_id:id});
+  port.receive({version:'deft.experience_bridge.v1',kind:'response',session_id:'session_12345678',request_id:'request_1',ok:true,output});
+  assert.deepEqual(await read,output);
+  for(const invalid of [{...output,format:'html'},{...output,content:'x'.repeat(16385)},{...output,bytes:'provider raw'},
+    {...output,metadata:{title:'x'.repeat(16385)}},{...output,metadata:{provider_locator:{id:'foreign'}}}]){
+    const pending=sdk.readResourceDocument('documents',id);
+    port.receive({version:'deft.experience_bridge.v1',kind:'response',session_id:'session_12345678',request_id:(port.sent.at(-1) as {request_id:string}).request_id,ok:true,output:invalid});
+    await assert.rejects(pending,/Document unavailable/);
+  }
+  await assert.rejects(sdk.readResourceDocument('documents','provider-native-id'),/Invalid record locator/);
+});
 
 test('SDK search uses closed request v2 and rejects private metadata or unselected fields in replies', async () => {
   const port = new Port(), sdk = createDeftExperienceSdk(port, 'session_12345678');
@@ -83,4 +131,17 @@ test('resource helpers bound locators and validate whole scalar replies', async 
     await assert.rejects(rejected, /Invalid Experience resource response/);
   }
   sdk.close();
+});
+
+test('SDK saved source nomination is bounded and carries no private locator',async()=>{
+  const port=new Port(),sdk=createDeftExperienceSdk(port,'session_12345678'),id='00000000-0000-4000-8000-000000000001';
+  const ref={field:'reply_record_id',action_key:'send_message',input_field:'parent_record_id',record_id:id};
+  const value={reply_record_id:id,body:'Saved reply'};
+  const saved=sdk.putPrivateState('drafts',id,0,value,{source_refs:[ref]});
+  assert.deepEqual((port.sent[0] as {input:unknown}).input,{operation:'put',record_id:id,expected_revision:0,value,source_refs:[ref]});
+  port.receive({version:'deft.experience_bridge.v1',kind:'response',session_id:'session_12345678',request_id:'request_1',ok:true,
+    output:{operation:'put',item:{record_id:id,revision:1,updated_at:'2026-10-02T00:00:00Z',expires_at:'2026-10-03T00:00:00Z'}}});
+  await saved;
+  for(const options of [{source_refs:[{...ref,provider_source:{}}]},{source_refs:[{...ref,record_id:'provider-id'}]},
+    {source_refs:[ref,ref]},{source_refs:[]},{source_refs:[{...ref,field:'body'}]}])assert.throws(()=>sdk.putPrivateState('drafts',id,1,value,options as never));
 });
