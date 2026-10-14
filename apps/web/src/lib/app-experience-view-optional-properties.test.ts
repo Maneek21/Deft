@@ -42,9 +42,12 @@ test('view compatibility leaves request inputs and broker outputs strict',async(
   const f=fixture();f.receive(envelope({kind:'request',request_id:'request_1',operation:'run_status',input}));await tick();assert.equal(f.bridge.active,false);assert.equal(f.calls(),0);assert.equal(f.views.length,0);
  }
  const port={onmessage:null as ((event:MessageEvent)=>void)|null,sent:[] as unknown[],postMessage(value:unknown){this.sent.push(value);},close(){}};
- const bridge=createExperienceBridge({port,pin,resourceKeys:[],actionKeys:[],broker:{isLive:()=>true,runStatus:async()=>({nested:undefined})},onView(){assert.fail('no view');}});
+ const bridge=createExperienceBridge({port,pin,resourceKeys:[],actionKeys:[],broker:{isLive:()=>true,runStatus:async()=>({nested:undefined,private:'must not cross the port'})},onView(){assert.fail('no view');}});
  port.onmessage?.({data:envelope({kind:'request',request_id:'request_1',operation:'run_status',input:{run_id:'run_test'}})} as MessageEvent);await tick();
- assert.equal(port.sent.length,0);assert.equal(bridge.active,false);bridge.revoke();
+ // Revoking invalid broker JSON settles the pending request with only the
+ // existing closed error envelope, never the invalid/private value.
+ assert.deepEqual(port.sent,[{version:'deft.experience_bridge.v1',kind:'response',session_id:pin.session_id,request_id:'request_1',ok:false,code:'UNAVAILABLE'}]);
+ await tick();assert.equal(port.sent.length,1,'No late successful/private reply');assert.equal(bridge.active,false);bridge.revoke();
 });
 
 test('optional view properties retain accessor cycle numeric key depth byte and replay fences',async()=>{

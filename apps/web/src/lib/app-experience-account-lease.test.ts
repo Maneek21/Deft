@@ -55,7 +55,7 @@ test('actual nonroot child renews independently; review mismatch, page end and a
 });
 
 test('actual retirement disposes only the retired child lease and clears its retained ownership',()=>{
- const retireBody=source.match(/retire:child=>\{([\s\S]*?)\},\s*\}\);\s*const sourceChild=/)?.[1];assert.ok(retireBody);
+ const retireBody=source.match(/retire:child=>\{([\s\S]*?)\},\s*\}\);/)?.[1];assert.ok(retireBody);
  const retired:string[]=[],records=new Map(),runs=new Map();
  const retire=new Function('session','retireSession','createdRecords','routedRuns',`return child=>{${retireBody}}`)({pin:{session_id:'root'}},(id:string)=>retired.push(id),records,runs);
  const make=(id:string)=>({targetKey:id,value:{session:{pin:{session_id:id}},lease:createExperienceLease({initial,current:()=>true,now:()=>0,refresh:async()=>initial})}});

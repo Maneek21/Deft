@@ -13,8 +13,10 @@ class Port implements ExperiencePort {onmessage:((event:MessageEvent)=>void)|nul
 // separately copied approximation. It is plain JS over already validated data.
 const installed=readFileSync(new URL('../components/apps/installed-app-experience.tsx',import.meta.url),'utf8');
 const start=installed.indexOf('const {presentation:_presentation,');
-assert.ok(start>=0);const end=installed.indexOf('return {...metadata,...(record?{record}:{})};',start)+ 'return {...metadata,...(record?{record}:{})};'.length;
-const project=new Function('result','request','AppDataRecordMetaSchema',installed.slice(start,end));
+const returnStatement='return {...metadata,...(record?{record:{...record,account_target_key:owner.targetKey}}:{})};';
+const end=installed.indexOf(returnStatement,start);
+assert.ok(start>=0&&end>start,'Actual installed metadata projection located');
+const project=new Function('result','request','AppDataRecordMetaSchema','owner',installed.slice(start,end+returnStatement.length));
 
 test('validated unsupported search diagnostics reach the actual bounded Worker reply with no invented freshness or full content',async()=>{
  const search={status:'unsupported',original_query:'unsupported:synthetic',unsupported:[{index:0,field:'unsupported',reason:'This search field is unsupported.'}],limitations:['Provider-specific coverage applies.'],query_complete:false};
@@ -24,7 +26,7 @@ test('validated unsupported search diagnostics reach the actual bounded Worker r
  }});
  const verified=await client.request('drafts','resource_list',{store_key:'drafts',resource_key:'inbox',cursor:null,limit:10,query:search.original_query},new AbortController().signal);assert.deepEqual(verified.search,search);
  const port=new Port(),bridge=createExperienceBridge({port,pin,resourceKeys:['inbox'],storeKeys:['drafts'],actionKeys:[],onView:()=>{},broker:{isLive:()=>true,appData:async(_pin,key,value,signal)=>{
-  const request=value as {operation:'resource_list';input:Record<string,unknown>};return project(await client.request(key,request.operation,request.input,signal),request,AppDataRecordMetaSchema);
+  const request=value as {operation:'resource_list';input:Record<string,unknown>};return project(await client.request(key,request.operation,request.input,signal),request,AppDataRecordMetaSchema,{targetKey:'sender'});
  }}});
  port.onmessage!({data:{version:'deft.experience_bridge.v1',kind:'request',session_id:pin.session_id,sequence:1,request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'resource_list',input:{store_key:'drafts',resource_key:'inbox',cursor:null,limit:10,query:search.original_query}}}} as MessageEvent);
  for(let i=0;i<20&&!port.sent.length;i++)await new Promise(resolve=>setTimeout(resolve,5));

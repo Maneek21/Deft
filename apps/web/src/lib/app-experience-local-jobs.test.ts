@@ -23,9 +23,14 @@ const node:Extract<ExperienceNode,{kind:'local_job_schedule'}>={kind:'local_job_
  store_key:'timers',operation_key:'remind',resource:{resource_key:'messages',record_id:id,content_digest:hash},
  profile:{schema_version:'deft.local_job_form.v1',note_field:'note',note_label:'Optional note',max_note_characters:2048}};
 
-test('local job disclosure retains reviewed input and recovers the original request across close/reopen',async()=>{
+test('local job disclosure retains reviewed input and recovers the original request across close/reopen',async(t)=>{
  const saved=Object.getOwnPropertyDescriptor(globalThis,'document');
  Object.assign(globalThis,{document:{createElement:(tag:string)=>new Element(tag)}});
+ // Hold the actual digest to prove scheduling is asynchronous, rather than
+ // assuming crypto.subtle finishes within a single timer tick on every runner.
+ const nativeDigest=crypto.subtle.digest.bind(crypto.subtle);
+ let releaseDigest!:()=>void;const digestGate=new Promise<void>(resolve=>{releaseDigest=resolve;});
+ t.mock.method(crypto.subtle,'digest',async(...args:Parameters<SubtleCrypto['digest']>)=>{await digestGate;return nativeDigest(...args);});
  const expires=new Date(Date.now()+86400000).toISOString();
  const target={session_id:id,target_key:'work',resource_key:'messages',account:{account_ref:id,label:'Work'},
   stores:[{declaration:{key:'timers',local_job_operations:[{key:'remind',local_only:true}]},consent:{expires_at:expires}}]} as unknown as Awaited<ReturnType<Options['select']>>;
@@ -51,7 +56,9 @@ test('local job disclosure retains reviewed input and recovers the original requ
   assert.deepEqual(panel.all().filter(element=>['input','textarea','select'].includes(element.tag)),fields);
   assert.equal(note.value,'Keep this reviewed note');assert.equal(requests.length,0);assert.equal(events.length,0);
   const schedule=panel.all().find(element=>element.textContent==='Schedule')!,recover=panel.all().find(element=>element.textContent==='Check original request status')!;
-  schedule.fire('click');await tick();assert.equal(requests.length,1);assert.equal(requests[0].input.value.note,note.value);
+  schedule.fire('click');await tick();assert.equal(schedule.disabled,true);assert.equal(requests.length,0,'No dispatch before its input digest is ready');
+  releaseDigest();for(let tries=0;schedule.disabled&&tries<100;tries++)await tick();
+  assert.equal(schedule.disabled,false);assert.equal(requests.length,1);assert.equal(requests[0].input.value.note,note.value);
   assert.equal(summary.textContent,'Follow up · Check status');
   const notice=panel.all().find(element=>element.attributes.get('role')==='status')!;
   assert.match(notice.textContent,/Not confirmed/);
@@ -62,5 +69,5 @@ test('local job disclosure retains reviewed input and recovers the original requ
   assert.deepEqual(requests.map(request=>request.operation),['schedule','status']);assert.equal(summary.textContent,node.label);
   assert.match(notice.textContent,/Original request confirmed: scheduled/);assert.deepEqual(events,[{kind:'click',node_id:node.id,value:'recovered'}]);
   assert.equal(note.value,'Keep this reviewed note');
- }finally{dispose?.();if(saved)Object.defineProperty(globalThis,'document',saved);else Reflect.deleteProperty(globalThis,'document');}
+ }finally{releaseDigest();dispose?.();if(saved)Object.defineProperty(globalThis,'document',saved);else Reflect.deleteProperty(globalThis,'document');}
 });
