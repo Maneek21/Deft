@@ -1,6 +1,6 @@
 # Current limitations
 
-Last reviewed September 8, 2026. The latest published preview is `v0.3.0-preview.15`, a core release.
+The published-release baseline reviewed here is `v0.3.0-preview.15` (September 8, 2026), not the current connected-App review candidate. The candidate uses packed Kit alpha.33 and generic Protocol 7 trusted forms, external Runtime and source contracts; see the [author guide](connected-app-author-guide.md). Its last schema 117 Email activation failed at database supplemental-effect validation. A corrected compatible Host identity and fresh installed acceptance remain pending; historical release instructions do not prove them.
 
 Installation and agent boundary notes updated September 11, 2026.
 
@@ -53,7 +53,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 
 - Apps are disabled by default. The API requires `DEFT_APPS_ENABLED=true`, and the web build requires `NEXT_PUBLIC_FEATURE_APPS=true`.
 - Connected App execution and bounded automations add further flags and operator review. They are included in preview.15, experimental, and disabled by default.
-- App Protocol v0 provides declarative internal records and native views. Current protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
+- App Protocol v0 provides declarative internal records and native views. The published preview.15 baseline does not provide arbitrary custom UI, public portals, general external runtimes or synchronization. The review candidate adds bounded generic trusted UI/Runtime/sync contracts, not arbitrary iframe UI or self-granted execution.
 - A package's requested permissions are review input. The host owns installation, grants, connector binding, activation, and execution authority.
 
 ## Scale and performance

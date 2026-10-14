@@ -15,11 +15,13 @@ import private Deft packages.
 
 The external [Email review](https://github.com/Maneek21/deft-email/pull/1) contains
 App `1.9.0-preview.1` and Runtime `0.4.0-preview.1`, both built against packed
-alpha.33. Its setup guide and package scripts are the current author example.
+alpha.33. Its package scripts are the current author example; the [pinned source snapshot setup](https://github.com/Maneek21/deft-email/blob/5fc2bc50265cfadbc8ee2e61535fbdb258bf3883/docs/setup.md) preserves the pre-cleanup instructions. Consult the reviewed [Email PR](https://github.com/Maneek21/deft-email/pull/1) for documentation corrections until their exact revision is frozen. The last App 1.9 activation on schema 117 failed at the database supplemental-effect guard; a corrected compatible Host and installed acceptance are pending. Kit parsing alone cannot establish database compatibility.
 Run the App build outside Deft, supply the independently deployed Runtime and
 review the resulting package through Settings → Apps. No Deft checkout is a
 Runtime dependency. Previous preview.1/preview.2 and E5.9/E5.11 artifacts remain
 historical evidence; they do not certify this candidate.
+
+In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. Both locks resolve the included sealed alpha.33 tarball, not a workspace link. The generated `app/app.deft.json` is the public protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides a compatible published Host, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
 
 Email owns mailbox/provider behavior, content normalization, its data model and
 UI declarations. Kit supplies bounded public contracts. Deft supplies generic
@@ -93,9 +95,7 @@ journey works:
 ## Historical Protocol 1/2 sandbox walkthrough
 
 The following sections preserve the older authoring example and its frozen
-artifacts. Protocol 1/2 compatibility remains available to existing connected
-apps, including Campaigns; it is separate from the retired built-in mailbox
-product. Current external Email does not use this frozen SandboxEmail interface.
+artifacts. Protocol 1/2 parsing and retained-history readers remain compatibility inputs; current Host policy rejects new connected admission on those legacy protocols. This is separate from the retired built-in mailbox product. Current external Email does not use this frozen SandboxEmail interface.
 Use the Protocol 7 Email example above for the current connected-app author path.
 
 ### 1. Build against the example provider
@@ -257,7 +257,7 @@ pnpm exec deft app doctor --url http://localhost:3001
 `http://localhost:3001`.
 
 `doctor` validates the local source and then checks the developer-status
-contract. A compatible current host retains the legacy fields
+contract. The historical host used the legacy fields
 `app_protocol: "0"`, `audience: "app-developer"`, and
 `single_use_install: true`, and adds this exact flow information:
 
@@ -404,7 +404,7 @@ not allowlist a shell, PowerShell, `cmd`, `pnpm`, `npm`, `npx`, a package runner
 or a broad directory. Configuring this proof provider does not bind it to an
 App, grant provider access, or make a staged App executable.
 
-## Current boundaries
+## Historical sandbox boundaries
 
 - No self-grant: packages and reports request authority; only the host can
   create effective grants, bindings, and activation state.
