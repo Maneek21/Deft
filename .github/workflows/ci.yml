@@ -513,10 +513,28 @@ jobs:
           docker run --rm --network deft-browser-smoke \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
             -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
-            --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed:demo'
+            --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed && pnpm --filter @deft/api exec tsx src/scripts/seed-test-fixtures.ts'
+          # Fixed API fixtures supply the synthetic owner; add only browser prerequisites.
+          # Never run seed-demo here: schema118 retains a truncate-protected adoption marker.
+          docker exec -i deft-browser-postgres psql -U postgres -d deft -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          INSERT INTO spaces (id, org_id, name, type, is_default, created_by)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6001', '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6', 'general', 'public', true, 'd4f985f6-6c37-4102-a7e8-32e22cfbe962')
+          ON CONFLICT (id) DO NOTHING;
+          INSERT INTO space_members (id, space_id, user_id)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6002', '9e60a105-31aa-437b-82c2-1b1849cd6001', 'd4f985f6-6c37-4102-a7e8-32e22cfbe962')
+          ON CONFLICT (space_id, user_id) DO NOTHING;
+          INSERT INTO projects (id, org_id, name, prefix, lead_id)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6003', '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6', 'Browser smoke', 'SMOKE', 'd4f985f6-6c37-4102-a7e8-32e22cfbe962')
+          ON CONFLICT (id) DO NOTHING;
+          INSERT INTO onboarding_state (id, user_id, completed)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6004', 'd4f985f6-6c37-4102-a7e8-32e22cfbe962', true)
+          ON CONFLICT (user_id) DO NOTHING;
+          COMMIT;
+          SQL
           docker run --rm --network deft-browser-smoke \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
-            -e DEFT_TEST_EMAIL=diego@testers-tomatoes.com \
+            -e DEFT_TEST_EMAIL=maneek@test.com \
             -e DEFT_APPROVAL_SMOKE_MARKER="CI approval smoke $GITHUB_RUN_ID" \
             --entrypoint sh deft:ci -c 'pnpm test:product-browser:seed'
           docker run -d --name deft-browser-app --network deft-browser-smoke \
@@ -547,8 +565,8 @@ jobs:
       - name: Run production browser smoke
         env:
           DEFT_WEB_URL: http://127.0.0.1:3000
-          DEFT_TEST_EMAIL: diego@testers-tomatoes.com
-          DEFT_TEST_PASSWORD: tomato123
+          DEFT_TEST_EMAIL: maneek@test.com
+          DEFT_TEST_PASSWORD: test1234
           DEFT_APPROVAL_SMOKE_MARKER: CI approval smoke ${{ github.run_id }}
         run: pnpm test:product-browser
       - name: Block critical production-image vulnerabilities
