@@ -29,20 +29,21 @@ export function ExperienceFilePicker({label,children,className,disabled=false,mu
 
 /** Browser files go to the host's draft upload/finalization path. Until it returns
  * a ready row they are visible as pending and cannot enter the send snapshot. */
-export function ExperienceComposeFilesControl({ label, files, onSelectFiles, onRemove, onRetry, onDownload, onInsertImage, onArchive, archiveBusy = false, onCancelArchive, disabled = false, acceptedMediaTypes, unavailableNotice }: {
+export function ExperienceComposeFilesControl({ label, files, onSelectFiles, onRemove, onRetry, onDownload, onInsertImage, onArchive, archiveBusy = false, onCancelArchive, disabled = false, acceptedMediaTypes, unavailableNotice, extraActions }: {
   label: string; files: readonly ComposeFile[]; onSelectFiles?: (files: readonly File[]) => void; onRemove?: (key: string) => void;
   onRetry?: (key: string) => void; onDownload?: (key: string) => void; onInsertImage?: (key: string) => void; onArchive?: () => void; archiveBusy?: boolean; onCancelArchive?: () => void;
-  disabled?: boolean; acceptedMediaTypes?: readonly string[]; unavailableNotice?: string;
+  disabled?: boolean; acceptedMediaTypes?: readonly string[]; unavailableNotice?: string; extraActions?: ReactNode;
 }) {
   return <div className="min-w-0 space-y-2 pt-3">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <span className="text-xs text-[var(--on-surface-variant)]">{label}</span>
+    <div className="flex flex-wrap items-center gap-2">
+      {files.length>0&&<span className="mr-auto text-xs text-[var(--on-surface-variant)]">{label}</span>}
       {onArchive && files.length > 0 && <button type="button" className="deft-pill min-h-11 px-3 text-xs" disabled={disabled} onClick={onArchive}>Download all files (.zip)</button>}
       {archiveBusy && onCancelArchive && <button type="button" className="deft-pill min-h-11 px-3 text-xs" onClick={onCancelArchive}>Cancel ZIP</button>}
       {onSelectFiles && <ExperienceFilePicker label="Add files" multiple disabled={disabled} accept={acceptedMediaTypes?.join(',')} onSelect={onSelectFiles}
         className="flex min-h-10 items-center gap-2 rounded-full px-3 text-xs text-[var(--on-surface-variant)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] hover:bg-[var(--surface-container-high)] disabled:opacity-50">
         <Paperclip size={16} aria-hidden="true"/>Add files
       </ExperienceFilePicker>}
+      {extraActions}
     </div>
     {files.length > 0 && <ul className="space-y-1.5" aria-label={label}>
       {files.map(file => <li key={file.key} className="flex min-w-0 items-center gap-3 rounded-xl bg-[var(--surface-container-low)] py-1.5 pl-3 pr-1">
