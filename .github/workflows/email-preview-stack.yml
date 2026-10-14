@@ -94,6 +94,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
+          pnpm exec playwright install --with-deps chromium 2>&1 | tee .ci-diagnostics/browser-install.log
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-prepared-effect-boundary.test.ts test/app-installed-tool-discovery.test.ts test/app-connection-registry.test.ts test/app-experience-provider-browse.test.ts test/app-experience-resource-content.test.ts 2>&1 | tee .ci-diagnostics/installed-app-boundary.log
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 src/lib/app-data-copy-effect.test.ts src/lib/app-integration-source-dispatch.test.ts 2>&1 | tee .ci-diagnostics/installed-app-capture.log
