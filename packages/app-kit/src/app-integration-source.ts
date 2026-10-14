@@ -22,8 +22,19 @@ export const AppIntegrationCapturePolicyInputSchema=z.strictObject({enabled:z.bo
  expected_revision:z.number().int().nonnegative()})
  .refine(value=>(value.destination.scope==='user')===(value.destination.space_id===null));
 export type AppIntegrationCapturePolicyInput=z.infer<typeof AppIntegrationCapturePolicyInputSchema>;
-export const AppIntegrationCaptureNominationSchema=z.strictObject({schema_version:z.literal('deft.app_capture_nomination.v1'),eligible:z.boolean(),
+export const AppIntegrationCaptureNominationV1Schema=z.strictObject({schema_version:z.literal('deft.app_capture_nomination.v1'),eligible:z.boolean(),
  reason:z.string().regex(/^[a-z_]{1,64}$/u).optional(),body_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
  thread_key:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),sender:z.string().max(320),received_at:z.string().max(64).nullable(),
  is_bulk:z.boolean(),partial:z.literal(true),attachments_processed:z.literal(false)}).refine(row=>!row.eligible||!!row.body_digest&&!!row.thread_key);
+export const APP_INTEGRATION_CAPTURE_NOMINATION_BYTES=98304;
+/** App-owned source evidence. Host verifies authority/digests; it never derives domain text. */
+export const AppIntegrationCaptureNominationV2Schema=z.strictObject({schema_version:z.literal('deft.app_capture_nomination.v2'),eligible:z.boolean(),
+ reason:z.string().regex(/^[a-z_]{1,64}$/u).optional(),body:z.string().max(16000).optional(),
+ body_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),thread_key:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
+ sender:z.string().max(320).regex(/^[^\u0000-\u001f\u007f]*$/u),received_at:z.string().max(64).nullable(),
+ folders:z.array(z.string().min(1).max(256).regex(/^[^\u0000-\u001f\u007f]+$/u)).max(16).refine(rows=>new Set(rows).size===rows.length),
+ is_bulk:z.boolean(),partial:z.literal(true),attachments_processed:z.literal(false)})
+ .refine(row=>!row.eligible||!!row.body&&row.body.length>=40&&!!row.body_digest&&!!row.thread_key)
+ .refine(row=>new TextEncoder().encode(JSON.stringify(row)).byteLength<=APP_INTEGRATION_CAPTURE_NOMINATION_BYTES);
+export const AppIntegrationCaptureNominationSchema=z.discriminatedUnion('schema_version',[AppIntegrationCaptureNominationV1Schema,AppIntegrationCaptureNominationV2Schema]);
 export type AppIntegrationCaptureNomination=z.infer<typeof AppIntegrationCaptureNominationSchema>;
