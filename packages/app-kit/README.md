@@ -44,7 +44,7 @@ install or operate it.
 
 ## Install the packed kit
 
-From a Deft checkout, create the exact package artifact:
+Authors install the reviewed packed artifact; no Deft checkout is required. SDK maintainers can optionally rebuild it from the complete corresponding source:
 
 ```sh
 pnpm --dir packages/app-kit pack --pack-destination /absolute/path/to/artifacts
@@ -57,14 +57,14 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.32.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.33.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.32`. Package metadata,
-`DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.32
-includes connection v2 sessions and independent action consents, reviewed
+This review candidate is `0.1.0-alpha.33`. Package metadata,
+`DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.33
+retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
 resource data/content contracts, attachments, safe compose HTML, and generic
 source/Task integration. These are contracts; a compatible Host must advertise
@@ -200,13 +200,9 @@ Personal MCP connections act with their user's access and explicit scopes;
 the Module's `agent_access` policy controls Defty and agent employees. Linked
 native tasks retain their own visibility rules.
 
-Connected Apps currently request the closed `sandbox_email_send` interface.
-Operators select a compatible provider and grant authority in Deft. An author
-cannot introduce a new executable interface merely by naming an MCP tool.
-Supporting another capability requires a host contract implementation and
-conformance checks. Sandbox acceptance does not establish message delivery.
+The protocol 1/2 connected templates and `sandbox_email_send` examples below are historical schema/conformance fixtures. They are not the current executable onboarding path. Current independent Apps use protocol 7 declarations, external Runtime custody and public stage/review/activation, as demonstrated by Email. Provider behavior belongs to the App Runtime; naming a capability or MCP tool grants no authority. Historical sandbox acceptance never established message delivery.
 
-## Authoring loop
+## Historical CLI authoring loop
 
 ```sh
 # Protocol v0; omitting --template remains the byte-identical default.
