@@ -293,8 +293,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Build web
-        run: pnpm --filter @deft/web build
+      - name: Build App Kit
+        run: pnpm --filter @deft/app-kit build
+      - name: Build production Web
+        run: pnpm --filter @deft/web exec next build --webpack
 
   versioned-upgrade:
     name: Versioned Upgrade
