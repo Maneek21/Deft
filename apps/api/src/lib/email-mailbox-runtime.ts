@@ -1,3 +1,4 @@
+import {legacyNativeEntry} from './email-native-adapter-contract.js';
 import {getEmailMailboxAuthority} from './email-account-authority-router.js';
 import {EmailMailboxConversationService} from './email-mailbox-conversation.js';
 import { EmailMailboxService, EmailMailboxError, type EmailActor, type EmailOperationActor, type EmailScope, type EmailCapability } from './email-mailbox-service.js';
@@ -70,8 +71,8 @@ export async function getEmailMailboxComponents(currentSql:(scope:EmailScope,tra
         eq(emailAccounts.account_id,scope.account_id),eq(emailAccounts.resource_binding_id,capability.resource_binding_id))).limit(1);
     if (!selected) throw new EmailMailboxError('EMAIL_ACCESS_DENIED');
     const binding=selected.binding;
-    const entry=(await getAppConnectionRegistry()).select({org_id:scope.org_id,owner_user_id:scope.owner_user_id,
-      installation_id:binding.app_installation_id,target_key:binding.target_key});
+    const entry=legacyNativeEntry((await getAppConnectionRegistry()).select({org_id:scope.org_id,owner_user_id:scope.owner_user_id,
+      installation_id:binding.app_installation_id,target_key:binding.target_key}));
     const pins=entry.pins;
     if (pins.org_id!==scope.org_id || pins.owner_user_id!==scope.owner_user_id
       || pins.installation_id!==binding.app_installation_id || !consent&&(pins.app_version_id!==binding.app_version_id

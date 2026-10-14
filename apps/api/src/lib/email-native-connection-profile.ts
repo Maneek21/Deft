@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import type {AppConnectionAdapter} from './app-connection-contract.js';
+import type {NativeEmailAdapter as AppConnectionAdapter} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionBinding,NativeEmailConnectionProvider} from './email-native-connection-contract.js';
 const id=z.string().min(1).max(256).refine(v=>v===v.trim()&&!/[\u0000-\u001f\u007f-\u009f]/u.test(v));
 export const NativeEmailAccountBridgeSchema=z.strictObject({

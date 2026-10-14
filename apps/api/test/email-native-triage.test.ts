@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import test from 'node:test';
 import {EmailNativeTriageService,RegisteredEmailNativeTriageProvider,emailNativeTriageSourceFingerprint} from '../src/lib/email-native-triage.js';
-import type {AppConnectionAdapter,NativeEmailAccount,NativeEmailTriageResult} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailTriageResult, NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 import type {EmailActor,EmailScope,EmailCapability,EmailMessageRecord} from '../src/lib/email-mailbox-service.js';
 import type {EmailMailboxFlagAcknowledgement} from '../src/lib/email-mailbox-store.js';
 const scope:EmailScope={org_id:'org-triage',owner_user_id:'owner-triage',account_id:'account-triage'};

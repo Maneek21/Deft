@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-test('native Email sync resolves through the scheduled leased worker registry',async()=>{
-  const workers=await import('../src/workers/index.js');
-  assert.equal(typeof await workers._getScheduledJobHandlerForTest('native-email-sync'),'function');
+test('retired mailbox jobs have no executable handler even if the old feature flag is enabled',async()=>{
+  const old=process.env.DEFT_NATIVE_EMAIL_ENABLED;process.env.DEFT_NATIVE_EMAIL_ENABLED='true';
+  try{const workers=await import('../src/workers/index.js');
+    for(const name of ['native-email-sync','native-email-outbox','native-email-sent-copy','native-email-draft-sync','native-email-draft-cleanup','native-email-notification-dispatch','native-email-timers','native-email-knowledge','email-knowledge-repair'])assert.equal(await workers._getScheduledJobHandlerForTest(name),null);
+  }finally{if(old===undefined)delete process.env.DEFT_NATIVE_EMAIL_ENABLED;else process.env.DEFT_NATIVE_EMAIL_ENABLED=old;}
 });
 
 test('scheduled chat-knowledge-batch resolves to a real handler', async () => {

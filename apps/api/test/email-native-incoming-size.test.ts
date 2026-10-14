@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
-import {NativeEmailPresentationSchema,NativeEmailFileSchema} from '../src/lib/app-connection-contract.js';
+import {NativeEmailPresentationSchema, NativeEmailFileSchema} from '../src/lib/email-native-adapter-contract.js';
 import {EmailMessageContentService} from '../src/lib/email-message-content.js';
-import {createEmailMailboxRoutes} from '../src/routes/email-mailbox.js';
 const M=1024*1024,logical='mail_'+'a'.repeat(64),digest='b'.repeat(64),ref='c'.repeat(64);
 const scope={org_id:'synthetic-org',owner_user_id:'synthetic-owner',account_id:'synthetic-account'};
 const identity={account_id:scope.account_id,provider:'gmail',logical_message_id:logical,source_digest:digest};
@@ -39,20 +38,4 @@ test('native source service accepts exact >8MiB bytes while held revocation/sour
 });
 test('native source service rejects raw35MiB+1 and clears provider bytes',async()=>{
  const f=serviceFixture(35*M+1);await assert.rejects(f.service.readSource(f.actor,scope,logical));assert.ok(f.bytes.every(byte=>byte===0));
-});
-const session={id:scope.owner_user_id,org_id:scope.org_id,sid:'synthetic-session',exp:2_000_000_000};
-test('native original route returns >8MiB exact byte attachment with private headers and clears service buffer',async()=>{
- const bytes=Buffer.alloc(9*M,0x41),hash=createHash('sha256').update(bytes).digest('hex');
- const app=createEmailMailboxRoutes({verify:async()=>session,service:async()=>{throw Error('unused');},now:()=>1000,content:async()=>({readSource:async()=>({account_id:scope.account_id,logical_message_id:logical,media_type:'message/rfc822',byte_length:bytes.length,digest:hash,mime_bytes:bytes})})});
- const response=await app.request(`/accounts/${scope.account_id}/messages/${logical}/source`,{headers:{authorization:'Bearer synthetic'}});
- assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(response.headers.get('x-content-type-options'),'nosniff');assert.match(response.headers.get('content-disposition')??'',/attachment/);assert.ok(bytes.every(byte=>byte===0));
- const returned=new Uint8Array(await response.arrayBuffer());try{assert.equal(returned.length,9*M);assert.equal(createHash('sha256').update(returned).digest('hex'),hash);}finally{returned.fill(0);}
-});
-test('native file route rejects mocked >25MiB, dishonest counts and nonbytes before binary disclosure',async()=>{
- for(const kind of ['oversized','dishonest','nonbytes']){
-  const bytes=new Uint8Array(kind==='oversized'?25*M+1:3),result={schema_version:'deft.email_file.v1',...identity,file_ref:ref,filename:'business.bin',media_type:'application/octet-stream',byte_length:kind==='dishonest'?2:bytes.length,bytes:kind==='nonbytes'?'not bytes':bytes};
-  const app=createEmailMailboxRoutes({verify:async()=>session,service:async()=>{throw Error('unused');},now:()=>1000,content:async()=>({readSource:async()=>{throw Error('unused');},readFile:async()=>result} as any)});
-  const response=await app.request(`/accounts/${scope.account_id}/messages/${logical}/file`,{method:'POST',headers:{authorization:'Bearer synthetic','content-type':'application/json'},body:JSON.stringify({source_digest:digest,file_ref:ref})});
-  assert.equal(response.status,503);assert.ok(bytes.every(byte=>byte===0));
- }
 });

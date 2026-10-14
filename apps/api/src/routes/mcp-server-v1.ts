@@ -46,7 +46,7 @@ import {
   type ToolHandler,
 } from '../lib/mcp-tools/index.js';
 import type { ToolContext, ToolResult } from '../lib/mcp-tools/types.js';
-import { discoverPersonalEmailToolSchemas } from '../lib/mcp-tools/email-discovery-contract.js';
+import { discoverPersonalInstalledTools, executePersonalInstalledTool } from '../lib/mcp-tools/installed-apps.js';
 import {
   HUMAN_TOOLS,
   buildHumanToolSchemas,
@@ -680,13 +680,10 @@ async function dispatchTool(
 }
 
 async function humanCatalog(scopes: string[], principal?: {kind:string;org_id:string;user_id:string;token_id:string}) {
-  const emailSchemas=principal ? await discoverPersonalEmailToolSchemas({principal_kind:principal.kind,org_id:principal.org_id,user_id:principal.user_id,token_id:principal.token_id}) : [];
-  const emailNames=new Set(emailSchemas.map(tool=>tool.name));
-  return buildHumanToolSchemas([...(toolSchemas as unknown as Array<Record<string, unknown>>).filter(tool=>!String(tool.name).startsWith('email_')),...emailSchemas])
-    .filter((schema) => {
-      const name = String(schema.name ?? '');
-      return (!name.startsWith('email_') || emailNames.has(name)) && humanToolHasRequiredScope(scopes, name);
-    });
+  const native = buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
+    .filter(schema => humanToolHasRequiredScope(scopes, String(schema.name ?? '')));
+  const installed = principal ? await discoverPersonalInstalledTools({principal_kind:principal.kind,org_id:principal.org_id,user_id:principal.user_id,token_id:principal.token_id},[...Object.keys(HUMAN_TOOLS),...native.map(schema=>String(schema.name))]) : [];
+  return [...native,...installed];
 }
 
 async function dispatchHumanTool(
@@ -697,7 +694,7 @@ async function dispatchHumanTool(
   const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
   const handler = HUMAN_TOOLS[canonicalToolName];
   if (!handler) {
-    return { isError: true, content: [{ type: 'text', text: `Unknown or unavailable personal MCP tool: ${toolName}` }] };
+    return executePersonalInstalledTool(canonicalToolName, args, ctx);
   }
   if (!humanToolHasRequiredScope(ctx.scopes, canonicalToolName)) {
     return { isError: true, content: [{ type: 'text', text: humanToolScopeError(canonicalToolName) ?? 'Missing MCP scope' }] };

@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import {NativeEmailSendIdentitySchema} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema} from './email-native-adapter-contract.js';
 const id=z.string().min(1).max(256).refine(v=>v.trim()===v&&!/[\u0000-\u001f\u007f-\u009f]/u.test(v));
 export const EmailOutboxScopeSchema=z.strictObject({org_id:id,owner_user_id:id,account_id:id});
 export const EmailOutboxScheduleInputSchema=z.strictObject({wall_time:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/u),zone:z.string().min(1).max(128),

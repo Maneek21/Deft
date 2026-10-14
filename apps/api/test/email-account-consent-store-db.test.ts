@@ -9,7 +9,6 @@ import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {PostgresEmailAccountConsentStore,type EmailAccountConsentGuard} from '../src/lib/email-account-consent-store.js';
 import {EmailAccountOwnerAuthority} from '../src/lib/email-account-owner-authority.js';
 import {EmailAccountLifecycleService} from '../src/lib/email-account-lifecycle-service.js';
-import {createEmailAccountLifecycleRoutes} from '../src/routes/email-account-lifecycle.js';
 import {EmailAccountAuthorityRouter} from '../src/lib/email-account-authority-router.js';
 import {PostgresEmailAccountAuthority} from '../src/lib/email-account-authority.js';
 import type {EmailServiceLease} from '../src/lib/email-mailbox-authority.js';
@@ -102,32 +101,6 @@ test('actual PG standalone consent encrypted CAS, immutable bridge/principal and
   const lease:EmailServiceLease={job_id:jobId,lock_token:lock,job_name:'native-email-outbox',outbox_id:outboxId,operation_id:operation};await pool.query("UPDATE web_sessions SET revoked_at=now() WHERE id='actual-native-sid'");assert.equal((await authority.currentService(scope,lease)).resource_binding_id,retainedBridge(proof.bridge).pins.resource_binding_id);
   for(const wrong of [{...lease,lock_token:randomUUID()},{...lease,outbox_id:randomUUID()},{...lease,job_name:'native-email-sync'}])await assert.rejects(authority.currentService(scope,wrong as EmailServiceLease),/ACCESS_DENIED/);
   await pool.query('UPDATE job_queue SET lock_expires_at=$1 WHERE id=$2',[new Date(now).toISOString(),jobId]);await assert.rejects(authority.currentService(scope,lease),/ACCESS_DENIED/);await pool.query("UPDATE web_sessions SET revoked_at=NULL WHERE id='actual-native-sid'");
- });
- await t.test('actual owner lifecycle public service and Hono routes adopt, pause/reconnect, CAS, metadata discovery and terminal revocation',async()=>{
-  const selected={...scope,account_id:'lifecycle-http'},actor={user_id:scope.owner_user_id,web_session_id:'actual-native-sid',access_expires_at:now+60000};
-  await pool.query("INSERT INTO email_accounts(org_id,owner_user_id,account_id,provider,resource_binding_id,principal_digest,state,authority_revision,consented_at) VALUES($1,$2,$3,'gmail',$4,$5,'active',7,$6)",[selected.org_id,selected.owner_user_id,selected.account_id,retainedBridge(proof.bridge).pins.resource_binding_id,proof.principal_digest,new Date(now)]);
-  const scheduled:{account_id:string;revision:number}[]=[],owner=new EmailAccountOwnerAuthority(database as never,store(),()=>now+5),fresh=()=>owner.inspect(actor,selected),service=new EmailAccountLifecycleService({
-   snapshot:(a,s,signal)=>owner.inspect(a,s,signal),
-   schedule:async(s,revision)=>{scheduled.push({account_id:s.account_id,revision});if(revision===10)throw Error('Synthetic enqueue outage; durable active row retained');},
-   connection:async(_a,s,snapshot)=>({...proof,scope:s,native_revision:snapshot.account.authority_revision,consent_revision:snapshot.consent?.revision??0,identity:{primary_address:'retained@example.test',display_label:'My native account'}}),
-   commit:(a,plan,signal)=>store().commit(plan,owner.guard(a,plan.next.scope,signal),signal),
-   catalog:async(a,org)=>{const snapshot=await owner.inspect(a,{...selected,org_id:org}),c=snapshot.consent;return {accounts:[{account_id:selected.account_id,provider:'gmail',authority_mode:c?'standalone':'legacy',state:c?.state??'active',revision:c?.revision??0,native_revision:snapshot.account.authority_revision,primary_address:c?.identity?.primary_address??'',display_label:c?.identity?.display_label??''}],has_more:false};},
-  },()=>now+5);
-  const routes=createEmailAccountLifecycleRoutes({verify:async token=>{if(token!=='owner')throw Error();return {id:actor.user_id,org_id:selected.org_id,sid:actor.web_session_id,exp:actor.access_expires_at/1000};},service:async()=>service,now:()=>now+5});
-  const url='/accounts/'+selected.account_id+'/lifecycle',get=()=>routes.request(url,{headers:{authorization:'Bearer owner'}}),patch=(body:unknown)=>routes.request(url,{method:'PATCH',headers:{authorization:'Bearer owner','content-type':'application/json'},body:JSON.stringify(body)});
-  assert.equal((await get()).headers.get('cache-control'),'no-store');assert.equal((await get()).status,200);assert.equal((await routes.request(url)).status,401);
-  let result=await patch({expected_revision:0,expected_native_revision:7,operation:'adopt',capabilities:['read']});assert.equal(result.status,200);let body=await result.json();assert.equal(body.authority_mode,'standalone');assert.equal(body.revision,1);assert.equal(body.native_revision,8);
-  assert.equal((await patch({expected_revision:0,expected_native_revision:7,operation:'adopt',capabilities:['read']})).status,409);
-  assert.equal((await patch({expected_revision:1,expected_native_revision:8,operation:'pause',provider_draft_ref:'browser-ref'})).status,400);
-  result=await patch({expected_revision:1,expected_native_revision:8,operation:'pause'});body=await result.json();assert.equal(body.state,'paused');assert.equal(body.revision,2);assert.equal(body.native_revision,9);
-  await assert.rejects(new PostgresEmailAccountAuthority(database as never,store(),()=>now+5).current(actor,selected,'human_read'),/ACCESS_DENIED/);
-  const catalog=await routes.request('/accounts/lifecycle',{headers:{authorization:'Bearer owner'}});assert.equal(catalog.status,200);assert.equal((await catalog.json()).accounts[0].primary_address,'retained@example.test');
-  const lostAck=await get();assert.equal((await lostAck.json()).revision,2,'ack recovery is a read, not a second mutation');
-  result=await patch({expected_revision:2,expected_native_revision:9,operation:'reconnect'});body=await result.json();assert.equal(body.state,'active');assert.equal(body.revision,3);assert.equal(body.native_revision,10);
-  const native=new PostgresEmailAccountAuthority(database as never,store(),()=>now+5),router=new EmailAccountAuthorityRouter(database as never,{current:async()=>assert.fail('App graph must not be read after adoption')} as never,native);await router.current(actor,selected,'human_read');await assert.rejects(router.current(actor,selected,'human_modify'),/ACCESS_DENIED/);
-  await pool.query("UPDATE web_sessions SET revoked_at=now() WHERE id='actual-native-sid'");assert.equal((await get()).status,403);await pool.query("UPDATE web_sessions SET revoked_at=NULL WHERE id='actual-native-sid'");
-  result=await patch({expected_revision:3,expected_native_revision:10,operation:'revoke'});body=await result.json();assert.equal(body.state,'revoked');assert.equal(body.revision,4);assert.equal(body.native_revision,11);await assert.rejects(router.current(actor,selected,'human_read'),/ACCESS_DENIED/);assert.equal((await patch({expected_revision:4,expected_native_revision:11,operation:'reconnect'})).status,409);
-  assert.deepEqual(scheduled,[{account_id:selected.account_id,revision:8},{account_id:selected.account_id,revision:10}],'only active consent transitions schedule sync; enqueue outage cannot undo durable consent');const snapshot=await fresh();assert.equal(snapshot.consent?.identity?.display_label,'My native account');const raw=(await pool.query('SELECT bridge_envelope FROM email_account_consents WHERE account_id=$1',[selected.account_id])).rows[0];assert.equal(JSON.stringify(raw).includes('retained@example.test'),false);
  });
  await t.test('router rejects a held legacy admission if explicit owner adoption finishes during its wait',async()=>{
   const selected={...scope,account_id:'legacy-adoption-race'},actor={user_id:scope.owner_user_id,web_session_id:'actual-native-sid',access_expires_at:now+60000};

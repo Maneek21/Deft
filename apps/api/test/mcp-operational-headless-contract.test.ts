@@ -13,7 +13,6 @@ import { isHttpsPublicUrl } from '../src/lib/public-url.js';
 import {
   HUMAN_READ_TOOLS,
   HUMAN_TOOL_SCOPES,
-  HUMAN_INDEPENDENT_TOOL_AUTHORITIES,
   HUMAN_TOOLS,
   HUMAN_WRITE_TOOLS,
   buildHumanToolSchemas,
@@ -39,7 +38,6 @@ import {
 } from '@deft/shared/modules';
 import { closeDb, db } from '../src/lib/db.js';
 import { RUNTIME_WORKFLOW_SCOPES } from '../src/lib/app-runtime-workflow-tools.js';
-import { EMAIL_INTEGRATION_TOOL_NAMES } from '../src/lib/email-integration-agent-tools.js';
 
 after(async () => closeDb());
 
@@ -197,16 +195,12 @@ test('hosted connector readiness requires a real HTTPS public URL', () => {
 });
 
 test('every operational tool is registered, classified, and advertised once', () => {
-  assert.deepEqual(Object.keys(HUMAN_INDEPENDENT_TOOL_AUTHORITIES).sort(), [...EMAIL_INTEGRATION_TOOL_NAMES].sort());
-  for (const name of EMAIL_INTEGRATION_TOOL_NAMES) assert.equal(HUMAN_TOOL_SCOPES[name], undefined,
-    `${name} must not imply that broad OAuth scopes authorize private Email`);
   const schemas = buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>);
   const schemaByName = new Map(schemas.map((schema) => [String(schema.name), schema]));
   assert.equal(new Set(schemas.map((schema) => String(schema.name))).size, schemas.length);
   for (const name of [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS]) {
     assert.ok(HUMAN_TOOL_SCOPES[name]
-      || Object.hasOwn(RUNTIME_WORKFLOW_SCOPES, name)
-      || Object.hasOwn(HUMAN_INDEPENDENT_TOOL_AUTHORITIES, name),
+      || Object.hasOwn(RUNTIME_WORKFLOW_SCOPES, name),
       `${name} must have an explicit scope or independently governed authority contract`);
   }
 
@@ -225,7 +219,7 @@ test('every operational tool is registered, classified, and advertised once', ()
   assert.equal((schemaByName.get('calendar_event_cancel')?.annotations as any)?.destructiveHint, true);
 });
 
-test('workspace capabilities omit ungranted Email and OAuth never loads Email grants', async () => {
+test('workspace capabilities omit ungranted App tools and OAuth never loads App grants', async () => {
   const token = { id: 'fixture-personal-token', agent_employee_id: null, app_run_authorization_version: 1 };
   const select = mock.method(db, 'select', (() => ({ from: () => ({ where: async () => [token] }) })) as any);
   const execute = mock.method(db, 'execute', (async () => ({ rows: [] })) as any);

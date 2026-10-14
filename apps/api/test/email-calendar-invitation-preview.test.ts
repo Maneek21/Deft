@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {EmailInvitationPreviewService,EmailInvitationPreviewError} from '../src/lib/email-calendar-invitation-preview.js';
 import {EmailMessageContentService} from '../src/lib/email-message-content.js';
-import {NativeEmailCalendarPartsSchema} from '../src/lib/app-connection-contract.js';
+import {NativeEmailCalendarPartsSchema} from '../src/lib/email-native-adapter-contract.js';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {parseEnvironmentAppRunKeyrings} from '../src/lib/app-run-keyrings.js';
 import type {EmailCapability,EmailMessageRecord} from '../src/lib/email-mailbox-service.js';

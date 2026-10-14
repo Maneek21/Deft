@@ -1,8 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { EmailAttachmentMetadataSchema, type EmailAttachmentMetadata } from './email-attachment-store.js';
 import type { EmailAttachmentService } from './email-attachment-service.js';
-import type { NativeEmailSendIdentity, NativeEmailSnapshotFactory } from './app-connection-contract.js';
-import { NativeEmailSendIdentitySchema } from './app-connection-contract.js';
+import type {NativeEmailSendIdentity, NativeEmailSnapshotFactory} from './email-native-adapter-contract.js';
+import {NativeEmailSendIdentitySchema} from './email-native-adapter-contract.js';
 import { EmailDraftContentSchema, selectVerifiedDraftFromAddress } from './email-draft-service.js';
 import type { EmailNativeSendError, EmailSendSnapshotBuilder } from './email-native-send-service.js';
 import { EmailNativeSendError as SendError } from './email-native-send-service.js';

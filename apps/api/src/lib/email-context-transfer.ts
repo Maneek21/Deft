@@ -6,7 +6,7 @@ import { emailContextTransfers } from '../../../../packages/db/src/email-context
 import type { db } from './db.js';
 import type { EmailActor, EmailAuthority, EmailCapability, EmailScope, EmailMessageRecord } from './email-mailbox-service.js';
 import { EmailMailboxError } from './email-mailbox-service.js';
-import type { NativeEmailPresentation } from './app-connection-contract.js';
+import type {NativeEmailPresentation} from './email-native-adapter-contract.js';
 import { createNativeKnowledge, createNativeNote, type ContextWriteDatabase } from './native-context-create.js';
 import { assertNativeChatForwardDestination, createNativeChatForward, NativeChatForwardError } from './native-chat-forward.js';
 

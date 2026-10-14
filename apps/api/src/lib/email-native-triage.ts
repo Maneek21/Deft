@@ -2,7 +2,7 @@ import { EmailOperationActorSchema } from './email-agent-actor.js';
 import {createHash} from 'node:crypto';
 import {canonicalCapabilityJson} from '@deft/shared';
 import {z} from 'zod';
-import {NativeEmailTriageResultSchema,NativeEmailDestinationSchema,type NativeEmailTriageOperation,type NativeEmailTriageRequest,type NativeEmailTriageResult,type NativeEmailTriageDestination,type NativeEmailAccount} from './app-connection-contract.js';
+import {NativeEmailTriageResultSchema, NativeEmailDestinationSchema, type NativeEmailTriageOperation, type NativeEmailTriageRequest, type NativeEmailTriageResult, type NativeEmailTriageDestination, type NativeEmailAccount} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import type {EmailOperationActor,EmailAuthority,EmailCapability,EmailScope,EmailMessageRecord} from './email-mailbox-service.js';
 

@@ -4,7 +4,6 @@ import { AppError } from './app-errors.js';
 import { AppConnectionCallbackSchema, AppConnectionManageSchema, type AppConnectionPins, type AppConnectionProjection, type AppConnectionPurpose } from './app-connection-contract.js';
 import { AppConnectionRegistry } from './app-connection-registry.js';
 import type { ExperienceCaller } from './app-experience-service.js';
-import { completeNativeEmailConnection, type EmailConnectionCompletion } from './email-mailbox-connection-completion.js';
 
 export interface AppConnectionAuthority {
   connectionSetup(caller: ExperienceCaller, sessionId: string, pins: AppConnectionPins, signal?: AbortSignal, purpose?: AppConnectionPurpose): Promise<AppConnectionProjection>;
@@ -92,8 +91,7 @@ async function responseJson(response: Response, signal: AbortSignal) {
 }
 export class AppConnectionService {
   constructor(private readonly registry: AppConnectionRegistry, private readonly authority: AppConnectionAuthority,
-    private readonly now = () => Date.now(), private readonly monotonic = () => performance.now(),
-    private readonly complete: EmailConnectionCompletion = completeNativeEmailConnection) {}
+    private readonly now = () => Date.now(), private readonly monotonic = () => performance.now()) {}
   async retainedTargets(caller:ExperienceCaller,installationId:string,signal?:AbortSignal){
     z.string().uuid().parse(installationId);if(!this.authority.connectionCleanup)throw accessEnded();
     const targets:{key:string}[]=[];
@@ -112,7 +110,7 @@ export class AppConnectionService {
     return new AppConnectionService(this.registry,{connectionSetup:(_caller,_session,pins,activeSignal,purpose)=>{
       if(purpose!=='status'&&purpose!=='disconnect')throw accessEnded();
       return authority.connectionCleanup!(caller,pins,activeSignal,purpose);
-    }},this.now,this.monotonic,this.complete).invoke(caller,caller.sid,nomination,'manage',raw,origin,signal);
+    }},this.now,this.monotonic).invoke(caller,caller.sid,nomination,'manage',raw,origin,signal);
   }
   async invoke(caller: ExperienceCaller, sessionId: string, nomination: { installation_id: string; target_key: string },
     operation: 'begin' | 'callback' | 'manage', raw: unknown, origin: string | undefined, signal?: AbortSignal) {
@@ -157,10 +155,7 @@ export class AppConnectionService {
         throw new AppError('Account connection needs attention', status === 400 ? 'APP_ACTION_INVALID' : status === 403 ? 'APP_ACCESS_DENIED' : 'APP_PROVIDER_UNAVAILABLE', status,
           parsed.success ? { connection_code: parsed.data.code } : undefined);
       }
-      const completed = await this.complete({ caller, entry, operation, purpose, result, signal: activeSignal });
-      if (completed !== result) await recheck();
-      stillCurrent(activeSignal);
-      return completed;
+      return result;
     });
   }
 }

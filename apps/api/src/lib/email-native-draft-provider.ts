@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {NativeEmailDraftSyncRequestSchema,NativeEmailDraftSyncResultSchema,type NativeEmailDraftSyncRequest,type NativeEmailDraftSyncResult,type NativeEmailDraftSyncEffect,type NativeEmailAccount} from './app-connection-contract.js';
+import {NativeEmailDraftSyncRequestSchema, NativeEmailDraftSyncResultSchema, type NativeEmailDraftSyncRequest, type NativeEmailDraftSyncResult, type NativeEmailDraftSyncEffect, type NativeEmailAccount} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import {EmailMailboxError,type EmailScope,type EmailCapability} from './email-mailbox-service.js';
 const denied=()=>new EmailMailboxError('EMAIL_ACCESS_DENIED');

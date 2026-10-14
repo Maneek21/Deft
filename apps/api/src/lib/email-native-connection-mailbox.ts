@@ -1,6 +1,6 @@
 import type {EmailAccountConsent} from './email-account-lifecycle.js';
 import type {EmailScope,EmailCapability} from './email-mailbox-service.js';
-import type {NativeEmailConnectionContext} from './app-connection-contract.js';
+import type {NativeEmailConnectionContext} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import {getNativeEmailProfileRegistry} from './email-native-connection-registry.js';
 import {NativeEmailConnectionAccountStore} from './email-native-connection-account-store.js';

@@ -4,7 +4,7 @@ import {z} from 'zod';
 import {canonicalCapabilityJson} from '@deft/shared';
 import {emailPresentationCache} from '@deft/db/schema';
 import {EmailMailboxCrypto} from './email-mailbox-crypto.js';
-import {NativeEmailPresentationSchema,type NativeEmailPresentation} from './app-connection-contract.js';
+import {NativeEmailPresentationSchema, type NativeEmailPresentation} from './email-native-adapter-contract.js';
 import type {EmailScope} from './email-mailbox-service.js';
 import type {EmailPresentationCache} from './email-message-content.js';
 

@@ -2,7 +2,7 @@ import {lookup as systemLookup} from 'node:dns/promises';
 import {isIP} from 'node:net';
 import {canonicalCapabilityJson} from '@deft/shared';
 import {z} from 'zod';
-import {NativeEmailSendIdentitySchema,type NativeEmailAccount,type NativeEmailConnectionContext} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema, type NativeEmailAccount, type NativeEmailConnectionContext} from './email-native-adapter-contract.js';
 import type {EmailImapCredentialCustody} from './email-imap-custody.js';
 import type {EmailImapHostAccount} from './email-imap-host.js';
 import {publicEmailServerAddress} from './email-public-address.js';

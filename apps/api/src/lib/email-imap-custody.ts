@@ -5,7 +5,7 @@ import { canonicalCapabilityJson } from '@deft/shared';
 import { z } from 'zod';
 import { type AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppRunSecretEnvelopeSchema, type AppRunSecretEnvelope } from './app-run-secrets.js';
-import type { NativeEmailAccount, NativeEmailConnectionContext } from './app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailConnectionContext} from './email-native-adapter-contract.js';
 
 const DOMAIN = 'deft.email.imap.credentials.v1';
 const MAX_PROFILE_BYTES = 64 * 1024;

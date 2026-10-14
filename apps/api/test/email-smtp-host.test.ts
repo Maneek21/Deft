@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createEmailSmtpHost} from '../src/lib/email-smtp-host.js';
 import type {EmailImapHostAccount} from '../src/lib/email-imap-host.js';
-import type {NativeEmailConnectionContext} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 const account=():EmailImapHostAccount=>({org_id:'org',owner_user_id:'owner',installation_id:'install',account_id:'account',provider:'imap_smtp',resource_binding_id:'binding',authority_epoch:1,connection_revision:1,principal_digest:'a'.repeat(64),health:'connected',capabilities:['read','send'],primary_address:'sender@example.test',display_label:'Mailbox',connection_target:'target',action_binding_id:'send-binding',verified_sender_identities:['sender@example.test']});
 function fixture(options:{privateDns?:boolean;held?:boolean;reject?:boolean;revoke?:boolean;verifyFalse?:boolean}={}){
  let metadata=account(),transportOptions:Record<string,any>|undefined,requests:any[]=[],closes=0,lookups=0,settle:()=>void=()=>{};

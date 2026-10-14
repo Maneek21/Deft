@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { NativeEmailAccount } from './app-connection-contract.js';
+import type {NativeEmailAccount} from './email-native-adapter-contract.js';
 import { EmailMailboxError, type EmailOperationActor, type EmailAuthority, type EmailCapability,
   type EmailOperation, type EmailScope } from './email-mailbox-service.js';
 

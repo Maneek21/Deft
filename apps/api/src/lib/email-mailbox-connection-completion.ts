@@ -1,3 +1,4 @@
+import {legacyNativeEntry} from './email-native-adapter-contract.js';
 import type { AppConnectionEntry } from './app-connection-registry.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 import type { EmailActor } from './email-mailbox-service.js';
@@ -17,7 +18,7 @@ export function createEmailConnectionCompletion(dependencies: {
   schedule: (scope: ScheduleScope) => Promise<unknown>;
 }): EmailConnectionCompletion {
   return async ({ caller, entry, operation, purpose, result, signal }) => {
-    if (!dependencies.enabled() || !entry.adapter.nativeEmailAccount || operation === 'begin' || purpose === 'disconnect'
+    if (!dependencies.enabled() || !legacyNativeEntry(entry).adapter.nativeEmailAccount || operation === 'begin' || purpose === 'disconnect'
       || !result || typeof result !== 'object' || Array.isArray(result)) return result;
     const status = result as Record<string, unknown>;
     const account = status.account as Record<string, unknown> | undefined;

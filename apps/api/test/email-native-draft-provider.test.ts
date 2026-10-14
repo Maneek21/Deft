@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
 import {RegisteredEmailNativeDraftProvider} from '../src/lib/email-native-draft-provider.js';
-import type {NativeEmailAccount,NativeEmailDraftSyncResult,NativeEmailConnectionContext} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailDraftSyncResult, NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 const scope={org_id:'org-draft-mirror',owner_user_id:'owner-draft-mirror',account_id:'account-draft-mirror'};
 const bytes=Buffer.from('From: owner@example.test\r\nSubject: Native mirror\r\n\r\nExact MIME');
 const digest=createHash('sha256').update(bytes).digest('hex');

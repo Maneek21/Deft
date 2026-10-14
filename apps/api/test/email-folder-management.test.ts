@@ -4,7 +4,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {EmailNativeFolderService,RegisteredEmailNativeFolderProvider} from '../src/lib/email-native-folders.js';
 import {EmailFolderNameSchema,EmailFolderManageValueSchema,EmailFolderManageRequestSchema,type EmailFolderManageValue,type EmailFolderManageJournal} from '../src/lib/email-folder-management-contract.js';
-import type {AppConnectionAdapter,NativeEmailAccount} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 const scope={org_id:'org-manage',owner_user_id:'owner-manage',account_id:'account-manage'},actor={user_id:scope.owner_user_id,web_session_id:'synthetic-session',access_expires_at:4_000_000},cap={scope,resource_binding_id:'binding-manage',authority_version:'authority-manage',expires_at:3_000_000};
 const folder=(id:string)=>'label:'+createHash('sha256').update(JSON.stringify({kind:'gmail_label_membership_v1',id})).digest('hex');
 const barrier=()=>{let release!:()=>void;const held=new Promise<void>(r=>release=r);return {held,release};};

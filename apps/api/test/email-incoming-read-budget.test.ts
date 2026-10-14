@@ -6,7 +6,6 @@ import {get as httpGet} from 'node:http';
 import {serve} from '@hono/node-server';
 import {createEmailIncomingReadBudget,EmailIncomingReadBusyError,acquireEmailIncomingBinaryResponse,emailIncomingProviderBudget} from '../src/lib/email-incoming-read-budget.js';
 import {RegisteredEmailMailboxProvider} from '../src/lib/email-mailbox-provider.js';
-import {createEmailMailboxRoutes} from '../src/routes/email-mailbox.js';
 const tick=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const gate=()=>{let release:()=>void=()=>{};const promise=new Promise<void>(resolve=>{release=resolve;});return {promise,release};};
 test('resource FIFO bounds queue, removes canceled/time-limited waiters and releases exactly once',async()=>{
@@ -54,21 +53,4 @@ test('real registered provider gate holds begun noncooperative IO after abort; f
  // Routine status uses no heavy slot even while both are occupied.
  await provider.assertConnected(scope,cap,recheck);denied=true;held.release();await begun;await thirdResult;
  assert.equal(calls,2);assert.ok(buffers.every(bytes=>bytes.every(byte=>byte===0)));assert.deepEqual(emailIncomingProviderBudget.snapshot(),{active:0,queued:0});
-});
-test('actual Node outgoing backpressure retains two raw leases, returns busy before third allocation and recovers after finish/close',{timeout:20000},async()=>{
- const size=35*1024*1024,logical='mail_'+'d'.repeat(64),copies:Uint8Array[]=[],originals:Uint8Array[]=[],outgoings:any[]=[];let allocations=0;
- const session={id:'socket-owner',org_id:'socket-org',sid:'socket-session',exp:Math.floor(Date.now()/1000)+60};
- const app=createEmailMailboxRoutes({verify:async()=>session,service:async()=>{throw Error('unused');},content:async()=>({readSource:async()=>{allocations++;const bytes=new Uint8Array(size).fill(73);originals.push(bytes);return {account_id:'socket-account',logical_message_id:logical,media_type:'message/rfc822',byte_length:size,digest:createHash('sha256').update(bytes).digest('hex'),mime_bytes:bytes};}})});
- const server=serve({hostname:'127.0.0.1',port:0,fetch:(request,env)=>{const out=env.outgoing as any,end=out.end.bind(out);outgoings.push(out);out.end=(...args:any[])=>{if(args[0] instanceof Uint8Array){copies.push(args[0]);console.log(JSON.stringify({event:'outgoing-end',bytes:args[0].length,first_byte:args[0][0],finished:out.writableFinished}));out.once('finish',()=>console.log(JSON.stringify({event:'outgoing-finish',first_byte:args[0][0]})));out.once('close',()=>console.log(JSON.stringify({event:'outgoing-close',first_byte:args[0][0]})));}return end(...args);};return app.fetch(request,env);}});
- await new Promise<void>(resolve=>server.once('listening',resolve));const address=server.address();assert.ok(address&&typeof address==='object');const url=`http://127.0.0.1:${address.port}/accounts/socket-account/messages/${logical}/source`;
- const clients:Array<ReturnType<typeof httpGet>>=[];
- const request=()=>new Promise<import('node:http').IncomingMessage>((resolve,reject)=>{const client=httpGet(url,{headers:{authorization:'Bearer synthetic'}},res=>{res.pause();res.on('error',()=>{});resolve(res);});clients.push(client);client.on('error',reject);});
- const consume=(res:import('node:http').IncomingMessage)=>new Promise<Buffer>((resolve,reject)=>{const chunks:Buffer[]=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve(Buffer.concat(chunks)));res.on('error',reject);res.resume();});
- try{
-  const one=await request(),two=await request();assert.equal(one.statusCode,200);assert.equal(two.statusCode,200);await tick();assert.equal(allocations,2);assert.equal(copies.length,2);assert.ok(originals.every(bytes=>bytes.every(byte=>byte===0)));assert.ok(copies.some(bytes=>bytes.some(byte=>byte===73)));
-  const busy=await request(),busyBody=await consume(busy);assert.equal(busy.statusCode,503);assert.equal(busy.headers['retry-after'],'2');assert.deepEqual(JSON.parse(busyBody.toString()),{code:'EMAIL_SOURCE_BUSY'});assert.equal(allocations,2);
-  const expected=createHash('sha256').update(new Uint8Array(size).fill(73)).digest('hex'),body=await consume(one);assert.equal(body.length,size);assert.equal(createHash('sha256').update(body).digest('hex'),expected);body.fill(0);
-  const recovered=await request(),fresh=await consume(recovered);assert.equal(recovered.statusCode,200);assert.equal(fresh.length,size);fresh.fill(0);assert.equal(allocations,3);
-  const closed=new Promise<void>(resolve=>outgoings[1].once('close',resolve));two.destroy();await closed;assert.ok(copies.every(bytes=>bytes.every(byte=>byte===0)));
- }finally{for(const client of clients)client.destroy();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

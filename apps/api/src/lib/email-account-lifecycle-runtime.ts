@@ -1,3 +1,4 @@
+import {legacyNativeEntry} from './email-native-adapter-contract.js';
 import {and,asc,eq} from 'drizzle-orm';
 import {emailAccounts,emailAccountConsents,appResourceBindings,emailPresentationCache} from '@deft/db/schema';
 import {db} from './db.js';
@@ -26,7 +27,7 @@ export async function getEmailAccountLifecycleService(){
   }
   const [binding]=await db.select().from(appResourceBindings).where(and(eq(appResourceBindings.org_id,scope.org_id),eq(appResourceBindings.owner_user_id,scope.owner_user_id),eq(appResourceBindings.id,a.resource_binding_id))).limit(1);
   if(!binding)return denied();
-  const pins=consent?.bridge.pins,entry=(await getAppConnectionRegistry()).select({org_id:scope.org_id,owner_user_id:scope.owner_user_id,installation_id:pins?.installation_id??binding.app_installation_id,target_key:pins?.target_key??binding.target_key});
+  const pins=consent?.bridge.pins,entry=legacyNativeEntry((await getAppConnectionRegistry()).select({org_id:scope.org_id,owner_user_id:scope.owner_user_id,installation_id:pins?.installation_id??binding.app_installation_id,target_key:pins?.target_key??binding.target_key}));
   const selected=entry.pins;
   if(!entry.module_sha256||!entry.adapter.nativeEmailAccount||selected.resource_binding_id!==a.resource_binding_id||selected.org_id!==scope.org_id||selected.owner_user_id!==scope.owner_user_id
    ||consent&&(entry.module_sha256!==consent.bridge.module_sha256||Object.keys(pins!).filter(k=>!['app_version_id','grant_snapshot_id'].includes(k)).some(k=>selected[k as keyof typeof selected]!==pins![k as keyof typeof selected]))

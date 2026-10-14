@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import {NativeEmailSendIdentitySchema,NativeEmailSendResultSchema,NativeEmailPrepareSendResultSchema,type NativeEmailSendIdentity} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema, NativeEmailSendResultSchema, NativeEmailPrepareSendResultSchema, type NativeEmailSendIdentity} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import type {EmailNativeSendProvider} from './email-native-send-service.js';
 import {EmailMailboxError,type EmailScope,type EmailCapability} from './email-mailbox-service.js';

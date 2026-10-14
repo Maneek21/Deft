@@ -7,7 +7,7 @@ import {and,eq} from 'drizzle-orm';
 import {emailAccounts,emailPresentationCache} from '@deft/db/schema';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {PostgresEmailPresentationCache} from '../src/lib/email-presentation-cache.js';
-import type {NativeEmailPresentation} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailPresentation} from '../src/lib/email-native-adapter-contract.js';
 import type {EmailScope} from '../src/lib/email-mailbox-service.js';
 
 const target='postgresql://gate_g_test@127.0.0.1:55435/email_stage34_cache_81';

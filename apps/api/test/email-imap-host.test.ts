@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { NativeEmailAccount, NativeEmailConnectionContext } from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 import { createEmailImapHost, EmailImapHostError, type EmailImapFlowClient, type EmailImapFlowConstructor, type EmailImapHostAccount } from '../src/lib/email-imap-host.js';
 
 const secret = 'host-test-password-never-log';

@@ -16,9 +16,8 @@ import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {EmailOutboxCrypto} from '../src/lib/email-outbox-crypto.js';
 import {EmailOutboxStore} from '../src/lib/email-outbox-store.js';
 import {createEmailNativeOutgoingSnapshotBuilder} from '../src/lib/email-native-outgoing-snapshot.js';
-import {NativeEmailCalendarPartsSchema} from '../src/lib/app-connection-contract.js';
+import {NativeEmailCalendarPartsSchema} from '../src/lib/email-native-adapter-contract.js';
 import type {EmailCapability} from '../src/lib/email-mailbox-service.js';
-import {createEmailCalendarInvitationRoutes} from '../src/routes/email-calendar-invitations.js';
 import {readEmailCalendarOccurrences} from '../src/lib/email-calendar-projection.js';
 import {Hono} from 'hono';
 const target='postgresql://gate_g_test@127.0.0.1:55435/email_stage34_notifications_87_fresh';
@@ -49,7 +48,6 @@ test('actual PG Calendar invitation + existing Outbox atomic owner action, resta
  const snapshots=createEmailNativeOutgoingSnapshotBuilder({accounts,attachments:{readForSend:async()=>{throw Error('NO_FILES');}},replies:async()=>{throw Error('NO_REPLY');},createOutgoingSnapshotService:(ports:any)=>createOutgoingSnapshotService({...ports,profile:'native'}),now:()=>new Date(clock)});
  const outbox=new EmailOutboxStore(database,cipher,binary,()=>new Date(clock)),store=()=>new EmailCalendarInvitationStore(database,cipher,()=>new Date(clock));
  const make=()=>new EmailCalendarInvitationService(authority,new EmailInvitationPreviewService(authority,content,cipher,()=>clock),store(),new EmailCalendarReplyOutbox(snapshots,accounts,outbox,cipher,()=>new Date(clock)),()=>clock);
- const routes=createEmailCalendarInvitationRoutes({verify:async(token:string)=>{if(token!=='fixture')throw Error('invalid');return {id:actor.user_id,org_id:scope.org_id,sid:actor.web_session_id,exp:actor.access_expires_at/1000};},service:async()=>make(),now:()=>clock});
  const input=async(s=scope,response:'accepted'|'tentative'|'declined'='accepted',send=false)=>({request_id:randomUUID(),preview_token:(await make().preview(actor,s,logical)).invitations[0]!.preview_token!,destination_id:'deft_personal' as const,recreate_deleted:false,action:{kind:'rsvp' as const,response,send_response:send}});
  let firstEvent='',firstRequest='';
  await t.test('read-only preview has no rows or provider effect; local Calendar import uses human_read only',async()=>{
@@ -74,15 +72,6 @@ test('actual PG Calendar invitation + existing Outbox atomic owner action, resta
  await t.test('restart receipt lookup is scoped and same request cannot switch response',async()=>{
   assert.equal((await make().readRequest(actor,scope,firstRequest))?.calendar.event_id,firstEvent);assert.equal(await make().readRequest(actor,other,firstRequest),null);
   const request=await input();request.request_id=firstRequest as ReturnType<typeof randomUUID>;request.action.response='declined';await assert.rejects(make().apply(actor,scope,request),/REQUEST_CONFLICT/);
- });
- await t.test('actual HTTP factory binds owner/SID scope, returns no-store preview/receipt, rejects browser ICS/recipients and never imports automatically',async()=>{
-  const headers={Authorization:'Bearer fixture','Content-Type':'application/json'},url=`http://fixture/accounts/${scope.account_id}/messages/${logical}/invitations`;
-  const before=Number((await pool.query('SELECT count(*) FROM events')).rows[0].count),preview=await routes.request(url,{headers});assert.equal(preview.status,200);assert.equal(preview.headers.get('cache-control'),'no-store');
-  assert.equal(Number((await pool.query('SELECT count(*) FROM events')).rows[0].count),before);assert.equal((await routes.request(url)).status,401);
-  const request=await input(),injected=await routes.request(`http://fixture/accounts/${scope.account_id}/invitations/apply`,{method:'POST',headers,body:JSON.stringify({...request,ics_text:body(),to:'attacker@example.test'})});assert.equal(injected.status,400);
-  assert.equal(Number((await pool.query('SELECT count(*) FROM events')).rows[0].count),before);
-  const receipt=await routes.request(`http://fixture/accounts/${scope.account_id}/invitations/requests/${firstRequest}`,{headers});assert.equal(receipt.status,200);assert.equal((await receipt.json()).receipt.calendar.event_id,firstEvent);
-  const otherReceipt=await routes.request(`http://fixture/accounts/${other.account_id}/invitations/requests/${firstRequest}`,{headers});assert.deepEqual(await otherReceipt.json(),{receipt:null});
  });
  await t.test('monotonic version and same-version content conflict preserve event',async()=>{
   summary='Same version external edit';await assert.rejects(make().apply(actor,scope,await input()),/VERSION_CONFLICT/);summary='Reviewed synthetic invitation';sequence=0;stamp='20261005T120000Z';await assert.rejects(make().apply(actor,scope,await input()),/STALE/);

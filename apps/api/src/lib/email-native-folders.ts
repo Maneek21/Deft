@@ -1,6 +1,6 @@
 import { EmailOperationActorSchema } from './email-agent-actor.js';
 import {z} from 'zod';
-import {NativeEmailFolderPageSchema,NativeEmailDestinationSchema,type NativeEmailFolderPage,type NativeEmailAccount,type NativeEmailTriageDestination} from './app-connection-contract.js';
+import {NativeEmailFolderPageSchema, NativeEmailDestinationSchema, type NativeEmailFolderPage, type NativeEmailAccount, type NativeEmailTriageDestination} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import {EmailMailboxError,type EmailOperationActor,type EmailScope,type EmailCapability,type EmailAuthority} from './email-mailbox-service.js';
 import {EmailMailboxCrypto} from './email-mailbox-crypto.js';

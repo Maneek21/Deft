@@ -1,8 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { HUMAN_EMAIL_TOOLS } from './email.js';
-import { discoverPersonalEmailToolSchemas, isIndependentlyGovernedEmailTool } from './email-discovery-contract.js';
-export { HUMAN_INDEPENDENT_TOOL_AUTHORITIES } from './email-discovery-contract.js';
-import { EMAIL_INTEGRATION_TOOL_NAMES as EMAIL_TOOL_NAMES } from '../email-integration-agent-tools.js';
+import { discoverPersonalInstalledTools } from './installed-apps.js';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { z } from 'zod';
@@ -212,7 +209,6 @@ function retrievalResultToSearchResult(row: ContextResult): Record<string, unkno
 }
 
 export const HUMAN_READ_TOOLS = new Set([
-  ...EMAIL_TOOL_NAMES.filter(name=>!['email_draft_save','email_triage','email_send'].includes(name)),
   'app_runtime_action_list', 'app_runtime_action_get', 'app_action_batch_get',
   'native_mentions_search',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'read'),
@@ -268,7 +264,6 @@ export const HUMAN_READ_TOOLS = new Set([
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
-  'email_draft_save','email_triage','email_send',
   'app_action_batch_propose', 'app_action_batch_cancel',
   'native_mentions_publish',
   ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'write'),
@@ -328,7 +323,6 @@ async function humanAppActionOperation(
 }
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
-  ...HUMAN_EMAIL_TOOLS,
   ...Object.fromEntries(RUNTIME_WORKFLOW_NAMES.map(name => [name,
     (args: unknown, ctx: HumanToolContext) => humanRuntimeWorkflowTool(name, args, ctx)])),
   native_mentions_search: async (args, ctx) => {
@@ -3177,9 +3171,8 @@ function operationalBoundary() {
 export async function humanWorkspaceCapabilities(_args: Record<string, never>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
-  const emailNames = new Set((await discoverPersonalEmailToolSchemas(ctx)).map(schema => schema.name));
+  const installed = await discoverPersonalInstalledTools(ctx, Object.keys(HUMAN_TOOLS));
   const available = [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS].filter((name) => {
-    if (isIndependentlyGovernedEmailTool(name) && !emailNames.has(name)) return false;
     if (!humanToolHasRequiredScope(ctx.scopes, name)) return false;
     if (name === 'agent_employee_update_state' && !canManageWorkspace(ctx)) return false;
     return true;
@@ -3188,7 +3181,7 @@ export async function humanWorkspaceCapabilities(_args: Record<string, never>, c
     ...operationalBoundary(),
     role: ctx.role,
     granted_scopes: ctx.scopes,
-    available_tools: available.sort(),
+    available_tools: [...available, ...installed.map(tool => tool.name)].sort(),
     guidance: 'Use attention_digest for triage, resolve_targets before fuzzy writes, and reuse idempotency_key when retrying the same write.',
   });
 }

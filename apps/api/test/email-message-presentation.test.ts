@@ -4,7 +4,7 @@ import test from 'node:test';
 const importFixtureModule = (specifier: string): Promise<any> => import(specifier);
 import {EmailMessageContentService,EmailMessageContentError,type EmailPresentationCache} from '../src/lib/email-message-content.js';
 import {RegisteredEmailMailboxProvider} from '../src/lib/email-mailbox-provider.js';
-import type {AppConnectionAdapter,NativeEmailAccount,NativeEmailPresentation,NativeEmailFile,NativeEmailImage} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailPresentation, NativeEmailFile, NativeEmailImage, NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 import type {EmailActor,EmailCapability,EmailMessageRecord,EmailScope} from '../src/lib/email-mailbox-service.js';
 
 const scope:EmailScope={org_id:'org-reader',owner_user_id:'owner-reader',account_id:'account-reader'};

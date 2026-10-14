@@ -7,7 +7,7 @@ import {EmailDraftContentSchema,selectVerifiedDraftFromAddress} from './email-dr
 import {EmailAttachmentMetadataSchema,type EmailAttachmentMetadata} from './email-attachment-store.js';
 import type {EmailDraftRow} from './email-draft-store.js';
 import type {EmailScope,EmailCapability} from './email-mailbox-service.js';
-import type {NativeEmailAccount,NativeEmailDraftMime} from './app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailDraftMime} from './email-native-adapter-contract.js';
 import type {EmailNativeReplyContext} from './email-native-outgoing-snapshot.js';
 
 export type EmailProviderDraftMimeInput=Readonly<{scope:EmailScope;draft:EmailDraftRow;capability:EmailCapability;recheck:()=>Promise<void>;signal?:AbortSignal}>;

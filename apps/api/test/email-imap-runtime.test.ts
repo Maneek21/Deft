@@ -3,7 +3,8 @@ import {randomUUID} from 'node:crypto';
 import test from 'node:test';
 import {createPinnedEmailImapHost} from '../src/lib/email-imap-runtime.js';
 import {EmailImapCredentialCustody,type EmailImapCredentialRecord} from '../src/lib/email-imap-custody.js';
-import type {AppConnectionPins,NativeEmailConnectionContext} from '../src/lib/app-connection-contract.js';
+import type {AppConnectionPins} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 const keys={current:()=>({key_id:'fixture',key:Buffer.alloc(32,9)}),read:()=>({key_id:'fixture',key:Buffer.alloc(32,9)}),keyIds:()=>['fixture']};
 async function fixture(verified=true){
  const pins:AppConnectionPins={org_id:randomUUID(),owner_user_id:randomUUID(),installation_id:randomUUID(),app_version_id:randomUUID(),grant_snapshot_id:randomUUID(),target_key:'mail',resource_key:'inbox',resource_binding_id:randomUUID(),action_key:'send_message',action_binding_id:randomUUID()};

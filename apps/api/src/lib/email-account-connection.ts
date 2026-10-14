@@ -1,5 +1,6 @@
 import {canonicalCapabilityJson} from '@deft/shared';
-import type {AppConnectionPins,NativeEmailConnectionContext} from './app-connection-contract.js';
+import type {AppConnectionPins} from './app-connection-contract.js';
+import type {NativeEmailConnectionContext} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import {EmailMailboxError,type EmailScope,type EmailCapability} from './email-mailbox-service.js';
 import {EmailAccountConsentSchema,requireEmailAccountConsent,type EmailAccountConsent} from './email-account-lifecycle.js';

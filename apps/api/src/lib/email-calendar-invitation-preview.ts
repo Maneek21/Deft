@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
-import {NativeEmailCalendarPartsSchema} from './app-connection-contract.js';
+import {NativeEmailCalendarPartsSchema} from './email-native-adapter-contract.js';
 import type {EmailActor,EmailAuthority,EmailCapability,EmailScope} from './email-mailbox-service.js';
 import type {EmailMessageContentService} from './email-message-content.js';
 import {EmailMailboxCrypto} from './email-mailbox-crypto.js';

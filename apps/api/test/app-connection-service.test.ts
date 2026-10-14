@@ -16,16 +16,12 @@ const projection: AppConnectionProjection = { ...pins, purpose: 'status', web_se
   expires_at: Date.now() + 60_000, checked_at: Date.now() };
 const nomination = { installation_id: pins.installation_id, target_key: pins.target_key };
 
-test('connection completion uses registry pins and withholds late cache outcome after authority changes', async () => {
-  let changed = false, completions = 0;
-  const registry = new AppConnectionRegistry([{ pins, adapter: { handle: async () => Response.json({ state: 'connected', account: { account_id: 'stable', health: 'connected' } }) } }]);
-  const service = new AppConnectionService(registry, { connectionSetup: async (_caller, _session, _pins, _signal, purpose) =>
-    ({ ...projection, purpose: purpose!, lifecycle_epoch: changed ? 2 : 1 }) }, Date.now, () => performance.now(), async input => {
-      completions++; assert.deepEqual(input.entry.pins, pins); assert.equal(input.caller.sid, caller.sid);
-      changed = true; return { ...(input.result as object), native_email: { state: 'active' } };
-    });
-  await assert.rejects(service.invoke(caller, sessionId, nomination, 'callback', { state: 's'.repeat(43), code: 'synthetic' }, undefined), /access changed/);
-  assert.equal(completions, 1);
+test('generic connection returns the authorized adapter result without native mailbox enrollment',async()=>{
+ const result={state:'connected',account:{account_id:'stable',health:'connected'}};let calls=0,checks=0;
+ const registry=new AppConnectionRegistry([{pins,adapter:{handle:async()=>{calls++;return Response.json(result);},nativeEmailAccount:async()=>assert.fail('retired account enrollment'),nativeEmailPage:async()=>assert.fail('retired mailbox synchronization')} as any}]);
+ const service=new AppConnectionService(registry,{connectionSetup:async(_caller,_session,actualPins,_signal,purpose)=>{checks++;assert.deepEqual(actualPins,pins);return {...projection,purpose:purpose!};}});
+ for(const [operation,input] of [['begin',{}],['callback',{state:'s'.repeat(43),code:'synthetic'}],['manage',{}]] as const){assert.deepEqual(await service.invoke(caller,sessionId,nomination,operation,input,undefined),result);}
+ assert.equal(calls,3);assert.equal(checks,6,'each adapter response still receives current-authority revalidation');
 });
 
 const documentPolicy: NonNullable<AppConnectionProjection['content_policy']> = { document: {

@@ -1,3 +1,4 @@
+import {legacyNativeEntry} from './email-native-adapter-contract.js';
 import { createHash } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { appResourceBindings, emailAccounts, emailCheckpoints, emailMessages, emailProviderStates, emailSyncReceipts, emailImapCredentials, orgMembers, users, webSessions } from '@deft/db/schema';
@@ -5,7 +6,7 @@ import type { EmailAuthorityDatabase } from './email-mailbox-authority.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { loadLiveAttachmentSyncBindingAuthority, LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import type { AppConnectionRegistry } from './app-connection-registry.js';
-import type { NativeEmailAccount, NativeEmailConnectionContext } from './app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailConnectionContext} from './email-native-adapter-contract.js';
 import { EmailMailboxError, type EmailActor, type EmailScope } from './email-mailbox-service.js';
 import {EmailImapCredentialCustody,EmailImapSetupProfileSchema,type EmailImapCredentialRecord} from './email-imap-custody.js';
 import type {AppRunKeyProvider} from './app-run-keyrings.js';
@@ -151,8 +152,8 @@ export class PostgresEmailMailboxEnrollment {
         }
         if (digest((await checkHuman()).members) !== memberDigest) return deny();
       };
-      const entry = (await this.getRegistry()).select({ org_id: orgId, owner_user_id: actor.user_id,
-        installation_id: live.installation.id, target_key: live.binding.target_key });
+      const entry = legacyNativeEntry((await this.getRegistry()).select({ org_id: orgId, owner_user_id: actor.user_id,
+        installation_id: live.installation.id, target_key: live.binding.target_key }));
       const pins = entry.pins, binding = live.binding;
       if (pins.org_id !== orgId || pins.owner_user_id !== actor.user_id || pins.installation_id !== live.installation.id
         || pins.app_version_id !== binding.app_version_id || pins.grant_snapshot_id !== binding.grant_snapshot_id

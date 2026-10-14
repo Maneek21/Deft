@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AppConnectionAdapter, NativeEmailAccount, NativeEmailConnectionContext,NativeEmailSearchPage } from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailConnectionContext, NativeEmailSearchPage, NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 import { EmailMailboxError, type EmailCapability, type EmailProviderPage, type EmailScope } from '../src/lib/email-mailbox-service.js';
 import { RegisteredEmailMailboxProvider, type NativeEmailConnectionResolver } from '../src/lib/email-mailbox-provider.js';
 

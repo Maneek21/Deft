@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {NativeEmailDraftSyncResultSchema,type NativeEmailDraftSyncEffect,type NativeEmailDraftSyncRequest} from './app-connection-contract.js';
+import {NativeEmailDraftSyncResultSchema, type NativeEmailDraftSyncEffect, type NativeEmailDraftSyncRequest} from './email-native-adapter-contract.js';
 import type {EmailServiceLease} from './email-mailbox-authority.js';
 import type {EmailCapability,EmailScope} from './email-mailbox-service.js';
 import type {EmailDraftGuard} from './email-draft-store.js';

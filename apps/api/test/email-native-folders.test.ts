@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {EmailNativeFolderService,RegisteredEmailNativeFolderProvider} from '../src/lib/email-native-folders.js';
-import type {AppConnectionAdapter,NativeEmailAccount,NativeEmailFolder} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailFolder, NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 import type {EmailActor,EmailScope,EmailCapability,EmailAuthority} from '../src/lib/email-mailbox-service.js';
 import {EmailNativeTriageService} from '../src/lib/email-native-triage.js';
 const scope:EmailScope={org_id:'org-folders',owner_user_id:'owner-folders',account_id:'account-folders'};

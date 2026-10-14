@@ -1,3 +1,4 @@
+import {legacyNativeEntry} from './email-native-adapter-contract.js';
 import { and, eq } from 'drizzle-orm';
 import { emailAccounts, appResourceBindings } from '@deft/db/schema';
 import type { db } from './db.js';
@@ -13,7 +14,7 @@ export function createEmailSourceReadingPolicy(database: Pick<typeof db, 'select
   read: (actor: EmailActor, orgId: string, accountId: string, signal: AbortSignal) => Promise<EmailReadingPreference>): EmailSourceReadingPolicy {
   return async ({ caller, entry, record, signal }) => {
     signal.throwIfAborted();
-    if (!entry.adapter.nativeEmailAccount || !Number.isFinite(caller.access_expires_at)) return 'ask';
+    if (!legacyNativeEntry(entry).adapter.nativeEmailAccount || !Number.isFinite(caller.access_expires_at)) return 'ask';
     const source = record.provider_source as Record<string, unknown> | undefined;
     const data = record.data as Record<string, unknown> | undefined;
     if (!source || source.schema_version !== 'deft.email_provider_source.v1' || typeof source.account_id !== 'string'

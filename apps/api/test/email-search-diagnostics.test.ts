@@ -1,15 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
 import {createEmailSearchDiagnostics,emailSearchDiagnosticAccounts,profileEmailSearchPhase,noteEmailSearchResult} from '../src/lib/email-search-diagnostics.js';
-
-test('actual routes fresh-process default/explicit-off and operator allowlist cap preserve body/status/no request activation',()=>{
- const cli=fileURLToPath(new URL('../../../node_modules/tsx/dist/cli.mjs',import.meta.url)),fixture=fileURLToPath(new URL('./email-search-diagnostics-route-fixture.mts',import.meta.url)),config=fileURLToPath(new URL('../../../tsconfig.email-stage34.json',import.meta.url));
- for(const mode of ['off','on','off']){const env={...process.env};if(mode==='on')env.DEFT_EMAIL_SEARCH_DIAGNOSTICS='{"account_ids":["fixture-a","fixture-b"]}';else delete env.DEFT_EMAIL_SEARCH_DIAGNOSTICS;
-  const run=spawnSync(process.execPath,[cli,'--tsconfig',config,fixture,mode],{env,encoding:'utf8',timeout:20000});assert.equal(run.status,0,run.stderr||run.stdout);assert.deepEqual(JSON.parse(run.stdout),{mode,records:mode==='on'?4:0,calls:6,unauthorized:401,malformed:400,denied:403});
- }
-});
 
 test('operator flag requires exactly two scoped accounts and never accepts a request switch',()=>{
  for(const raw of [undefined,'1','{}','null','[]',JSON.stringify({account_ids:['a']}),JSON.stringify({account_ids:['a','a']}),JSON.stringify({account_ids:['a','b'],enabled:true}),JSON.stringify({account_ids:['a',' b']}),'x'.repeat(1025)])assert.equal(emailSearchDiagnosticAccounts(raw).size,0);

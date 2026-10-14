@@ -2,7 +2,7 @@ import { EmailOperationActorSchema } from './email-agent-actor.js';
 import { createHash } from 'node:crypto';
 import {canonicalCapabilityJson} from '@deft/shared';
 import { z } from 'zod';
-import { NativeEmailSearchPageSchema, type NativeEmailSearchPage } from './app-connection-contract.js';
+import {NativeEmailSearchPageSchema, type NativeEmailSearchPage} from './email-native-adapter-contract.js';
 import { EmailMailboxError, validateEmailMessageRecords, type EmailOperationActor, type EmailAuthority, type EmailCapability, type EmailMessageRecord, type EmailScope } from './email-mailbox-service.js';
 import type { EmailMailboxCrypto } from './email-mailbox-crypto.js';
 import {profileEmailSearchPhase} from './email-search-diagnostics.js';

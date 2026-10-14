@@ -5,7 +5,7 @@ import {
   EmailImapCredentialCustody, EmailImapCustodyError,
   type EmailImapCredentialRecord, type EmailImapCredentialStore, type EmailImapScope,
 } from '../src/lib/email-imap-custody.js';
-import type { NativeEmailAccount, NativeEmailConnectionContext } from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount, NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 
 const scope: EmailImapScope = { org_id: 'org-imap', owner_user_id: 'owner-imap', account_id: 'acct-imap' };
 const input = { host: 'IMAP.Example.Test.', port: 993, transport: 'implicit_tls' as const,

@@ -16,7 +16,7 @@ import {PostgresEmailAccountAuthority} from '../src/lib/email-account-authority.
 import type {NativeEmailConnectionBinding} from '../src/lib/email-native-connection-contract.js';
 import type {NativeEmailProviderProfile} from '../src/lib/email-native-connection-profile.js';
 import {planEmailAccountAdoption} from '../src/lib/email-account-lifecycle.js';
-import type {AppConnectionAdapter} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 const target='postgresql://gate_g_test@127.0.0.1:55435/email_stage34_connections_85',safe=process.env.DATABASE_URL===target&&process.env.DEFT_TEST_DATABASE_URL===target;
 test('public native OAuth setup → actual PostgreSQL enrollment → restarted native mailbox without App rows',{skip:!safe,timeout:20000},async t=>{
  const namespace='native_account_'+randomUUID().replaceAll('-',''),admin=new pg.Pool({connectionString:target});await admin.query(`CREATE SCHEMA "${namespace}"`);

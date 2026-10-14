@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import test from 'node:test';
 import {verifyEmailImapSetup} from '../src/lib/email-imap-setup-probe.js';
-import type {AppConnectionPins,NativeEmailConnectionContext} from '../src/lib/app-connection-contract.js';
+import type {AppConnectionPins} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 function fixture(options:{smtp?:boolean;failImap?:boolean;failSmtp?:boolean;revokeAfterAuth?:boolean;privateDns?:boolean}={}){
  const pins:AppConnectionPins={org_id:randomUUID(),owner_user_id:randomUUID(),installation_id:randomUUID(),app_version_id:randomUUID(),grant_snapshot_id:randomUUID(),target_key:'mail',resource_key:'inbox',resource_binding_id:randomUUID(),action_key:'send_message',action_binding_id:randomUUID()};
  let revoked=false;const counts={connect:0,close:0,smtp:0,smtpClose:0,send:0};

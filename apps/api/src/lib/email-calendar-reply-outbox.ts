@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {emailDrafts} from '@deft/db/schema';
 import {canonicalCapabilityJson} from '@deft/shared';
-import {NativeEmailSendIdentitySchema} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema} from './email-native-adapter-contract.js';
 import {EmailDraftContentSchema} from './email-draft-service.js';
 import {emailDraftContext,type EmailDraftRow} from './email-draft-store.js';
 import type {EmailActor,EmailCapability,EmailScope} from './email-mailbox-service.js';

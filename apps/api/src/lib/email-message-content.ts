@@ -2,8 +2,7 @@ import { EmailOperationActorSchema } from './email-agent-actor.js';
 import { createHash } from 'node:crypto';
 import { canonicalCapabilityJson } from '@deft/shared';
 import { z } from 'zod';
-import {NativeEmailIncomingLimits,NativeEmailPresentationSchema,NativeEmailFileSchema,NativeEmailImageSchema,NativeEmailDigestSchema,NativeEmailCalendarPartsSchema,
-  type NativeEmailSource,type NativeEmailPresentation,type NativeEmailFile,type NativeEmailImage,type NativeEmailCalendarParts} from './app-connection-contract.js';
+import {NativeEmailIncomingLimits, NativeEmailPresentationSchema, NativeEmailFileSchema, NativeEmailImageSchema, NativeEmailDigestSchema, NativeEmailCalendarPartsSchema, type NativeEmailSource, type NativeEmailPresentation, type NativeEmailFile, type NativeEmailImage, type NativeEmailCalendarParts} from './email-native-adapter-contract.js';
 import type { EmailOperationActor, EmailAuthority, EmailCapability, EmailMessageRecord, EmailScope } from './email-mailbox-service.js';
 import {EmailIncomingReadBusyError} from './email-incoming-read-budget.js';
 

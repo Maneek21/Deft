@@ -5,7 +5,7 @@ import {canonicalCapabilityJson} from '@deft/shared';
 import type {db} from './db.js';
 import {EmailMailboxCrypto} from './email-mailbox-crypto.js';
 import type {EmailScope} from './email-mailbox-service.js';
-import type {NativeEmailTriagePlan,NativeEmailTriageValue} from './app-connection-contract.js';
+import type {NativeEmailTriagePlan, NativeEmailTriageValue} from './email-native-adapter-contract.js';
 
 type ProviderScope={org_id:string;owner_id:string;installation_id:string};
 type Database=Pick<typeof db,'transaction'>;

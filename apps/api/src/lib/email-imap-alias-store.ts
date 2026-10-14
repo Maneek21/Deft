@@ -6,7 +6,7 @@ import {emailMessages,emailCheckpoints,emailMemberships,emailOperations,emailIma
 import type {db} from './db.js';
 import {EmailMailboxCrypto} from './email-mailbox-crypto.js';
 import type {EmailScope,EmailMessageRecord} from './email-mailbox-service.js';
-import type {NativeEmailProviderScope,NativeEmailTriageValue} from './app-connection-contract.js';
+import type {NativeEmailProviderScope, NativeEmailTriageValue} from './email-native-adapter-contract.js';
 import {EmailImapAliasProofSchema,EmailImapLocatorSchema,emailImapLocatorKey,emailImapSourceDigest,type EmailImapMoveNomination,type EmailImapAliasProof} from './email-imap-alias-contract.js';
 type Database=Pick<typeof db,'transaction'>;
 type Tx=Parameters<Parameters<Database['transaction']>[0]>[0];

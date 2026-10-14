@@ -1,6 +1,6 @@
 import {canonicalCapabilityJson} from '@deft/shared';
 import {NativeEmailSentCopyRequestSchema,NativeEmailSentCopyResultSchema,EmailSentCopySettingsSchema,type NativeEmailSentCopyRequest} from './email-sent-copy-contract.js';
-import type {NativeEmailConnectionContext} from './app-connection-contract.js';
+import type {NativeEmailConnectionContext} from './email-native-adapter-contract.js';
 import type {NativeEmailConnectionResolver} from './email-mailbox-provider.js';
 import type {EmailScope,EmailCapability} from './email-mailbox-service.js';
 export class RegisteredEmailSentCopyProvider{

@@ -1,6 +1,7 @@
 import {and,eq} from 'drizzle-orm';
 import {emailAccounts,emailImapCredentials} from '@deft/db/schema';
-import {AppConnectionPinsSchema,type AppConnectionPins,type NativeEmailAccount,type NativeEmailConnectionContext,type NativeEmailImapHostFactory} from './app-connection-contract.js';
+import {AppConnectionPinsSchema, type AppConnectionPins} from './app-connection-contract.js';
+import {type NativeEmailAccount, type NativeEmailConnectionContext, type NativeEmailImapHostFactory} from './email-native-adapter-contract.js';
 import {EmailImapCredentialCustody,type EmailImapCredentialRecord} from './email-imap-custody.js';
 import {createEmailImapHost,type EmailImapHostAccount} from './email-imap-host.js';
 import {createEmailSmtpHost} from './email-smtp-host.js';

@@ -1,7 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {canonicalCapabilityJson} from '@deft/shared';
 import {z} from 'zod';
-import {NativeEmailSendIdentitySchema,NativeEmailSendResultSchema,NativeEmailPrepareSendResultSchema,type NativeEmailSendIdentity,type NativeEmailPrepareSendResult} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema, NativeEmailSendResultSchema, NativeEmailPrepareSendResultSchema, type NativeEmailSendIdentity, type NativeEmailPrepareSendResult} from './email-native-adapter-contract.js';
 import type {EmailActor,EmailScope,EmailAuthority,EmailCapability} from './email-mailbox-service.js';
 import type {EmailDraftStore} from './email-draft-store.js';
 import type {EmailSendSnapshotBuilder,EmailSendSnapshotIdentity,EmailNativeSendProvider} from './email-native-send-service.js';

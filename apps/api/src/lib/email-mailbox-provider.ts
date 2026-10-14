@@ -1,6 +1,4 @@
-import {NativeEmailIncomingLimits,NativeEmailDigestSchema,NativeEmailPresentationSchema,NativeEmailFileSchema,NativeEmailImageSchema,NativeEmailCalendarPartsSchema,NativeEmailSearchRequestSchema,NativeEmailSearchPageSchema,NativeEmailConversationPageSchema,
-  type AppConnectionAdapter,type NativeEmailAccount,type NativeEmailConnectionContext,type NativeEmailSource,
-  type NativeEmailPresentation,type NativeEmailFile,type NativeEmailImage,type NativeEmailCalendarParts,type NativeEmailSearchPage,type NativeEmailSearchRequest,type NativeEmailConversationPage} from './app-connection-contract.js';
+import {NativeEmailIncomingLimits, NativeEmailDigestSchema, NativeEmailPresentationSchema, NativeEmailFileSchema, NativeEmailImageSchema, NativeEmailCalendarPartsSchema, NativeEmailSearchRequestSchema, NativeEmailSearchPageSchema, NativeEmailConversationPageSchema, type NativeEmailAccount, type NativeEmailConnectionContext, type NativeEmailSource, type NativeEmailPresentation, type NativeEmailFile, type NativeEmailImage, type NativeEmailCalendarParts, type NativeEmailSearchPage, type NativeEmailSearchRequest, type NativeEmailConversationPage, type NativeEmailAdapter as AppConnectionAdapter} from './email-native-adapter-contract.js';
 import { EmailMailboxError, type EmailCapability, type EmailProviderPage, type EmailScope } from './email-mailbox-service.js';
 import {emailIncomingProviderBudget} from './email-incoming-read-budget.js';
 

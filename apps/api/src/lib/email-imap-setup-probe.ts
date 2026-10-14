@@ -1,4 +1,5 @@
-import {AppConnectionPinsSchema,type AppConnectionPins,type NativeEmailConnectionContext,type NativeEmailImapHostFactory} from './app-connection-contract.js';
+import {AppConnectionPinsSchema, type AppConnectionPins} from './app-connection-contract.js';
+import {type NativeEmailConnectionContext, type NativeEmailImapHostFactory} from './email-native-adapter-contract.js';
 import {EmailImapCredentialCustody,EmailImapSetupProfileSchema,type EmailImapCredentialRecord,type EmailImapProfileInput} from './email-imap-custody.js';
 import {createEmailImapHost,type EmailImapHostAccount,type EmailImapHostDependencies} from './email-imap-host.js';
 import {createEmailSmtpHost} from './email-smtp-host.js';

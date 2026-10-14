@@ -9,7 +9,7 @@ import {emailAccounts,emailOperations} from '@deft/db/schema';
 import {and,eq} from 'drizzle-orm';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {PostgresEmailOperationJournal} from '../src/lib/email-operation-journal.js';
-import type {NativeEmailTriagePlan} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailTriagePlan} from '../src/lib/email-native-adapter-contract.js';
 const target='postgresql://gate_g_test@127.0.0.1:55435/email_stage34_fresh_65';
 const safe=process.env.DATABASE_URL===target&&process.env.DEFT_TEST_DATABASE_URL===target;
 test('native operation journal commits reservations before effects, fences leases and preserves uncertain outcomes',{skip:!safe,timeout:30000},async t=>{

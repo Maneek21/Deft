@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import type {NativeEmailAccount} from './app-connection-contract.js';
+import type {NativeEmailAccount} from './email-native-adapter-contract.js';
 import {EmailMailboxError,type EmailActor,type EmailCapability,type EmailScope} from './email-mailbox-service.js';
 
 const id=z.string().min(1).max(256).refine(value=>value.trim()===value&&!/[\u0000-\u001f\u007f-\u009f]/u.test(value));

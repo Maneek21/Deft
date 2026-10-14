@@ -13,7 +13,7 @@ import {createNativeImapEffectsBridge} from '../../../examples/apps/email/provid
 import {LogicalMailIndex} from '../../../examples/apps/email/logical-mail-index.mjs';
 // @ts-ignore -- registered provider bundle is JavaScript.
 import {providerSourceForParent} from '../../../examples/apps/email/providers/provider-browser.mjs';
-import {NativeEmailPresentationSchema,NativeEmailFileSchema} from '../src/lib/app-connection-contract.js';
+import {NativeEmailPresentationSchema, NativeEmailFileSchema} from '../src/lib/email-native-adapter-contract.js';
 const readerMime=Buffer.from('From: sender@example.test\r\nTo: owner@example.test\r\nSubject: Real host reader fixture\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=reader\r\n\r\n--reader\r\nContent-Type: text/plain\r\n\r\nVisible body\r\n--reader\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=proof.txt\r\nContent-Transfer-Encoding: base64\r\n\r\n'+Buffer.from('Exact decoded proof').toString('base64')+'\r\n--reader--\r\n');
 async function fixture(){
  const scope={org_id:'org-host-bridge',owner_user_id:'owner-host-bridge',account_id:'account-host-bridge'};let stored:EmailImapCredentialRecord|null=null,connects=0,logouts=0,closes=0,afterList=()=>{};

@@ -11,7 +11,7 @@ import {EmailCalendarInvitationStore,emailInvitationModelContext} from '../src/l
 import {EmailCalendarInvitationService} from '../src/lib/email-calendar-invitation-service.js';
 import {EmailInvitationPreviewService} from '../src/lib/email-calendar-invitation-preview.js';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
-import {NativeEmailCalendarPartsSchema} from '../src/lib/app-connection-contract.js';
+import {NativeEmailCalendarPartsSchema} from '../src/lib/email-native-adapter-contract.js';
 import {parseEmailCalendarInvitations,serializeEmailInvitationReply,selectEmailInvitationAttendee} from '../src/lib/email-calendar-invitation.js';
 import {assertEmailInvitationReceiver} from '../src/lib/email-calendar-attendee-projection.js';
 import {projectEmailCalendarEvents} from '../src/lib/email-calendar-projection.js';

@@ -9,7 +9,7 @@ import {ConnectedEmailMailboxAuthority} from './email-mailbox-connected-authorit
 import {getEmailMailboxComponents} from './email-mailbox-runtime.js';
 import {getAppRunRuntime} from './app-run-runtime.js';
 import {db} from './db.js';
-import {NativeEmailSendIdentitySchema} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema} from './email-native-adapter-contract.js';
 
 /** Not mounted by default. Address availability is inspected through the
  * registered adapter; saved preferences remain readable if that inspection

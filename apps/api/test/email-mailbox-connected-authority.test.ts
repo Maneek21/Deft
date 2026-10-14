@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ConnectedEmailMailboxAuthority } from '../src/lib/email-mailbox-connected-authority.js';
 import type { EmailAuthority, EmailCapability } from '../src/lib/email-mailbox-service.js';
-import type { NativeEmailAccount } from '../src/lib/app-connection-contract.js';
+import type {NativeEmailAccount} from '../src/lib/email-native-adapter-contract.js';
 const scope={org_id:'org',owner_user_id:'owner',account_id:'account'};
 const actor={user_id:'owner',web_session_id:'sid',access_expires_at:10000};
 function fixture() {

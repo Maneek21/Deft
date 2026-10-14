@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { NativeEmailDraftSyncResultSchema, type NativeEmailDraftSyncEffect } from './app-connection-contract.js';
+import {NativeEmailDraftSyncResultSchema, type NativeEmailDraftSyncEffect} from './email-native-adapter-contract.js';
 import type { EmailServiceLease } from './email-mailbox-authority.js';
 import type { EmailActor,EmailAuthority,EmailCapability, EmailScope } from './email-mailbox-service.js';
 import { EmailDraftStore, type EmailDraftGuard, type EmailDraftRow } from './email-draft-store.js';
@@ -103,7 +103,7 @@ export class EmailProviderDraftMirrorService {
       return valid;
     };
     const host={scope,capability,recheck,signal,draft_sync_before_effect:effect};
-    const invoke=async(request:import('./app-connection-contract.js').NativeEmailDraftSyncRequest)=>{
+    const invoke=async(request:import('./email-native-adapter-contract.js').NativeEmailDraftSyncRequest)=>{
       const result=NativeEmailDraftSyncResultSchema.parse(await this.provider.sync(request,host));
       if(result.mime_bytes)readbacks.push(result.mime_bytes);
       return result;

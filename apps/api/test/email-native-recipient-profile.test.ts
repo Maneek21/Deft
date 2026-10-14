@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {parseMailboxList,formatMailboxList,parseNativeMailboxList,formatNativeMailboxList} from '../../../packages/app-kit/src/mailbox-list.js';
-import {NativeEmailPresentationSchema} from '../src/lib/app-connection-contract.js';
+import {NativeEmailPresentationSchema} from '../src/lib/email-native-adapter-contract.js';
 import {EmailDraftContentSchema} from '../src/lib/email-draft-service.js';
 import {assertNativeReplyModeAvailable} from '../src/lib/email-native-reply-policy.js';
 import {createEmailNativeOutgoingSnapshotBuilder,type EmailNativeReplyContext} from '../src/lib/email-native-outgoing-snapshot.js';

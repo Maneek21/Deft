@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
 import {RegisteredEmailNativeSendProvider} from '../src/lib/email-native-send-provider.js';
-import type {AppConnectionAdapter,NativeEmailSendIdentity} from '../src/lib/app-connection-contract.js';
+import type {NativeEmailSendIdentity, NativeEmailAdapter as AppConnectionAdapter} from '../src/lib/email-native-adapter-contract.js';
 import type {EmailScope,EmailCapability} from '../src/lib/email-mailbox-service.js';
 const scope:EmailScope={org_id:'org-send',owner_user_id:'owner-send',account_id:'account-send'};
 const cap:EmailCapability={scope,resource_binding_id:'binding-send',authority_version:'authority-send',expires_at:5000};

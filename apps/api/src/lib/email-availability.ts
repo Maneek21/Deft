@@ -1,3 +1,4 @@
+import {legacyNativeEntry} from './email-native-adapter-contract.js';
 import type {AppConnectionEntry} from './app-connection-registry.js';
 import type {AppConnectionRegistry} from './app-connection-registry.js';
 import {z} from 'zod';
@@ -18,10 +19,11 @@ export async function currentLegacyEmailInstallationIds(input:{org_id:string;own
  const entries=input.registry.retainedOwnerEntriesForOwner({org_id:input.org_id,owner_user_id:input.owner_user_id});
  if(entries.length>32)return Object.freeze([] as string[]);
  const found=new Set<string>();
- for(const entry of entries){
+ for(const rawEntry of entries){
+  const entry=legacyNativeEntry(rawEntry);
   const pins=entry.pins;
   if(pins.org_id!==input.org_id||pins.owner_user_id!==input.owner_user_id||!validId(pins.installation_id)
-    ||typeof entry.adapter.nativeEmailAccount!=='function'||typeof entry.adapter.nativeEmailPage!=='function')continue;
+    ||typeof legacyNativeEntry(entry).adapter.nativeEmailAccount!=='function'||typeof legacyNativeEntry(entry).adapter.nativeEmailPage!=='function')continue;
   try{if(await input.live(entry))found.add(pins.installation_id);}catch{/* one stale registry edge doesn't hide native navigation */}
  }
  return Object.freeze([...found].sort().slice(0,50));
@@ -58,7 +60,7 @@ const emailAddress=(v:unknown):v is string=>typeof v==='string'&&v.length<=320&&
 export async function listEmailConnectionTargets(actor:EmailActor,orgId:string,registry:EmailAvailabilityRegistry,
  readStatus:ConnectionStatusReader,existing:ExistingAccountReader,signal?:AbortSignal):Promise<EmailConnectionTargetPage>{
  const entries=registry.retainedOwnerEntriesForOwner({org_id:orgId,owner_user_id:actor.user_id});
- const candidates=entries.filter(entry=>typeof entry.adapter.nativeEmailAccount==='function'&&typeof entry.adapter.nativeEmailPage==='function')
+ const candidates=entries.filter(entry=>typeof legacyNativeEntry(entry).adapter.nativeEmailAccount==='function'&&typeof legacyNativeEntry(entry).adapter.nativeEmailPage==='function')
   .sort((a,b)=>a.pins.installation_id.localeCompare(b.pins.installation_id)||a.pins.target_key.localeCompare(b.pins.target_key));
  if(candidates.length>50)throw new Error('EMAIL_CONNECTION_TARGETS_UNAVAILABLE');
  const targets:EmailConnectionTarget[]=[],seen=new Set<string>();let unavailable_count=0,next=0;

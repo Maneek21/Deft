@@ -6,7 +6,7 @@ import { db } from './db.js';
 import { enqueue,enqueueOrRearmFailed,QUEUE_NAMES,RetryLaterJobError } from './queues.js';
 import type { JobHandler } from '../workers/types.js';
 import type { EmailActor,EmailCapability,EmailMessageRecord,EmailScope } from './email-mailbox-service.js';
-import type { NativeEmailPresentation } from './app-connection-contract.js';
+import type {NativeEmailPresentation} from './email-native-adapter-contract.js';
 import { defaultEmailKnowledgePolicy,EmailKnowledgePolicySchema,emailKnowledgeEligibility,emailKnowledgeHash,emailKnowledgeThreadKey,normalizeEmailKnowledgeBody,validateEmailKnowledgeExtraction,type EmailKnowledgePolicy } from './email-knowledge.js';
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Current=(scope:EmailScope,tx?:unknown,signal?:AbortSignal)=>Promise<EmailCapability>;

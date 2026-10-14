@@ -7,7 +7,7 @@ import type { EmailAuthorityDatabase } from '../src/lib/email-mailbox-authority.
 import type { AppRunTransaction } from '../src/lib/app-run-repository.js';
 import type { LiveAttachmentSyncBindingAuthority } from '../src/lib/app-attachment-sync-authority.js';
 import type { AppConnectionRegistry } from '../src/lib/app-connection-registry.js';
-import type { NativeEmailConnectionContext } from '../src/lib/app-connection-contract.js';
+import type {NativeEmailConnectionContext} from '../src/lib/email-native-adapter-contract.js';
 import { EmailMailboxError } from '../src/lib/email-mailbox-service.js';
 
 const actor = { user_id: 'owner', web_session_id: 'sid', access_expires_at: 20000 };

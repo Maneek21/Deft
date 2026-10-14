@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {canonicalCapabilityJson} from '@deft/shared';
 import type {EmailActor,EmailScope,EmailMessageRecord} from './email-mailbox-service.js';
 import type {EmailMessageContentStore} from './email-message-content.js';
-import type {NativeEmailPresentation} from './app-connection-contract.js';
+import type {NativeEmailPresentation} from './email-native-adapter-contract.js';
 const fingerprint=(record:EmailMessageRecord)=>createHash('sha256').update(canonicalCapabilityJson([record.account_id,record.logical_message_id,record.revision,record.provider_source])).digest('hex');
 const messageId=(value:string)=>/^<[^<>\s@]+@[^<>\s@]+>$/u.test(value)&&value.length<=200;
 /** Private reply context never sends a raw provider locator to the browser. The

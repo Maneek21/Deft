@@ -14,7 +14,7 @@ import {RegisteredEmailNativeDraftProvider} from './email-native-draft-provider.
 import {createEmailProviderDraftMimeBuilder} from './email-provider-draft-mime.js';
 import {createEmailNativeReplyResolver} from './email-native-reply.js';
 import {EmailMailboxError,type EmailScope,type EmailCapability} from './email-mailbox-service.js';
-import {NativeEmailSendIdentitySchema} from './app-connection-contract.js';
+import {NativeEmailSendIdentitySchema} from './email-native-adapter-contract.js';
 
 /** Native background draft sync is authorized by its actual queue lease and
  * explicit account opt-in. No human bearer token or artificial session exists. */

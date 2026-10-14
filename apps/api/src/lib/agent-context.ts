@@ -110,12 +110,14 @@ export async function executeToolCall(
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
 
-  if (toolName.startsWith('email_')) {
-    const { EMAIL_INTEGRATION_TOOL_NAMES,executeEmailIntegrationTool } = await import('./email-integration-agent-tools.js');
-    if (EMAIL_INTEGRATION_TOOL_NAMES.includes(toolName as typeof EMAIL_INTEGRATION_TOOL_NAMES[number])) {
-      try {
-        return { result: await executeEmailIntegrationTool(toolName, params, {kind:'defty',org_id:orgId,user_id:_userId,conversation_id:conversationId,employee_id:agentEmployeeId}), citations:[] };
-      } catch(error) { return {result:{error:error instanceof Error ? error.message : 'EMAIL_TOOL_UNAVAILABLE'},citations:[]}; }
+  const {AGENT_TOOLS,CALENDAR_READ_TOOLS}=await import('./agent-tools.js');
+  if (!AGENT_TOOLS.some(tool=>tool.name===toolName) && !CALENDAR_READ_TOOLS.some(tool=>tool.name===toolName)) {
+    const {installedToolSchemas,executeInstalledTool}=await import('./app-installed-tool-discovery.js');
+    const caller={kind:'defty' as const,org_id:orgId,user_id:_userId,conversation_id:conversationId,employee_id:agentEmployeeId};
+    const installed=await installedToolSchemas(caller).catch(()=>[]);
+    if(installed.some(tool=>tool.name===toolName)) {
+      try{return {result:await executeInstalledTool(toolName,params,caller),citations:[]};}
+      catch{return {result:{error:'APP_INSTALLED_TOOL_UNAVAILABLE'},citations:[]};}
     }
   }
 
