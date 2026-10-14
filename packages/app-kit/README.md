@@ -1,6 +1,6 @@
 # `@deft/app-kit`
 
-The alpha.33 candidate adds provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. Existing sealed alpha.30/alpha.32 packages and legacy parsers remain historical compatibility inputs; the new Email flow uses alpha.33 contracts.
+The alpha.33 candidate adds provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. The current App1.9.0-preview.1 / Runtime0.4.0-preview.1 candidate uses alpha.33 and is reviewed in [Email PR1](https://github.com/Maneek21/deft-email/pull/1). Existing sealed alpha.30/alpha.32 packages and their exact proofs remain historical inputs.
 
 Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
 
@@ -70,7 +70,9 @@ resource data/content contracts, attachments, safe compose HTML, and generic
 source/Task integration. These are contracts; a compatible Host must advertise
 and authorize the corresponding operations.
 
-The matching external Email review is
+### Historical recovery artifacts
+
+The matching historical external Email review is
 [deft-email PR #1](https://github.com/Maneek21/deft-email/pull/1). Its
 [historical setup instructions](https://github.com/Maneek21/deft-email/blob/4c33dca127f799ff43a318625319808266799366/docs/setup.md)
 retain the exact frozen consumer proof.
@@ -78,7 +80,7 @@ The frozen Email browser package `1.8.0-preview.1` uses **alpha.30**, while its
 independent Runtime `0.3.1-e5.9` uses **alpha.32**. Do not replace the browser
 Kit or regenerate its accepted App package merely to make both versions equal.
 
-[Current independent Email setup](https://github.com/Maneek21/deft-email/blob/015e60ae0fd500ab3bf5f8df4140a93572d65671/docs/setup.md)
+[Historical recovery Email setup](https://github.com/Maneek21/deft-email/blob/015e60ae0fd500ab3bf5f8df4140a93572d65671/docs/setup.md)
 is pinned to the reviewed recovery source: App `1.8.0-preview.2` still uses
 **alpha.30**; Runtime `0.3.1-e5.11`, including the Refresh UUID fix, still uses
 **alpha.32**. This updates the consumer pointer, not the SDK matrix or frozen
@@ -86,8 +88,8 @@ artifacts; Host/fresh-install acceptance remains a separate gate.
 
 The recorded alpha.32 tarball SHA256 is
 `44a4419d6f40320650f20f89d6a99ee3ee0631e613843439fc349849f5a35ddb`;
-retain its hash and the external consumer lockfile. This PR corrects author
-documentation; rebuilding a tarball from this PR does not reproduce the old
+retain its hash and the external consumer lockfile. Those recovery documentation
+updates did not change the SDK executable; rebuilding today's package does not reproduce the old
 README bytes and must not overwrite that frozen archive.
 
 The matching Host review follows this Author Kit PR in the Deft review stack.
@@ -200,7 +202,7 @@ Personal MCP connections act with their user's access and explicit scopes;
 the Module's `agent_access` policy controls Defty and agent employees. Linked
 native tasks retain their own visibility rules.
 
-The protocol 1/2 connected templates and `sandbox_email_send` examples below are historical schema/conformance fixtures. They are not the current executable onboarding path. Current independent Apps use protocol 7 declarations, external Runtime custody and public stage/review/activation, as demonstrated by Email. Provider behavior belongs to the App Runtime; naming a capability or MCP tool grants no authority. Historical sandbox acceptance never established message delivery.
+The protocol 1/2 connected templates and `sandbox_email_send` examples below retain frozen compatibility for existing CRM/Campaign Apps. They are not the current independent Email onboarding path and do not restore the built-in mailbox product. Current independent Email uses protocol 7 declarations, external Runtime custody and public stage/review/activation. Provider behavior belongs to the App Runtime; naming a capability or MCP tool grants no authority. Historical sandbox acceptance never established message delivery.
 
 ## Historical CLI authoring loop
 
