@@ -200,7 +200,7 @@ jobs:
     if: needs.release-scope.outputs.release_scope == 'hermes-certified'
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -302,7 +302,7 @@ jobs:
     needs: typecheck
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -504,7 +504,7 @@ jobs:
             -e POSTGRES_USER=postgres \
             -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
             -e POSTGRES_DB=deft \
-            pgvector/pgvector:pg16
+            pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
           for attempt in $(seq 1 30); do
             docker exec deft-browser-postgres pg_isready -U postgres >/dev/null 2>&1 && break
             if [ "$attempt" = 30 ]; then echo 'database did not become ready'; exit 1; fi

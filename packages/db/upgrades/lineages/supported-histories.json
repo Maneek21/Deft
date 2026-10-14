@@ -8,7 +8,15 @@
     "canonical_public_commit": "b567af6ff12e5e4c61dbc54eddde17a81b986a28",
     "raw_git_inventory_sha256": "ef04b96d0d22a36c6950c56ce4c6171a6e3ae2333267f2364934b2eae6619a69",
     "crlf_export_inventory_sha256": "8622e4c41f25af5ecb547d975c8a5e64208cdf1ce1ab2c9e6aef06c40a27b10e",
-    "public_installation": "none available; disposable exact-source replay only"
+    "public_installation": "none available; disposable exact-source replay only",
+    "canonical_preview1_schema118": {
+      "baseline_image": "ghcr.io/maneek21/deft@sha256:c1a8326d87ab9bcc7d9e0bd606b32e9b84b4558dff9d78f72555a81efc2c03b1",
+      "postgres_image": "pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+      "snapshot_fixture": "lineages/canonical-preview1-schema118.json",
+      "snapshot_fixture_sha256": "3ee4322feee660851f3e5885741a70e9436ea1f6e60ac859aad47cc1d9ef9ea8",
+      "catalog_digest": "67239f5a35a4444df01a412005d0256d50cb9ec064c86332e8f40ebde2b01cb8",
+      "reproduction": "Initialize immutable baseline; run the unchanged supported pnpm db:upgrade once. Capture public structural catalog and migration ledger, no user rows. PostgreSQL160015/vector0.8.6."
+    }
   },
   "variants": [
     {
@@ -14092,6 +14100,699 @@
         }
       ],
       "catalog_digest": "a51ddf0763fbf1ebf369bb05ffa194a06792f63199fe6047bcb59f808109a3c7",
+      "append": []
+    },
+    {
+      "name": "canonical-preview1-current-schema118",
+      "lineage": "public61",
+      "stage": "current",
+      "catalog_digest": "67239f5a35a4444df01a412005d0256d50cb9ec064c86332e8f40ebde2b01cb8",
+      "ledger": [
+        {
+          "version": "0.2.0-preview.1",
+          "description": "Supported schema baseline v0.2.0-preview.1",
+          "checksum": "8087077013b2875ef32b4ad1b1633ca4048834c1adb7bfff95a7c921424da979",
+          "kind": "baseline"
+        },
+        {
+          "version": "0.2.0-preview.2",
+          "description": "Add durable automation runs and meeting brief idempotency",
+          "checksum": "e10b7282f30aabee269bca331bdd73c91a076754282504d809445c75029975d9",
+          "kind": "migration"
+        },
+        {
+          "version": "0.2.0-preview.3",
+          "description": "Add durable attention lifecycle, delivery ledger, approvers, and browser subscriptions",
+          "checksum": "938153444b438596a34353d6eeb07406d7fe31e66808d9b4d9580f2ed65d07a8",
+          "kind": "migration"
+        },
+        {
+          "version": "0.2.0-preview.4",
+          "description": "Redact legacy cross-reference, reminder, notification, and restricted clip-derived text",
+          "checksum": "d8a9f806192edeafc4755d5f577be63dfbd54ddd3c4c7796d4254152378b352f",
+          "kind": "migration"
+        },
+        {
+          "version": "0.2.0-preview.5",
+          "description": "Add tenant-aware dedupe, renewable leases, and race-safe recurring jobs",
+          "checksum": "765e8215923396826e1ee7b49de9a6b0211bf9767430fbf8daaee3bd0e04ff86",
+          "kind": "migration"
+        },
+        {
+          "version": "0.2.0-preview.6",
+          "description": "Add declarative module installations, immutable versions, records, and native search",
+          "checksum": "32440cbf255ab9a592634163b19b64a3592109cb0596d7115dcf55b2a2cc3745",
+          "kind": "migration"
+        },
+        {
+          "version": "0.2.0-preview.7",
+          "description": "Add normalized module record relations and personal saved views",
+          "checksum": "de402881efc34c1b6989eb4ae8a27c21eca97c744c3812e6a282d3171681ad14",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.100",
+          "description": "Apply reviewed cross-store record changes with ordered source and destination authority",
+          "checksum": "bd13d3f13e691b106c027b8cfed1628060cc9e4956621eeda250b1862b8e68ee",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.101",
+          "description": "Runtime-owned credential forms and atomic connection carriers",
+          "checksum": "ef35fb87c88151417c7faac05826ebf6838dfc2d001ee340db587511e760831a",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.102",
+          "description": "App-owned local schedule channels with current authority and durable execution journals",
+          "checksum": "11b925f704c197284d25777b13d6e2a2926a6f445c73055fefbf0140ade7ba80",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.103",
+          "description": "Reviewed future record effects with immutable authority, local acknowledgement and dispatch cancellation fences",
+          "checksum": "1381a736e371923d2b236644555da0dfcee06643790db264b16eb73df018868b",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.104",
+          "description": "Bind resource observation to exact current form, upgrade or reattachment receipts",
+          "checksum": "0caad3d986f7221c6aa4514698304c85b6772544e2ed316d701476c0ab434ec4",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.105",
+          "description": "Atomic exact prepared resource batch membership and sequential known-receipt release",
+          "checksum": "c12efa58420a06b79a29b163a9220e2e83ebe451a6c97163490c478420940198",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.106",
+          "description": "Reviewed generic record mirrors with current account authority and exact accepted-action cleanup",
+          "checksum": "05b04766a06fe0c8e986a706782f7a82a98bd28d255145961eab7e666cebce60",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.107",
+          "description": "Bound current readonly original Run inspection to immutable metadata leases",
+          "checksum": "7bb28b4cb2c632c0b005bd646d9d155a2d50cf781b468cb36d75abbd925803e9",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.108",
+          "description": "Preserve immutable proof of expired callback-unconsumed capability upgrades",
+          "checksum": "dbc050b5ece0061ef9a85c50b741003d0d1b05b43839058afcb270ee51f57753",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.109",
+          "description": "Opt-in bounded same-session runtime renewal under immutable principal and reviewed authority",
+          "checksum": "ea6a84ba1c2d96c185cf84d71a28b22845b6c0a3455ac5c18f12dda940e43592",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.110",
+          "description": "Independent App principal tools, source capture lineage, reviewed destinations and opt-in metadata notifications",
+          "checksum": "118e8d80571257c7377b60288c568b265044abe87793b4f5872f9612c1fb625b",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.111",
+          "description": "Fresh owner-reviewed time-only same-binding consent continuation with atomic receipts",
+          "checksum": "545bb5fa58ab101f7c807125019e1613167aaaa8266c1793c624c4f28894e659",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.112",
+          "description": "Preserve native email history under durable account write fences and fresh destination admission",
+          "checksum": "a1e0275fa5be4a4c5e0cff00ee0e0e67504bd977c6d7dd13ca6414f47dafa1bc",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.113",
+          "description": "Reconcile reviewed owner-page lineage without replacing consent-continuation guards",
+          "checksum": "01fd7717273d0c458a2d55a5e05665380f316ac63dc5880717a5a38adc36d3ef",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.114",
+          "description": "Reconcile reviewed native reference and passive mention lineage without backfill",
+          "checksum": "9a81326edf4fd767a2c88479b82ab1b82dce1e2065f4a7a513b0d0e05cbd0661",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.115",
+          "description": "Qualify existing nested CHECK helper references for standard PostgreSQL dump restoration",
+          "checksum": "878c4908260846ebf1ea5314d47d83155818e74a4b642324245f7f5e5d987033",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.116",
+          "description": "Strict same-authority credential repair records with exclusive reservations and authenticated receipt or closure admission",
+          "checksum": "c0a2fb22c13804d1cdc77b835446fbe80de0118f75d2164c3d4ca5ddc4fe4ece",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.117",
+          "description": "Close fenced abandoned credential exchanges without replay or certainty substitution",
+          "checksum": "416180018e88e7ee0757f50ea3506a6c0da608499243ae16dfd3b341af43ba11",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.118",
+          "description": "Validate generic signed supplemental effect declarations with bounded scalar details and declared action ownership",
+          "checksum": "a070c7357fca1454e1477c104f6eff96d94d261346e59a15761f0957ada1cf34",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.14",
+          "description": "Add tenant-bound message and task attachment links with legacy backfill",
+          "checksum": "f2041bd08586fdb98e49ba21f49bfb3bf46bf0d396ad344c277bf6fef210887c",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.15",
+          "description": "Add bounded attachment processing metadata and permission-inheriting derivatives",
+          "checksum": "ab31dbadcf4f239667b3d2f533defe564325be87586f53ad5ac7c10acf20b696",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.16",
+          "description": "Add declarative App v0 installations, immutable versions, and owned Module bindings",
+          "checksum": "e5c93de2b444d926ff82de7bdeb0c72a05a5fd32946de2966d9e1eaf266d065e",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.17",
+          "description": "Add dormant governed App Run metadata, encrypted payload, attempt, event, and receipt boundaries",
+          "checksum": "a55c9a9c9dc68dc4e9ecbfe8746617500683be5fbcf06cc26d78957a2113afcc",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.18",
+          "description": "Harden dormant App Run replay, cancellation, retry ancestry, and attempt fencing",
+          "checksum": "733dfef62df38b0399e644f1266bbe8fc5998e3aec58a026b27df3f19ea3d8d6",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.19",
+          "description": "Fail closed on App Run release, budget, approval-link, replay-horizon, and attempt dispatch boundaries",
+          "checksum": "229ee109a95d1504dba46ffa7095303faf650a2db996c2de169cc685685b9251",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.20",
+          "description": "Add monotonic live authority versions for governed App Run authorization rechecks",
+          "checksum": "d36528699d65d3c8c5fa84a8261fc79d9554860693545dbea8e9e6363274a8f8",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.21",
+          "description": "Guard child App Run lineage, authorization ceilings, and root budget continuity",
+          "checksum": "b729b073906a81f2bca4d44b1ad245e0b53ab1281da543cc79e9f5157d00567b",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.22",
+          "description": "Add tenant-bound, live-authorized resource relation sets, edges, and replay receipts",
+          "checksum": "ca5ecbba260f3b3f722aa43c35e454a5852e3b777500a16bcbadfae5315ea3f4",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.23",
+          "description": "Add immutable connected-App grant requests, exact binding lineage, and dormant App Run identities",
+          "checksum": "5fb1c085953210be3b30d6b61c1bf8bddd5fb70e9f814cfdd67149e1f13eaf62",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.24",
+          "description": "Enable reviewed connected-App grants, immutable supersession, and lifecycle coherence",
+          "checksum": "8cad31a0007701010a455f056109e913fa253ea95af8cedc1f75c16fdeb051e3",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.25",
+          "description": "Permit exact tenant-bound App-origin Run ancestry behind the production rollout gate",
+          "checksum": "b2fa2c7d30970d812b2bd44e52314ed9f7193ae28648d0b530bf2b917613c3f4",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.26",
+          "description": "Add dormant approved App automation definitions, fire identities, and exact Run lineage",
+          "checksum": "99bc0b877854a22934243929828229203ff19fff954c6f8ac52f5c9e57dc9306",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.27",
+          "description": "Add durable browser session families for rotation and immediate revocation; legacy browser sessions require sign-in",
+          "checksum": "ab5fe9ec5600658a5e22ff0e2a83d34f906cb6369cf3e57efa05af798391bf17",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.28",
+          "description": "Invalidate outstanding browser password reset links after credential changes",
+          "checksum": "e37ec9f8138c4ea8b0356524a01140f9f2f7aaa1f3f26b587265d02b9dc78e28",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.29",
+          "description": "Persist scoped native create identities for safe explicit retries",
+          "checksum": "8b207507da072e201756a3a00f20dc645d2a8b3931188c4b3563b450c7cbee98",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.30",
+          "description": "Preserve tenant-bound original values and link provenance for reviewed Module record merges",
+          "checksum": "9f8a0c3bfe3abfef0055c9f1176d6c7e67dbdbf2c48d353c013b5a672d9a1795",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.31",
+          "description": "Add dormant reviewed Runtime ancestry, sessions and fenced Run attempts",
+          "checksum": "c52c284a4fa7f0f523270ff182f743603405399f2fb9237025308396f67a0d2c",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.32",
+          "description": "Add dormant public endpoints, retained ingress and canonical exclusive claims",
+          "checksum": "a1bf1dd57b90d9fa5a55c383c48ac260416215f51a9323353533a08264b77f03",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.33",
+          "description": "Permit explicitly reviewed Runtime App protocol v3 with effective grant coherence",
+          "checksum": "f4569c15cc803e95b513e957146e03552ae87532a63f8a6efe2325be3f337fd5",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.34",
+          "description": "Permit additive installed Runtime App protocol v4 with effective grant coherence",
+          "checksum": "115c68fece4b53880c821fda69364a528fbd29658315da065ebd6c5d74c0118c",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.35",
+          "description": "Bind reviewed public ingress principals to one governed Runtime Run",
+          "checksum": "f26af2a89ebd6a0c23aa9808f20b74e4faf74a587ef30b3b7aeb712a6816f5e9",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.36",
+          "description": "Pin installed Experience sessions to authenticated web and App authority",
+          "checksum": "b87476613dd54cea7756aba2275d79d28d4dee18f7155b92b2621505ce38a4a6",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.37",
+          "description": "Add dormant host-reviewed resource sync bindings, sessions, intent and encrypted projections",
+          "checksum": "876d49abb2aeba78ad79f3d4b3cffa9ed2f4d2ef34c34efd8961b6cdff0088d3",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.38",
+          "description": "Permit reviewed App Protocol v5 stage and activation with pinned resource descriptors",
+          "checksum": "5678cfda64cc8266b5f161e2b43662092712ee07c10d7ff7fdfb607114a3eef3",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.39",
+          "description": "Prevent duplicate current owner-private resource consent for one reviewed App grant",
+          "checksum": "7954be7979d4c739df56f0688315b0f0063606b394e95f74cc64505543d2097d",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.4",
+          "description": "Add single-flight Agent Channel leases and truthful work outcomes",
+          "checksum": "0409e45722fbc2fec45bf5adb122efb666e7329be36d63a63cbc26f8c97a9d71",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.40",
+          "description": "Add dormant immutable human session consent for exact Experience private-field disclosure",
+          "checksum": "476bcce4b3989975706ad2c862f5315da49014f37f76eaa967f047a53dbb5800",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.41",
+          "description": "Add optional reviewed scalar public availability and canonical claim deadlines",
+          "checksum": "a3bff004d4ce8c554e140a6369ee3f0ab230039c4330e4e93e26af407f64f997",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.42",
+          "description": "Add reviewed public endpoint budgets and fresh canonical reservation charge instants",
+          "checksum": "5989d33a24691df784d889c6a879f383b08f8a1dba20b9788cd8e7bc1057c2f5",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.43",
+          "description": "Add reviewed signed public ingress key versions and bounded durable nonce receipts",
+          "checksum": "44349b57d136c56ab85953a375e205b61f7357f662a9de7bedb6086bbf0ff4c1",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.44",
+          "description": "Add separately consented host-native Calendar bindings and exact protocol 6 Run/public ancestry",
+          "checksum": "68fa2bf9e665c910ccb2f1f344d1ac8fde4828a20eba01b023fe23c5d1dff8ee",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.45",
+          "description": "Add dormant immutable exact-content human private App resource sharing",
+          "checksum": "61adca85634d75c17c92e21c1ac8b209e5ff6d8b6c7ed4137b11d0f211a21f0c",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.46",
+          "description": "Add retained public controls and atomic pre-effect withdrawal identities",
+          "checksum": "89969954521a32e05c56d3be679eff7fa75cecb1f56d37a594fda1b00190c20f",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.47",
+          "description": "Add dormant protocol7/channel3 encrypted owner-only attachment quarantine and checked parent custody",
+          "checksum": "1a8c3936efe85b8f6687d433fd2e2778e9fe8eefa8baa98eb927405f60c626f8",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.48",
+          "description": "Add explicit current-owner public cancellation selection and bounded historical create consent",
+          "checksum": "46a1d79721f81eb5b12e82d3e51f9bc29a10b1c16fe4dd087efec399e2479e1d",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.49",
+          "description": "Add dormant independent exact-purpose first-class MCP private resource grants",
+          "checksum": "3168463a77e60916b9c060fab6945092fa48ad51a2f73c47ea2e99e11e975e71",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.5",
+          "description": "Add idempotent Hermes-to-wiki memory reconciliation receipts",
+          "checksum": "16925928b03586b232822e2dcdd4a7dc390e553d03ccf92056359bacea6e1e01",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.50",
+          "description": "Admit closed owner-only protocol7 effective grants and bounded checkpoint custody accounting",
+          "checksum": "c7181f823c8cd4c6cbfb4cde471d69891d4a4a18aa92cb27976d9c6818af201e",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.51",
+          "description": "Admit separately reviewed protocol7 blob-grant.v2 Runtime and Experience composition without widening v1",
+          "checksum": "48a8d7322df4a3d265f0655c9044184a8b55e5aa971718fd265679a4acc3c7ac",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.52",
+          "description": "Add permanent exact Defty Space seals, reviewed private-purpose grants and bounded encrypted canonical message history",
+          "checksum": "13c744cf715ea92907ccb7ec1edb2af9a7921cb79731f62ec905b47c8330b8e2",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.53",
+          "description": "Add dormant encrypted artifact-bound owner-private App state with revision CAS and bounded retention",
+          "checksum": "51c5391c69b14d24356026842b278f10c66a3d7a117afc6f2bc4947b814bad20",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.54",
+          "description": "Add revocable exact-scope human Experience consent independent of technical leases and separate bounded agent policies",
+          "checksum": "65851120195d96c2eb8f0920a17ba93dbc93c3f96f72b4cea359d24a35d3ceff",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.55",
+          "description": "Group bounded immutable Runtime Run inputs under one exact host review with revocable per-effect release fencing",
+          "checksum": "df246ad2081e2ddf6d2c530caa50108dd12a80acbaae28e92d585ab9c0c91127",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.56",
+          "description": "Pin every batch to its exact owner policy revision and fail closed for unpinned preview55 batches",
+          "checksum": "0a6a3012dea1d7e73b6c5283405ccf225e83a9e0fc3a10c72bc0f7a2aad0262b",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.57",
+          "description": "Scope private resource custody and Experience sessions to reviewed targets and anchor runtime actions to owner custody",
+          "checksum": "c8a34eba984e59c6389887b91b808cc4d314c6645f6885c98f458aeddada42a0",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.58",
+          "description": "Admit explicitly reviewed download-only PDF media without widening retained owner attachment policies",
+          "checksum": "a4aa4bc241edd6da50d08266a8344d41830ed452dd63d18fae97ad1c9197b3c5",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.59",
+          "description": "Add separately reviewed encrypted private draft files and immutable action payload custody",
+          "checksum": "21d2cefaaa2a3cf1809f730794126ae80b50c1b6443fe05f74a65ce364425340",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.6",
+          "description": "Require the lease-safe Agent Channel v2 compatibility contract",
+          "checksum": "08eeb21cd4f9bc6b85e45c779d1dcb24fe90972cec8809ad8aeba9d90020e5ae",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.60",
+          "description": "Admit explicitly reviewed per-owner connections under fixed deployment operator authority",
+          "checksum": "be989b0f8f4b427dd8cd7b7bb0253e1bbe21892b27741277ff523ad73568a89f",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.61",
+          "description": "Permit owner-reviewed in-place page-limit consent amendments within current deployment admission",
+          "checksum": "ba3125b1cef092e33d8db68590dd8b4f202a2af816a2bd836c6e5eaa09431510",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.62",
+          "description": "Retain bounded encrypted immutable source records for exactly confirmed owner Runtime actions",
+          "checksum": "80841117f9ee5e8f20ad41862aa978a47efe4997562c3bcbef35948f440fe7c6",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.63",
+          "description": "Add dormant owner-account-scoped native Email index, encrypted metadata and atomic sync checkpoints",
+          "checksum": "5417eea044d919ccdadbdd7edc7d309bbee48aff460e6f15de0de3bd50cd5e70",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.64",
+          "description": "Add human-owned per-account remote image reading preferences with revision CAS",
+          "checksum": "3969754d21283851838f771f1fbe96913c7dce240f6a7ef4a9fdabc616d3db66",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.65",
+          "description": "Add dormant encrypted account-scoped IMAP credential custody",
+          "checksum": "5c9070de67e9a520e2ed6a4c4ed125bce0ad7e166f63e1d1aeab4f573d25fe95",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.66",
+          "description": "Add durable encrypted native owner drafts with revision CAS",
+          "checksum": "ab34d942d4197dfe3e24f9199c27e69af3e707439cf3357708867dd927a25407",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.67",
+          "description": "Add encrypted native Email operation journals and durable write reservations",
+          "checksum": "4734f655a9aa65ce90a470fa90caeed3587d9b542a16c20007237b1f597713bf",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.68",
+          "description": "Add immutable per-draft-revision native Email send reservations and encrypted outcome receipts",
+          "checksum": "452ceaf7b3fd29ac7a5418eb6e3a0d47aec7a8f5f1e3a30a0b85d514885a100c",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.69",
+          "description": "Add durable encrypted native draft files independent of Experience leases",
+          "checksum": "929415b8231d4dd66e740618cb21af1c4bbb410f35ab9efedd7805c914b9efbf",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.7",
+          "description": "Reconcile durable runtime effects before uncertain Agent Channel terminal outcomes",
+          "checksum": "ff0699aaf2d6c4b3735ac7a9551f8c7377dcda6700472f34e40ee4d337d272aa",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.70",
+          "description": "Add opt-in encrypted native provider draft mirror ledger",
+          "checksum": "263c27cf8f81fffbd10112cba6df0705a2c60b352b8490b563335770b16d740c",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.71",
+          "description": "Add recoverable provider draft update journal operations",
+          "checksum": "245d87187b7877e49b26b9f5093bc34675146e35e49571665e9e7deac23c5d36",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.72",
+          "description": "Add encrypted immutable Email Outbox snapshots and dispatch journals",
+          "checksum": "3f1369e05aa3cb0f31eecf668a25ae9f8d9959c52af32ccfbb864b25ee5e65b3",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.73",
+          "description": "Require complete Outbox attempt markers before submission or terminal provider outcomes",
+          "checksum": "854bbaadf971ba845536fbe3159f601893c7f7f376636ed50cba529f4f27351a",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.74",
+          "description": "Retain encrypted resumable Microsoft draft preparation and final-send journals",
+          "checksum": "b1b265bbcf530d0cb6cb572776a165430e54cd1afd460a6b9bd07f4f92fe51d8",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.76",
+          "description": "Add encrypted account-owned compose templates with revision control",
+          "checksum": "1e9769b92903faeddb9bd2dff58a004705e19d0720b92664a127471afa730943",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.77",
+          "description": "Add encrypted per-account sender identity signature preferences",
+          "checksum": "cc3401e45ee5c762638bc8e234e4ecf4dce7f32ea761ecd1aa1efa3d32603a02",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.78",
+          "description": "Preserve canonical IMAP message identities across journal-proven UID moves",
+          "checksum": "f669d1d82ed57493a6862aa19aab9d8c0fc658ab21ad674a776a91665c2f36aa",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.79",
+          "description": "Retain separate accepted-only SMTP Sent-copy append and recovery journals",
+          "checksum": "b2249c16c0e63baa93d1c21024e06ce61f9c7fbd3ca09b8c4724c677f4b1a1f3",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.80",
+          "description": "Add encrypted owner-account-scoped native email snooze and follow-up timers",
+          "checksum": "71753651109e4b37dd8edc3010b6f36c9ff7d2eb924522608eb5ffed0e1e9e3a",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.81",
+          "description": "Add bounded encrypted native Email reader cache with current-authority access",
+          "checksum": "b721c4df89f5e184489143f8fe4a1735802957b712845081fca643edeecbfbf9",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.82",
+          "description": "Add explicit owner-native Email consent with immutable retained credential bridge",
+          "checksum": "dc37499a83fbd7ab5414cf547bdd638cfae5431ec9ec8af9e5c74312a5683ccf",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.83",
+          "description": "Add encrypted account-owned local email rules with revision control",
+          "checksum": "71e146d5f809532b3444c9acc74a4ee7042a36ce90e91008191726fe9cb1c926",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.84",
+          "description": "Add encrypted idempotency receipts for explicitly reviewed native rule actions",
+          "checksum": "d9a2fafcf080f9a9f3d4ff9d3f240f581db1fc7bc10bdaaf4583b79741498351",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.85",
+          "description": "Add owner-native OAuth setup receipts and immutable first-party provider custody profiles",
+          "checksum": "b1ec09d5068b59b898be44aa86c3e638aacebfba8723541612c45e729db1a464",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.87",
+          "description": "Add metadata-only native email new-mail notification outbox and unread projections",
+          "checksum": "dcf3a9d09614f79439dcc2fa001b0c76653747f009793b0c70fc5f1446d09404",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.88",
+          "description": "Add encrypted native Email Calendar invitation versions and immutable action receipts",
+          "checksum": "190a8e40b94a561fe575f5b91851ba53ffa46838d0b96bfb5b75b95b272f5704",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.89",
+          "description": "Bind reviewed Email source and destination creation with private idempotent transfer receipts",
+          "checksum": "311113849f89ceb4f3687b3ab19d70d8bc8c2e65fa43b53408580492676bd18d",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.90",
+          "description": "Permit reviewed Email link/excerpt transfers through existing Chat forwarding semantics",
+          "checksum": "3c050256b110be16b77c0129eb9153cef6ac3aefa8f03a2d8906440d16420105",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.91",
+          "description": "Add opt-in automatic native Email knowledge policies, evidence and durable observations",
+          "checksum": "ebcc3b396407a47ba97074433456fa1f1534d61cda4835c1e9eb1ca02566a19e",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.92",
+          "description": "Add explicit owner-account-operation grants for native Defty and exact personal MCP credentials",
+          "checksum": "0eb92ec0101b76c4cb2aa6d36361bc798f102ff450582d43058ef2b5c24fc095",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.93",
+          "description": "Add isolated durable native folder-management operation journals without rewriting retained kinds",
+          "checksum": "bd416ad52dd7bf4679fff8a9df3054a98cb8db85c3f32e31cc275331653d1a4e",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.94",
+          "description": "Add dormant generic owner-scoped connection sessions with durable CAS and current operator authority",
+          "checksum": "c1aff79a673bfa250db01b97bd03b05eb8008590e211e75c119af90f2ff2ea42",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.95",
+          "description": "Add dormant app-owned record consent and exact invocation metadata without host content custody",
+          "checksum": "9747ddbacde49c44e1c25a137b0d2ffb4e813b97e0b395a38c772dd8e052371b",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.96",
+          "description": "Preserve exact opaque app-data locator bounds with PostgreSQL-compatible identity checks",
+          "checksum": "af40de8ddb4077d73973636883e8e2bd4e9afcc9083683dbbd23d91ac1353459",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.97",
+          "description": "Retain stable app-owned account custody through fresh reviewed connection sessions",
+          "checksum": "81133273a25ad5dc8806dfbc8368be5af4ffed3baa5ed43d7af8380bbaee9d54",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.98",
+          "description": "Bind explicitly reviewed background resource observation to current account custody and the existing v3 Run lane",
+          "checksum": "757a3e5cb0af5f14e297c23bf109acb8b7426e030f65725ae35439b156bba648",
+          "kind": "migration"
+        },
+        {
+          "version": "0.3.0-preview.99",
+          "description": "Preserve stable account custody across reviewed independent capability upgrades and fence superseded connections",
+          "checksum": "970f5c907e69ffa4366d6ce3a2e27d569174d71c91aed4362b91ad89f0ef6b20",
+          "kind": "migration"
+        }
+      ],
       "append": []
     }
   ],
