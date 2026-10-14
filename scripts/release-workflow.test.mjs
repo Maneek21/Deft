@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const compose = readFileSync(new URL('../docker-compose.yml', import.meta.url), 'utf8');
+const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
 const generatorUrl = new URL('./generate-release-manifest.mjs', import.meta.url);
 const generator = readFileSync(generatorUrl, 'utf8');
 const scopeResolverUrl = new URL('./resolve-release-scope.mjs', import.meta.url);
@@ -57,6 +58,16 @@ function createPinnedHermesFixture(root) {
   }
   writeFileSync(join(root, 'package.json'), `${JSON.stringify({ version: manifest.deft_release }, null, 2)}\n`);
 }
+
+test('source builds report the checked-out release, not a stale Dockerfile default', () => {
+  // The release workflow passes DEFT_RELEASE_VERSION explicitly. Any default here
+  // would override the in-code fallback in apps/api/src/lib/agent-channel.ts, which
+  // release prep keeps in step with package.json.
+  const defaults = [...dockerfile.matchAll(/^ARG DEFT_RELEASE_VERSION=(.*)$/gm)].map((match) => match[1]);
+  assert.ok(defaults.length > 0, 'Dockerfile must declare DEFT_RELEASE_VERSION');
+  assert.deepEqual(defaults.filter(Boolean), [], 'Dockerfile must not pin a DEFT_RELEASE_VERSION default');
+  assert.match(workflow, /DEFT_RELEASE_VERSION=\$\{\{ steps\.release\.outputs\.version \}\}/);
+});
 
 test('release publication signs and verifies the exact image digest before creating a release', () => {
   assert.match(workflow, /id-token:\s*write/);

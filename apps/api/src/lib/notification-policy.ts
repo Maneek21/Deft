@@ -103,13 +103,14 @@ function spaceLevelAllowsNotification(
 export async function explainNotificationPolicy(
   values: Pick<NotificationInsert, 'user_id' | 'type'>,
   options: NotificationPolicyOptions = {},
+  executor: Pick<typeof db, 'select'> = db,
 ): Promise<NotificationPolicyDecision> {
   const inferredChannel =
     options.channel === undefined
       ? notificationChannelForType(String(values.type))
       : options.channel;
 
-  const [recipient] = await db
+  const [recipient] = await executor
     .select({
       notification_preferences: users.notification_preferences,
       status_text: users.status_text,
@@ -134,7 +135,7 @@ export async function explainNotificationPolicy(
   }
 
   if (options.spaceId) {
-    const [membership] = await db
+    const [membership] = await executor
       .select({
         is_muted: spaceMembers.is_muted,
         notification_level: spaceMembers.notification_level,

@@ -1,4 +1,8 @@
 'use client';
+import { NativeMentionTextarea } from '@/components/native-mention-textarea';
+import { NativeMentionMarkdown } from '@/components/native-mention-markdown';
+import { NativeMentionPublish } from '@/components/native-mention-publish';
+import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -301,7 +305,7 @@ function CreatePageModal({ onClose, onCreated }: { onClose: () => void; onCreate
         {/* Content */}
         <div>
           <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--text-secondary)' }}>Content</label>
-          <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="Write page content..."
+          <NativeMentionTextarea value={content} onChange={e => setContent(e.target.value)} placeholder="Write page content..."
             rows={6}
             className="w-full px-3 py-2 rounded-lg text-[13px] outline-none resize-y"
             style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }} />
@@ -351,6 +355,9 @@ export default function KnowledgePage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const activeSlug = useRef(selectedSlug);
+  useEffect(() => { activeSlug.current = selectedSlug; }, [selectedSlug]);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [detail, setDetail] = useState<WikiPageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -526,6 +533,8 @@ export default function KnowledgePage() {
 
   // Fetch page detail when selected
   useEffect(() => {
+    let current = true;
+    setEditing(false);
     if (!selectedSlug) {
       setDetail(null);
       setEditing(false);
@@ -533,10 +542,9 @@ export default function KnowledgePage() {
     }
     setDetailLoading(true);
     api.get(`/api/wiki/${selectedSlug}`).then(async res => {
-      if (res.ok) {
-        setDetail(await res.json());
-      }
-    }).catch(() => {}).finally(() => setDetailLoading(false));
+      if (res.ok) { const payload = await res.json(); if (current) setDetail(payload); }
+    }).catch(() => {}).finally(() => { if (current) setDetailLoading(false); });
+    return () => { current = false; };
   }, [selectedSlug]);
 
   const startEditing = () => {
@@ -554,7 +562,9 @@ export default function KnowledgePage() {
 
   const saveEdit = async () => {
     if (!detail) return;
+    const savedSlug = detail.slug;
     setSaving(true);
+    setSaveError(null);
     try {
       const parsedTags = editForm.tags
         .split(',')
@@ -570,13 +580,15 @@ export default function KnowledgePage() {
         tags: parsedTags,
       });
       if (res.ok) {
+        if (activeSlug.current !== savedSlug) return;
         setEditing(false);
         // Refetch detail
         const detailRes = await api.get(`/api/wiki/${detail.slug}`);
-        if (detailRes.ok) setDetail(await detailRes.json());
+        if (detailRes.ok) { const payload = await detailRes.json(); if (activeSlug.current === savedSlug) setDetail(payload); }
         fetchPages();
-      }
+      } else if (activeSlug.current === savedSlug) setSaveError('Wiki could not be saved. Your edit is still open.');
     } catch {
+      if (activeSlug.current === savedSlug) setSaveError('Wiki could not be saved. Your edit is still open.');
     } finally {
       setSaving(false);
     }
@@ -958,25 +970,23 @@ export default function KnowledgePage() {
             </div>
 
             {/* Content */}
+            {saveError && <p role="alert" className="text-sm">{saveError}</p>}
             <div className="p-4 rounded-lg" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
               {editing ? (
-                <textarea value={editForm.content} onChange={e => setEditForm(f => ({ ...f, content: e.target.value }))}
+                <NativeMentionTextarea value={editForm.content} onChange={e => setEditForm(f => ({ ...f, content: e.target.value }))}
                   rows={12}
                   className="w-full text-[13px] leading-relaxed outline-none resize-y bg-transparent"
                   style={{ color: 'var(--text-primary)' }} />
               ) : (
                 <div className="text-[13px] leading-relaxed prose prose-sm max-w-none" style={{ color: 'var(--text-primary)' }}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[[rehypeSanitize, defaultSchema]]}
-                  >
-                    {detail.content}
-                  </ReactMarkdown>
+                  <NativeMentionMarkdown content={detail.content} />
                 </div>
               )}
             </div>
 
             {/* Linked Pages */}
+            {!editing && <NativeMentionPublish source={{ kind: 'wiki_page', id: detail.id }} content={detail.content} />}
+            {!editing && <NativeMentionBacklinks kind="wiki_page" id={detail.id} />}
             {!editing && detail.linked_pages.length > 0 && (
               <div>
                 <h3 className="text-[12px] font-semibold mb-2 flex items-center gap-1.5"

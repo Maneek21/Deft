@@ -139,6 +139,9 @@ async function main() {
     const nativeCreateFile = '0.3.0-preview.29-native-create-requests.sql';
     await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
+    const nativeMentionsFile = '0.3.0-preview.61-native-mentions.sql';
+    await client.query(readFileSync(resolve(upgradesDir, nativeMentionsFile), 'utf8'));
+    console.log(`[apply-extras] reconciled ${nativeMentionsFile}`);
 
     // These additive, dormant surfaces must follow the historical App Run
     // reconciliations, which restore the predecessor's provider/ancestry checks.
@@ -190,6 +193,7 @@ async function main() {
       'app_attachment_stages_checkpoint_fk', 'app_attachment_stages_attempt_fk',
       'app_attachment_stages_projection_fk', 'app_attachment_stages_identity_check',
       'app_attachment_stages_metadata_check', 'app_attachment_stages_state_check',
+      'native_mention_source_org_fk',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -306,6 +310,11 @@ async function main() {
 
     const requiredIndexes = [
       'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_cleanup_idx', 'app_attachment_stages_parent_idx',
+      'native_reference_source_unique',
+      'native_reference_org_id_unique',
+      'native_reference_refs_gin',
+      'native_mention_delivery_unique',
+      'native_mention_recipient_idx',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -384,6 +393,10 @@ async function main() {
     const requiredAppRunTriggers = [
       'app_v7_effective_grant_shape_trigger', 'app_v7_effective_grant_shape_trigger', 'app_attachment_binding_policy_guard_trigger',
       'app_attachment_stage_guard_trigger', 'app_attachment_stage_capacity_trigger',
+      'native_reference_messages',
+      'native_reference_tasks',
+      'native_reference_task_comments',
+      'native_reference_wiki_pages',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
       'app_run_attempts_state_identity_trigger',
