@@ -72,11 +72,18 @@ and authorize the corresponding operations.
 
 The matching external Email review is
 [deft-email PR #1](https://github.com/Maneek21/deft-email/pull/1). Its
-[setup instructions](https://github.com/Maneek21/deft-email/blob/4c33dca127f799ff43a318625319808266799366/docs/setup.md)
-are pinned to that exact reviewed source commit.
+[historical setup instructions](https://github.com/Maneek21/deft-email/blob/4c33dca127f799ff43a318625319808266799366/docs/setup.md)
+retain the exact frozen consumer proof.
 The frozen Email browser package `1.8.0-preview.1` uses **alpha.30**, while its
 independent Runtime `0.3.1-e5.9` uses **alpha.32**. Do not replace the browser
 Kit or regenerate its accepted App package merely to make both versions equal.
+
+[Current independent Email setup](https://github.com/Maneek21/deft-email/blob/015e60ae0fd500ab3bf5f8df4140a93572d65671/docs/setup.md)
+is pinned to the reviewed recovery source: App `1.8.0-preview.2` still uses
+**alpha.30**; Runtime `0.3.1-e5.11`, including the Refresh UUID fix, still uses
+**alpha.32**. This updates the consumer pointer, not the SDK matrix or frozen
+artifacts; Host/fresh-install acceptance remains a separate gate.
+
 The recorded alpha.32 tarball SHA256 is
 `44a4419d6f40320650f20f89d6a99ee3ee0631e613843439fc349849f5a35ddb`;
 retain its hash and the external consumer lockfile. This PR corrects author
