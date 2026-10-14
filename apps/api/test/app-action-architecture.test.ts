@@ -225,10 +225,9 @@ test('App Run approve and reject routes stay on the governed approval resolver',
     resolver,
     /return action === 'email_send' \|\| action === APP_RUN_APPROVAL_ACTION \|\| MCP_ACTION_KINDS\.has\(action\)/,
   );
-  // Native legacy Send is a separately governed owner-only approval. It must
-  // not turn the resolver into an open action predicate or bypass requester checks.
-  assert.match(resolver, /row\.action === 'email_send' && approverUserId !== row\.user_id/);
-  assert.match(resolver, /Only the mailbox owner may review Email Send/);
+  // Historical native proposals remain routable to a denial, never a new Send.
+  assert.match(resolver, /if\(row\.source==='native_email'\|\|row\.action==='email_send'\)return \{status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'\}/);
+  assert.doesNotMatch(resolver, /executeNativeEmailAction|completeNativeEmailConnection/);
 });
 
 test('automation worker cutover is host-only and reuses AppAction plus AppRun without a second executor', async () => {
