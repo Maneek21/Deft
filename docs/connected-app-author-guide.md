@@ -14,8 +14,8 @@ tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
 The external [Email review](https://github.com/Maneek21/deft-email/pull/1) contains
-App `1.9.0-preview.1` and Runtime `0.4.0-preview.1`, both built against packed
-alpha.33. Its package scripts are the current author example; the [pinned source snapshot setup](https://github.com/Maneek21/deft-email/blob/5fc2bc50265cfadbc8ee2e61535fbdb258bf3883/docs/setup.md) preserves the pre-cleanup instructions. Consult the reviewed [Email PR](https://github.com/Maneek21/deft-email/pull/1) for documentation corrections until their exact revision is frozen. The last App 1.9 activation on schema 117 failed at the database supplemental-effect guard; a corrected compatible Host and installed acceptance are pending. Kit parsing alone cannot establish database compatibility.
+App `1.9.0-preview.5` and Runtime `0.4.0-preview.3`, both built against packed
+alpha.33. Its package scripts are the current author example; the [pinned source snapshot setup](https://github.com/Maneek21/deft-email/blob/5fc2bc50265cfadbc8ee2e61535fbdb258bf3883/docs/setup.md) preserves the pre-cleanup instructions. Consult the reviewed [Email PR](https://github.com/Maneek21/deft-email/pull/1) for documentation corrections until their exact revision is frozen. Schema 118 corrected the historical supplemental-effect database refusal and accepted the preceding preview.3 installation. The current reviewed source candidate still needs its exact build, complete functional/authority acceptance, fresh public installation and Email-only upgrade proof. Kit parsing alone cannot establish database compatibility.
 Run the App build outside Deft, supply the independently deployed Runtime and
 review the resulting package through Settings → Apps. No Deft checkout is a
 Runtime dependency. Previous preview.1/preview.2 and E5.9/E5.11 artifacts remain
