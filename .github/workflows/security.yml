@@ -46,3 +46,25 @@ jobs:
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@v4.38.1
+        id: analyze
+        with:
+          output: .ci-codeql-diagnostics
+          upload: never
+      - name: Verify exact reviewed dispositions; reject new or changed findings
+        id: dispositions
+        run: |
+          node --test scripts/codeql-reviewed-findings.test.mjs
+          node scripts/codeql-reviewed-findings.mjs .ci-codeql-diagnostics
+      # Keep GitHub's raw alerts visible, including every unresolved finding.
+      # Accepted false positives require explicit GitHub alert dispositions;
+      # external SARIF suppressions alone are not assumed to affect its check.
+      - uses: github/codeql-action/upload-sarif@v4.38.1
+        if: always() && steps.analyze.outcome == 'success'
+        with:
+          sarif_file: .ci-codeql-diagnostics/javascript.sarif
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: canonical-codeql-${{ github.run_id }}
+          path: .ci-codeql-diagnostics/
+          include-hidden-files: true
