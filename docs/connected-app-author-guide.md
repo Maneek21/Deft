@@ -92,12 +92,11 @@ journey works:
 
 ## Historical Protocol 1/2 sandbox walkthrough
 
-The following sections preserve the old authoring example and its frozen
-artifacts. The current Host retires the SandboxEmail private interface for new
-review, preparation and execution, including queued attempts. These commands are
-for reproducing historical package/protocol tests, not for creating a current
-connected app. Existing records and receipts are retained. Use the Protocol 7
-Email example above for the current installation path.
+The following sections preserve the older authoring example and its frozen
+artifacts. Protocol 1/2 compatibility remains available to existing connected
+apps, including Campaigns; it is separate from the retired built-in mailbox
+product. Current external Email does not use this frozen SandboxEmail interface.
+Use the Protocol 7 Email example above for the current connected-app author path.
 
 ### 1. Build against the example provider
 
