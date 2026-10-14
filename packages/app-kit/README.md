@@ -6,11 +6,11 @@ Record form v3 declares scalar fields, optional mailbox-list pill controls, veri
 
 A record store may declare `supplemental_effects` with a closed bounded `RuntimeObjectSchema`. `parseAppPreparedEffectDetails` checks declared detail fields; the Host also verifies the canonical plan digest, account, action binding, custody generation and exact prepared input. `deft.app_run_inspection_result.v2` carries generic primary/effect outcomes and immutable receipt pins, with automatic retry forbidden. Old sent-copy contracts remain for historical metadata, not the new execution path.
 
-Authors build against the packed package without a Deft checkout. Existing programmatic protocol 7 packaging APIs and public sideload review remain the install path; this change adds no CLI or implicit activation. The candidate requires a compatible Host implementation and fresh installation evidence before independence acceptance.
+Authors build against the packed package without a Deft checkout. Existing programmatic protocol 7 packaging APIs and public sideload review remain the install path; this change adds no CLI or implicit activation. The candidate requires a compatible Host implementation, including database grant validation, and fresh installation evidence before independence acceptance. The last schema 117 App 1.9 activation rejected `supplemental_effects`; a corrected Host identity and accepted installation are pending.
 
 Portable, deterministic authoring and packaging contracts for declarative Deft
 Apps. The package includes the `deft` CLI, strict App Protocol v0, v1, and v2
-validators, requested-authority projection helpers, developer-host
+validators plus programmatic Protocol 7 packaging, requested-authority projection helpers, developer-host
 compatibility helpers, frozen sandbox-email conformance vectors, and a
 non-executable bounded-automation simulator.
 
@@ -202,7 +202,7 @@ Personal MCP connections act with their user's access and explicit scopes;
 the Module's `agent_access` policy controls Defty and agent employees. Linked
 native tasks retain their own visibility rules.
 
-The protocol 1/2 connected templates and `sandbox_email_send` examples below retain frozen compatibility for existing CRM/Campaign Apps. They are not the current independent Email onboarding path and do not restore the built-in mailbox product. Current independent Email uses protocol 7 declarations, external Runtime custody and public stage/review/activation. Provider behavior belongs to the App Runtime; naming a capability or MCP tool grants no authority. Historical sandbox acceptance never established message delivery.
+The protocol 1/2 connected templates and `sandbox_email_send` examples below retain frozen parsing/proof and historical-reader compatibility. Current Host policy rejects new legacy connected admission; the following install table describes the historical Host, not a current onboarding guarantee. They are not the current independent Email onboarding path and do not restore the built-in mailbox product. Current independent Email uses protocol 7 declarations, external Runtime custody and public stage/review/activation. Provider behavior belongs to the App Runtime; naming a capability or MCP tool grants no authority. Historical sandbox acceptance never established message delivery.
 
 ## Historical CLI authoring loop
 
