@@ -236,6 +236,7 @@ test('equipment bulk create is reviewed, idempotent, and executes under its prop
     const retryProposal = payload(retryResponse.body);
     assert.equal(payload(concurrentRetryResponse.body).action_id, retryProposal.action_id);
     assert.equal(retryProposal.status, 'pending_retry_approval');
+    assert.equal(payload(concurrentRetryResponse.body).status, 'pending_retry_approval');
     assert.notEqual(retryProposal.action_id, partialProposal.action_id);
     const retryRow = await client.query('SELECT params FROM agent_actions WHERE id = $1', [retryProposal.action_id]);
     assert.equal(retryRow.rows[0].params.__deft_bulk_retry_of_action_id, partialProposal.action_id);
