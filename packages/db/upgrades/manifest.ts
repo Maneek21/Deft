@@ -252,6 +252,11 @@ export const upgradeManifest = {
     { version: '0.3.0-preview.54', file: '0.3.0-preview.54-app-experience-consent.sql', description: 'Add revocable exact-scope human Experience consent independent of technical leases and separate bounded agent policies' },
     { version: '0.3.0-preview.55', file: '0.3.0-preview.55-app-action-batches.sql', description: 'Group bounded immutable Runtime Run inputs under one exact host review with revocable per-effect release fencing' },
     { version: '0.3.0-preview.56', file: '0.3.0-preview.56-app-action-batch-policy-revision.sql', description: 'Pin every batch to its exact owner policy revision and fail closed for unpinned preview55 batches' },
+    {
+      version: '0.3.0-preview.61',
+      file: '0.3.0-preview.61-native-mentions.sql',
+      description: 'Add native reference reconciliation and durable passive mention publication',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

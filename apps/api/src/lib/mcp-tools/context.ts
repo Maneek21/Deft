@@ -1,3 +1,5 @@
+import { NATIVE_MENTION_AGENT_GUIDANCE } from '../native-mention-agent-contract.js';
+import { nativeMentionsEnabled } from '../native-mentions.js';
 /**
  * platform_context MCP tool — "NC1" in the Deft Agentic Vision plan.
  *
@@ -625,6 +627,7 @@ export async function platformContext(
       relevant_wiki_snippets: wikiSnippets,
       context_packets: buildContextPackets(wikiSnippets, trigger, ctx),
       trigger_context: trigger ?? null,
+      native_mentions: { enabled: nativeMentionsEnabled(), usage: NATIVE_MENTION_AGENT_GUIDANCE },
       _cache_hit: false,
     };
 
