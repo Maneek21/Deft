@@ -87,9 +87,10 @@ jobs:
     name: Test API
     runs-on: ubuntu-latest
     needs: typecheck
+    timeout-minutes: 45
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -101,9 +102,12 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+          --label deft.test_fixture=email-preview-api
+          --label deft.test_run=${{ github.run_id }} --label deft.test_attempt=${{ github.run_attempt }}
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
       DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
+      DEFT_TEST_TIMEOUT_MS: '1800000'
       JWT_SECRET: ci-test-secret-not-for-prod
       JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
       # Fake, non-functional key. The memory-extract tests mock the Anthropic
@@ -138,8 +142,58 @@ jobs:
         # exactly those fixed-id rows (idempotent, isolated). Without it ~13
         # tests fail with FK violations / 0-row assertions.
         run: pnpm --filter @deft/api exec tsx src/scripts/seed-test-fixtures.ts
+      - name: Start exact loopback mailbox predecessor and verify server identity
+        id: api_predecessor
+        run: |
+          mkdir -p .ci-api-diagnostics
+          set -euo pipefail
+          name="email-mailbox-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach --name "$name" --network host \
+            --label deft.test_fixture=email-mailbox-predecessor --label deft.test_run="$GITHUB_RUN_ID" --label deft.test_attempt="$GITHUB_RUN_ATTEMPT" \
+            --env POSTGRES_USER=gate_g_test --env POSTGRES_DB=email_stage34_test \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b \
+            postgres -c listen_addresses=127.0.0.1 -p 55435
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec "$name" pg_isready -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -AtF '|' \
+            -c 'SELECT current_database(),current_user,inet_server_port(),host(inet_server_addr())' \
+            | tee .ci-api-diagnostics/mailbox-predecessor-identity.txt
+          test "$(cat .ci-api-diagnostics/mailbox-predecessor-identity.txt)" = 'email_stage34_test|gate_g_test|55435|127.0.0.1'
+          test "$(docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -At \
+            -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")" = '0'
+      - name: Build App Kit before isolated imports
+        run: pnpm --filter @deft/app-kit build
+      - name: Verify database isolation guards
+        run: node --test scripts/email-preview-test-databases.test.mjs
       - name: Run tests
-        run: pnpm --filter @deft/api test
+        env:
+          DEFT_PREVIEW_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: pnpm run test:email-preview-api
+      - name: Preserve dedicated database logs and stop this runner fixture
+        if: always()
+        run: |
+          name="email-mailbox-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker inspect "$name" >/dev/null 2>&1; then
+            mkdir -p .ci-api-diagnostics
+            docker logs "$name" > .ci-api-diagnostics/mailbox-predecessor-server.log 2>&1
+            docker stop --time 30 "$name"
+          fi
+      - name: Preserve API isolation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: platform-api-isolation-${{ github.run_id }}
+          path: .ci-api-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: warn
 
   hermes-release-gate:
     name: Hermes Employee Release Gate
