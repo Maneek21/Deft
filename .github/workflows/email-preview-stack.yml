@@ -310,24 +310,11 @@ jobs:
           output: .ci-security-diagnostics
           upload: never
           upload-database: false
-      - name: Fail unresolved security findings and preserve their locations
+      - name: Fail unreviewed or changed security findings and preserve exact dispositions
         run: |
-          node --input-type=module <<'NODE'
-          import {readdirSync,readFileSync,writeFileSync} from 'node:fs';
-          const directory='.ci-security-diagnostics';
-          const findings=[];
-          const files=readdirSync(directory).filter(name=>name.endsWith('.sarif'));
-          if(!files.length)throw Error('CodeQL produced no SARIF evidence');
-          for(const file of files){
-            for(const run of JSON.parse(readFileSync(directory+'/'+file,'utf8')).runs){
-              for(const result of run.results??[])findings.push({rule:result.ruleId,level:result.level??'warning',locations:result.locations});
-            }
-          }
-          writeFileSync(directory+'/findings.json',JSON.stringify(findings,null,2)+'\n');
-          console.log('Unresolved CodeQL findings:',findings.length);
-          if(findings.length)process.exitCode=1;
-          NODE
-      - name: Preserve full security findings without suppressions
+          node --test scripts/codeql-reviewed-findings.test.mjs
+          node scripts/codeql-reviewed-findings.mjs .ci-security-diagnostics
+      - name: Preserve original SARIF and separately reviewed dispositions
         if: always()
         uses: actions/upload-artifact@v6
         with:
