@@ -20,16 +20,22 @@ test('source dispatch uses existing public read envelope, current lease and exac
  for(const change of ['binding','account','deadline']){const wrong=fixture(change);await assert.rejects(wrong.service(caller,target,'knowledge_capture'));assert.equal(wrong.dispatches(),0);}
  for(const change of ['uuid','not_found']){const wrong=fixture(change);await assert.rejects(wrong.service(caller,target,'knowledge_capture'));}
 });
-test('capture uses actual Email sender/date/folder metadata and skips unknown folder membership before model',async()=>{
+test('capture validates App-owned evidence and explicit policy without domain field inference',async()=>{
  const plain_text='We agreed to retain this reusable release process and the original source evidence.';
- const nomination={schema_version:'deft.app_capture_nomination.v1',eligible:true,sender:'Person',received_at:resource.data.date,is_bulk:false,partial:true,attachments_processed:false,body_digest:appIntegrationSourceDigest(plain_text),thread_key:appIntegrationSourceDigest(resource.record_id)};
- const snapshot:Parameters<typeof appIntegrationCaptureEvidence>[0]={caller,purpose:'knowledge_capture',authority:{identity:'owned',expires_at:Date.now()+10000},publication:{target,checkpoint_id:id(20),generation:1,cursor_sequence:1,projection_revision:'original',applied_sequence:1,payload_digest:digest,observed_at:resource.data.date,partial:true},resource,presentation:{plain_text,metadata:{capture_folders:'["inbox"]',capture_nomination:JSON.stringify(nomination)}}};
+ const nomination={schema_version:'deft.app_capture_nomination.v2',eligible:true,body:plain_text,folders:['release-notes'],sender:'Project maintainer',received_at:resource.data.date,is_bulk:false,partial:true,attachments_processed:false,body_digest:appIntegrationSourceDigest(plain_text),thread_key:appIntegrationSourceDigest('release-series')};
+ const snapshot:Parameters<typeof appIntegrationCaptureEvidence>[0]={caller,purpose:'knowledge_capture',authority:{identity:'owned',expires_at:Date.now()+10000},publication:{target,checkpoint_id:id(20),generation:1,cursor_sequence:1,projection_revision:'original',applied_sequence:1,payload_digest:digest,observed_at:resource.data.date,partial:true},resource:{...resource,data:{summary:'Resource fields are not capture evidence'}},presentation:{plain_text:'This display text is not normalized source evidence.',metadata:{capture_nomination:JSON.stringify(nomination)}}};
  const policy:Parameters<typeof appIntegrationCaptureEvidence>[1]={id:id(3),revision:1,history_since:resource.data.date,enabled:true,destination:{scope:'user',space_id:null},history_days:30,expected_revision:1,include_bulk:false,excluded_senders:[],excluded_folders:[]};
- const evidence=await appIntegrationCaptureEvidence(snapshot,policy);assert.equal(evidence.eligible,true);assert.equal(evidence.sender,'Person');assert.equal(evidence.received_at,resource.data.date);
- const trash=await appIntegrationCaptureEvidence({...snapshot,presentation:{...snapshot.presentation,metadata:{capture_folders:'["trash"]'}}},policy);assert.equal(trash.reason,'excluded_folder');
- const unknown=await appIntegrationCaptureEvidence({...snapshot,resource:{...resource,data:{sender:'Person'}},presentation:{plain_text:snapshot.presentation.plain_text}},policy);assert.equal(unknown.reason,'unknown_folder_membership');
- await assert.rejects(appIntegrationCaptureEvidence({...snapshot,presentation:{...snapshot.presentation,metadata:{capture_folders:'["inbox"]',capture_nomination:JSON.stringify({...nomination,body_digest:'sha256:'+'b'.repeat(64)})}}},policy),/INVALID_NOMINATION/u);
- await assert.rejects(appIntegrationCaptureEvidence({...snapshot,presentation:{...snapshot.presentation,metadata:{capture_folders:'["inbox"]',capture_nomination:'a'.repeat(2049)}}},policy),/INVALID_NOMINATION/u);
+ const nominated=(value:unknown)=>({...snapshot,presentation:{metadata:{capture_nomination:JSON.stringify(value)}}});
+ const evidence=await appIntegrationCaptureEvidence(snapshot,policy);assert.equal(evidence.eligible,true);assert.equal(evidence.sender,'Project maintainer');assert.equal(evidence.received_at,resource.data.date);assert.equal(evidence.body,plain_text);assert.equal(evidence.thread_key,nomination.thread_key);
+ assert.equal((await appIntegrationCaptureEvidence(snapshot,{...policy,excluded_folders:['RELEASE-NOTES']})).reason,'excluded_folder');
+ assert.equal((await appIntegrationCaptureEvidence(snapshot,{...policy,excluded_senders:['MAINTAINER']})).reason,'excluded_sender');
+ assert.equal((await appIntegrationCaptureEvidence(nominated({...nomination,eligible:false,reason:'app_excluded'}),policy)).reason,'app_excluded');
+ assert.equal((await appIntegrationCaptureEvidence(nominated({...nomination,is_bulk:true}),policy)).reason,'bulk');
+ assert.equal((await appIntegrationCaptureEvidence(nominated({...nomination,received_at:'unknown'}),policy)).reason,'unknown_received_date');
+ const {body,folders,...legacy}=nomination;
+ assert.equal((await appIntegrationCaptureEvidence(nominated({...legacy,schema_version:'deft.app_capture_nomination.v1'}),policy)).reason,'unsupported_nomination');
+ for(const invalid of [{...nomination,body_digest:'sha256:'+'b'.repeat(64)},{...nomination,body:'too short'},{...nomination,folders:['invalid\nfolder']},{...nomination,body:'a'.repeat(16001)}])await assert.rejects(appIntegrationCaptureEvidence(nominated(invalid),policy),/INVALID_NOMINATION/u);
+ await assert.rejects(appIntegrationCaptureEvidence({...snapshot,presentation:{metadata:{capture_nomination:'a'.repeat(98305)}}},policy),/INVALID_NOMINATION/u);
 });
 
 test('read-only dispatcher allows a six-second authority roundtrip within the existing30s read maximum',async t=>{

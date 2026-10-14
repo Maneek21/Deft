@@ -5,6 +5,9 @@ import {AppDataPreparedRecordActionSchema,canonicalAppDataJson,canonicalAppPrepa
 /** The declaration is reviewed content. Current action authority is checked
  * independently by the host, and current custody by the external executor. */
 export function verifiedPreparedRecordAction(raw:unknown,bindingId?:string,store?:Pick<RecordStoreDeclaration,'supplemental_effects'>):AppDataPreparedRecordAction {
+  return verifyPreparedRecordAction(raw,bindingId,store,false);
+}
+function verifyPreparedRecordAction(raw:unknown,bindingId:string|undefined,store:Pick<RecordStoreDeclaration,'supplemental_effects'>|undefined,retained:boolean):AppDataPreparedRecordAction {
   const prepared=AppDataPreparedRecordActionSchema.parse(raw);
   if(prepared.supplemental_effect){
     const effect=prepared.supplemental_effect;
@@ -21,6 +24,7 @@ export function verifiedPreparedRecordAction(raw:unknown,bindingId?:string,store
   // Retained v1 metadata can still be inspected without changing its identity.
   // New apps use declared supplemental effects; their semantics belong to the Runtime.
   if(!prepared.copy_effect)return prepared;
+  if(!retained)throw new Error('Legacy copy effects cannot be newly prepared');
   const {plan_digest,...unsigned}=prepared.copy_effect;
   const digest='sha256:'+createHash('sha256').update(canonicalAppDataJson(unsigned)).digest('hex');
   if(digest!==plan_digest||bindingId!==undefined&&prepared.copy_effect.action_binding_id!==bindingId)
@@ -33,5 +37,5 @@ export function verifiedPreparedRecordAction(raw:unknown,bindingId?:string,store
 export function verifiedRetainedPreparedRecordAction(raw:unknown,bindingId:string,store?:Pick<RecordStoreDeclaration,'supplemental_effects'>):AppDataPreparedRecordAction {
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.hasOwn(raw,'preview'))
     throw new Error('Invalid retained prepared metadata');
-  return verifiedPreparedRecordAction({...raw,preview:{}},bindingId,store);
+  return verifyPreparedRecordAction({...raw,preview:{}},bindingId,store,true);
 }

@@ -22,12 +22,15 @@ test('legacy prepared records remain valid without a copy declaration',()=>{
   legacy.input={account_ref:prepared.input.account_ref,mime_digest:hash} as typeof legacy.input;
   assert.equal(verifiedPreparedRecordAction(legacy).copy_effect,undefined);
 });
-test('sealed copy declaration pairs account, exact MIME, current binding and canonical destination',()=>{
-  const {prepared,binding}=sample();assert.equal(verifiedPreparedRecordAction(prepared,binding).copy_effect?.destination?.mailbox,'Sent');
-  assert.throws(()=>verifiedPreparedRecordAction(prepared,randomUUID()));
-  for(const field of ['account_ref','mime_digest'] as const){const altered=structuredClone(prepared);(altered.input as Record<string,string>)[field]=field==='account_ref'?randomUUID():'sha256:'+'b'.repeat(64);assert.throws(()=>verifiedPreparedRecordAction(altered,binding));}
+test('historical sealed copy metadata remains verifiable but cannot be newly prepared',()=>{
+  const {prepared,binding}=sample();
+  const retained=(value:typeof prepared)=>{const {preview,...metadata}=value;void preview;return metadata;};
+  assert.throws(()=>verifiedPreparedRecordAction(prepared,binding),/cannot be newly prepared/u);
+  assert.equal(verifiedRetainedPreparedRecordAction(retained(prepared),binding).copy_effect?.destination?.mailbox,'Sent');
+  assert.throws(()=>verifiedRetainedPreparedRecordAction(retained(prepared),randomUUID()));
+  for(const field of ['account_ref','mime_digest'] as const){const altered=structuredClone(prepared);(altered.input as Record<string,string>)[field]=field==='account_ref'?randomUUID():'sha256:'+'b'.repeat(64);assert.throws(()=>verifiedRetainedPreparedRecordAction(retained(altered),binding));}
   for(const alter of [(p:typeof prepared)=>{p.copy_effect.destination.mailbox='Archive';},(p:typeof prepared)=>{p.copy_effect.destination.uidvalidity='8';},(p:typeof prepared)=>{p.copy_effect.custody_generation++;},(p:typeof prepared)=>{p.copy_effect.message_id='<other@example.test>';}]){
-    const altered=structuredClone(prepared);alter(altered);assert.throws(()=>verifiedPreparedRecordAction(altered,binding));
+    const altered=structuredClone(prepared);alter(altered);assert.throws(()=>verifiedRetainedPreparedRecordAction(retained(altered),binding));
   }
 });
 test('retained invocation validates sealed copy metadata without retaining the private preview',()=>{
