@@ -20,7 +20,7 @@ import {recordChoiceEdit} from '@/lib/app-experience-record-fields';
 import {ExperienceRecordFields} from './experience-record-fields';
 import type {DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNode} from '../../../../../packages/app-kit/src/app-data';
 import {ExperienceComposeRichEditor,type ComposeImagePort} from './experience-compose-controls-rich-editor';
-import {ExperienceComposeMailboxControl} from './experience-compose-controls';
+import {ExperienceComposeMailboxControl,ExperienceFilePicker} from './experience-compose-controls';
 import {parseMailboxList} from '../../../../../packages/app-kit/src/mailbox-list';
 
 export type ExperienceRecordFormNode=RecordFormNode;
@@ -46,19 +46,20 @@ export const recordSurfaceStyles=`
 .deft-experience [data-record-surface] button:not([data-record-primary]){background:transparent;color:var(--foreground-secondary,var(--on-surface-variant));border-color:transparent;font-weight:500;box-shadow:none}
 .deft-experience [data-record-surface] button:not([data-record-primary]):hover:not(:disabled){background:var(--hover-tint,var(--surface-container-low))}
 .deft-experience [data-record-surface] button[aria-pressed="true"]{background:var(--surface-container-high);color:var(--primary)}
+.deft-experience [data-record-surface] input:not([type="checkbox"]):not([type="file"]),.deft-experience [data-record-surface] textarea{background:transparent;border-color:transparent}
 .deft-experience [data-record-surface] [role="document"] .deft-editor{min-height:0!important;padding:0}
 `;
 /** Layout is local to this surface; its writing subtree and CAS owner never change. */
 export function RecordSurface({label,children}:{label:string;children:import('react').ReactNode}){
  const [expanded,setExpanded]=useState(false),bodyId=useId();
- return <section aria-label={label} data-record-surface="true" className={`mx-auto w-full min-w-0 ${expanded?'max-w-none':'max-w-4xl'} space-y-3 rounded-xl bg-[var(--surface)] px-5 py-5 sm:px-8`}>
+ return <section aria-label={label} data-record-surface="true" className={`relative mx-auto w-full min-w-0 ${expanded?'max-w-none':'max-w-4xl'} rounded-xl bg-[var(--surface)] px-1 py-2 sm:px-3`}>
   <style>{recordSurfaceStyles}</style>
   <button type="button" aria-label={expanded?'Restore record width':'Expand record'} title={expanded?'Restore record width':'Expand record'} aria-expanded={expanded} aria-controls={bodyId}
-   className="ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-full px-2 text-xs focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
+   className="absolute right-1 top-2 z-10 flex min-h-10 min-w-10 items-center justify-center rounded-full px-2 text-xs focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
    onPointerDown={event=>event.preventDefault()} onClick={()=>setExpanded(value=>!value)}>
    {expanded?<Minimize2 size={16} aria-hidden="true"/>:<Maximize2 size={16} aria-hidden="true"/>}
   </button>
-  <div id={bodyId} className="min-w-0 space-y-3">{children}</div>
+  <div id={bodyId} className="min-w-0 space-y-2 [&>:first-child]:pr-11">{children}</div>
  </section>;
 }
 const pill='min-h-10 rounded-full px-3 py-2 text-xs hover:bg-[var(--hover-tint)] focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-50';
@@ -82,11 +83,11 @@ function RecordBody({value,files,profile,disabled,presentationOnly=false,onChang
   hostImages={{files,extension,register}} maxCharacters={richtext.max_characters} maxPlainCharacters={richtext.max_characters}
   disabled={disabled} presentationOnly={presentationOnly} onChange={onChange} validateValue={validate}/>;
  if(presentationOnly)return <div role="document" aria-label={richtext.label} className="whitespace-pre-wrap break-words py-4 text-[0.9375rem] leading-7">{value.plainText}</div>;
- return <div className="min-w-0 space-y-2 pt-5"><label htmlFor={id} className="sr-only">{richtext.label}</label>
+ return <div className="min-w-0 space-y-2 pt-3"><label htmlFor={id} className="sr-only">{richtext.label}</label>
   <textarea id={id} data-compose-writing-control="true" value={value.plainText} disabled={disabled} maxLength={richtext.max_characters}
    onChange={event=>{setNotice('');onChange({html:'',plainText:event.target.value});}}
    className="min-h-[clamp(12rem,35dvh,24rem)] w-full resize-y rounded-lg bg-transparent px-1 py-3 text-[0.9375rem] leading-7 outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-60"/>
-  <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--muted)]"><p role="status">{notice}</p><span>{value.plainText.length.toLocaleString()} / {richtext.max_characters.toLocaleString()} characters</span></div>
+  <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--muted)]"><p role="status">{notice}</p>{value.plainText.length>=richtext.max_characters*.9&&<span>{(richtext.max_characters-value.plainText.length).toLocaleString()} characters left</span>}</div>
   <button type="button" disabled={disabled} className={pill} onClick={()=>{try{onChange(plainToRich(value.plainText));setNotice('');}catch{setNotice('Formatting would exceed the draft limits. Your text is kept.');}}}>Add formatting</button>
  </div>;
 }
@@ -174,7 +175,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  async function detach(fileId:string){if(disabled||!current())return;const file=files.find(item=>item.file_id===fileId);if(!file)return;setFileBusy(true);
   try{await writer.current!.mutate(()=>ports.detach(node,writer.current!.snapshot.row,file,context.signal));}finally{if(current())setFileBusy(false);}}
  return <RecordSurface label={node.label}>
-  {recoveryState&&<section aria-label="Browser draft recovery" className="space-y-2 text-xs"><p role="status">{recoveryState.notice}</p>
+  {recoveryState&&(!recoveryState.ready||recoveryState.candidate||recoveryState.submission||recoveryState.notice!=='Browser recovery ready')&&<section aria-label="Browser draft recovery" className="space-y-2 text-xs"><p role="status">{recoveryState.notice}</p>
    {recoveryState.ready&&recoveryState.submission&&current()&&<p aria-label="Submission reference" className="break-all">Submission reference <code>{recoveryState.submission.submissionId}</code></p>}
    {recoveryState.candidate&&!recoveryState.candidate.submission&&<div className="flex gap-2"><button type="button" className={pill} onClick={async()=>{const value=await recovery.current?.restore(writer.current!.snapshot);if(value&&current())writer.current?.restoreRecovery(value);}}>Restore browser draft</button><button type="button" className={pill} onClick={()=>void recovery.current?.keepCurrent()}>Keep current draft</button></div>}
    {recoveryState.submission&&ports.submissionStatus&&<button type="button" className={pill} onClick={async()=>{try{await recovery.current?.renew();const attempt=recovery.current?.snapshot().submission;if(attempt&&current()&&recoveryScope.current&&await ports.submissionStatus!(node,attempt,recoveryScope.current,context.signal)&&current()){await recovery.current?.confirmed();writer.current?.dispose();setSubmitted(true);setNotice('Submission status confirmed. Check Activity for delivery status.');}}catch{if(current())setNotice('Submission status is unavailable. This submission will not be repeated.');}}}>Check original submission</button>}
@@ -198,7 +199,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
   {!!node.record_changes?.length&&ports.listChanges&&ports.prepareChange&&ports.applyChange&&ports.changeStatus&&<ExperienceRecordChanges node={node} writer={()=>writer.current} ports={ports as ExperienceRecordFormPorts&RecordChangePorts} signal={context.signal} current={current} disabled={immutable||!!node.disabled||fileBusy||copyUnconfirmed||reviewBusy||state.state==='blocked'} onBusy={setChangeBusy}/> }
   {profile.files&&!!node.source_refs?.length&&ports.listOriginals&&ports.copyOriginal&&ports.copyStatus&&<ExperienceRecordOriginalFiles node={node} writer={()=>writer.current} ports={ports as FileCopyPorts} signal={context.signal} current={current} disabled={disabled||immutable} onBusy={setFileBusy} onUnconfirmed={setCopyUnconfirmed}/>}
   {profile.files&&<ExperienceRecordFiles node={node} row={state.row} ports={ports} signal={context.signal} current={current} disabled={disabled||immutable} onSelectFiles={selected=>void upload(selected)} onRemove={fileId=>void detach(fileId)} onInsertImage={profile.richtext?.inline_images==='host_files'?insertImage:undefined}/>}
-  {profile.richtext?.inline_images==='host_files'&&profile.files&&profile.files.max_files>0&&<label className={`${pill} inline-flex items-center gap-2 ${disabled?'opacity-50':'cursor-pointer'}`}><ImagePlus size={16}/>Insert image<input className="sr-only" aria-label="Insert image" type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={disabled||immutable} onChange={event=>{const selected=Array.from(event.target.files??[]);event.target.value='';if(selected.length)void upload(selected,true);}}/></label>}
+  {profile.richtext?.inline_images==='host_files'&&profile.files&&profile.files.max_files>0&&<ExperienceFilePicker label="Insert image" className={`${pill} inline-flex items-center gap-2`} disabled={disabled||immutable} accept="image/png,image/jpeg,image/gif,image/webp" onSelect={selected=>void upload(selected,true)}><ImagePlus size={16} aria-hidden="true"/>Insert image</ExperienceFilePicker>}
   <div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className="text-xs text-[var(--muted)]">{notice||state.notice||(state.row.revision===0?'Not saved on server':'Saved privately')}</p><div className="flex flex-wrap gap-2">
    {state.state==='blocked'?<>
     {ports.saveStatus&&<button type="button" className={pill} disabled={!current()||fileBusy||copyUnconfirmed||reviewBusy||changeBusy} onClick={async()=>{await recovery.current?.renew();if(current())await writer.current?.reconcileSave();}}>Check saved status</button>}

@@ -203,6 +203,16 @@ export const EXPERIENCE_RENDERER_CSS = `
 @media(max-width:420px) { .deft-experience { padding:12px } .deft-experience .ex-grid-scroll table { min-width:510px } .deft-experience .ex-stack-title { font-size:16px } }
 @container(max-width:700px) { .deft-experience .ex-stack-document:has(> .ex-field-body) > .ex-stack-toolbar { margin:-24px -20px 12px; padding:12px 16px } .deft-experience .ex-stack-workspace > .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:0 } .deft-experience .ex-stack-document { padding:24px 20px } .deft-experience .ex-stack-sidebar { border-right:0 } .deft-experience .ex-stack-toolbar { padding:12px 16px } .deft-experience .ex-button-list { padding:16px 20px } .deft-experience.ex-workspace { padding:0 } .deft-experience .ex-stack-split { grid-template-columns:minmax(0,1fr); gap:16px } .deft-experience .ex-stack.ex-mobile-hidden { display:none } .deft-experience .ex-mobile-only { display:grid } .deft-experience .ex-mobile-only.ex-stack-horizontal,.deft-experience .ex-mobile-only.ex-stack-toolbar,.deft-experience .ex-mobile-only.ex-stack-workspace { display:flex } }
 @container(max-width:700px) { .deft-experience .ex-stack-document { padding:0 20px 24px } .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -20px; padding:12px 20px } }
+
+/* Shared compact surfaces; app declarations still own navigation and hierarchy. */
+.deft-experience .ex-stack-document{padding:0 24px 24px;gap:14px}
+.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -24px;padding:10px 24px;min-height:60px;gap:8px}
+.deft-experience .ex-stack-sidebar>.ex-stack-toolbar{min-height:60px;padding:10px 14px;gap:8px}
+.deft-experience .ex-stack-sidebar>.ex-button-list{padding:12px 16px}
+.deft-experience .ex-stack-document>.ex-text:first-child{margin-top:20px}
+.deft-experience .ex-stack-toolbar>.ex-text-heading{font-size:18px;line-height:1.35}
+.deft-experience .ex-stack-toolbar .ex-stack-horizontal{gap:4px}
+@media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}}
 `;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {

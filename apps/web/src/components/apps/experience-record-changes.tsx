@@ -13,7 +13,8 @@ export function ExperienceRecordChanges(props:{node:ExperienceRecordFormNode;wri
  },[props.node.record_id,props.node.store_key,props.ports,props.signal]);
  const preparing=['loading','preparing','applying'].includes(state.phase),snapshot=props.writer()?.snapshot;
  return <section aria-label="Saved content" className="space-y-3">
-  <div className="flex flex-wrap gap-2">{props.node.record_changes?.map(control=><button key={control.operation_key} type="button" className="min-h-10 rounded-full px-3 text-xs" disabled={props.disabled||state.phase!=='idle'} onClick={()=>void ref.current?.choose(control)}>{control.label}</button>)}</div>
+  <details className="rounded-lg" open={state.phase!=='idle'}><summary className="w-fit cursor-pointer rounded-full px-3 py-2 text-xs text-[var(--on-surface-variant)] focus-visible:ring-2 focus-visible:ring-[var(--primary)]">Saved content</summary>
+  <div className="flex flex-wrap gap-2">{props.node.record_changes?.map(control=><button key={control.operation_key} type="button" className="min-h-10 rounded-full px-3 text-xs" disabled={props.disabled||state.phase!=='idle'} onClick={()=>void ref.current?.choose(control)}>{control.label}</button>)}</div></details>
   {state.phase==='choosing'&&<div className="space-y-2 rounded-xl bg-[var(--surface-container-low)] p-3"><h3 className="text-sm">Choose saved content</h3>
    {state.choices.map(choice=><button key={choice.record_id} type="button" className="block min-h-10 w-full rounded-lg px-3 text-left text-sm hover:bg-[var(--surface-container-high)]" onClick={()=>void ref.current?.prepare(choice)}>{choice.label}</button>)}
    {state.next_cursor&&<button type="button" className="min-h-10 rounded-full px-3 text-xs" onClick={()=>void ref.current?.nextPage()}>More saved content</button>}<button type="button" className="min-h-10 rounded-full px-3 text-xs" onClick={()=>ref.current?.close()}>Close</button></div>}
