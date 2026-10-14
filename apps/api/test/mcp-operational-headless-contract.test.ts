@@ -36,6 +36,7 @@ import {
   MODULE_OPERATION_NAMES,
 } from '@deft/shared/modules';
 import { closeDb } from '../src/lib/db.js';
+import { RUNTIME_WORKFLOW_SCOPES } from '../src/lib/app-runtime-workflow-tools.js';
 
 after(async () => closeDb());
 
@@ -197,7 +198,8 @@ test('every operational tool is registered, classified, and advertised once', ()
   const schemaByName = new Map(schemas.map((schema) => [String(schema.name), schema]));
   assert.equal(new Set(schemas.map((schema) => String(schema.name))).size, schemas.length);
   for (const name of [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS]) {
-    assert.ok(HUMAN_TOOL_SCOPES[name], `${name} must have an explicit scope contract`);
+    assert.ok(HUMAN_TOOL_SCOPES[name] || Object.hasOwn(RUNTIME_WORKFLOW_SCOPES, name),
+      `${name} must have an explicit scope or independently governed authority contract`);
   }
 
   for (const name of READ_TOOLS) {

@@ -1,0 +1,27 @@
+{
+  "schema": "deft.app_platform.current_provider_payload.v1",
+  "historical_proof_path": "examples/app-platform-connected-proof-bundle.json",
+  "provider_package": "@deft/app-platform-sandbox-email-provider",
+  "provider_version": "0.1.0-alpha.2",
+  "content": {
+    "schema": "deft.app_platform.packed_payload.v1",
+    "files": [
+      {
+        "path": "README.md",
+        "byte_length": 1942,
+        "digest": "sha256:3e61eaabd7902cd6d8565123cd844641f810cebaaefa30e747fd1dc8caf009e2"
+      },
+      {
+        "path": "package.json",
+        "byte_length": 420,
+        "digest": "sha256:e79be07825ef52ab8c705dfde74a80999012ddd0cce8687c9053baf3fa012b9d"
+      },
+      {
+        "path": "server.mjs",
+        "byte_length": 10712,
+        "digest": "sha256:cc5ba57ea2ff5e8e2819704e7552933bf97431ab8fcb3c1c37577d128f20359f"
+      }
+    ],
+    "digest": "sha256:cfb54c8015a4ee7e7ebfe09cffec55ba50222df64eb7664d7ceb690a12c8ecea"
+  }
+}
