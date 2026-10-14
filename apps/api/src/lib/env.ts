@@ -100,6 +100,11 @@ export const env = {
   // OpenAI Whisper or Deepgram override via env or per-org config.
   TRANSCRIPTION_PROVIDER: (process.env.TRANSCRIPTION_PROVIDER || 'local') as 'local' | 'openai' | 'deepgram',
   WHISPER_URL: process.env.WHISPER_URL || 'http://localhost:9000', // local whisper container
+  // 'openai' provider: point it at any OpenAI-compatible endpoint (LiteLLM,
+  // Groq, a self-hosted gateway). Empty = api.openai.com, whisper-1, OPENAI_API_KEY.
+  TRANSCRIPTION_OPENAI_BASE_URL: process.env.TRANSCRIPTION_OPENAI_BASE_URL || '',
+  TRANSCRIPTION_OPENAI_MODEL: process.env.TRANSCRIPTION_OPENAI_MODEL || '',
+  TRANSCRIPTION_OPENAI_API_KEY: process.env.TRANSCRIPTION_OPENAI_API_KEY || '',
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || '',
   // Phase 10 — Prometheus scraper bearer token. Unset = /api/metrics returns 503.
   METRICS_SCRAPE_TOKEN: process.env.METRICS_SCRAPE_TOKEN || '',

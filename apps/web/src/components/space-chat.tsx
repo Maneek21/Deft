@@ -1,4 +1,5 @@
 'use client';
+import { NativeMentionContent } from '@/components/native-mention-content';
 
 import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
 
@@ -485,6 +486,9 @@ function renderContent(content: string) {
 
   // Detect if content is HTML (from TipTap editor)
   const isHtml = text.startsWith('<') && /<\/?[a-z][\s>]/i.test(text);
+  if (text.includes('data-deft-ref-kind') || text.includes('[[deft:')) {
+    return <span className="message-content"><NativeMentionContent html={isHtml ? text : renderSimpleMarkdown(text)} /></span>;
+  }
 
   if (isHtml) {
     // Process mentions within HTML: replace <@id|name> with styled spans

@@ -81,6 +81,7 @@ import {
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
+import { nativeMentionsAvailable } from '@/lib/native-mentions';
 import { MobileActionSheet } from './mobile-action-sheet';
 
 type TaskResult = {
@@ -245,7 +246,7 @@ export function RichComposer({
           }
           const { from } = view.state.selection;
           const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
-          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@+(\w*)$/)) {
+          if (textBefore.match(/#(\w*)$/) || (!nativeMentionsAvailable() && textBefore.match(/@+(\w*)$/))) {
             // # / @ autocomplete are React popups with document-level
             // listeners — prevent ProseMirror's default but let the
             // listener catch the key.
@@ -290,7 +291,7 @@ export function RichComposer({
       // of text that should be replaced when a suggestion is accepted,
       // so handleMentionSelect works even after the editor loses focus
       // on click.
-      const atMatch = textBefore.match(/@+(\w*)$/);
+      const atMatch = nativeMentionsAvailable() ? null : textBefore.match(/@+(\w*)$/);
       if (atMatch) {
         setShowMentions(true);
         setMentionQuery(atMatch[1]);
