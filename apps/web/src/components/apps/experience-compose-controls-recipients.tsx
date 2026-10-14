@@ -2,7 +2,6 @@
 
 import { useId, useState } from 'react';
 import { X } from 'lucide-react';
-import {RecipientAssistance,type RecipientSearch} from './integrations/recipient-assistance';
 import { composeAddressLabel, parseComposeAddresses, selectedComposeIdentity, type ComposeAddress, type ComposeIdentityOption } from '@/lib/app-experience-compose-controls';
 import { formatMailboxList, parseMailboxList, type MailboxAddress } from '../../../../../packages/app-kit/src/mailbox-list';
 
@@ -18,8 +17,8 @@ function mailboxEdit(value: string, maxItems: number): MailboxEdit {
 /** Scalar contract text stays in the parent on every keystroke. An incomplete
  * recipient therefore invalidates the saved preview, even before chip commit.
  * Explicit commits use the same parser as the host and retain order/duplicates. */
-export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, maxLength = 2048, disabled = false, onChange, suggest }: {
-  label: string; value: string; maxItems?: number; maxLength?: number; disabled?: boolean; onChange: (value: string) => void; suggest?: RecipientSearch;
+export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, maxLength = 2048, disabled = false, onChange }: {
+  label: string; value: string; maxItems?: number; maxLength?: number; disabled?: boolean; onChange: (value: string) => void;
 }) {
   const id = useId();
   const [edit, setEdit] = useState(() => mailboxEdit(value, maxItems));
@@ -69,7 +68,6 @@ export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, m
           }} />
       </div>
     </div>
-    {suggest&&<RecipientAssistance query={current.pending} search={suggest} disabled={disabled} onSelect={row=>{try{const selected=parseMailboxList(formatMailboxList([{address:row.address,displayName:row.name}]),{maxItems:1});if(current.addresses.length>=maxItems)throw Error();write([...current.addresses,...selected],'');setNotice('');}catch{setNotice('This recipient could not be added.');}}}/>}
     <p id={`${id}-detail`} role="status" className={visibleNotice ? 'pb-2 pl-[4.25rem] text-xs text-[var(--error)]' : 'sr-only'}>
       {visibleNotice || 'Separate addresses with a comma or semicolon. Press Enter to add recipients.'}
     </p>

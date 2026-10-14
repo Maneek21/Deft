@@ -8,7 +8,6 @@ import {SourceNominationPanel,type NominatedSourceSurface} from './integrations/
 import {mountRecordTaskEntry} from './integrations/record-task-entry';
 import {CurrentIntegrationAccessSettings} from './integrations/integration-access-settings';
 import {appDataInputDigest} from '@/lib/app-experience-data-client';
-import {RecipientAssistanceResultSchema} from './integrations/recipient-assistance';
 import {boundedConfirmationJson} from '@/lib/app-experience-action-confirmation';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -619,7 +618,6 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     const recordMirrorControls=createExperienceRecordMirrorHost({experienceId:session.pin.session_id,select:(store,signal)=>dataClient.select(store,signal),current:locallyCurrent,fetch:(path,options)=>api.fetch(path,options)});
     const localJobControls=createExperienceLocalJobHost({select:async(store,signal,ref)=>(ref?(await sourceChild([ref],signal)).value.client:dataClient).select(store,signal),current:locallyCurrent,fetch:(path,options)=>api.fetch(path,options)});
     const recordForms=createExperienceRecordFormHost({...routedPorts,
-      suggestRecipients:async(node,query,signal)=>{const client=await recordClient(node,signal),target=await client.select(node.store_key,signal);if(!locallyCurrent()||signal.aborted)throw Error('Recipients unavailable');const result=RecipientAssistanceResultSchema.parse(await boundedConfirmationJson(await api.fetch('/api/app-integrations/recipients/'+encodeURIComponent(target.session_id)+'/search',{method:'POST',signal,body:JSON.stringify({query,limit:10})})));const current=await client.select(node.store_key,signal);if(!locallyCurrent()||signal.aborted||current.session_id!==target.session_id||current.account.account_ref!==target.account.account_ref)throw Error('Recipient account changed');return result;},
       deliverSubmitted:(node,row,signal)=>deliverExperienceRecordSubmission({confirmed:true,nodeId:node.id,row,signal,current:locallyCurrent,
         send:(event,signal)=>bridge.sendUiEvent(event,{signal})}),
       reopenSubmitted:()=>{

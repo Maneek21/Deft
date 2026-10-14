@@ -21,13 +21,11 @@ import {ExperienceRecordFields} from './experience-record-fields';
 import type {DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNode} from '../../../../../packages/app-kit/src/app-data';
 import {ExperienceComposeRichEditor,type ComposeImagePort} from './experience-compose-controls-rich-editor';
 import {ExperienceComposeMailboxControl} from './experience-compose-controls';
-import type {RecipientSearch} from './integrations/recipient-assistance';
 import {parseMailboxList} from '../../../../../packages/app-kit/src/mailbox-list';
 
 export type ExperienceRecordFormNode=RecordFormNode;
 export type ExperienceRecordFormReference=ExperienceRecordFormNode|DeftExperienceRecordFormV2Node;
 export type ExperienceRecordFormPorts={
- suggestRecipients?:(node:ExperienceRecordFormNode,query:string,signal:AbortSignal)=>ReturnType<RecipientSearch>;
  resolveSeed?:(node:ExperienceRecordFormNode,signal:AbortSignal)=>Promise<ExperienceRecordFormNode>;
  load:(node:ExperienceRecordFormReference,signal:AbortSignal)=>Promise<{record:ExperienceRecordRow;identities:readonly RecordFormIdentity[];primaryIdentity?:RecordFormIdentity|null}>;
  save:(node:ExperienceRecordFormReference,revision:number,value:Record<string,unknown>,requestId:string,digest:string,signal:AbortSignal)=>Promise<ExperienceRecordRow>;
@@ -191,7 +189,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
   })}</div><div className="flex items-center gap-1">{optionalFields.map(field=><button key={field.field} type="button" className={pill} disabled={disabled} aria-expanded={optionalExpanded(field.field)} onClick={()=>setOptionalVisibility(previous=>({...previous,[field.field]:!optionalExpanded(field.field)}))}>{field.label}{valueCount(field)?` (${valueCount(field)})`:recordFormString(value,field.field)?' (check)':''}</button>)}</div></div>
   {fields.map(field=>{
    if(field.kind==='verified_identity'||field.kind==='text'&&field.optional&&!optionalExpanded(field.field))return null;
-   if(field.kind==='text'&&field.format==='mailbox_list'&&field.presentation==='pills')return <ExperienceComposeMailboxControl key={field.field} label={field.label} value={recordFormString(value,field.field)} disabled={disabled} suggest={ports.suggestRecipients?((query,signal)=>ports.suggestRecipients!(node,query,AbortSignal.any([context.signal,signal]))):undefined} onChange={text=>edit({...writer.current!.snapshot.value,[field.field]:text})}/>;
+   if(field.kind==='text'&&field.format==='mailbox_list'&&field.presentation==='pills')return <ExperienceComposeMailboxControl key={field.field} label={field.label} value={recordFormString(value,field.field)} disabled={disabled} onChange={text=>edit({...writer.current!.snapshot.value,[field.field]:text})}/>;
    if(field.kind==='boolean')return <label key={field.field} className="flex items-center gap-3 text-sm"><input type="checkbox" aria-label={field.label} checked={value[field.field] as boolean} disabled={disabled} onChange={event=>edit({...writer.current!.snapshot.value,[field.field]:event.target.checked})}/>{field.label}</label>;
    if(field.kind==='choice')return <label key={field.field} className="block text-xs">{field.label}<select aria-label={field.label} value={value[field.field] as string} disabled={disabled} className="mt-1 min-h-11 w-full rounded-lg bg-[var(--surface-container-low)] px-3" onChange={event=>edit(recordChoiceEdit(writer.current!.snapshot.value,field,event.target.value))}>{field.options.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
    return <label key={field.field} className="flex items-start gap-3"><span className="w-14 shrink-0 py-3.5 text-xs text-[var(--on-surface-variant)]">{field.label}</span><input aria-label={field.label} value={recordFormString(value,field.field)} disabled={disabled} maxLength={field.max_characters} required={field.required} onChange={event=>edit({...writer.current!.snapshot.value,[field.field]:event.target.value})} className="min-h-11 min-w-0 flex-1 rounded-lg bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"/></label>;

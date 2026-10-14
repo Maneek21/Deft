@@ -101,7 +101,6 @@ import { appExperienceRoutes } from './routes/app-experiences.js';
 import {appIntegrationDestinationRoutes} from './routes/app-integration-destinations.js';
 import {appIntegrationNotificationRoutes} from './routes/app-integration-notifications.js';
 import {appIntegrationPreparationRoutes} from './routes/app-integration-preparations.js';
-import {appIntegrationRecipientRoutes} from './routes/app-integration-recipients.js';
 import {appIntegrationPermissionRoutes} from './routes/app-integration-permissions.js';
 import {resourceSyncWebAuthority} from './lib/app-resource-sync-web-authority.js';
 import { appOwnerConnectionRoutes } from './routes/app-owner-connections.js';
@@ -336,7 +335,6 @@ if (APPS_ENABLED) {
   const integrationHuman=async(c:import('hono').Context)=>{const auth=await resourceSyncWebAuthority(c.req.header('authorization'));return {kind:'human' as const,org_id:auth.actor.org_id,user_id:auth.actor.actor_id,principal_id:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};};
   app.route('/api/app-integrations/destinations',appIntegrationDestinationRoutes(integrationHuman));
   app.route('/api/app-integrations/notifications',appIntegrationNotificationRoutes(integrationHuman));
-  app.route('/api/app-integrations/recipients',appIntegrationRecipientRoutes());
   app.route('/api/app-integrations/permissions',appIntegrationPermissionRoutes(async c=>{const caller=await integrationHuman(c);return {org_id:caller.org_id,user_id:caller.user_id,sid:caller.principal_id,access_expires_at:caller.access_expires_at};}));
   app.route('/api/app-integrations/preparations',appIntegrationPreparationRoutes(async c=>{const caller=await integrationHuman(c);return {org_id:caller.org_id,user_id:caller.user_id,sid:caller.principal_id,access_expires_at:caller.access_expires_at};}));
   app.route('/api/app-owner-connections', appOwnerConnectionRoutes);

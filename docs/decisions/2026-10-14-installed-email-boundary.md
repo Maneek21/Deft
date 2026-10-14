@@ -46,7 +46,7 @@ native Email execution, sideload, connect, read, save/reopen a draft with a file
 review and send once, independently verify delivery, and resolve a Task source
 backlink. Verify supported delegated tools through app declarations. Restart the
 Runtime without losing state. Change and upgrade Email only against the same
-Host, including a declared operation and UI change.
+Host, including App-owned draft behavior and a declared UI change.
 
 Run affected isolation, expiry, exact-input and uncertain-outcome regressions,
 then consolidated integration checks on the candidate tree. Existing failed
@@ -58,3 +58,5 @@ old evidence; capture fresh screenshots and video for this candidate.
 Separate Kit, Host and Email review changes. No merge, auto-merge, release tag or
 release publication is authorized by this implementation. Final handoff includes
 all PRs, actual validation, remaining limitations and recommended merge order.
+
+Optional Host recipient autocomplete is removed from this preview; manually entered mailbox pills and independent Cc/Bcc controls remain available.
