@@ -169,6 +169,8 @@ jobs:
           test "$(cat .ci-api-diagnostics/mailbox-predecessor-identity.txt)" = 'email_stage34_test|gate_g_test|55435|127.0.0.1'
           test "$(docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -At \
             -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")" = '0'
+      - name: Build App Kit before isolated imports
+        run: pnpm --filter @deft/app-kit build
       - name: Verify database isolation guards
         run: node --test scripts/email-preview-test-databases.test.mjs
       - name: Run tests
