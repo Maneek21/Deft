@@ -1,6 +1,6 @@
 # Current limitations
 
-The published-release baseline reviewed here is `v0.3.0-preview.15` (September 8, 2026), not the current connected-App review candidate. The candidate uses packed Kit alpha.33 and generic Protocol 7 trusted forms, external Runtime and source contracts; see the [author guide](connected-app-author-guide.md). Its last schema 117 Email activation failed at database supplemental-effect validation. A corrected compatible Host identity and fresh installed acceptance remain pending; historical release instructions do not prove them.
+The published-release baseline reviewed here is `v0.3.0-preview.15` (September 8, 2026), not the current connected-App review candidate. The candidate uses packed Kit alpha.33 and generic Protocol 7 trusted forms, external Runtime and source contracts; see the [author guide](connected-app-author-guide.md). Schema 118 corrected the historical supplemental-effect database refusal; the preceding preview.3 installation passed draft/file/restart/Send and image checks. Complete current candidate and fresh installation acceptance remain pending, including Task publication and finite-authority renewal. Historical release instructions or older delivery receipts do not prove these gates.
 
 Installation and agent boundary notes updated September 11, 2026.
 
