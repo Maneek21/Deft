@@ -4,6 +4,7 @@ import {AppFutureRecordActionDeclarationsSchema,AppFutureExecutionWindowSchema,A
 import {AppLocalJobOperationsSchema} from './local-job-declaration.js';
 import {z} from 'zod';
 import {AppPreparedCopyEffectSchema,AppPreparedCopyEffectInputSchema} from './prepared-copy-effect.js';
+import {AppPreparedEffectDeclarationsSchema,AppPreparedEffectSchema,AppPreparedEffectInputSchema} from './prepared-effect.js';
 import {AppRecordChangeDeclarationsSchema,AppRecordChangeControlsSchema,AppRecordPrepareChangeInputSchema,AppRecordApplyChangeInputSchema,AppPreparedRecordChangeSchema} from './record-change.js';
 import {AppConnectionActionConsentSchema,AppConnectionSessionScopeSchema} from './connection-session.js';
 import {AppResourceActionPlanInputSchema,AppResourceActionReadInputSchema,AppDataPreparedResourceActionSchema} from './app-resource-action.js';
@@ -27,7 +28,7 @@ const value = z.record(z.string(), z.unknown()).refine(row => {
   try {canonicalAppDataJson(row); return new TextEncoder().encode(JSON.stringify(row)).byteLength <= APP_DATA_LIMITS.record_bytes;} catch {return false;}
 }, 'Record must be a bounded complete JSON object');
 export const RecordStoreDeclarationSchema = z.strictObject({schema_version: z.literal('deft.app_record_store.v1'), key,
-  resource_key: key, runtime_requirement_key: key, record_changes:AppRecordChangeDeclarationsSchema.optional(), local_job_operations:AppLocalJobOperationsSchema.optional(), future_record_actions:AppFutureRecordActionDeclarationsSchema.optional(), record_mirrors:AppRecordMirrorDeclarationsSchema.optional(), max_record_bytes: z.number().int().min(1).max(APP_DATA_LIMITS.record_bytes),
+  resource_key: key, runtime_requirement_key: key, supplemental_effects:AppPreparedEffectDeclarationsSchema.optional(), record_changes:AppRecordChangeDeclarationsSchema.optional(), local_job_operations:AppLocalJobOperationsSchema.optional(), future_record_actions:AppFutureRecordActionDeclarationsSchema.optional(), record_mirrors:AppRecordMirrorDeclarationsSchema.optional(), max_record_bytes: z.number().int().min(1).max(APP_DATA_LIMITS.record_bytes),
   max_files: z.number().int().min(0).max(32), max_file_bytes: z.number().int().min(1).max(APP_DATA_LIMITS.file_bytes),
   max_total_file_bytes: z.number().int().min(1).max(APP_DATA_LIMITS.total_file_bytes),
   source_projection: AppIntegrationSourceMappingSchema.optional(),
@@ -52,7 +53,8 @@ export const AppDataRecordSchema = z.strictObject({schema_version: z.literal('de
   files, summary:z.record(key,z.union([z.string().max(2048),z.number().finite(),z.boolean()])).optional(), created_at: z.iso.datetime(), updated_at: z.iso.datetime()});
 export type AppDataRecord = z.infer<typeof AppDataRecordSchema>;
 export const AppDataRecordMetaSchema = AppDataRecordSchema.omit({value:true,files:true});
-export const AppDataIdentitySchema = z.strictObject({address: z.string().email().max(320), label});
+/** Displayable verified principal identifier. Its domain grammar belongs to the Runtime. */
+export const AppDataIdentitySchema = z.strictObject({address: z.string().min(1).max(320).regex(/^[^\u0000-\u001f\u007f<>]+$/u), label});
 const identities = z.array(AppDataIdentitySchema).max(32);
 export const AppDataConnectionSchema = z.strictObject({session_id:id,session_revision:revision,
   runtime_session_ref:opaque,account_ref:opaque});
@@ -126,7 +128,14 @@ export const AppDataFreshnessSchema = z.strictObject({observed_at:z.iso.datetime
 export const AppDataPreparedRecordActionSchema=z.strictObject({schema_version:z.literal('deft.app_prepared_record_action.v1'),
   snapshot_id:id,snapshot_digest:digest,record_id:id,revision,record_content_digest:digest.optional(),action_key:key,
   input:z.record(key,z.union([z.string().max(2048),z.number().finite(),z.boolean()])).refine(row=>Object.keys(row).length<=32&&new TextEncoder().encode(JSON.stringify(row)).length<=8192),preview:value,expires_at:z.iso.datetime(),future_release:AppPreparedFutureReleaseSchema.optional(),copy_effect:AppPreparedCopyEffectSchema.optional(),required_action_consents:z.array(AppConnectionActionConsentSchema).min(1).max(8).refine(rows=>new Set(rows.map(row=>row.action_key)).size===rows.length&&rows.every((row,i)=>i===0||rows[i-1]!.action_key<row.action_key)).optional()})
-  .refine(row=>{
+  .safeExtend({supplemental_effect:AppPreparedEffectSchema.optional()}).refine(row=>{
+    const fields=['effect_version','effect_key','effect_plan_digest','effect_content_digest','effect_custody_generation'];
+    if(!row.supplemental_effect)return fields.every(field=>!Object.hasOwn(row.input,field));
+    if(row.copy_effect)return false;
+    const pins=AppPreparedEffectInputSchema.safeParse(Object.fromEntries(fields.map(field=>[field,row.input[field]]))),effect=row.supplemental_effect;
+    return pins.success&&pins.data.effect_version===effect.version&&pins.data.effect_key===effect.effect_key
+      &&pins.data.effect_plan_digest===effect.plan_digest&&pins.data.effect_content_digest===effect.content_digest&&pins.data.effect_custody_generation===effect.custody_generation&&row.input.account_ref===effect.account_ref;
+  },'A supplemental effect requires its exact reviewed input pins').refine(row=>{
     if(row.future_release&&Date.parse(row.expires_at)!==Date.parse(row.future_release.execution_window.dispatch_expires_at))return false;
     const fields=['sent_copy_version','sent_copy_mode','sent_copy_plan_digest'];
     if(row.required_action_consents?.some(consent=>consent.action_key===row.action_key||Date.parse(consent.expires_at)<Date.parse(row.expires_at)))return false;
@@ -219,6 +228,30 @@ export const DeftExperienceRecordFormV2NodeSchema=z.strictObject({kind:z.literal
  record_id:id,expected_revision:revision,content_digest:digest,profile:DeftExperienceRecordFormV2ProfileSchema,disabled:z.boolean().optional()});
 export type DeftExperienceRecordFormV2Node=z.infer<typeof DeftExperienceRecordFormV2NodeSchema>;
 export type DeftExperienceRecordFormV2Profile=z.infer<typeof DeftExperienceRecordFormV2ProfileSchema>;
+
+/** Declared controls, never field-name conventions or provider validation. */
+export const DeftExperienceRecordFormV3FieldSchema=z.discriminatedUnion('kind',[
+ z.strictObject({kind:z.literal('text'),field:key,label:scalarLabel,max_characters:z.number().int().min(1).max(16384),required:z.boolean(),
+  format:z.enum(['plain','mailbox_list']).optional(),presentation:z.enum(['normal','pills']).optional(),optional:z.boolean().optional()}),
+ DeftExperienceRecordScalarFieldSchema.options[1],DeftExperienceRecordScalarFieldSchema.options[2],
+ z.strictObject({kind:z.literal('verified_identity'),field:key,label:scalarLabel,editable:z.literal(false),identity_field:key.optional()}),
+]).refine(field=>field.kind!=='text'||(field.presentation!=='pills'||field.format==='mailbox_list')&&!(field.optional&&field.required),'Control presentation must match its declared format');
+export const DeftExperienceRecordFormV3ProfileSchema=z.strictObject({schema_version:z.literal('deft.record_form_profile.v3'),
+ max_record_bytes:z.number().int().min(1).max(APP_DATA_LIMITS.record_bytes),fields:z.array(DeftExperienceRecordFormV3FieldSchema).min(1).max(16),
+ richtext:DeftExperienceRecordFormProfileSchema.shape.richtext.optional(),files:DeftExperienceRecordFormProfileSchema.shape.files.extend({archive_name_field:key.optional()}).optional(),
+ labels:z.strictObject({save:scalarLabel.optional(),review:scalarLabel.optional(),submitted:scalarLabel.optional(),readonly:scalarLabel.optional(),scheduled:scalarLabel.optional(),initial_change_unavailable:scalarLabel.optional()}).optional(),
+ review:z.strictObject({title:scalarLabel,confirm_label:scalarLabel,description:z.string().max(500).optional(),
+  supplemental_effect:z.strictObject({label:scalarLabel,fields:z.array(z.strictObject({field:key,label:scalarLabel})).min(1).max(16).refine(fields=>new Set(fields.map(field=>field.field)).size===fields.length)}).optional()}).optional(),
+}).refine(profile=>{const fields=[...profile.fields.map(field=>field.field),...profile.fields.flatMap(field=>field.kind==='choice'&&field.activation?[field.activation.field]:[]),
+ ...(profile.richtext?[profile.richtext.html_field,profile.richtext.plain_field]:[]),...(profile.files?[profile.files.field]:[])];
+ return new Set(fields).size===fields.length&&(!profile.files||profile.files.max_file_bytes<=profile.files.max_total_bytes)
+  &&profile.fields.every(field=>field.kind!=='choice'||!field.activation||field.options.some(option=>option.value===field.activation!.inactive_value));
+},'Edited fields must be distinct and file budgets consistent');
+export const DeftExperienceRecordFormV3NodeSchema=z.strictObject({...DeftExperienceRecordFormNodeSchema.shape,profile:DeftExperienceRecordFormV3ProfileSchema})
+ .refine(node=>node.seed?node.expected_revision===0&&node.content_digest==='sha256:'+'0'.repeat(64)&&!node.source_refs?.length:node.expected_revision>=1,'Revision zero requires explicit unsaved seed')
+ .refine(node=>!node.initial_change||node.initial_change.source_store_key!==node.store_key,'Initial changes require a distinct source store');
+export type DeftExperienceRecordFormV3Node=z.infer<typeof DeftExperienceRecordFormV3NodeSchema>;
+export type DeftExperienceRecordFormV3Profile=z.infer<typeof DeftExperienceRecordFormV3ProfileSchema>;
 
 export const DeftExperienceRecordDocumentNodeSchema = z.strictObject({kind:z.literal('record_document'),id:nodeId,
   profile_version:z.literal('deft.record_document.v1'),store_key:key,resource_key:key,record_id:id,content_digest:digest,

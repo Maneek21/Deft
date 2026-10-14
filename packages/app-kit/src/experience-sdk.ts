@@ -4,7 +4,7 @@ export {inspectNativeComposeRaster,validateNativeComposeRaster} from './native-c
 import type { DeftExperienceCapability, DeftExperienceResourceDocumentNode } from './experience-capabilities.js';
 import type { DeftExperienceRichtextFieldNode, DeftExperienceFileFieldNode, DeftExperienceResourceRefreshNode } from './experience-capabilities.js';
 import type {AppDataRecord,AppDataResult,DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNode,DeftExperienceRecordDocumentNode} from './app-data.js';
-export type {DeftExperienceRecordFormV2Node,DeftExperienceRecordFormV2Profile,DeftExperienceRecordFormNode,DeftExperienceRecordDocumentNode} from './app-data.js';
+export type {DeftExperienceRecordFormV3Node,DeftExperienceRecordFormV3Profile,DeftExperienceRecordFormV2Node,DeftExperienceRecordFormV2Profile,DeftExperienceRecordFormNode,DeftExperienceRecordDocumentNode} from './app-data.js';
 import { parseNativeSafeComposeHtml as parseRichHtml, parseSafeComposeHtml as parseBasicHtml } from './safe-compose-html.js';
 export type { DeftExperienceCapability, DeftExperienceCapabilities, DeftExperienceCapabilityRequest,
   DeftExperienceResourceDocumentNode, DeftExperienceRichtextFieldProfile, DeftExperienceFileFieldProfile,
@@ -142,6 +142,10 @@ export function createDeftRecordFormV2Node(input:Omit<DeftExperienceRecordFormV2
 export type {NativeComposeRasterInfo,NativeComposeRasterProfile} from './native-compose-raster.js';
 export type {NativeComposeOptions,NativeComposeInlineAttachment} from './safe-compose-html.js';
 export { nativeComposeImageCid,nativeComposeInlineFileIds,removeNativeComposeInlineFiles,NATIVE_COMPOSE_BODY_LIMITS,plainTextToNativeComposeHtml,plainTextToSafeComposeHtml, parseSafeComposeHtml,parseNativeSafeComposeHtml,canonicalNativeComposeLink,nativeSafeComposeHtmlFromEditorDocument,nativeComposeDraftFromEditorDocument } from './safe-compose-html.js';
+/** Provider-independent trusted editor controls; legacy names remain wire compatible. */
+export {parseNativeSafeComposeHtml as parseTrustedRichtextHtml,nativeSafeComposeHtmlFromEditorDocument as trustedRichtextHtmlFromEditorDocument,
+ nativeComposeDraftFromEditorDocument as trustedRichtextDraftFromEditorDocument,nativeComposeInlineFileIds as trustedRichtextInlineFileIds,
+ removeNativeComposeInlineFiles as removeTrustedRichtextInlineFiles} from './safe-compose-html.js';
 /** Public author-side SDK leaf. Bundlers inline this into the immutable Worker.
  * It contains no credential, URL, fetch or direct workspace API surface. */
 export { parseMailboxList, formatMailboxList } from './mailbox-list.js';

@@ -1,4 +1,5 @@
 export * from './safe-compose-html.js';
+export * from './prepared-effect.js';
 import { z } from 'zod';
 import { RuntimeAuthoringShape, RuntimeAuthoringSchema, RuntimeRequestedAuthoritySchema } from './runtime-authoring.js';
 import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAuthoritySchema, PUBLIC_AVAILABILITY_SCALAR_TYPES } from './installed-authoring.js';
@@ -79,7 +80,7 @@ export const DEFT_APP_PROTOCOL_VERSION_V7 = '7' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V7 = 'deft.app.package.v7' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
-export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.32' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.33' as const;
 export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
 export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;

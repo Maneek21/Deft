@@ -1,5 +1,13 @@
 # `@deft/app-kit`
 
+The alpha.33 candidate adds provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. Existing sealed alpha.30/alpha.32 packages and legacy parsers remain historical compatibility inputs; the new Email flow uses alpha.33 contracts.
+
+Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
+
+A record store may declare `supplemental_effects` with a closed bounded `RuntimeObjectSchema`. `parseAppPreparedEffectDetails` checks declared detail fields; the Host also verifies the canonical plan digest, account, action binding, custody generation and exact prepared input. `deft.app_run_inspection_result.v2` carries generic primary/effect outcomes and immutable receipt pins, with automatic retry forbidden. Old sent-copy contracts remain for historical metadata, not the new execution path.
+
+Authors build against the packed package without a Deft checkout. Existing programmatic protocol 7 packaging APIs and public sideload review remain the install path; this change adds no CLI or implicit activation. The candidate requires a compatible Host implementation and fresh installation evidence before independence acceptance.
+
 Portable, deterministic authoring and packaging contracts for declarative Deft
 Apps. The package includes the `deft` CLI, strict App Protocol v0, v1, and v2
 validators, requested-authority projection helpers, developer-host

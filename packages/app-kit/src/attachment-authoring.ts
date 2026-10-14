@@ -30,6 +30,9 @@ export const AttachmentAuthoringSchema = z.strictObject(AttachmentAuthoringShape
       ||tool.action_key&&!value.runtime_actions.some(action=>action.key===tool.action_key))ctx.addIssue({code:'custom',path:['integration_tools',index],message:'Integration tool must map one signed store/resource/runtime and declared action'});
   }
   for (const [index, store] of (value.record_stores ?? []).entries()) {
+    for(const effect of store.supplemental_effects??[])if(!value.runtime_actions.some(action=>action.key===effect.action_key)
+      ||!value.owner_connections?.some(policy=>policy.resource_key===store.resource_key&&policy.action_keys.includes(effect.action_key)))
+      ctx.addIssue({code:'custom',path:['record_stores',index,'supplemental_effects'],message:'Supplemental effect requires a declared same-resource Runtime action'});
     if (store.source_projection) {
       const descriptor = value.sync_descriptors.find(row => row.key === store.resource_key
         && row.key === store.source_projection!.sync_descriptor_key && row.requested_visibility === 'user_private'
