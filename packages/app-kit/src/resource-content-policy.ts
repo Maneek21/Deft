@@ -8,9 +8,9 @@ export const ResourceContentPolicySchema = z.strictObject({
   document: z.strictObject({ max_characters: z.number().int().min(1).max(16384),
     formats: z.array(z.enum(['plain','html'])).min(1).max(2).refine(values => new Set(values).size === values.length).optional(),
     metadata_schema: RuntimeObjectSchema.optional() }),
-  source: z.strictObject({media_type:z.literal('message/rfc822'),filename:z.literal('message.eml'),max_bytes:z.number().int().min(1).max(8388608)}).optional(),
+  source: z.strictObject({media_type:z.string().regex(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u),filename:z.string().min(1).max(255).refine(value=>!/[\u0000-\u001f\u007f/\\]/u.test(value)),max_bytes:z.number().int().min(1).max(8388608)}).optional(),
   triage_options: z.strictObject({max_options:z.number().int().min(1).max(100)}).optional(),
-  search_filters:z.array(z.enum(['text','from','to','cc','bcc','subject','filename','has_attachments','received_on','after','before','unread','flagged'])).min(1).max(13).refine(rows=>new Set(rows).size===rows.length).optional(),
+  search_filters:z.array(key).min(1).max(32).refine(rows=>new Set(rows).size===rows.length).optional(),
 });
 export const ResourceContentDeclarationSchema = z.strictObject({ resource_key: key, ...ResourceContentPolicySchema.shape });
 export const ResourceContentDeclarationsSchema = z.array(ResourceContentDeclarationSchema).min(1).max(16)

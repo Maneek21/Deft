@@ -15,7 +15,7 @@ const nodeId = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const recordId = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 export const DeftExperienceCapabilitySchema = z.enum([
   'resource_document.v1', 'richtext_field.v1', 'file_field.v1', 'resource_refresh.v1',
-  'record_form.v1','record_form_seed.v1', 'record_form.v2','repeated_fields.v1', 'record_document.v1','record_document_policy.v1','record_initial_change.v1','record_change_parameters.v1','record_form_presentation.v1','record_intake.mailto.v1','local_job.v1','keyboard_controls.v1','record_mirror.v1',
+  'record_form.v1','record_form_seed.v1', 'record_form.v2','record_form.v3','repeated_fields.v1', 'record_document.v1','record_document_policy.v1','record_initial_change.v1','record_change_parameters.v1','record_form_presentation.v1','record_intake.mailto.v1','local_job.v1','keyboard_controls.v1','record_mirror.v1',
 ]);
 export type DeftExperienceCapability = z.infer<typeof DeftExperienceCapabilitySchema>;
 /** Refresh has a public declaration but no installable renderer adapter yet. */

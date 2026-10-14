@@ -7,7 +7,7 @@ const id=z.string().uuid(),hash=z.string().regex(/^sha256:[a-f0-9]{64}$/u),opaqu
 export const APP_CONNECTION_FORM_LIMITS=Object.freeze({transport_json_bytes:16384,form_json_bytes:65536,setup_ms:60000,input_lease_ms:300000,targets:32});
 /** This module is metadata only: no credential/form field can enter a host,
  * Worker, callback or operator transport request. The reviewed runtime owns UI. */
-export const AppConnectionFormAccountSchema=z.strictObject({account_ref:accountRef,label:z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f<>]+$/u),address:z.email().max(320),capabilities:z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u)).max(16),identity_assurance:z.literal('owner_declared_authenticated')});
+export const AppConnectionFormAccountSchema=z.strictObject({account_ref:accountRef,label:z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f<>]+$/u),address:z.string().min(1).max(320).regex(/^[^\u0000-\u001f\u007f<>]+$/u),capabilities:z.array(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u)).max(16),identity_assurance:z.literal('owner_declared_authenticated')});
 export const AppConnectionFormReceiptSchema=z.strictObject({schema_version:z.literal('deft.app_connection_form_receipt.v1'),account_ref:accountRef,custody_generation:z.number().int().min(1).max(2147483646),principal_digest:hash,custody_digest:hash,scope_digest:hash,committed_at:z.iso.datetime(),digest:hash});
 export const AppConnectionFormBeginSchema=z.strictObject({schema_version:z.literal('deft.app_connection_form_begin.v1'),installation_id:id,target_key:AppConnectionSessionScopeSchema.shape.target_key,request_id:id,source_session_id:id.nullable()});
 export const AppConnectionFormManageSchema=z.strictObject({session_id:id});
