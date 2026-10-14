@@ -781,78 +781,97 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const subtaskCreateIntentRef = useRef<{ projectId: string; intent: ReturnType<typeof createNativeCreateIntent> } | null>(null);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const descriptionDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const pendingDescription = useRef<string | undefined>(undefined);
-  const descriptionSaving = useRef(false);
+  const descriptionQueue = useRef<Promise<void>>(Promise.resolve());
+  const savedDescriptionContents = useRef(new Map<string, string>());
+  const rememberSavedDescription = useCallback((id: string, html: string) => {
+    const saved = savedDescriptionContents.current;
+    saved.delete(id); saved.set(id, html);
+    if (saved.size > 2) saved.delete(saved.keys().next().value!);
+  }, []);
+  const pendingDescriptionSave = useRef<(() => Promise<void>) | null>(null);
+  const descriptionRevision = useRef(0);
+  const descriptionDirty = useRef(false);
+  const activeTaskId = useRef(taskId);
+  const descriptionTaskId = activeTaskId;
   const [saveNotice, setSaveNotice] = useState('');
   const [subtaskSaving, setSubtaskSaving] = useState<string | null>(null);
-  const descriptionTaskId = useRef(taskId);
-
   useEffect(() => {
-    descriptionTaskId.current = taskId;
-    pendingDescription.current = undefined;
-    descriptionSaving.current = false;
-    clearTimeout(descriptionDebounce.current);
+    activeTaskId.current = taskId; descriptionDirty.current = false; ++descriptionRevision.current;
     setSaveNotice('');
+    return () => {
+      clearTimeout(descriptionDebounce.current);
+      const save = pendingDescriptionSave.current; pendingDescriptionSave.current = null;
+      if (save) void save().catch(() => {});
+    };
   }, [taskId]);
-
+  const saveDescription = (html: string) => {
+    const targetId = taskId;
+    const revision = descriptionRevision.current;
+    const operation = descriptionQueue.current.then(async () => {
+      if (activeTaskId.current === targetId) setSaveNotice('Saving description…');
+      if (savedDescriptionContents.current.get(targetId) === html) {
+        if (activeTaskId.current === targetId && descriptionRevision.current === revision) { descriptionDirty.current = false; setSaveNotice('Description saved'); }
+        return;
+      }
+      const response = await api.patch(`/api/tasks/${targetId}`, { description: html });
+      if (!response.ok) throw new Error('Description could not be saved. Retry before notifying.');
+      const result = await response.json();
+      rememberSavedDescription(targetId, result.description ?? html);
+      if (activeTaskId.current === targetId) {
+        if (descriptionRevision.current === revision) { descriptionDirty.current = false; setSaveNotice('Description saved'); }
+        setTask(previous => previous?.id === targetId ? { ...previous, ...result } : previous);
+        if (task?.id === targetId) onUpdated({ ...task, ...result });
+      }
+    });
+    descriptionQueue.current = operation.catch(() => {});
+    return operation.catch(error => {
+      if (activeTaskId.current === targetId && descriptionRevision.current === revision) {
+        setSaveNotice('Description not saved. Try again before leaving.');
+      }
+      throw error;
+    });
+  };
   const flushDescription = async () => {
     clearTimeout(descriptionDebounce.current);
-    if (descriptionSaving.current || pendingDescription.current === undefined) return;
-    const html = pendingDescription.current;
-    pendingDescription.current = undefined;
-    descriptionSaving.current = true;
-    setSaveNotice('Saving description…');
-    try {
-      const res = await api.patch(`/api/tasks/${taskId}`, { description: html || null });
-      if (!res.ok) throw new Error('Save failed');
-      const saved = await res.json();
-      if (descriptionTaskId.current !== taskId) return;
-      setTask((current) => current ? { ...current, ...saved } : current);
-      if (task) onUpdated({ ...task, ...saved });
-      setSaveNotice('Description saved');
-    } catch {
-      if (descriptionTaskId.current !== taskId) return;
-      if (pendingDescription.current === undefined) pendingDescription.current = html;
-      setSaveNotice('Description not saved. Try again before leaving.');
-      return;
-    } finally {
-      if (descriptionTaskId.current === taskId) descriptionSaving.current = false;
-    }
-    if (pendingDescription.current !== undefined) void flushDescription();
+    if (!descriptionDirty.current) return;
+    const save = pendingDescriptionSave.current;
+    pendingDescriptionSave.current = null;
+    try { await (save ? save() : saveDescription(descValue)); } catch { /* The save notice retains the explicit retry. */ }
   };
-
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (hasUnsavedDescription(pendingDescription.current, descriptionSaving.current)) {
-        event.preventDefault();
-        event.returnValue = '';
+      if (hasUnsavedDescription(pendingDescriptionSave.current ? '' : undefined, descriptionDirty.current)) {
+        event.preventDefault(); event.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', warn);
-    return () => {
-      window.removeEventListener('beforeunload', warn);
-      clearTimeout(descriptionDebounce.current);
-    };
+    return () => { window.removeEventListener('beforeunload', warn); };
   }, []);
   const depSearchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Load task
-  const loadTask = useCallback(async () => {
-    setLoading(true);
+  const loadTask = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
+    const revision = descriptionRevision.current;
     const res = await api.get(`/api/tasks/${taskId}`);
+    if (activeTaskId.current !== taskId) return;
     if (res.ok) {
       const data = await res.json();
+      if (activeTaskId.current !== taskId) return;
       const normalized = normalizeTaskDetailPayload(data);
       setTask(normalized);
       setTitleValue(normalized.title);
-      setDescValue(normalized.description || '');
+      if (!descriptionDirty.current && descriptionRevision.current === revision) {
+        rememberSavedDescription(taskId, normalized.description || '');
+        setDescValue(normalized.description || '');
+      }
       setSubtasks(data.subtasks || []);
       setParentTask(data.parent_task || null);
       setAgentProgress(data.agent_outcome ? null : data.agent_progress || null);
       setAgentOutcome(data.agent_outcome || null);
     }
     setLoading(false);
-  }, [taskId]);
+  }, [taskId, rememberSavedDescription]);
 
   useEffect(() => {
     loadTask();
@@ -867,7 +886,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const onUpdated = (payload: { id: string } & Record<string, unknown>) => {
       if (payload.id !== taskId) return;
       // Refetch for canonical shape (includes joined fields like assignee_name, labels, subtasks)
-      loadTask();
+      void loadTask(true);
     };
     const onDeleted = (payload: { id: string }) => {
       if (payload.id !== taskId) return;
@@ -2095,21 +2114,25 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               value={descValue}
               onBlur={flushDescription}
               onChange={(html) => {
+                descriptionDirty.current = true; ++descriptionRevision.current;
                 setDescValue(html);
                 // Auto-save after editing
-                pendingDescription.current = html;
                 setSaveNotice('Description not yet saved');
                 clearTimeout(descriptionDebounce.current);
-                descriptionDebounce.current = setTimeout(() => void flushDescription(), 800);
+                const save = () => saveDescription(html);
+                pendingDescriptionSave.current = save;
+                descriptionDebounce.current = setTimeout(() => {
+                  if (pendingDescriptionSave.current === save) pendingDescriptionSave.current = null;
+                  void save().catch(() => {});
+                }, 800);
               }}
             />
             {['Description not yet saved', 'Description not saved. Try again before leaving.'].includes(saveNotice) && <button onClick={() => void flushDescription()}>Save description</button>}
             <NativeMentionPublish source={{ kind: 'task', id: taskId }} content={descValue}
               prepare={async () => {
-                await flushDescription();
-                if (hasUnsavedDescription(pendingDescription.current, descriptionSaving.current)) {
-                  throw new Error('Save the description and retry before notifying mentions.');
-                }
+                clearTimeout(descriptionDebounce.current);
+                pendingDescriptionSave.current = null;
+                await saveDescription(descValue);
               }} />
             {/* Fix 4: quick comment entry point always visible on description tab */}
             <div
