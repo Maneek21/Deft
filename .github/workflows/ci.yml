@@ -69,6 +69,8 @@ jobs:
           'src/app/(app)/notes/note-save-coordinator.test.ts'
           'src/app/(app)/notes/protected-note-image.test.ts'
           'src/app/(app)/notes/note-load-state.test.ts'
+      - name: Install locked browser for mounted App contracts
+        run: pnpm exec playwright install --with-deps chromium
       - name: Test installed app session and review contracts
         run: >-
           pnpm --filter @deft/web exec tsx --test
