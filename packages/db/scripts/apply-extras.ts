@@ -248,6 +248,17 @@ async function main() {
       console.log(`[apply-extras] reconciled ${platformFile}`);
     }
 
+    // Restore this guard only when its forward migration is already recorded.
+    // Fresh initialization must reach the unchanged117 catalog before convergence;
+    // standalone extras cannot silently upgrade a retained117 database.
+    const supplementalEffectsRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (SELECT 1 FROM deft_schema_migrations WHERE version='0.3.0-preview.118') AS installed
+    `)).rows[0]?.installed === true;
+    if (supplementalEffectsRecorded) {
+      await client.query(readFileSync(resolve(upgradesDir, '0.3.0-preview.118-app-supplemental-effects.sql'), 'utf8'));
+      console.log('[apply-extras] restored recorded supplemental effect guards');
+    }
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.

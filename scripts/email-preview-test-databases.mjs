@@ -52,7 +52,7 @@ export function testDatabaseIsolation({docker,mainContainer,predecessorContainer
  function createTemplate(){
   assertMain();
   assert.equal(main('postgres',`SELECT count(*) FROM pg_database WHERE datname='${template}'`),'0');
-  assert.equal(main('deft_test','SELECT count(*) FROM deft_schema_migrations'),'113');
+  assert.equal(main('deft_test','SELECT count(*) FROM deft_schema_migrations'),'114');
   assert.equal(main('deft_test','SELECT (SELECT count(*) FROM app_runs)+(SELECT count(*) FROM app_run_secret_payloads)+(SELECT count(*) FROM app_run_receipts)'),'0',
    'the seeded template must contain no retained Run authority or ciphertext');
   ledgerDigest=verifyLedger('deft_test');

@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {readCatalog,readLedger} from './lineage-catalog.mjs';
 
 const directory=resolve(dirname(fileURLToPath(import.meta.url)),'../upgrades');
-const PLAN_SHA256='f9ddcde16f1404276eaa0588ea3d264936eedaf5b10602e69f5704872700e4dc';
+const PLAN_SHA256='f913d9b1c0988e6d9bf9f08b8b80364b083798ac94e421ff48b0cf78eb358263';
 const LOCK_ID=7314029421;
 const hex=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
 const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;
@@ -52,6 +52,16 @@ async function inspect(client,plan){
 export async function assertReviewedCurrent(client){
  const plan=loadReviewedPlan();const state=await snapshot(client);const selected=selectReviewedHistory(state,plan);
  if(selected.append.length)fail('E5_FRESH_CATALOG_NOT_COMPLETE');
+ return selected;
+}
+// The immutable fresh bootstrap is schema117. Only this exact reviewed
+// catalog/ledger may be committed before the normal forward118 convergence.
+export async function assertReviewedFreshBootstrap(client){
+ const plan=loadReviewedPlan();const selected=selectReviewedHistory(await snapshot(client),plan);
+ if(selected.name!=='fresh-current-contracts-complete-schema116-schema117'
+  ||selected.stage!=='current'||selected.append.length!==1
+  ||selected.append[0].version!=='0.3.0-preview.118'
+  ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
  return selected;
 }
 export async function convergeReviewedRelease(client,{status=false,dryRun=false}={}){

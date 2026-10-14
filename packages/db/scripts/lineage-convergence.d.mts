@@ -8,4 +8,5 @@ export function sameLedger(actual: unknown, expected: unknown): boolean;
 export function selectReviewedHistory(snapshot: {ledger: unknown; digest: string}, plan: ReviewedPlan): ReviewedVariant;
 export function loadReviewedPlan(): ReviewedPlan;
 export function assertReviewedCurrent(client: {query: (...args: any[]) => Promise<any>}): Promise<ReviewedVariant>;
+export function assertReviewedFreshBootstrap(client: {query: (...args: any[]) => Promise<any>}): Promise<ReviewedVariant>;
 export function convergeReviewedRelease(client: {query: (...args: any[]) => Promise<any>}, options?: {status?: boolean; dryRun?: boolean}): Promise<ReviewedVariant>;

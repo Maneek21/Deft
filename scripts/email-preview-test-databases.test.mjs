@@ -25,7 +25,7 @@ function fixture(overrides={}){
   if(sql.startsWith('SELECT current_database'))return overrides.identity??`${database}|${isMain?'postgres':'gate_g_test'}|${isMain?'5432':'55435'}|127.0.0.1`;
   if(sql.includes('pg_stat_activity'))return String(typeof overrides.clients==='function'?overrides.clients():overrides.clients??0);
   if(sql.includes('pg_database WHERE'))return sql.includes('automation_renewal')?String(overrides.automationExisting??Number(automation)):String(overrides.templateExisting??Number(template));
-  if(sql==='SELECT count(*) FROM deft_schema_migrations')return'113';
+  if(sql==='SELECT count(*) FROM deft_schema_migrations')return'114';
   if(sql.includes('app_run_secret_payloads'))return String(overrides.retained??0);
   if(sql.includes('SELECT version,checksum,kind'))return overrides.corruptTemplate&&database.startsWith('deft_preview_template_')?'wrong ledger':'001|abcd|baseline\n117|def|migration';
   if(sql.startsWith('SELECT pg_database_size'))return'1024';
