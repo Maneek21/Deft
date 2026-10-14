@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+import {Hono} from 'hono';
+const source=ts.createSourceFile('routes.ts',readFileSync(process.env.DEFT_RETIRED_HANDOFF_ROUTE_SOURCE??new URL('../src/routes/app-integration-tools.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
+const declaration=source.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createAppIntegrationToolRoutes')!;
+const code=ts.transpileModule('('+declaration.getText(source).replace('export ','')+')',{compilerOptions:{target:ts.ScriptTarget.ES2015}}).outputText;
+test('enabled integration router cannot dispatch retired Email-specific Defty handoff',async()=>{let called=0;const limit=()=>async(_context:unknown,next:()=>Promise<void>)=>next();const create=vm.runInNewContext(code,{Hono,Promise,process:{env:{DEFT_APPS_ENABLED:'true'}},isAppOwnerConnectionsEnabled:()=>true,createAppResourceSyncLimits:limit,createAppResourcePrivateReadLimits:limit,caller:async()=>{called++;throw Error('Denied');},appHttpFailure:(context:any)=>context.json({code:'FORBIDDEN'},403)});const routes=create();const response=await routes.request('http://fixture.invalid/defty-context',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});assert.equal(response.status,404);assert.equal(called,0);});

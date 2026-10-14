@@ -73,7 +73,6 @@
     "app-runtime-setup-http-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
     "apps-connected-grants-db.test.ts",
-    "email-agent-tools-integration-db.test.ts",
     "email-calendar-invitation-index-db.test.ts",
     "email-context-transfer-mounted-db.test.ts",
     "email-knowledge-db.test.ts",
@@ -140,7 +139,6 @@
     "app-runtime-renewal-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
     "apps-connected-grants-db.test.ts",
-    "email-agent-tools-integration-db.test.ts",
     "email-context-transfer-mounted-db.test.ts"
   ],
   "isolated": [
@@ -229,7 +227,6 @@
     "app-runtime-setup-http-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
     "apps-connected-grants-db.test.ts",
-    "email-agent-tools-integration-db.test.ts",
     "email-calendar-invitation-index-db.test.ts",
     "email-context-transfer-mounted-db.test.ts",
     "email-knowledge-db.test.ts",
