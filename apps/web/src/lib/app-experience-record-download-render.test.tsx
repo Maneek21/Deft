@@ -21,11 +21,11 @@ test('actual trusted submitted/archived preview offers Download with document bo
 
 import {ExperienceComposeRichEditor} from '../components/apps/experience-compose-controls-rich-editor';
 test('readonly rich presentation retains validated document renderer without edit controls',()=>{
- let writes=0;const html=renderToStaticMarkup(<ExperienceComposeRichEditor label="Message" value={{html:'<p><strong>Synthetic</strong></p>',plainText:'Synthetic'}} maxCharacters={262144} maxPlainCharacters={262144} nativeLinks preserveWhitespace presentationOnly onChange={()=>{writes++;}}/>);
+ let writes=0;const html=renderToStaticMarkup(<ExperienceComposeRichEditor label="Message" value={{html:'<p><strong>Synthetic</strong></p>',plainText:'Synthetic'}} maxCharacters={262144} maxPlainCharacters={262144} hostLinks preserveWhitespace presentationOnly onChange={()=>{writes++;}}/>);
  assert.match(html,/role="document"/);assert.doesNotMatch(html,/role="toolbar"|textarea|Use plain text|Add formatting|formatting characters/);assert.equal(writes,0);
 });
 test('invalid retained rich HTML is never rendered as markup or editable source in readonly presentation',()=>{
- const html=renderToStaticMarkup(<ExperienceComposeRichEditor label="Message" value={{html:'<script>private-script</script>',plainText:'  retained\ttext\n\n'}} maxCharacters={262144} maxPlainCharacters={262144} nativeLinks presentationOnly onChange={()=>{throw Error('No writes');}}/>);
+ const html=renderToStaticMarkup(<ExperienceComposeRichEditor label="Message" value={{html:'<script>private-script</script>',plainText:'  retained\ttext\n\n'}} maxCharacters={262144} maxPlainCharacters={262144} hostLinks presentationOnly onChange={()=>{throw Error('No writes');}}/>);
  assert.match(html,/Formatting unavailable/);assert.match(html,/  retained\ttext\n\n/);assert.doesNotMatch(html,/private-script|textarea|toolbar/);
 });
 
@@ -34,7 +34,7 @@ test('readonly headers show the stored sender object, never infer a missing send
  const value={to:'Synthetic recipient <recipient@example.test>',cc:'copy@example.test',bcc:'blind@example.test',subject:'Synthetic',body:'  preserved\ttext\n\n',body_html:'',attachments:[],mode:'forward',reply_record_id:'internal-source',from_identity:{address:'saved@example.test'}};
  const render=(value:Record<string,unknown>)=>renderToStaticMarkup(<ExperienceRecordPreview node={node} row={{record_id:node.record_id,revision:2,content_digest:node.content_digest,status:'submitted',value}} value={value} ports={{} as any} signal={new AbortController().signal} current={()=>true}/>);
  const html=render(value);assert.match(html,/saved@example.test/);assert.match(html,/copy@example.test/);assert.match(html,/blind@example.test/);assert.match(html,/  preserved\ttext\n\n/);assert.doesNotMatch(html,/internal-source|forward/);
- const {from_identity,...missing}=value;assert.match(render(missing),/Not recorded in this saved draft/);assert.doesNotMatch(render(missing),/saved@example.test/);
+ const {from_identity,...missing}=value;assert.match(render(missing),/Not recorded/);assert.doesNotMatch(render(missing),/saved@example.test/);
  assert.throws(()=>render({...value,from_identity:'invalid'}),/Record identity unavailable/);
- assert.throws(()=>render({...value,body_html:'<p>different</p>'}),/Record body pair changed/);
+ assert.throws(()=>render({...value,body_html:'<p>different</p>'}),/Record text pair changed/);
 });

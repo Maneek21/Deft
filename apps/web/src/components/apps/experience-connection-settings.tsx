@@ -14,8 +14,6 @@ import {ExperienceBackgroundRefresh} from './experience-background-refresh';
 import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
 import { appConnectionSessionTag, createAppConnectionSessionFlow, type AppConnectionContext } from '@/lib/app-connection-session-flow';
-import { adoptNativeEmailAccount, nativeEmailSetup, type NativeEmailSetup } from '@/lib/email-native-enrollment';
-import { EmailReadingSettings } from './email-reading-settings';
 import { appApiError } from '@/lib/apps';
 import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview,
   type OwnerPolicy, type OwnerResourceRequest } from '@/lib/app-owner-connection';
@@ -162,7 +160,7 @@ function RetainedConnectionSettings(props:SettingsProps&{excludedTargets?:string
   </div>;
 }
 
-type Status = { state: 'connected' | 'reauth_required' | 'revoked' | 'not_connected'; address?: string; native?: NativeEmailSetup | null };
+type Status = { state: 'connected' | 'reauth_required' | 'revoked' | 'not_connected'; address?: string };
 function statusView(value: unknown): Status {
   if (!value || typeof value !== 'object') throw Error('Connection status is unavailable.');
   const result = value as Record<string, unknown>;
@@ -170,7 +168,7 @@ function statusView(value: unknown): Status {
   const account = result.account && typeof result.account === 'object' ? result.account as Record<string, unknown> : null;
   if (result.state === 'connected' && (account?.health !== 'connected' || typeof account.primary_address !== 'string'
     || account.primary_address.length > 256 || /[\r\n\0]/.test(account.primary_address))) throw Error('Connection status is unavailable.');
-  return { state: result.state as Status['state'], ...(result.state === 'connected' ? { address: account!.primary_address as string, native: nativeEmailSetup(value) } : {}) };
+  return { state: result.state as Status['state'], ...(result.state === 'connected' ? { address: account!.primary_address as string } : {}) };
 }
 function AdminConnectionSettings({ sessionId, targetKey, installationId, experienceKey, ensureAuthority, disabled, onBusy, onConnectionNavigation, onReadingPreferencesChanged }: {
   sessionId?: string; targetKey:string; installationId: string; experienceKey: string; ensureAuthority: () => Promise<boolean>;
@@ -193,19 +191,6 @@ function AdminConnectionSettings({ sessionId, targetKey, installationId, experie
     }).catch(error => { if (current) { setStatus(null); setNotice(error instanceof Error ? error.message : 'Account setup is unavailable.'); } });
     return () => { current = false; };
   }, [management]);
-  async function enableCachedMailbox() {
-    if (working || disabled || document.hidden || !status?.native) return;
-    const selected = status.native, anchor = api.getAccessToken();
-    const current = () => mounted.current && !document.hidden && !!anchor && isSameWebSession(anchor, api.getAccessToken());
-    setWorking(true); onBusy(true); setNotice('Setting up cached mailbox…');
-    try {
-      const native = await adoptNativeEmailAccount(selected, { fetch: (path, options) => api.fetch(path, options), current });
-      if (current()) { setStatus(previous => previous?.native?.account_id === selected.account_id
-        && previous.native.resource_binding_id === selected.resource_binding_id ? { ...previous, native } : previous);
-        setNotice('Cached mailbox enabled. Messages will appear as the first sync completes.'); }
-    } catch (error) { if (current()) setNotice(error instanceof Error ? error.message : 'Cached mailbox setup was not confirmed.'); }
-    finally { if (mounted.current) { setWorking(false); onBusy(false); } }
-  }
   async function act(operation: 'begin' | 'disconnect') {
     if (working || disabled || document.hidden) return;
     setWorking(true); onBusy(true); setNotice('');
@@ -243,14 +228,6 @@ function AdminConnectionSettings({ sessionId, targetKey, installationId, experie
     </div>
     {status?.state === 'reauth_required' && <p className="text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Reconnect this account to restore provider access.</p>}
     {notice && <p role="status" className="text-sm text-[var(--on-surface-variant)]">{notice}</p>}
-    {status?.state === 'connected' && status.native && <div className="space-y-2 text-sm">
-      <p style={{ color: 'var(--text-secondary)' }}>{status.native.state === 'active' ? 'Cached mailbox enabled · first sync may still be running.'
-        : 'Keep a cached mailbox in Deft for this connected account. Private access and agent approvals stay separate.'}</p>
-      {status.native.state !== 'active' && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={disabled || working}
-        onClick={() => void enableCachedMailbox()}>{working ? 'Setting up…' : 'Enable cached mailbox'}</button>}
-      <EmailReadingSettings key={status.native.account_id} accountId={status.native.account_id} setupState={status.native.state}
-        disabled={disabled || working} onBusy={onBusy} onSaved={onReadingPreferencesChanged}/>
-    </div>}
     {status && <div className="flex flex-wrap gap-2">
       {status.state !== 'connected' && sessionId && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={disabled || working} onClick={() => void act('begin')}>
         {working ? 'Opening setup…' : status.state === 'reauth_required' ? 'Reconnect account' : 'Connect account'}

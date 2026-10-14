@@ -1,12 +1,26 @@
 import {parseNativeSafeComposeHtml} from '../../../../packages/app-kit/src/safe-compose-html';
 import type {ExperienceRecordValue,ExperienceRecordRow} from './app-experience-record-writer';
-import type {DeftExperienceRecordFormNode} from '../../../../packages/app-kit/src/app-data';
+import type {DeftExperienceRecordFormNode,DeftExperienceRecordFormV3Node,DeftExperienceRecordFormV3Profile} from '../../../../packages/app-kit/src/app-data';
 
-export type RecordFormProfile=DeftExperienceRecordFormNode['profile'];
+export type RecordFormNode=DeftExperienceRecordFormNode|DeftExperienceRecordFormV3Node;
+export type RecordFormProfile=RecordFormNode['profile'];
+export function recordFormFields(profile:RecordFormProfile):DeftExperienceRecordFormV3Profile['fields'] {
+ if(profile.schema_version==='deft.record_form_profile.v3')return profile.fields;
+ return [...(profile.identity?[{kind:'verified_identity' as const,field:profile.identity.field,label:profile.identity.label,editable:false as const,identity_field:profile.identity.address_field}]:[]),...profile.addresses.map(field=>({kind:'text' as const,...field,format:'mailbox_list' as const,presentation:'pills' as const,max_characters:2048,required:false})),{kind:'text',...profile.subject,required:false}];
+}
+export function recordFormIdentity(value:ExperienceRecordValue,field:Extract<DeftExperienceRecordFormV3Profile['fields'][number],{kind:'verified_identity'}>):string {const saved=value[field.field];if(field.identity_field)return saved&&typeof saved==='object'&&!Array.isArray(saved)&&typeof (saved as Record<string,unknown>)[field.identity_field]==='string'?(saved as Record<string,string>)[field.identity_field]:'';return typeof saved==='string'?saved:'';}
+export function recordFormLabels(profile:RecordFormProfile){return {save:'Save',review:'Review action',submitted:'Submission accepted. Check Activity for its status.',readonly:'Read-only record',scheduled:'Manage scheduled action',initial_change_unavailable:'Optional default unavailable.',...(profile.schema_version==='deft.record_form_profile.v3'?profile.labels:{})};}
+/** Every reviewed scalar must have an author-declared caption; no hidden effect fields. */
+export function recordFormEffectFields(profile:RecordFormProfile,details:Record<string,string|number|boolean>){
+ const declared=profile.schema_version==='deft.record_form_profile.v3'?profile.review?.supplemental_effect:undefined;
+ if(!declared||Object.keys(details).some(key=>!declared.fields.some(field=>field.field===key)))throw Error('Supplemental effect presentation unavailable');
+ return {label:declared.label,fields:declared.fields.filter(field=>Object.hasOwn(details,field.field)).map(field=>({label:field.label,value:String(details[field.field])}))};
+}
+
 export type RecordFormFile={file_id:string;filename:string;media_type:string;size_bytes:number;sha256:string};
 export type RecordFormIdentity={address:string;label:string};
 /** Status is returned by the trusted scoped read; author flags grant no editing. */
-export function experienceRecordFormMode(node:DeftExperienceRecordFormNode,record:ExperienceRecordRow):'readonly'|'editable'{
+export function experienceRecordFormMode(node:RecordFormNode,record:ExperienceRecordRow):'readonly'|'editable'{
  if(record.record_id!==node.record_id||!['draft','submitted','archived'].includes(record.status))throw Error('Record identity changed');
  validateRecordFormValue(record.value,node.profile);
  if(record.status!=='draft')return 'readonly';
@@ -16,6 +30,7 @@ export function experienceRecordFormMode(node:DeftExperienceRecordFormNode,recor
 }
 export const recordFormString=(value:ExperienceRecordValue,field:string)=>{const text=value[field];if(typeof text!=='string')throw Error('Record field unavailable');return text;};
 export function recordFormFiles(value:ExperienceRecordValue,profile:RecordFormProfile):RecordFormFile[]{
+ if(!profile.files)return [];
  const files=value[profile.files.field];if(!Array.isArray(files)||files.length>profile.files.max_files)throw Error('Record files unavailable');
  const seen=new Set<string>();let bytes=0;
  for(const file of files){if(!file||typeof file!=='object'||Object.keys(file).sort().join(',')!=='file_id,filename,media_type,sha256,size_bytes'
@@ -30,14 +45,21 @@ export function recordFormFiles(value:ExperienceRecordValue,profile:RecordFormPr
  * folds recipient text, removes unknown schema fields or rewrites HTML. */
 export function validateRecordFormValue(value:ExperienceRecordValue,profile:RecordFormProfile){
  if(!value||typeof value!=='object'||Array.isArray(value)||new TextEncoder().encode(JSON.stringify(value)).byteLength>profile.max_record_bytes)throw Error('Record limit');
- const files=recordFormFiles(value,profile),html=recordFormString(value,profile.richtext.html_field),plain=recordFormString(value,profile.richtext.plain_field);
- if(html.length>profile.richtext.max_characters||plain.length>profile.richtext.max_characters||!plain.isWellFormed()||/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(plain))throw Error('Record body unavailable');
- if(html&&parseNativeSafeComposeHtml(html,{maxCharacters:profile.richtext.max_characters,inlineAttachments:profile.richtext.inline_images==='host_files'?files:[]}).plainText!==plain)throw Error('Record body pair changed');
- for(const field of profile.addresses){const text=recordFormString(value,field.field);if(text.length>2048||/[\r\n\0]/u.test(text))throw Error('Record address limit');}
- const subject=recordFormString(value,profile.subject.field);if(subject.length>profile.subject.max_characters||/[\r\n\0]/u.test(subject))throw Error('Record subject limit');
- if(profile.identity){const identity=value[profile.identity.field];if(identity!==undefined&&(!identity||typeof identity!=='object'||Array.isArray(identity)||typeof (identity as Record<string,unknown>)[profile.identity.address_field]!=='string'))throw Error('Record identity unavailable');}
+ const files=recordFormFiles(value,profile),rich=profile.richtext;
+ if(rich){const html=recordFormString(value,rich.html_field),plain=recordFormString(value,rich.plain_field);
+  if(html.length>rich.max_characters||plain.length>rich.max_characters||!plain.isWellFormed()||/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(plain))throw Error('Record text unavailable');
+  if(html&&parseNativeSafeComposeHtml(html,{maxCharacters:rich.max_characters,inlineAttachments:rich.inline_images==='host_files'?files:[]}).plainText!==plain)throw Error('Record text pair changed');
+ }
+ for(const field of recordFormFields(profile)){const saved=value[field.field];
+  if(field.kind==='text'&&(typeof saved!=='string'||!saved.isWellFormed()||saved.length>field.max_characters||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(saved)||field.format==='mailbox_list'&&/[\r\n]/u.test(saved)||field.required&&!saved.trim()))throw Error('Record field needs correction');
+  if(field.kind==='boolean'&&typeof saved!=='boolean')throw Error('Record field unavailable');
+  if(field.kind==='choice'&&!field.options.some(option=>option.value===saved))throw Error('Record choice unavailable');
+  if(field.kind==='choice'&&field.activation){const marker=value[field.activation.field];if(marker!==undefined&&(!marker||typeof marker!=='object'||Array.isArray(marker)||Object.keys(marker).sort().join(',')!=='enabled,schema_version'||(marker as Record<string,unknown>).schema_version!==field.activation.schema_version||typeof (marker as Record<string,unknown>).enabled!=='boolean'))throw Error('Saved placement changed');}
+  if(field.kind==='verified_identity'&&saved!==undefined){const identity=recordFormIdentity(value,field);if(!identity||identity.length>320||/[\u0000-\u001f\u007f-\u009f]/u.test(identity))throw Error('Record identity unavailable');}
+ }
 }
 export async function prepareRecordFormFile(file:File,profile:RecordFormProfile,existing:readonly RecordFormFile[]):Promise<RecordFormFile>{
+ if(!profile.files)throw Error('Files not declared');
  if(existing.length>=profile.files.max_files||file.size>profile.files.max_file_bytes||existing.reduce((sum,row)=>sum+row.size_bytes,0)+file.size>profile.files.max_total_bytes)throw Error('File limit');
  const bytes=await file.arrayBuffer();try{const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
   const result={file_id:crypto.randomUUID(),filename:file.name,media_type:file.type||'application/octet-stream',size_bytes:file.size,sha256:Array.from(hash,byte=>byte.toString(16).padStart(2,'0')).join('')};

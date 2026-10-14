@@ -17,7 +17,6 @@ import {
 } from 'lucide-react';
 import { formatRelative } from '@/lib/time';
 import type { AttentionItem } from '@/hooks/use-attention';
-import { nativeEmailAttentionHref } from '@/lib/email-native-notification-link';
 
 const ICONS: Record<string, typeof Bell> = {
   mention: AtSign,
@@ -60,8 +59,8 @@ export function AttentionRow({
 }) {
   const Icon = ICONS[item.kind] ?? Bell;
   const unseen = item.state === 'open_unseen';
-  const email = item.source_type === 'email';
-  const href = email ? nativeEmailAttentionHref(item) : item.link;
+  const retiredSource=item.source_type==='email';
+  const href = retiredSource?null:item.link;
   const content = (
     <div className="group flex min-w-0 items-start gap-3 border-b px-1 py-3.5 last:border-b-0" style={{ borderColor: 'var(--border)' }}>
       <span
@@ -77,13 +76,13 @@ export function AttentionRow({
         <div className="flex min-w-0 items-center gap-2">
           {unseen && <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--primary)' }} />}
           <p className="truncate text-[13px]" style={{ color: 'var(--foreground)', fontWeight: unseen ? 650 : 500 }}>
-            {email ? 'New email' : item.title}
+            {retiredSource?'Historical Email notification':item.title}
           </p>
           {item.event_count > 1 && (
             <span className="shrink-0 text-[10px]" style={{ color: 'var(--muted)' }}>+{item.event_count - 1}</span>
           )}
         </div>
-        {!email && item.body && (
+        {!retiredSource&&item.body && (
           <p className="mt-0.5 line-clamp-2 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
             {attentionPreview(item.body)}
           </p>

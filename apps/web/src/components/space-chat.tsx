@@ -9,7 +9,6 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { openDeftyDm } from '@/lib/quick-actions';
-import {appendEmailChatContext,type EmailChatContext} from '@/lib/email-native-defty-context';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { subscribeToSpace } from '@/lib/space-socket';
@@ -629,8 +628,6 @@ export function SpaceChat({
   spaceTopic,
   spaceDescription,
   highlightMessageId,
-  emailContext,
-  onClearEmailContext,
 }: {
   spaceId: string;
   spaceName: string;
@@ -638,8 +635,6 @@ export function SpaceChat({
   spaceTopic?: string | null;
   spaceDescription?: string | null;
   highlightMessageId?: string;
-  emailContext?:EmailChatContext;
-  onClearEmailContext?:(context?:EmailChatContext)=>void;
 }) {
   const { user } = useAuth();
   const router = useRouter();
@@ -1209,8 +1204,6 @@ export function SpaceChat({
     const quotedMessageToSend = quotedMessage;
     const pendingFilesToSend = [...pendingFiles];
     let content = serializeMentions(html);
-    const emailContextToSend=emailContext?.spaceId===requestSpaceId&&spaceType==='dm'?emailContext:null;
-    if(emailContextToSend)content=appendEmailChatContext(content,emailContextToSend);
     // Prepend quoted message if present
     if (quotedMessageToSend) {
       const quoteHtml = serializeQuotedMessage(quotedMessageToSend);
@@ -1237,7 +1230,6 @@ export function SpaceChat({
     const createdMessage = await response.json() as Message;
     intent.acknowledgeSuccess(intentKey);
     if (activeSpaceIdRef.current !== requestSpaceId) return;
-    if(emailContextToSend)onClearEmailContext?.(emailContextToSend);
     const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
     setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));
     if (quotedMessageToSend) {
@@ -2306,7 +2298,6 @@ export function SpaceChat({
           </div>
         )}
 
-        {emailContext?.spaceId===spaceId&&spaceType==='dm'&&<div className="mx-3 mb-2 flex items-center gap-2 text-xs"><a href={'/email?'+new URLSearchParams({account:emailContext.accountId,message:emailContext.messageId}).toString()} className="rounded-full bg-[var(--surface-container-low)] px-3 py-1.5 text-[var(--text-secondary)]">Email context</a><button type="button" onClick={()=>onClearEmailContext?.()} aria-label="Remove email context" className="rounded-full p-1.5 hover:bg-[var(--hover-tint)]"><X size={12}/></button></div>}
         {/* Rich text composer — hidden while recording so the recorder
             owns the input area (single focused interaction). */}
         {!clipRecording && (

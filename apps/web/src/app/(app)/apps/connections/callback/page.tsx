@@ -5,9 +5,7 @@ import Link from 'next/link';
 import { api, isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { getActiveSessionCacheScope } from '@/lib/session-cache';
-import { completeDirectEmailConnection, directEmailCallbackMatches, directEmailSessionTag, directEmailStatusNotice, readDirectEmailPending } from '@/lib/email-native-direct-connections';
 import { APP_CONNECTION_PENDING_KEY, pendingAppConnection, connectionCallback } from '@/lib/app-connection-flow';
-import { nativeEmailSetup } from '@/lib/email-native-enrollment';
 import {APP_CONNECTION_UPGRADE_PENDING_KEY,completeConnectionUpgrade} from '@/lib/app-connection-upgrade';
 import {APP_CONNECTION_REPAIR_PENDING_KEY,completeConnectionRepair} from '@/lib/app-connection-repair';
 import { APP_CONNECTION_SESSION_PENDING_KEY, appConnectionCallbackUsesGeneric, appConnectionSessionTag, completeAppConnectionSession } from '@/lib/app-connection-session-flow';
@@ -36,8 +34,7 @@ export default function AppConnectionCallbackPage() {
           // Its own nonce never falls back to a legacy adapter. An independent
           // exact native/legacy pending nonce may coexist with an unknown attempt.
           const genericStored=sessionStorage.getItem(APP_CONNECTION_SESSION_PENDING_KEY);
-          const tag=await directEmailSessionTag(scope).catch(()=>null);
-          const nativeMatches=Boolean(tag&&directEmailCallbackMatches(search,sessionStorage,tag));
+          const nativeMatches=false;
           let legacyMatches=false;
           try{const stored=sessionStorage.getItem(APP_CONNECTION_PENDING_KEY);if(stored){connectionCallback(search,pendingAppConnection(JSON.parse(stored)));legacyMatches=true;}}catch{/* No independent validated legacy nonce. */}
           const upgradeStored=sessionStorage.getItem(APP_CONNECTION_UPGRADE_PENDING_KEY);
@@ -71,13 +68,6 @@ export default function AppConnectionCallbackPage() {
             href=`/apps/${encodeURIComponent(identity.installationId)}/${encodeURIComponent(identity.experienceKey)}`;
             return {href,message:completed.state==='connected'?'Your account is connected. Return to the app to continue.':completed.state==='indeterminate'?'Account setup has an uncertain outcome. Return to the app and check connection status; this attempt will not be repeated.':'Account setup was not completed. Return to the app to check its status.',success:completed.state==='connected'};
           }
-          // Retained provider profiles may use this fixed callback URI. Native
-          // dispatch requires its exact nonce and current verified human SID;
-          // other callbacks keep the established App connection flow.
-          if(tag&&(nativeMatches||!search&&!genericStored&&!sessionStorage.getItem(APP_CONNECTION_PENDING_KEY)&&readDirectEmailPending(sessionStorage,tag)?.expected_state)){
-            const completed=await completeDirectEmailConnection({search,sessionTag:tag,storage:sessionStorage,current:sameSession,fetch:(path,init)=>api.fetch(path,init)});
-            return {href:'/email',message:directEmailStatusNotice(completed),success:completed.state==='connected'};
-          }
           const stored = sessionStorage.getItem(APP_CONNECTION_PENDING_KEY);
           sessionStorage.removeItem(APP_CONNECTION_PENDING_KEY);
           const pending = pendingAppConnection(stored ? JSON.parse(stored) : null);
@@ -87,13 +77,10 @@ export default function AppConnectionCallbackPage() {
           const response = await api.fetch(`/api/app-experiences/sessions/${encodeURIComponent(pending.sessionId)}/connections/callback`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
           });
-          if (!response.ok) throw Error('Account setup was not confirmed. Return to Email to check its status or reconnect.');
+          if (!response.ok) throw Error('Account setup was not confirmed. Return to the app to check its status or reconnect.');
           const completed = await response.json() as { state?: string; account?: { health?: string } };
-          if (completed.state !== 'connected' || completed.account?.health !== 'connected') throw Error('Account setup was not confirmed. Return to Email to check its status.');
-          const native = nativeEmailSetup(completed);
-          return { href, message: native?.state === 'active' ? 'Your account is connected and cached mailbox setup is enabled. Return to Email while the first sync completes.'
-            : native?.state === 'unavailable' ? 'Your account is connected. Cached mailbox setup needs a retry from Account connection in Email settings.'
-              : 'Your account is connected. Return to Email to continue.', success: true };
+          if (completed.state !== 'connected' || completed.account?.health !== 'connected') throw Error('Account setup was not confirmed. Return to the app to check its status.');
+          return { href, message: 'Your account is connected. Return to the app to continue.', success: true };
         } catch (error) {
           return { href, message: error instanceof Error ? error.message : 'Account setup was not confirmed.', success: false };
         } finally {
@@ -114,7 +101,7 @@ export default function AppConnectionCallbackPage() {
     <section className="deft-soft-card space-y-4 p-6">
       <h1 className="text-xl font-semibold">Account setup</h1>
       <p role="status" className="text-sm text-[var(--on-surface-variant)]">{result?.message ?? 'Checking your account connection…'}</p>
-      {result && <Link className="deft-pill inline-flex items-center" style={{ minHeight: 44 }} href={result.href}>Back to Email</Link>}
+      {result && <Link className="deft-pill inline-flex items-center" style={{ minHeight: 44 }} href={result.href}>Back to app</Link>}
     </section>
   </main>;
 }

@@ -48,7 +48,7 @@ export function ExperienceRecordFields({node,ports,context,emit,registerWriter}:
   })}</div>
   {node.profile.repeated_fields&&<ExperienceRepeatedRecordFields groups={node.profile.repeated_fields} value={value} disabled={disabled} readonly={readonly} onChange={next=>{if(!disabled&&writable())writer.current?.edit(next);}}/>}
   {rich&&<ExperienceComposeRichEditor label={rich.label} value={{html:value[rich.html_field] as string,plainText:value[rich.plain_field] as string}}
-   maxCharacters={rich.max_html_characters} maxPlainCharacters={rich.max_plain_characters} preserveWhitespace nativeLinks disabled={disabled} presentationOnly={readonly}
+   maxCharacters={rich.max_html_characters} maxPlainCharacters={rich.max_plain_characters} preserveWhitespace hostLinks disabled={disabled} presentationOnly={readonly}
    validateValue={pair=>validateRecordFields({...value,[rich.html_field]:pair.html,[rich.plain_field]:pair.plainText},node.profile,state.row.value)}
    onChange={pair=>{if(!disabled&&writable())writer.current?.edit({...writer.current.snapshot.value,[rich.html_field]:pair.html,[rich.plain_field]:pair.plainText});}}/>}
   <div className="flex flex-wrap items-center justify-between gap-3"><p role="status" className="text-xs text-[var(--muted)]">{notice||state.notice||(readonly?'Read-only':'Saved privately')}</p>

@@ -19,7 +19,7 @@ function RichField({node,emit,context}:{node:Extract<Control,{kind:'richtext_fie
     published.current=[];setValue({html:node.value.html,plainText:node.value.plain_text});
   },[node.value.html,node.value.plain_text]);
   return <div><ExperienceComposeRichEditor label={node.label} value={value} maxCharacters={node.profile.max_characters}
-    maxPlainCharacters={node.profile.max_characters} preserveWhitespace nativeLinks={node.profile.links==='host_validated'} disabled={node.disabled}
+    maxPlainCharacters={node.profile.max_characters} preserveWhitespace hostLinks={node.profile.links==='host_validated'} disabled={node.disabled}
     validateValue={next=>{validateExperienceRichtextEdit(node,next);}}
     onChange={next=>{if(!context.current()||context.signal.aborted)return;try{const richtext=validateExperienceRichtextEdit(node,next);
       published.current.push(JSON.stringify(richtext));if(published.current.length>32)published.current.shift();

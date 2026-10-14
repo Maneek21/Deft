@@ -1,6 +1,6 @@
 import {canonicalAppDataJson} from '../../../../packages/app-kit/src/app-data';
 import {AppRecordChangeParametersSchema,AppPreparedRecordChangeSchema,type AppPreparedRecordChange,type AppRecordChangeReference} from '../../../../packages/app-kit/src/record-change';
-import type {DeftExperienceRecordFormNode} from '../../../../packages/app-kit/src/app-data';
+import type {RecordFormNode as DeftExperienceRecordFormNode} from './app-experience-record-form';
 import type {createExperienceRecordWriter,ExperienceRecordRow} from './app-experience-record-writer';
 export class RecordChangeNotApplied extends Error{constructor(){super('This change was not applied. Reopen the saved draft before trying again.');}}
 export type RecordChangeControl=NonNullable<DeftExperienceRecordFormNode['record_changes']>[number];

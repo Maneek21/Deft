@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { createExperienceBridge, parseExperienceView, type ExperiencePin, type ExperiencePort } from './app-experience-bridge';
 import { createDeftExperienceSdk } from '../../../../packages/app-kit/src/experience-sdk';
 import {createExperienceConnection} from './app-experience-connection';
+const unavailable=(requestId:string)=>({version:'deft.experience_bridge.v1',kind:'response',session_id:pin.session_id,request_id:requestId,ok:false,code:'UNAVAILABLE'});
 
 test('app-data mailbox read SDK call expires while live authority is unavailable without later dispatch', async () => {
   let available=false,calls=0;
@@ -41,18 +42,19 @@ test('mailbox read deadline covers final authority check and never reveals retur
   release(true);await delay();assert.equal(port.sent.length,1);assert.equal(JSON.stringify(port.sent).includes('protected'),false);bridge.revoke();
 });
 
-test('replaced read port gets no timeout reply and write/action requests retain existing lifetime', async () => {
+test('revoked reads and bounded creates settle uncertainty once; ordinary actions retain their lifetime', async () => {
   const port=new FakePort();const bridge=createExperienceBridge({port,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],readTimeoutMs:10,
     broker:{isLive:()=>new Promise(()=>{})},onView:()=>{}});
   port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'record_list',input:{store_key:'drafts',cursor:null,limit:10}}}));
-  bridge.revoke();await new Promise(resolve=>setTimeout(resolve,25));assert.equal(port.sent.length,0);
+  bridge.revoke();await new Promise(resolve=>setTimeout(resolve,25));assert.deepEqual(port.sent,[unavailable('request_1')]);
   for(const operation of ['app_data','action']){
     const target=new FakePort();let release!:(value:unknown)=>void,calls=0;
     const own=createExperienceBridge({port:target,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:['send_message'],readTimeoutMs:10,
       broker:{isLive:()=>true,appData:async()=>{calls++;return new Promise(resolve=>{release=resolve;});},action:async()=>{calls++;return new Promise(resolve=>{release=resolve;});}},onView:()=>{}});
-    target.receive(message(1,{kind:'request',request_id:'request_1',operation,key:operation==='action'?'send_message':'drafts',input:operation==='action'?{}:{operation:'record_create',input:{store_key:'drafts'}}}));
-    await new Promise(resolve=>setTimeout(resolve,25));assert.equal(target.sent.length,0);assert.equal(calls,1);
-    release({completed:true});await delay();assert.equal((target.sent[0] as {ok:boolean}).ok,true);own.revoke();
+    target.receive(message(1,{kind:'request',request_id:'request_1',operation,key:operation==='action'?'send_message':'drafts',input:operation==='action'?{}:{operation:'record_create',input:{store_key:'drafts',record_id:'11111111-1111-4111-8111-111111111111',value:{}}}}));
+    await new Promise(resolve=>setTimeout(resolve,25));assert.equal(calls,1);
+    if(operation==='app_data')assert.deepEqual(target.sent,[unavailable('request_1')]);else assert.equal(target.sent.length,0);
+    release({completed:true});await delay();if(operation==='app_data'){assert.deepEqual(target.sent,[unavailable('request_1')]);assert.equal(calls,1);}else assert.equal((target.sent[0] as {ok:boolean}).ok,true);own.revoke();
   }
 });
 
@@ -189,7 +191,7 @@ test('document bridge returns bounded plain content through the public SDK and d
  let live=true,release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});let calls=0;
  const bridge=createExperienceBridge({port:hostPort,pin,resourceKeys:['inbox'],actionKeys:[],broker:{isLive:()=>live,resource:async(_pin,key,input)=>{assert.equal(key,'inbox');assert.deepEqual(input,{operation:'read_document',record_id:recordId});if(++calls===2)await held;return document;}},onView:()=>undefined});
  const sdk=createDeftExperienceSdk(authorPort,pin.session_id);
- try{assert.deepEqual(await sdk.readResourceDocument('inbox',recordId),document);const reading=sdk.readResourceDocument('inbox',recordId).catch(()=>undefined);await delay();live=false;release();await delay();assert.equal(hostPort.sent.filter(value=>(value as {kind?:string}).kind==='response').length,1);assert.equal(bridge.active,false);sdk.close();await reading;}
+ try{assert.deepEqual(await sdk.readResourceDocument('inbox',recordId),document);const reading=sdk.readResourceDocument('inbox',recordId).catch(()=>undefined);await delay();live=false;release();await delay();const responses=hostPort.sent.filter(value=>(value as {kind?:string}).kind==='response');assert.equal(responses.length,2);assert.deepEqual(responses[1],unavailable('request_2'));assert.equal((responses[0] as {ok:boolean}).ok,true);assert.equal(bridge.active,false);sdk.close();await reading;}
  finally{sdk.close();bridge.revoke();}
 });
 
@@ -320,7 +322,8 @@ test('host stamps exact pin and drops late resource response after revocation', 
   finish({ records:['late'] });
   await delay();
   assert.equal(suppliedSignal?.aborted, true);
-  assert.equal(port.sent.length, 0);
+  assert.deepEqual(port.sent,[unavailable('request_1')]);
+  assert.equal(JSON.stringify(port.sent).includes('late'),false);
 });
 
 test('wrong action key, malformed payload and flood fail closed before callbacks', async () => {
@@ -423,7 +426,8 @@ test('resource response bounds cover the entire envelope and withdrawal drops la
   bridge.revoke();
   resolveRead({ private_body: 'late' });
   await delay();
-  assert.equal(port.sent.length, 0);
+  assert.deepEqual(port.sent,[unavailable('request_1')]);
+  assert.equal(JSON.stringify(port.sent).includes('private_body'),false);
   const boundedPort = new FakePort();
   createExperienceBridge({ port: boundedPort, pin, resourceKeys: ['inbox'], actionKeys: [],
     broker: { isLive: () => true, resource: async () => Array.from({ length: 15 }, () => 'x'.repeat(4095)) }, onView: () => undefined });

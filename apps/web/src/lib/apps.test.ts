@@ -15,7 +15,6 @@ import {
   normalizeAppResourceContentReview,
 } from './apps';
 import { getAppNavigationItems, getInstalledExperienceNavigation, isAppNavigationGroupActive } from './app-navigation';
-import { nativeEmailAppNavigation } from './email-native-navigation';
 
 const observedNavigation = JSON.parse(readFileSync(new URL('./fixtures/email-e2-2-app-navigation.json', import.meta.url), 'utf8'));
 test('public source fixture contains only the observed Email installation and declarations', () => {
@@ -31,12 +30,12 @@ test('public source fixture contains only the observed Email installation and de
   ].sort());
 });
 
-test('Email-only observed E2.2 public Apps response reaches the active Experience sidebar with retained native Email', () => {
+test('Email-only observed E2.2 public Apps response reaches the active Experience sidebar without a built-in product dependency', () => {
   const apps = normalizeAppsResponse(observedNavigation['/api/apps'].response);
   const experiences = getInstalledExperienceNavigation(apps);
-  const groups = nativeEmailAppNavigation(getAppNavigationItems([
+  const groups = getAppNavigationItems([
     ...observedNavigation['/api/apps/navigation'].response.navigation, ...experiences,
-  ]), { available: true, legacy_installation_ids: ['bbc68de7-94ae-4674-a527-abfdc4324054'] });
+  ]);
   const active = groups.find(group => isAppNavigationGroupActive('/apps/bbc68de7-94ae-4674-a527-abfdc4324054/main', group, groups));
   assert.equal(active?.name, 'Email');
   assert.equal(active?.links.some(link => link.kind === 'experience' && link.experience_key === 'main'), true);

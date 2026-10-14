@@ -6,14 +6,11 @@ import { SpaceChat } from '@/components/space-chat';
 import { ThreadPanel } from '@/components/thread-panel';
 import { api } from '@/lib/api';
 import { useChatContext } from '@/lib/chat-context';
-import {parseEmailChatContext,type EmailChatContext} from '@/lib/email-native-defty-context';
 
 export default function ChatPage() {
   const searchParams = useSearchParams();
   const router=useRouter();
-  const emailContext=parseEmailChatContext(searchParams.toString());
   const currentSearch=useRef(searchParams.toString());currentSearch.current=searchParams.toString();
-  const clearEmailContext=(sent?:EmailChatContext)=>{const context=parseEmailChatContext(currentSearch.current);if(sent&&(!context||context.spaceId!==sent.spaceId||context.accountId!==sent.accountId||context.messageId!==sent.messageId))return;const params=new URLSearchParams(currentSearch.current);params.delete('email_account');params.delete('email_message');router.replace('/chat'+(params.size?'?'+params.toString():''),{scroll:false});};
   const { activeSpaceId, syncActiveSpaceIdFromUrl, spaces, threadMessage, setThreadMessage } = useChatContext();
 
   const urlSpaceId = searchParams.get('space');
@@ -66,8 +63,6 @@ export default function ChatPage() {
             spaceTopic={activeSpace.topic}
             spaceDescription={activeSpace.description}
             highlightMessageId={urlMessageId || undefined}
-            emailContext={activeSpace.type==='dm'&&emailContext?.spaceId===effectiveSpaceId?emailContext:undefined}
-            onClearEmailContext={clearEmailContext}
           />
         ) : (
           <div

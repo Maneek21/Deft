@@ -8,7 +8,7 @@ import { DeftExperienceResourceDocumentNodeSchema, type DeftExperienceResourceDo
   DeftExperienceResourceRefreshNodeSchema, type DeftExperienceResourceRefreshNode,
   DeftExperienceCapabilitySchema,
   type DeftExperienceCapability } from '../../../../packages/app-kit/src/experience-capabilities';
-import {DeftExperienceRecordFormV2NodeSchema,type DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNodeSchema,type DeftExperienceRecordFormNode,DeftExperienceRecordDocumentNodeSchema,type DeftExperienceRecordDocumentNode} from '../../../../packages/app-kit/src/app-data';
+import {DeftExperienceRecordFormV3NodeSchema,type DeftExperienceRecordFormV3Node,DeftExperienceRecordFormV2NodeSchema,type DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNodeSchema,type DeftExperienceRecordFormNode,DeftExperienceRecordDocumentNodeSchema,type DeftExperienceRecordDocumentNode} from '../../../../packages/app-kit/src/app-data';
 
 export type ExperiencePin = Readonly<{
   org_id: string; user_id: string; app_installation_id: string;
@@ -22,7 +22,7 @@ export type ExperienceNode =
   | DeftExperienceLocalJobScheduleNode | DeftExperienceLocalJobListNode
   | DeftExperienceResourceDocumentNode
   | DeftExperienceRichtextFieldNode | DeftExperienceFileFieldNode | DeftExperienceResourceRefreshNode
-  | DeftExperienceRecordFormNode | DeftExperienceRecordFormV2Node | DeftExperienceRecordDocumentNode
+  | DeftExperienceRecordFormV3Node | DeftExperienceRecordFormNode | DeftExperienceRecordFormV2Node | DeftExperienceRecordDocumentNode
   | Readonly<{ kind: 'document'; id: string; format: 'plain' | 'html'; content: string; truncated?: boolean; printable?: boolean; print_control_id?: string; title?: string; metadata?: readonly Readonly<{ label: string; value: string }>[] }>
   | Readonly<{ kind: 'text'; id: string; text: string; tone?: 'default' | 'muted' | 'heading' | 'caption' | 'body' }>
   | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean; eyebrow?: string; icon?: 'compose' | 'refresh' | 'search' | 'reply' | 'archive' | 'back' | 'close' | 'send' | 'select' | 'check' | 'more' }>
@@ -124,8 +124,8 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
        if(!budget.capabilities?.includes('record_form.v2')||input.profile.repeated_fields!==undefined&&!budget.capabilities?.includes('repeated_fields.v1'))return null;if(record(input.profile)&&Array.isArray(input.profile.fields)&&input.profile.fields.some(field=>record(field)&&field.activation)&&!budget.capabilities?.includes('record_initial_change.v1'))return null;const parsed=DeftExperienceRecordFormV2NodeSchema.safeParse(input);
        return parsed.success&&budget.storeKeys?.includes(parsed.data.store_key)?parsed.data:null;
       }
-      if(!budget.capabilities?.includes('record_form.v1'))return null;if(input.seed!==undefined&&!budget.capabilities?.includes('record_form_seed.v1'))return null;if(input.presentation!==undefined&&!budget.capabilities?.includes('record_form_presentation.v1'))return null;if(input.initial_change&&!budget.capabilities?.includes('record_initial_change.v1'))return null;if(Array.isArray(input.record_changes)&&input.record_changes.some(change=>record(change)&&change.parameters)&&!budget.capabilities?.includes('record_change_parameters.v1'))return null;
-      const parsed=DeftExperienceRecordFormNodeSchema.safeParse(input);
+      const v3=record(input.profile)&&input.profile.schema_version==='deft.record_form_profile.v3';if(!budget.capabilities?.includes(v3?'record_form.v3':'record_form.v1'))return null;if(input.seed!==undefined&&!budget.capabilities?.includes('record_form_seed.v1'))return null;if(input.presentation!==undefined&&!budget.capabilities?.includes('record_form_presentation.v1'))return null;if(input.initial_change&&!budget.capabilities?.includes('record_initial_change.v1'))return null;if(Array.isArray(input.record_changes)&&input.record_changes.some(change=>record(change)&&change.parameters)&&!budget.capabilities?.includes('record_change_parameters.v1'))return null;
+      const parsed=(v3?DeftExperienceRecordFormV3NodeSchema:DeftExperienceRecordFormNodeSchema).safeParse(input);
       return parsed.success&&budget.storeKeys?.includes(parsed.data.store_key)&&(!parsed.data.source_refs?.length||parsed.data.source_refs.every(ref=>budget.resourceKeys?.includes(ref.resource_key)))&&(!parsed.data.action_key||budget.actionKeys?.includes(parsed.data.action_key))&&(!parsed.data.initial_change||budget.storeKeys?.includes(parsed.data.initial_change.source_store_key))&&(!parsed.data.record_changes||parsed.data.record_changes.every(change=>budget.storeKeys?.includes(change.source_store_key)))?parsed.data:null;
     }
     case 'record_document': {

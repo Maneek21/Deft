@@ -4,7 +4,6 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {transpileModule, ScriptTarget} from 'typescript';
 import {connectionSessionRetirementRequired, pendingAppConnection, connectionCallback, APP_CONNECTION_PENDING_KEY} from './app-connection-flow';
-import {nativeEmailSetup} from './email-native-enrollment';
 import {appConnectionCallbackUsesGeneric} from './app-connection-session-flow';
 
 // Exercise the component's actual opening-owner pagehide and unmount retirement
@@ -38,13 +37,13 @@ test('callback exchanges once and retires the retained session after success or 
     const ok=outcome==='connected'||outcome.startsWith('cache_');
     const pending={sessionId:'11111111-1111-4111-8111-111111111111',installationId:'22222222-2222-4222-8222-222222222222',experienceKey:'main',state:'s'.repeat(43),expiresAt:Date.now()+60000};
     let stored:string|null=JSON.stringify(pending);const calls:string[]=[];
-    const result=await vm.runInNewContext(code,{pendingAppConnection,connectionCallback,APP_CONNECTION_PENDING_KEY,nativeEmailSetup,
-      APP_CONNECTION_SESSION_PENDING_KEY:'generic',directEmailSessionTag:async()=>null,scope:'scope',sameSession:()=>true,
+    const result=await vm.runInNewContext(code,{pendingAppConnection,connectionCallback,APP_CONNECTION_PENDING_KEY,
+      APP_CONNECTION_UPGRADE_PENDING_KEY:'upgrade',APP_CONNECTION_REPAIR_PENDING_KEY:'repair',URLSearchParams,APP_CONNECTION_SESSION_PENDING_KEY:'generic',directEmailSessionTag:async()=>null,scope:'scope',sameSession:()=>true,
       search:`?state=${pending.state}&code=synthetic`,sessionStorage:{getItem:(key:string)=>key===APP_CONNECTION_PENDING_KEY?stored:null,removeItem:()=>{stored=null;}},
       api:{fetch:async(path:string,options:{method:string})=>{calls.push(`${options.method} ${path}`);if(options.method==='POST'&&outcome==='lost_response')throw Error('Unavailable');return {ok,json:async()=>({state:'connected',account:{health:'connected',account_id:'stable'},...(outcome.startsWith('cache_')?{native_email:{account_id:'stable',resource_binding_id:'11111111-1111-4111-8111-111111111111',state:outcome==='cache_active'?'active':'unavailable'}}:{})})};}},encodeURIComponent,JSON,Error});
     assert.equal(result.success,ok);assert.equal(stored,null);
-    if(outcome==='cache_unavailable')assert.match(result.message,/connected.*retry/);
-    if(outcome==='cache_active')assert.match(result.message,/first sync/);
+    if(outcome.startsWith('cache_'))assert.match(result.message,/connected.*app/);
+
     assert.deepEqual(calls,[`POST /api/app-experiences/sessions/${pending.sessionId}/connections/callback`,`DELETE /api/app-experiences/sessions/${pending.sessionId}`]);
   }
 });
@@ -68,8 +67,8 @@ test('callback effect replay uses one exchange; foreign provider state never dis
     const pending={sessionId:'11111111-1111-4111-8111-111111111111',installationId:'22222222-2222-4222-8222-222222222222',experienceKey:'main',state:'s'.repeat(43),expiresAt:Date.now()+60000};
     const calls:string[]=[];let stored:string|null=JSON.stringify(pending);let rendered:{success:boolean}|null=null;
     const request:{current:Promise<unknown>|null}={current:null};
-    const effect=vm.runInNewContext(code,{request,pendingAppConnection,connectionCallback,APP_CONNECTION_PENDING_KEY,nativeEmailSetup,
-      APP_CONNECTION_SESSION_PENDING_KEY:'generic',directEmailSessionTag:async()=>null,sessionCacheScope:'scope',user:{id:'owner'},org:{id:'org'},
+    const effect=vm.runInNewContext(code,{request,pendingAppConnection,connectionCallback,APP_CONNECTION_PENDING_KEY,
+      APP_CONNECTION_UPGRADE_PENDING_KEY:'upgrade',APP_CONNECTION_REPAIR_PENDING_KEY:'repair',URLSearchParams,APP_CONNECTION_SESSION_PENDING_KEY:'generic',directEmailSessionTag:async()=>null,sessionCacheScope:'scope',user:{id:'owner'},org:{id:'org'},
       query:{current:undefined},requestAnchor:{current:null},getActiveSessionCacheScope:()=> 'scope',isSameWebSession:()=>true,
       window:{location:{search:`?state=${foreign?'x'.repeat(43):pending.state}&code=synthetic`,pathname:'/apps/connections/callback'},history:{replaceState:()=>undefined}},
       sessionStorage:{getItem:(key:string)=>key===APP_CONNECTION_PENDING_KEY?stored:null,removeItem:()=>{stored=null;}},setResult:(value:{success:boolean})=>{rendered=value;},
@@ -103,7 +102,7 @@ test('final pagehide UI cleanup does not override guarded opening and Worker ret
   }
 });
 
-test('actual callback page routes an independent native nonce despite unknown generic intent and never downgrades its own nonce',async()=>{
+test('generic callback never falls back to a retired native nonce and never downgrades its own consumed nonce',async()=>{
  const source=readFileSync(new URL('../app/(app)/apps/connections/callback/page.tsx',import.meta.url),'utf8');
  const body=source.match(/request.current = \(async \(\) => \{([\s\S]*?)\n      \}\)\(\);/)![1];
  const code=transpileModule(`(async()=>{${body}})()`,{compilerOptions:{target:ScriptTarget.ES2022}}).outputText;
@@ -111,12 +110,12 @@ test('actual callback page routes an independent native nonce despite unknown ge
   let nativeCalls=0,genericCalls=0,otherCalls=0;
   const generic=JSON.stringify({phase:'consumed',state:'generic-state',installationId:'11111111-1111-4111-8111-111111111111',experienceKey:'main'});
   const result=await vm.runInNewContext(code,{scope:'scope',search:`?state=${native?'native-state':'generic-state'}&code=synthetic`,sameSession:()=>true,
-   APP_CONNECTION_SESSION_PENDING_KEY:'generic',APP_CONNECTION_PENDING_KEY,appConnectionCallbackUsesGeneric,connectionCallback,pendingAppConnection,
+   APP_CONNECTION_UPGRADE_PENDING_KEY:'upgrade',APP_CONNECTION_REPAIR_PENDING_KEY:'repair',URLSearchParams,APP_CONNECTION_SESSION_PENDING_KEY:'generic',APP_CONNECTION_PENDING_KEY,appConnectionCallbackUsesGeneric,connectionCallback,pendingAppConnection,
    sessionStorage:{getItem:(key:string)=>key==='generic'?generic:null,removeItem:()=>{otherCalls++;}},
    directEmailSessionTag:async()=> 'tag',directEmailCallbackMatches:(search:string)=>new URLSearchParams(search).get('state')==='native-state',
    completeDirectEmailConnection:async()=>{nativeCalls++;return{state:'connected'};},directEmailStatusNotice:()=> 'Connected',
    appConnectionSessionTag:async()=> 'tag',completeAppConnectionSession:async()=>{genericCalls++;throw Error('Invalid generic setup');},user:{id:'owner'},org:{id:'org'},
    api:{fetch:async()=>{otherCalls++;throw Error('Unexpected legacy request');}},JSON,Error,encodeURIComponent});
-  assert.equal(nativeCalls,native?1:0);assert.equal(genericCalls,native?0:1);assert.equal(otherCalls,0);assert.equal(result.success,native);
+  assert.equal(nativeCalls,0);assert.equal(genericCalls,1);assert.equal(otherCalls,0);assert.equal(result.success,false);
  }
 });

@@ -764,16 +764,3 @@ input:focus, textarea:focus {
 .task-table-create-row:focus-within {
   background: var(--surface-container-low);
 }
-
-/* Native received links retain their sanitized authored foreground/background;
-   unstyled links inherit the local text color through the shared renderer.
-   Source markup cannot nominate this host-owned body class. */
-.native-email-document a[href] {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.native-email-document a[href]:focus-visible {
-  outline: 2px solid currentColor;
-  outline-offset: 2px;
-}

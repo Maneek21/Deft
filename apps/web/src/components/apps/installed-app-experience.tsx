@@ -63,7 +63,6 @@ import type {ExperienceSettingsSection} from '@/lib/app-experience-settings';
 import { connectionSessionRetirementRequired, type PendingAppConnection } from '@/lib/app-connection-flow';
 import { ExperienceConnectionSettings } from './experience-connection-settings';
 import type { ExperienceComposeRequest } from '@/lib/app-experience-action-composer';
-import {createNativeEmailRefresh,isEmailMailboxRefresh} from '@/lib/email-native-refresh';
 import {createExperienceTargetPreference,experienceTargetPreferenceKey} from '@/lib/app-experience-target-preference';
 import {deliverExperienceRecordSubmission,reopenExperienceAfterSubmission} from '@/lib/app-experience-record-submission';
 
@@ -184,7 +183,6 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const rendered = useRef(false);
   const [renewalBusy, setRenewalBusy] = useState(false);
   const [renewalNotice, setRenewalNotice] = useState<string | null>(null);
-  const [mailboxRefreshNotice,setMailboxRefreshNotice]=useState('');
   const renewalGeneration = useRef(0);
   const leaseCurrent = useRef<ReturnType<typeof createExperienceLease> | null>(null);
   const ensureAuthority = useRef<(() => Promise<boolean>) | null>(null);
@@ -661,15 +659,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       const mountKey=`${known.key}/${known.recordId}/${node.id}`;usedPresentations.add(mountKey);const existing=presentationDisposals.get(mountKey);if(existing?.document===known){existing.mount.attach(wrap);return;}existing?.mount();
       const dispose=mountExperienceSourcePresentation({wrap,node,scope:exposure,sessionId:session.pin.session_id,resourceKey:known.key,recordId:known.recordId,current:()=>locallyCurrent()&&trustedDocument===known,load:(signal)=>sourcePresentation(known.key,known.recordId,signal),registerPrint:print=>{presentationPrinters.set(node.id,print);return()=>{if(presentationPrinters.get(node.id)===print)presentationPrinters.set(node.id,()=>true);};}});presentationDisposals.set(mountKey,{document:known,mount:dispose});
     }};
-    const sendViewEvent=(event:unknown)=>{
-      if(session.experience.renderer_version==='deft.trusted_renderer.v1'&&locallyCurrent()&&isEmailMailboxRefresh(latestView,event)){void nativeRefresh.start();return Promise.resolve(true);}
-      return bridge.sendUiEvent(event);
-    };
-    const nativeRefresh=createNativeEmailRefresh({installationId,targetKey:session.resource_target_key??'primary',current:locallyCurrent,
-      fetch:(path,options)=>api.fetch(path,options),notice:setMailboxRefreshNotice,
-      reload:async()=>locallyCurrent()&&isEmailMailboxRefresh(latestView,{kind:'click',node_id:'refresh'})
-        ?bridge.sendUiEvent({kind:'click',node_id:'refresh'}):false});
-    setMailboxRefreshNotice('');
+    const sendViewEvent=(event:unknown)=>bridge.sendUiEvent(event);
     const renderHostView=(view:ExperienceView)=>{usedPresentations=new Set();if(viewHost.current)renderExperienceView(viewHost.current,view,event=>sendViewEvent(event),rendererOptions);for(const [key,entry]of presentationDisposals)if(!usedPresentations.has(key)){entry.mount();presentationDisposals.delete(key);}if(!usedPresentations.size)sourcePresentations.clear();};
     let latestView: ExperienceView | null = null;
     readingPreferencesChanged.current=()=>{
@@ -982,7 +972,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     const childTimer=setInterval(()=>{if(childSweepBusy||!locallyCurrent()||document.hidden)return;childSweepBusy=true;void accounts.sweep(AbortSignal.timeout(10000)).then(async ended=>{if(!locallyCurrent())return;for(const target of ended){setResourceBatch(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setResourceAction(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setRecordAction(current=>{if(current?.targetKey===target){current.finish(false);return null;}return current;});await bridge.sendUiEvent({kind:'click',node_id:'account_visibility_'+target});}}).catch(()=>{}).finally(()=>{childSweepBusy=false;});},5000);
     const stop = (retireSession = true) => {
       if (stopped) return;
-      sourceNominationAbort.abort();setNominatedSource(null);nativeRefresh.dispose();setMailboxRefreshNotice('');
+      sourceNominationAbort.abort();setNominatedSource(null);
       stopped = true; latestView = null;trustedDocument=null;sourceReview.clear();sourcePresentations.clear();for(const entry of presentationDisposals.values())entry.mount();presentationDisposals.clear();setPreferencesNode(null);preferencesEvent.current=null;intakePrepare.current=null;readingPreferencesChanged.current=null; setSuspended(false); setSource(null); setRunReview(null);
       clearInterval(childTimer);accounts.close();connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null; setConnectionUnavailable(false);
       clearNavigation(navigationOwner);
@@ -1044,7 +1034,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       socket?.off('app:changed', onAppChange);
       document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', pageHide); clearTimeout(expiry);
       stopped = true;
-      sourceNominationAbort.abort();setNominatedSource(null);nativeRefresh.dispose();setMailboxRefreshNotice('');
+      sourceNominationAbort.abort();setNominatedSource(null);
       connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null;
       refreshNavigation.current = null;
       if (leaseCurrent.current === lease) leaseCurrent.current = null;
@@ -1114,7 +1104,6 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     <style>{EXPERIENCE_RENDERER_CSS}</style>
     <h1 className="sr-only">{session?.experience.label ?? 'Account setup'}</h1>
     {renewalNotice && <p role="alert" className="shrink-0 px-5 py-3 text-sm">{renewalNotice}</p>}
-    {mailboxRefreshNotice&&<p role="status" className="shrink-0 px-5 py-2 text-xs text-[var(--text-secondary)]">{mailboxRefreshNotice}</p>}
     {connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Connection interrupted. Reconnecting... Your saved work is kept.</p>}
     {suspended && !connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Resuming app…</p>}
     {session&&(error||!exposure)&&!settingsOpen&&<div className="shrink-0 px-5 py-2"><button type="button" className="deft-pill min-h-11" disabled={connectionSetupBusy||!!composer}

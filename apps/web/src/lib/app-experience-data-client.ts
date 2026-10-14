@@ -2,7 +2,7 @@ import {createRecordSeedLocator} from './app-experience-record-seed';
 import {AppPreparedRecordChangeSchema,AppRecordPrepareChangeInputSchema,AppRecordApplyChangeInputSchema} from '../../../../packages/app-kit/src/record-change';
 import {AppDataRecordMetaSchema} from '../../../../packages/app-kit/src/app-data';
 import {RecordChangeNotApplied,verifyRecordChangeReceipt,type RecordChangePorts} from './app-experience-record-changes';
-import {validateRecordFormValue} from './app-experience-record-form';
+import {recordFormFields,recordFormIdentity,recordFormLabels,recordFormFiles,validateRecordFormValue} from './app-experience-record-form';
 import {AppDataContextSchema,AppDataResolveInputSchema,AppDataRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,
  APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,canonicalAppDataJson,frameAppData,parseAppDataFrame,
  AppDataSourceFileSchema,type AppDataRequest,type AppDataResult,type AppDataRecord,type DeftExperienceRecordDocumentNode} from '../../../../packages/app-kit/src/app-data';
@@ -109,12 +109,12 @@ export function createExperienceDataClient(options:{installationId:string;target
  const recordTarget=async(node:ExperienceRecordFormReference,signal:AbortSignal)=>{
   const target=await select(node.store_key,signal),store=target.stores.find(store=>store.declaration.key===node.store_key);
   if(!store?.consent||Date.parse(store.consent.expires_at)<=Date.now()||node.profile.max_record_bytes>store.declaration.max_record_bytes
-   ||(node.profile.schema_version==='deft.record_form_profile.v1'&&(node.profile.files.max_files>store.declaration.max_files||node.profile.files.max_file_bytes>store.declaration.max_file_bytes
-   ||node.profile.files.max_total_bytes>store.declaration.max_total_file_bytes))||node.profile.schema_version==='deft.record_form_profile.v2'&&store.declaration.max_files!==0)throw Error('Draft profile is not admitted');
-  if(node.profile.schema_version==='deft.record_form_profile.v1'&&'record_changes' in node&&node.record_changes?.some(change=>!store.declaration.record_changes?.some(declared=>declared.key===change.operation_key&&declared.source_store_key===change.source_store_key)||!target.stores.some(item=>item.declaration.key===change.source_store_key)))throw Error('Saved-content control not admitted');
+   ||(node.profile.schema_version!=='deft.record_form_profile.v2'&&node.profile.files&&(node.profile.files.max_files>store.declaration.max_files||node.profile.files!.max_file_bytes>store.declaration.max_file_bytes
+   ||node.profile.files.max_total_bytes>store.declaration.max_total_file_bytes))||node.profile.schema_version==='deft.record_form_profile.v2'&&store.declaration.max_files!==0||node.profile.schema_version==='deft.record_form_profile.v3'&&!node.profile.files&&store.declaration.max_files!==0)throw Error('Draft profile is not admitted');
+  if(node.profile.schema_version!=='deft.record_form_profile.v2'&&'record_changes' in node&&node.record_changes?.some(change=>!store.declaration.record_changes?.some(declared=>declared.key===change.operation_key&&declared.source_store_key===change.source_store_key)||!target.stores.some(item=>item.declaration.key===change.source_store_key)))throw Error('Saved-content control not admitted');
   return target;
  };
- const checkedRecord=(node:ExperienceRecordFormReference,result:AppDataResult)=>{const record=row(result,node.record_id);if(node.profile.schema_version==='deft.record_form_profile.v1')recordCopySource(node as ExperienceRecordFormNode,record);
+ const checkedRecord=(node:ExperienceRecordFormReference,result:AppDataResult)=>{const record=row(result,node.record_id);if(node.profile.schema_version!=='deft.record_form_profile.v2')recordCopySource(node as ExperienceRecordFormNode,record);
   if(node.profile.schema_version==='deft.record_form_profile.v2'&&(record.files?.length||record.source_refs?.length))throw Error('Settings file/source custody unavailable');return record;};
  const seedRows=new Map<string,{record:ExperienceRecordRow;accountId:string;resourceTargetKey:string}>(),seedLocators=new Map<string,ReturnType<typeof createRecordSeedLocator>>();
  const ports:ExperienceRecordFormPorts={
@@ -133,8 +133,8 @@ export function createExperienceDataClient(options:{installationId:string;target
   initialSource:async(node,record,signal)=>{
    const control=node.initial_change;if(!control||record.status!=='draft'||record.revision!==1||record.content_revision!==1) return null;
    await changeTarget(node,control,signal);const metadata=await request(node.store_key,'connection_metadata',{store_key:node.store_key},signal);
-   const mapped=node.profile.identity,identity=mapped?record.value[mapped.field] as Record<string,unknown>|undefined:undefined;
-   const address=mapped&&typeof identity?.[mapped.address_field]==='string'?identity[mapped.address_field] as string:metadata.primary_identity?.address;
+   const mapped=recordFormFields(node.profile).find(field=>field.kind==='verified_identity');
+   const address=mapped?.kind==='verified_identity'?recordFormIdentity(record.value,mapped):metadata.primary_identity?.address;
    if(!address||!metadata.identities?.some(item=>item.address===address))return null;
    let cursor:string|null=null,pages=0;const matches:import('./app-experience-record-changes').RecordChangeChoice[]=[];
    do{if(++pages>2)throw Error('Saved default catalog exceeds its limit');const result=await request(control.source_store_key,'record_list',{store_key:control.source_store_key,cursor,limit:25},signal);
@@ -143,13 +143,13 @@ export function createExperienceDataClient(options:{installationId:string;target
    }while(cursor);check(signal);return matches.length===1?matches[0]:null;
   },
   load:async(node,signal)=>{const target=await recordTarget(node,signal);
-   if(node.profile.schema_version==='deft.record_form_profile.v1'&&'seed' in node&&node.seed){const seedNode=node as ExperienceRecordFormNode;
+   if(node.profile.schema_version!=='deft.record_form_profile.v2'&&'seed' in node&&node.seed){const seedNode=node as ExperienceRecordFormNode;
     const read=await request(seedNode.store_key,'record_read',locator(node),signal,crypto.randomUUID(),undefined,true);
     if(read.outcome==='completed'){const record=row(read,seedNode.record_id);await seedLocators.get(seedNode.record_id)?.confirmed(seedNode.record_id);seedLocators.delete(seedNode.record_id);seedRows.delete(seedNode.record_id);return {record,identities:read.identities??[],primaryIdentity:read.primary_identity??null};}
     if(read.outcome!=='not_found')throw Error('Seed record unavailable');
     const metadata=await request(seedNode.store_key,'connection_metadata',{store_key:seedNode.store_key},signal);let initial=seedNode.seed!.value,initialNotice='';
-    if(seedNode.initial_change){try{await changeTarget(seedNode,seedNode.initial_change,signal);const source=await request(seedNode.initial_change.source_store_key,'connection_metadata',{store_key:seedNode.initial_change.source_store_key,seed:{operation_key:seedNode.initial_change.operation_key,destination_store_key:seedNode.store_key,value:seedNode.seed!.value}},signal);await changeTarget(seedNode,seedNode.initial_change,signal);if(source.record_seed_value)initial=source.record_seed_value;}catch{initialNotice='Saved default is unavailable. You can write without it.';}}
-    validateRecordFormValue(initial,seedNode.profile);if((initial[seedNode.profile.files.field] as unknown[]).length)throw Error('Seed files must be empty');const sender=seedNode.profile.identity?initial[seedNode.profile.identity.field] as Record<string,unknown>|undefined:undefined;if(sender&&!metadata.identities?.some(identity=>identity.address===sender[seedNode.profile.identity!.address_field]))throw Error('Seed sender changed');
+    if(seedNode.initial_change){try{await changeTarget(seedNode,seedNode.initial_change,signal);const source=await request(seedNode.initial_change.source_store_key,'connection_metadata',{store_key:seedNode.initial_change.source_store_key,seed:{operation_key:seedNode.initial_change.operation_key,destination_store_key:seedNode.store_key,value:seedNode.seed!.value}},signal);await changeTarget(seedNode,seedNode.initial_change,signal);if(source.record_seed_value)initial=source.record_seed_value;}catch{initialNotice=recordFormLabels(seedNode.profile).initial_change_unavailable;}}
+    validateRecordFormValue(initial,seedNode.profile);if(recordFormFiles(initial,seedNode.profile).length)throw Error('Seed files must be empty');for(const field of recordFormFields(seedNode.profile)){if(field.kind!=='verified_identity')continue;const identity=recordFormIdentity(initial,field);if(identity&&!metadata.identities?.some(item=>item.address===identity))throw Error('Seed identity changed');}
     const record:ExperienceRecordRow={record_id:seedNode.record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:initialNotice}};seedRows.set(seedNode.record_id,{record:structuredClone(record),accountId:target.account.account_ref,resourceTargetKey:target.target_key});return {record,identities:metadata.identities??[],primaryIdentity:metadata.primary_identity??null};
    }
    const result=await request(node.store_key,'record_read',locator(node),signal),record=checkedRecord(node,result);
@@ -169,7 +169,7 @@ export function createExperienceDataClient(options:{installationId:string;target
    const reply=await request(node.store_key,'resource_list_files',{store_key:node.store_key,...source},signal),files=(reply.files??[]).map(file=>AppDataSourceFileSchema.parse(file));
    if(files.length>32||new Set(files.map(file=>file.file_ref)).size!==files.length||files.some(file=>file.size_bytes>store.resource_content!.max_source_bytes))throw Error('Original file catalog changed');return files;},
   copyOriginal:async(node,record,source,file,fileId,requestId,signal)=>{
-   if(file.disposition!=='attachment'||file.size_bytes>node.profile.files.max_file_bytes)throw Error('Original file cannot be copied');
+   if(file.disposition!=='attachment'||file.size_bytes>node.profile.files!.max_file_bytes)throw Error('Original file cannot be copied');
    const input=copyInput(node,record,source,file,fileId),next=row(await request(node.store_key,'file_copy',input,signal,requestId),node.record_id);
    return verifyFileCopy(node,record,next,source,file,fileId);},
   copyStatus:async(node,record,source,file,fileId,requestId,signal)=>{const input=copyInput(node,record,source,file,fileId),reply=await request(node.store_key,'request_status',{store_key:node.store_key,request_id:requestId},signal),status=reply.request_status;

@@ -12,18 +12,19 @@ import {useEffect,useId,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ChevronDown,ImagePlus,Maximize2,Minimize2} from 'lucide-react';
 import {createExperienceRecordWriter,experienceRecordSubmissionEvent,type ExperienceRecordRow,type ExperienceRecordWriterState} from '@/lib/app-experience-record-writer';
-import {prepareRecordFormFile,recordFormFiles,recordFormString,validateRecordFormValue,experienceRecordFormMode,type RecordFormFile,type RecordFormIdentity,type RecordFormProfile} from '@/lib/app-experience-record-form';
-import {createNativeInlinePreviews,nativeInlineImageExtension} from '@/lib/email-native-inline-images';
-import {nativePlainToRich,nativeRichEditorView} from '@/lib/email-native-rich-mode';
+import {prepareRecordFormFile,recordFormFiles,recordFormString,validateRecordFormValue,experienceRecordFormMode,type RecordFormFile,type RecordFormIdentity,recordFormFields,recordFormIdentity,recordFormLabels,type RecordFormNode,type RecordFormProfile} from '@/lib/app-experience-record-form';
+import {createInlinePreviews,inlineImageExtension} from '@/lib/app-experience-inline-images';
+import {plainToRich,richEditorView} from '@/lib/app-experience-rich-mode';
 import {nativeComposeImageCid,parseNativeSafeComposeHtml} from '../../../../../packages/app-kit/src/safe-compose-html';
+import {recordChoiceEdit} from '@/lib/app-experience-record-fields';
 import {ExperienceRecordFields} from './experience-record-fields';
 import type {DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNode} from '../../../../../packages/app-kit/src/app-data';
-import {ExperienceComposeRichEditor,type NativeComposeImagePort} from './experience-compose-controls-rich-editor';
+import {ExperienceComposeRichEditor,type ComposeImagePort} from './experience-compose-controls-rich-editor';
 import {ExperienceComposeMailboxControl} from './experience-compose-controls';
 import type {RecipientSearch} from './integrations/recipient-assistance';
 import {parseMailboxList} from '../../../../../packages/app-kit/src/mailbox-list';
 
-export type ExperienceRecordFormNode=DeftExperienceRecordFormNode;
+export type ExperienceRecordFormNode=RecordFormNode;
 export type ExperienceRecordFormReference=ExperienceRecordFormNode|DeftExperienceRecordFormV2Node;
 export type ExperienceRecordFormPorts={
  suggestRecipients?:(node:ExperienceRecordFormNode,query:string,signal:AbortSignal)=>ReturnType<RecipientSearch>;
@@ -54,7 +55,7 @@ export function RecordSurface({label,children}:{label:string;children:import('re
  const [expanded,setExpanded]=useState(false),bodyId=useId();
  return <section aria-label={label} data-record-surface="true" className={`mx-auto w-full min-w-0 ${expanded?'max-w-none':'max-w-4xl'} space-y-3 rounded-xl bg-[var(--surface)] px-5 py-5 sm:px-8`}>
   <style>{recordSurfaceStyles}</style>
-  <button type="button" aria-label={expanded?'Restore message width':'Expand message'} title={expanded?'Restore message width':'Expand message'} aria-expanded={expanded} aria-controls={bodyId}
+  <button type="button" aria-label={expanded?'Restore record width':'Expand record'} title={expanded?'Restore record width':'Expand record'} aria-expanded={expanded} aria-controls={bodyId}
    className="ml-auto flex min-h-10 min-w-10 items-center justify-center rounded-full px-2 text-xs focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
    onPointerDown={event=>event.preventDefault()} onClick={()=>setExpanded(value=>!value)}>
    {expanded?<Minimize2 size={16} aria-hidden="true"/>:<Maximize2 size={16} aria-hidden="true"/>}
@@ -65,44 +66,41 @@ export function RecordSurface({label,children}:{label:string;children:import('re
 const pill='min-h-10 rounded-full px-3 py-2 text-xs hover:bg-[var(--hover-tint)] focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-50';
 
 function RecordBody({value,files,profile,disabled,presentationOnly=false,onChange,preview,register,validate}:{value:{html:string;plainText:string};files:RecordFormFile[];profile:RecordFormProfile;
- disabled:boolean;presentationOnly?:boolean;onChange:(next:{html:string;plainText:string})=>void;preview:ReturnType<typeof createNativeInlinePreviews>;
- register:(port:NativeComposeImagePort|null,previous?:NativeComposeImagePort)=>void;validate:(next:{html:string;plainText:string})=>void}){
+ disabled:boolean;presentationOnly?:boolean;onChange:(next:{html:string;plainText:string})=>void;preview:ReturnType<typeof createInlinePreviews>;
+ register:(port:ComposeImagePort|null,previous?:ComposeImagePort)=>void;validate:(next:{html:string;plainText:string})=>void}){
+ const richtext=profile.richtext!;
  const id=useId(),ref=useRef({files,preview,register,value,disabled,onChange});ref.current={files,preview,register,value,disabled,onChange};
- const extension=useMemo(()=>nativeInlineImageExtension({files:()=>ref.current.files,preview:file=>ref.current.preview.acquire(file)}),[]);
- const rich=useMemo(()=>value.html?nativeRichEditorView(value,{inlineAttachments:files}):null,[value.html,value.plainText,files]);
+ const extension=useMemo(()=>inlineImageExtension({files:()=>ref.current.files,preview:file=>ref.current.preview.acquire(file)}),[]);
+ const rich=useMemo(()=>value.html?richEditorView(value,{inlineAttachments:files}):null,[value.html,value.plainText,files]);
  const [notice,setNotice]=useState('');
- useEffect(()=>{if(rich||presentationOnly)return;let active=true;const port:NativeComposeImagePort={insert(fileId,alt){
+ useEffect(()=>{if(rich||presentationOnly)return;let active=true;const port:ComposeImagePort={insert(fileId,alt){
   if(!active||ref.current.disabled||!ref.current.files.some(file=>file.file_id===fileId))return false;
   try{const escape=(text:string)=>text.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-   const pair=nativePlainToRich(ref.current.value.plainText),html=pair.html+'<p><img src="cid:'+nativeComposeImageCid(fileId)+'" alt="'+escape(alt)+'"></p>';
+   const pair=plainToRich(ref.current.value.plainText),html=pair.html+'<p><img src="cid:'+nativeComposeImageCid(fileId)+'" alt="'+escape(alt)+'"></p>';
    ref.current.onChange(parseNativeSafeComposeHtml(html,{inlineAttachments:ref.current.files}));return true;}catch{return false;}}};
   register(port);return()=>{active=false;register(null,port);};
  },[!!rich,register,presentationOnly]);
- if(rich)return <ExperienceComposeRichEditor label={profile.richtext.label} value={rich} preserveWhitespace nativeLinks
-  nativeImages={{files,extension,register}} maxCharacters={profile.richtext.max_characters} maxPlainCharacters={profile.richtext.max_characters}
+ if(rich)return <ExperienceComposeRichEditor label={richtext.label} value={rich} preserveWhitespace hostLinks
+  hostImages={{files,extension,register}} maxCharacters={richtext.max_characters} maxPlainCharacters={richtext.max_characters}
   disabled={disabled} presentationOnly={presentationOnly} onChange={onChange} validateValue={validate}/>;
- if(presentationOnly)return <div role="document" aria-label={profile.richtext.label} className="whitespace-pre-wrap break-words py-4 text-[0.9375rem] leading-7">{value.plainText}</div>;
- return <div className="min-w-0 space-y-2 pt-5"><label htmlFor={id} className="sr-only">{profile.richtext.label}</label>
-  <textarea id={id} data-compose-writing-control="true" value={value.plainText} disabled={disabled} maxLength={profile.richtext.max_characters}
+ if(presentationOnly)return <div role="document" aria-label={richtext.label} className="whitespace-pre-wrap break-words py-4 text-[0.9375rem] leading-7">{value.plainText}</div>;
+ return <div className="min-w-0 space-y-2 pt-5"><label htmlFor={id} className="sr-only">{richtext.label}</label>
+  <textarea id={id} data-compose-writing-control="true" value={value.plainText} disabled={disabled} maxLength={richtext.max_characters}
    onChange={event=>{setNotice('');onChange({html:'',plainText:event.target.value});}}
    className="min-h-[clamp(12rem,35dvh,24rem)] w-full resize-y rounded-lg bg-transparent px-1 py-3 text-[0.9375rem] leading-7 outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-60"/>
-  <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--muted)]"><p role="status">{notice}</p><span>{value.plainText.length.toLocaleString()} / {profile.richtext.max_characters.toLocaleString()} characters</span></div>
-  <button type="button" disabled={disabled} className={pill} onClick={()=>{try{onChange(nativePlainToRich(value.plainText));setNotice('');}catch{setNotice('Formatting would exceed the draft limits. Your text is kept.');}}}>Add formatting</button>
+  <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--muted)]"><p role="status">{notice}</p><span>{value.plainText.length.toLocaleString()} / {richtext.max_characters.toLocaleString()} characters</span></div>
+  <button type="button" disabled={disabled} className={pill} onClick={()=>{try{onChange(plainToRich(value.plainText));setNotice('');}catch{setNotice('Formatting would exceed the draft limits. Your text is kept.');}}}>Add formatting</button>
  </div>;
 }
 export function ExperienceRecordPreview({value,node,row,ports,signal,current}:{value:Record<string,unknown>;node:ExperienceRecordFormNode;
  row:ExperienceRecordRow;ports:ExperienceRecordFormPorts;signal:AbortSignal;current:()=>boolean}){
- const preview=useMemo(()=>createNativeInlinePreviews({current:()=>current()&&!signal.aborted,read:(file,readSignal)=>ports.readFile(node,row,file,AbortSignal.any([signal,readSignal])),denied:()=>{}}),[]);
+ const preview=useMemo(()=>createInlinePreviews({current:()=>current()&&!signal.aborted,read:(file,readSignal)=>ports.readFile(node,row,file,AbortSignal.any([signal,readSignal])),denied:()=>{}}),[]);
  useEffect(()=>()=>preview.dispose(),[preview]);
- const files=recordFormFiles(value,node.profile),identity=node.profile.identity;
+ const files=recordFormFiles(value,node.profile),rich=node.profile.richtext;
  validateRecordFormValue(value,node.profile);
- const savedIdentity=identity?value[identity.field] as Record<string,unknown>|undefined:undefined;
- const savedAddress=identity&&typeof savedIdentity?.[identity.address_field]==='string'?savedIdentity[identity.address_field] as string:'';
  return <div className="space-y-3"><dl className="space-y-3">
-  {identity&&<div><dt className="text-xs text-[var(--muted)]">{identity.label}</dt><dd className="break-words">{savedAddress||'Not recorded in this saved draft'}</dd></div>}
-  {[...node.profile.addresses,node.profile.subject].map(field=><div key={field.field}><dt className="text-xs text-[var(--muted)]">{field.label}</dt><dd className="whitespace-pre-wrap break-words">{recordFormString(value,field.field)||'-'}</dd></div>)}
- </dl><RecordBody value={{html:recordFormString(value,node.profile.richtext.html_field),plainText:recordFormString(value,node.profile.richtext.plain_field)}} files={files} profile={node.profile} disabled presentationOnly onChange={()=>{}} preview={preview} register={()=>{}} validate={()=>{}}/>
-
+  {recordFormFields(node.profile).map(field=><div key={field.field}><dt className="text-xs text-[var(--muted)]">{field.label}</dt><dd className="whitespace-pre-wrap break-words">{field.kind==='verified_identity'?recordFormIdentity(value,field)||'Not recorded':field.kind==='boolean'?(value[field.field]?'On':'Off'):field.kind==='choice'?field.options.find(option=>option.value===value[field.field])?.label:String(value[field.field])||'—'}</dd></div>)}
+ </dl>{rich&&<RecordBody value={{html:recordFormString(value,rich.html_field),plainText:recordFormString(value,rich.plain_field)}} files={files} profile={node.profile} disabled presentationOnly onChange={()=>{}} preview={preview} register={()=>{}} validate={()=>{}}/>}
  {files.length>0&&<ExperienceRecordFiles node={node} row={row} ports={ports} signal={signal} current={current}/>}</div>;
 }
 /** One form owns one CAS writer. Body bytes and file handles never enter author events. */
@@ -112,12 +110,12 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  const [recoveryState,setRecoveryState]=useState<RecordRecoveryState|null>(null);
  const eventPort=useRef(emit);eventPort.current=emit;
  const [state,setState]=useState<ExperienceRecordWriterState|null>(null),[identities,setIdentities]=useState<readonly RecordFormIdentity[]>([]);
- const [primaryIdentity,setPrimaryIdentity]=useState<RecordFormIdentity|null>(null);const [notice,setNotice]=useState('Opening draft...'),[optionalVisibility,setOptionalVisibility]=useState<Record<string,boolean>>({}),[fromOpen,setFromOpen]=useState(false),[fileBusy,setFileBusy]=useState(false),[copyUnconfirmed,setCopyUnconfirmed]=useState(false),[changeBusy,setChangeBusy]=useState(false),[reviewBusy,setReviewBusy]=useState(false),[submitted,setSubmitted]=useState(false);
+ const [primaryIdentity,setPrimaryIdentity]=useState<RecordFormIdentity|null>(null);const [notice,setNotice]=useState('Opening draft...'),[optionalVisibility,setOptionalVisibility]=useState<Record<string,boolean>>({}),[identityOpen,setIdentityOpen]=useState<string|null>(null),[fileBusy,setFileBusy]=useState(false),[copyUnconfirmed,setCopyUnconfirmed]=useState(false),[changeBusy,setChangeBusy]=useState(false),[reviewBusy,setReviewBusy]=useState(false),[submitted,setSubmitted]=useState(false);
  const initialChange=useRef<ReturnType<typeof createInitialRecordChange>|null>(null);const [initialUnknown,setInitialUnknown]=useState(false);
- const writer=useRef<ReturnType<typeof createExperienceRecordWriter>|null>(null),timer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined),imagePort=useRef<NativeComposeImagePort|null>(null);
+ const writer=useRef<ReturnType<typeof createExperienceRecordWriter>|null>(null),timer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined),imagePort=useRef<ComposeImagePort|null>(null);
  const [imageGeneration,setImageGeneration]=useState(0),pendingImage=useRef<{fileId:string;alt:string}|null>(null),latest=useRef(state);latest.current=state;
  const current=()=>context.current()&&!context.signal.aborted;
- const preview=useMemo(()=>createNativeInlinePreviews({current,read:(file,signal)=>{const row=writer.current?.snapshot.row;if(!row)throw Error('Draft unavailable');return ports.readFile(node,row,file,signal);},denied:()=>setNotice('File access ended.')}),[]);
+ const preview=useMemo(()=>createInlinePreviews({current,read:(file,signal)=>{const row=writer.current?.snapshot.row;if(!row)throw Error('Draft unavailable');return ports.readFile(node,row,file,signal);},denied:()=>setNotice('File access ended.')}),[]);
  useEffect(()=>{let alive=true;let renewal:ReturnType<typeof setInterval>|undefined;void (async()=>{if(node.seed&&ports.resolveSeed){const previous=node.record_id,resolved=await ports.resolveSeed(node,context.signal);if(!alive||!current())throw Error('Seed scope ended');resolvedSeed.current=resolved;node=resolved;if(previous!==resolved.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:resolved.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');if(!alive||!current())throw Error('Seed scope ended');}return ports.load(node,context.signal);})().then(async({record,identities,primaryIdentity})=>{
   if(!alive||!current())return;const mode=experienceRecordFormMode(node,record);recordCopySource(node,record);setIdentities(identities);setPrimaryIdentity(primaryIdentity??null);const initialNotice=typeof record.summary?.initial_value_notice==='string'?record.summary.initial_value_notice:'';
   if(mode==='readonly'){setNotice(initialNotice);setState({row:record,value:record.value,dirty:false,state:'saved',notice:'Read-only'});registerWriter?.(()=>Promise.resolve(true));return;}
@@ -145,25 +143,26 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  }).catch(()=>{if(alive&&current())setNotice('This saved draft is unavailable. Reopen it to check its current revision.');});
  return()=>{alive=false;clearTimeout(timer.current);clearInterval(renewal);recovery.current?.dispose();registerWriter?.(null);initialChange.current?.dispose();writer.current?.dispose();preview.dispose();};},[]);
  const edit=(next:Record<string,unknown>)=>{if(!current()||!writer.current?.edit(next))return;clearTimeout(timer.current);timer.current=setTimeout(()=>void writer.current?.save(),650);};
- const register=useRef((port:NativeComposeImagePort|null,previous?:NativeComposeImagePort)=>{if(!port&&previous&&imagePort.current!==previous)return;imagePort.current=port;if(port&&pendingImage.current)setImageGeneration(value=>value+1);}).current;
+ const register=useRef((port:ComposeImagePort|null,previous?:ComposeImagePort)=>{if(!port&&previous&&imagePort.current!==previous)return;imagePort.current=port;if(port&&pendingImage.current)setImageGeneration(value=>value+1);}).current;
  useEffect(()=>{const pending=pendingImage.current;if(!pending||!state||fileBusy||!imagePort.current)return;
   if(imagePort.current.insert(pending.fileId,pending.alt))pendingImage.current=null;
  },[state?.row.revision,fileBusy,imageGeneration]);
+ const labels=recordFormLabels(node.profile);
  if(!state)return <p role="status" className="py-4 text-sm text-[var(--muted)]">{notice}</p>;
  if(state.row.status!=='draft')return <RecordSurface label={node.label}>
-  <p role="status" className="text-sm">{state.row.status==='submitted'?'Submitted record':'Archived record'} / Read-only{typeof state.row.summary?.send_state==='string'?` / ${state.row.summary.send_state}`:''}</p>
-  <ExperienceRecordPreview value={state.value} node={node} row={state.row} ports={ports} signal={context.signal} current={current}/>{typeof state.row.summary?.future_submission_id==='string'&&ports.review&&<button type="button" className={pill} disabled={reviewBusy||!current()} onClick={async()=>{setReviewBusy(true);try{await ports.review!(node,state.row,context.signal);if(current())ports.reopenSubmitted?.();}finally{if(current())setReviewBusy(false);}}}>Manage scheduled Send</button>}</RecordSurface>;
- if(submitted)return <section aria-label={node.label}><p role="status" className="py-4 text-sm">Message submitted. Check Activity for delivery status. Start a new message to compose again.</p>
+  <p role="status" className="text-sm">{state.row.status==='submitted'?'Submitted record':'Archived record'} / {labels.readonly}</p>
+  <ExperienceRecordPreview value={state.value} node={node} row={state.row} ports={ports} signal={context.signal} current={current}/>{typeof state.row.summary?.future_submission_id==='string'&&ports.review&&<button type="button" className={pill} disabled={reviewBusy||!current()} onClick={async()=>{setReviewBusy(true);try{await ports.review!(node,state.row,context.signal);if(current())ports.reopenSubmitted?.();}finally{if(current())setReviewBusy(false);}}}>{labels.scheduled}</button>}</RecordSurface>;
+ if(submitted)return <section aria-label={node.label}><p role="status" className="py-4 text-sm">{labels.submitted}</p>
   {notice&&<p role="status" className="text-sm text-[var(--muted)]">{notice}</p>}
   {notice==='App controls could not be updated. Reopen the app to reconcile its saved state.'&&ports.reopenSubmitted&&<button type="button" className={pill} disabled={!current()} onClick={()=>{if(current())ports.reopenSubmitted?.();}}>Reopen app</button>}</section>;
- const immutable=state.row.summary?.calendar_reply_immutable===true;
+ const immutable=!!node.disabled;
  const value=state.value,profile=node.profile,files=recordFormFiles(value,profile),disabled=!!node.disabled||!!recoveryState?.candidate||fileBusy||copyUnconfirmed||reviewBusy||changeBusy||state.state==='blocked';
- const identityProfile=profile.identity,identity=identityProfile?value[identityProfile.field] as Record<string,unknown>|undefined:undefined,
-  sender=identityProfile&&typeof identity?.[identityProfile.address_field]==='string'?identity[identityProfile.address_field] as string:primaryIdentity?.address??(node.initial_change?'':identities[0]?.address??'');
- const body={html:recordFormString(value,profile.richtext.html_field),plainText:recordFormString(value,profile.richtext.plain_field)};
+ const fields=recordFormFields(profile),rich=profile.richtext;
+ const body=rich?{html:recordFormString(value,rich.html_field),plainText:recordFormString(value,rich.plain_field)}:null;
+ const optionalFields=fields.filter(field=>field.kind==='text'&&field.optional);
  const optionalExpanded=(field:string)=>optionalVisibility[field]??Boolean(recordFormString(value,field));
- const recipientCount=(field:string)=>{try{return parseMailboxList(recordFormString(value,field),{maxItems:32,allowEmpty:true}).length;}catch{return null;}};
- const changeBody=(next:{html:string;plainText:string})=>edit({...writer.current!.snapshot.value,[profile.richtext.html_field]:next.html,[profile.richtext.plain_field]:next.plainText});
+ const valueCount=(field:typeof fields[number])=>{const text=recordFormString(value,field.field);if(field.kind==='text'&&field.format==='mailbox_list'){try{return parseMailboxList(text,{maxItems:32,allowEmpty:true}).length;}catch{return null;}}return text?1:0;};
+ const changeBody=(next:{html:string;plainText:string})=>{if(rich)edit({...writer.current!.snapshot.value,[rich.html_field]:next.html,[rich.plain_field]:next.plainText});};
  async function upload(selected:readonly File[],inline=false){if(!current()||disabled||selected.length!==1){setNotice('Select one file at a time.');return;}setFileBusy(true);setNotice('');
   try{const file=await prepareRecordFormFile(selected[0],profile,files);if(inline&&!['image/png','image/jpeg','image/gif','image/webp'].includes(file.media_type))throw Error('Choose a PNG, JPEG, GIF or WebP image.');
    const ok=await writer.current!.mutate(async()=>{const row=writer.current!.snapshot.row,next=await ports.upload(node,row,file,selected[0],context.signal);
@@ -180,36 +179,38 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
   {recoveryState&&<section aria-label="Browser draft recovery" className="space-y-2 text-xs"><p role="status">{recoveryState.notice}</p>
    {recoveryState.ready&&recoveryState.submission&&current()&&<p aria-label="Submission reference" className="break-all">Submission reference <code>{recoveryState.submission.submissionId}</code></p>}
    {recoveryState.candidate&&!recoveryState.candidate.submission&&<div className="flex gap-2"><button type="button" className={pill} onClick={async()=>{const value=await recovery.current?.restore(writer.current!.snapshot);if(value&&current())writer.current?.restoreRecovery(value);}}>Restore browser draft</button><button type="button" className={pill} onClick={()=>void recovery.current?.keepCurrent()}>Keep current draft</button></div>}
-   {recoveryState.submission&&ports.submissionStatus&&<button type="button" className={pill} onClick={async()=>{try{await recovery.current?.renew();const attempt=recovery.current?.snapshot().submission;if(attempt&&current()&&recoveryScope.current&&await ports.submissionStatus!(node,attempt,recoveryScope.current,context.signal)&&current()){await recovery.current?.confirmed();writer.current?.dispose();setSubmitted(true);setNotice('Submission status confirmed. Check Activity for delivery status.');}}catch{if(current())setNotice('Submission status is unavailable. This draft will not retry Send.');}}}>Check original submission</button>}
+   {recoveryState.submission&&ports.submissionStatus&&<button type="button" className={pill} onClick={async()=>{try{await recovery.current?.renew();const attempt=recovery.current?.snapshot().submission;if(attempt&&current()&&recoveryScope.current&&await ports.submissionStatus!(node,attempt,recoveryScope.current,context.signal)&&current()){await recovery.current?.confirmed();writer.current?.dispose();setSubmitted(true);setNotice('Submission status confirmed. Check Activity for delivery status.');}}catch{if(current())setNotice('Submission status is unavailable. This submission will not be repeated.');}}}>Check original submission</button>}
    {!recoveryState.ready&&<button type="button" className={pill} onClick={()=>void recovery.current?.renew()}>Check browser recovery access</button>}
   </section>}
-  {immutable&&<p role="status" className="text-xs text-[var(--muted)]">This invitation response is fixed to the original invitation and attendee. Review it before Send.</p>}
   {initialUnknown&&<button type="button" className={pill} disabled={!current()||changeBusy} onClick={()=>void initialChange.current?.check()}>Check original saved-content change</button>}
-  <div className="flex flex-wrap items-center justify-between gap-2">{identityProfile&&<div className="relative min-w-0">
-   <button type="button" className={`${pill} flex max-w-full items-center gap-2 bg-[var(--surface-container-low)]`} disabled={disabled||immutable} aria-expanded={fromOpen} onClick={()=>setFromOpen(open=>!open)}><span className="text-[var(--muted)]">{identityProfile.label}</span><span className="max-w-64 truncate">{sender||'Unavailable'}</span><ChevronDown size={14}/></button>
-   {fromOpen&&<div className="absolute left-0 z-30 mt-2 w-80 max-w-[calc(100vw-2rem)] space-y-2 rounded-xl bg-[var(--surface-container-high)] p-3 shadow-xl"><label className="block text-xs">Sender address<select aria-label="Sender address" className="mt-1 w-full rounded-lg bg-[var(--surface-container-low)] px-2 py-2 text-sm" value={sender} disabled={disabled||immutable} onChange={event=>{if(!identities.some(item=>item.address===event.target.value))return;edit({...writer.current!.snapshot.value,[identityProfile.field]:{...identity,[identityProfile.address_field]:event.target.value}});setFromOpen(false);}}>
-    {!identities.some(item=>item.address===sender)&&<option value={sender}>{sender} (unavailable)</option>}{identities.map(item=><option key={item.address} value={item.address}>{item.label||item.address}</option>)}</select></label><button type="button" className={pill} onClick={()=>setFromOpen(false)}>Close</button></div>}
-  </div>}<div className="flex items-center gap-1">{profile.addresses.filter(field=>field.optional).map(field=><button key={field.field} type="button" className={pill} disabled={disabled||immutable} aria-expanded={optionalExpanded(field.field)} onClick={()=>setOptionalVisibility(previous=>({...previous,[field.field]:!optionalExpanded(field.field)}))}>{field.label}{recipientCount(field.field)?` (${recipientCount(field.field)})`:recordFormString(value,field.field)?' (check)':''}</button>)}</div></div>
-  {profile.addresses.filter(field=>!field.optional||optionalExpanded(field.field)).map(field=><ExperienceComposeMailboxControl key={field.field} label={field.label} value={recordFormString(value,field.field)} disabled={disabled||immutable} suggest={ports.suggestRecipients?((query,signal)=>ports.suggestRecipients!(node,query,AbortSignal.any([context.signal,signal]))):undefined}
-   onChange={text=>edit({...writer.current!.snapshot.value,[field.field]:text})}/>)}
-  <label className="flex items-start gap-3"><span className="w-14 shrink-0 py-3.5 text-xs text-[var(--on-surface-variant)]">{profile.subject.label}</span><input aria-label={profile.subject.label} value={recordFormString(value,profile.subject.field)} disabled={disabled||immutable} maxLength={profile.subject.max_characters}
-   onChange={event=>edit({...writer.current!.snapshot.value,[profile.subject.field]:event.target.value})} className="min-h-11 min-w-0 flex-1 rounded-lg bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"/></label>
-  <RecordBody value={body} files={files} profile={profile} disabled={disabled||immutable} onChange={changeBody} preview={preview} register={register}
-   validate={next=>validateRecordFormValue({...writer.current!.snapshot.value,[profile.richtext.html_field]:next.html,[profile.richtext.plain_field]:next.plainText},profile)}/>
+  <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2">{fields.filter(field=>field.kind==='verified_identity').map(field=>{
+   if(field.kind!=='verified_identity')return null;const identity=value[field.field],selected=recordFormIdentity(value,field)||(primaryIdentity?.address??identities[0]?.address??'');
+   return <div key={field.field} className="relative min-w-0"><button type="button" className={`${pill} flex max-w-full items-center gap-2 bg-[var(--surface-container-low)]`} disabled={disabled} aria-label={`${field.label} ${selected||'Unavailable'}`} aria-expanded={identityOpen===field.field} onClick={()=>setIdentityOpen(previous=>previous===field.field?null:field.field)}><span className="text-[var(--muted)]">{field.label}</span><span className="max-w-64 truncate">{selected||'Unavailable'}</span><ChevronDown size={14}/></button>
+    {identityOpen===field.field&&<div className="absolute left-0 z-30 mt-2 w-80 max-w-[calc(100vw-2rem)] space-y-2 rounded-xl bg-[var(--surface-container-high)] p-3 shadow-xl"><label className="block text-xs">{field.label}<select aria-label={field.label} className="mt-1 w-full rounded-lg bg-[var(--surface-container-low)] px-2 py-2 text-sm" value={selected} disabled={disabled} onChange={event=>{if(!identities.some(item=>item.address===event.target.value))return;edit({...writer.current!.snapshot.value,[field.field]:field.identity_field?{...(identity&&typeof identity==='object'?identity:{}),[field.identity_field]:event.target.value}:event.target.value});setIdentityOpen(null);}}>
+     {!identities.some(item=>item.address===selected)&&<option value={selected}>{selected} (unavailable)</option>}{identities.map(item=><option key={item.address} value={item.address}>{item.label||item.address}</option>)}</select></label><button type="button" className={pill} onClick={()=>setIdentityOpen(null)}>Close</button></div>}</div>;
+  })}</div><div className="flex items-center gap-1">{optionalFields.map(field=><button key={field.field} type="button" className={pill} disabled={disabled} aria-expanded={optionalExpanded(field.field)} onClick={()=>setOptionalVisibility(previous=>({...previous,[field.field]:!optionalExpanded(field.field)}))}>{field.label}{valueCount(field)?` (${valueCount(field)})`:recordFormString(value,field.field)?' (check)':''}</button>)}</div></div>
+  {fields.map(field=>{
+   if(field.kind==='verified_identity'||field.kind==='text'&&field.optional&&!optionalExpanded(field.field))return null;
+   if(field.kind==='text'&&field.format==='mailbox_list'&&field.presentation==='pills')return <ExperienceComposeMailboxControl key={field.field} label={field.label} value={recordFormString(value,field.field)} disabled={disabled} suggest={ports.suggestRecipients?((query,signal)=>ports.suggestRecipients!(node,query,AbortSignal.any([context.signal,signal]))):undefined} onChange={text=>edit({...writer.current!.snapshot.value,[field.field]:text})}/>;
+   if(field.kind==='boolean')return <label key={field.field} className="flex items-center gap-3 text-sm"><input type="checkbox" aria-label={field.label} checked={value[field.field] as boolean} disabled={disabled} onChange={event=>edit({...writer.current!.snapshot.value,[field.field]:event.target.checked})}/>{field.label}</label>;
+   if(field.kind==='choice')return <label key={field.field} className="block text-xs">{field.label}<select aria-label={field.label} value={value[field.field] as string} disabled={disabled} className="mt-1 min-h-11 w-full rounded-lg bg-[var(--surface-container-low)] px-3" onChange={event=>edit(recordChoiceEdit(writer.current!.snapshot.value,field,event.target.value))}>{field.options.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+   return <label key={field.field} className="flex items-start gap-3"><span className="w-14 shrink-0 py-3.5 text-xs text-[var(--on-surface-variant)]">{field.label}</span><input aria-label={field.label} value={recordFormString(value,field.field)} disabled={disabled} maxLength={field.max_characters} required={field.required} onChange={event=>edit({...writer.current!.snapshot.value,[field.field]:event.target.value})} className="min-h-11 min-w-0 flex-1 rounded-lg bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"/></label>;
+  })}
+  {body&&rich&&<RecordBody value={body} files={files} profile={profile} disabled={disabled} onChange={changeBody} preview={preview} register={register} validate={next=>validateRecordFormValue({...writer.current!.snapshot.value,[rich.html_field]:next.html,[rich.plain_field]:next.plainText},profile)}/>}
   {!!node.record_changes?.length&&ports.listChanges&&ports.prepareChange&&ports.applyChange&&ports.changeStatus&&<ExperienceRecordChanges node={node} writer={()=>writer.current} ports={ports as ExperienceRecordFormPorts&RecordChangePorts} signal={context.signal} current={current} disabled={immutable||!!node.disabled||fileBusy||copyUnconfirmed||reviewBusy||state.state==='blocked'} onBusy={setChangeBusy}/> }
-  {!!node.source_refs?.length&&ports.listOriginals&&ports.copyOriginal&&ports.copyStatus&&<ExperienceRecordOriginalFiles node={node} writer={()=>writer.current} ports={ports as FileCopyPorts} signal={context.signal} current={current} disabled={disabled||immutable} onBusy={setFileBusy} onUnconfirmed={setCopyUnconfirmed}/>}
-  <ExperienceRecordFiles node={node} row={state.row} ports={ports} signal={context.signal} current={current} disabled={disabled||immutable} onSelectFiles={selected=>void upload(selected)} onRemove={fileId=>void detach(fileId)} onInsertImage={profile.richtext.inline_images==='host_files'?insertImage:undefined}/>
-  {profile.richtext.inline_images==='host_files'&&profile.files.max_files>0&&<label className={`${pill} inline-flex items-center gap-2 ${disabled?'opacity-50':'cursor-pointer'}`}><ImagePlus size={16}/>Insert image<input className="sr-only" aria-label="Insert image" type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={disabled||immutable} onChange={event=>{const selected=Array.from(event.target.files??[]);event.target.value='';if(selected.length)void upload(selected,true);}}/></label>}
+  {profile.files&&!!node.source_refs?.length&&ports.listOriginals&&ports.copyOriginal&&ports.copyStatus&&<ExperienceRecordOriginalFiles node={node} writer={()=>writer.current} ports={ports as FileCopyPorts} signal={context.signal} current={current} disabled={disabled||immutable} onBusy={setFileBusy} onUnconfirmed={setCopyUnconfirmed}/>}
+  {profile.files&&<ExperienceRecordFiles node={node} row={state.row} ports={ports} signal={context.signal} current={current} disabled={disabled||immutable} onSelectFiles={selected=>void upload(selected)} onRemove={fileId=>void detach(fileId)} onInsertImage={profile.richtext?.inline_images==='host_files'?insertImage:undefined}/>}
+  {profile.richtext?.inline_images==='host_files'&&profile.files&&profile.files.max_files>0&&<label className={`${pill} inline-flex items-center gap-2 ${disabled?'opacity-50':'cursor-pointer'}`}><ImagePlus size={16}/>Insert image<input className="sr-only" aria-label="Insert image" type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={disabled||immutable} onChange={event=>{const selected=Array.from(event.target.files??[]);event.target.value='';if(selected.length)void upload(selected,true);}}/></label>}
   <div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className="text-xs text-[var(--muted)]">{notice||state.notice||(state.row.revision===0?'Not saved on server':'Saved privately')}</p><div className="flex flex-wrap gap-2">
    {state.state==='blocked'?<>
     {ports.saveStatus&&<button type="button" className={pill} disabled={!current()||fileBusy||copyUnconfirmed||reviewBusy||changeBusy} onClick={async()=>{await recovery.current?.renew();if(current())await writer.current?.reconcileSave();}}>Check saved status</button>}
     <button type="button" className={pill} disabled={fileBusy||copyUnconfirmed||reviewBusy||changeBusy} onClick={()=>{if(!fileBusy&&!copyUnconfirmed&&!reviewBusy&&!changeBusy)void writer.current?.reopen();}}>Reopen saved version</button>
-   </>:<button type="button" className={pill} disabled={disabled||state.state==='saving'||!state.dirty&&state.row.revision!==0} onClick={()=>void writer.current?.save(true)}>Save draft</button>}
+   </>:<button type="button" className={pill} disabled={disabled||state.state==='saving'||!state.dirty&&state.row.revision!==0} onClick={()=>void writer.current?.save(true)}>{labels.save}</button>}
    {node.action_key&&ports.review&&<button data-record-primary="true" type="button" className="min-h-10 rounded-full bg-[var(--primary)] px-5 py-2 text-sm text-[var(--on-primary)] disabled:opacity-50" disabled={disabled||state.state==='saving'||state.row.revision===0} onClick={async()=>{setReviewBusy(true);try{if(await writer.current!.save(true)&&await ports.review!(node,writer.current!.snapshot.row,context.signal,recovery.current?{beforeSubmit:attempt=>recovery.current!.beforeSubmit(attempt,writer.current!.snapshot),confirmed:()=>recovery.current!.confirmed(),restored:expected=>writer.current!.reopen({...expected,preserve_edits:true})}:undefined)&&current()){
      clearTimeout(timer.current);const row=writer.current!.snapshot.row;writer.current!.dispose();preview.dispose();registerWriter?.(()=>Promise.resolve(true));setSubmitted(true);setNotice('Updating app controls...');
      let posted=false;try{posted=ports.deliverSubmitted?await ports.deliverSubmitted(node,row,context.signal):await eventPort.current(experienceRecordSubmissionEvent(node.id,row))===true;}catch{/* Confirmed submission stays immutable even if UI delivery fails. */}
      if(current())setNotice(posted?'':'App controls could not be updated. Reopen the app to reconcile its saved state.');
-    }}catch{if(current()){if(recovery.current?.snapshot().submission)writer.current?.blockRecovery();setNotice('The saved message could not be reviewed. Your draft is kept.');}}finally{if(current())setReviewBusy(false);}}}>Review &amp; send</button>}
+    }}catch{if(current()){if(recovery.current?.snapshot().submission)writer.current?.blockRecovery();setNotice('The saved record could not be reviewed. Your changes are kept.');}}finally{if(current())setReviewBusy(false);}}}>{labels.review}</button>}
   </div></div>
  </RecordSurface>;
 }

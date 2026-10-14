@@ -1,6 +1,6 @@
 import {canonicalAppDataJson} from '../../../../packages/app-kit/src/app-data';
 import {RecordChangeNotApplied,verifyRecordChangeReceipt,type RecordChangeChoice,type RecordChangePorts} from './app-experience-record-changes';
-import type {DeftExperienceRecordFormNode} from '../../../../packages/app-kit/src/app-data';
+import type {RecordFormNode as DeftExperienceRecordFormNode} from './app-experience-record-form';
 import type {createExperienceRecordWriter,ExperienceRecordRow} from './app-experience-record-writer';
 export type InitialChangePorts=RecordChangePorts&{initialSource:(node:DeftExperienceRecordFormNode,row:ExperienceRecordRow,signal:AbortSignal)=>Promise<RecordChangeChoice|null>};
 /** One nomination belongs to the exact loaded clean initial row. Read failure

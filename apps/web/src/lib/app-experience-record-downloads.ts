@@ -1,7 +1,7 @@
 import {createExperienceFileArchive} from './app-experience-file-archive';
 import type {ExperienceRecordRow} from './app-experience-record-writer';
-import {recordFormFiles,type RecordFormFile} from './app-experience-record-form';
-import type {DeftExperienceRecordFormNode} from '../../../../packages/app-kit/src/app-data';
+import {recordFormString,recordFormFiles,type RecordFormFile} from './app-experience-record-form';
+import type {RecordFormNode as DeftExperienceRecordFormNode} from './app-experience-record-form';
 /** File reads reuse the exact trusted catalog and public binary port. No writer,
  * action or author event participates; all bytes/URLs belong to this lifetime. */
 export function createExperienceRecordDownloads(options:{node:DeftExperienceRecordFormNode;row:()=>ExperienceRecordRow;current:()=>boolean;signal:AbortSignal;
@@ -21,7 +21,7 @@ export function createExperienceRecordDownloads(options:{node:DeftExperienceReco
  return {cancelArchive(){archive?.cancel();},async downloadArchive(change?:(busy:boolean,notice:string)=>void):Promise<boolean>{
   if(busy||!current())return false;busy=true;const row=structuredClone(options.row());
   try{const files=recordFormFiles(row.value,options.node.profile),pins=files.map(file=>pin(row,file));
-   archive=createExperienceFileArchive({files:()=>files,subject:()=>String(row.value[options.node.profile.subject.field]??'Files'),current:()=>current()&&files.every((file,index)=>pin(options.row(),file)===pins[index]),signal:controller.signal,read:(file,signal)=>options.read(row,file,signal),change});
+   archive=createExperienceFileArchive({files:()=>files,subject:()=>{const profile=options.node.profile;return profile.schema_version==='deft.record_form_profile.v3'&&profile.files?.archive_name_field?recordFormString(row.value,profile.files.archive_name_field):options.node.label;},current:()=>current()&&files.every((file,index)=>pin(options.row(),file)===pins[index]),signal:controller.signal,read:(file,signal)=>options.read(row,file,signal),change});
    return await archive.download();
   }catch{return false;}finally{archive?.dispose();archive=undefined;busy=false;}
  },dispose(){options.signal.removeEventListener('abort',dispose);dispose();},async download(file:RecordFormFile):Promise<boolean>{
