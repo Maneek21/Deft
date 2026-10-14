@@ -17,6 +17,13 @@ file and exact-action controls in Deft. Standard field formats may be reused
 across apps, but the Host must not select behavior by Email app IDs, action names,
 provider names or fixed mail field names.
 
+Frozen Protocol 1/2 sandbox compatibility remains for older connected apps.
+Current Email uses Protocol 7 and does not depend on that interface. Retiring
+the unrelated compatibility plane would change existing Campaigns/CRM behavior;
+it is outside this proof. Standard iCalendar parsing is a neutral shared utility.
+Historical native storage and completed-adoption source readers remain, subject
+to current authority; preserved data does not grant access to unadopted sources.
+
 An optional mail package compiled into the Host would retain the dependency.
 A new arbitrary UI/plugin execution plane adds unnecessary scope. Neither is
 part of this change.
