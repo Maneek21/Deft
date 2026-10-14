@@ -5,7 +5,6 @@ import type { AppExperienceExposureService } from './app-experience-exposure.js'
 import type { ExperienceCaller } from './app-experience-service.js';
 import { getAppConnectionRegistry, type AppConnectionRegistry } from './app-connection-registry.js';
 import { humanActionDigest } from './app-experience-human-action-contract.js';
-import { sourceEmailReadingPolicy, type EmailSourceReadingPolicy } from './email-reading-source-policy.js';
 
 const fileRef=z.string().regex(/^[a-f0-9]{64}$/u),recordId=z.string().uuid();
 export const ExperienceResourceContentRequestSchema = z.union([
@@ -15,21 +14,25 @@ export const ExperienceResourceContentRequestSchema = z.union([
 ]);
 export const ExperienceSourceFileSchema=z.strictObject({file_ref:fileRef,filename:z.string().min(1).max(200).refine(value=>!/[\u0000-\u001f\u007f/\\]/u.test(value)),media_type:z.string().regex(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u),size_bytes:z.number().int().min(0).max(8388608),disposition:z.enum(['attachment','inline']),preview:z.enum(['text','image','pdf','unsupported']),content_id:z.string().max(256).optional()});
 const sourceFiles=z.array(ExperienceSourceFileSchema).max(32).refine(rows=>new Set(rows.map(row=>row.file_ref)).size===rows.length);
-const presentationSchema=z.strictObject({format:z.enum(['plain','html']),content:z.string().max(262144).refine(value=>Buffer.byteLength(value,'utf8')<=262144&&!value.includes('\0')),plain_text:z.string().max(262144).refine(value=>Buffer.byteLength(value,'utf8')<=262144),truncated:z.boolean(),rendering_fallback:z.literal('plain_text').optional(),images:z.array(z.strictObject({image_ref:fileRef,kind:z.enum(['cid','remote']),index:z.number().int().min(0).max(31),alt:z.string().max(200)})).max(32),headers:z.array(z.strictObject({label:z.enum(['From','To','Cc','Reply-To','Date','Subject']),value:z.string().max(2048).refine(value=>!/[\r\n\0]/u.test(value))})).max(6),metadata:z.record(z.string(),z.union([z.string(),z.number().finite(),z.boolean()])).optional()}).refine(value=>value.rendering_fallback===undefined||value.format==='plain'&&value.images.length===0);
+const presentationSchema=z.strictObject({format:z.enum(['plain','html']),content:z.string().max(262144).refine(value=>Buffer.byteLength(value,'utf8')<=262144&&!value.includes('\0')),plain_text:z.string().max(262144).refine(value=>Buffer.byteLength(value,'utf8')<=262144),truncated:z.boolean(),rendering_fallback:z.literal('plain_text').optional(),images:z.array(z.strictObject({image_ref:fileRef,kind:z.enum(['cid','remote']),index:z.number().int().min(0).max(31),alt:z.string().max(200)})).max(32),headers:z.array(z.strictObject({label:z.string().min(1).max(64).refine(value=>!/[\r\n\0]/u.test(value)),value:z.string().max(2048).refine(value=>!/[\r\n\0]/u.test(value))})).max(6),metadata:z.record(z.string(),z.union([z.string(),z.number().finite(),z.boolean()])).optional()}).refine(value=>value.rendering_fallback===undefined||value.format==='plain'&&value.images.length===0);
 const option=z.strictObject({id:z.string().min(1).max(256).refine(value=>!/[\r\n\0]/.test(value)),label:z.string().min(1).max(256).refine(value=>!/[\r\n\0]/.test(value))});
-export const ExperienceTriageOptionsSchema=z.strictObject({schema_version:z.literal('deft.experience_triage_options.v1'),account_id:z.string().min(1).max(256),provider:z.enum(['gmail','microsoft','imap_smtp']),destinations:z.array(option.extend({kind:z.enum(['folder','label'])})).max(100),labels:z.array(option).max(100),complete:z.boolean(),labels_supported:z.boolean()}).refine(value=>value.destinations.length+value.labels.length<=100&&new Set(value.destinations.map(row=>row.id)).size===value.destinations.length&&new Set(value.labels.map(row=>row.id)).size===value.labels.length);
+export const ExperienceTriageOptionsSchema=z.strictObject({schema_version:z.literal('deft.experience_triage_options.v1'),account_id:z.string().min(1).max(256),provider:z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/u),destinations:z.array(option.extend({kind:z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/u)})).max(100),labels:z.array(option).max(100),complete:z.boolean(),labels_supported:z.boolean()}).refine(value=>value.destinations.length+value.labels.length<=100&&new Set(value.destinations.map(row=>row.id)).size===value.destinations.length&&new Set(value.labels.map(row=>row.id)).size===value.labels.length);
 export const ExperienceResourceDocumentSchema = z.strictObject({ format: z.enum(['plain','html']), content: z.string().max(16384).refine(value=>!value.includes('\0')),
   truncated: z.boolean(), plain_text:z.string().max(16384).refine(value=>!value.includes('\0')).optional(), metadata: z.record(z.string(), z.union([z.string(),z.number().finite(),z.boolean()])).optional() })
   .refine(value=>value.format!=='html'||typeof value.plain_text==='string');
 const unavailable = () => new AppError('Original content is unavailable for this source', 'APP_ACTION_UNAVAILABLE', 409);
 type Authority = Pick<AppExperienceExposureService, 'sourceRecord' | 'connectionSetup'>;
+type SourceReadingPolicy = (input: { caller: ExperienceCaller; entry: ReturnType<AppConnectionRegistry['select']>;
+  record: Record<string, unknown>; signal: AbortSignal }) => Promise<'ask' | 'always'>;
 
 /** Fixed private adapter, exact host source, and a current source read ceiling.
  * This port cannot prepare an action or nominate provider URLs. */
 export class AppExperienceResourceContentService {
   constructor(private readonly authority: Authority, private readonly registry: () => Promise<AppConnectionRegistry> = getAppConnectionRegistry,
     private readonly now = Date.now, private readonly timeoutMs = 15000,
-    private readonly readingPolicy: EmailSourceReadingPolicy = sourceEmailReadingPolicy) {
+    // Legacy resource readers have no app-owned preference record. Never infer
+    // content disclosure policy from a native product's account tables.
+    private readonly readingPolicy: SourceReadingPolicy = async () => 'ask') {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15000) throw new TypeError('Invalid content timeout');
   }
   async read(caller: ExperienceCaller, sessionId: string, resourceKey: string, raw: unknown, signal?: AbortSignal) {
@@ -104,7 +107,7 @@ export class AppExperienceResourceContentService {
         }
         if(!captured||captured.byteLength>policy!.source!.max_bytes)throw unavailable();
         if(input.operation==='read_file'){const selected=files.find(row=>row.file_ref===input.file_ref);if(!selected||result.file_ref!==input.file_ref||captured.byteLength!==selected.size_bytes||Object.keys(result).some(key=>!['files','file_ref','bytes','omitted_file_count'].includes(key)))throw unavailable();return {kind:'file' as const,bytes:captured,media_type:'application/octet-stream' as const,filename:selected.filename,...common};}
-        if(input.operation==='read_image'){if(result.image_ref!==input.image_ref||captured.byteLength<1||captured.byteLength>2097152||!['image/png','image/jpeg','image/gif','image/webp'].includes(String(result.media_type))||Object.keys(result).some(key=>!['files','image_ref','bytes','media_type','omitted_file_count'].includes(key)))throw unavailable();return {kind:'image' as const,bytes:captured,media_type:String(result.media_type),filename:'message-image',...common};}
+        if(input.operation==='read_image'){if(result.image_ref!==input.image_ref||captured.byteLength<1||captured.byteLength>2097152||!['image/png','image/jpeg','image/gif','image/webp'].includes(String(result.media_type))||Object.keys(result).some(key=>!['files','image_ref','bytes','media_type','omitted_file_count'].includes(key)))throw unavailable();return {kind:'image' as const,bytes:captured,media_type:String(result.media_type),filename:'resource-image',...common};}
         throw unavailable();
       }
       if(input.operation==='triage_options'){

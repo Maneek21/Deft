@@ -11,7 +11,9 @@ import { exposureDigest, exposurePayloadData, exposureUnavailable } from './app-
 export const ProviderBrowseRequestSchema = z.strictObject({ operation: z.literal('browse'),
   kind: z.enum(['list', 'search', 'conversation']), folder: z.string().min(1).max(128).regex(/^[a-z][a-z0-9_]*$/),
   query: z.string().max(200).refine(value => !/[\r\n\0]/.test(value)).optional(),
-  filters:z.strictObject({text:z.string().min(1).max(500),from:z.string().min(1).max(500),to:z.string().min(1).max(500),cc:z.string().min(1).max(500),bcc:z.string().min(1).max(500),subject:z.string().min(1).max(500),filename:z.string().min(1).max(500),has_attachments:z.boolean(),received_on:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),after:z.string().max(20),before:z.string().max(20),unread:z.boolean(),flagged:z.boolean()}).partial().refine(value=>Object.keys(value).length>0).optional(),
+  filters:z.record(z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u).refine(key=>!['constructor','prototype','__proto__'].includes(key)),
+    z.union([z.string().min(1).max(500).refine(value=>!/[\r\n\0]/u.test(value)),z.boolean()]))
+    .refine(value=>Object.keys(value).length>0&&Object.keys(value).length<=32).optional(),
   cursor: z.string().uuid().optional(), record_id: z.string().uuid().optional() })
   .refine(value => value.kind === 'search' ? (!!value.query?.trim()!==!!value.filters) && !value.record_id
     : value.kind === 'conversation' ? !!value.record_id && !value.query&&!value.filters : !value.query && !value.record_id&&!value.filters);
@@ -27,12 +29,9 @@ const PageSchema = z.strictObject({ schema_version: z.literal('deft.app_provider
   count: z.strictObject({ returned: z.number().int().min(0).max(10), exact_total: z.null() }),
   failure_count: z.number().int().min(0).max(10) })
   .refine(page => (!page.complete || page.next_cursor === null && page.failure_count === 0) && page.count.returned === page.items.length);
-export const NATIVE_EMAIL_CACHE_CURSOR_PREFIX='deft-native-email-cache:v1:';
-export type NativeMailboxExperiencePageResult=Readonly<{page:z.infer<typeof PageSchema>;recheck:()=>Promise<void>}>;
-export type NativeMailboxExperiencePage=(input:Readonly<{caller:ExperienceCaller;projection:AppConnectionProjection;folder:string;cursor:string|null;limit:number}>,signal:AbortSignal)=>Promise<NativeMailboxExperiencePageResult|null>;
 type Authority = Pick<AppExperienceExposureService, 'providerAuthority' | 'connectionSetup' | 'sourceRecord' | 'browseAuthority'>;
 type Cursor = { query_digest: string; cursor: string; source_id: string | null };
-type BrowseTiming = { elapsed_ms: number; provider_ms: number; native_cache_ms: number; native_cache_hit: boolean; native_final_ms: number; recheck_ms: number; recheck_calls: number; recheck_reads: number; outcome: 'success' | 'unavailable'; code: string | null; authority_phase: BrowseAuthorityPhase };
+type BrowseTiming = { elapsed_ms: number; provider_ms: number; recheck_ms: number; recheck_calls: number; recheck_reads: number; outcome: 'success' | 'unavailable'; code: string | null; authority_phase: BrowseAuthorityPhase };
 const identity = (projection: AppConnectionProjection) => {
   const { checked_at: _checked, expires_at: _expires, ...pins } = projection; return exposureDigest(pins);
 };
@@ -45,8 +44,8 @@ export class AppExperienceProviderBrowseService {
     private readonly handles: ExperienceProviderHandles = experienceProviderHandles,
     private readonly now = Date.now, private readonly timeoutMs = 60000,
     private readonly observe: (timing: BrowseTiming) => void = timing => {
-      if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'email_browse_timing', ...timing }));
-    },private readonly nativeMailboxPage?:NativeMailboxExperiencePage) {
+      if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'app_resource_browse_timing', ...timing }));
+    }) {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new TypeError('Invalid provider page deadline');
   }
   async read(caller: ExperienceCaller, sessionId: string, resourceKey: string, raw: unknown, signal?: AbortSignal) {
@@ -57,7 +56,7 @@ export class AppExperienceProviderBrowseService {
     const limit = new Promise<never>((_, fail) => { reject = fail; });
     const abort = () => reject(exposureUnavailable()); workSignal.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    const started = performance.now(), timing: BrowseTiming = { elapsed_ms: 0, provider_ms: 0, native_cache_ms: 0, native_cache_hit: false, native_final_ms: 0, recheck_ms: 0, recheck_calls: 0, recheck_reads: 0, outcome: 'unavailable', code: null, authority_phase: { locked_ms: 0, package_verify_ms: 0, package_verify_calls: 0, projection_ms: 0, final_ms: 0, db_query_ms: 0, db_query_count: 0, db_acquisition_ms: 0 } };
+    const started = performance.now(), timing: BrowseTiming = { elapsed_ms: 0, provider_ms: 0, recheck_ms: 0, recheck_calls: 0, recheck_reads: 0, outcome: 'unavailable', code: null, authority_phase: { locked_ms: 0, package_verify_ms: 0, package_verify_calls: 0, projection_ms: 0, final_ms: 0, db_query_ms: 0, db_query_count: 0, db_acquisition_ms: 0 } };
     try { const result = await Promise.race([this.current(caller, sessionId, resourceKey, input, workSignal, timing), limit]); timing.outcome = 'success'; return result; }
     catch (error) { const code = error instanceof Error ? error.message : ''; timing.code = /^[A-Z][A-Z0-9_]{1,99}$/.test(code) ? code : 'PROVIDER_BROWSE_UNAVAILABLE'; throw exposureUnavailable(); }
     finally { clearTimeout(timer); workSignal.removeEventListener('abort', abort); timing.elapsed_ms = performance.now() - started;
@@ -106,26 +105,12 @@ export class AppExperienceProviderBrowseService {
       || parent.installation_id !== nomination.installation_id)) throw exposureUnavailable();
     await recheck();
     let page: z.infer<typeof PageSchema>;
-    let cached:NativeMailboxExperiencePageResult|null=null;
-      const privateCursor=continuation?.cursor??null;
-      const nativeContinuation=privateCursor?.startsWith(NATIVE_EMAIL_CACHE_CURSOR_PREFIX)??false;
-      if(nativeContinuation&&(input.kind!=='list'||!this.nativeMailboxPage))throw exposureUnavailable();
-      if(input.kind==='list'&&this.nativeMailboxPage){
-        const cacheStarted=performance.now();
-        try {cached=await this.nativeMailboxPage({caller,projection:{...initial,expires_at:deadline},folder:input.folder,cursor:privateCursor,limit:Math.min(10,nomination.max_records_per_page)},signal);timing.native_cache_hit=cached!==null;}
-        finally {timing.native_cache_ms=performance.now()-cacheStarted;}
-      }
-      if(nativeContinuation&&!cached)throw exposureUnavailable();
-      if(cached)page=PageSchema.parse(cached.page);
-      else {const providerStarted=performance.now();try {page = PageSchema.parse(await entry.adapter.browseResource({ operation: input.kind, folder: input.folder,
+    const providerStarted=performance.now();try {page = PageSchema.parse(await entry.adapter.browseResource({ operation: input.kind, folder: input.folder,
       ...(input.filters?{filters:input.filters}:{}),
       query: input.query ?? '', cursor: continuation?.cursor ?? null, source: parent?.record ?? null, limit: Math.min(10, nomination.max_records_per_page) },
     { projection: { ...initial, expires_at: deadline }, recheck, signal, search_fields: nomination.allowed_fields })); }
-      finally { timing.provider_ms = performance.now() - providerStarted; }}
+      finally { timing.provider_ms = performance.now() - providerStarted; }
     await recheck();
-    // Native custody must still be current after the final Exposure wait. The
-    // hook's second status read runs here, not an extra credential lookup.
-    if(cached){const finalStarted=performance.now();try {await cached.recheck();}finally{timing.native_final_ms=performance.now()-finalStarted;}}
     if (page.items.length > nomination.max_records_per_page || Date.parse(page.observed_at) > this.now()
       || Buffer.byteLength(JSON.stringify(page)) > Math.min(524288, nomination.max_page_bytes)) throw exposureUnavailable();
     if (parent && exposureDigest(parent) !== exposureDigest(await this.authority.sourceRecord(caller, sessionId, resourceKey, input.record_id!, signal))) throw exposureUnavailable();

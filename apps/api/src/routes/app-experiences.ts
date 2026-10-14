@@ -20,7 +20,6 @@ import { and, eq } from 'drizzle-orm';
 import { AppError } from '../lib/app-errors.js';
 import { AppExperienceResourceContentService } from '../lib/app-experience-resource-content.js';
 import { AppExperienceProviderBrowseService } from '../lib/app-experience-provider-browse.js';
-import { getNativeEmailMailboxExperiencePage } from '../lib/email-mailbox-experience-cache.js';
 
 const MAX_ACTION_BYTES = 65_536;
 const READ_DEADLINE_MS = 10_000;
@@ -244,13 +243,13 @@ export function createAppExperienceRoutes(service: AppExperienceService = appExp
       if(output.kind==='presentation')return c.json({exposure_id:output.exposure_id,exposure_epoch:output.exposure_epoch,expires_at:output.expires_at,presentation:output.presentation});
       const bytes=new Uint8Array(output.bytes);output.bytes.fill(0);
       if(output.kind==='file'||output.kind==='image')return new Response(bytes,{headers:{'Content-Type':output.media_type,'Content-Length':String(bytes.byteLength),'Content-Disposition':`attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(output.filename)}`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Deft-Exposure-Id':output.exposure_id,'X-Deft-Exposure-Epoch':String(output.exposure_epoch)}});
-      return new Response(bytes,{headers:{'Content-Type':output.media_type,'Content-Length':String(bytes.byteLength),'Content-Disposition':`attachment; filename="${output.filename}"`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Deft-Exposure-Id':output.exposure_id,'X-Deft-Exposure-Epoch':String(output.exposure_epoch)}});
+      return new Response(bytes,{headers:{'Content-Type':output.media_type,'Content-Length':String(bytes.byteLength),'Content-Disposition':`attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(output.filename)}`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Deft-Exposure-Id':output.exposure_id,'X-Deft-Exposure-Epoch':String(output.exposure_epoch)}});
     } catch (error) { return failure(c, error); }
   });
   routes.post('/sessions/:sessionId/resources/:resourceKey/browse', async c => {
     try {
       const service = new AppExperienceProviderBrowseService((await getAppRunRuntime()).keys, await exposure(),
-        async () => options.connectionRegistry ?? await getAppConnectionRegistry(),undefined,undefined,undefined,undefined,getNativeEmailMailboxExperiencePage());
+        async () => options.connectionRegistry ?? await getAppConnectionRegistry());
       const output = await service.read(await caller(c), c.req.param('sessionId'), c.req.param('resourceKey'), await jsonBody(c), c.req.raw.signal);
       c.req.raw.signal.throwIfAborted(); c.header('Cache-Control', 'no-store'); return c.json(output);
     } catch (error) { return failure(c, error); }

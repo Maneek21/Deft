@@ -1,3 +1,4 @@
+import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {isDeepStrictEqual} from 'node:util';
 import {sql} from 'drizzle-orm';
 import {AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit';
@@ -43,6 +44,7 @@ export async function readOriginalPrepared(caller:ExperienceCaller,id:string,sig
  try{const reply=await (await getAppConnectionSessionRegistry()).dataRuntime(account.scope,account.profile).request(request,controller.signal);
   const result=reply.result;if(!result||result.outcome!=='completed'||result.request_id!==id||result.operation!==read.operation||result.input_digest!==integrationDigest(read))throw denied();
   const prepared=result.prepared??result.prepared_resource;if(!prepared||!isDeepStrictEqual(preparedLocator(prepared),row.prepared))throw denied();
+  if(result.prepared)verifiedPreparedRecordAction(result.prepared,action?.action_binding_id,account.store);
   await currentOriginalTool(row);controller.signal.throwIfAborted();return {row,account,declaration,action,prepared,provenance:originalPreparedProvenance(row)};
  }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
 }

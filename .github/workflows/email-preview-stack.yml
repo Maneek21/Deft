@@ -95,6 +95,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-prepared-effect-boundary.test.ts test/app-installed-tool-discovery.test.ts test/app-connection-registry.test.ts test/app-experience-provider-browse.test.ts test/app-experience-resource-content.test.ts 2>&1 | tee .ci-diagnostics/installed-app-boundary.log
           pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/native-mention-agent-catalog.test.ts test/app-attachment-default-off.test.ts test/app-runtime-action-discovery.test.ts 2>&1 | tee .ci-diagnostics/host-cold-native.log
           node --test apps/api/test/app-owner-context-history.test.mjs 2>&1 | tee .ci-diagnostics/owner-context-history.log
           node --test scripts/email-preview-test-databases.test.mjs 2>&1 | tee .ci-diagnostics/api-isolation-guards.log
@@ -102,7 +103,7 @@ jobs:
           node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           node --test packages/db/scripts/reviewed-lineage-artifacts.test.mjs 2>&1 | tee .ci-diagnostics/reviewed-lineage-artifacts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
-          pnpm --filter @deft/web exec tsx --test src/lib/email-native-navigation.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/native-email-navigation.log
+          pnpm --filter @deft/web exec tsx --test src/lib/app-navigation.test.ts src/lib/app-experience-record-form-v3.test.tsx src/lib/app-experience-record-form-v3-mounted.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/installed-app-navigation.log
           pnpm --filter @deft/web exec tsx --test src/lib/app-experience-source-image-queue.test.ts src/lib/app-experience-source-presentation.test.ts src/lib/app-experience-source-policy.test.ts src/lib/app-experience-source-view.test.ts 2>&1 | tee .ci-diagnostics/source-image-queue.log
           node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log
       - name: Compile production Web

@@ -87,6 +87,22 @@ test('governed original source checks exact policy and zeroes withheld bytes aft
  await assert.rejects(service.read(caller,sessionId,'inbox',{operation:'read_source',record_id:recordId}),closed);assert.ok(bytes.every(value=>value===0));
 });
 
+test('source and options ports admit declared nonmail documents without provider-name special cases',async()=>{
+ const f=fixture(),bytes=new TextEncoder().encode('{"title":"Reviewed"}');
+ f.state.reviewed.add('read_source');f.state.reviewed.add('triage_options');
+ f.state.projection.content_policy!.source={media_type:'application/json',filename:'reviewed-document.json',max_bytes:1024};
+ f.state.projection.content_policy!.triage_options={max_options:4};
+ const options={schema_version:'deft.experience_triage_options.v1',account_id:'workspace_7',provider:'document_store',
+  destinations:[{id:'reviewed',label:'Reviewed',kind:'collection'}],labels:[],complete:true,labels_supported:false};
+ const adapter:AppConnectionAdapter={handle:async()=>new Response(),readSource:async()=>({bytes,media_type:'application/json',filename:'reviewed-document.json'}),readTriageOptions:async()=>options};
+ const service=new AppExperienceResourceContentService(f.authority,async()=>new AppConnectionRegistry([{pins,adapter}]),()=>f.state.time);
+ const read=()=>service.read(caller,sessionId,'inbox',{operation:'read_source',record_id:recordId});
+ assert.equal((await read()).kind,'source');
+ assert.deepEqual((await service.read(caller,sessionId,'inbox',{operation:'triage_options',record_id:recordId})).options,options);
+ adapter.readSource=async()=>({bytes:new Uint8Array(bytes),media_type:'text/html',filename:'reviewed-document.json'});
+ await assert.rejects(read(),closed);
+});
+
 test('plain read uses exact retained source and preserves generic document', async()=>{
  const f=fixture();const output=await f.read();assert.deepEqual(output.document,document);
  assert.equal(output.exposure_id,f.state.source.exposure_id);assert.equal(f.state.inputs.length,1);assert.equal(f.state.sourceReads,2);

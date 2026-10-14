@@ -4,15 +4,13 @@ import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { AppError } from './app-errors.js';
-import { AppConnectionPinsSchema, type AppConnectionAdapter, type AppConnectionPins, type AppConnectionContext,type NativeEmailImapHostFactory } from './app-connection-contract.js';
-import {nativeEmailCredentialPolicyDigest,nativeEmailImplementationDigest} from './email-native-connection-implementation.js';
+import { AppConnectionPinsSchema, type AppConnectionAdapter, type AppConnectionPins, type AppConnectionContext } from './app-connection-contract.js';
 
 export type AppConnectionEntry = Readonly<{ pins: AppConnectionPins; adapter: AppConnectionAdapter;module_sha256?:string;implementation_digest?:string }>;
 const unavailable = () => new AppError('Account connection is not configured for this reviewed source', 'APP_ACTION_UNAVAILABLE', 503);
 const ConfigSchema = z.strictObject({ schema_version: z.literal('deft.app_connection_adapters.v1'), entries: z.array(z.strictObject({
   pins: AppConnectionPinsSchema, module_path: z.string().min(1).max(2048),
   module_sha256: z.string().regex(/^[a-f0-9]{64}$/), options: z.record(z.string(), z.unknown()),
-  compatible_from:z.strictObject({module_sha256:z.string().regex(/^[a-f0-9]{64}$/),credential_policy_sha256:z.string().regex(/^[a-f0-9]{64}$/),revision:z.number().int().positive().max(2147483646)}).optional(),
 })).max(32) });
 
 /** Deployment-owned code registry. Browser inputs can never register an adapter,
@@ -49,7 +47,6 @@ export async function loadAppConnectionRegistry(configPath: string | undefined):
     const config = ConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
     const entries: AppConnectionEntry[] = [];
     for (const item of config.entries) {
-      if(item.compatible_from&&(!Array.isArray(item.options.capabilities)||item.options.capabilities.some(cap=>typeof cap!=='string')||nativeEmailCredentialPolicyDigest(item.options,item.options.capabilities as string[])!==item.compatible_from.credential_policy_sha256))throw unavailable();
       if (!isAbsolute(item.module_path)) throw unavailable();
       const moduleStat = await lstat(item.module_path);
       if (!moduleStat.isFile() || moduleStat.isSymbolicLink() || moduleStat.size > 1_048_576) throw unavailable();
@@ -57,15 +54,13 @@ export async function loadAppConnectionRegistry(configPath: string | undefined):
       if (createHash('sha256').update(await readFile(modulePath)).digest('hex') !== item.module_sha256) throw unavailable();
       const loaded = await import(pathToFileURL(modulePath).href) as { createAppConnectionAdapter?: (args: unknown) => Promise<AppConnectionAdapter> };
       if (typeof loaded.createAppConnectionAdapter !== 'function') throw unavailable();
-      const nativeEmailImapHost:NativeEmailImapHostFactory=async constructors=>(await import('./email-imap-runtime.js')).createRegisteredEmailImapHost(item.pins,constructors);
       const host = Object.freeze({
-        nativeEmailImapHost,
         resolveContext: async (context: AppConnectionContext) => context.projection,
         assertCurrent: async (context: AppConnectionContext) => context.recheck(),
       });
       const adapter = await loaded.createAppConnectionAdapter({ host, options: item.options });
       if (!adapter || typeof adapter.handle !== 'function') throw unavailable();
-      entries.push(Object.freeze({ pins: Object.freeze(item.pins), adapter,module_sha256:item.compatible_from?.module_sha256??item.module_sha256,...(item.compatible_from?{implementation_digest:nativeEmailImplementationDigest({original_sha256:item.compatible_from.module_sha256,module_sha256:item.module_sha256,revision:item.compatible_from.revision,credential_policy_sha256:item.compatible_from.credential_policy_sha256})}:{}) }));
+      entries.push(Object.freeze({ pins: Object.freeze(item.pins), adapter, module_sha256: item.module_sha256 }));
     }
     return new AppConnectionRegistry(entries);
   } catch { throw unavailable(); }

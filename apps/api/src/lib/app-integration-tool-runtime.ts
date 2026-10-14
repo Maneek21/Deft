@@ -1,3 +1,4 @@
+import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {and,eq,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {appVersions,appGrantSnapshots,appRuntimeBindings} from '@deft/db/schema';
@@ -96,6 +97,7 @@ export async function executeIntegrationTool(caller:AppIntegrationToolCaller,raw
   if(result.request_id!==outer.request_id||result.tool_key!==outer.tool_key||result.tool_operation!==outer.tool_operation||result.store_key!==outer.store_key||result.input_digest!==metadata.input_digest)throw denied();
   controller.signal.throwIfAborted();await currentOriginalTool({metadata,state:'inflight',prepared:null,run_id:null,run_input_digest:null,runtime_binding_id:null});
   if(result.outcome!=='completed'){await finishIntegrationTool(outer.request_id,'indeterminate');return {request_id:outer.request_id,state:'indeterminate'};}
+  if(result.data_result?.prepared)verifiedPreparedRecordAction(result.data_result.prepared,action?.action_binding_id,account.store);
   const prepared=declaration.mode==='review'?preparedLocator(result.data_result?.prepared??result.data_result?.prepared_resource):null;
   if(result.data_result&&(result.data_result.request_id!==outer.request_id||!declaration.data_operations.includes(result.data_result.operation as typeof declaration.data_operations[number])))throw denied();
   if(prepared&&(prepared.snapshot_id!==outer.request_id||prepared.action_key!==declaration.action_key||Date.parse(prepared.expires_at)>account.expires_at))throw denied();

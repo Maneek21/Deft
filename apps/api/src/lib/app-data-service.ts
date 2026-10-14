@@ -1,6 +1,7 @@
 import {assertFutureRecordActionLocalRequest,acknowledgeFutureRecordActionLocal} from './app-future-record-action-local.js';
 import {futureRecordActionWindowDeadline,assertPreparedFutureRecordAction} from './app-future-record-action-window.js';
 import {invokeRecordChange} from './app-data-record-change-service.js';
+import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {randomUUID,createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {and,eq} from 'drizzle-orm';
@@ -95,6 +96,7 @@ export class AppDataService {
     ||Buffer.byteLength(JSON.stringify(row.value))>authority.store.max_record_bytes||row.files.length>authority.store.max_files
     ||row.files.some(file=>file.size_bytes>authority.store.max_file_bytes)||row.files.reduce((sum,file)=>sum+file.size_bytes,0)>authority.store.max_total_file_bytes)throw invalid();}
    const prepared=reply.result?.prepared;
+   if(prepared)verifiedPreparedRecordAction(prepared,undefined,authority.store);
    if(prepared?.future_release)assertPreparedFutureRecordAction(authority,prepared);
    if(prepared&&(!prepared.future_release&&Date.parse(prepared.expires_at)>authority.expires_at||operation.operation==='prepare_action'&&prepared.action_key!==operation.input.action_key
     ||operation.operation==='read_prepared'&&(prepared.snapshot_id!==operation.input.snapshot_id||prepared.snapshot_digest!==operation.input.snapshot_digest)))throw invalid();
@@ -113,7 +115,7 @@ export class AppDataService {
     ...(reply.result?.record?{store_key:storeKey,record_id:reply.result.record.record_id,revision:reply.result.record.revision,content_digest:reply.result.record.content_digest}:{}),
     ...(prepared?{prepared:{schema_version:prepared.schema_version,snapshot_id:prepared.snapshot_id,snapshot_digest:prepared.snapshot_digest,
       record_id:prepared.record_id,revision:prepared.revision,action_key:prepared.action_key,input:prepared.input,expires_at:prepared.expires_at,
-      ...(prepared.future_release?{future_release:prepared.future_release}:{}),...(prepared.copy_effect?{copy_effect:prepared.copy_effect}:{}),...(prepared.required_action_consents?{required_action_consents:prepared.required_action_consents}:{})}}:{}),
+      ...(prepared.future_release?{future_release:prepared.future_release}:{}),...(prepared.copy_effect?{copy_effect:prepared.copy_effect}:{}),...(prepared.supplemental_effect?{supplemental_effect:prepared.supplemental_effect}:{}),...(prepared.required_action_consents?{required_action_consents:prepared.required_action_consents}:{})}}:{}),
     ...(resourcePrepared?{prepared_resource:{schema_version:resourcePrepared.schema_version,snapshot_id:resourcePrepared.snapshot_id,
       snapshot_digest:resourcePrepared.snapshot_digest,account_ref:resourcePrepared.account_ref,action_key:resourcePrepared.action_key,
       resource_key:resourcePrepared.resource_key,operation_key:resourcePrepared.operation_key,source_manifest_digest:resourcePrepared.source_manifest_digest,

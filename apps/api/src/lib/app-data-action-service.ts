@@ -13,7 +13,7 @@ import { AppExperienceHumanActionService, type HumanActionAuthorityPort } from '
 import { HumanActionConfirmSchema, humanActionDigest, openHumanActionTicket } from './app-experience-human-action-contract.js';
 import { verifiedExperienceBundle } from './app-experience-service.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
-import {verifiedPreparedCopyEffect} from './app-data-copy-effect.js';
+import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 
 const id = z.string().uuid(), key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u);
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -40,7 +40,7 @@ export class AppDataActionService {
         eq(appRuntimeBindings.id, authority.runtime_binding_id))).limit(1).for('share');
       if (!binding || binding.owner_resource_binding_id !== current.scope.resource_binding_id
         || binding.action_key !== action || binding.reviewed_by_user_id !== caller.user_id) throw appDataDenied();
-      if(prepared)verifiedPreparedCopyEffect(prepared,authority.runtime_binding_id);
+      if(prepared)verifiedPreparedRecordAction(prepared,authority.runtime_binding_id,current.store);
       const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, caller.org_id),
         eq(appVersions.id, session.app_version_id))).limit(1);
       if (!version || !session.experience_key) throw appDataDenied();
@@ -58,7 +58,7 @@ export class AppDataActionService {
     const { prepared: rawPrepared, authority } = await this.data.prepare(request.connection_session_id, {
       store_key: request.store_key, record_id: request.record_id, expected_revision: request.expected_revision,
       expected_content_digest: request.content_digest, action_key: action,...(request.execution_window?{execution_window:request.execution_window}:{}) });
-    const prepared = verifiedPreparedCopyEffect(rawPrepared);
+    const prepared = verifiedPreparedRecordAction(rawPrepared,undefined,authority.store);
     if(Boolean(prepared.future_release)!==Boolean(request.execution_window))throw appDataDenied();
     if (prepared.record_content_digest!==undefined&&prepared.record_content_digest!==request.content_digest)throw appDataDenied();
     if (!authority.consent || prepared.action_key !== action || prepared.record_id !== request.record_id
@@ -95,7 +95,7 @@ export class AppDataActionService {
     const connection = id.parse(input.connection_session_id), store = key.parse(input.record_store_key);
     const { prepared: rawPrepared, authority } = await this.data.readPrepared(connection, { store_key: store,
       snapshot_id: id.parse(input.snapshot_id), snapshot_digest: digest.parse(input.prepared_digest) });
-    const prepared = verifiedPreparedCopyEffect(rawPrepared);
+    const prepared = verifiedPreparedRecordAction(rawPrepared,undefined,authority.store);
     if (prepared.action_key !== ticket.action_key || prepared.snapshot_digest !== input.prepared_digest
       || authority.connection.session_revision !== input.connection_revision
       || authority.consent?.consent_id !== input.data_consent_id || authority.consent?.consent_digest !== input.data_consent_digest

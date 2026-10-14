@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { AppExperienceProviderBrowseService, ProviderBrowseRequestSchema, NATIVE_EMAIL_CACHE_CURSOR_PREFIX, type NativeMailboxExperiencePage } from '../src/lib/app-experience-provider-browse.js';
+import { AppExperienceProviderBrowseService, ProviderBrowseRequestSchema } from '../src/lib/app-experience-provider-browse.js';
 import { ExperienceProviderHandles, type ProviderSourceRecord } from '../src/lib/app-experience-provider-handles.js';
 import { AppConnectionRegistry } from '../src/lib/app-connection-registry.js';
 import type { AppConnectionAdapter, AppConnectionProjection } from '../src/lib/app-connection-contract.js';
@@ -55,6 +55,18 @@ function fixture() {
   const read = (input: Record<string, unknown> = { operation: 'browse', kind: 'list', folder: 'all' }) => service.read(caller, session, 'inbox', input);
   return { caller, session, pins, state, handles, authority, adapter, registry, service, read };
 }
+
+test('declared non-mail search fields reach the provider and undeclared fields do not', async () => {
+  const f = fixture(), input = { operation: 'browse', kind: 'search', folder: 'all', filters: { stage: 'review', active: true } };
+  await assert.rejects(f.read(input)); assert.equal(f.state.calls, 0);
+  f.state.projection = { ...f.state.projection, content_policy: { document: { max_characters: 100 }, search_filters: ['stage', 'active'] } };
+  const original = f.adapter.browseResource!;
+  f.adapter.browseResource = async (request, context) => { assert.deepEqual(request.filters, input.filters); return original(request, context); };
+  await f.read(input); assert.equal(f.state.calls, 1);
+  await assert.rejects(f.read({ ...input, filters: { undeclared: 'value' } })); assert.equal(f.state.calls, 1);
+  for (const filters of [{ stage: 'line\nbreak' }, { stage: {} }, { constructor: 'bad' }])
+    assert.equal(ProviderBrowseRequestSchema.safeParse({ ...input, filters }).success, false);
+});
 
 test('provider cursor fixture pages cross1000 without projection writes or exposing provider IDs', async () => {
   const f = fixture(); let cursor: string | undefined, count = 0, first = '', last = '';
@@ -141,7 +153,7 @@ test('revoked concurrent snapshot cannot disclose page after another snapshot se
 test('browse diagnostics contain aggregate timing counts and outcome only',async()=>{
  const f=fixture(),events:unknown[]=[];const service=new AppExperienceProviderBrowseService(keys,f.authority,async()=>f.registry,f.handles,()=>f.state.time,60000,event=>events.push(event));
  await service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'});
- const result=events[0] as Record<string,unknown>;assert.deepEqual(Object.keys(result).sort(),['authority_phase','code','elapsed_ms','native_cache_hit','native_cache_ms','native_final_ms','outcome','provider_ms','recheck_calls','recheck_ms','recheck_reads']);assert.equal(result.outcome,'success');assert.equal(result.code,null);assert.equal(result.native_cache_hit,false);assert.equal(result.native_cache_ms,0);assert.equal(JSON.stringify(result).includes(f.caller.user_id),false);
+ const result=events[0] as Record<string,unknown>;assert.deepEqual(Object.keys(result).sort(),['authority_phase','code','elapsed_ms','outcome','provider_ms','recheck_calls','recheck_ms','recheck_reads']);assert.equal(result.outcome,'success');assert.equal(result.code,null);assert.equal(JSON.stringify(result).includes(f.caller.user_id),false);
 });
 
 test('phase collectors stay request scoped and never enter provider response payloads',async()=>{
@@ -154,37 +166,4 @@ test('phase collectors stay request scoped and never enter provider response pay
 test('timeout timing event is detached from a later unsettled authority collector',async()=>{
  const f=fixture(),events:any[]=[];let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});const old=f.authority.browseAuthority;f.authority.browseAuthority=async(...args:any[])=>{await held;args[5]?.({locked_ms:99,package_verify_ms:99,package_verify_calls:2,projection_ms:1,final_ms:1,db_query_ms:99,db_query_count:10,db_acquisition_ms:1});return old(...args.slice(0,5) as Parameters<typeof old>);};
  const service=new AppExperienceProviderBrowseService(keys,f.authority,async()=>f.registry,f.handles,()=>f.state.time,10,x=>events.push(x));await assert.rejects(service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'}));assert.equal(events[0].authority_phase.locked_ms,0);release();await new Promise(resolve=>setTimeout(resolve,20));assert.equal(events[0].authority_phase.locked_ms,0);
-});
-
-const cachedPage=()=>({schema_version:'deft.app_provider_browse_page.v1' as const,items:[{revision:'cached-r1',label:'Private header',data:{subject:'Cached subject',unreviewed:'private hidden field'},provider_source:{account_id:'private-account',authority_epoch:7,locator:{message_id:'private-provider-cache-id'}}}],next_cursor:null as string|null,complete:true,observed_at:new Date(500).toISOString(),count:{returned:1,exact_total:null},failure_count:0});
-function withCache(f:ReturnType<typeof fixture>,hook:(...args:Parameters<NativeMailboxExperiencePage>)=>Promise<ReturnType<typeof cachedPage>|null>,final=async()=>{}){return new AppExperienceProviderBrowseService(keys,f.authority,async()=>f.registry,f.handles,()=>f.state.time,60000,()=>{},async(...args)=>{const page=await hook(...args);return page?{page,recheck:final}:null;});}
-test('native cached list uses the same reviewed fields, label, opaque source handle and public response contract',async()=>{
-  const f=fixture();let calls=0;const service=withCache(f,async(input)=>{calls++;assert.equal(input.projection.resource_binding_id,f.pins.resource_binding_id);assert.equal(input.projection.web_session_id,f.caller.sid);assert.equal(input.limit,10);return cachedPage();});
-  const result=await service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'});
-  assert.equal(calls,1);assert.equal(f.state.calls,0);assert.equal(result.output.items[0]!.label,'Cached subject');assert.deepEqual(result.output.items[0]!.data,{subject:'Cached subject'});
-  const json=JSON.stringify(result);assert.equal(json.includes('private-provider-cache-id'),false);assert.equal(json.includes('private hidden field'),false);assert.equal(json.includes('provider_source'),false);
-  const source=f.handles.read<ProviderSourceRecord>(keys,f.state.nomination.handle_scope,'source',result.output.items[0]!.record_id);
-  assert.equal(source!.provider_source.authority_epoch,7);assert.deepEqual(source!.provider_source.locator,{message_id:'private-provider-cache-id'});
-});
-test('native cache miss falls back only on initial pages and leaves search/conversation on provider path',async()=>{
-  const f=fixture();let calls=0;const service=withCache(f,async()=>{calls++;return null;});
-  const first=await service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'});assert.equal(f.state.calls,1);assert.equal(calls,1);
-  await service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'search',folder:'all',query:'hello'});
-  await service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'conversation',folder:'all',record_id:first.output.items[0]!.record_id});
-  assert.equal(calls,1);assert.equal(f.state.calls,3);
-});
-test('native cursor is opaque in the UI and never reaches the provider on expired/missing native cache',async()=>{
-  const f=fixture();let next=false;const service=withCache(f,async input=>{if(next){assert.equal(input.cursor,NATIVE_EMAIL_CACHE_CURSOR_PREFIX+'sealed-native-token');return null;}next=true;return {...cachedPage(),next_cursor:NATIVE_EMAIL_CACHE_CURSOR_PREFIX+'sealed-native-token',complete:false};});
-  const page=(await service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'})).output;
-  assert.equal(JSON.stringify(page).includes('sealed-native-token'),false);await assert.rejects(service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all',cursor:page.next_cursor!}));
-  await assert.rejects(f.read({operation:'browse',kind:'list',folder:'all',cursor:page.next_cursor!}));assert.equal(f.state.calls,0);
-});
-test('final fresh Exposure authority and PageSchema reject late revoked or malformed native cache pages',async()=>{
-  for(const kind of ['revoke','changed-grant','invalid-page']){const f=fixture();const service=withCache(f,async()=>{const page=cachedPage();if(kind==='revoke')f.state.live=false;if(kind==='changed-grant')f.state.projection={...f.state.projection,grant_epoch:f.state.projection.grant_epoch+1};if(kind==='invalid-page')page.count.returned=2;return page;});await assert.rejects(service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'}));assert.equal(f.state.calls,0);}
-});
-test('native custody finalizer runs after final Exposure wait and rejects a late epoch change without handles',async()=>{
-  const f=fixture(),original=f.authority.browseAuthority;let checks=0,epoch=7,finals=0;
-  f.authority.browseAuthority=async(...args)=>{const result=await original(...args);if(++checks===2)epoch=8;return result;};
-  const service=withCache(f,async()=>cachedPage(),async()=>{finals++;assert.equal(checks,2);if(epoch!==7)throw exposureUnavailable();});
-  await assert.rejects(service.read(f.caller,f.session,'inbox',{operation:'browse',kind:'list',folder:'all'}));assert.equal(finals,1);assert.equal(f.state.calls,0);
 });

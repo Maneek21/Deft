@@ -1,3 +1,4 @@
+import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {z} from 'zod';
 import {and,eq,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
@@ -31,7 +32,7 @@ export type ReviewedFutureRecordActionAuthority=z.infer<typeof ReviewedFutureRec
 /** Shared live readers check owner membership, installed version/grant,
  * deployment admission, resource purpose and connected account. No browser
  * session, observation consent or local-job execution authority is borrowed. */
-export async function currentFutureRecordActionAuthority(tx:AppRunTransaction,raw:unknown,clock=()=>new Date()){
+export async function currentFutureRecordActionAuthority(tx:AppRunTransaction,raw:unknown,clock=()=>new Date(),prepared?:unknown){
  const pins=ReviewedFutureRecordActionAuthoritySchema.parse(raw),now=clock();
  if(!Number.isFinite(now.getTime())||Date.parse(pins.authority_expires_at)<=now.getTime()||appDataDigest(pins.policy)!==pins.policy_digest)throw appDataDenied();
  const identity=pins.purpose_identity;
@@ -65,6 +66,7 @@ export async function currentFutureRecordActionAuthority(tx:AppRunTransaction,ra
   ||reviewed.registration.runtime_epoch!==consent.authority_epoch||digestAppGrantValue(reviewed.authorization_snapshot)!==consent.consent_digest
   ||!reviewed.owner_target_consent_expires_at||reviewed.owner_target_consent_expires_at.getTime()<Date.parse(pins.authority_expires_at))throw appDataDenied();
  }
+ if(prepared!==undefined)verifiedPreparedRecordAction(prepared,undefined,store);
  if(clock().getTime()>=Date.parse(pins.authority_expires_at))throw appDataDenied();
  return pins;
 }

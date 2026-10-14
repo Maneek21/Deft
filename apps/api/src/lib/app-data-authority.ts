@@ -1,7 +1,7 @@
 import {validateContinuationCarrier} from './app-connection-consent-continuation-fence.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
 import {AppRecordChangeAuthorityRequestSchema,AppRecordChangeAuthorityResultSchema} from '@deft/app-kit';
-import {verifiedRetainedPreparedCopyEffect} from './app-data-copy-effect.js';
+import {verifiedRetainedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {sameRecordChangeAuthority} from './app-data-record-change-guards.js';
 import {and,eq,sql,desc} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
@@ -129,10 +129,11 @@ export async function authorizeReleasedAppDataAction(nomination:{org_id:string;o
    return !!prepared&&prepared.snapshot_id===input.snapshot_id&&prepared.snapshot_digest===input.prepared_digest&&prepared.action_key===nomination.operation_name&&typeof prepared.expires_at==='string'&&Date.parse(prepared.expires_at)>Date.now();});
   if(!candidates.length)return false;
   const row=candidates.find(candidate=>isDeepStrictEqual((candidate.result!.prepared as Record<string,unknown>).input,preparedInput));if(!row)return false;
-  const prepared=verifiedRetainedPreparedCopyEffect(row.result!.prepared,nomination.runtime_binding_id);
+  const prepared=verifiedRetainedPreparedRecordAction(row.result!.prepared,nomination.runtime_binding_id);
   if(prepared.future_release)return false;
   const caller={org_id:nomination.org_id,user_id:nomination.owner_id,sid:row.web_session_id,access_expires_at:row.access_expires_at.getTime()};
   const current=await currentAppDataAuthority(caller,input.connection_session_id,input.record_store_key,appDataRetainedGuard(caller),true,input.data_consent_id);
+  verifiedRetainedPreparedRecordAction(row.result!.prepared,nomination.runtime_binding_id,current.store);
   if(prepared.required_action_consents?.some(required=>!current.action_consents?.some(active=>isDeepStrictEqual(active,required))||Date.parse(required.expires_at)<=Date.now()))return false;
   return current.scope.installation_id===nomination.installation_id&&current.scope.app_version_id===nomination.app_version_id
    &&current.scope.grant_snapshot_id===nomination.grant_snapshot_id&&current.connection.session_revision===input.connection_revision
@@ -163,9 +164,9 @@ async function authorizeReleasedFutureRecordAction(nomination:Parameters<typeof 
   ||pins.connection.account_ref!==nomination.input.account_ref||pins.data_consent_id!==nomination.input.data_consent_id
   ||pins.data_consent_digest!==nomination.input.data_consent_digest||pins.store_key!==nomination.input.record_store_key)return false;
   const {record_content_digest:_,...preparedMetadata}=row.prepared;
-  const prepared=verifiedRetainedPreparedCopyEffect({...preparedMetadata,input:preparedInput},nomination.runtime_binding_id);
+  const prepared=verifiedRetainedPreparedRecordAction({...preparedMetadata,input:preparedInput},nomination.runtime_binding_id);
   if(!prepared.future_release||!isDeepStrictEqual(prepared.input,preparedInput)||prepared.snapshot_digest!==row.prepared_digest)return false;
-  await currentFutureRecordActionAuthority(tx,pins);
+  await currentFutureRecordActionAuthority(tx,pins,()=>new Date(),prepared);
   return row.dispatch_lifetime_expires_at.getTime()>Date.now();
  });
 }
