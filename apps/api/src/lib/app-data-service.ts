@@ -43,9 +43,9 @@ export class AppDataService {
    ||appConsentDeadline(row.expires_at,snapshot.consent_lifetime)>appConsentDeadline(authority.scope.consent_expires_at,authority.scope.consent_lifetime)
    ||snapshot.consent_lifetime!==input.consent_lifetime
    ||(snapshot.consent_lifetime==='until_revoked'?authority.allow_until_revoked!==true||!snapshot.review_expires_at||Date.parse(snapshot.review_expires_at)<=Date.now():row.expires_at!.getTime()>row.created_at.getTime()+authority.consent_max_seconds*1000))throw appDataDenied();
-  if(!await store.activate(input.consent_id,input.expected_review_digest))throw conflict();return {consent_id:row.consent_id,consent_digest:row.consent_digest,expires_at:row.expires_at?.toISOString()??null,...(snapshot.consent_lifetime?{consent_lifetime:snapshot.consent_lifetime}:{})};
+  if(!await store.activate(input.consent_id,input.expected_review_digest,authority.consent_connection_ids))throw conflict();return {consent_id:row.consent_id,consent_digest:row.consent_digest,expires_at:row.expires_at?.toISOString()??null,...(snapshot.consent_lifetime?{consent_lifetime:snapshot.consent_lifetime}:{})};
  }
- async revoke(sessionId:string,id:string){const store=new PostgresAppDataStore(this.caller),row=await store.consent(id);if(!row||row.connection_session_id!==sessionId)throw appDataDenied();await store.revoke(id);return {revoked:true};}
+ async revoke(sessionId:string,id:string){const store=new PostgresAppDataStore(this.caller),row=await store.consent(id);if(!row)throw appDataDenied();if(row.connection_session_id!==sessionId){const authority=await this.current(sessionId,row.store_key,false);if(!authority.consent_connection_ids.includes(row.connection_session_id))throw appDataDenied();}await store.revoke(id);return {revoked:true};}
  async invoke(sessionId:string,raw:unknown,bytes?:Uint8Array,signal?:AbortSignal){
   const request=AppDataRequestSchema.parse(raw);return withAppDataBinaryIo(this.caller,request.operation,()=>this.invokeOwned(sessionId,request,bytes,signal));
  }

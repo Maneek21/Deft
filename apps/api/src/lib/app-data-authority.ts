@@ -17,6 +17,7 @@ import {currentAppConnectionReadAuthority} from './app-connection-session-author
 import {appDataConnectionActionSelection} from './app-data-read-authority.js';
 import {PostgresAppConnectionSessionStore} from './app-connection-session-store.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
+import {appDataConsentConnections} from './app-data-consent-repair.js';
 import {PostgresAppDataStore} from './app-data-store.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 import type {WebAuthorityGuard} from './app-resource-sync-web-authority.js';
@@ -51,10 +52,11 @@ export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_
  const policy=manifest.owner_connections?.find(item=>item.resource_key===current.scope.resource_key&&item.provider_profile_key===current.profile.key
   &&item.runtime_requirement_key===current.profile.runtime_requirement_key);if(!policy)throw appDataDenied();
  const connection=AppDataConnectionSchema.parse({session_id:sessionId,session_revision:session.revision,runtime_session_ref:session.runtime_session_ref,account_ref:session.account.account_ref});
+ const consentConnections=await appDataConsentConnections(session);
  const policyDigest=appDataDigest(store);let consent:null|{consent_id:string;consent_digest:string;expires_at:Date|null;consent_lifetime?:AppConsentLifetime}=null;
- if(requireConsent){const rows=await new PostgresAppDataStore(caller).activeConsent(sessionId,storeKey);
+ if(requireConsent){const rows=await new PostgresAppDataStore(caller).activeConsent(consentConnections.map(item=>item.session_id),storeKey);
   const valid=rows.filter(row=>{const snap=AppDataConsentSnapshotSchema.parse(row.snapshot);return (!expectedConsentId||row.consent_id===expectedConsentId)
-   &&isDeepStrictEqual(snap.scope,current.scope)&&snap.connection.session_id===connection.session_id&&snap.connection.runtime_session_ref===connection.runtime_session_ref
+   &&isDeepStrictEqual(snap.scope,current.scope)&&consentConnections.some(item=>item.session_id===snap.connection.session_id&&item.runtime_session_ref===snap.connection.runtime_session_ref&&item.account?.account_ref===snap.connection.account_ref&&snap.connection.session_revision<=item.revision)
    &&snap.connection.account_ref===connection.account_ref&&isDeepStrictEqual(snap.store,store)&&snap.data_policy_digest===policyDigest&&appDataDigest(snap)===row.consent_digest
    &&appConsentDeadline(row.expires_at,snap.consent_lifetime)<=appConsentDeadline(current.scope.consent_expires_at,current.scope.consent_lifetime)
    &&(snap.consent_lifetime==='until_revoked'?policy.allow_until_revoked===true:row.expires_at!.getTime()<=row.created_at.getTime()+policy.max_consent_seconds*1000);});
@@ -62,7 +64,7 @@ export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_
  }
  const after=await sessions.read(locator,'data');if(!after||after.state!=='connected'||after.revision!==session.revision)throw appDataDenied();
  const expires_at=Math.min(current.expires_at,appConsentDeadline(current.scope.consent_expires_at,current.scope.consent_lifetime),consent?appConsentDeadline(consent.expires_at,consent.consent_lifetime):Infinity);
- if(expires_at<=Date.now())throw appDataDenied();return {...current,store,connection,consent,data_policy_digest:policyDigest,expires_at,
+ if(expires_at<=Date.now())throw appDataDenied();return {...current,store,connection,consent,consent_connection_ids:consentConnections.map(item=>item.session_id),data_policy_digest:policyDigest,expires_at,
   consent_max_seconds:policy.max_consent_seconds,allow_until_revoked:policy.allow_until_revoked};
 }
 export type CurrentAppDataAuthority=Awaited<ReturnType<typeof currentAppDataAuthority>>;

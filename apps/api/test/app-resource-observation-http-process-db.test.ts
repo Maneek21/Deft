@@ -211,7 +211,7 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     await writeFile(runtimeConfigPath, JSON.stringify({listen_port: 0, store_root: storeRoot, key_id: 'fixture-key-v1',
       encryption_key_hex: randomBytes(32).toString('hex'), runtime_auth_token: runtimeToken, authority_token: authorityToken,
       authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/authority`,
-      ...(persistentProof?{authority_v2_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/authority-v2`,consent_continuation_authority_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/consent-continuation-authority`}:{}), reattach_authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/reattach-authority`, data_authority_url: `http://127.0.0.1:${hostPort}/api/app-data/runtime/authority`, gmail_client_file: clientPath,
+      ...(persistentProof?{authority_v2_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/authority-v2`,consent_continuation_authority_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/consent-continuation-authority`,upgrade_authority_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/upgrade-authority`}:{}), reattach_authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/reattach-authority`, data_authority_url: `http://127.0.0.1:${hostPort}/api/app-data/runtime/authority`, gmail_client_file: clientPath,
       registrations: [{...(persistentProof?{connection_protocol:'v2'}:{}),org_id: org, runtime_registration_id: binding.registration_id, operator_user_id: people.owner,
         runtime_epoch: entry.runtime_epoch, profile_digest: connectionProfileDigest(profile as any),
         target_key: resourceInput.target_key, resource_key: 'inbox'},
@@ -360,6 +360,35 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       const dataGrant=await call(dataBase+'/activate',{store_key:'drafts',consent_id:dataReview.snapshot.consent_id,
         expires_at:null,consent_lifetime:'until_revoked',expected_review_digest:dataReview.review_digest,accept_host_policy:true},tokens.member);
       assert.equal(dataGrant.expires_at,null);assert.equal(dataGrant.consent_lifetime,'until_revoked');
+      if(process.env.DEFT_E3_DATA_REPAIR_PROOF==='true'){
+        const dataRows=await import('../../../packages/db/src/app-data-schema.js');
+        const originalRows=await db.select().from(dataRows.appDataConsents).where(eq(dataRows.appDataConsents.consent_id,dataGrant.consent_id));
+        const recordId=randomUUID(),value={mode:'compose',to:'',cc:'',bcc:'',subject:'Repair continuity',body:'Retained draft',body_html:'',reply_record_id:'',attachments:[]};
+        const invoke=(sid:string,operation:string,input:unknown,token=tokens.member)=>call(`/api/app-data/connections/${sid}/requests`,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation,input},token);
+        const before=await invoke(connected.session_id,'record_create',{store_key:'drafts',record_id:recordId,value});
+        const nomination={mode:'credential_repair',installation_id:installed.id,target_key:resourceInput.target_key,source_session_id:connected.session_id,request_id:randomUUID()};
+        assert.equal((await request(base+'/upgrade/review',nomination,tokens.other)).status,403);
+        const reviewed=await call(base+'/upgrade/review',nomination,tokens.member);
+        assert.ok(reviewed.review_digest);
+        const begun=await call(base+'/upgrade/begin',{mode:'credential_repair',session_id:reviewed.session_id,review_digest:reviewed.review_digest},tokens.member);
+        let repaired=await call(base+'/upgrade/callback',{mode:'credential_repair',session_id:reviewed.session_id,state:begun.callback_state,outcome:'authorized',code:'fixture-first-account-send'},tokens.member);
+        assert.equal(repaired.state,'connected');
+        repaired=await call(base+'/upgrade/status',{mode:'credential_repair',session_id:repaired.session_id},tokens.member);
+        assert.equal(repaired.state,'connected');assert.equal(repaired.account.account_ref,connected.account.account_ref);
+        const context=await call(`/api/app-data/installations/${installed.id}/context?target_key=${resourceInput.target_key}`,undefined,tokens.member);
+        assert.equal(context.targets.length,1);assert.equal(context.targets[0].session_id,repaired.session_id);
+        assert.equal(context.targets[0].stores[0].consent?.consent_id,dataGrant.consent_id,'same immutable grant is visible after acknowledged repair');
+        const after=await invoke(repaired.session_id,'record_read',{store_key:'drafts',record_id:recordId});
+        assert.deepEqual(after.record,before.record,'repair carries saved draft bytes and revision without a new consent');
+        assert.deepEqual(await db.select().from(dataRows.appDataConsents).where(eq(dataRows.appDataConsents.consent_id,dataGrant.consent_id)),originalRows,'repair/read never rewrite original consent or digest');
+        assert.equal((await request(`/api/app-data/connections/${repaired.session_id}/requests`,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'record_read',input:{store_key:'drafts',record_id:recordId}},tokens.other)).status,403);
+        assert.equal((await request(`/api/app-data/connections/${currentSessions[1].session_id}/consent/revoke`,{consent_id:dataGrant.consent_id},tokens.member)).status,403,'foreign account cannot nominate an inherited grant');
+        await call(`/api/app-data/connections/${repaired.session_id}/consent/revoke`,{consent_id:dataGrant.consent_id},tokens.member);
+        assert.deepEqual(await call(`/api/app-data/connections/${repaired.session_id}/consent/revoke`,{consent_id:dataGrant.consent_id},tokens.member),{revoked:true},'lost revoke ACK can be reconciled without restoring a grant');
+        assert.equal((await request(`/api/app-data/connections/${repaired.session_id}/requests`,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'record_read',input:{store_key:'drafts',record_id:recordId}},tokens.member)).status,403,'original revocation remains effective through repair');
+        console.log('# persistent data repair HTTP proof '+JSON.stringify({same_grant:true,immutable_snapshot:true,same_draft:true,current_runtime_authority:true,wrong_owner_denied:true,foreign_chain_denied:true,revoke_through_current:true}));
+        return;
+      }
       const observationBase='/api/app-resource-observations/consent',obsInput={connection_session_id:connected.session_id,
         request_id:randomUUID(),interval_seconds:60,expires_at:null,consent_lifetime:'until_revoked'};
       assert.equal((await request(observationBase+'/review',{...obsInput,consent_lifetime:undefined},tokens.member)).status,400);
