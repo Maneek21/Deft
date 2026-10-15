@@ -11,8 +11,8 @@ test('validated persistent resource consent survives final guards without extend
   process.env.DEFT_APP_RUN_KEYRINGS = JSON.stringify({ schema_version: 'deft.app_run_keyring.v1',
     run_encryption: ring('final-enc', 11), receipt_signing: ring('final-sign', 12), fingerprint: ring('final-fp', 13) });
   try {
-    const { assertAttachmentStageFinalAuthority } = await import('./app-attachment-sync-run.js');
-    const { AppResourceSyncClosureService } = await import('./app-resource-sync-closure.js');
+    const { assertAttachmentStageFinalAuthority } = await import('../src/lib/app-attachment-sync-run.js');
+    const { AppResourceSyncClosureService } = await import('../src/lib/app-resource-sync-closure.js');
     let now = Date.now();
     const clock = () => new Date(now), future = () => new Date(now + 60_000);
     const tx = { select: () => ({ from: () => ({ where: async () => [{ id: 'owner', kind: 'human', is_agent: false }] }) }),
