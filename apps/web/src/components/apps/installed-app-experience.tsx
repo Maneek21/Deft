@@ -733,7 +733,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           return;
         }
         const recovering = unavailable; unavailable = false; setConnectionUnavailable(false);
-        if (recovering && !document.hidden) startWorker();
+        if (!document.hidden) startWorker();
         if (recovering && !document.hidden && latestView && viewHost.current) {
           publishViewNavigation(latestView);
           renderHostView(latestView);
@@ -1003,8 +1003,10 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         if (status === 'started') startup.started(); else startup.fail(status);
         return;
       }
-      if (!authorityCurrent() || started || event.source !== frame.contentWindow || event.origin !== 'null'
-        || !event.data || event.data.kind !== 'deft_experience_bootstrap_ready.v1'
+      // Readiness is transport metadata. Retain it across a renewable lease gap;
+      // startWorker still requires current authority, visibility and one transfer.
+      if (!identityCurrent() || started || event.source !== frame.contentWindow || event.origin !== 'null'
+        || !event.data || Object.keys(event.data).join(',') !== 'kind' || event.data.kind !== 'deft_experience_bootstrap_ready.v1'
         || !frame.contentWindow) return;
       startup.ready(); bootstrapReady = true; startWorker();
     };
