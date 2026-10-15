@@ -14,7 +14,7 @@
     "examples/apps/email/providers/native-connection-retained.mjs": "cf64c2a178f6589b9760f3055f14d0d51e9bbee6e81524a5971182e09b50773a",
     "examples/apps/email/providers/oauth-contract.mjs": "c5b15eaf82a258f6ea13d78d03a0debb7bd21e66341bf3bd8e96db53b3e37192",
     "examples/apps/email/providers/oauth-provider.mjs": "8144e4db2cf56f9ff2ffa41efcb2a811497778db8d30354ae9c148cc092e85b7",
-    "apps/web/src/components/apps/installed-app-experience.tsx": "c020bfe11b61b685cd62b67e8398fc2cd4cef6e448e7b4271a6cb572daa98f55",
+    "apps/web/src/components/apps/installed-app-experience.tsx": "8c2c9eccb40bb26793ea4c9796ef5aaf16b2d18d80c445cb5482e95dae9e5e3b",
     "apps/web/src/lib/app-experience-bridge.ts": "ed0ad818ddc9f7c69a86efe184a6380934fc329027d074a29a96f3fdc1ea6aff",
     "apps/web/src/lib/app-experience-lease.ts": "1fd793057125771dc4b5efc311e26287f38935e301af689a090bc922706ee7d0",
     "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",
@@ -29,8 +29,11 @@
     "examples/apps/email/providers/triage-contract.mjs": "962318ba7eebcb6329a470a265e244077c41624f88d55920edac0296eb3b6afe",
     "apps/web/src/lib/app-connection-reattachment.test.ts": "d0ff5f9be2182fe74fcc94225bdb1e1c387a7e00608b002756ea7a65ff1f92c1",
     "apps/web/src/lib/app-connection-session-flow.ts": "01fa8a2a9e7aab42fdcac618d3a78df6189ee9e0f8f7b39a8e94055bf046eb2a",
-    "apps/web/public/app-experience-bootstrap.js": "cc03020bba4777192aa3ecccf1e5d0c7de3cd706224f39b1615a2c492cfbe314",
-    "apps/web/src/lib/app-experience-startup.ts": "f9f552de56e1c2abed8005bffac7aba379220ae7b0efa41b5d5e18a1a92cf380"
+    "apps/web/src/lib/app-experience-startup.ts": "f9f552de56e1c2abed8005bffac7aba379220ae7b0efa41b5d5e18a1a92cf380",
+    "apps/web/src/lib/app-experience-bootstrap-script.ts": "52920b3ce29082f7d3d83fdeb8cd040a34f16a88743142f0a900c53ce6c49980",
+    "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts": "715f49184bf2468416e409256c7a9d525405f846ed96fcd04ee8ba791b4f7520",
+    "apps/web/src/app/app-experience-bootstrap.js/route.ts": "7a78c864a3566f2580a7fab697b1cd56df037376500dacb2d9dbe4f571608e9a",
+    "apps/web/next.config.ts": "5a4383a0b1a22ed19600df3bc34de5fecc690afb6dbf6e63388473ac6897b049"
   },
   "findings": [
     {
@@ -172,54 +175,63 @@
       "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "line": 994,
-      "fingerprint": "6c7c3683c977b36b1f04cd0ea65cd54701e598301950c58e4f7d2ec692d50fe9",
+      "line": 995,
+      "fingerprint": "d550841c717a9fdc4c6b73ffdcac73e437eb919a9c46e4f92e1db72b74fe7996",
       "sources": [
         "apps/web/src/components/apps/installed-app-experience.tsx",
         "apps/web/src/lib/app-experience-bridge.ts",
         "apps/web/src/lib/app-experience-lease.ts",
         "apps/web/src/lib/app-experience-connection.ts",
         "apps/web/src/app/app-experience-bootstrap/route.ts",
-        "apps/web/public/app-experience-bootstrap.js",
-        "apps/web/src/lib/app-experience-startup.ts"
+        "apps/web/src/lib/app-experience-bootstrap-script.ts",
+        "apps/web/src/lib/app-experience-startup.ts",
+        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
+        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
+        "apps/web/next.config.ts"
       ],
-      "justification": "The target is the exact Host-created opaque iframe, with allow-scripts and no allow-same-origin, fixed bootstrap, exact contentWindow/null-origin readiness and current authority. Start sends signed public Worker source/session identity plus one scoped MessagePort; stop revokes/removes it. Wildcard is required for opaque origin, not arbitrary-window disclosure. Frame/bridge/bootstrap/lease source is pinned below."
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned."
     },
     {
       "id": "FP-013",
       "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "line": 1008,
-      "fingerprint": "11ef43923777778fd294e20345f7f04dd496fc379bc2a2e8ac5471f0cbcfed91",
+      "line": 1010,
+      "fingerprint": "0718ac1cb1c1bfe1df3ef30157192b9078bc84a97a3d298d6e756c874a1216c3",
       "sources": [
         "apps/web/src/components/apps/installed-app-experience.tsx",
         "apps/web/src/lib/app-experience-bridge.ts",
         "apps/web/src/lib/app-experience-lease.ts",
         "apps/web/src/lib/app-experience-connection.ts",
         "apps/web/src/app/app-experience-bootstrap/route.ts",
-        "apps/web/public/app-experience-bootstrap.js",
-        "apps/web/src/lib/app-experience-startup.ts"
+        "apps/web/src/lib/app-experience-bootstrap-script.ts",
+        "apps/web/src/lib/app-experience-startup.ts",
+        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
+        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
+        "apps/web/next.config.ts"
       ],
-      "justification": "The target is the exact Host-created opaque iframe, with allow-scripts and no allow-same-origin, fixed bootstrap, exact contentWindow/null-origin readiness and current authority. Start sends signed public Worker source/session identity plus one scoped MessagePort; stop revokes/removes it. Wildcard is required for opaque origin, not arbitrary-window disclosure. Frame/bridge/bootstrap/lease source is pinned below."
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned."
     },
     {
       "id": "FP-014",
       "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "line": 1078,
-      "fingerprint": "af392045505c45b54e87221dc6bc3d532e65b14be8ef35d77ccad3e352ecb3ad",
+      "line": 1090,
+      "fingerprint": "75ce06eff2805ba1f40035fb4ee0a7eda16afd042432f3eeb8e1fb22c3c3f804",
       "sources": [
         "apps/web/src/components/apps/installed-app-experience.tsx",
         "apps/web/src/lib/app-experience-bridge.ts",
         "apps/web/src/lib/app-experience-lease.ts",
         "apps/web/src/lib/app-experience-connection.ts",
         "apps/web/src/app/app-experience-bootstrap/route.ts",
-        "apps/web/public/app-experience-bootstrap.js",
-        "apps/web/src/lib/app-experience-startup.ts"
+        "apps/web/src/lib/app-experience-bootstrap-script.ts",
+        "apps/web/src/lib/app-experience-startup.ts",
+        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
+        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
+        "apps/web/next.config.ts"
       ],
-      "justification": "The target is the exact Host-created opaque iframe, with allow-scripts and no allow-same-origin, fixed bootstrap, exact contentWindow/null-origin readiness and current authority. Start sends signed public Worker source/session identity plus one scoped MessagePort; stop revokes/removes it. Wildcard is required for opaque origin, not arbitrary-window disclosure. Frame/bridge/bootstrap/lease source is pinned below."
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned."
     },
     {
       "id": "FP-015",
