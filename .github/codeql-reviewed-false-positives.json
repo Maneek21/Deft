@@ -1,7 +1,7 @@
 {
   "schema_version": "deft.codeql_false_positives.v1",
-  "review_source_commit": "3f30966b1bfc9851c770c9ce0b2f55ed1b026321",
-  "review_original_sarif_sha256": "ab96ede86e749e7a324a08673cc9487bec9f0847632b1dda10c4c904e48f9dde",
+  "review_source_commit": "7bd45632567cea04d9bca831a87b8e28107a4152",
+  "review_original_sarif_sha256": "bfec8c52e54504167727415f87e12a07d97d00c7c428abb3874da512794c0bdf",
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
     "apps/api/src/lib/agent-actions.ts": "6c8d739c34939f7c0ca38771a4dafa7328f7dfd3ac15f809c1d3c49bc20f136c",
@@ -14,7 +14,7 @@
     "examples/apps/email/providers/native-connection-retained.mjs": "cf64c2a178f6589b9760f3055f14d0d51e9bbee6e81524a5971182e09b50773a",
     "examples/apps/email/providers/oauth-contract.mjs": "c5b15eaf82a258f6ea13d78d03a0debb7bd21e66341bf3bd8e96db53b3e37192",
     "examples/apps/email/providers/oauth-provider.mjs": "8144e4db2cf56f9ff2ffa41efcb2a811497778db8d30354ae9c148cc092e85b7",
-    "apps/web/src/components/apps/installed-app-experience.tsx": "664afcbc7dec2abe8958ca67c8aa112577f02bd779b4484a5501fe4ba5d8b805",
+    "apps/web/src/components/apps/installed-app-experience.tsx": "0366c80aadc26073b2b3999cdb1f7f3f0e18c08a561c212166dd9cea6344694c",
     "apps/web/src/lib/app-experience-bridge.ts": "ed0ad818ddc9f7c69a86efe184a6380934fc329027d074a29a96f3fdc1ea6aff",
     "apps/web/src/lib/app-experience-lease.ts": "1fd793057125771dc4b5efc311e26287f38935e301af689a090bc922706ee7d0",
     "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",
@@ -28,7 +28,9 @@
     "examples/apps/email/providers/oauth-account.test.mjs": "86144284254bcaa3cd29afe68fac215178f9aa5c9ad641213791340c31e00562",
     "examples/apps/email/providers/triage-contract.mjs": "962318ba7eebcb6329a470a265e244077c41624f88d55920edac0296eb3b6afe",
     "apps/web/src/lib/app-connection-reattachment.test.ts": "d0ff5f9be2182fe74fcc94225bdb1e1c387a7e00608b002756ea7a65ff1f92c1",
-    "apps/web/src/lib/app-connection-session-flow.ts": "01fa8a2a9e7aab42fdcac618d3a78df6189ee9e0f8f7b39a8e94055bf046eb2a"
+    "apps/web/src/lib/app-connection-session-flow.ts": "01fa8a2a9e7aab42fdcac618d3a78df6189ee9e0f8f7b39a8e94055bf046eb2a",
+    "apps/web/public/app-experience-bootstrap.js": "cc03020bba4777192aa3ecccf1e5d0c7de3cd706224f39b1615a2c492cfbe314",
+    "apps/web/src/lib/app-experience-startup.ts": "f9f552de56e1c2abed8005bffac7aba379220ae7b0efa41b5d5e18a1a92cf380"
   },
   "findings": [
     {
@@ -170,14 +172,16 @@
       "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "line": 977,
-      "fingerprint": "b506f39274c0093cb95b169670e004333315647155455e97488efe8351f57053",
+      "line": 985,
+      "fingerprint": "b7e45f5779949f33c9a1b2fe725cb4a325fa42df6b74ba3b08bf80b8be9fd642",
       "sources": [
         "apps/web/src/components/apps/installed-app-experience.tsx",
         "apps/web/src/lib/app-experience-bridge.ts",
         "apps/web/src/lib/app-experience-lease.ts",
         "apps/web/src/lib/app-experience-connection.ts",
-        "apps/web/src/app/app-experience-bootstrap/route.ts"
+        "apps/web/src/app/app-experience-bootstrap/route.ts",
+        "apps/web/public/app-experience-bootstrap.js",
+        "apps/web/src/lib/app-experience-startup.ts"
       ],
       "justification": "The target is the exact Host-created opaque iframe, with allow-scripts and no allow-same-origin, fixed bootstrap, exact contentWindow/null-origin readiness and current authority. Start sends signed public Worker source/session identity plus one scoped MessagePort; stop revokes/removes it. Wildcard is required for opaque origin, not arbitrary-window disclosure. Frame/bridge/bootstrap/lease source is pinned below."
     },
@@ -186,14 +190,16 @@
       "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "line": 990,
-      "fingerprint": "156c0739991a7ef8a889b389dd9fc45251464ddabf8c21512099270dddc20660",
+      "line": 998,
+      "fingerprint": "b9c7724dd0c68e517e3476d9a2576384d939d063eea9b97ac71fc107531b3b43",
       "sources": [
         "apps/web/src/components/apps/installed-app-experience.tsx",
         "apps/web/src/lib/app-experience-bridge.ts",
         "apps/web/src/lib/app-experience-lease.ts",
         "apps/web/src/lib/app-experience-connection.ts",
-        "apps/web/src/app/app-experience-bootstrap/route.ts"
+        "apps/web/src/app/app-experience-bootstrap/route.ts",
+        "apps/web/public/app-experience-bootstrap.js",
+        "apps/web/src/lib/app-experience-startup.ts"
       ],
       "justification": "The target is the exact Host-created opaque iframe, with allow-scripts and no allow-same-origin, fixed bootstrap, exact contentWindow/null-origin readiness and current authority. Start sends signed public Worker source/session identity plus one scoped MessagePort; stop revokes/removes it. Wildcard is required for opaque origin, not arbitrary-window disclosure. Frame/bridge/bootstrap/lease source is pinned below."
     },
@@ -202,14 +208,16 @@
       "disposition": "false_positive",
       "rule": "js/cross-window-information-leak",
       "path": "apps/web/src/components/apps/installed-app-experience.tsx",
-      "line": 1041,
-      "fingerprint": "9610996890f12d0dc955b085eeec74fb387b0497dcc434bb4b295baa252e6b42",
+      "line": 1055,
+      "fingerprint": "51c72516a57faac957bc24a70c40a8b0a376bc91c171d6e279fbdc6db3d0665b",
       "sources": [
         "apps/web/src/components/apps/installed-app-experience.tsx",
         "apps/web/src/lib/app-experience-bridge.ts",
         "apps/web/src/lib/app-experience-lease.ts",
         "apps/web/src/lib/app-experience-connection.ts",
-        "apps/web/src/app/app-experience-bootstrap/route.ts"
+        "apps/web/src/app/app-experience-bootstrap/route.ts",
+        "apps/web/public/app-experience-bootstrap.js",
+        "apps/web/src/lib/app-experience-startup.ts"
       ],
       "justification": "The target is the exact Host-created opaque iframe, with allow-scripts and no allow-same-origin, fixed bootstrap, exact contentWindow/null-origin readiness and current authority. Start sends signed public Worker source/session identity plus one scoped MessagePort; stop revokes/removes it. Wildcard is required for opaque origin, not arbitrary-window disclosure. Frame/bridge/bootstrap/lease source is pinned below."
     },
