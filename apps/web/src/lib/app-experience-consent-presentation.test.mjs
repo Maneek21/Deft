@@ -1,5 +1,4 @@
-import {AppDataContextSchema,AppDataConsentSnapshotSchema,AppDataConsentReferenceSchema} from '../../../../packages/app-kit/src/app-data';
-import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
+import {AppDataContextSchema,AppDataConsentSnapshotSchema,AppDataConsentReferenceSchema,appConsentDeadline} from '../../../../packages/app-kit/dist/index.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
