@@ -54,6 +54,7 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       app.route('/api/app-runtime/channel',(await import('../src/routes/app-runtime-channel.js')).appRuntimeChannelRoutes);}
     app.route('/api/app-resource-observations',(await import('../src/routes/app-resource-observations.js')).appResourceObservationRoutes);
     app.route('/api/app-resource-sync-channel/v3',(await import('../src/routes/app-attachment-sync-channel.js')).appAttachmentSyncChannelRoutes);
+    if(persistentProof)app.route('/api/app-resource-sync-management',(await import('../src/routes/app-resource-sync-management.js')).appResourceSyncManagementRoutes);
     const directory = await mkdtemp(join(tmpdir(), 'deft-e2-session-test-'));
     const observationChannelPath=join(directory,'observation-channel.json');
     const configPath = join(directory, 'reviewed-http.json'), previousConfig = process.env.DEFT_APP_CONNECTION_HTTP_CONFIG;
@@ -99,13 +100,17 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     };
     const fixture = JSON.parse((await runtimeSecurityPackage()).json);
     const {EMAIL_METADATA_DESCRIPTOR}=await import(pathToFileURL(join(runtimeRoot!,'vendor/metadata-resource.mjs')).href);
-    fixture.manifest.sync_descriptors=[{...EMAIL_METADATA_DESCRIPTOR,key:'inbox'}];
+    fixture.manifest.sync_descriptors=[structuredClone({...EMAIL_METADATA_DESCRIPTOR,key:'inbox'})];
+    if(persistentProof)for(const [field,maxLength]of Object.entries({source_record_id:36,source_content_digest:71,source_observed_at:64})){
+      fixture.manifest.sync_descriptors[0].record_schema.properties[field]={type:'string',maxLength};fixture.manifest.sync_descriptors[0].record_schema.required.push(field);
+    }
     fixture.manifest.id = 'community.example.e2data.a' + org.replaceAll('-', '');
     fixture.manifest.owner_connections = [{ key: 'mailbox', resource_key: 'inbox', action_keys: ['send_message'],
       ...(persistentProof?{allow_until_revoked:true}:{}),max_consent_seconds: 86400, provider_profile_key: 'google_mail', runtime_requirement_key: 'sync_provider' }];
     fixture.manifest.record_stores=[{schema_version:'deft.app_record_store.v1',key:'drafts',resource_key:'inbox',runtime_requirement_key:'sync_provider',
       max_record_bytes:491520,max_files:32,max_file_bytes:26214400,max_total_file_bytes:26214400,
-      resource_content:{max_presentation_bytes:262144,max_source_bytes:36700160,max_file_bytes:26214400,max_image_bytes:2097152}}];
+      resource_content:{max_presentation_bytes:262144,max_source_bytes:36700160,max_file_bytes:26214400,max_image_bytes:2097152},
+      ...(persistentProof?{source_projection:{sync_descriptor_key:'inbox',record_id_field:'source_record_id',content_digest_field:'source_content_digest',observed_at_field:'source_observed_at',projection_identity_field:'logical_message_id',navigation_entry_key:'main'}}:{})}];
     const experience=await prepareDeftExperienceArtifact('experiences/main.json',{schema_version:'deft.experience_bundle.v3',worker_source:'self.onmessage=()=>{};',entry_view:'main',
       resource_keys:['inbox'],action_keys:['send_message'],state_keys:[],record_store_keys:['drafts']});
     delete fixture.manifest.private_state;fixture.artifacts=[experience];fixture.manifest.experiences=[{key:'main',label:'Synthetic full native records',artifact_path:experience.path,
@@ -302,7 +307,7 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       assert.equal(moves,2);assert.equal(providerRequests.length,providerBefore,'reattachment carries custody without repeating OAuth/provider reads');
     }
     if(persistentProof){
-      const beforeProvider=providerRequests.length,old=currentSessions[0];
+      const beforeProvider=providerRequests.length,old=currentSessions[0];let observedRunId:string|undefined;
       const {currentExperienceResourceConsent}=await import('../src/lib/app-experience-service.js'),{sql}=await import('drizzle-orm');
       const consentClock=new Date();
       for(const [mode,expiry,expected]of [
@@ -337,6 +342,16 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       assert.ok((await call(experienceBase+'/targets',undefined,tokens.member)).targets.some((row:{key:string})=>row.key===resourceInput.target_key));
       assert.equal((await request(experienceBase+'/sessions',experienceInput,tokens.owner)).status,403,'operator cannot select another owner resource');
       assert.equal((await request(experienceBase+'/sessions',{resource_target_key:'missing_target'},tokens.other)).status,403,'another owner cannot select a target they do not own');
+      await t.test('persistent Experience acquires reviews accepts and reads under the same current resource',async()=>{
+        const path='/api/app-experiences/sessions/'+persistentExperience.pin.session_id;
+        assert.equal((await call(path+'/access/acquire',{},tokens.member)).grant_status,'review_required');
+        const disclosure=await call(path+'/access/review',{},tokens.member);
+        assert.equal(disclosure.snapshot.resources[0].consent_expires_at,null);assert.equal(disclosure.snapshot.resources[0].consent_lifetime,'until_revoked');
+        assert.equal((await call(path+'/access/accept',{review_token:disclosure.review_token,review_digest:disclosure.review_digest,accept_exposure:true},tokens.member)).grant_status,'active');
+        assert.equal((await call(path+'/access/acquire',{},tokens.member)).grant_status,'active');
+        const listed=await call(path+'/resources/inbox',{schema_version:'deft.experience_resource_request.v1',operation:'list_summary',limit:1},tokens.member);
+        assert.deepEqual(listed.output.items,[]);
+      });
       const dataBase=`/api/app-data/connections/${connected.session_id}/consent`;
       assert.equal((await request(dataBase+'/review',{store_key:'drafts',expires_at:null},tokens.member)).status,400);
       const dataReview=await call(dataBase+'/review',{store_key:'drafts',expires_at:null,consent_lifetime:'until_revoked'},tokens.member);
@@ -353,6 +368,28 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       assert.equal(observation.expires_at,null);assert.equal(observation.consent_lifetime,'until_revoked');
       assert.ok(Date.parse(observation.review_expires_at)>Date.now()&&Date.parse(observation.review_expires_at)<=Date.now()+300000);
       await call(observationBase+'/activate',{consent_id:observation.consent_id,review_digest:observation.review_digest},tokens.member);
+      await t.test('actual durable scanner selects persistent observation and admits one new read Run',async()=>{
+        process.env.DEFT_APP_RESOURCE_SYNC_SCHEDULER_ENABLED='true';
+        const scanner=await import('../src/lib/app-resource-sync-scanner.js'),queues=await import('../src/lib/queues.js');
+        await queues.cleanupStaleJobs();await scanner.ensureAppResourceSyncScan(0);
+        await db.update(s.jobQueue).set({run_at:new Date()}).where(and(eq(s.jobQueue.name,scanner.APP_RESOURCE_SYNC_SCAN_JOB),eq(s.jobQueue.status,'pending')));
+        const job=await queues.dequeueJob(queues.QUEUE_NAMES.SCHEDULED_JOBS,{jobName:scanner.APP_RESOURCE_SYNC_SCAN_JOB,leaseMs:60000});assert.ok(job);
+        // Isolate this synthetic target within the existing durable scan cursor,
+        // without changing any resource cursor, consent, Run or historical row.
+        const hex=(BigInt('0x'+binding.binding_id.replaceAll('-',''))-1n).toString(16).padStart(32,'0');
+        const predecessor=hex.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/,'$1-$2-$3-$4-$5');
+        await db.update(s.jobQueue).set({data:{after_binding_id:predecessor}}).where(eq(s.jobQueue.id,job.id));
+        const abort=new AbortController(),attachment=await attachments.getAppAttachmentRuntime();let admittedId:string|undefined;
+        const scanned=await scanner.scanAppResourceSyncBindings({...job,signal:abort.signal},{admitDue:async()=>({state:'blocked',reason:'cursor_requires_recovery'})},{async admitObservation(target,limits){
+          if(target.resource_binding_id!==binding.binding_id)return{state:'blocked',reason:'cursor_requires_recovery'};
+          const result=await attachment.admission.admitObservation(target,limits);if(result.state==='created')admittedId=observedRunId=result.run_id;
+          abort.abort();return result;
+        }});
+        assert.equal(await queues.completeJob(job.id,job.lockToken!),true);assert.equal(scanned.created,1);assert.ok(admittedId);
+        const obs=await import('../../../packages/db/src/resource-observation-schema.js');
+        const links=await db.select().from(obs.appResourceObservationRuns).where(eq(obs.appResourceObservationRuns.run_id,admittedId));
+        assert.equal(links.length,1);assert.equal(links[0]!.consent_id,observation.consent_id);
+      });
       const issued=(await call(`/api/apps/blob/sync/bindings/${binding.binding_id}/sessions`,
         {technical_renewal:{renewal_lifetime:'until_revoked',requested_until:null}},tokens.owner)).session;
       assert.equal(issued.renewable_until,null);assert.equal(issued.renewal_lifetime,'until_revoked');
@@ -360,6 +397,46 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       const {createDeftResourceSyncClientV3}=await import('@deft/app-kit');
       const client=createDeftResourceSyncClientV3({channel_url:`http://127.0.0.1:${hostPort}/api/app-resource-sync-channel/v3`,
         credential:{session_id:issued.session_id,session_token:issued.session_token},fetch:realFetch});
+      await t.test('persistent V3 assignments and own session metadata retain explicit mode',async()=>{
+        const assignments=await call('/api/apps/blob/sync/operator/assignments',undefined,tokens.owner);
+        const assigned=assignments.assignments.find((row:{binding_id:string})=>row.binding_id===binding.binding_id);assert.ok(assigned);
+        assert.equal(assigned.consent_expires_at,null);assert.equal(assigned.consent_lifetime,'until_revoked');
+        const sessions=await call(`/api/apps/blob/sync/bindings/${binding.binding_id}/sessions?session_id=${issued.session_id}`,undefined,tokens.owner);
+        assert.equal(sessions.sessions.length,1);assert.equal(sessions.sessions[0].session_id,issued.session_id);
+        assert.equal(sessions.sessions[0].expires_at,issued.expires_at);
+        const legacy=await call('/api/app-resource-sync-management/operator/assignments',undefined,tokens.owner);
+        assert.ok(!legacy.assignments.some((row:{binding_id:string})=>row.binding_id===binding.binding_id),'legacy V2 cannot list the V3 binding');
+      });
+      await t.test('persistent observation claim start heartbeat result and materialized read retain authority',async()=>{
+        assert.ok(observedRunId);const claim=await client.claim();assert.ok(claim);assert.equal(claim.run_id,observedRunId);
+        const started=await client.start(claim);await client.heartbeat(claim);
+        await db.transaction(async tx=>{
+          const {loadLiveAttachmentSyncAuthority}=await import('../src/lib/app-attachment-sync-authority.js'),{assertAttachmentStageFinalAuthority}=await import('../src/lib/app-attachment-sync-run.js');
+          const [session]=await tx.select().from(s.appRuntimeSessions).where(eq(s.appRuntimeSessions.id,issued.session_id));assert.ok(session);
+          const authority=await loadLiveAttachmentSyncAuthority(tx,{org_id:org,session_id:issued.session_id,token_hash:session.token_hash,clock:()=>new Date()});
+          const [run]=await tx.select().from(s.appRuns).where(eq(s.appRuns.id,claim.run_id)),[attempt]=await tx.select().from(s.appRunAttempts).where(eq(s.appRunAttempts.id,claim.attempt_id));assert.ok(run);assert.ok(attempt);
+          await assertAttachmentStageFinalAuthority(tx,{run,attempt,authority},()=>new Date());
+        });
+        const {createResourceObservationClient}=await import('@deft/app-kit');
+        const observationClient=createResourceObservationClient({channel_url:`http://127.0.0.1:${hostPort}/api/app-resource-observations/runtime`,credential:{session_id:issued.session_id,session_token:issued.session_token},fetch:realFetch});
+        assert.equal((await observationClient.authorize(claim)).snapshot.consent_lifetime,'until_revoked');
+        const metadata=Object.fromEntries(Object.entries(EMAIL_METADATA_DESCRIPTOR.record_schema.properties).map(([key,value])=>[key,(value as {type:string}).type==='boolean'?false:'']));
+        const sourceId=randomUUID(),sourceDigest='sha256:'+'4'.repeat(64);
+        Object.assign(metadata,{metadata_version:'deft.email_message_metadata.v1',account_id:connected.account.account_ref,logical_message_id:'synthetic-persistent-message',conversation_id:'synthetic-persistent-conversation',provider:'gmail',label:'Synthetic persistent source',subject:'Synthetic persistent source',body_status:'lazy',files_status:'none',source_record_id:sourceId,source_content_digest:sourceDigest,source_observed_at:new Date().toISOString()});
+        await client.result(claim,started,{status:'returned',provider_succeeded:true,page:{schema_version:'deft.app_sync_page.v2',upserts:[{id:'synthetic-persistent-message',revision:'1',data:metadata,attachments:[]}],tombstones:[],next_cursor:null,has_more:false}});
+        const [settled]=await db.select().from(s.appRuns).where(eq(s.appRuns.id,observedRunId));assert.equal(settled!.state,'succeeded');
+        const projections=await db.select().from(s.appResourceProjections).where(eq(s.appResourceProjections.resource_binding_id,binding.binding_id));assert.equal(projections.length,1);
+        const path='/api/app-experiences/sessions/'+persistentExperience.pin.session_id;
+        const listed=await call(path+'/resources/inbox',{schema_version:'deft.experience_resource_request.v1',operation:'list_summary',limit:1},tokens.member);
+        assert.equal(listed.output.items.length,1);
+        const read=await call(path+'/resources/inbox',{schema_version:'deft.experience_resource_request.v1',operation:'read_one',record_id:listed.output.items[0].record_id},tokens.member);
+        assert.equal(read.output.item.data.subject,'Synthetic persistent source');
+        const {createAppIntegrationPublicationReader}=await import('../src/lib/app-integration-source-publication.js');
+        const publication=createAppIntegrationPublicationReader({keys:(await attachments.getAppAttachmentRuntime()).keys,transaction:callback=>db.transaction(callback)});
+        const caller={org_id:org,user_id:people.member,kind:'human' as const,principal_id:people.member};
+        const source=await publication.resolveProjectionIdentity(caller,{installation_id:installed.id,store_key:'drafts',account_ref:connected.account.account_ref,resource_key:'inbox'},binding.binding_id,'synthetic-persistent-message');
+        const published=await publication(caller,source);assert.equal(published.target.ref.record_id,sourceId);assert.equal(published.target.ref.content_digest,sourceDigest);
+      });
       // Revoke the issuing browser SID, not the durable permission or transport.
       const principal=await web.verifyWebAccess(tokens.owner!);
       await db.update(s.webSessions).set({revoked_at:new Date()}).where(eq(s.webSessions.id,principal.sid));

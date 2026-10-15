@@ -441,7 +441,7 @@ export class AppExperienceExposureService {
 
     if (!Number.isFinite(now) || (!allowExpired && context.session.expires_at.getTime() <= now) || caller.access_expires_at! <= now || context.web.expires_at.getTime() <= now
 
-      || context.authorities.some(a => !a.binding.consent_expires_at || a.binding.consent_expires_at.getTime() <= now)) throw exposureUnavailable();
+      || context.authorities.some(a => appConsentDeadline(a.binding.consent_expires_at,a.binding.consent_lifetime??undefined) <= now)) throw exposureUnavailable();
 
     this.enabled(caller, signal);
 

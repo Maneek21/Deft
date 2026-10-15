@@ -1,5 +1,5 @@
 import {futureRecordActionGate,optionalFutureRecordAction,settleFutureRecordAction} from './app-future-record-action-dispatch.js';
-import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit';
+import { appConsentDeadline, APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit';
 import {requireCurrentResourceObservationRun,observedResourceAuthorization,hasResourceObservationPin} from './app-resource-observation-authority.js';
 import { loadLiveAttachmentSyncAuthority, loadLiveAttachmentSyncBindingAuthority,
   type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
@@ -149,9 +149,9 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       if(run&&hasResourceObservationPin(run.authorization,authority.binding.id)){
         if(!await requireCurrentResourceObservationRun(tx,authority.binding.org_id,runId,authority as LiveAttachmentSyncBindingAuthority,this.now))throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
       }}
-    if (!authority || !authority.binding.consent_expires_at || !await attachmentFinalAuthorityIsCurrent(tx,
+    if (!authority || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= this.now().getTime() || !await attachmentFinalAuthorityIsCurrent(tx,
       [authority.binding.owner_user_id,authority.registration.operator_user_id],{clock:this.now,
-        expires_at:[...('session' in authority ? [authority.session.expires_at] : []),authority.binding.consent_expires_at,...deadlines]})) throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
+        expires_at:[...('session' in authority ? [authority.session.expires_at] : []),...(authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : []),...deadlines]})) throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
   }
 
   /** A v2 Run is host-created for one reviewed private binding. The live
@@ -639,7 +639,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         if(retained&&(retainedRows?.length!==ids.length||retainedRows.some(row=>!ids.includes(row.record_id)||row.resource_binding_id!==bindingId||row.resource_key!==definition.resourceKey)))return null;
         if (rows.length !== ids.length&&!retainedRows) return null;
         const clock = await samplePrivateAccessClock(tx, this.now);
-        const deadlines = [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at, resource.binding.consent_expires_at!,
+        const deadlines = [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at,
+          ...(resource.binding.consent_expires_at ? [resource.binding.consent_expires_at] : []),
           ...(authority.attachment_authority ? [authority.attachment_authority.session_expires_at] : []),
           ...(action.owner_target_consent_expires_at ? [action.owner_target_consent_expires_at] : [])];
         afterCommit = () => { signal?.throwIfAborted(); if (deadlines.some(deadline => deadline.getTime() <= clock.current().getTime())
@@ -719,7 +720,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !attempt.lease_expires_at || attempt.lease_expires_at <= now
         || run.cancel_requested_at || !run.execution_released_at
         || !['pending', 'running'].includes(run.state)
-        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
       const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs(this.leaseMs));
       const [renewed] = await tx.update(appRunAttempts).set({
@@ -922,7 +923,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       if (attempt.state !== 'provider_call_started' || !attempt.lease_expires_at
         || attempt.lease_expires_at <= now || run.state !== 'running'
         || run.cancel_requested_at || run.input_expires_at <= now
-        || authority.binding.consent_expires_at! <= now
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return false;
       if (result.status === 'indeterminate' || result.status === 'not_attempted') {
         // The host crossed provider_call_started before releasing the input.
@@ -962,7 +963,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         });
         const finalClock = this.now();
         if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
-          || authority.binding.consent_expires_at! <= finalClock
+          || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= finalClock.getTime()
           || run.input_expires_at <= finalClock || run.result_expires_at <= finalClock) {
           // A page has already been written in this transaction. Returning
           // false would commit it without output, terminal Run or receipt.
@@ -989,7 +990,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       }
       const finalClock = this.now();
       if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
-        || authority.binding.consent_expires_at! <= finalClock
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= finalClock.getTime()
         || run.input_expires_at <= finalClock) {
         throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
       }
@@ -1000,7 +1001,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         provider_call_finished_at: finalClock, safe_outcome: outcome }, finalClock, receiptFacts);
       const committedAt = this.now();
       if (attempt.lease_expires_at <= committedAt || authority.session.expires_at <= committedAt
-        || authority.binding.consent_expires_at! <= committedAt
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= committedAt.getTime()
         || run.input_expires_at <= committedAt || run.result_expires_at <= committedAt) {
         // Includes page, output and receipt writes: abort the whole transaction.
         throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
@@ -1056,7 +1057,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !attempt.lease_expires_at || attempt.lease_expires_at <= now
         || !run.execution_released_at || run.cancel_requested_at
         || !['pending', 'running'].includes(run.state)
-        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
       const rawInput = await this.secretRepository.readInput(input.org_id, run.id, tx);
       let request: ReturnType<typeof parseSyncRequest> | ReturnType<typeof SyncRequestV2Schema.parse>;
@@ -1078,7 +1079,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         payload: { attempt_id: attempt.id }, now });
       const checkedAt = this.now();
       if (attempt.lease_expires_at <= checkedAt || run.input_expires_at <= checkedAt
-        || authority.binding.consent_expires_at! <= checkedAt
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= checkedAt.getTime()
         || authority.session.expires_at <= checkedAt) {
         throw new Error('APP_RESOURCE_SYNC_START_EXPIRED');
       }
@@ -1115,7 +1116,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       const now = this.now();
       if (!run.execution_released_at || run.cancel_requested_at
         || !['pending', 'running'].includes(run.state)
-        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
       if (!attempt || attempt.state !== 'pending') return null;
       const [session] = await tx.update(appRuntimeSessions).set({
@@ -1178,7 +1179,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     });
     if (!authority || !await this.#resourceSyncRunMatchesAuthority(tx, run, authority)) return null;
     const checkedAt = this.now();
-    if (run.input_expires_at <= checkedAt || authority.binding.consent_expires_at! <= checkedAt) return null;
+    if (run.input_expires_at <= checkedAt || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= checkedAt.getTime()) return null;
     const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
       eq(appRunAttempts.org_id, run.org_id), eq(appRunAttempts.run_id, run.id),
       inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),

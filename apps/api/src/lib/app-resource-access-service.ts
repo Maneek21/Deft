@@ -220,7 +220,7 @@ export class AppResourceAccessService {
         throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_STALE", 409);
       }
       const now = this.current(tx);
-      if (new Date(s.review_expires_at) <= now || new Date(s.expires_at) > live.authority.binding.consent_expires_at!) {
+      if (new Date(s.review_expires_at) <= now || Date.parse(s.expires_at) > appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined)) {
         throw accessUnavailable();
       }
       const [prior] = await tx.select().from(grants).where(and(eq(grants.org_id, c.org_id), eq(grants.owner_user_id, c.user_id), eq(grants.review_digest, input.review_digest)));
@@ -299,7 +299,7 @@ export class AppResourceAccessService {
         throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_TOO_LARGE", 413);
       }
       await this.final(tx, c, live.participants, current.expires_at, live);
-      if (live.authority.binding.consent_expires_at! <= this.current(tx)) {
+      if (appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined) <= this.current(tx).getTime()) {
         throw accessUnavailable();
       }
       return result;

@@ -13,7 +13,7 @@ import { PostgresAppRunAttentionProjector } from './app-run-attention.js';
 import { loadAttachmentSyncClosureBindingAuthority } from './app-attachment-sync-authority.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
 import {appResourceObservationConsents,appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
-import {ResourceObservationSnapshotSchema} from '@deft/app-kit';
+import {appConsentDeadline,ResourceObservationSnapshotSchema} from '@deft/app-kit';
 import {hasResourceObservationPin,loadObservationConnection,observedResourceAuthorization,observationPolicyDigest} from './app-resource-observation-authority.js';
 import {isDeepStrictEqual} from 'node:util';
 import { attachmentFinalAuthorityIsCurrent, assertAttachmentBrokerEnabled } from './app-attachment-authority.js';
@@ -157,9 +157,12 @@ export class AppResourceSyncClosureService {
 
   private async final(tx: AppRunTransaction, context: Awaited<ReturnType<AppResourceSyncClosureService['current']>>, guard: WebAuthorityGuard) {
     const clock = await samplePrivateAccessClock(tx, this.now);
+    const binding = context.authority.binding;
+    if (appConsentDeadline(binding.consent_expires_at, binding.consent_lifetime ?? undefined) <= clock.current().getTime()) throw stale();
+    const consentDeadlines = binding.consent_expires_at ? [binding.consent_expires_at] : [];
     if (!await attachmentFinalAuthorityIsCurrent(tx, context.participants, { guard, clock: this.now,
-      expires_at: [context.authority.binding.consent_expires_at!] })) throw stale();
-    const deadlines = [context.authority.binding.consent_expires_at!, guard.current_web_session_expires_at()];
+      expires_at: consentDeadlines })) throw stale();
+    const deadlines = [...consentDeadlines, guard.current_web_session_expires_at()];
     return () => { if (!isAppAttachmentBrokerEnabled()
       || context.authority.registration.owner_connection_admission_id && !isAppOwnerConnectionsEnabled()
       || deadlines.some(deadline => deadline <= clock.current())) throw stale(); };

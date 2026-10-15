@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { canonicalCapabilityJson } from '@deft/shared';
@@ -113,5 +114,5 @@ export async function finalPrivateDefty(tx: AppRunTransaction, caller: AccessCal
   const now = clock();
   if (context.parent.authority.version.protocol_version === '7') assertAttachmentBrokerEnabled();
   if (!privateDeftyEnabled() || expires <= now || caller.guard.current_web_session_expires_at() <= now
-    || !context.parent.authority.binding.consent_expires_at || context.parent.authority.binding.consent_expires_at <= now) throw accessUnavailable();
+    || appConsentDeadline(context.parent.authority.binding.consent_expires_at,context.parent.authority.binding.consent_lifetime??undefined) <= now.getTime()) throw accessUnavailable();
 }

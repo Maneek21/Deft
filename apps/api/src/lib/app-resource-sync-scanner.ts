@@ -76,7 +76,9 @@ export async function scanAppResourceSyncBindings(
       or(eq(appResourceBindings.registration_contract_version,'deft.app_runtime_channel.v2'),
         observationAdmission?and(eq(appResourceBindings.registration_contract_version,'deft.app_runtime_channel.v3'),
           sql`EXISTS(SELECT 1 FROM app_resource_observation_consents o WHERE o.org_id=${appResourceBindings.org_id}
-            AND o.resource_binding_id=${appResourceBindings.id} AND o.state='active' AND o.expires_at>clock_timestamp())`):undefined),
+            AND o.resource_binding_id=${appResourceBindings.id} AND o.state='active'
+            AND ((o.snapshot->>'consent_lifetime'='until_revoked' AND o.expires_at IS NULL)
+              OR (NOT(o.snapshot?'consent_lifetime') AND o.expires_at>clock_timestamp())))`):undefined),
       cursor.after_binding_id ? gt(appResourceBindings.id, cursor.after_binding_id) : undefined,
     )).orderBy(asc(appResourceBindings.id)).limit(APP_RESOURCE_SYNC_SCAN_LIMIT + 1);
     const saveCursor = async (after: string | null) => {

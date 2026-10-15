@@ -1,4 +1,5 @@
-import { and, asc, eq, gt, ne, sql } from 'drizzle-orm';
+import { appConsentDeadline, appConsentExpiryValid } from '@deft/app-kit';
+import { and, asc, eq, gt, isNull, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appResourceBindings, appRuntimeRegistrations, appRuntimeSessions, orgMembers, users } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
@@ -20,7 +21,9 @@ const Operators = z.strictObject({ schema_version: z.literal('deft.app_resource_
   operators: z.array(z.strictObject({ user_id: Id, name: z.string().max(160) })).max(50), next_after: Id.nullable() });
 const Assignments = z.strictObject({ schema_version: z.literal('deft.app_resource_sync_assignments.v1'),
   assignments: z.array(z.strictObject({ binding_id: Id, installation_id: Id, resource_key: z.string(),
-    owner_user_id: Id, owner_name: z.string().max(160), consent_expires_at: DateTime })).max(50), next_after: Id.nullable() });
+    owner_user_id: Id, owner_name: z.string().max(160), consent_expires_at: DateTime.nullable(),
+    consent_lifetime: z.literal('until_revoked').optional() }).refine(value =>
+      appConsentExpiryValid(value.consent_expires_at, value.consent_lifetime))).max(50), next_after: Id.nullable() });
 const Sessions = z.strictObject({ schema_version: z.literal('deft.app_resource_sync_sessions.v1'),
   sessions: z.array(z.strictObject({ session_id: Id, created_at: DateTime,
     expires_at: DateTime, revoked_at: DateTime.nullable() })).max(50), next_after: Id.nullable() });
@@ -79,7 +82,10 @@ export async function listAssignedResourceSyncBindings(actor: ModuleActor, raw: 
         eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.state, 'active'),
         eq(appRuntimeRegistrations.operator_user_id, actor.actor_id), eq(appRuntimeRegistrations.state, 'active'),
         eq(appRuntimeRegistrations.contract_version, mode ? 'deft.app_runtime_channel.v3' : 'deft.app_runtime_channel.v2'),
-        gt(appResourceBindings.consent_expires_at, new Date()),
+        mode ? or(
+          and(eq(appResourceBindings.consent_lifetime, 'until_revoked'), isNull(appResourceBindings.consent_expires_at)),
+          and(isNull(appResourceBindings.consent_lifetime), gt(appResourceBindings.consent_expires_at, new Date())))
+          : gt(appResourceBindings.consent_expires_at, new Date()),
         query.after ? gt(appResourceBindings.id, query.after) : undefined))
       .orderBy(asc(appResourceBindings.id)).limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
@@ -126,14 +132,15 @@ export async function listAssignedResourceSyncBindings(actor: ModuleActor, raw: 
     await currentActor(tx, actor);
     const assignments = [];
     for (const { row, authority } of live) {
-      if (!authority.binding.consent_expires_at || authority.binding.consent_expires_at <= new Date()
+      if (appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= Date.now()
         || !await resourceSyncParticipantsAreHuman(tx, row.owner_user_id, actor.actor_id)) continue;
       assignments.push({ binding_id: row.binding_id, installation_id: authority.installation.id,
         resource_key: authority.binding.resource_key, owner_user_id: row.owner_user_id,
-        owner_name: name(row.owner_name), consent_expires_at: authority.binding.consent_expires_at.toISOString() });
+        owner_name: name(row.owner_name), consent_expires_at: authority.binding.consent_expires_at?.toISOString() ?? null,
+        ...(authority.binding.consent_lifetime === 'until_revoked' ? { consent_lifetime: 'until_revoked' as const } : {}) });
     }
     await finishAttachmentSyncMetadata(tx, [actor.actor_id, ...live.map(({ row }) => row.owner_user_id)],
-      mode, live.map(({ authority }) => authority.binding.consent_expires_at!));
+      mode, live.flatMap(({ authority }) => authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : []));
     return Assignments.parse({ schema_version: 'deft.app_resource_sync_assignments.v1', assignments,
       next_after: rows.length > query.limit ? page.at(-1)!.binding_id : null });
   });
@@ -179,12 +186,12 @@ export async function listOwnResourceSyncSessions(actor: ModuleActor, bindingId:
     if (!mode) await guard?.(tx);
     await currentActor(tx, actor);
     if (!await resourceSyncParticipantsAreHuman(tx, live.binding.owner_user_id, actor.actor_id)
-      || !live.binding.consent_expires_at || live.binding.consent_expires_at <= new Date()) throw denied();
+      || appConsentDeadline(live.binding.consent_expires_at, live.binding.consent_lifetime ?? undefined) <= Date.now()) throw denied();
     const page = rows.slice(0, query.limit).map(row => ({ session_id: row.session_id,
       created_at: row.created_at.toISOString(), expires_at: row.expires_at.toISOString(),
       revoked_at: row.revoked_at?.toISOString() ?? null }));
     await finishAttachmentSyncMetadata(tx, [actor.actor_id, live.binding.owner_user_id], mode,
-      [live.binding.consent_expires_at!]);
+      live.binding.consent_expires_at ? [live.binding.consent_expires_at] : []);
     return Sessions.parse({ schema_version: 'deft.app_resource_sync_sessions.v1', sessions: page,
       next_after: rows.length > query.limit ? page.at(-1)!.session_id : null });
   });

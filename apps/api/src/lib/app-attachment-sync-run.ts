@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { appRuns, appRunAttempts, appSyncIntents, appSyncCheckpoints } from '@deft/db/schema';
 import { AppRunAuthorizationSnapshotSchema, canonicalCapabilityJson } from '@deft/shared';
-import type { AttachmentStageHeader } from '@deft/app-kit';
+import { appConsentExpiryValid, type AttachmentStageHeader } from '@deft/app-kit';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { buildResourceSyncAuthorizationSnapshot } from './app-resource-sync-authorization.js';
 import { loadLiveAttachmentSyncAuthority, type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
@@ -77,8 +77,9 @@ export async function assertAttachmentStageFinalAuthority(tx: AppRunTransaction,
   const { run, attempt, authority } = context;
   if(authority&&hasResourceObservationPin(run.authorization_snapshot,authority.binding.id)
     &&!await requireCurrentResourceObservationRun(tx,run.org_id,run.id,authority,clock))throw attachmentStale();
-  if (!authority || !attempt.lease_expires_at || !authority.binding.consent_expires_at
+  if (!authority || !attempt.lease_expires_at
+    || !appConsentExpiryValid(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined)
     || !await attachmentFinalAuthorityIsCurrent(tx, [authority.binding.owner_user_id,authority.registration.operator_user_id],
       { clock, signal, expires_at: [run.input_expires_at,run.result_expires_at,attempt.lease_expires_at,
-        authority.session.expires_at,authority.binding.consent_expires_at,...extraDeadlines] })) throw attachmentStale();
+        authority.session.expires_at,...(authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : []),...extraDeadlines] })) throw attachmentStale();
 }

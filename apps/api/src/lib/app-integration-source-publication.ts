@@ -1,4 +1,5 @@
 import {and,eq,inArray,gt,asc} from 'drizzle-orm';
+import {appConsentDeadline} from '@deft/app-kit';
 import {appResourceProjections,appSyncCheckpoints} from '@deft/db/schema';
 import {AppResourceSyncSecretService} from './app-resource-sync-secrets.js';
 import type {AppRunKeyProvider} from './app-run-keyrings.js';
@@ -33,7 +34,7 @@ export function createAppIntegrationPublicationReader(input:{keys:AppRunKeyProvi
   const record=decodePrivateProjection(secrets,row,{...descriptor,schema_version:'deft.app_sync_descriptor.v1'});
   const result=appIntegrationPublishedProjection({target,mapping,descriptor_key:authority.descriptor.key,checkpoint,row,record});
   if(!await attachmentSyncParticipantsAreHuman(tx,authority.binding.owner_user_id,authority.registration.operator_user_id)
-   ||!authority.binding.consent_expires_at||authority.binding.consent_expires_at.getTime()<=clock())throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');
+   ||appConsentDeadline(authority.binding.consent_expires_at,authority.binding.consent_lifetime??undefined)<=clock())throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');
   return result;
  };
  const reader=(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,tx?:AppRunTransaction)=>tx?read(caller,target,tx):input.transaction(tx=>read(caller,target,tx));
