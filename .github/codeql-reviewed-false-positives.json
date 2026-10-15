@@ -1,7 +1,7 @@
 {
   "schema_version": "deft.codeql_false_positives.v1",
-  "review_source_commit": "7bd45632567cea04d9bca831a87b8e28107a4152",
-  "review_original_sarif_sha256": "bfec8c52e54504167727415f87e12a07d97d00c7c428abb3874da512794c0bdf",
+  "review_source_commit": "477a2141f9bfb7d017c49e46d6088d9f2a1ee696",
+  "review_original_sarif_sha256": "d067fab997fffc61966ece483347c01319fd1489d156d4194c9a0b3046ca53cf",
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
     "apps/api/src/lib/agent-actions.ts": "6c8d739c34939f7c0ca38771a4dafa7328f7dfd3ac15f809c1d3c49bc20f136c",
@@ -66,7 +66,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/agent-actions.ts",
       "line": 339,
-      "fingerprint": "22bd235c0027a0279d12f9c2acd2f7cf4086231f35b1f147a55b9da14d5e780b",
+      "fingerprint": "e7f359112de46612484ded0327c8396f4dc38717073ad5b0cd903973fdd9b921",
       "sources": [
         "apps/api/src/lib/agent-actions.ts"
       ],
@@ -78,7 +78,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
       "line": 30,
-      "fingerprint": "6a4b9b6a502fdbe9c01521f9d814816d05b4b94820bca334fe24ed536c14339d",
+      "fingerprint": "bd3dbc722aacad6a85c32b5e2384e32d191a49989998180f67707e3d1e196203",
       "sources": [
         "apps/api/src/lib/app-installed-tool-discovery.ts",
         "apps/api/src/lib/app-integration-tool-runtime.ts"
@@ -127,7 +127,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/receipts.ts",
       "line": 165,
-      "fingerprint": "2af0173c9845058657cc1188ade177d7ad20ade641cd0ed4296432d40216a7a8",
+      "fingerprint": "35dac1c43baa6d899308356d0f45d797eed331190165755332fca0c95debb601",
       "sources": [
         "apps/api/src/lib/receipts.ts"
       ],
@@ -139,7 +139,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/workspace-plan-import.ts",
       "line": 149,
-      "fingerprint": "cd64155a062e301afd96a073f108f7c167e25b584227c9350a3a9f4f9910a15f",
+      "fingerprint": "446bed1234c8e2e8886a386518244d3e5ea041bb986070737dc2bca81d55838e",
       "sources": [
         "apps/api/src/lib/workspace-plan-import.ts"
       ],
@@ -163,7 +163,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "examples/apps/email/providers/oauth-contract.mjs",
       "line": 12,
-      "fingerprint": "85681448acf6e5ed11fa83cdf0410ae85b388b335a949275296d17bbd3ec6d0b",
+      "fingerprint": "9f1c0f96e8fe66d2e5067a4a7aae7eaf5a1a6f16cf7f19ca7aa0798a1e873c4b",
       "sources": [
         "examples/apps/email/providers/oauth-contract.mjs",
         "examples/apps/email/providers/oauth-provider.mjs"
@@ -239,7 +239,7 @@
       "rule": "js/cross-window-information-leak",
       "path": "scripts/gate-g/experiences/rich-host.html",
       "line": 62,
-      "fingerprint": "3dbeba6f426879f92aa8793fb9a9e50955bfac5be7619692f83d11264e4b36f0",
+      "fingerprint": "adbd20f4473221df718cfe28a8052f169d58426f070e7de6a3ae6f6d68fbc708",
       "sources": [
         "scripts/gate-g/experiences/rich-host.html"
       ],

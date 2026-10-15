@@ -190,6 +190,7 @@ export class AppResourceSyncManagement {
               ...(operator_user_id ? { operator_user_id: binding.operator_user_id } : {}),
               state: binding.state as 'active' | 'disabled',
               consent_expires_at: binding.consent_expires_at?.toISOString() ?? null,
+              ...(binding.consent_lifetime === 'until_revoked' ? { consent_lifetime: 'until_revoked' as const } : {}),
               can_issue_session: binding.operator_user_id === actor.actor_id
                 && binding.registration_state === 'active' && binding.state === 'active'
                 && appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)>now.getTime(),

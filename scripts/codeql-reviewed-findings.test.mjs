@@ -13,3 +13,16 @@ test('a changed authority dependency invalidates its matching sink disposition',
 test('duplicate findings, duplicate reviews and stale reviews do not silently disappear',t=>{const f=fixture(t);const repeated=structuredClone(f.sarif);repeated.runs[0].results.push(repeated.runs[0].results[0]);assert.equal(reviewSarif(repeated,f.review,f.root).passed,false);assert.throws(()=>reviewSarif(f.sarif,{...f.review,findings:[...f.review.findings,f.review.findings[0]]},f.root),/DUPLICATE_REVIEW/);const empty=structuredClone(f.sarif);empty.runs[0].results=[];assert.equal(reviewSarif(empty,f.review,f.root).passed,false);});
 test('unsupported input, non-false-positive dispositions and unsafe source paths are rejected',t=>{const f=fixture(t);assert.throws(()=>reviewSarif({...f.sarif,version:'unknown'},f.review,f.root),/INVALID_SARIF/);assert.throws(()=>reviewSarif(f.sarif,{...f.review,findings:[{...f.review.findings[0],disposition:'risk_accepted'}]},f.root),/INVALID_REVIEW/);for(const path of ['../private','/absolute','src\\..\\private'])assert.throws(()=>reviewSarif(f.sarif,{...f.review,findings:[{...f.review.findings[0],sources:[path]}]},f.root),/INVALID_REVIEW/);});
 test('the actual CLI preserves original SARIF bytes and writes distinct transparent disposition artifacts',t=>{const f=fixture(t);mkdirSync(join(f.root,'.github'));writeFileSync(join(f.root,'.github/codeql-reviewed-false-positives.json'),JSON.stringify(f.review));const dir=join(f.root,'output');mkdirSync(dir);const raw=JSON.stringify(f.sarif);writeFileSync(join(dir,'javascript.sarif'),raw);const r=main(dir,f.root);assert.equal(r.passed,true);assert.equal(readFileSync(join(dir,'javascript.sarif'),'utf8'),raw);assert.equal(JSON.parse(readFileSync(join(dir,'disposition.json'),'utf8')).gate,'passed');assert.equal(JSON.parse(readFileSync(join(dir,'findings.json'),'utf8')).length,1);assert.equal(JSON.parse(readFileSync(join(dir,'reviewed/javascript.sarif'),'utf8')).runs[0].results[0].suppressions[0].status,'accepted');});
+
+test('independent code-flow permutation is stable but every inner step and multiplicity stays pinned',()=>{
+ const loc=(path,line)=>({location:{physicalLocation:{artifactLocation:{uri:path},region:{startLine:line}}}});
+ const flow=(path)=>({threadFlows:[{locations:[loc(path,1),loc(path,2)]},{locations:[loc(path,3)]}]});
+ const a=flow('src/a.js'),b=flow('src/b.js');
+ const result={ruleId:'js/fixture',message:{text:'exact'},locations:[],codeFlows:[a,b,a]};
+ const hash=findingFingerprint(result);
+ assert.equal(findingFingerprint({...result,codeFlows:[b,a,a]}),hash);
+ for(const flows of [[a,b],[a,b,a,a],[a,{...b,message:{text:'changed'}},a],
+  [a,{threadFlows:[...b.threadFlows].reverse()},a],
+  [a,{threadFlows:[{locations:[...b.threadFlows[0].locations].reverse()},b.threadFlows[1]]},a],
+  [a,flow('src/foreign.js'),a]]) assert.notEqual(findingFingerprint({...result,codeFlows:flows}),hash);
+});

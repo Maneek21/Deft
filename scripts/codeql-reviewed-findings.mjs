@@ -12,7 +12,9 @@ function canonical(value){
  return value;
 }
 export function findingFingerprint(result){
- return hash(JSON.stringify(canonical({rule:result.ruleId,level:result.level??'warning',message:result.message,locations:result.locations,partialFingerprints:result.partialFingerprints??{},codeFlows:result.codeFlows??[]})));
+ // Only independent outer flows are unordered; retain every inner path, step and duplicate.
+ const codeFlows=(result.codeFlows??[]).map(canonical).sort((a,b)=>{const x=JSON.stringify(a),y=JSON.stringify(b);return x<y?-1:x>y?1:0;});
+ return hash(JSON.stringify(canonical({rule:result.ruleId,level:result.level??'warning',message:result.message,locations:result.locations,partialFingerprints:result.partialFingerprints??{},codeFlows})));
 }
 export function reviewSarif(original,review,repositoryRoot){
  need(original.version==='2.1.0'&&Array.isArray(original.runs)&&original.runs.length>0,'INVALID_SARIF');
