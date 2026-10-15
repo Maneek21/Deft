@@ -47,7 +47,7 @@ BEGIN
     THEN RAISE EXCEPTION 'observation continuation connection pins mismatch';END IF;
    receipt:=jsonb_build_object('custody_generation',continuation->'result'->'custody_generation','receipt_digest',continuation->'result'->'receipt_digest');
   ELSE
-   receipt:=COALESCE(record->'upgrade'->'receipt',record->'reattachment'->'receipt','null'::jsonb);
+   receipt:=COALESCE(record->'credential_repair'->'receipt',record->'upgrade'->'receipt',record->'reattachment'->'receipt','null'::jsonb);
   END IF;
  END IF;
 

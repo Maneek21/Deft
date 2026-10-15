@@ -90,5 +90,30 @@ test('observation SQL accepts exact renewed connection receipts and retains all 
    await c.query('UPDATE app_connection_sessions SET record=$1',[{...record,[kind]:{receipt:{custody_generation:2,receipt_digest:digest}}}]);
    await insert();
   }
+  const sourceId=randomUUID();
+  const repair={...record,revision:3,callback_state_hash:'a'.repeat(64),callback_expires_at:'2030-01-01T11:02:00.000Z',
+   created_at:continuation.created_at,updated_at:continuation.updated_at,
+   profile:{schema_version:'deft.app_connection_profile.v1',key:'synthetic',provider_id:'synthetic',operator_user_id:owner,
+    runtime_requirement_key:'runtime',resource_key:scope.resource_key,action_keys:[],authorization_origin:'https://provider.example.test',credential_custody:'runtime',executable:false},
+   credential_repair:{schema_version:'deft.app_connection_credential_repair.v1',
+    source:{session_id:sourceId,session_revision:2,scope,runtime_session_ref:'old_runtime_ref',account_ref:account.account_ref},
+    transport_digest:digest,review_expires_at:continuation.review_expires_at,historical_attempts:[],publication_continuity_digest:null,
+    begin_consumed:true,reservation_closed:true,
+    review:{digest,custody_generation:1,custody_digest:digest,account,
+     fence:{reservation_id:randomUUID(),repair_session_id:sid,source_session_id:sourceId,source_revision:2,account_ref:account.account_ref,
+      resource_binding_id:scope.resource_binding_id,old_custody_generation:1,planned_custody_generation:2,identity_digest:digest,fence_digest:digest,
+      historical_attempts:[],publication_continuity_digest:digest}},
+    receipt:{custody_generation:2,receipt_digest:digest}}};
+  // Existing116 validation remains authoritative; this is a valid repair
+  // carrier, not an invented receipt added to bypass the session contract.
+  assert.equal((await c.query('SELECT public.deft_app_connection_credential_repair_record_valid($1) AS valid',[repair])).rows[0].valid,true);
+  await c.query('UPDATE app_connection_sessions SET record=$1',[repair]);
+  await define(upgrade('0.3.0-preview.104-app-resource-observation-connection-receipts.sql'));
+  await denied(()=>insert(),/observation connection pins mismatch/);
+  await define(upgrade('0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'));
+  await insert();
+  for(const wrong of [{...snapshot,connection:{...snapshot.connection,expected_custody_generation:3}},
+   {...snapshot,connection:{...snapshot.connection,receipt_digest:'sha256:'+'b'.repeat(64)}}])
+   await denied(()=>insert(wrong),/observation connection pins mismatch/);
  } finally {await c.query('ROLLBACK');await c.end();}
 });

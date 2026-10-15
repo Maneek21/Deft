@@ -19,8 +19,8 @@
     },
     "schema119": {
       "method": "Single function replacement from actual PostgreSQL160015 pg_get_functiondef. Prior sealed full118 catalog captures retained; only deft_resource_observation_consent_guard changes. Retained and fresh standard-upgrader results independently verified.",
-      "migration_sha256": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
-      "function_definition_sha256": "41e538d29f74e70fdae0df2bceb651a9ed25e5f9270fce44d097c684a897894c",
+      "migration_sha256": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
+      "function_definition_sha256": "c2234aed33c723c9a5464c8a1ed460f6cd614492775571f61c94f8fd1cd47473",
       "canonical118_full_catalog_sha256": "99a7553b2cb19f24d37eb8747d572dbe075b37fedf9ebf03e584d015e60bd038"
     }
   },
@@ -806,7 +806,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -1510,7 +1510,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -2218,7 +2218,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -2922,7 +2922,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -3708,7 +3708,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -4412,7 +4412,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -5119,7 +5119,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -5823,7 +5823,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -6526,7 +6526,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -7229,7 +7229,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -7932,7 +7932,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -8635,7 +8635,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -9337,7 +9337,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -10039,7 +10039,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -10741,7 +10741,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -11443,7 +11443,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -12144,7 +12144,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -12845,7 +12845,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -13546,7 +13546,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -14247,7 +14247,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -14948,7 +14948,7 @@
           "version": "0.3.0-preview.119",
           "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ]
@@ -15645,11 +15645,11 @@
         {
           "version": "0.3.0-preview.119",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ],
-      "catalog_digest": "ea0e9da1919b99530c51e5c9a134719581dda1dfb8dc86d939f1e2d414bb6570",
+      "catalog_digest": "79a2768e704b2102e4c19199d7998d9f9fa4f9d53305855f9ad46d041a4fa28f",
       "append": []
     },
     {
@@ -16344,11 +16344,11 @@
         {
           "version": "0.3.0-preview.119",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ],
-      "catalog_digest": "85a8d9407cd660704c1b0e5cc8f501e321a626302206be9985651d6873f35744",
+      "catalog_digest": "563654c2efd969130524a65b6dcef2bc21c3c543173358a7130454097c793e0b",
       "append": []
     },
     {
@@ -17043,11 +17043,11 @@
         {
           "version": "0.3.0-preview.119",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ],
-      "catalog_digest": "85a8d9407cd660704c1b0e5cc8f501e321a626302206be9985651d6873f35744",
+      "catalog_digest": "563654c2efd969130524a65b6dcef2bc21c3c543173358a7130454097c793e0b",
       "append": []
     },
     {
@@ -17742,18 +17742,18 @@
         {
           "version": "0.3.0-preview.119",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ],
-      "catalog_digest": "d688cac003c3690442c091b289dad4c595876ea270d96e2273b577d1622c8000",
+      "catalog_digest": "fc61a380795154ea6c42c2c9bc4424fca200d7df30febc58844c0c1633ba2de8",
       "append": []
     },
     {
       "name": "canonical-preview1-current-schema118-schema119",
       "lineage": "public61",
       "stage": "current",
-      "catalog_digest": "a651524e0bf6206301fd808a0f1085fb1b703291df3f312b3233be461ab51e9d",
+      "catalog_digest": "0185b4d312389f134d43aad7f502f6ce7defcd8a733055f5e7fe423976501e11",
       "ledger": [
         {
           "version": "0.2.0-preview.1",
@@ -18442,7 +18442,7 @@
         {
           "version": "0.3.0-preview.119",
           "description": "Bind resource observations to exact connected consent-continuation receipts",
-          "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a",
+          "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905",
           "kind": "migration"
         }
       ],
@@ -19168,7 +19168,7 @@
     },
     {
       "file": "0.3.0-preview.119-app-resource-observation-continuation-receipts.sql",
-      "checksum": "9bc1bc502bc4415bf238ea40d0cbbea65ded51f23a35d405d301d76062ff5b9a"
+      "checksum": "ef41277cd1171b7041685403b5081d3542e9d8ef0d2fd91081c311c9218f6905"
     }
   ]
 }
