@@ -320,6 +320,7 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.116',file:'0.3.0-preview.116-app-connection-credential-repair.sql',description:'Strict same-authority credential repair records with exclusive reservations and authenticated receipt or closure admission'},
     {version:'0.3.0-preview.117',file:'0.3.0-preview.117-app-connection-uncertain-exchange.sql',description:'Close fenced abandoned credential exchanges without replay or certainty substitution'},
     {version:'0.3.0-preview.118',file:'0.3.0-preview.118-app-supplemental-effects.sql',description:'Validate generic signed supplemental effect declarations with bounded scalar details and declared action ownership'},
+    {version:'0.3.0-preview.119',file:'0.3.0-preview.119-app-resource-observation-continuation-receipts.sql',description:'Bind resource observations to exact connected consent-continuation receipts'},
   ] satisfies UpgradeMigration[],
 } as const;
 

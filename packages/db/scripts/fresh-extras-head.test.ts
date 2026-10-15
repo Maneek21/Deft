@@ -25,3 +25,19 @@ test('extras restores118 only for an existing ledger that records it',async()=>{
   if(expected)assert.ok(files[0]!.endsWith('0.3.0-preview.118-app-supplemental-effects.sql'));
  }
 });
+
+test('extras restores119 only when the forward observation migration is recorded',async()=>{
+ const source=ts.createSourceFile('extras.ts',readFileSync(new URL('./apply-extras.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
+ const nodes=source.statements.flatMap(function walk(node:ts.Node):ts.Node[]{
+  if(ts.isVariableStatement(node)&&node.getText(source).includes('const observationContinuationRecorded'))return[node];
+  if(ts.isIfStatement(node)&&node.expression.getText(source)==='observationContinuationRecorded')return[node];
+  return node.getChildren(source).flatMap(walk);
+ });assert.equal(nodes.length,2);
+ const code=ts.transpileModule(nodes.map(n=>n.getText(source)).join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+ for(const[ledgerExists,recorded,expected]of[[false,false,0],[true,false,0],[true,true,1]]as const){
+  const files:string[]=[];
+  await new AsyncFunction('client','readFileSync','resolve','upgradesDir','console','ledgerExists',code)({query:async()=>({rows:[{installed:recorded}]})},(path:string)=>{files.push(path);return'';},resolve,'/upgrades',{log:()=>{}},ledgerExists);
+  assert.equal(files.length,expected);if(expected)assert.ok(files[0]!.endsWith('0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'));
+ }
+});

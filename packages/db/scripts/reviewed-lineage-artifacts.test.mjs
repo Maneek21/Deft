@@ -4,9 +4,9 @@ import {fileURLToPath} from 'node:url';
 import test from 'node:test';
 import {hash,loadReviewedPlan,selectReviewedHistory} from './lineage-convergence.mjs';
 
-test('all 179 reviewed lineage artifacts preserve their exact raw checksums',()=>{
+test('all 180 reviewed lineage artifacts preserve their exact raw checksums',()=>{
  const plan=loadReviewedPlan();
- assert.equal(plan.files.length,179);
+ assert.equal(plan.files.length,180);
  for(const item of plan.files){
   const raw=readFileSync(fileURLToPath(new URL('../upgrades/'+item.file,import.meta.url)));
   assert.equal(hash(raw),item.checksum,item.file);
@@ -25,7 +25,7 @@ test('canonical preview1 upgrade output is recognized exactly and drift is denie
  const {snapshot}=JSON.parse(raw);
  const selected=selectReviewedHistory(snapshot,plan);
  assert.equal(selected.name,'canonical-preview1-current-schema118');
- assert.deepEqual(selected.append,[]);
+ assert.deepEqual(selected.append.map(row=>row.version),['0.3.0-preview.119']);
  const wrongCatalog=structuredClone(snapshot);wrongCatalog.digest='0'.repeat(64);
  assert.throws(()=>selectReviewedHistory(wrongCatalog,plan),/E5_REVIEWED_LINEAGE_UNRECOGNIZED/);
  const wrongLedger=structuredClone(snapshot);wrongLedger.ledger[0].checksum='0'.repeat(64);

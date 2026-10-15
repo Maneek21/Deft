@@ -259,6 +259,15 @@ async function main() {
       console.log('[apply-extras] restored recorded supplemental effect guards');
     }
 
+    // Never change the attested117 bootstrap or an un-upgraded retained DB.
+    const observationContinuationRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (SELECT 1 FROM deft_schema_migrations WHERE version='0.3.0-preview.119') AS installed
+    `)).rows[0]?.installed === true;
+    if (observationContinuationRecorded) {
+      await client.query(readFileSync(resolve(upgradesDir, '0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'), 'utf8'));
+      console.log('[apply-extras] restored recorded observation continuation receipt guard');
+    }
+
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
     // depends on so pushed and migrated databases behave the same.

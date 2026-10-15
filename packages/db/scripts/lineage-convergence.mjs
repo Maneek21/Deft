@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {readCatalog,readLedger} from './lineage-catalog.mjs';
 
 const directory=resolve(dirname(fileURLToPath(import.meta.url)),'../upgrades');
-const PLAN_SHA256='9ccd8c38fc59df19e94fd61bf52e4ee0f591a65d6132afd825abc9a1bee2bd23';
+const PLAN_SHA256='377e60517dd05c093ff216a10af3c8c39c10996e88126710d8b5a10a028e85d7';
 const LOCK_ID=7314029421;
 const hex=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
 const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;
@@ -59,9 +59,11 @@ export async function assertReviewedCurrent(client){
 export async function assertReviewedFreshBootstrap(client){
  const plan=loadReviewedPlan();const selected=selectReviewedHistory(await snapshot(client),plan);
  if(selected.name!=='fresh-current-contracts-complete-schema116-schema117'
-  ||selected.stage!=='current'||selected.append.length!==1
+  ||selected.stage!=='current'||selected.append.length!==2
   ||selected.append[0].version!=='0.3.0-preview.118'
-  ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
+  ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql'
+  ||selected.append[1].version!=='0.3.0-preview.119'
+  ||selected.append[1].file!=='0.3.0-preview.119-app-resource-observation-continuation-receipts.sql')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
  return selected;
 }
 export async function convergeReviewedRelease(client,{status=false,dryRun=false}={}){
