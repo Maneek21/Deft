@@ -303,6 +303,22 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     }
     if(persistentProof){
       const beforeProvider=providerRequests.length,old=currentSessions[0];
+      const {currentExperienceResourceConsent}=await import('../src/lib/app-experience-service.js'),{sql}=await import('drizzle-orm');
+      const consentClock=new Date();
+      for(const [mode,expiry,expected]of [
+        ['until_revoked',null,true],[null,new Date(consentClock.getTime()+60000),true],
+        [null,null,false],[null,new Date(consentClock.getTime()-1),false],
+        ['until_revoked',new Date(consentClock.getTime()+60000),false],['unexpected',null,false],
+      ]as const){
+        const selected=await db.execute(sql`WITH app_resource_bindings(consent_lifetime,consent_expires_at) AS (VALUES(${mode}::text,${expiry?.toISOString()??null}::timestamptz))
+          SELECT 1 AS admitted FROM app_resource_bindings WHERE ${currentExperienceResourceConsent(consentClock)}`);
+        assert.equal(selected.rows.length,expected?1:0,'actual PostgreSQL selector denies implicit null, mixed modes and expired grants');
+      }
+      assert.notEqual(resourceInput.target_key,'primary');
+      const experienceBase=`/api/app-experiences/${installed.id}/main`,experienceInput={resource_target_key:resourceInput.target_key};
+      const finiteExperience=await call(experienceBase+'/sessions',experienceInput,tokens.member);
+      assert.equal(finiteExperience.resource_target_key,resourceInput.target_key,'finite non-primary target remains available');
+      assert.ok((await call(experienceBase+'/targets',undefined,tokens.member)).targets.some((row:{key:string})=>row.key===resourceInput.target_key));
       const input={installation_id:installed.id,target_key:resourceInput.target_key,source_session_id:old.session_id,
         request_id:randomUUID(),consent_expires_at:null,consent_lifetime:'until_revoked'};
       assert.equal((await request(base+'/consent-continuation/review',{...input,consent_lifetime:undefined},tokens.member)).status,400);
@@ -316,6 +332,11 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       assert.equal(connected.state,'connected');assert.equal(connected.expires_at,null);
       assert.equal(connected.account.account_ref,old.account.account_ref);assert.equal(connected.scope.consent_lifetime,'until_revoked');
       currentSessions[0]=connected;
+      const persistentExperience=await call(experienceBase+'/sessions',experienceInput,tokens.member);
+      assert.equal(persistentExperience.resource_target_key,resourceInput.target_key,'explicit persistent non-primary target can create an Experience');
+      assert.ok((await call(experienceBase+'/targets',undefined,tokens.member)).targets.some((row:{key:string})=>row.key===resourceInput.target_key));
+      assert.equal((await request(experienceBase+'/sessions',experienceInput,tokens.owner)).status,403,'operator cannot select another owner resource');
+      assert.equal((await request(experienceBase+'/sessions',{resource_target_key:'missing_target'},tokens.other)).status,403,'another owner cannot select a target they do not own');
       const dataBase=`/api/app-data/connections/${connected.session_id}/consent`;
       assert.equal((await request(dataBase+'/review',{store_key:'drafts',expires_at:null},tokens.member)).status,400);
       const dataReview=await call(dataBase+'/review',{store_key:'drafts',expires_at:null,consent_lifetime:'until_revoked'},tokens.member);
@@ -351,10 +372,14 @@ test(persistentProof?'explicit persistent account, data and observation grants u
       await call(dataBase+'/revoke',{consent_id:dataGrant.consent_id},tokens.member);
       assert.equal((await call(observationBase+'/revoke',{consent_id:observation.consent_id},tokens.member)).state,'revoked');
       assert.equal((await call(observationBase+'/status',{consent_id:observation.consent_id},tokens.member)).state,'unavailable','operator membership loss keeps the revoked grant unavailable');
+      await call(`/api/apps/blob/sync/bindings/${binding.binding_id}/revoke`,{},tokens.member);
+      assert.equal((await request(experienceBase+'/sessions',experienceInput,tokens.member)).status,403,'revoked persistent binding remains denied');
+      assert.ok(!(await call(experienceBase+'/targets',undefined,tokens.member)).targets.some((row:{key:string})=>row.key===resourceInput.target_key));
       assert.equal(providerRequests.length,beforeProvider,'permission continuation and renewal have no provider I/O');
       console.log('# persistent public HTTP proof '+JSON.stringify({account_continuation:true,same_account:true,data_grant:true,
         observation_grant:true,explicit_null_only:true,finite_review_deadlines:true,v3_same_credential_renewal:true,
-        original_browser_revoked:true,current_member_required:true,revocation:true,provider_calls:0}));
+        original_browser_revoked:true,current_member_required:true,revocation:true,experience_finite_and_persistent_nonprimary:true,
+        experience_foreign_and_revoked_denied:true,experience_null_mode_negatives:true,provider_calls:0}));
       return;
     }
     const observationBase='/api/app-resource-observations/consent',observationContext=`/api/app-resource-observations/installations/${installed.id}/context`;

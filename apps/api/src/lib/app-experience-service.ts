@@ -37,6 +37,11 @@ type Executor = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'exe
 const denied = () => new AppError('Experience access denied', 'APP_ACCESS_DENIED', 403);
 const stale = () => new AppError('Experience session is no longer current', 'APP_STALE', 409);
 
+export function currentExperienceResourceConsent(now: Date) {
+  return or(and(eq(appResourceBindings.consent_lifetime, 'until_revoked'), isNull(appResourceBindings.consent_expires_at)),
+    and(isNull(appResourceBindings.consent_lifetime), gt(appResourceBindings.consent_expires_at, now)));
+}
+
 // The selector nominates reviewed owner custody; it never grants authority.
 function runtimeTargetScope(caller: ExperienceCaller, session: typeof appExperienceSessions.$inferSelect) {
   const ownedTarget = sql`EXISTS (SELECT 1 FROM app_resource_bindings target
@@ -158,7 +163,7 @@ export class AppExperienceService {
           eq(appResourceBindings.org_id, caller.org_id), eq(appResourceBindings.owner_user_id, caller.user_id),
           eq(appResourceBindings.app_installation_id, installation.id), eq(appResourceBindings.app_version_id, version.id),
           eq(appResourceBindings.grant_snapshot_id, grant.id), eq(appResourceBindings.target_key, targetKey),
-          eq(appResourceBindings.state, 'active'), gt(appResourceBindings.consent_expires_at, new Date()),
+          eq(appResourceBindings.state, 'active'), currentExperienceResourceConsent(new Date()),
           inArray(appResourceBindings.resource_key, [...bundle.resource_keys])));
         if (resources.length !== bundle.resource_keys.length || new Set(resources.map(row => row.key)).size !== resources.length) throw denied();
       }
@@ -235,7 +240,7 @@ export class AppExperienceService {
         .from(appResourceBindings).where(and(eq(appResourceBindings.org_id, caller.org_id), eq(appResourceBindings.owner_user_id, caller.user_id),
           eq(appResourceBindings.app_installation_id, installation.id), eq(appResourceBindings.app_version_id, version.id),
           eq(appResourceBindings.grant_snapshot_id, installation.active_grant_snapshot_id), eq(appResourceBindings.state, 'active'),
-          gt(appResourceBindings.consent_expires_at, new Date()), inArray(appResourceBindings.resource_key, [...bundle.resource_keys]))).limit(65) : [];
+          currentExperienceResourceConsent(new Date()), inArray(appResourceBindings.resource_key, [...bundle.resource_keys]))).limit(65) : [];
       if (rows.length > 64) throw stale();
       let targets = [...new Set(rows.map(row => row.target))].filter(target => {
         const resources = rows.filter(row => row.target === target);
