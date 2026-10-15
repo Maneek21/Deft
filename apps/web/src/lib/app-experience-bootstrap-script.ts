@@ -1,12 +1,17 @@
-(() => {
+/** Trusted bootstrap only. Author bytes run exclusively in its opaque Blob Worker. */
+export const EXPERIENCE_BOOTSTRAP_SCRIPT = String.raw`(() => {
   'use strict';
   let started = false;
   let worker;
   let sessionId;
   let authorPort;
+  const expectedOrigin = location.href === 'about:srcdoc'
+    ? document.querySelector('meta[name="deft-experience-parent-origin"]')?.content
+    : new URL(location.href).origin;
+  if (!expectedOrigin || !/^https?:$/.test(new URL(expectedOrigin).protocol)
+    || new URL(expectedOrigin).origin !== expectedOrigin) return;
   addEventListener('message', (event) => {
     const data = event.data;
-    const expectedOrigin = new URL(location.href).origin;
     if (event.source !== parent || event.origin !== expectedOrigin || !data) return;
     if (started && data.kind === 'stop' && data.session_id === sessionId
       && Object.keys(data).every(key => ['kind', 'session_id'].includes(key)) && event.ports.length === 0) {
@@ -37,5 +42,6 @@
       URL.revokeObjectURL(url);
     }
   });
-  parent.postMessage({ kind: 'deft_experience_bootstrap_ready.v1' }, new URL(location.href).origin);
+  parent.postMessage({ kind: 'deft_experience_bootstrap_ready.v1' }, expectedOrigin);
 })();
+`;

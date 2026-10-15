@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
-import {readFileSync} from 'node:fs';
+import { EXPERIENCE_BOOTSTRAP_SCRIPT as source } from './app-experience-bootstrap-script';
 
-const source=readFileSync(new URL('../../public/app-experience-bootstrap.js',import.meta.url),'utf8');
 test('bootstrap accepts the reviewed96KiB Worker source ceiling and rejects the next character before construction',()=>{
  for(const size of [0,65537,98304,98305]){
   let handler:(event:unknown)=>void=()=>{},workers=0,closed=0;

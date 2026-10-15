@@ -75,6 +75,7 @@ jobs:
         run: >-
           pnpm --filter @deft/web exec tsx --test
           src/lib/app-experience-*.test.ts
+          src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/app-runtime-setup.test.ts
           src/lib/private-state-adoption.test.ts
           src/lib/action-batch-review.test.ts

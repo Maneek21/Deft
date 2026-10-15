@@ -23,6 +23,7 @@ import { createExperienceSuspension, experienceOperationAllowedWhileHidden } fro
 import { ExperiencePreferences } from './experience-preferences';
 import type { ExperienceNode, ExperienceView } from '@/lib/app-experience-bridge';
 import { createExperienceBridge } from '@/lib/app-experience-bridge';
+import { buildExperienceBootstrapSrcdoc } from '@/lib/app-experience-bootstrap-srcdoc';
 import { createExperienceStartup, experienceStartupStatus } from '@/lib/app-experience-startup';
 import { renderExperienceView, clearExperienceView, suspendExperienceView, flushExperienceInputs, EXPERIENCE_RENDERER_CSS } from '@/lib/app-experience-renderer';
 import { normalizeInstalledExperienceSession, experienceLifetimeIsCurrent,
@@ -993,6 +994,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       clearNavigation(navigationOwner);
       frame.contentWindow?.postMessage({ kind: 'stop', session_id: session.pin.session_id }, '*');
       bridge.revoke();
+      port.port2.close();
       frame.remove();
       if (viewHost.current) clearExperienceView(viewHost.current);
       rendered.current = false;
@@ -1030,9 +1032,19 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     };
     addEventListener('message', onBootstrapReady);
     frame.addEventListener('load', onBootstrapLoad);
-    frame.src = '/app-experience-bootstrap';
-    // This transport has no React-rendered contents; its lifetime owns the node.
-    document.body.append(frame);
+    const attachBootstrap = async () => {
+      try {
+        const srcdoc = await buildExperienceBootstrapSrcdoc(location.origin);
+        if (!identityCurrent()) { port.port2.close(); bridge.revoke(); return; }
+        frame.srcdoc = srcdoc;
+        // This transport has no React-rendered contents; its lifetime owns the node.
+        document.body.append(frame);
+      } catch {
+        if (identityCurrent()) startup.fail('bootstrap');
+        else { port.port2.close(); bridge.revoke(); }
+      }
+    };
+    void attachBootstrap();
     const checkConnection = () => { void connection.check(); };
     const poll = setInterval(checkConnection, 5000);
     addEventListener('online', checkConnection);
@@ -1077,6 +1089,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       sourceNominationAbort.abort();setNominatedSource(null);
       frame.contentWindow?.postMessage({ kind: 'stop', session_id: session.pin.session_id }, '*');
       bridge.revoke();
+      port.port2.close();
       frame.remove();
       if (viewHost.current) clearExperienceView(viewHost.current);
       rendered.current = false;

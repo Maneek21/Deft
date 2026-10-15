@@ -105,7 +105,7 @@ jobs:
           node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
           node --test packages/db/scripts/reviewed-lineage-artifacts.test.mjs 2>&1 | tee .ci-diagnostics/reviewed-lineage-artifacts.log
           pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
-          pnpm --filter @deft/web exec tsx --test src/lib/app-navigation.test.ts src/lib/app-experience-record-form-v3.test.tsx src/lib/app-experience-record-form-v3-mounted.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/installed-app-navigation.log
+          pnpm --filter @deft/web exec tsx --test src/lib/app-experience-bootstrap-browser.test.mjs src/lib/app-navigation.test.ts src/lib/app-experience-record-form-v3.test.tsx src/lib/app-experience-record-form-v3-mounted.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/installed-app-navigation.log
           pnpm --filter @deft/web exec tsx --test src/lib/app-experience-source-image-queue.test.ts src/lib/app-experience-source-presentation.test.ts src/lib/app-experience-source-policy.test.ts src/lib/app-experience-source-view.test.ts 2>&1 | tee .ci-diagnostics/source-image-queue.log
           node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log
       - name: Compile production Web

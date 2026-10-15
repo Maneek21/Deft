@@ -16,7 +16,7 @@ function visit(node:ts.Node){
   if(ts.isVariableDeclaration(node)&&['bootstrapDiagnostic','onBootstrapLoad'].includes(node.name.getText(source)))diagnostics[node.name.getText(source)]=node.initializer!.getText(source);
   if(ts.isVariableDeclaration(node)&&node.name.getText(source)==='startup'&&node.initializer&&ts.isCallExpression(node.initializer))diagnostics.failed=node.initializer.arguments[0].getText(source);
   if(ts.isJsxElement(node)&&node.openingElement.attributes.properties.some(attr=>ts.isJsxAttribute(attr)&&attr.name.getText(source)==='data-experience-startup-phase'))diagnostics.alert=node.getText(source);
-  if(ts.isVariableDeclaration(node)&&['frame','stop'].includes(node.name.getText(source)))transport[node.name.getText(source)]=node.initializer!.getText(source);
+  if(ts.isVariableDeclaration(node)&&['frame','stop','attachBootstrap'].includes(node.name.getText(source)))transport[node.name.getText(source)]=node.initializer!.getText(source);
   if(ts.isExpressionStatement(node)&&/^frame\.(title\s*=|sandbox\.add\(|referrerPolicy\s*=|setAttribute\(|style\.cssText\s*=|src\s*=)/.test(node.getText(source)))frameSetup.push(node.getText(source));
   if(ts.isExpressionStatement(node)&&node.getText(source)==='document.body.append(frame);')transport.append=node.getText(source);
   if(ts.isCallExpression(node)&&node.expression.getText(source)==='useEffect'&&node.arguments[0]&&ts.isArrowFunction(node.arguments[0])&&ts.isBlock(node.arguments[0].body)&&node.arguments[0].body.getText(source).includes('document.body.append(frame)')){
@@ -83,7 +83,7 @@ function mountTransport(body:TransportBody,sessionId:string){
  const frame=${transport.frame};${frameSetup.join('\n')}
  const bootstrapDiagnostic=${diagnostics.bootstrapDiagnostic},onBootstrapLoad=${diagnostics.onBootstrapLoad};
  const identityCurrent=()=>!stopped,authorityCurrent=()=>identityCurrent(),locallyCurrent=()=>authorityCurrent()&&!unavailable&&!document.hidden;
- const startup={ready(){},started(){},fail(){},dispose(){disposed=true;}},experienceStartupStatus=()=>null,port={port2:{}},session={pin:{session_id:sessionId},bundle:{worker_source:'reviewed'}},viewHost={current:null};
+ const startup={ready(){},started(){},fail(){},dispose(){disposed=true;}},experienceStartupStatus=()=>null,port={port2:{close(){}}},session={pin:{session_id:sessionId},bundle:{worker_source:'reviewed'}},viewHost={current:null};
  const noop=()=>{},setNominatedSource=noop,setPreferencesNode=noop,setSuspended=noop,setSource=noop,setRunReview=noop,setConnectionUnavailable=noop,setError=noop,clearNavigation=noop,closeComposer=noop,closeConfirmation=noop;
  const sourceNominationAbort={abort:noop},sourceReview={clear:noop},sourcePresentations=new Map(),presentationDisposals=new Map(),preferencesEvent={current:null},intakePrepare={current:null},readingPreferencesChanged={current:null},ensureAuthority={current:null};
  const accounts={close:noop},connection={dispose:noop},lease=null,navigationOwner={},rendered={current:false},bridge={revoke(){revoked=true;}},api={fetch(){retired++;return Promise.resolve();}},root='/synthetic',childTimer=0;let flushRecordWrites={current:null};
@@ -103,7 +103,7 @@ test('actual transport attach uses stable body and both retirement paths remove 
  const body:TransportBody={children:[],append(frame){this.children.push(frame);frame.parentNode=this;}};
  for(const cleanup of ['stop','cleanup']as const){
   const page=mountTransport(body,'11111111-1111-4111-8111-111111111111');
-  assert.equal(page.frame.parentNode,body);assert.equal(page.frame.src,'/app-experience-bootstrap');assert.equal(page.frame.sandbox.values.join(','),'allow-scripts');assert.equal(page.frame.attributes['aria-hidden'],'true');
+  assert.equal(page.frame.parentNode,body);assert.equal(page.frame.src,undefined,'transport must not trigger HTTP frame navigation');assert.equal(page.frame.sandbox.values.join(','),'allow-scripts');assert.equal(page.frame.attributes['aria-hidden'],'true');
   assert.match(page.frame.style.cssText,/position:fixed;top:0;left:0;/);assert.equal(page.frame.referrerPolicy,'no-referrer');
   page.ready();assert.equal(page.state().starts,1);page[cleanup]();assert.equal(body.children.length,0);assert.equal(page.state().loadListeners,0);assert.equal(page.state().disposed,true);assert.equal(page.state().revoked,true);assert.equal(page.state().retired,0);
   page.ready();assert.equal(page.state().starts,1,'retired frame cannot transfer again');
@@ -163,4 +163,27 @@ test('readiness before load remains valid and late callbacks cannot change a cle
  const page=mount();page.current(true);page.ready();assert.equal(page.state().starts,1);assert.equal(page.diagnostic().current.load_observed,false);
  page.load();assert.equal(page.diagnostic().current.load_observed,true);page.cleanup();const before=page.diagnostic();page.load();page.ready({origin:'private'});assert.deepEqual(page.diagnostic(),before);assert.equal(page.state().starts,1);
  const noReady=mount();noReady.load();noReady.timeout();const captured=JSON.parse(noReady.diagnostic().snapshot??'{}');assert.equal(captured.load_observed,true);assert.equal(captured.ready_candidate_seen,false);assert.equal(captured.start_transfer_attempted,false);
+});
+
+
+test('actual async srcdoc attachment retires safely and reports hash/build failure immediately',async()=>{
+ for(const mode of ['current','retired','rejected']as const){
+  const context=vm.createContext({mode});
+  vm.runInContext(`
+   let current=true,appended=0,failed=0,closed=0,revoked=0,release,reject;
+   const document={body:{append(value){appended++;}}},frame={},location={origin:'https://deft.test'},port={port2:{close(){closed++;}}},bridge={revoke(){revoked++;}};
+   const identityCurrent=()=>current,startup={fail(phase){if(phase!=='bootstrap')throw Error('wrong phase');failed++;}};
+   const buildExperienceBootstrapSrcdoc=()=>new Promise((yes,no)=>{release=yes;reject=no;});
+   const attachBootstrap=${transport.attachBootstrap};
+   const pending=attachBootstrap();
+   if(mode==='retired')current=false;
+   if(mode==='rejected')reject(Error('synthetic digest failure'));else release('trusted-srcdoc');
+   globalThis.result=pending.then(()=>({appended,failed,closed,revoked,srcdoc:frame.srcdoc}));
+  `,context);
+  const result=await context.result;
+  assert.equal(result.appended,mode==='current'?1:0);
+  assert.equal(result.failed,mode==='rejected'?1:0);
+  assert.equal(result.closed,mode==='retired'?1:0);assert.equal(result.revoked,mode==='retired'?1:0);
+  assert.equal(result.srcdoc,mode==='current'?'trusted-srcdoc':undefined);
+ }
 });

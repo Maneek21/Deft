@@ -68,6 +68,10 @@ const nextConfig: NextConfig = {
             value: [
               "default-src 'self'",
               "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              // Next SPA navigation retains the original document policy.
+              // Trusted Host pages may create Blob Workers; opaque srcdoc children
+              // apply an additional hash-only/connect-none policy.
+              "worker-src 'self' blob:",
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data: https://fonts.gstatic.com",
