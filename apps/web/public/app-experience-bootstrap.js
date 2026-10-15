@@ -23,11 +23,16 @@
     const port = event.ports[0];
     authorPort = port; sessionId = data.session_id;
     const url = URL.createObjectURL(new Blob([data.worker_source], { type: 'text/javascript' }));
+    const status = (state, phase) => parent.postMessage({ kind: 'deft_experience_bootstrap_status.v1', session_id: sessionId, state, phase }, expectedOrigin);
+    const failed = (phase) => { worker?.terminate(); port.close(); status('failed', phase); };
     try {
       worker = new Worker(url);
+      worker.onerror = () => failed('worker_runtime');
+      worker.onmessageerror = () => failed('worker_runtime');
       worker.postMessage({ kind: 'start', session_id: data.session_id, port }, [port]);
+      status('started', 'first_view');
     } catch {
-      port.close();
+      failed('worker_start');
     } finally {
       URL.revokeObjectURL(url);
     }

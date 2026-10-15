@@ -23,6 +23,7 @@ import { createExperienceSuspension, experienceOperationAllowedWhileHidden } fro
 import { ExperiencePreferences } from './experience-preferences';
 import type { ExperienceNode, ExperienceView } from '@/lib/app-experience-bridge';
 import { createExperienceBridge } from '@/lib/app-experience-bridge';
+import { createExperienceStartup, experienceStartupStatus } from '@/lib/app-experience-startup';
 import { renderExperienceView, clearExperienceView, suspendExperienceView, flushExperienceInputs, EXPERIENCE_RENDERER_CSS } from '@/lib/app-experience-renderer';
 import { normalizeInstalledExperienceSession, experienceLifetimeIsCurrent,
   normalizeExperienceExposureStatus, normalizeExperienceExposureReview, normalizeExperienceAccess, type ExperienceExposureStatus,
@@ -83,6 +84,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const { publishNavigation, clearNavigation } = useExperienceNavigation();
   const [session, setSession] = useState<InstalledExperienceSession | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startupPhase, setStartupPhase] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [nominatedSource,setNominatedSource]=useState<NominatedSourceSurface|null>(null);
   const [preferencesNode,setPreferencesNode]=useState<ExperienceNode|null>(null);
@@ -265,7 +267,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     setSession(null); setResourceTargets([]); setSource(null); setRunReview(null); closeComposer(true);closeConfirmation(true); setRecoveryReady(false); setRecoveryStates([]);
     setError(null); setSuspended(false); setConnectionUnavailable(false);
     setReady(false);
-    setReview(null); setExposure(null); setExposureBusy(false); reviewGeneration.current += 1;
+    setReview(null); setExposure(null); setExposureBusy(false); setStartupPhase(null); reviewGeneration.current += 1;
     if (viewHost.current) clearExperienceView(viewHost.current);
     rendered.current = false;
     if (!user || !org || !sessionCacheScope) return;
@@ -658,7 +660,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       const dispose=mountExperienceSourcePresentation({wrap,node,scope:exposure,sessionId:session.pin.session_id,resourceKey:known.key,recordId:known.recordId,current:()=>locallyCurrent()&&trustedDocument===known,load:(signal)=>sourcePresentation(known.key,known.recordId,signal),registerPrint:print=>{presentationPrinters.set(node.id,print);return()=>{if(presentationPrinters.get(node.id)===print)presentationPrinters.set(node.id,()=>true);};}});presentationDisposals.set(mountKey,{document:known,mount:dispose});
     }};
     const sendViewEvent=(event:unknown)=>bridge.sendUiEvent(event);
-    const renderHostView=(view:ExperienceView)=>{usedPresentations=new Set();if(viewHost.current)renderExperienceView(viewHost.current,view,event=>sendViewEvent(event),rendererOptions);for(const [key,entry]of presentationDisposals)if(!usedPresentations.has(key)){entry.mount();presentationDisposals.delete(key);}if(!usedPresentations.size)sourcePresentations.clear();};
+    const renderHostView=(view:ExperienceView)=>{usedPresentations=new Set();if(viewHost.current){renderExperienceView(viewHost.current,view,event=>sendViewEvent(event),rendererOptions);startup.view();}for(const [key,entry]of presentationDisposals)if(!usedPresentations.has(key)){entry.mount();presentationDisposals.delete(key);}if(!usedPresentations.size)sourcePresentations.clear();};
     let latestView: ExperienceView | null = null;
     readingPreferencesChanged.current=()=>{
       if(!locallyCurrent())return;
@@ -741,6 +743,11 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     });
     const live = connection.ensure;
     ensureAuthority.current = live;
+    const startup = createExperienceStartup(phase => {
+      stop();
+      setStartupPhase(phase);
+      setError('The app could not open. Reconnect to try again.');
+    });
     const bridge = createExperienceBridge({
       port: port.port1, pin: session.pin,
       resourceKeys: session.bundle.resource_keys,
@@ -970,6 +977,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     const childTimer=setInterval(()=>{if(childSweepBusy||!locallyCurrent()||document.hidden)return;childSweepBusy=true;void accounts.sweep(AbortSignal.timeout(10000)).then(async ended=>{if(!locallyCurrent())return;for(const target of ended){setResourceBatch(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setResourceAction(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setRecordAction(current=>{if(current?.targetKey===target){current.finish(false);return null;}return current;});await bridge.sendUiEvent({kind:'click',node_id:'account_visibility_'+target});}}).catch(()=>{}).finally(()=>{childSweepBusy=false;});},5000);
     const stop = (retireSession = true) => {
       if (stopped) return;
+      startup.dispose();
       sourceNominationAbort.abort();setNominatedSource(null);
       stopped = true; latestView = null;trustedDocument=null;sourceReview.clear();sourcePresentations.clear();for(const entry of presentationDisposals.values())entry.mount();presentationDisposals.clear();setPreferencesNode(null);preferencesEvent.current=null;intakePrepare.current=null;readingPreferencesChanged.current=null; setSuspended(false); setSource(null); setRunReview(null);
       clearInterval(childTimer);accounts.close();connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null; setConnectionUnavailable(false);
@@ -990,10 +998,15 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       frame.contentWindow.postMessage({ kind: 'start', session_id: session.pin.session_id, worker_source: session.bundle.worker_source }, '*', [port.port2]);
     };
     const onBootstrapReady = (event: MessageEvent) => {
+      const status = experienceStartupStatus(event, frame.contentWindow, session.pin.session_id);
+      if (status && authorityCurrent()) {
+        if (status === 'started') startup.started(); else startup.fail(status);
+        return;
+      }
       if (!authorityCurrent() || started || event.source !== frame.contentWindow || event.origin !== 'null'
         || !event.data || event.data.kind !== 'deft_experience_bootstrap_ready.v1'
         || !frame.contentWindow) return;
-      bootstrapReady = true; startWorker();
+      startup.ready(); bootstrapReady = true; startWorker();
     };
     addEventListener('message', onBootstrapReady);
     frame.src = '/app-experience-bootstrap';
@@ -1026,6 +1039,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     // healthy Worker at the original deadline after successful renewal.
     const expiry = exposure ? undefined : setTimeout(() => stop(), Math.max(0, Date.parse(session.expires_at) - Date.now()));
     return () => {
+      startup.dispose();
       clearInterval(poll); removeEventListener('online', checkConnection); suspension.dispose();
       removeEventListener('message', onBootstrapReady);
       removeEventListener('storage', onStorage);
@@ -1106,7 +1120,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     {suspended && !connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Resuming app…</p>}
     {session&&(error||!exposure)&&!settingsOpen&&<div className="shrink-0 px-5 py-2"><button type="button" className="deft-pill min-h-11" disabled={connectionSetupBusy||!!composer}
       onClick={()=>void showSettings(true)}>Account settings</button></div>}
-    {error && session && !accountSetupOpen ? <p role="alert" className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
+    {error && session && !accountSetupOpen ? <p role="alert" data-experience-startup-phase={startupPhase ?? undefined} className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
       : !ready && !error && !accountSetupOpen ? <p role="status" className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening app…</p>
       : null}
     {!session && user && user.role !== 'guest' && org && sessionCacheScope && !accountSetupOpen && <section className="shrink-0 space-y-3 px-5 py-4 text-sm">
