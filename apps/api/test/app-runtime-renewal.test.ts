@@ -21,3 +21,15 @@ test('issuer and renewal schemas do not accept caller nominated principal, ceili
  assert.ok(AppRuntimeRenewRequestSchema.safeParse(request).success);
  for(const key of ['renewable_until','sid','role','resource_binding_id','expires_at'])assert.equal(AppRuntimeRenewRequestSchema.safeParse({...request,[key]:'nominated'}).success,false);
 });
+
+
+test('explicit persistent permission renews only a live finite lease; expired/implicit/mixed mode fail',()=>{
+ const now=new Date('2099-10-15T12:00:00.000Z'),current=new Date(now.getTime()+60000);
+ const base={now,current_expires_at:current,expected_expires_at:current,renewable_until:null,principal_expires_at:null,renewal_lifetime:'until_revoked' as const};
+ assert.equal(runtimeRenewalDeadline(base)?.getTime(),now.getTime()+15*60000);
+ assert.equal(runtimeRenewalDeadline({...base,expected_expires_at:new Date(now.getTime()-60000)})?.getTime(),current.getTime());
+ assert.equal(runtimeRenewalDeadline({...base,current_expires_at:now,expected_expires_at:now}),null);
+ assert.equal(runtimeRenewalDeadline({...base,renewal_lifetime:undefined}),null);
+ assert.equal(runtimeRenewalDeadline({...base,renewable_until:current}),null);
+ assert.equal(runtimeRenewalDeadline({...base,principal_expires_at:current}),null);
+});

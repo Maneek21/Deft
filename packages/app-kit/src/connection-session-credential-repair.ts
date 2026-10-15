@@ -1,6 +1,7 @@
+import { appConsentDeadline} from './consent-lifetime.js';
 import { z } from 'zod';
 const accountRef=z.string().min(1).max(512).regex(/^[A-Za-z0-9_-]+$/u);
-import { AppConnectionSessionScopeSchema, AppConnectionSessionViewSchema,
+import { appConnectionSessionViewDeadline, AppConnectionSessionScopeSchema, AppConnectionSessionViewSchema,
   AppConnectionSessionCallbackSchema, AppConnectionSessionBegunSchema } from './connection-session.js';
 import { AppConnectionReattachSourceSchema, AppConnectionReattachEligibilitySchema } from './connection-session-reattach.js';
 import {canonicalConnectionReattachmentJson} from './connection-session-reattach.js';
@@ -63,13 +64,13 @@ export const AppConnectionCredentialRepairReviewViewSchema = z.strictObject({
   fence:AppConnectionCredentialRepairFenceSchema,
   review_digest: digest, expires_at: z.iso.datetime(),
 });
-export const AppConnectionCredentialRepairBegunSchema = AppConnectionSessionBegunSchema.extend({
-  schema_version: z.literal('deft.app_connection_credential_repair_session.v1') });
-export const AppConnectionCredentialRepairClosedViewSchema = AppConnectionSessionViewSchema.extend({
+export const AppConnectionCredentialRepairBegunSchema = z.strictObject({ ...AppConnectionSessionBegunSchema.shape,
+  schema_version: z.literal('deft.app_connection_credential_repair_session.v1') }).refine(appConnectionSessionViewDeadline);
+export const AppConnectionCredentialRepairClosedViewSchema = z.strictObject({ ...AppConnectionSessionViewSchema.shape,
   schema_version: z.literal('deft.app_connection_credential_repair_closed.v1'), state: z.literal('not_connected'), account: z.null(),
   source_session_id: id, source_revision: z.number().int().nonnegative().max(2_147_483_646), account_ref: accountRef,
   review_expires_at: z.iso.datetime(), closure: AppConnectionCredentialRepairClosureSchema,
-});
+}).refine(appConnectionSessionViewDeadline);
 const envelope = { schema_version: z.literal('deft.app_connection_credential_repair_runtime.v1'), session_id: id,
   scope: AppConnectionSessionScopeSchema, source: AppConnectionCredentialRepairSourceSchema, transport_digest: digest,
   historical_attempts:AppConnectionCredentialRepairHistoricalAttemptsSchema,publication_continuity_digest:z.null(),
@@ -88,11 +89,11 @@ const variants = [
     acknowledged_closure:z.strictObject({session_id:id,session_revision:z.number().int().positive(),receipt_digest:digest}).optional() }),
 ] as const;
 const deadline = (value: { operation: string; expires_at: string; review_expires_at: string;
-  scope: { consent_expires_at: string }; action_consents: z.infer<typeof AppConnectionActionConsentsSchema> }) =>
-  Date.parse(value.review_expires_at) <= Date.parse(value.scope.consent_expires_at)
-  && Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at)
+  scope: { consent_expires_at: string | null; consent_lifetime?: 'until_revoked' }; action_consents: z.infer<typeof AppConnectionActionConsentsSchema> }) =>
+  Date.parse(value.review_expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
+  && Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
   && (value.operation === 'status' || (value.operation === 'callback' || Date.parse(value.expires_at) <= Date.parse(value.review_expires_at))
-    && value.action_consents.every(consent => Date.parse(value.expires_at) <= Date.parse(consent.expires_at)));
+    && value.action_consents.every(consent => Date.parse(value.expires_at) <= appConsentDeadline(consent.expires_at, consent.consent_lifetime)));
 export const AppConnectionCredentialRepairRuntimeRequestSchema = z.discriminatedUnion('operation', variants).refine(deadline)
  .refine(v=>canonicalConnectionReattachmentJson(v.scope)===canonicalConnectionReattachmentJson(v.source.scope))
  .refine(v=>v.operation!=='status'||[v.close_prepared,v.close_expired,v.close_uncertain,v.acknowledged_receipt,v.acknowledged_closure].filter(Boolean).length<=1);

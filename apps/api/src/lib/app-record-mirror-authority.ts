@@ -1,3 +1,4 @@
+import {appConsentDeadline,AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit';
 import {discloseRecordMirrorRead} from './app-record-mirror-read-deadline.js';
 import {z} from 'zod';
 import {and,eq,sql} from 'drizzle-orm';
@@ -19,14 +20,14 @@ export const ReviewedRecordMirrorAuthoritySchema=z.strictObject({
  purpose_identity:z.strictObject({consent_grant_id:id.nullable(),consent_epoch:z.number().int().min(0).nullable(),exposure_id:id,exposure_epoch:z.number().int().min(0)}),
  connection:AppDataConnectionSchema,store_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
  data_consent_id:id,data_consent_digest:digest,data_policy_digest:digest,
- data_consent_expires_at:z.iso.datetime(),policy:AppRecordMirrorDeclarationSchema,policy_digest:digest,
+ data_consent_expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional(),policy:AppRecordMirrorDeclarationSchema,policy_digest:digest,
  action_consents:z.array(AppConnectionActionConsentSchema).length(1)
   .refine(rows=>new Set(rows.map(row=>row.action_key)).size===rows.length&&rows.every((row,i)=>i===0||rows[i-1]!.action_key<row.action_key)),
  custody_generation:z.number().int().min(1).max(2147483646).nullable(),custody_receipt_digest:digest.nullable(),
  authority_expires_at:z.iso.datetime(),
-}).refine(row=>row.action_consents.some(consent=>consent.action_key===row.policy.action_key)
- &&row.action_consents.every(consent=>Date.parse(consent.expires_at)>=Date.parse(row.authority_expires_at))
- &&Date.parse(row.authority_expires_at)<=Math.min(Date.parse(row.scope.consent_expires_at),Date.parse(row.data_consent_expires_at))
+}).refine(row=>appConsentExpiryValid(row.data_consent_expires_at,row.consent_lifetime)&&row.action_consents.some(consent=>consent.action_key===row.policy.action_key)
+ &&row.action_consents.every(consent=>appConsentDeadline(consent.expires_at,consent.consent_lifetime)>=Date.parse(row.authority_expires_at))
+ &&Date.parse(row.authority_expires_at)<=Math.min(appConsentDeadline(row.scope.consent_expires_at, row.scope.consent_lifetime),appConsentDeadline(row.data_consent_expires_at,row.consent_lifetime))
  &&(row.custody_generation===null)===(row.custody_receipt_digest===null));
 export type ReviewedRecordMirrorAuthority=z.infer<typeof ReviewedRecordMirrorAuthoritySchema>;
 /** Shared live readers check owner membership, installed version/grant,
@@ -48,7 +49,7 @@ export async function currentRecordMirrorAuthority(tx:AppRunTransaction,raw:unkn
   if(reviewed.protocol_version!=='7'||reviewed.binding.action_key!==consent.action_key
   ||reviewed.binding.owner_resource_binding_id!==pins.scope.resource_binding_id||reviewed.operator_user_id!==pins.scope.operator_user_id
   ||reviewed.registration.runtime_epoch!==consent.authority_epoch||digestAppGrantValue(reviewed.authorization_snapshot)!==consent.consent_digest
-  ||!reviewed.owner_target_consent_expires_at||reviewed.owner_target_consent_expires_at.getTime()<Date.parse(pins.authority_expires_at))throw appDataDenied();
+  ||reviewed.owner_target_consent_lifetime!=='until_revoked'&&(!reviewed.owner_target_consent_expires_at||reviewed.owner_target_consent_expires_at.getTime()<Date.parse(pins.authority_expires_at)))throw appDataDenied();
  }
  if(clock().getTime()>=Date.parse(pins.authority_expires_at))throw appDataDenied();
  return pins;
@@ -58,10 +59,10 @@ export async function currentRecordMirrorAuthority(tx:AppRunTransaction,raw:unkn
 export async function currentRecordMirrorReadAuthority(tx:AppRunTransaction,raw:unknown,clock=()=>new Date()){
  return validateRecordMirrorReadAuthority(tx,ReviewedRecordMirrorAuthoritySchema.parse(raw),clock);
 }
-type RecordMirrorReadPins=Pick<ReviewedRecordMirrorAuthority,'scope'|'connection'|'store_key'|'data_consent_id'|'data_consent_digest'|'data_policy_digest'|'data_consent_expires_at'|'policy'|'policy_digest'|'custody_generation'|'custody_receipt_digest'>;
+type RecordMirrorReadPins=Pick<ReviewedRecordMirrorAuthority,'scope'|'connection'|'store_key'|'data_consent_id'|'data_consent_digest'|'data_policy_digest'|'data_consent_expires_at'|'consent_lifetime'|'policy'|'policy_digest'|'custody_generation'|'custody_receipt_digest'>;
 async function validateRecordMirrorReadAuthority<T extends RecordMirrorReadPins>(tx:AppRunTransaction,pins:T,clock:()=>Date){
  const now=clock();
- if(!Number.isFinite(now.getTime())||Date.parse(pins.data_consent_expires_at)<=now.getTime()||appDataDigest(pins.policy)!==pins.policy_digest)throw appDataDenied();
+ if(!Number.isFinite(now.getTime())||appConsentDeadline(pins.data_consent_expires_at,pins.consent_lifetime)<=now.getTime()||appDataDigest(pins.policy)!==pins.policy_digest)throw appDataDenied();
  return discloseRecordMirrorRead(pins,async()=>{
  const binding=await resourceObservationBindingAuthority(tx,pins.scope.org_id,pins.scope.resource_binding_id,clock);
  const connection=await loadObservationConnection(tx,binding,pins.connection.session_id);
@@ -76,8 +77,8 @@ async function validateRecordMirrorReadAuthority<T extends RecordMirrorReadPins>
  ||appDataDigest(store)!==pins.data_policy_digest||!isDeepStrictEqual(policy,pins.policy))throw appDataDenied();
  const [consent]=await tx.select().from(appDataConsents).where(and(eq(appDataConsents.org_id,pins.scope.org_id),
  eq(appDataConsents.owner_user_id,pins.scope.owner_user_id),eq(appDataConsents.consent_id,pins.data_consent_id),eq(appDataConsents.state,'active'))).for('share');
- if(!consent||consent.expires_at.toISOString()!==pins.data_consent_expires_at||consent.consent_digest!==pins.data_consent_digest
- ||consent.expires_at<=now||appDataDigest(consent.snapshot)!==pins.data_consent_digest)throw appDataDenied();
+ if(!consent||(consent.expires_at?.toISOString()??null)!==pins.data_consent_expires_at||consent.consent_digest!==pins.data_consent_digest
+ ||appConsentDeadline(consent.expires_at,AppDataConsentSnapshotSchema.parse(consent.snapshot).consent_lifetime)<=now.getTime()||appDataDigest(consent.snapshot)!==pins.data_consent_digest)throw appDataDenied();
  const data=AppDataConsentSnapshotSchema.parse(consent.snapshot);
  if(!isDeepStrictEqual(data.scope,pins.scope)||!isDeepStrictEqual(data.store,store)
  ||data.connection.session_id!==pins.connection.session_id||data.connection.runtime_session_ref!==pins.connection.runtime_session_ref
@@ -130,8 +131,8 @@ export async function currentOwnerRecordMirrorReadAuthority(tx:AppRunTransaction
  }
  const readable=await validateRecordMirrorReadAuthority(tx,{scope:current.scope,connection:current.connection,store_key:current.store.key,
   data_consent_id:current.consent.consent_id,data_consent_digest:current.consent.consent_digest,data_policy_digest:current.data_policy_digest,
-  data_consent_expires_at:current.consent.expires_at.toISOString(),policy:reviewed.policy,policy_digest:reviewed.policy_digest,
+  data_consent_expires_at:current.consent.expires_at?.toISOString()??null,...(current.consent.consent_lifetime?{consent_lifetime:current.consent.consent_lifetime}:{}),policy:reviewed.policy,policy_digest:reviewed.policy_digest,
   custody_generation:custody?.custody_generation??null,custody_receipt_digest:custody?.receipt_digest??null},clock);
  // Return only visibility deadlines, never a constructed recurring-write grant.
- return {scope:readable.scope,data_consent_expires_at:new Date(Math.min(current.expires_at,Date.parse(readable.data_consent_expires_at))).toISOString()};
+ return {scope:readable.scope,data_consent_expires_at:new Date(Math.min(current.expires_at,appConsentDeadline(readable.data_consent_expires_at,readable.consent_lifetime))).toISOString()};
 }

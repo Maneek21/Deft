@@ -19,7 +19,7 @@ test('actual account settings and callback select public generic flow before leg
  const settings=readFileSync(new URL('../components/apps/experience-connection-settings.tsx',import.meta.url),'utf8');
  const callback=readFileSync(new URL('../app/(app)/apps/connections/callback/page.tsx',import.meta.url),'utf8');
  assert.match(settings,/GenericConnectionSettings/);assert.match(settings,/createAppConnectionSessionFlow/);
- assert.ok(callback.indexOf('completeAppConnectionSession(')<callback.indexOf('completeDirectEmailConnection('));
+ assert.match(callback,/completeAppConnectionSession\(/);assert.doesNotMatch(callback,/completeDirectEmailConnection|email-connection/);assert.ok(callback.indexOf('completeAppConnectionSession(')<callback.indexOf('const stored = sessionStorage.getItem(APP_CONNECTION_PENDING_KEY)'));
 });
 test('unknown generic pending permits an independent exact native/legacy callback; own nonce never downgrades',()=>{
  const stored=JSON.stringify({phase:'consumed',state:nonce});

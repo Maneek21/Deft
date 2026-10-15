@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import {parseConnectionUpgradeContext,createConnectionUpgradeFlow,type ConnectionUpgradeMetadata} from './app-connection-upgrade';
 import {createConnectionRepairFlow,type ConnectionRepairMetadata} from './app-connection-repair';
 import { appConnectionReattachmentMetadata, createAppConnectionReattachmentFlow, type AppConnectionReattachmentMetadata } from './app-connection-reattachment';
@@ -37,7 +38,7 @@ export async function appConnectionSessionTag(scope:string){
 function sessionView(raw:unknown,identity:AppConnectionIdentity,targetKey:string,expected?:AppConnectionSessionView){
  const value=AppConnectionSessionViewSchema.parse(raw);
  if(value.scope.org_id!==identity.orgId||value.scope.owner_user_id!==identity.ownerId||value.scope.installation_id!==identity.installationId||value.scope.target_key!==targetKey
-  ||value.state==='connected'&&!value.account||value.state!=='connected'&&value.state!=='indeterminate'&&!!value.account||Date.parse(value.expires_at)>Date.parse(value.scope.consent_expires_at)
+  ||value.state==='connected'&&!value.account||value.state!=='connected'&&value.state!=='indeterminate'&&!!value.account||appConsentDeadline(value.expires_at,value.expires_at===null?value.scope.consent_lifetime:undefined)>appConsentDeadline(value.scope.consent_expires_at,value.scope.consent_lifetime)
   ||expected&&(value.session_id!==expected.session_id||!equal(value.scope,expected.scope)||expected.account&&value.account&&value.account.account_ref!==expected.account.account_ref))fail();
  return value;
 }
@@ -129,13 +130,13 @@ export function createAppConnectionSessionFlow(ports:Ports){
   dispose(){disposed=true;},
   async load(){current();const value=await context({...ports,current:()=>!disposed&&ports.current()});current();ctx=value;return value;},
   async begin(targetKey:string){current();if(busy)fail();const chosen=target(targetKey),pending=readPending(ports);
-   if(pending||reuse.unresolved(targetKey)||repair.unresolved(targetKey)||chosen.upgrade&&upgrade.unresolved(targetKey)||!chosen.runtime_ready||chosen.session&&!['not_connected','disconnected'].includes(chosen.session.state)||Date.parse(chosen.scope.consent_expires_at)<=(ports.now?.()??Date.now()))fail();
+   if(pending||reuse.unresolved(targetKey)||repair.unresolved(targetKey)||chosen.upgrade&&upgrade.unresolved(targetKey)||!chosen.runtime_ready||chosen.session&&!['not_connected','disconnected'].includes(chosen.session.state)||appConsentDeadline(chosen.scope.consent_expires_at,chosen.scope.consent_lifetime)<=(ports.now?.()??Date.now()))fail();
    const intent:Pending={...ports.identity,schema_version:'deft.app_connection_pending.v1',targetKey,phase:'starting',connectionSessionId:null,scope:null,state:null,expiresAt:new Date((ports.now?.()??Date.now())+600_000).toISOString(),accountRef:null,...(chosen.upgrade?{protocol:'v2' as const}:{})};
    // A lost Begin acknowledgement remains fenced. Context discovers the host's
    // durable session; absence after an uncertain attempt is not retry consent.
    ports.storage.setItem(APP_CONNECTION_SESSION_PENDING_KEY,JSON.stringify(intent));busy=true;
    try{const raw=await post(ports,chosen.upgrade?'v2/begin':'begin',{installation_id:ports.identity.installationId,target_key:targetKey});current();const begun=AppConnectionSessionBegunSchema.parse(raw);
-    const view=sessionView({schema_version:begun.schema_version,session_id:begun.session_id,state:begun.state,scope:begun.scope,expires_at:begun.expires_at,account:begun.account},ports.identity,targetKey);
+    if(typeof begun.expires_at!=='string')fail();const view=sessionView({schema_version:begun.schema_version,session_id:begun.session_id,state:begun.state,scope:begun.scope,expires_at:begun.expires_at,account:begun.account},ports.identity,targetKey);
     const url=new URL(begun.authorization_url);if(!equal(begun.scope,chosen.scope)||url.origin!==chosen.profile.authorization_origin||url.searchParams.getAll('state').length!==1||url.searchParams.get('state')!==begun.callback_state||Date.parse(begun.expires_at)<=(ports.now?.()??Date.now()))fail();
     ports.storage.setItem(APP_CONNECTION_SESSION_PENDING_KEY,JSON.stringify({...intent,phase:'awaiting_callback',connectionSessionId:begun.session_id,scope:begun.scope,state:begun.callback_state,expiresAt:begun.expires_at}));chosen.session=view;return url.href;
    }finally{busy=false;}

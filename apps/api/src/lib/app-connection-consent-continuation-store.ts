@@ -75,7 +75,7 @@ export class PostgresConsentContinuationStore{
     await lockContinuationTarget(tx,r.scope);await assertContinuationSource(tx,r);
     const now=await tx.execute(sql`SELECT to_jsonb(b) AS snapshot FROM app_resource_bindings b WHERE b.org_id=${q.org_id} AND b.id=${r.scope.resource_binding_id} FOR UPDATE`);
     if(!isDeepStrictEqual(now.rows[0]?.snapshot,r.binding_before))throw continuationDenied();
-    await tx.update(appResourceBindings).set({consent_expires_at:new Date(r.scope.consent_expires_at),reviewed_at:new Date(r.reviewed_at),attachment_consent_digest:r.attachment_consent_digest,updated_at:new Date(session.updated_at)})
+    await tx.update(appResourceBindings).set({consent_expires_at:(r.scope.consent_expires_at===null?null:new Date(r.scope.consent_expires_at)),consent_lifetime:r.scope.consent_lifetime??null,reviewed_at:new Date(r.reviewed_at),attachment_consent_digest:r.attachment_consent_digest,updated_at:new Date(session.updated_at)})
       .where(and(eq(appResourceBindings.org_id,q.org_id),eq(appResourceBindings.id,r.scope.resource_binding_id)));
     const starting={...session,revision:0,state:'starting' as const,callback_consumed:false,runtime_session_ref:null,account:null};
     await tx.insert(appConnectionSessions).values({org_id:q.org_id,owner_user_id:q.owner_user_id,session_id:q.session_id,web_session_id:(await this.metadata(q,tx))!.web_session_id,

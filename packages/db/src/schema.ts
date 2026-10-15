@@ -2538,6 +2538,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
   max_retained_bytes: integer('max_retained_bytes').notNull(),
   min_interval_seconds: integer('min_interval_seconds').notNull(),
   consent_expires_at: timestamp('consent_expires_at'),
+  consent_lifetime: text('consent_lifetime').$type<'until_revoked'>(),
   state: text('state').$type<'disabled' | 'active' | 'revoked'>().default('disabled').notNull(),
   reviewed_by_user_id: text('reviewed_by_user_id'),
   reviewed_at: timestamp('reviewed_at'),
@@ -2652,13 +2653,15 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     AND ${t.min_interval_seconds} BETWEEN 60 AND 86400
   `),
   check('app_resource_bindings_review_check', sql`
-    (${t.state} = 'disabled' AND ${t.reviewed_by_user_id} IS NULL
-      AND ${t.reviewed_at} IS NULL AND ${t.consent_expires_at} IS NULL)
+    COALESCE(((${t.state} = 'disabled' AND ${t.reviewed_by_user_id} IS NULL
+      AND ${t.reviewed_at} IS NULL AND ${t.consent_expires_at} IS NULL AND ${t.consent_lifetime} IS NULL)
     OR (${t.state} IN ('active','revoked') AND ${t.reviewed_by_user_id} IS NOT NULL
       AND ${t.reviewed_by_user_id} = ${t.owner_user_id}
-      AND ${t.reviewed_at} IS NOT NULL AND ${t.consent_expires_at} IS NOT NULL
+      AND ${t.reviewed_at} IS NOT NULL AND ((${t.consent_lifetime} IS NULL AND ${t.consent_expires_at} IS NOT NULL
       AND ${t.consent_expires_at} > ${t.reviewed_at}
       AND ${t.consent_expires_at} <= ${t.reviewed_at} + interval '90 days')
+      OR (${t.consent_lifetime}='until_revoked' AND ${t.consent_expires_at} IS NULL)))
+),false)
   `),
 ]);
 
@@ -2678,6 +2681,7 @@ export const appRuntimeSessions = pgTable('app_runtime_sessions', {
   next_sequence: integer('next_sequence').default(1).notNull(),
   expires_at: timestamp('expires_at').notNull(),
   renewable_until: timestamp('renewable_until', { withTimezone: true }),
+  renewal_lifetime: text('renewal_lifetime').$type<'until_revoked'>(),
   renewal_web_session_id: text('renewal_web_session_id'),
   renewal_operator_role: text('renewal_operator_role'),
   revoked_at: timestamp('revoked_at'),
@@ -2705,7 +2709,7 @@ export const appRuntimeSessions = pgTable('app_runtime_sessions', {
   `),
   check('app_runtime_sessions_epoch_check', sql`${t.session_epoch} >= 0 AND ${t.runtime_epoch} >= 0 AND ${t.lifecycle_epoch} >= 0 AND ${t.grant_epoch} >= 0 AND ${t.next_sequence} >= 1`),
   check('app_runtime_sessions_token_check', sql`${t.token_hash} ~ '^sha256:[a-f0-9]{64}$'`),
-  check('app_runtime_sessions_renewal_check', sql`(${t.renewable_until} IS NULL AND ${t.renewal_web_session_id} IS NULL AND ${t.renewal_operator_role} IS NULL) OR (${t.audience} = 'app_runtime' AND ${t.renewable_until} IS NOT NULL AND ${t.renewal_web_session_id} IS NOT NULL AND length(${t.renewal_web_session_id}) > 0 AND ${t.renewal_operator_role} IS NOT NULL AND ${t.renewal_operator_role} IN ('owner','admin','member') AND (${t.expires_at} AT TIME ZONE 'UTC') <= ${t.renewable_until} AND ${t.renewable_until} > (${t.created_at} AT TIME ZONE 'UTC'))`),
+  check('app_runtime_sessions_renewal_check', sql`(((${t.renewal_lifetime} IS NULL AND ${t.renewable_until} IS NULL AND ${t.renewal_web_session_id} IS NULL AND ${t.renewal_operator_role} IS NULL) OR (${t.renewal_web_session_id} IS NOT NULL AND length(${t.renewal_web_session_id}) > 0 AND ${t.renewal_operator_role} IS NOT NULL AND ${t.renewal_operator_role} IN ('owner','admin','member') AND ((${t.renewal_lifetime} IS NULL AND ${t.audience}='app_runtime' AND ${t.renewable_until} IS NOT NULL AND (${t.expires_at} AT TIME ZONE 'UTC') <= ${t.renewable_until} AND ${t.renewable_until} > (${t.created_at} AT TIME ZONE 'UTC')) OR (${t.renewal_lifetime}='until_revoked' AND ${t.audience} IN ('app_runtime','app_resource_sync') AND ${t.renewable_until} IS NULL AND isfinite(${t.expires_at}) AND isfinite(${t.created_at}) AND ${t.expires_at}>${t.created_at})))) IS TRUE)`),
 ]);
 
 // ═══ APP AUTOMATION FOUNDATION (DORMANT TRACK A) ═══

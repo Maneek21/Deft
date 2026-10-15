@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {and,eq,sql,desc} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {AppConnectionConsentContinuationAuthorityRequestSchema,AppConnectionConsentContinuationAuthorityResultSchema,
@@ -23,11 +24,11 @@ export async function appConnectionConsentContinuationRuntimeAuthority(raw:unkno
  if(before.authority_operation!==input.operation||Date.parse(input.expires_at)!==before.authority_expires_at.getTime()||before.authority_expires_at.getTime()<=Date.now())throw continuationDenied();
  if(input.operation==='prepare'&&r.state!=='preparing'||input.operation==='activate'&&(!r.activation_started||!['activating','indeterminate'].includes(r.state))
   ||input.operation==='status'&&['connected','not_connected','committing'].includes(r.state)
-  ||!isDeepStrictEqual(appConnectionConsentContinuationPins(input),appConnectionConsentContinuationPins(continuationRequest(r,'status',Date.parse(r.scope.consent_expires_at))))
+  ||!isDeepStrictEqual(appConnectionConsentContinuationPins(input),appConnectionConsentContinuationPins(continuationRequest(r,'status',Date.parse(r.review_expires_at))))
   ||('review' in input&&!isDeepStrictEqual(input.review,r.review)))throw continuationDenied();
  const caller={org_id:q.org_id,user_id:q.owner_user_id,sid:before.web_session_id,access_expires_at:before.access_expires_at.getTime()},guard=retainedWebGuard(caller);
  const current=await db.transaction(tx=>assertFreshContinuation(tx,caller,guard,r));
- const deadline=Math.min(Date.parse(input.expires_at),current.expires_at,Date.parse(r.scope.consent_expires_at),input.operation==='status'?Infinity:Date.parse(r.review_expires_at),input.operation==='status'?Infinity:Math.min(...r.action_consents.map(a=>Date.parse(a.expires_at))));
+ const deadline=Math.min(Date.parse(input.expires_at),current.expires_at,appConsentDeadline(r.scope.consent_expires_at, r.scope.consent_lifetime),input.operation==='status'?Infinity:Date.parse(r.review_expires_at),input.operation==='status'?Infinity:Math.min(...r.action_consents.map(a=>appConsentDeadline(a.expires_at, a.consent_lifetime))));
  const after=await store.metadata(q);if(!after||after.revision!==before.revision||deadline<=Date.now())throw continuationDenied();
  (await getAppConnectionSessionRegistry()).authenticate(current.scope,authorization);
  return AppConnectionConsentContinuationAuthorityResultSchema.parse({...input,allowed:true,expires_at:new Date(deadline).toISOString()});
@@ -47,7 +48,7 @@ export async function appConnectionConsentContinuationContext(caller:ExperienceC
     const max_consent_expires_at=new Date(Date.now()+admission.policy.max_consent_seconds*1000).toISOString();
     const rows=await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id,caller.org_id),eq(appConnectionSessions.owner_user_id,caller.user_id),
       sql`${appConnectionSessions.record}->'scope'->>'resource_binding_id'=${identity.binding.id}`,sql`${appConnectionSessions.record}->>'state'='connected'`,
-      sql`${appConnectionSessions.record}->'scope'->>'consent_expires_at'=${identity.binding.consent_expires_at!.toISOString()}`)).orderBy(desc(appConnectionSessions.created_at)).limit(2);
+      sql`${appConnectionSessions.record}->'scope'->>'consent_expires_at'=${(identity.binding.consent_expires_at?.toISOString()??null)}`)).orderBy(desc(appConnectionSessions.created_at)).limit(2);
     if(rows.length!==1)throw continuationDenied();const old=AppConnectionSessionRecordSchema.parse(rows[0]!.record);
     if(!old.account||!old.runtime_session_ref||!old.action_consents||old.revision<1)throw continuationDenied();
     const [pendingRow]=await tx.select().from(journals).where(and(eq(journals.org_id,caller.org_id),eq(journals.owner_user_id,caller.user_id),eq(journals.source_session_id,old.session_id),sql`${journals.record}->>'state' NOT IN ('connected','not_connected')`)).limit(1);
@@ -60,12 +61,13 @@ export async function appConnectionConsentContinuationContext(caller:ExperienceC
       const locked=await store.metadata(q,tx,true);if(!locked||locked.revision!==pending.revision||locked.record.activation_started)throw continuationDenied();
       await store.cas(tx,q,pending,{...pending,state:'not_connected',revision:pending.revision+1,updated_at:new Date().toISOString()});pending=null;
     }
-    const proposal=pending?.scope.consent_expires_at??max_consent_expires_at;
-    const current=await currentConsentContinuationAuthority(caller,{installation_id,target_key},guard,new Date(proposal),tx);
-    if(!isDeepStrictEqual({...old.scope,consent_expires_at:proposal},current.scope)||!isDeepStrictEqual(old.profile,current.profile))throw continuationDenied();
+    const proposal=pending?pending.scope.consent_expires_at:max_consent_expires_at;
+    const proposalLifetime=pending?.scope.consent_lifetime;
+    const current=await currentConsentContinuationAuthority(caller,{installation_id,target_key},guard,proposal===null?null:new Date(proposal),tx,proposalLifetime);
+    if(!isDeepStrictEqual({...old.scope,consent_expires_at:proposal,...(proposalLifetime?{consent_lifetime:proposalLifetime}:{})},current.scope)||!isDeepStrictEqual(old.profile,current.profile))throw continuationDenied();
     return {target_key,source:{session_id:old.session_id,session_revision:old.revision,scope:old.scope,runtime_session_ref:old.runtime_session_ref,account_ref:old.account.account_ref,action_consents:old.action_consents},
-      account:old.account,max_consent_expires_at,runtime_ready:current.runtime_ready,pending:pending?{session_id:pending.session_id,state:pending.state,activation_started:pending.activation_started,
-       consent_expires_at:pending.scope.consent_expires_at,review:pending.review?continuationReviewView(pending):null}:null};
+      account:old.account,max_consent_expires_at,...(admission.policy.allow_until_revoked?{allow_until_revoked:true}:{}),runtime_ready:current.runtime_ready,pending:pending?{session_id:pending.session_id,state:pending.state,activation_started:pending.activation_started,
+       consent_expires_at:pending.scope.consent_expires_at,...(pending.scope.consent_lifetime?{consent_lifetime:pending.scope.consent_lifetime}:{}),review:pending.review?continuationReviewView(pending):null}:null};
    });targets.push(target);
   }catch(error){if(error instanceof AppError&&error.code==='APP_ACCESS_DENIED')continue;throw error;}
  }

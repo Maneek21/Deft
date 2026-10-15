@@ -1,17 +1,18 @@
+import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '../../../../packages/app-kit/src/consent-lifetime';
 export type OwnerLimits = { max_records_per_page: number; max_page_bytes: number; max_retained_records: number;
   max_retained_bytes: number; min_interval_seconds: number };
 export type OwnerAttachments = { allowed_media_types: string[]; max_attachment_bytes: number; max_attachments_per_record: number;
   max_attachments_per_run: number; max_attachment_bytes_per_run: number; retention_days: number };
 type AdmissionRef = { admission_id: string; admission_digest: string };
-export type OwnerResourceRequest = AdmissionRef & { target_key: string; consent_expires_at: string; limits: OwnerLimits; attachment_policy: OwnerAttachments };
-export type OwnerBinding = { binding_id: string; target_key: string; state: 'active' | 'disabled'; consent_expires_at: string | null;
+export type OwnerResourceRequest = AdmissionRef & { target_key: string; consent_expires_at: string|null;consent_lifetime?:AppConsentLifetime; limits: OwnerLimits; attachment_policy: OwnerAttachments };
+export type OwnerBinding = { binding_id: string; target_key: string; state: 'active' | 'disabled'; consent_expires_at: string | null;consent_lifetime?:AppConsentLifetime;
   actions: { action_key: string; binding_id: string; state: 'active' | 'disabled' }[] };
-export type OwnerPolicy = { policy: { key: string; resource_key: string; action_keys: string[]; max_consent_seconds: number };
+export type OwnerPolicy = { policy: { key: string; resource_key: string; action_keys: string[]; max_consent_seconds: number;allow_until_revoked?:true };
   status: 'admitted' | 'deployment_review_required'; admission: null | (AdmissionRef & { operator_user_id: string; operator_label: string;
     resource_request: OwnerResourceRequest }); bindings: OwnerBinding[] };
 const fail = (): never => { throw Error('Personal account setup changed. Reload before continuing.'); };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : fail();
-const keys = (row: Record<string, unknown>, fields: string) => { if (Object.keys(row).sort().join(',') !== fields.split(',').sort().join(',')) fail(); };
+const keys = (row: Record<string, unknown>, fields: string,optional='') => { if(fields.split(',').some(key=>!Object.hasOwn(row,key))||Object.keys(row).some(key=>![...fields.split(','),...optional.split(',')].includes(key)))fail(); };
 const id = (value: unknown): string => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value) ? value : fail();
 const digest = (value: unknown): string => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value) ? value : fail();
 const key = (value: unknown): string => typeof value === 'string' && /^[a-z][a-z0-9_]{0,47}$/.test(value)
@@ -19,6 +20,7 @@ const key = (value: unknown): string => typeof value === 'string' && /^[a-z][a-z
 const integer = (value: unknown, min: number, max: number): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max ? value : fail();
 const array = (value: unknown, max: number): unknown[] => Array.isArray(value) && value.length <= max ? value : fail();
 const date = (value: unknown): string => typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value)) ? value : fail();
+function consent(row:Record<string,unknown>,legacyNull=false):{consent_expires_at:string|null;consent_lifetime?:AppConsentLifetime}{const expires_at=row.consent_expires_at===null?null:date(row.consent_expires_at),mode=row.consent_lifetime;if(mode!==undefined&&mode!=='until_revoked'||!appConsentExpiryValid(expires_at,mode)&&!(legacyNull&&expires_at===null&&mode===undefined))fail();return {consent_expires_at:expires_at,...(mode==='until_revoked'?{consent_lifetime:mode}:{})};}
 const reference = (value: unknown): AdmissionRef => { const row = object(value); return { admission_id: id(row.admission_id), admission_digest: digest(row.admission_digest) }; };
 const equal = (a: unknown, b: unknown): boolean => {
   if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((value, i) => equal(value, b[i]));
@@ -48,24 +50,24 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
   if (row.schema_version !== 'deft.owner_connection_context.v1' || row.installation_id !== installationId) fail();
   const policies = array(row.policies, 16).map(value => {
     const entry = object(value); keys(entry, 'policy,status,admission,bindings'); const policy = object(entry.policy);
-    keys(policy, 'key,resource_key,action_keys,max_consent_seconds');
+    keys(policy, 'key,resource_key,action_keys,max_consent_seconds','allow_until_revoked');if(policy.allow_until_revoked!==undefined&&policy.allow_until_revoked!==true)fail();
     const actions = array(policy.action_keys, 16).map(key); if (actions.some((action, i) => i > 0 && action <= actions[i - 1]!)) fail();
-    const selected = { key: key(policy.key), resource_key: key(policy.resource_key), action_keys: actions, max_consent_seconds: integer(policy.max_consent_seconds, 1, 90 * 86400) };
+    const selected = { key: key(policy.key), resource_key: key(policy.resource_key), action_keys: actions, max_consent_seconds: integer(policy.max_consent_seconds, 1, 90 * 86400),...(policy.allow_until_revoked===true?{allow_until_revoked:true as const}:{}) };
     if (entry.status !== 'admitted' && entry.status !== 'deployment_review_required') fail();
     let admission: OwnerPolicy['admission'] = null;
     if (entry.admission !== null) {
       const admitted = object(entry.admission); keys(admitted, 'admission_id,admission_digest,operator_user_id,operator_label,resource_request');
-      const request = object(admitted.resource_request); keys(request, 'admission_id,admission_digest,target_key,consent_expires_at,limits,attachment_policy');
+      const request = object(admitted.resource_request); keys(request, 'admission_id,admission_digest,target_key,consent_expires_at,limits,attachment_policy','consent_lifetime');
       const label = typeof admitted.operator_label === 'string' ? admitted.operator_label : fail();
       const ref = reference(admitted); if (!equal(ref, reference(request))
         || !label.trim() || label.length > 120 || /[\r\n\0]/.test(label)) fail();
       admission = { ...ref, operator_user_id: id(admitted.operator_user_id), operator_label: label,
-        resource_request: { ...ref, target_key: key(request.target_key), consent_expires_at: date(request.consent_expires_at),
+        resource_request: { ...ref, target_key: key(request.target_key), ...consent(request),
           limits: limits(request.limits), attachment_policy: attachments(request.attachment_policy) } };
     }
     if ((entry.status === 'admitted') !== !!admission) fail();
     const bindings = array(entry.bindings, 16).map(value => {
-      const binding = object(value); keys(binding, 'binding_id,target_key,state,consent_expires_at,actions');
+      const binding = object(value); keys(binding, 'binding_id,target_key,state,consent_expires_at,actions','consent_lifetime');
       if (binding.state !== 'active' && binding.state !== 'disabled') fail();
       const actions = array(binding.actions, 16).map(value => {
         const action = object(value); keys(action, 'action_key,binding_id,state');
@@ -74,7 +76,7 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
       });
       if (new Set(actions.map(action => action.action_key)).size !== actions.length) fail();
       return { binding_id: id(binding.binding_id), target_key: key(binding.target_key), state: binding.state as 'active' | 'disabled',
-        consent_expires_at: binding.consent_expires_at === null ? null : date(binding.consent_expires_at), actions };
+        ...consent(binding,true), actions };
     });
     if (new Set(bindings.map(binding => binding.binding_id)).size !== bindings.length) fail();
     return { policy: selected, status: entry.status, admission, bindings } as OwnerPolicy;
@@ -83,12 +85,12 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
   return policies;
 }
 export function ownerResourceRequest(policy: OwnerPolicy, now = Date.now()): OwnerResourceRequest {
-  const request = policy.admission?.resource_request; if (!request || Date.parse(request.consent_expires_at) <= now) return fail();
+  const request = policy.admission?.resource_request; if (!request || appConsentDeadline(request.consent_expires_at,request.consent_lifetime) <= now) return fail();
   return structuredClone(request);
 }
 export function ownerActionRequest(policy: OwnerPolicy, binding: OwnerBinding, actionKey: string, now = Date.now()) {
   if (!policy.admission || !policy.bindings.some(item => item.binding_id === binding.binding_id) || binding.state !== 'active'
-    || !binding.consent_expires_at || Date.parse(binding.consent_expires_at) <= now || !policy.policy.action_keys.includes(actionKey)) return fail();
+    || !appConsentExpiryValid(binding.consent_expires_at,binding.consent_lifetime) || appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime) <= now || !policy.policy.action_keys.includes(actionKey)) return fail();
   return { admission_id: policy.admission.admission_id, admission_digest: policy.admission.admission_digest,
     owner_resource_binding_id: binding.binding_id, action_key: actionKey };
 }
@@ -102,7 +104,7 @@ export function ownerConnectionReview(value: unknown, input: { installationId: s
   if (host.retry_class !== 'unsafe_or_unknown' || host.retention_class !== 'standard') fail();
   if (input.kind === 'resources' && 'target_key' in request) {
     if (review.schema_version !== 'deft.app_attachment_consent_review.v1' || review.owner_user_id !== input.ownerId
-      || review.resource_key !== input.policy.policy.resource_key || review.consent_expires_at !== request.consent_expires_at
+      || review.resource_key !== input.policy.policy.resource_key || review.consent_expires_at !== request.consent_expires_at||review.consent_lifetime!==request.consent_lifetime
       || !equal(review.limits, request.limits) || !equal(review.attachment_policy, request.attachment_policy)
       || host.risk_class !== 'internal_write' || host.review_requirement !== 'policy' || host.review_scope !== 'reviewed_resource_sync'
       || host.encrypted_custody !== true || host.owner_only_binary !== true || host.provider_url_fetch !== false || host.irrecoverable_host_purge !== true) fail();

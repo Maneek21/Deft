@@ -14,6 +14,7 @@ export const OwnerConnectionPolicyDeclarationSchema = z.strictObject({
   action_keys: z.array(key).max(OWNER_CONNECTION_POLICY_LIMITS.actions_per_policy)
     .refine(keys => keys.every((value, index) => !index || keys[index - 1]! < value),
       'Owner connection action keys must be unique and sorted'),
+  allow_until_revoked: z.literal(true).optional(),
   max_consent_seconds: z.number().int().min(1).max(OWNER_CONNECTION_POLICY_LIMITS.consent_seconds),
   /** Requested profile only; the host separately admits its immutable operator
    * and runtime registration. Legacy owner policies omit both fields. */

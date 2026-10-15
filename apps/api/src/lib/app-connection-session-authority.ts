@@ -1,3 +1,4 @@
+import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
 import {assertOwnerConnectionRegistration} from './app-owner-connection-authority.js';
 import {selectAdmittedConnectionPolicy} from './app-connection-admitted-policy.js';
 import { and, eq } from 'drizzle-orm';
@@ -36,14 +37,14 @@ export function retainedWebGuard(caller: ExperienceCaller): WebAuthorityGuard {
 
 export type AppConnectionAuthorityOwner=Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>;
 async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwner,
-  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date) {
+  nomination: { installation_id: string; target_key: string }, guard: WebAuthorityGuard, requireTransport:boolean, requestedMode:'v1'|'v2'|'credential_form.v1'|'declared'='v1',requiredAction?:RequiredConnectionAction,suppliedTransaction?:AppRunTransaction,continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime) {
   const use=async(tx:AppRunTransaction) => {
     const locators = await currentConnectionBindingLocators(tx,caller,nomination).limit(2);
     if (locators.length !== 1) throw denied();
-    const current = await (continuationExpiry?loadConsentContinuationBindingIdentity:loadLiveAttachmentSyncBindingAuthority)(tx, { org_id: caller.org_id,
+    const current = await (continuationExpiry!==undefined?loadConsentContinuationBindingIdentity:loadLiveAttachmentSyncBindingAuthority)(tx, { org_id: caller.org_id,
       resource_binding_id: locators[0]!.id, clock: () => new Date() });
     if (!current || current.binding.owner_user_id !== caller.user_id || current.binding.target_key !== nomination.target_key
-      || !current.registration.owner_connection_admission_id || !current.binding.consent_expires_at) throw denied();
+      || !current.registration.owner_connection_admission_id || !appConsentExpiryValid(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)) throw denied();
     const manifest = parseAttachmentAppManifest(current.version.manifest);
     const admission=await assertOwnerConnectionRegistration(tx,current.registration,{owner_user_id:caller.user_id,resource_key:current.binding.resource_key,lockedReviewed:current});
     const policy=selectAdmittedConnectionPolicy(manifest.owner_connections??[],admission.policy,{resource_key:current.binding.resource_key,runtime_requirement_key:current.descriptor.runtime_requirement_key});
@@ -59,9 +60,11 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
       target_key: current.binding.target_key, resource_key: current.binding.resource_key, resource_binding_id: current.binding.id,
       runtime_registration_id: current.registration.id, operator_user_id: current.registration.operator_user_id,
       runtime_epoch: current.registration.runtime_epoch, profile_digest: connectionProfileDigest(profile),
-      consent_expires_at: (continuationExpiry??current.binding.consent_expires_at).toISOString() };
-    if(continuationExpiry&&(!Number.isFinite(continuationExpiry.getTime())||continuationExpiry<=new Date()
-      ||continuationExpiry<=current.binding.consent_expires_at||continuationExpiry.getTime()>Date.now()+policy.max_consent_seconds*1000))throw denied();
+      consent_expires_at: (continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)?.toISOString()??null,
+      ...((continuationExpiry!==undefined?continuationLifetime:current.binding.consent_lifetime)?{consent_lifetime:'until_revoked' as const}:{}) };
+    if(continuationExpiry!==undefined&&(!appConsentExpiryValid(continuationExpiry,continuationLifetime)||appConsentDeadline(continuationExpiry,continuationLifetime)<=Date.now()
+      ||appConsentDeadline(continuationExpiry,continuationLifetime)<=appConsentDeadline(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)
+      ||(continuationLifetime==='until_revoked'?policy.allow_until_revoked!==true:continuationExpiry!.getTime()>Date.now()+policy.max_consent_seconds*1000)))throw denied();
     let runtime_ready=false,mode:'v1'|'v2'|'credential_form.v1'=requestedMode==='declared'?registry.reviewedProtocol(scope.org_id,scope.installation_id,profile):requestedMode==='v2'?'v2':requestedMode==='credential_form.v1'?'credential_form.v1':'v1';
     try{if(requestedMode==='declared'){if(registry.protocol(scope,profile)!==mode)throw denied();registry.assertReady(scope,profile);}
       else if(mode==='v2')registry.runtimeV2(scope,profile);else if(mode==='credential_form.v1')registry.formRuntime(scope,profile);else registry.runtime(scope,profile);
@@ -93,15 +96,15 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
       if(requiredAction&&(binding.id!==requiredAction.action_binding_id||binding.action_key!==requiredAction.action_key))continue;
       try {
         const actionInput={org_id:caller.org_id,user_id:caller.user_id,runtime_binding_id:binding.id};
-        const reviewed = continuationExpiry ? await authorizer!.captureConsentContinuationPurposes(tx,actionInput,continuationExpiry)
+        const reviewed = continuationExpiry!==undefined ? await authorizer!.captureConsentContinuationPurposes(tx,actionInput,continuationExpiry,continuationLifetime)
           : await authorizer!.captureReviewedRuntimeInTransaction(tx,actionInput);
         if (reviewed.protocol_version !== '7' || reviewed.operator_user_id !== scope.operator_user_id
-          || !reviewed.owner_target_consent_expires_at || reviewed.owner_target_consent_expires_at <= new Date()) continue;
+          || reviewed.owner_target_consent_lifetime!=='until_revoked'&&(!reviewed.owner_target_consent_expires_at || reviewed.owner_target_consent_expires_at <= new Date())) continue;
         const consent = { action_binding_id: binding.id, action_key: binding.action_key,
           authority_epoch: reviewed.registration.runtime_epoch, consent_id: binding.id,
           consent_digest: digestAppGrantValue(reviewed.authorization_snapshot),
-          expires_at: new Date(Math.min(reviewed.owner_target_consent_expires_at.getTime(),
-            Date.parse(scope.consent_expires_at))).toISOString() };
+          expires_at:scope.consent_lifetime==='until_revoked'&&reviewed.owner_target_consent_lifetime==='until_revoked'?null:new Date(Math.min(reviewed.owner_target_consent_expires_at?.getTime()??Infinity,appConsentDeadline(scope.consent_expires_at,scope.consent_lifetime))).toISOString(),
+          ...(scope.consent_lifetime==='until_revoked'&&reviewed.owner_target_consent_lifetime==='until_revoked'?{consent_lifetime:'until_revoked' as const}:{}) };
         if(mode==='v1'){action_consent=consent;break;}
         action_consents.push(consent);
       } catch (error) {
@@ -110,7 +113,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
     }
     }
     if (!await attachmentFinalAuthorityIsCurrent(tx, [caller.user_id, scope.operator_user_id], {
-      guard, expires_at: [continuationExpiry??current.binding.consent_expires_at] })) throw denied();
+      guard, expires_at:(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)?[(continuationExpiry!==undefined?continuationExpiry:current.binding.consent_expires_at)!]:[] })) throw denied();
     if(action_consents.length>8)throw denied();
     return { scope, profile, runtime_ready,connection_protocol:mode, ...(mode!=='v1'?{action_consents}:action_consent ? { action_consent } : {}),
       expires_at: Math.min(guard.current_web_session_expires_at().getTime(), caller.access_expires_at ?? 0) };
@@ -120,8 +123,8 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
 
 /** Dedicated fresh owner review: historical expiry is evidence only. Every
  * other current authority fence is shared with operational admission. */
-export async function currentConsentContinuationAuthority(caller:ExperienceCaller,nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,expiry:Date,tx?:AppRunTransaction){
-  const current=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',undefined,tx,expiry);
+export async function currentConsentContinuationAuthority(caller:ExperienceCaller,nomination:{installation_id:string;target_key:string},guard:WebAuthorityGuard,expiry:Date|null,tx?:AppRunTransaction,lifetime?:AppConsentLifetime){
+  const current=await loadCurrentConnectionAuthority(caller,nomination,guard,true,'declared',undefined,tx,expiry,lifetime);
   if(!('action_consents' in current))throw denied();
   return {...current,action_consents:current.action_consents};
 }
@@ -180,13 +183,13 @@ export async function appConnectionRuntimeAuthority(raw: unknown, authorization:
     access_expires_at: metadata.access_expires_at.getTime() };
   const current = await currentAppConnectionSessionAuthority(caller, { installation_id: record.scope.installation_id,
     target_key: record.scope.target_key }, retainedWebGuard(caller));
-  const deadline = Math.min(Date.parse(input.expires_at), current.expires_at, Date.parse(record.scope.consent_expires_at),
+  const deadline = Math.min(Date.parse(input.expires_at), current.expires_at, appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
     input.operation === 'begin' || input.operation === 'callback' ? Date.parse(record.callback_expires_at) : Infinity);
   const after = await store.metadata(locator);
   if (!after || after.revision !== metadata.revision || !isDeepStrictEqual(current.scope, record.scope)
     || (input.operation === 'begin' || input.operation === 'callback') && (!isDeepStrictEqual(input.action_consent, record.action_consent)
       || !isDeepStrictEqual(current.action_consent, record.action_consent)
-      || input.action_consent && Date.parse(input.action_consent.expires_at) <= Date.now())
+      || input.action_consent && appConsentDeadline(input.action_consent.expires_at,input.action_consent.consent_lifetime) <= Date.now())
     || deadline <= Date.now()) throw denied();
   (await getAppConnectionSessionRegistry()).authenticate(current.scope, authorization);
   return AppConnectionRuntimeAuthorityResultSchema.parse({ ...input, allowed: true, expires_at: new Date(deadline).toISOString() });

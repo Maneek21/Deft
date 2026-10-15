@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import { AppConnectionSessionViewSchema, type AppConnectionSessionView } from '../../../../packages/app-kit/src/connection-session';
 import { AppConnectionReattachAnyReviewViewSchema } from '../../../../packages/app-kit/src/connection-session-reattach';
 import type { AppConnectionIdentity, AppConnectionTarget } from './app-connection-session-flow';
@@ -17,7 +18,7 @@ const accountSchema = AppConnectionSessionViewSchema.shape.account.unwrap();
 const idSchema = AppConnectionSessionViewSchema.shape.session_id;
 function reviewed(raw: unknown, target: AppConnectionTarget) {
   const value = AppConnectionReattachAnyReviewViewSchema.parse(raw);
-  if (Boolean(target.upgrade)!==(value.schema_version==='deft.app_connection_reattach_review.v2')||!same(value.scope, target.scope) || Date.parse(value.expires_at) > Date.parse(target.scope.consent_expires_at)) fail();
+  if (Boolean(target.upgrade)!==(value.schema_version==='deft.app_connection_reattach_review.v2')||!same(value.scope, target.scope) || Date.parse(value.expires_at) > appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime)) fail();
   return value;
 }
 /** Closed host nomination only; no historical authority or runtime locator is accepted. */
@@ -29,7 +30,7 @@ export function appConnectionReattachmentMetadata(raw: unknown, target: AppConne
     const source_session_id = idSchema.parse(c.source_session_id);
     if (!Number.isInteger(c.source_revision) || (c.source_revision as number) < 1 || (c.source_revision as number) > 2147483646
       || target.session && !['not_connected', 'disconnected'].includes(target.session.state)
-        && !(target.session.account === null && ['awaiting_callback', 'indeterminate'].includes(target.session.state) && Date.parse(target.session.expires_at) <= Date.now()) || source_session_id === target.session?.session_id) fail();
+        && !(target.session.account === null && ['awaiting_callback', 'indeterminate'].includes(target.session.state) && appConsentDeadline(target.session.expires_at,target.session.expires_at===null?target.session.scope.consent_lifetime:undefined) <= Date.now()) || source_session_id === target.session?.session_id) fail();
     candidate = { source_session_id, source_revision: c.source_revision as number, account: accountSchema.parse(c.account) };
   }
   if (value.pending !== null) {
@@ -73,7 +74,7 @@ export function createAppConnectionReattachmentFlow(ports: Ports) {
     return value as Intent;
   }
   const store = (value: Intent) => ports.storage.setItem(key(value.target_key), JSON.stringify(value));
-  const ready = (target: AppConnectionTarget) => { ports.current(); if (!target.runtime_ready || Date.parse(target.scope.consent_expires_at) <= now()) fail(); };
+  const ready = (target: AppConnectionTarget) => { ports.current(); if (!target.runtime_ready || appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime) <= now()) fail(); };
   function result(raw: unknown, target: AppConnectionTarget, expected: Intent, allowReview: boolean): ExistingAccountResult {
     if (['deft.app_connection_reattach_review.v1','deft.app_connection_reattach_review.v2'].includes(String(object(raw).schema_version))) {
       const value = reviewed(raw, target);
@@ -87,8 +88,8 @@ export function createAppConnectionReattachmentFlow(ports: Ports) {
       return value;
     }
     const value = AppConnectionSessionViewSchema.parse(raw);
-    if (!same(value.scope, target.scope) || value.session_id !== expected.session_id || Date.parse(value.expires_at) > Date.parse(target.scope.consent_expires_at)
-      || Date.parse(value.expires_at) <= now() || !['connected', 'indeterminate', 'not_connected'].includes(value.state) || value.state === 'connected' && !value.account
+    if (!same(value.scope, target.scope) || value.session_id !== expected.session_id || appConsentDeadline(value.expires_at,value.expires_at===null?value.scope.consent_lifetime:undefined) > appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime)
+      || appConsentDeadline(value.expires_at,value.expires_at===null?value.scope.consent_lifetime:undefined) <= now() || !['connected', 'indeterminate', 'not_connected'].includes(value.state) || value.state === 'connected' && !value.account
       || value.state === 'not_connected' && value.account || expected.account && value.account && !same(value.account, expected.account)) fail();
     if (value.state === 'not_connected' && (expected.phase === 'activating' || target.reattachment?.pending?.activation_started)) fail();
     target.reattachment = { candidate: null, pending: value.state === 'indeterminate'
@@ -117,7 +118,7 @@ export function createAppConnectionReattachmentFlow(ports: Ports) {
     async review(targetKey: string): Promise<ExistingAccountResult> {
       ports.current(); if (busy) fail(); const target = ports.target(targetKey); ready(target);
       if (pendingIntent(target) || target.session && !['not_connected', 'disconnected'].includes(target.session.state)
-        && !(target.reattachment?.candidate && target.session.account === null && ['awaiting_callback', 'indeterminate'].includes(target.session.state) && Date.parse(target.session.expires_at) <= now())) fail();
+        && !(target.reattachment?.candidate && target.session.account === null && ['awaiting_callback', 'indeterminate'].includes(target.session.state) && appConsentDeadline(target.session.expires_at,target.session.expires_at===null?target.session.scope.consent_lifetime:undefined) <= now())) fail();
       const candidate = target.reattachment?.candidate; if (!candidate) fail();
       const expected: Intent = { schema_version: 'deft.app_connection_reuse_pending.v1', identity: ports.identity, target_key: targetKey,
         session_id: crypto.randomUUID(), scope: target.scope, source_session_id: candidate.source_session_id,

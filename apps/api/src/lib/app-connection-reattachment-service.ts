@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -61,8 +62,8 @@ export class AppConnectionReattachmentService {
     if (authority.scope.org_id !== caller.org_id || authority.scope.owner_user_id !== caller.user_id
       || authority.scope.installation_id !== nomination.installation_id || authority.scope.target_key !== nomination.target_key
       || !Number.isFinite(authority.expires_at) || !Number.isFinite(caller.access_expires_at)
-      || Math.min(authority.expires_at, caller.access_expires_at!, Date.parse(authority.scope.consent_expires_at)) <= this.clock()
-      || purpose!=='reattach_status'&&authority.action_consents?.some(consent=>Date.parse(consent.expires_at)<=this.clock())
+      || Math.min(authority.expires_at, caller.access_expires_at!, appConsentDeadline(authority.scope.consent_expires_at, authority.scope.consent_lifetime)) <= this.clock()
+      || purpose!=='reattach_status'&&authority.action_consents?.some(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime)<=this.clock())
       || expected && (!isDeepStrictEqual(expected.scope, authority.scope) || !isDeepStrictEqual(expected.profile, authority.profile)
         || purpose !== 'reattach_status' && (!isDeepStrictEqual(expected.action_consent, authority.action_consent)||!isDeepStrictEqual(expected.action_consents,authority.action_consents)))) throw denied();
     return { ...authority, expires_at: Math.min(authority.expires_at, caller.access_expires_at!) };
@@ -106,8 +107,8 @@ export class AppConnectionReattachmentService {
     const purpose = operation === 'prepare' ? 'reattach_review' : operation === 'activate' ? 'reattach_activate' : 'reattach_status';
     const authority = await this.authority(caller, this.nomination(record), purpose, record);
     const data = record.reattachment!;
-    let deadline = Math.min(this.clock() + 30_000, authority.expires_at, Date.parse(record.scope.consent_expires_at),
-      operation === 'status' ? Infinity : Math.min(Date.parse(data.review_expires_at),...(record.action_consents??[]).map(consent=>Date.parse(consent.expires_at))));
+    let deadline = Math.min(this.clock() + 30_000, authority.expires_at, appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
+      operation === 'status' ? Infinity : Math.min(Date.parse(data.review_expires_at),...(record.action_consents??[]).map(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime))));
     if (deadline <= this.clock()) throw denied();
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -187,7 +188,7 @@ export class AppConnectionReattachmentService {
       || !isDeepStrictEqual(source.profile, authority.profile)
       || !isDeepStrictEqual(source.action_consents?.map(consent=>consent.action_key),authority.action_consents?.map(consent=>consent.action_key))) throw denied();
     await this.ports.assertNoActiveEffects(source, authority);
-    const now = this.clock(), reviewExpiry = Math.min(now + 300_000, authority.expires_at, Date.parse(target.consent_expires_at));
+    const now = this.clock(), reviewExpiry = Math.min(now + 300_000, authority.expires_at, appConsentDeadline(target.consent_expires_at, target.consent_lifetime));
     const record = AppConnectionSessionRecordSchema.parse({ session_id: input.request_id, revision: 0, scope: target,
       profile: authority.profile, state: 'starting', callback_state_hash: createHash('sha256').update(randomBytes(32)).digest('hex'),
       callback_consumed: false, callback_expires_at: new Date(reviewExpiry).toISOString(), runtime_session_ref: null,

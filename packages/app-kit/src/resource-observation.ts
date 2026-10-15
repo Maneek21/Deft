@@ -1,3 +1,4 @@
+import { AppConsentLifetimeSchema, AppConsentExpirySchema, appConsentDeadline, appConsentExpiryValid } from './consent-lifetime.js';
 import {z} from 'zod';
 import {AppConnectionSessionScopeSchema} from './connection-session.js';
 import {canonicalConnectionReattachmentJson} from './connection-session-reattach.js';
@@ -15,17 +16,18 @@ export const ResourceObservationConnectionSchema=z.strictObject({session_id:id,r
 export const RESOURCE_OBSERVATION_ATTACHMENT_MODE='unsupported' as const;
 export const ResourceObservationSnapshotSchema=z.strictObject({schema_version:z.literal('deft.app_resource_observation_consent.v1'),
   consent_id:id,scope:AppConnectionSessionScopeSchema,connection:ResourceObservationConnectionSchema,resource_policy_digest:digest,
-  interval_seconds:z.number().int().min(60).max(86400),expires_at:instant})
-  .refine(value=>Date.parse(value.expires_at)<=Date.parse(value.scope.consent_expires_at),'Observation exceeds resource consent');
+  interval_seconds:z.number().int().min(60).max(86400),expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional(),review_expires_at:instant.optional()})
+  .refine(value=>appConsentExpiryValid(value.expires_at,value.consent_lifetime) && (value.consent_lifetime===undefined ? value.review_expires_at===undefined : value.review_expires_at!==undefined),{abort:true})
+  .refine(value=>appConsentDeadline(value.expires_at,value.consent_lifetime)<=appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime),'Observation exceeds resource consent');
 export type ResourceObservationSnapshot=z.infer<typeof ResourceObservationSnapshotSchema>;
 export const ResourceObservationReviewRequestSchema=z.strictObject({connection_session_id:id,request_id:id,
-  interval_seconds:z.number().int().min(60).max(86400),expires_at:instant});
+  interval_seconds:z.number().int().min(60).max(86400),expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional()}).refine(v=>appConsentExpiryValid(v.expires_at,v.consent_lifetime));
 export const ResourceObservationActivateRequestSchema=z.strictObject({consent_id:id,review_digest:digest});
 export const ResourceObservationReferenceSchema=z.strictObject({consent_id:id});
 export const ResourceObservationReviewSchema=z.strictObject({schema_version:z.literal('deft.app_resource_observation_review.v1'),
   consent_id:id,review_digest:digest,attachment_mode:z.literal('unsupported'),scope:AppConnectionSessionScopeSchema,connection_session_id:id,
   account:z.strictObject({account_ref:opaque,label:z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f<>]+$/u)}),
-  expected_custody_generation:generation.nullable(),interval_seconds:z.number().int().min(60).max(86400),expires_at:instant});
+  expected_custody_generation:generation.nullable(),interval_seconds:z.number().int().min(60).max(86400),expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional(),review_expires_at:instant.optional()}).refine(v=>appConsentExpiryValid(v.expires_at,v.consent_lifetime) && (v.consent_lifetime===undefined ? v.review_expires_at===undefined : v.review_expires_at!==undefined));
 export const ResourceObservationStatusSchema=z.strictObject({schema_version:z.literal('deft.app_resource_observation_status.v1'),
   consent_id:id,state:z.enum(['proposed','active','revoked','unavailable']),review:ResourceObservationReviewSchema});
 export const ResourceObservationAuthorityRequestSchema=z.strictObject({schema_version:z.literal('deft.app_resource_observation_authority.v1'),
@@ -33,7 +35,7 @@ export const ResourceObservationAuthorityRequestSchema=z.strictObject({schema_ve
   session_id:id,run_id:id,attempt_id:id,claim_token:id,sequence:z.number().int().min(1).max(2147483646),expires_at:instant});
 export const ResourceObservationAuthorityResultSchema=ResourceObservationAuthorityRequestSchema.extend({allowed:z.literal(true),
   consent_digest:digest,snapshot:ResourceObservationSnapshotSchema})
-  .refine(value=>Date.parse(value.expires_at)<=Date.parse(value.snapshot.expires_at),'Authority exceeds consent');
+  .refine(value=>Date.parse(value.expires_at)<=appConsentDeadline(value.snapshot.expires_at,value.snapshot.consent_lifetime),'Authority exceeds consent');
 export async function digestResourceObservation(value:ResourceObservationSnapshot){
   const bytes=new TextEncoder().encode(canonicalConnectionReattachmentJson(ResourceObservationSnapshotSchema.parse(value)));
   return 'sha256:'+Array.from(new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256',bytes)),byte=>byte.toString(16).padStart(2,'0')).join('');
@@ -65,6 +67,6 @@ export const ResourceObservationContextSchema=z.strictObject({schema_version:z.l
  installation_id:id,org_id:id,owner_user_id:id,targets:z.array(z.strictObject({target_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
  scope:AppConnectionSessionScopeSchema,connection_session_id:id,
  account:ResourceObservationReviewSchema.shape.account,min_interval_seconds:z.number().int().min(60).max(86400),
- attachment_mode:z.literal('unsupported'),consent:z.strictObject({consent_id:id,state:z.enum(['proposed','active','revoked','unavailable'])}).nullable()})).max(32)});
+ attachment_mode:z.literal('unsupported'),allow_until_revoked:z.literal(true).optional(),consent:z.strictObject({consent_id:id,state:z.enum(['proposed','active','revoked','unavailable'])}).nullable()})).max(32)});
 
 export type ResourceObservationContext=z.infer<typeof ResourceObservationContextSchema>;

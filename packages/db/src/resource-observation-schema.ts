@@ -4,7 +4,7 @@ export const appResourceObservationConsents=pgTable('app_resource_observation_co
  org_id:text('org_id').notNull(),owner_user_id:text('owner_user_id').notNull(),consent_id:text('consent_id').notNull(),
  resource_binding_id:text('resource_binding_id').notNull(),connection_session_id:text('connection_session_id').notNull(),
  state:text('state').notNull(),consent_digest:text('consent_digest').notNull(),snapshot:jsonb('snapshot').$type<Record<string,unknown>>().notNull(),
- expires_at:timestamp('expires_at',{withTimezone:true}).notNull(),created_at:timestamp('created_at',{withTimezone:true}).notNull(),
+ expires_at:timestamp('expires_at',{withTimezone:true}),created_at:timestamp('created_at',{withTimezone:true}).notNull(),
  updated_at:timestamp('updated_at',{withTimezone:true}).notNull(),
 },t=>[primaryKey({columns:[t.org_id,t.consent_id]}),index('app_resource_observation_active_idx').on(t.org_id,t.resource_binding_id,t.state),
  check('app_resource_observation_state',sql`${t.state} IN ('proposed','active','revoked')`),

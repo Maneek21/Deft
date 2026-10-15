@@ -1,3 +1,4 @@
+import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
@@ -177,8 +178,9 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
     || binding.review_scope !== APP_RESOURCE_SYNC_HOST_POLICY.review_scope
     || binding.retry_class !== APP_RESOURCE_SYNC_HOST_POLICY.retry_class
     || binding.retention_class !== APP_RESOURCE_SYNC_HOST_POLICY.retention_class
-    || !binding.consent_expires_at || !binding.reviewed_at
-    || binding.consent_expires_at <= binding.reviewed_at) return null;
+    || !binding.reviewed_at||!appConsentExpiryValid(binding.consent_expires_at,binding.consent_lifetime??undefined)
+    || appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=binding.reviewed_at.getTime()
+    || binding.consent_lifetime==='until_revoked'&&ownerAdmission?.policy.allow_until_revoked!==true) return null;
   try {
     const parsed = SyncDescriptorV2Schema.parse(binding.reviewed_descriptor);
     if (await digestResourceSyncDescriptorV2(parsed) !== reviewed.descriptor_digest) return null;
@@ -186,7 +188,7 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   try { parseAttachmentConsentPolicy(reviewed.descriptor.attachments, binding.attachment_policy); } catch { return null; }
   if (binding.attachment_consent_digest !== digestAppGrantValue({ ...attachmentSyncConsentReview({
     org_id: input.org_id, owner_user_id: binding.owner_user_id, operator_user_id: registration.operator_user_id,
-    reviewed, consent_expires_at: binding.consent_expires_at, limits: binding, attachment_policy: binding.attachment_policy,
+    reviewed, consent_expires_at: binding.consent_expires_at, ...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{}), limits: binding, attachment_policy: binding.attachment_policy,
     ...(ownerAdmission ? { owner_connection_admission: ownerAdmission.reference } : {}) }),
     ...(binding.target_key === 'primary' ? {} : { target_key: binding.target_key }) })) return null;
   const [providerSnapshot] = await tx.select().from(capabilityProviderSnapshots).where(and(
@@ -198,8 +200,8 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   catch { return null; }
   if (!await attachmentSyncParticipantsAreHuman(tx, binding.owner_user_id, registration.operator_user_id)) return null;
   const checkedAt = currentTime(input.clock);
-  if (!checkedAt || !continuationIdentityOnly && binding.consent_expires_at <= checkedAt
-    || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: continuationIdentityOnly ? [] : [binding.consent_expires_at] })) return null;
+  if (!checkedAt || !continuationIdentityOnly && appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=checkedAt.getTime()
+    || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: continuationIdentityOnly||binding.consent_lifetime==='until_revoked' ? [] : [binding.consent_expires_at!] })) return null;
   return Object.freeze({ ...reviewed, registration, binding, provider_snapshot: providerSnapshot,
     connection_profile_required: ownerAdmission?.snapshot.connection_profile !== undefined,
     checked_at: checkedAt });
@@ -239,9 +241,13 @@ export async function loadLiveAttachmentSyncAuthority(tx: AppRunTransaction,
     || session.lifecycle_epoch !== bindingAuthority.installation.lifecycle_epoch
     || session.grant_epoch !== bindingAuthority.installation.grant_epoch
     || session.revoked_at || session.expires_at <= checkedAt
-    || bindingAuthority.binding.consent_expires_at === null
-    || bindingAuthority.binding.consent_expires_at <= checkedAt) return null;
+    || appConsentDeadline(bindingAuthority.binding.consent_expires_at,bindingAuthority.binding.consent_lifetime??undefined)<=checkedAt.getTime()) return null;
+  if(session.renewal_lifetime==='until_revoked'){
+    if(session.renewable_until!==null||!session.renewal_web_session_id||!session.renewal_operator_role||bindingAuthority.binding.consent_lifetime!=='until_revoked')return null;
+    const {runtimeRenewalPersistentPrincipal}=await import('./app-runtime-renewal.js');
+    if(!await runtimeRenewalPersistentPrincipal(tx,{org_id:input.org_id,operator_user_id:session.operator_user_id,role:session.renewal_operator_role}))return null;
+  }
   if (!await attachmentFinalAuthorityIsCurrent(tx, [bindingAuthority.binding.owner_user_id, bindingAuthority.registration.operator_user_id],
-    { clock: input.clock, expires_at: [session.expires_at, bindingAuthority.binding.consent_expires_at] })) return null;
+    { clock: input.clock, expires_at: [session.expires_at, ...(bindingAuthority.binding.consent_expires_at?[bindingAuthority.binding.consent_expires_at]:[])] })) return null;
   return Object.freeze({ ...bindingAuthority, session, checked_at: checkedAt });
 }

@@ -33,7 +33,7 @@ export const AppRuntimeSessionCredentialSchema = z.object({
 }).strict();
 export type AppRuntimeSessionCredential = z.infer<typeof AppRuntimeSessionCredentialSchema>;
 export const AppRuntimeRenewRequestSchema=AppRuntimeSessionCredentialSchema.extend({schema_version:z.literal(APP_RUNTIME_CHANNEL_VERSION),expected_expires_at:z.string().datetime()}).strict();
-export const AppRuntimeSessionIssueInputSchema=z.strictObject({technical_renewal:z.strictObject({requested_until:z.string().datetime()}).optional()});
+export const AppRuntimeSessionIssueInputSchema=z.strictObject({technical_renewal:z.union([z.strictObject({requested_until:z.string().datetime()}),z.strictObject({renewal_lifetime:z.literal('until_revoked'),requested_until:z.null()})]).optional()});
 
 export const AppRuntimeClaimRequestSchema = AppRuntimeSessionCredentialSchema.extend({
   schema_version: z.literal(APP_RUNTIME_CHANNEL_VERSION),

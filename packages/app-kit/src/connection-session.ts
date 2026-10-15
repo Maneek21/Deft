@@ -1,3 +1,4 @@
+import { AppConsentLifetimeSchema, AppConsentExpirySchema, appConsentDeadline, appConsentExpiryValid } from './consent-lifetime.js';
 import { z } from 'zod';
 
 const id = z.string().uuid();
@@ -13,7 +14,8 @@ const actions = z.array(key).max(16).refine(values =>
 /** An explicit current owner-reviewed action grant. Its absence means that
  * OAuth setup may request only the reviewed read capability. */
 export const AppConnectionActionConsentSchema = z.strictObject({ action_binding_id: id, action_key: key,
-  authority_epoch: epoch, consent_id: id, consent_digest: digest, expires_at: z.iso.datetime() });
+  authority_epoch: epoch, consent_id: id, consent_digest: digest, expires_at: AppConsentExpirySchema, consent_lifetime: AppConsentLifetimeSchema.optional() })
+  .refine(v => appConsentExpiryValid(v.expires_at, v.consent_lifetime),{abort:true});
 export type AppConnectionActionConsent = Readonly<z.infer<typeof AppConnectionActionConsentSchema>>;
 
 /** Portable author request only. A host separately admits the provider profile,
@@ -49,8 +51,8 @@ export const AppConnectionSessionScopeSchema = z.strictObject({
   package_digest: digest, grant_snapshot_digest: digest, lifecycle_epoch: epoch, grant_epoch: epoch,
   target_key: key, resource_key: key, resource_binding_id: id,
   runtime_registration_id: id, operator_user_id: id, runtime_epoch: epoch,
-  profile_digest: digest, consent_expires_at: z.iso.datetime(),
-});
+  profile_digest: digest, consent_expires_at: AppConsentExpirySchema, consent_lifetime: AppConsentLifetimeSchema.optional(),
+}).refine(v => appConsentExpiryValid(v.consent_expires_at, v.consent_lifetime),{abort:true});
 export type AppConnectionSessionScope = Readonly<z.infer<typeof AppConnectionSessionScopeSchema>>;
 export const AppConnectionSessionBeginSchema = z.strictObject({ installation_id: id, target_key: key });
 export const AppConnectionSessionCallbackSchema = z.discriminatedUnion('outcome', [
@@ -93,7 +95,7 @@ export const AppConnectionRuntimeAuthorityRequestSchema = z.strictObject({
   action_consent: AppConnectionActionConsentSchema.optional(),
   operation: z.enum(['begin', 'callback', 'status', 'disconnect']),
   expires_at: z.iso.datetime(),
-}).refine(value => Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at),
+}).refine(value => Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime),
   'Runtime authority cannot outlive reviewed consent');
 export type AppConnectionRuntimeAuthorityRequest = Readonly<z.infer<typeof AppConnectionRuntimeAuthorityRequestSchema>>;
 export const AppConnectionRuntimeAuthorityResultSchema = z.strictObject({
@@ -102,7 +104,7 @@ export const AppConnectionRuntimeAuthorityResultSchema = z.strictObject({
   action_consent: AppConnectionActionConsentSchema.optional(),
   operation: z.enum(['begin', 'callback', 'status', 'disconnect']),
   expires_at: z.iso.datetime(),
-}).refine(value => Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at),
+}).refine(value => Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime),
   'Runtime authority cannot outlive reviewed consent');
 export type AppConnectionRuntimeAuthorityResult = Readonly<z.infer<typeof AppConnectionRuntimeAuthorityResultSchema>>;
 const authorizationUrl = z.string().max(8192).refine(value => {
@@ -119,14 +121,16 @@ export const AppConnectionRuntimeResultSchema = z.discriminatedUnion('state', [
 ]);
 export type AppConnectionRuntimeResult = Readonly<z.infer<typeof AppConnectionRuntimeResultSchema>>;
 
+export const appConnectionSessionViewDeadline = (v: {expires_at:string|null;scope:AppConnectionSessionScope}) =>
+  v.expires_at===null?v.scope.consent_lifetime==='until_revoked':Date.parse(v.expires_at)<=appConsentDeadline(v.scope.consent_expires_at,v.scope.consent_lifetime);
 export const AppConnectionSessionViewSchema = z.strictObject({
   schema_version: z.literal('deft.app_connection_session.v1'), session_id: id,
   state: z.enum(['awaiting_callback', 'connected', 'not_connected', 'disconnected', 'indeterminate']),
-  scope: AppConnectionSessionScopeSchema, expires_at: z.iso.datetime(), account: account.nullable(),
-});
+  scope: AppConnectionSessionScopeSchema, expires_at: AppConsentExpirySchema, account: account.nullable(),
+}).refine(appConnectionSessionViewDeadline);
 export type AppConnectionSessionView = Readonly<z.infer<typeof AppConnectionSessionViewSchema>>;
-export const AppConnectionSessionBegunSchema = AppConnectionSessionViewSchema.extend({
-  state: z.literal('awaiting_callback'), callback_state: token, authorization_url: authorizationUrl,
+export const AppConnectionSessionBegunSchema = AppConnectionSessionViewSchema.safeExtend({
+  state: z.literal('awaiting_callback'), expires_at:z.iso.datetime(), callback_state: token, authorization_url: authorizationUrl,
 }).strict();
 export type AppConnectionSessionBegun = Readonly<z.infer<typeof AppConnectionSessionBegunSchema>>;
 

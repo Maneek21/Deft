@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { StoredPrivateSourceSchema, type StoredPrivateSource } from './app-private-state-secrets.js';
 
 import {loadOwnerConnectionCleanup} from './app-connection-cleanup-authority.js';
@@ -492,13 +493,13 @@ export class AppExperienceExposureService {
 
         ...(content ? { content_policy: { document: content.document, ...(content.source ? {source:content.source} : {}),...(content.triage_options?{triage_options:content.triage_options}:{}),...(content.search_filters?{search_filters:content.search_filters}:{}) } } : {}),
 
-        consent_expires_at: a.binding.consent_expires_at!.toISOString() };
+        consent_expires_at: a.binding.consent_expires_at?.toISOString()??null,...(a.binding.consent_lifetime?{consent_lifetime:a.binding.consent_lifetime}:{}) };
 
     });
 
     const expiry = Math.min(preparedAt.getTime() + EXPOSURE_LIMITS.exposure_ms, accessExpiry.getTime(), context.web.expires_at.getTime(),
 
-      context.session.expires_at.getTime(), ...context.authorities.map(a => a.binding.consent_expires_at!.getTime()));
+      context.session.expires_at.getTime(), ...context.authorities.map(a => appConsentDeadline(a.binding.consent_expires_at,a.binding.consent_lifetime??undefined)));
 
     return ExposureSnapshotSchema.parse({ schema_version: (context.verified.bundle.schema_version === 'deft.experience_bundle.v3' || context.verified.bundle.schema_version === 'deft.experience_bundle.v4') ? STATE_EXPOSURE_VERSION : context.verified.bundle.schema_version === 'deft.experience_bundle.v2' ? SEARCH_EXPOSURE_VERSION : EXPOSURE_VERSION, payload_policy_version: PAYLOAD_VERSION,
 
@@ -724,7 +725,7 @@ export class AppExperienceExposureService {
 
       const expires_at = new Date(Math.min(this.clock().getTime() + EXPOSURE_LIMITS.exposure_ms,
 
-        caller.access_expires_at!, context.web.expires_at.getTime(), ...context.authorities.map(a => a.binding.consent_expires_at!.getTime())));
+        caller.access_expires_at!, context.web.expires_at.getTime(), ...context.authorities.map(a => appConsentDeadline(a.binding.consent_expires_at,a.binding.consent_lifetime??undefined))));
 
       if (expires_at <= this.clock()) throw exposureUnavailable();
 
@@ -888,11 +889,11 @@ export class AppExperienceExposureService {
 
               || !context.participantIds.includes(current.registration.operator_user_id)
 
-              || !current.owner_target_consent_expires_at || current.owner_target_consent_expires_at.getTime() <= this.clock().getTime()) continue;
+              ||current.owner_target_consent_lifetime!=='until_revoked'&&(!current.owner_target_consent_expires_at||current.owner_target_consent_expires_at.getTime()<=this.clock().getTime())) continue;
 
             reviewed_action_keys.push(binding.action_key);
 
-            actionDeadlines.push(current.owner_target_consent_expires_at.getTime());
+            if(current.owner_target_consent_expires_at)actionDeadlines.push(current.owner_target_consent_expires_at.getTime());
 
           } catch (error) {
 
@@ -926,7 +927,7 @@ export class AppExperienceExposureService {
 
       const expires_at = Math.min(Date.parse(snapshot.expires_at), context.exposure!.expires_at.getTime(),
 
-        resource.binding.consent_expires_at!.getTime(), ...actionDeadlines);
+        appConsentDeadline(resource.binding.consent_expires_at,resource.binding.consent_lifetime??undefined), ...actionDeadlines);
 
       checkDeadline = () => {
 
@@ -1014,7 +1015,7 @@ export class AppExperienceExposureService {
 
         expires_at: Math.min(context.exposure!.expires_at.getTime(), context.session.expires_at.getTime(),
 
-          context.web.expires_at.getTime(), caller.access_expires_at!, source.binding.consent_expires_at!.getTime()) };
+          context.web.expires_at.getTime(), caller.access_expires_at!, appConsentDeadline(source.binding.consent_expires_at,source.binding.consent_lifetime??undefined)) };
 
   }
 
@@ -1340,7 +1341,7 @@ export class AppExperienceExposureService {
 
             expires_at: Math.min(context.session.expires_at.getTime(), context.exposure!.expires_at.getTime(),
 
-              caller.access_expires_at!, context.web.expires_at.getTime(), source.binding.consent_expires_at!.getTime()),
+              caller.access_expires_at!, context.web.expires_at.getTime(), appConsentDeadline(source.binding.consent_expires_at,source.binding.consent_lifetime??undefined)),
 
           })) } : {}),
 

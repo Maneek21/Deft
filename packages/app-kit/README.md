@@ -1,6 +1,6 @@
 # `@deft/app-kit`
 
-The alpha.33 candidate adds provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. The reviewed App1.9.0-preview.5 / Runtime0.4.0-preview.3 source candidate uses alpha.33 and is reviewed in [Email PR1](https://github.com/Maneek21/deft-email/pull/1). Existing sealed alpha.30/alpha.32 packages and their exact proofs remain historical inputs.
+The alpha.34 candidate adds explicit persistent permission and retains alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. The historical App1.9.0-preview.5 / Runtime0.4.0-preview.3 proof uses alpha.33; current external Email review remains in [Email PR1](https://github.com/Maneek21/deft-email/pull/1). Existing sealed alpha.30/alpha.32 packages and their exact proofs remain historical inputs.
 
 Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
 
@@ -19,6 +19,12 @@ static Module validity using the same pure semantic validator as the host.
 Installation compatibility, required setup, authorization, effective grants,
 tenant isolation, dependency and connector selection, activation, and execution
 remain host responsibilities.
+
+## Explicit persistent permission (alpha.34 candidate)
+
+A signed owner policy may opt in with `allow_until_revoked: true`. An existing connected account can then receive a fresh consent-continuation review with `consent_lifetime: 'until_revoked'` and `consent_expires_at: null`. Initial account enrollment remains finite. Data and observation grants use the same explicit mode with `expires_at: null`; null without the mode, or the mode with a finite deadline, is invalid. Existing finite grants omit the mode and retain their original bytes and limits.
+
+Persistent permission does not make requests indefinite: continuation reviews last two minutes, data/observation reviews five minutes, and technical channel leases remain finite (at most fifteen minutes). The existing credential can renew only while its Host lease and current account, installation, custody and human membership remain valid. Revocation still denies subsequent use. `appConsentDeadline`, `appConsentIsCurrent` and `appConsentWithin` validate these pairs; only explicit mode plus null represents a persistent durable deadline. Exact-message Send review remains separate. Alpha.34 persistent grants require a compatible Host with the additive consent migration and a Runtime that understands explicit lifetimes; alpha.33 archives remain unchanged. Contract tests do not establish live provider acceptance.
 
 ## Module validation
 
@@ -57,13 +63,13 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.33.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.34.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.33`. Package metadata,
-`DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.33
+This review candidate is `0.1.0-alpha.34`. Package metadata,
+`DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.34
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
 resource data/content contracts, attachments, safe compose HTML, and generic

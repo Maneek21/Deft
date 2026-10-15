@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {validateContinuationCarrier} from './app-connection-consent-continuation-fence.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
 import {and,eq,sql} from 'drizzle-orm';
@@ -44,7 +45,7 @@ export async function loadObservationConnection(tx:AppRunTransaction,authority:L
   ||scope.lifecycle_epoch!==installation.lifecycle_epoch||scope.grant_epoch!==installation.grant_epoch
   ||scope.runtime_registration_id!==registration.id||scope.runtime_epoch!==registration.runtime_epoch
   ||scope.operator_user_id!==registration.operator_user_id||scope.target_key!==binding.target_key||scope.resource_key!==binding.resource_key
-  ||scope.consent_expires_at!==binding.consent_expires_at!.toISOString())throw observationDenied();
+  ||scope.consent_expires_at!==(binding.consent_expires_at?.toISOString()??null)||scope.consent_lifetime!==(binding.consent_lifetime??undefined))throw observationDenied();
  const registry=await getAppConnectionSessionRegistry();registry.assertReady(scope,record.profile);
  const form=await validateStoredFormConnection(tx,{org_id:scope.org_id,owner_user_id:scope.owner_user_id,session_id:record.session_id},record);
  const continuation=!form?await validateContinuationCarrier(tx,record,registry.protocol(scope,record.profile)==='credential_form.v1'):null;
@@ -54,7 +55,7 @@ export async function loadObservationConnection(tx:AppRunTransaction,authority:L
 }
 export async function observationSnapshotIsCurrent(tx:AppRunTransaction,snapshot:ResourceObservationSnapshot,
  authority:LiveAttachmentSyncBindingAuthority,clock:()=>Date){
- if(!Number.isFinite(clock().getTime())||Date.parse(snapshot.expires_at)<=clock().getTime()
+ if(!Number.isFinite(clock().getTime())||appConsentDeadline(snapshot.expires_at,snapshot.consent_lifetime)<=clock().getTime()
   ||snapshot.scope.org_id!==authority.binding.org_id||snapshot.scope.owner_user_id!==authority.binding.owner_user_id
   ||snapshot.scope.resource_binding_id!==authority.binding.id||snapshot.interval_seconds<authority.binding.min_interval_seconds
   ||snapshot.resource_policy_digest!==await observationPolicyDigest(authority))throw observationDenied();

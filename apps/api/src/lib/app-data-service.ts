@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {assertFutureRecordActionLocalRequest,acknowledgeFutureRecordActionLocal} from './app-future-record-action-local.js';
 import {futureRecordActionWindowDeadline,assertPreparedFutureRecordAction} from './app-future-record-action-window.js';
 import {invokeRecordChange} from './app-data-record-change-service.js';
@@ -27,20 +28,22 @@ export class AppDataService {
  constructor(readonly caller:ExperienceCaller,readonly guard:WebAuthorityGuard){}
  async current(session:string,store:string,requiresConsent:boolean|'optional'=true,operation?:string,expectedConsentId?:string){return currentAppDataAuthority(this.caller,session,store,this.guard,requiresConsent,expectedConsentId,appDataConnectionActionSelection(operation));}
  async review(sessionId:string,raw:unknown){const input=AppDataConsentReviewRequestSchema.parse(raw),authority=await this.current(sessionId,input.store_key,false);
-  const expiry=appDataConsentExpiry(input.expires_at,authority.scope.consent_expires_at,authority.consent_max_seconds);
+  const expiry=appDataConsentExpiry(input.expires_at,authority.scope.consent_expires_at,authority.consent_max_seconds,Date.now(),input.consent_lifetime,authority.scope.consent_lifetime,authority.allow_until_revoked===true);
   const snapshot=AppDataConsentSnapshotSchema.parse({schema_version:'deft.app_data_consent.v1',consent_id:randomUUID(),scope:authority.scope,
-   connection:authority.connection,store:authority.store,data_policy_digest:authority.data_policy_digest,purpose:'human_record_write',expires_at:new Date(expiry).toISOString()});
+   connection:authority.connection,store:authority.store,data_policy_digest:authority.data_policy_digest,purpose:'human_record_write',expires_at:Number.isFinite(expiry)?new Date(expiry).toISOString():null,...(input.consent_lifetime?{consent_lifetime:input.consent_lifetime,review_expires_at:new Date(Date.now()+300000).toISOString()}:{})});
   const digest=appDataDigest(snapshot),now=new Date();await new PostgresAppDataStore(this.caller).propose({org_id:this.caller.org_id,owner_user_id:this.caller.user_id,
-   consent_id:snapshot.consent_id,connection_session_id:sessionId,store_key:input.store_key,state:'proposed',consent_digest:digest,snapshot,expires_at:new Date(expiry),created_at:now,updated_at:now});
+   consent_id:snapshot.consent_id,connection_session_id:sessionId,store_key:input.store_key,state:'proposed',consent_digest:digest,snapshot,expires_at:Number.isFinite(expiry)?new Date(expiry):null,created_at:now,updated_at:now});
   return {snapshot,review_digest:digest};
  }
  async activate(sessionId:string,raw:unknown){const input=AppDataConsentActivateRequestSchema.parse(raw),authority=await this.current(sessionId,input.store_key,false),store=new PostgresAppDataStore(this.caller),row=await store.consent(input.consent_id);
-  if(!row||row.connection_session_id!==sessionId||row.store_key!==input.store_key||row.consent_digest!==input.expected_review_digest||row.expires_at.toISOString()!==input.expires_at)throw appDataDenied();
+  if(!row||row.connection_session_id!==sessionId||row.store_key!==input.store_key||row.consent_digest!==input.expected_review_digest||(row.expires_at?.toISOString()??null)!==input.expires_at)throw appDataDenied();
   const snapshot=AppDataConsentSnapshotSchema.parse(row.snapshot);
   if(!isDeepStrictEqual(snapshot.scope,authority.scope)||!isDeepStrictEqual(snapshot.store,authority.store)||snapshot.connection.account_ref!==authority.connection.account_ref
    ||snapshot.connection.runtime_session_ref!==authority.connection.runtime_session_ref||appDataDigest(snapshot)!==row.consent_digest
-   ||row.expires_at.getTime()>Date.parse(authority.scope.consent_expires_at)||row.expires_at.getTime()>row.created_at.getTime()+authority.consent_max_seconds*1000)throw appDataDenied();
-  if(!await store.activate(input.consent_id,input.expected_review_digest))throw conflict();return {consent_id:row.consent_id,consent_digest:row.consent_digest,expires_at:row.expires_at.toISOString()};
+   ||appConsentDeadline(row.expires_at,snapshot.consent_lifetime)>appConsentDeadline(authority.scope.consent_expires_at,authority.scope.consent_lifetime)
+   ||snapshot.consent_lifetime!==input.consent_lifetime
+   ||(snapshot.consent_lifetime==='until_revoked'?authority.allow_until_revoked!==true||!snapshot.review_expires_at||Date.parse(snapshot.review_expires_at)<=Date.now():row.expires_at!.getTime()>row.created_at.getTime()+authority.consent_max_seconds*1000))throw appDataDenied();
+  if(!await store.activate(input.consent_id,input.expected_review_digest))throw conflict();return {consent_id:row.consent_id,consent_digest:row.consent_digest,expires_at:row.expires_at?.toISOString()??null,...(snapshot.consent_lifetime?{consent_lifetime:snapshot.consent_lifetime}:{})};
  }
  async revoke(sessionId:string,id:string){const store=new PostgresAppDataStore(this.caller),row=await store.consent(id);if(!row||row.connection_session_id!==sessionId)throw appDataDenied();await store.revoke(id);return {revoked:true};}
  async invoke(sessionId:string,raw:unknown,bytes?:Uint8Array,signal?:AbortSignal){
@@ -100,7 +103,7 @@ export class AppDataService {
    if(prepared?.future_release)assertPreparedFutureRecordAction(authority,prepared);
    if(prepared&&(!prepared.future_release&&Date.parse(prepared.expires_at)>authority.expires_at||operation.operation==='prepare_action'&&prepared.action_key!==operation.input.action_key
     ||operation.operation==='read_prepared'&&(prepared.snapshot_id!==operation.input.snapshot_id||prepared.snapshot_digest!==operation.input.snapshot_digest)))throw invalid();
-   if(prepared?.required_action_consents?.some(required=>!authority.action_consents?.some(active=>isDeepStrictEqual(active,required))||Date.parse(required.expires_at)<=Date.now()))throw invalid();
+   if(prepared?.required_action_consents?.some(required=>!authority.action_consents?.some(active=>isDeepStrictEqual(active,required))||appConsentDeadline(required.expires_at,required.consent_lifetime)<=Date.now()))throw invalid();
    const resourcePrepared=reply.result?.prepared_resource;
    if(resourcePrepared&&(Date.parse(resourcePrepared.expires_at)>authority.expires_at||resourcePrepared.account_ref!==authority.connection.account_ref
     ||resourcePrepared.resource_key!==authority.scope.resource_key
@@ -160,12 +163,12 @@ export class AppDataService {
    const requested=options.storeKey===undefined?undefined:declarations.find(item=>item.key===options.storeKey&&item.resource_key===session.scope.resource_key);
    const selected=options.storeKey===undefined?null:new Set([options.storeKey,...(requested?.record_changes??[]).map(change=>change.source_store_key)]);
    let identities:NonNullable<AppDataResult['identities']>=[];for(const declaration of declarations){if(declaration.resource_key!==session.scope.resource_key||selected&&!selected.has(declaration.key))continue;
-    try{const authority=await this.current(session.session_id,declaration.key,'optional','connection_metadata');const consent=authority.consent?{consent_id:authority.consent.consent_id,consent_digest:authority.consent.consent_digest,expires_at:authority.consent.expires_at.toISOString()}:null;
+    try{const authority=await this.current(session.session_id,declaration.key,'optional','connection_metadata');const consent=authority.consent?{consent_id:authority.consent.consent_id,consent_digest:authority.consent.consent_digest,expires_at:authority.consent.expires_at?.toISOString()??null,...(authority.consent.consent_lifetime?{consent_lifetime:authority.consent.consent_lifetime}:{})}:null;
      if(options.includeIdentities!==false&&!identities.length){const metadata=await this.invoke(session.session_id,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'connection_metadata',input:{store_key:declaration.key}});identities=metadata.result?.identities??[];}
      stores.push({declaration:authority.store,consent});
     }catch(error){if(!(error instanceof AppError))throw error;}
    }
-   if(stores.length)targets.push({session_id:session.session_id,target_key:session.scope.target_key,account:session.account,resource_key:session.scope.resource_key,identities,stores});
+   if(stores.length)targets.push({session_id:session.session_id,target_key:session.scope.target_key,account:session.account,resource_key:session.scope.resource_key,identities,...(session.scope.consent_lifetime==='until_revoked'?{allow_until_revoked:true}:{}),stores});
   }return AppDataContextSchema.parse({schema_version:'deft.app_data_context.v1',installation_id:installationId,targets});
  }
 }

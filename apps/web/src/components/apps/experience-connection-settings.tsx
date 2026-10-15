@@ -1,5 +1,6 @@
 'use client';
 
+import {appConsentDeadline,appConsentExpiryValid} from '../../../../../packages/app-kit/src/consent-lifetime';
 import { useEffect, useRef, useState } from 'react';
 import { api, isSameWebSession } from '@/lib/api';
 import { APP_CONNECTION_PENDING_KEY, connectionBegin, type PendingAppConnection } from '@/lib/app-connection-flow';
@@ -279,7 +280,7 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
   }, [contextPath, installationId, disabled, reload]);
   const policy = policies?.find(item => item.policy.key === selected);
   const binding = policy?.bindings.find(item => (!props.targetKey || item.target_key === props.targetKey)
-    && item.state === 'active' && item.consent_expires_at && Date.parse(item.consent_expires_at) > checkedAt);
+    && item.state === 'active' && appConsentExpiryValid(item.consent_expires_at,item.consent_lifetime) && appConsentDeadline(item.consent_expires_at,item.consent_lifetime) > checkedAt);
   const missingActions = policy?.policy.action_keys.filter(key => !binding?.actions.some(action => action.action_key === key && action.state === 'active')) ?? [];
   async function requestReview(kind: OwnerReview['kind'], actionKey?: string) {
     if (!policy || busyRef.current || disabled || document.hidden) return;
@@ -328,7 +329,7 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
         <h4 className="text-base font-semibold">{review.kind === 'resources' ? 'Review account access' : `Review ${'action_key' in review.request ? review.request.action_key.replaceAll('_', ' ') : 'this action'}`}</h4>
         <p className="break-words">Account operator: <span className="font-medium">{policy.admission.operator_label}</span>, approved by your workspace.</p>
         {review.kind === 'resources' && 'target_key' in review.request ? <>
-          <p>The approved operator can save your account records until {new Date(review.request.consent_expires_at).toLocaleString()}. These records and attachments are private to you.</p>
+          <p>The approved operator can save your account records {review.request.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(review.request.consent_expires_at!).toLocaleString()}`}. These records and attachments are private to you.</p>
           <p>Up to {review.request.limits.max_retained_records.toLocaleString()} saved records and {sizeLabel(review.request.limits.max_retained_bytes)} total;
             updates at most every {(review.request.limits.min_interval_seconds / 60).toLocaleString(undefined, { maximumFractionDigits: 1 })} minutes.</p>
           <p>Attachments: {review.request.attachment_policy.allowed_media_types.map(type => mediaLabels[type]).join(', ')}; up to {sizeLabel(review.request.attachment_policy.max_attachment_bytes)} each,
@@ -344,7 +345,7 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
         <div className="flex flex-wrap gap-2 border-t pt-3" style={{ borderColor: 'var(--border-default)' }}><button type="button" className="deft-pill" style={{ minHeight: 44, background: 'var(--primary-container)', color: 'var(--on-primary-container)' }} disabled={busy || disabled} onClick={() => void activate()}>{busy ? 'Saving access…' : 'Allow access'}</button>
           <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={busy} onClick={() => setReview(null)}>Cancel</button></div>
       </section> : <div className="space-y-3">
-        {binding && <p className="text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Account records are allowed until {new Date(binding.consent_expires_at!).toLocaleString()}. Action permissions are reviewed separately.</p>}
+        {binding && <p className="text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Account records are allowed {binding.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(binding.consent_expires_at!).toLocaleString()}`}. Action permissions are reviewed separately.</p>}
         <div className="flex flex-wrap gap-2">
         {!binding && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={busy || disabled} onClick={() => void requestReview('resources')}>Review account access</button>}
         {binding && missingActions.map(action => <button type="button" key={action} className="deft-pill" style={{ minHeight: 44 }} disabled={busy || disabled}

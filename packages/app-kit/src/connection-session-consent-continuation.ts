@@ -1,3 +1,4 @@
+import { AppConsentLifetimeSchema, AppConsentExpirySchema, appConsentDeadline, appConsentExpiryValid } from './consent-lifetime.js';
 import { z } from 'zod';
 import { AppConnectionSessionScopeSchema, AppConnectionSessionViewSchema } from './connection-session.js';
 import { AppConnectionActionConsentsSchema } from './connection-session-v2.js';
@@ -18,8 +19,8 @@ export const AppConnectionConsentContinuationSourceSchema = AppConnectionReattac
 export const AppConnectionConsentContinuationStoredReviewSchema = AppConnectionReattachEligibilitySchema.extend({ digest });
 export const AppConnectionConsentContinuationReviewRequestSchema = z.strictObject({
   installation_id: id, target_key: AppConnectionSessionScopeSchema.shape.target_key,
-  source_session_id: id, request_id: id, consent_expires_at: z.iso.datetime(),
-}).refine(value => value.request_id !== value.source_session_id, 'Continuation requires a new identity');
+  source_session_id: id, request_id: id, consent_expires_at: AppConsentExpirySchema, consent_lifetime: AppConsentLifetimeSchema.optional(),
+}).refine(value => appConsentExpiryValid(value.consent_expires_at,value.consent_lifetime) && value.request_id !== value.source_session_id, 'Continuation requires a new identity');
 export const AppConnectionConsentContinuationActivateRequestSchema = z.strictObject({ session_id: id, review_digest: digest });
 export const AppConnectionConsentContinuationStatusRequestSchema = z.strictObject({ session_id: id });
 
@@ -38,25 +39,25 @@ type Envelope = z.infer<typeof variants[number]>;
 function valid(value: Envelope): boolean {
   const source = value.source;
   if (value.session_id === source.session_id
-    || Object.keys(value.scope).some(key => key !== 'consent_expires_at'
+    || Object.keys(value.scope).some(key => !['consent_expires_at','consent_lifetime'].includes(key)
       && value.scope[key as keyof typeof value.scope] !== source.scope[key as keyof typeof source.scope])
-    || Date.parse(value.scope.consent_expires_at) <= Date.parse(source.scope.consent_expires_at)
+    || appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime) <= appConsentDeadline(source.scope.consent_expires_at, source.scope.consent_lifetime)
     || value.action_consents.length !== source.action_consents.length) return false;
   for (let index = 0; index < value.action_consents.length; index++) {
     const old = source.action_consents[index]!, current = value.action_consents[index]!;
     if (['action_binding_id', 'action_key', 'authority_epoch', 'consent_id'].some(key =>
       old[key as keyof typeof old] !== current[key as keyof typeof current])
-      || Date.parse(old.expires_at) > Date.parse(source.scope.consent_expires_at)
-      || Date.parse(current.expires_at) > Date.parse(value.scope.consent_expires_at)
-      || Date.parse(current.expires_at) <= Date.parse(old.expires_at)) return false;
+      || appConsentDeadline(old.expires_at, old.consent_lifetime) > appConsentDeadline(source.scope.consent_expires_at, source.scope.consent_lifetime)
+      || appConsentDeadline(current.expires_at, current.consent_lifetime) > appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
+      || appConsentDeadline(current.expires_at, current.consent_lifetime) <= appConsentDeadline(old.expires_at, old.consent_lifetime)) return false;
   }
   if ('review' in value && value.review && value.review.account.account_ref !== source.account_ref) return false;
   // Historical source consent is identity evidence only. Every phase obtains
   // independent fresh owner authority; original consent may already be expired.
-  return Date.parse(value.review_expires_at) <= Date.parse(value.scope.consent_expires_at)
-    && Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at)
+  return Date.parse(value.review_expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
+    && Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
     && (value.operation === 'status' || Date.parse(value.expires_at) <= Date.parse(value.review_expires_at)
-      && value.action_consents.every(consent => Date.parse(value.expires_at) <= Date.parse(consent.expires_at)));
+      && value.action_consents.every(consent => Date.parse(value.expires_at) <= appConsentDeadline(consent.expires_at, consent.consent_lifetime)));
 }
 export const AppConnectionConsentContinuationRuntimeRequestSchema = z.discriminatedUnion('operation', variants)
   .refine(valid, 'Consent continuation must preserve identities/purposes and extend only bounded deadlines');
@@ -80,8 +81,8 @@ export const AppConnectionConsentContinuationReviewViewSchema = z.strictObject({
   scope: AppConnectionSessionScopeSchema, action_consents: AppConnectionActionConsentsSchema,
   account, custody_generation: generation, review_digest: digest, expires_at: z.iso.datetime(),
 }).refine(value => value.session_id !== value.source_session_id
-  && Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at)
-  && value.action_consents.every(consent => Date.parse(value.expires_at) <= Date.parse(consent.expires_at)));
+  && Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
+  && value.action_consents.every(consent => Date.parse(value.expires_at) <= appConsentDeadline(consent.expires_at, consent.consent_lifetime)));
 
 /** Pure canonical payloads: consumers hash UTF-8 canonical JSON with SHA256.
  * Operation and short I/O deadline are intentionally not durable identity pins. */

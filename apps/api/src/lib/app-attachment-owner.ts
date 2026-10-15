@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { AttachmentStageHeaderSchema,canonicalAttachmentJson } from '@deft/app-kit';
@@ -60,7 +61,7 @@ export class AppAttachmentOwnerService {
         size_bytes:row.declared_size_bytes,state:row.state==='linked'?'available' as const:'blocked' as const}};
     });
     if(!await attachmentFinalAuthorityIsCurrent(tx,[authority.binding.owner_user_id,authority.registration.operator_user_id],
-      {guard:subject.guard,signal,expires_at:[authority.binding.consent_expires_at!,...rows.map(row=>row.linked_expires_at!)]}))throw attachmentStale();
+      {guard:subject.guard,signal,expires_at:[...(authority.binding.consent_expires_at?[authority.binding.consent_expires_at]:[]),...rows.map(row=>row.linked_expires_at!)]}))throw attachmentStale();
     const { attachments: _attachmentPolicy, ...scalar } = authority.descriptor;
     const decoded = decodePrivateProjection(this.#sync,parent,{...scalar,schema_version:'deft.app_sync_descriptor.v1'});
     return { entries:selected, authority, checkpoint, parent, body:decoded };
@@ -96,7 +97,7 @@ export class AppAttachmentOwnerService {
       const current=await this.#load(tx,subject,target,signal);
       return {schema_version:'deft.app_attachment_parent.v1',ref:this.#ref(current.authority,current.parent.id),
         label:this.#label(current.body.data[current.authority.descriptor.label_field]),data:current.body.data,
-        freshness:'unknown',consent_expires_at:current.authority.binding.consent_expires_at!.toISOString(),
+        freshness:'unknown',consent_expires_at:current.authority.binding.consent_expires_at?.toISOString()??null,...(current.authority.binding.consent_lifetime?{consent_lifetime:current.authority.binding.consent_lifetime}:{}),
         attachments:{schema_version:'deft.app_attachment_catalog.v1',attachments:current.entries.map(entry=>entry.metadata)}};
     },signal,performance.now()+10_000);
   }
@@ -150,12 +151,12 @@ export class AppAttachmentOwnerService {
         {...scalar,schema_version:'deft.app_sync_descriptor.v1'});
         return {projection_id:row.id,ref:this.#ref(authority,row.id),label:this.#label(body.data[authority.descriptor.label_field])};});
       if(!await attachmentFinalAuthorityIsCurrent(tx,[authority.binding.owner_user_id,authority.registration.operator_user_id],
-        {guard:subject.guard,signal,expires_at:[authority.binding.consent_expires_at!]}))throw attachmentStale();
-      const expires_at=Math.min(Date.now()+300_000,authority.binding.consent_expires_at!.getTime(),subject.guard.current_web_session_expires_at().getTime());
+        {guard:subject.guard,signal,expires_at:authority.binding.consent_expires_at?[authority.binding.consent_expires_at]:[]}))throw attachmentStale();
+      const expires_at=Math.min(Date.now()+300_000,appConsentDeadline(authority.binding.consent_expires_at,authority.binding.consent_lifetime??undefined),subject.guard.current_web_session_expires_at().getTime());
       const next_cursor=rows.length>input.limit?sealPrivateSearchCursor(this.keys,{after:selected.at(-1)!.id,
         expires_at,identity_scope,checkpoint_scope,query_fields_scope}):null;
       return {schema_version:'deft.app_attachment_parent_page.v1',items,next_cursor,freshness:'unknown',
-        consent_expires_at:authority.binding.consent_expires_at!.toISOString()};
+        consent_expires_at:authority.binding.consent_expires_at?.toISOString()??null,...(authority.binding.consent_lifetime?{consent_lifetime:authority.binding.consent_lifetime}:{})};
     },signal,performance.now()+10_000);
   }
   #ref(authority:NonNullable<Awaited<ReturnType<typeof loadLiveAttachmentSyncBindingAuthority>>>,id:string) {

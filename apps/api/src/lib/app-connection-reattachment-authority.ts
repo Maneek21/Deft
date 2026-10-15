@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { and, eq, inArray, or, notInArray, sql } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
 import { AppConnectionReattachAnyRuntimeRequestSchema, AppConnectionReattachAnyAuthorityResultSchema } from '@deft/app-kit';
@@ -63,7 +64,7 @@ async function assertNoActiveReattachmentEffects(source: AppConnectionSessionRec
     // Legacy/v1 reattachment keeps its historical stricter effect gate.
     const [legacyUnknown] = source.action_consents===undefined ? await tx.select({id:appRuns.id}).from(appRuns).where(and(targetRun,eq(appRuns.state,'unknown_outcome'))).limit(1) : [];
     if (run || attempt || unsafeUnknown || legacyUnknown || !await attachmentFinalAuthorityIsCurrent(tx,
-      [target.scope.owner_user_id, target.scope.operator_user_id], { guard, expires_at: [new Date(target.scope.consent_expires_at)] })) throw denied();
+      [target.scope.owner_user_id, target.scope.operator_user_id], { guard, expires_at: target.scope.consent_expires_at?[new Date(target.scope.consent_expires_at)]:[] })) throw denied();
   });
 }
 
@@ -121,8 +122,8 @@ export async function appConnectionReattachmentRuntimeAuthority(raw: unknown, au
   if (input.operation !== 'status' || !record.callback_consumed) {
     await assertNoActiveReattachmentEffects(source, current, guard, record.session_id);
   }
-  const deadline = Math.min(Date.parse(input.expires_at), current.expires_at, Date.parse(current.scope.consent_expires_at),
-    input.operation === 'status' ? Infinity : Math.min(Date.parse(data.review_expires_at),...(record.action_consents??[]).map(consent=>Date.parse(consent.expires_at))));
+  const deadline = Math.min(Date.parse(input.expires_at), current.expires_at, appConsentDeadline(current.scope.consent_expires_at, current.scope.consent_lifetime),
+    input.operation === 'status' ? Infinity : Math.min(Date.parse(data.review_expires_at),...(record.action_consents??[]).map(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime))));
   const after = await store.metadata(locator), sourceAfter = await store.metadata({ org_id: locator.org_id,
     owner_user_id: locator.owner_user_id, session_id: data.source.session_id });
   if (deadline <= Date.now() || !after || after.revision !== metadata.revision || !sourceAfter

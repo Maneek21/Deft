@@ -1,3 +1,4 @@
+import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit';
 type Target=Readonly<{key:string;label:string}>;
 type Binding=Readonly<{id:string;key:string;target:string}>;
 type Pins=Readonly<{org_id:string;owner_user_id:string;installation_id:string;app_version_id:string;grant_snapshot_id:string;lifecycle_epoch:number;grant_epoch:number}>;
@@ -11,7 +12,7 @@ export function experienceTargetAccountLabels(targets:readonly Target[],records:
       const record=object(raw),scope=object(record?.scope),account=object(record?.account);
       if(record?.state!=='connected'||typeof record.runtime_session_ref!=='string'||!record.runtime_session_ref||!scope||!account
         ||Object.entries(pins).some(([key,value])=>scope[key]!==value)||scope.target_key!==target.key
-        ||typeof scope.consent_expires_at!=='string'||Date.parse(scope.consent_expires_at)<=now||!Number.isFinite(Date.parse(scope.consent_expires_at))
+        ||(typeof scope.consent_expires_at!=='string'&&scope.consent_expires_at!==null)||!appConsentExpiryValid(scope.consent_expires_at as string|null,scope.consent_lifetime)||appConsentDeadline(scope.consent_expires_at as string|null,scope.consent_lifetime)<=now
         ||!bindings.some(binding=>binding.id===scope.resource_binding_id&&binding.target===target.key&&binding.key===scope.resource_key)
         ||typeof account.account_ref!=='string'||!account.account_ref||typeof account.label!=='string'||!account.label.trim()
         ||account.label.length>80||/[\u0000-\u001f\u007f]/u.test(account.label))continue;

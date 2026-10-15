@@ -1,3 +1,4 @@
+import {type AppConsentLifetime} from '@deft/app-kit';
 import { captureRuntimeAgent } from './app-experience-human-action-agent-capture.js';
 import { loadRuntimeOwnerTarget,loadConsentContinuationOwnerTarget } from './app-runtime-owner-target.js';
 import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
@@ -332,12 +333,12 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
   }
 
   /** Fresh independent consent-only capture; no Run dispatch uses this entrance. */
-  async captureConsentContinuationPurposes(tx:AppRunTransaction,input:{org_id:string;user_id:string;runtime_binding_id:string},expiry:Date){
-    return this.captureReviewedRuntimeFreshInTransaction(tx,input,expiry);
+  async captureConsentContinuationPurposes(tx:AppRunTransaction,input:{org_id:string;user_id:string;runtime_binding_id:string},expiry:Date|null,lifetime?:AppConsentLifetime){
+    return this.captureReviewedRuntimeFreshInTransaction(tx,input,expiry,lifetime);
   }
   private async captureReviewedRuntimeFreshInTransaction(tx: AppRunTransaction, input: Readonly<{
     org_id: string; user_id: string; runtime_binding_id: string;
-  }>, continuationExpiry?:Date) {
+  }>, continuationExpiry?:Date|null,continuationLifetime?:AppConsentLifetime) {
     const [locator] = await tx.select({
       app_installation_id: appRuntimeBindings.app_installation_id,
       app_version_id: appRuntimeBindings.app_version_id,
@@ -425,7 +426,7 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || grant.snapshot_digest !== digestAppGrantValue(grant.canonical_snapshot)) {
       throw new Error('APP_RUN_AUTHORIZATION_STALE');
     }
-    const ownerTarget = binding.owner_resource_binding_id ? await (continuationExpiry?((tx:AppRunTransaction,input:Parameters<typeof loadRuntimeOwnerTarget>[1])=>loadConsentContinuationOwnerTarget(tx,input,continuationExpiry)):loadRuntimeOwnerTarget)(tx, {
+    const ownerTarget = binding.owner_resource_binding_id ? await (continuationExpiry!==undefined?((tx:AppRunTransaction,input:Parameters<typeof loadRuntimeOwnerTarget>[1])=>loadConsentContinuationOwnerTarget(tx,input,continuationExpiry,continuationLifetime)):loadRuntimeOwnerTarget)(tx, {
       org_id: input.org_id, owner_user_id: input.user_id, resource_binding_id: binding.owner_resource_binding_id,
       installation_id: installation.id, app_version_id: version.id, grant_snapshot_id: grant.id,
       operator_user_id: registration.operator_user_id, prelocked_participant_ids: participants,
@@ -505,7 +506,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         authority_id: ownerTarget.binding.id, version: authorityVersion('app_binding', {
           target_key: ownerTarget.binding.target_key, owner: ownerTarget.binding.owner_user_id,
           descriptor_digest: ownerTarget.binding.descriptor_digest, state: ownerTarget.binding.state,
-          consent_expires_at: ownerTarget.binding.consent_expires_at?.toISOString(),
+          consent_expires_at: ownerTarget.binding.consent_expires_at?.toISOString()??null,
+          ...(ownerTarget.binding.consent_lifetime?{consent_lifetime:ownerTarget.binding.consent_lifetime}:{}),
           registration_id: ownerTarget.registration.id, runtime_epoch: ownerTarget.registration.runtime_epoch,
         }) }] : [])].sort((a, b) => `${a.authority_kind}\0${a.authority_id}`
         .localeCompare(`${b.authority_kind}\0${b.authority_id}`)),
@@ -514,9 +516,10 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     if (version.protocol_version === '7' && (!isAppV5RuntimeActionsEnabled() || !isAppAttachmentBrokerEnabled())) {
       throw new Error('APP_RUN_AUTHORIZATION_STALE');
     }
+    const lifetimePins:{owner_target_consent_expires_at?:Date;owner_target_consent_lifetime?:'until_revoked'}=ownerTarget?(ownerTarget.binding.consent_lifetime==='until_revoked'?{owner_target_consent_lifetime:'until_revoked'}:{owner_target_consent_expires_at:ownerTarget.binding.consent_expires_at!}):{};
     return Object.freeze({ authorization_snapshot, binding, registration, action, protocol_version:version.protocol_version,
       operator_user_id:registration.operator_user_id,
-      ...(ownerTarget ? { owner_target_consent_expires_at: ownerTarget.binding.consent_expires_at! } : {}),
+      ...lifetimePins,
       provider_snapshot_digest: providerRow.snapshot_digest,
       review_contract_digest: action.contract_digest,
       installation_lifecycle_epoch: installation.lifecycle_epoch,

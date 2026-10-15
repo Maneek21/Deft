@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {and,eq,inArray,notInArray,or,ne} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -87,8 +88,8 @@ export async function appConnectionCredentialRepairRuntimeAuthority(raw:unknown,
   ||source.runtime_session_ref!==data.source.runtime_session_ref||source.account?.account_ref!==data.source.account_ref
   ||registry.transportDigest(source.scope.org_id,source.scope.installation_id,source.profile)!==data.transport_digest)throw denied();
  await assertNoActiveConnectionCredentialRepairEffects(source,current,record.session_id);
- const expiry=Math.min(Date.parse(input.expires_at),current.expires_at,Date.parse(record.scope.consent_expires_at),
-  input.operation==='status'||input.operation==='callback'?Infinity:Date.parse(data.review_expires_at),...(input.operation==='status'?[]:input.action_consents.map(item=>Date.parse(item.expires_at))));
+ const expiry=Math.min(Date.parse(input.expires_at),current.expires_at,appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
+  input.operation==='status'||input.operation==='callback'?Infinity:Date.parse(data.review_expires_at),...(input.operation==='status'?[]:input.action_consents.map(item=>appConsentDeadline(item.expires_at,item.consent_lifetime))));
  const after=await store.metadata(locator),sourceAfter=await store.metadata({org_id:locator.org_id,owner_user_id:locator.owner_user_id,session_id:source.session_id});
  if(expiry<=Date.now()||after?.revision!==row.revision||sourceAfter?.revision!==source.revision)throw denied();enabled();
  registry.authenticate(current.scope,authorization);return AppConnectionCredentialRepairAuthorityResultSchema.parse({...input,allowed:true,expires_at:new Date(expiry).toISOString()});

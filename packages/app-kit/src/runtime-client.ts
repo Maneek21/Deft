@@ -5,7 +5,7 @@ export type AppRuntimeCredential = Readonly<{
   session_id: string;
   session_token: string;
 }>;
-export type AppRuntimeRenewal = Readonly<{session_id:string;expires_at:string;renewable_until:string}>;
+export type AppRuntimeRenewal = Readonly<{session_id:string;expires_at:string;renewable_until:string|null;renewal_lifetime?:'until_revoked'}>;
 
 export type AppRuntimeClaim = Readonly<{
   schema_version: 'deft.app_runtime_channel.v1';
@@ -189,9 +189,7 @@ export function createAppRuntimeClient(options: AppRuntimeClientOptions) {
       if(!input||Object.keys(input).length!==1||!iso(input.expected_expires_at))throw new TypeError('Invalid Runtime renewal');
       const reply=await post<{renewed:AppRuntimeRenewal}>('renew',{expected_expires_at:input.expected_expires_at},undefined,signal),value=reply.renewed;
       signal?.throwIfAborted();
-      if(Object.keys(reply).length!==1||!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!=='expires_at,renewable_until,session_id'
-        ||value.session_id!==options.credential.session_id||!iso(value.expires_at)||!iso(value.renewable_until)
-        ||Date.parse(value.expires_at)<Date.parse(input.expected_expires_at)||Date.parse(value.expires_at)>Date.parse(value.renewable_until)||Date.parse(value.expires_at)<=Date.now())throw new AppRuntimeClientError(200,'APP_RUNTIME_INVALID_RENEWAL');
+      if(Object.keys(reply).length!==1||!validAppRuntimeRenewal(value,input.expected_expires_at,options.credential.session_id))throw new AppRuntimeClientError(200,'APP_RUNTIME_INVALID_RENEWAL');
       return Object.freeze({...value});
     },
     async claim(): Promise<AppRuntimeClaim | null> {
@@ -296,4 +294,14 @@ export function createAppRuntimeClient(options: AppRuntimeClientOptions) {
       return reply.run;
     },
   });
+}
+
+/** Shared closed response check for action and v3 observation transport renewal. */
+export function validAppRuntimeRenewal(raw:unknown,expected:string,sessionId:string):raw is AppRuntimeRenewal {
+ if(!raw||typeof raw!=='object'||Array.isArray(raw))return false;
+ const v=raw as AppRuntimeRenewal,persistent=v.renewal_lifetime==='until_revoked';
+ const iso=(x:unknown):x is string=>typeof x==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/u.test(x)&&Number.isFinite(Date.parse(x));
+ return Object.keys(v).sort().join(',')===(persistent?'expires_at,renewable_until,renewal_lifetime,session_id':'expires_at,renewable_until,session_id')
+  &&v.session_id===sessionId&&iso(v.expires_at)&&iso(expected)&&Date.parse(v.expires_at)>=Date.parse(expected)&&Date.parse(v.expires_at)>Date.now()
+  &&(persistent?v.renewable_until===null:iso(v.renewable_until)&&Date.parse(v.expires_at)<=Date.parse(v.renewable_until));
 }

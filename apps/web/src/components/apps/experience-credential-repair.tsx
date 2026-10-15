@@ -37,8 +37,8 @@ export function ExperienceCredentialRepair({target,client,disabled,onBusy,onCont
   <p>Restore the connection to this same account. Your saved records and existing permission expiry stay unchanged.</p>
   {notice&&<p role="status">{notice}</p>}
   {!pending&&target.credential_repair.candidate&&<><p className="break-words">{target.credential_repair.candidate.account.label}</p><button type="button" className="deft-pill min-h-11" disabled={unavailable} onClick={()=>void act('review')}>Reconnect account</button></>}
-  {review&&<><p className="break-words font-medium">{review.account.label}</p><p>Existing access ends {new Date(review.scope.consent_expires_at).toLocaleString()}.</p>
-   {review.action_consents.map(consent=><p key={consent.action_key}>{consent.action_key.replaceAll('_',' ')} — until {new Date(consent.expires_at).toLocaleString()}</p>)}
+  {review&&<><p className="break-words font-medium">{review.account.label}</p><p>Existing access {review.scope.consent_lifetime==='until_revoked'?'continues until revoked':`ends ${new Date(review.scope.consent_expires_at!).toLocaleString()}`}.</p>
+   {review.action_consents.map(consent=><p key={consent.action_key}>{consent.action_key.replaceAll('_',' ')} — {consent.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(consent.expires_at!).toLocaleString()}`}</p>)}
    <button type="button" className="deft-pill min-h-11" disabled={unavailable||Date.parse(review.expires_at)<=Date.now()} onClick={()=>void act('begin')}>Continue to provider</button></>}
   {pending&&<div className="flex flex-wrap gap-2"><button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={unavailable} onClick={()=>void act('status')}>Check reconnection status</button>
    {target.credential_repair.pending?.callback_consumed&&target.credential_repair.pending.state==='indeterminate'&&<><p>The previous provider outcome remains unknown. Closing this stalled reconnection will not retry it.</p><button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={unavailable} onClick={()=>void act('close_uncertain')}>Close stalled reconnection</button></>}

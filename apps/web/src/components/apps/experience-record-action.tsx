@@ -1,4 +1,5 @@
 'use client';
+import {appConsentDeadline,type AppConsentLifetime} from '../../../../../packages/app-kit/src/consent-lifetime';
 import {useEffect,useRef,useState} from 'react';
 import {AppDialog} from '@/components/overlay-primitives';
 import {api} from '@/lib/api';
@@ -10,7 +11,7 @@ import {canonicalAppPreparedEffectJson} from '../../../../../packages/app-kit/sr
 import {AppFutureExecutionWindowSchema,AppFutureRecordActionStatusSchema,type AppFutureExecutionWindow,type AppFutureRecordActionStatus,type AppFutureRecordActionDeclaration} from '../../../../../packages/app-kit/src/future-record-action';
 type Review={prepared:AppDataPreparedRecordAction;ticket:string;input_digest:string;expires_at:string};
 export type RecordActionRequest={node:ExperienceRecordFormNode;row:ExperienceRecordRow;ports:ExperienceRecordFormPorts;signal:AbortSignal;
- current:()=>boolean;futureSubmissionId?:string;futurePolicy?:AppFutureRecordActionDeclaration;dataAuthorityExpiresAt?:string;connectionSessionId:string;sessionId:string;targetKey:string;recovery?:{beforeSubmit:(attempt:import('@/lib/app-experience-record-browser-recovery').RecordSubmissionAttempt)=>Promise<void>;confirmed:()=>Promise<void>;restored?:(expected:Pick<ExperienceRecordRow,'record_id'|'revision'|'content_digest'>)=>Promise<unknown>};finish:(submitted?:boolean)=>void};
+ current:()=>boolean;futureSubmissionId?:string;futurePolicy?:AppFutureRecordActionDeclaration;dataAuthorityExpiresAt?:string|null;dataAuthorityLifetime?:AppConsentLifetime;connectionSessionId:string;sessionId:string;targetKey:string;recovery?:{beforeSubmit:(attempt:import('@/lib/app-experience-record-browser-recovery').RecordSubmissionAttempt)=>Promise<void>;confirmed:()=>Promise<void>;restored?:(expected:Pick<ExperienceRecordRow,'record_id'|'revision'|'content_digest'>)=>Promise<unknown>};finish:(submitted?:boolean)=>void};
 async function boundedJson(response:Response){if(!response.ok||!response.body||response.headers.get('content-type')?.split(';')[0]!=='application/json')throw Error('Review unavailable');
  const reader=response.body.getReader(),chunks:Uint8Array[]=[];let count=0;try{for(;;){const part=await reader.read();if(part.done)break;count+=part.value.length;if(count>1048576)throw Error('Review limit');chunks.push(part.value);}const bytes=new Uint8Array(count);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}try{return JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes));}finally{bytes.fill(0);}}
  finally{chunks.forEach(chunk=>chunk.fill(0));await reader.cancel().catch(()=>{});reader.releaseLock();}}
@@ -51,7 +52,7 @@ export function ExperienceRecordAction({request,onRun}:{request:RecordActionRequ
  function configure(){try{
   if(timing==='now'){setExecutionWindow(undefined);setNotice('Preparing saved record…');setConfigured(true);return;}
   const schedule=timing==='schedule'?{wall_time:wallTime,zone,ambiguity,missed_policy:missed}:null;
-  const deadline=Math.min(Date.parse(request.dataAuthorityExpiresAt??''),Date.now()+(request.futurePolicy!.max_schedule_horizon_seconds+request.futurePolicy!.max_dispatch_lifetime_seconds+request.futurePolicy!.max_undo_delay_seconds)*1000);if(!Number.isFinite(deadline)||deadline<=Date.now())throw Error();
+  if(request.dataAuthorityExpiresAt===undefined)throw Error();const deadline=Math.min(appConsentDeadline(request.dataAuthorityExpiresAt,request.dataAuthorityLifetime),Date.now()+(request.futurePolicy!.max_schedule_horizon_seconds+request.futurePolicy!.max_dispatch_lifetime_seconds+request.futurePolicy!.max_undo_delay_seconds)*1000);if(!Number.isFinite(deadline)||deadline<=Date.now())throw Error();
   const window=AppFutureExecutionWindowSchema.parse({undo_delay_seconds:undoSeconds,schedule,dispatch_expires_at:new Date(deadline).toISOString()});
   setExecutionWindow(window);setNotice('Preparing saved record…');setConfigured(true);
  }catch{setNotice('Choose a valid time and current account permission.');}}

@@ -85,9 +85,9 @@ export class AppOwnerConnectionService {
         min_interval_seconds: binding.min_interval_seconds };
       if (!ownerConnectionLimitsWithin(limits, admission.snapshot.limits)) throw ownerConnectionDenied();
       if (input.max_records_per_page === binding.max_records_per_page) throw stale();
-      expiresAt.push(binding.consent_expires_at!);
+      if(binding.consent_expires_at)expiresAt.push(binding.consent_expires_at);
       const consent = { ...attachmentSyncConsentReview({ org_id: actor.org_id, owner_user_id: actor.actor_id,
-        operator_user_id: registration.operator_user_id, reviewed: authority, consent_expires_at: binding.consent_expires_at!,
+        operator_user_id: registration.operator_user_id, reviewed: authority, consent_expires_at: binding.consent_expires_at,...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{}),
         limits, attachment_policy: binding.attachment_policy, owner_connection_admission: admission.reference }),
         ...(binding.target_key === 'primary' ? {} : { target_key: binding.target_key }) };
       const review = { schema_version: 'deft.owner_resource_page_limits_review.v1', binding_id: binding.id,
@@ -208,7 +208,7 @@ export class AppOwnerConnectionService {
               attachment_policy: reviewed.manifest.sync_descriptors.find(item => item.key === policy.resource_key)!.attachments } };
         }
         const bindings = await Promise.all(owned.map(async ({ app_resource_bindings: binding }) => ({ binding_id: binding.id, target_key: binding.target_key,
-          state: binding.state, consent_expires_at: binding.consent_expires_at?.toISOString() ?? null,
+          state: binding.state, consent_expires_at: binding.consent_expires_at?.toISOString() ?? null,...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{}),
           actions: await tx.select({ action_key: appRuntimeBindings.action_key, binding_id: appRuntimeBindings.id, state: appRuntimeBindings.state })
             .from(appRuntimeBindings).where(and(eq(appRuntimeBindings.org_id, actor.org_id), eq(appRuntimeBindings.owner_resource_binding_id, binding.id),
               inArray(appRuntimeBindings.state, ['active', 'disabled']))).limit(16) })));
@@ -225,13 +225,13 @@ export class AppOwnerConnectionService {
     return this.guarded(actor, locator.operator_user_id, guard, tx => loadOwnerConnectionAdmission(tx, actor.org_id, reference));
   }
   async resource(actor: ModuleActor, raw: unknown, guard: WebAuthorityGuard, activate = false) {
-    human(actor); const parsed = (activate ? OwnerConnectionResourceRequestSchema.extend(activation) : OwnerConnectionResourceRequestSchema).parse(raw);
+    human(actor); const parsed = (activate ? OwnerConnectionResourceRequestSchema.safeExtend(activation) : OwnerConnectionResourceRequestSchema).parse(raw);
     const reference = { admission_id: parsed.admission_id, admission_digest: parsed.admission_digest }, current = await this.ownerInput(actor, reference, guard);
     const input = { schema_version: 'deft.app_attachment_consent_request.v1', installation_id: current.row.app_installation_id,
       resource_key: current.policy.resource_key, operator_user_id: current.row.operator_user_id, expected_app_version_id: current.row.app_version_id,
       expected_package_digest: current.snapshot.package_digest, expected_grant_snapshot_digest: current.snapshot.grant_snapshot_digest,
       expected_lifecycle_epoch: current.snapshot.lifecycle_epoch, expected_grant_epoch: current.snapshot.grant_epoch,
-      target_key: parsed.target_key, consent_expires_at: parsed.consent_expires_at, limits: parsed.limits, attachment_policy: parsed.attachment_policy,
+      target_key: parsed.target_key, consent_expires_at: parsed.consent_expires_at,...(parsed.consent_lifetime?{consent_lifetime:parsed.consent_lifetime}:{}), limits: parsed.limits, attachment_policy: parsed.attachment_policy,
       ...(activate ? { expected_review_digest: 'expected_review_digest' in parsed ? parsed.expected_review_digest : undefined, accept_host_policy: true } : {}) };
     const management = new AppResourceSyncManagement(this.keys, this.now, 'attachment_v3');
     return activate ? management.activateConsent(actor, input, guard, reference) : management.prepareConsent(actor, input, guard, reference);

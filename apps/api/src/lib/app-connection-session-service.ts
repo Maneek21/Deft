@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -39,16 +40,16 @@ export const AppConnectionSessionRecordSchema = z.strictObject({
   if(value.credential_repair&&(!value.action_consents||value.upgrade||value.reattachment||value.action_consent))
     ctx.addIssue({code:'custom',message:'Credential repair requires its own exact authority protocol'});
   if(value.credential_repair&&(!isDeepStrictEqual(value.scope,value.credential_repair.source.scope)
-    ||Date.parse(value.credential_repair.review_expires_at)>Date.parse(value.scope.consent_expires_at)))
+    ||Date.parse(value.credential_repair.review_expires_at)>appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)))
     ctx.addIssue({code:'custom',message:'Credential repair cannot change or renew authority'});
   if(value.action_consent&&value.action_consents!==undefined||value.upgrade&&(!value.action_consents||value.reattachment))
     ctx.addIssue({code:'custom',message:'Connection protocols cannot mix authority formats'});
-  if(value.upgrade&&Date.parse(value.upgrade.review_expires_at)>Date.parse(value.scope.consent_expires_at))
+  if(value.upgrade&&Date.parse(value.upgrade.review_expires_at)>appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime))
     ctx.addIssue({code:'custom',message:'Upgrade review exceeds current consent'});
   if(value.upgrade?.closure&&(value.callback_consumed||value.account!==null||value.state!=='not_connected'))
     ctx.addIssue({code:'custom',message:'Expired upgrade closure cannot admit a callback or account'});
   if(value.action_consents?.some(consent=>consent.consent_id!==consent.action_binding_id
-    ||Date.parse(consent.expires_at)>Date.parse(value.scope.consent_expires_at)))
+    ||appConsentDeadline(consent.expires_at, consent.consent_lifetime)>appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)))
     ctx.addIssue({code:'custom',message:'Independent action consent exceeds its binding'});
 });
 const recordSchema = AppConnectionSessionRecordSchema;
@@ -119,11 +120,11 @@ export class AppConnectionSessionService {
       || scope.installation_id !== nomination.installation_id || scope.target_key !== nomination.target_key
       || scope.operator_user_id !== current.profile.operator_user_id || scope.resource_key !== current.profile.resource_key
       || scope.profile_digest !== profileDigest(current.profile)
-      || current.expires_at <= this.clock() || Date.parse(scope.consent_expires_at) <= this.clock()
+      || current.expires_at <= this.clock() || appConsentDeadline(scope.consent_expires_at, scope.consent_lifetime) <= this.clock()
       || (caller.access_expires_at !== undefined && caller.access_expires_at <= this.clock())
       || expected && (!isDeepStrictEqual(expected.scope, scope) || !isDeepStrictEqual(expected.profile, current.profile))
-      || (purpose === 'begin' || purpose === 'callback') && (current.action_consent && Date.parse(current.action_consent.expires_at) <= this.clock()
-        || current.action_consents?.some(consent=>Date.parse(consent.expires_at)<=this.clock())
+      || (purpose === 'begin' || purpose === 'callback') && (current.action_consent && appConsentDeadline(current.action_consent.expires_at,current.action_consent.consent_lifetime) <= this.clock()
+        || current.action_consents?.some(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime)<=this.clock())
         || expected && (!isDeepStrictEqual(expected.action_consent, current.action_consent)
           || !isDeepStrictEqual(expected.action_consents,current.action_consents)))) throw denied();
     return current;
@@ -139,7 +140,7 @@ export class AppConnectionSessionService {
     return { installation_id: record.scope.installation_id, target_key: record.scope.target_key };
   }
   private checkDeadline(authority: AppConnectionSessionAuthority, record: AppConnectionSessionRecord) {
-    if (Math.min(authority.expires_at, Date.parse(record.scope.consent_expires_at)) <= this.clock()
+    if (Math.min(authority.expires_at, appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime)) <= this.clock()
       || ['starting', 'awaiting_callback', 'connecting'].includes(record.state)
       && Date.parse(record.callback_expires_at) <= this.clock()) throw denied();
   }
@@ -157,7 +158,7 @@ export class AppConnectionSessionService {
   private async invoke(caller: ExperienceCaller, record: AppConnectionSessionRecord, purpose: AppConnectionSessionPurpose,
     authority: AppConnectionSessionAuthority, request: AppConnectionRuntimeRequest) {
     const controller = new AbortController();
-    const remaining = Math.min(IO_MS, authority.expires_at - this.clock(), Date.parse(record.scope.consent_expires_at) - this.clock(),
+    const remaining = Math.min(IO_MS, authority.expires_at - this.clock(), appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime) - this.clock(),
       ['starting', 'connecting'].includes(record.state) ? Date.parse(record.callback_expires_at) - this.clock() : IO_MS);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let committed: AppConnectionSessionRecord | undefined;
@@ -185,7 +186,7 @@ export class AppConnectionSessionService {
         this.checkDeadline(authority, record); this.checkDeadline(current, record); controller.signal.throwIfAborted();
         armDeadline();
         const expires_at=new Date(Math.min(Date.parse(request.expires_at),authority.expires_at,current.expires_at,
-          ...(['begin','callback'].includes(purpose)?record.action_consents?.map(consent=>Date.parse(consent.expires_at))??[]:[]))).toISOString();
+          ...(['begin','callback'].includes(purpose)?record.action_consents?.map(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime))??[]:[]))).toISOString();
         if(record.action_consents!==undefined){const {action_consent,...base}=request;void action_consent;
           return (runtime as Awaited<ReturnType<NonNullable<AppConnectionSessionPorts['registeredRuntimeV2']>>>).request(
             AppConnectionRuntimeV2RequestSchema.parse({...base,schema_version:'deft.app_connection_runtime.v2',action_consents:record.action_consents,expires_at}),controller.signal);}
@@ -231,7 +232,7 @@ export class AppConnectionSessionService {
       ...(authority.action_consent ? { action_consent: authority.action_consent } : {}),
       ...(authority.action_consents?{action_consents:authority.action_consents}:{}),
       state: 'starting', callback_state_hash: hash(state), callback_consumed: false,
-      callback_expires_at: new Date(Math.min(now + SESSION_MS, authority.expires_at, Date.parse(authority.scope.consent_expires_at))).toISOString(),
+      callback_expires_at: new Date(Math.min(now + SESSION_MS, authority.expires_at, appConsentDeadline(authority.scope.consent_expires_at, authority.scope.consent_lifetime))).toISOString(),
       runtime_session_ref: null, account: null, created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString() });
     if (!await this.ports.store.create(record)) throw conflict();
     const result = await this.invoke(caller, record, 'begin', authority, { schema_version: 'deft.app_connection_runtime.v1',

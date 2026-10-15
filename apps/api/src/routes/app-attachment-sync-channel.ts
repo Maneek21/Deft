@@ -93,6 +93,12 @@ function failure(c: Context, error: unknown) {
   return c.json({ error: 'Resource sync request failed', code: 'APP_RESOURCE_SYNC_FAILURE' }, 500);
 }
 
+appAttachmentSyncChannelRoutes.post('/renew',async c=>{
+ try{if(new URL(c.req.url).search)throw Error('JSON');const payload=await request(c,4096);c.req.raw.signal.throwIfAborted();
+ const renewed=await(await getAppAttachmentRuntime()).channel.renew(payload);c.req.raw.signal.throwIfAborted();
+ return renewed?c.json({renewed}):c.json({error:'Resource session renewal unavailable',code:'APP_RESOURCE_SYNC_ACCESS_DENIED'},403);
+ }catch(error){return failure(c,error);}
+});
 appAttachmentSyncChannelRoutes.post('/claim', async (c) => {
   try {
     const payload = await request(c, 4096);

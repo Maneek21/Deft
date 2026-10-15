@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { canonicalCapabilityJson } from '@deft/shared';
@@ -89,7 +90,7 @@ export class AppPrivateDeftyService {
       secrets: this.secrets, clock: () => this.current(tx), signal, write, empty, credentialKeyVersion: keyVersion });
   }
   private async final(tx: Tx, c: AccessCaller, context: Context, expires: Date) {
-    const bounded = new Date(Math.min(expires.getTime(), context.parent.authority.binding.consent_expires_at!.getTime(),
+    const bounded = new Date(Math.min(expires.getTime(), appConsentDeadline(context.parent.authority.binding.consent_expires_at,context.parent.authority.binding.consent_lifetime??undefined),
       c.guard.current_web_session_expires_at().getTime()));
     this.clocks.get(tx)!.bindDeadline(bounded);
     await finalPrivateDefty(tx, c, context, bounded, () => this.current(tx));
@@ -105,7 +106,7 @@ export class AppPrivateDeftyService {
         || !Object.hasOwn(context.parent.record!.data, field))) throw accessUnavailable();
       const now = this.clocks.get(tx)!.issuance();
       const expires = new Date(Math.min(Date.parse(input.expires_at), now.getTime() + PRIVATE_DEFTY_LIMITS.grant_ms,
-        context.parent.authority.binding.consent_expires_at!.getTime(), c.guard.current_web_session_expires_at().getTime()));
+        appConsentDeadline(context.parent.authority.binding.consent_expires_at,context.parent.authority.binding.consent_lifetime??undefined), c.guard.current_web_session_expires_at().getTime()));
       const snapshot = PrivateDeftyGrantSnapshot.parse({
         schema_version: 'deft.app_private_defty_snapshot.v1', purpose: 'defty_private_context',
         org_id: c.org_id, owner_user_id: c.user_id, space_id: input.space_id, seal_id: randomUUID(),

@@ -4,7 +4,7 @@ export const appDataConsents=pgTable('app_data_consents',{
   org_id:text('org_id').notNull(),owner_user_id:text('owner_user_id').notNull(),consent_id:text('consent_id').notNull(),
   connection_session_id:text('connection_session_id').notNull(),store_key:text('store_key').notNull(),
   state:text('state').notNull(),consent_digest:text('consent_digest').notNull(),snapshot:jsonb('snapshot').$type<Record<string,unknown>>().notNull(),
-  expires_at:timestamp('expires_at',{withTimezone:true}).notNull(),created_at:timestamp('created_at',{withTimezone:true}).notNull(),
+  expires_at:timestamp('expires_at',{withTimezone:true}),created_at:timestamp('created_at',{withTimezone:true}).notNull(),
   updated_at:timestamp('updated_at',{withTimezone:true}).notNull(),
 },t=>[primaryKey({columns:[t.org_id,t.owner_user_id,t.consent_id]}),
   index('app_data_consents_target_idx').on(t.org_id,t.owner_user_id,t.connection_session_id,t.store_key,t.state),

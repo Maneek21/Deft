@@ -5,10 +5,10 @@ import { AppResourceSyncConsentRequestSchema } from './app-resource-sync-policy.
 
 export const APP_ATTACHMENT_RETAINED_STAGE_LIMIT = 4096;
 
-export const AppAttachmentConsentRequestSchema = AppResourceSyncConsentRequestSchema.extend({
+export const AppAttachmentConsentRequestSchema = AppResourceSyncConsentRequestSchema.safeExtend({
   schema_version: z.literal('deft.app_attachment_consent_request.v1'), attachment_policy: AttachmentPolicySchema,
 });
-export const AppAttachmentConsentActivationSchema = AppAttachmentConsentRequestSchema.extend({
+export const AppAttachmentConsentActivationSchema = AppAttachmentConsentRequestSchema.safeExtend({
   expected_review_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u), accept_host_policy: z.literal(true),
 });
 export type AppAttachmentConsentRequest = z.infer<typeof AppAttachmentConsentRequestSchema>;

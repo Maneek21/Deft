@@ -29,7 +29,7 @@ export async function captureFutureRecordActionReview(tx:AppRunTransaction,curre
  const authority=ReviewedFutureRecordActionAuthoritySchema.parse({
   schema_version:'deft.reviewed_future_record_action_authority.v1',review_session_id:reviewSessionId,purpose_identity:purposeIdentity,scope:current.scope,connection:current.connection,store_key:current.store.key,
   data_consent_id:current.consent.consent_id,data_consent_digest:current.consent.consent_digest,data_policy_digest:current.data_policy_digest,
-  data_consent_expires_at:current.consent.expires_at.toISOString(),policy,policy_digest:appDataDigest(policy),action_consents:actionConsents,
+  data_consent_expires_at:current.consent.expires_at?.toISOString()??null,...(current.consent.consent_lifetime?{consent_lifetime:current.consent.consent_lifetime}:{}),policy,policy_digest:appDataDigest(policy),action_consents:actionConsents,
   custody_generation:connection.connection_receipt?.custody_generation??null,custody_receipt_digest:connection.connection_receipt?.receipt_digest??null,
   authority_expires_at:future.authority_expires_at,
  });

@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {and,eq} from 'drizzle-orm';
 import {appRuntimeSessions,appRuns,appRunAttempts,appSyncIntents,appSyncCheckpoints} from '@deft/db/schema';
 import {ResourceObservationAuthorityRequestSchema,ResourceObservationAuthorityResultSchema} from '../../../../packages/app-kit/src/resource-observation.js';
@@ -37,7 +38,7 @@ export async function resourceObservationRuntimeAuthority(raw:unknown,authorizat
   const [checkpoint]=await tx.select().from(appSyncCheckpoints).where(and(eq(appSyncCheckpoints.org_id,locator.org_id),eq(appSyncCheckpoints.id,intent.checkpoint_id),eq(appSyncCheckpoints.resource_binding_id,authority.binding.id))).limit(1).for('share');
   if(!checkpoint||checkpoint.state!=='active'||checkpoint.generation!==intent.generation||checkpoint.cursor_sequence!==intent.expected_cursor_sequence
    ||checkpoint.cursor_hmac_key_version!==intent.expected_cursor_hmac_key_version||checkpoint.cursor_hmac!==intent.expected_cursor_hmac)throw observationDenied();
-  const deadline=Math.min(Date.parse(input.expires_at),Date.parse(observed.snapshot.expires_at),run.input_expires_at.getTime(),
+  const deadline=Math.min(Date.parse(input.expires_at),appConsentDeadline(observed.snapshot.expires_at,observed.snapshot.consent_lifetime),run.input_expires_at.getTime(),
    run.result_expires_at.getTime(),authority.session.expires_at.getTime(),attempt.lease_expires_at.getTime());
   if(deadline<=Date.now()||!await attachmentFinalAuthorityIsCurrent(tx,[authority.binding.owner_user_id,authority.registration.operator_user_id],
    {expires_at:[new Date(deadline)]}))throw observationDenied();

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
 import { freshBootstrapSql } from './fresh-bootstrap-sql.mjs';
+import { assertReviewedCurrent } from './lineage-convergence.mjs';
 
 const { Client } = pg;
 
@@ -37,6 +38,16 @@ async function main() {
     const ledgerExists = (await client.query<{ installed: boolean }>(`
       SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS installed
     `)).rows[0]?.installed === true;
+    const persistentConsentRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (SELECT 1 FROM deft_schema_migrations WHERE version='0.3.0-preview.120') AS installed
+    `)).rows[0]?.installed === true;
+    if (persistentConsentRecorded) {
+      // Legacy SQL predates explicit persistent consent. Never replay its finite
+      // CHECKs over reviewed120 rows or use extras as an implicit schema repair.
+      await assertReviewedCurrent(client);
+      console.log('[apply-extras] exact current120 catalog verified; no historical SQL replay');
+      return;
+    }
     const freshInitialization = !ledgerExists && process.argv.includes('--fresh-init');
     for (const file of files) {
       const sql = readFileSync(resolve(drizzleDir, file), 'utf8');
@@ -267,6 +278,7 @@ async function main() {
       await client.query(readFileSync(resolve(upgradesDir, '0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'), 'utf8'));
       console.log('[apply-extras] restored recorded observation continuation receipt guard');
     }
+
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app

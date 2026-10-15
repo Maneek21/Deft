@@ -1,4 +1,4 @@
-import { SyncRequestV2Schema } from '@deft/app-kit';
+import { SyncRequestV2Schema,appConsentDeadline } from '@deft/app-kit';
 import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
@@ -10,7 +10,7 @@ import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appRuns, appRunAttempts, appAttachmentStages, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
 import { APP_RUN_CONTRACT_VERSIONS, APP_RUN_DEFAULT_ATTEMPT_LIMIT,
-  AppRunSafePreviewSchema,canonicalCapabilityJson,
+  AppRunSafePreviewSchema,
   idempotencyDeadline, retentionDeadline } from '@deft/shared';
 import { parseSyncRequest } from '@deft/app-kit/experimental/resource-sync';
 import { AppError } from './app-errors.js';
@@ -24,6 +24,7 @@ import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
 import {activeResourceObservation,observedResourceAuthorization,requireCurrentResourceObservationRun,hasResourceObservationPin} from './app-resource-observation-authority.js';
 import {appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
+import {requireObservationRecoveryPredecessor} from './app-resource-observation-recovery.js';
 
 const HostTargetSchema = z.strictObject({ org_id: z.string().uuid(),
   resource_binding_id: z.string().uuid() });
@@ -140,10 +141,13 @@ export class AppResourceSyncAdmissionService {
       const observation=(observationMode || continuation)?await activeResourceObservation(tx,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,this.clock):null;
       if(observationMode&&!observation)throw unavailable();
       if(observation&&recoveryRunId){
-        const prior=await requireCurrentResourceObservationRun(tx,target.org_id,recoveryRunId,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,this.clock,'predecessor_read');
-        if(prior.row.consent_id!==observation.row.consent_id||prior.row.consent_digest!==observation.row.consent_digest||!recoveryPredecessor
-          ||canonicalCapabilityJson(recoveryPredecessor.authorization_snapshot)!==canonicalCapabilityJson(observedResourceAuthorization(
-            buildAttachmentSyncAuthorizationSnapshot(authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority),observation.row)))throw unavailable();
+        if(!recoveryPredecessor)throw unavailable();
+        await requireObservationRecoveryPredecessor(tx,recoveryRunId,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,
+          observation,recoveryPredecessor.authorization_snapshot);
+        const identity={domain:'deft.app_resource_observation.recovery.v1',org_id:target.org_id,
+          resource_binding_id:binding.id,previous_run_id:recoveryRunId,consent_id:observation.row.consent_id,consent_digest:observation.row.consent_digest};
+        recoveryCandidates=this.runSecrets.fingerprintJsonCandidates('idempotency',identity);
+        recoveryFingerprint=this.runSecrets.fingerprintJson('idempotency',identity);
       }
       const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
         eq(appSyncCheckpoints.org_id, target.org_id),
@@ -151,15 +155,15 @@ export class AppResourceSyncAdmissionService {
       )).limit(1).for('update');
       const now = this.clock();
       assertWithinBudget();
+      const consentExpiry=appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined);
       if (!checkpoint || checkpoint.state !== 'active' || !Number.isFinite(now.getTime())
-        || !binding.consent_expires_at || binding.consent_expires_at <= now) throw unavailable();
-      const consentExpiry = binding.consent_expires_at;
+        || consentExpiry<=now.getTime()) throw unavailable();
       const finalAttachment = async (deadlines: readonly Date[] = []) => {
         if(observation){const current=await activeResourceObservation(tx,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,this.clock);
           if(!current||current.row.consent_id!==observation.row.consent_id||current.row.consent_digest!==observation.row.consent_digest)throw unavailable();}
         if (this.internalMode === 'attachment_v3' && !await attachmentFinalAuthorityIsCurrent(tx,
           [binding.owner_user_id,registration.operator_user_id], { guard:attachmentCaller?.guard,
-            clock:this.clock,signal:limits?.signal,expires_at:[consentExpiry,...deadlines] })) throw unavailable();
+            clock:this.clock,signal:limits?.signal,expires_at:[...(Number.isFinite(consentExpiry)?[new Date(consentExpiry)]:[]),...deadlines] })) throw unavailable();
       };
 
       // The checkpoint lock serializes host admission. Read existing Runs
@@ -172,6 +176,9 @@ export class AppResourceSyncAdmissionService {
             if(linked.row.consent_id!==observation.row.consent_id||linked.row.consent_digest!==observation.row.consent_digest)throw unavailable();}
           await finalAttachment(); return Object.freeze({state:'existing',run_id:replacement.id}); }
         if (!recoveryIntent || recoveryIntent.checkpoint_id !== checkpoint.id || recoveryIntent.generation !== checkpoint.generation
+          || recoveryIntent.app_installation_id!==installation.id||recoveryIntent.app_version_id!==version.id
+          || recoveryIntent.grant_snapshot_id!==grant.id||recoveryIntent.owner_user_id!==binding.owner_user_id
+          || recoveryIntent.provider_snapshot_id!==binding.provider_snapshot_id||recoveryIntent.descriptor_digest!==authority.descriptor_digest
           || recoveryIntent.expected_cursor_sequence !== checkpoint.cursor_sequence || recoveryIntent.expected_cursor_hmac !== checkpoint.cursor_hmac
           || recoveryIntent.expected_cursor_hmac_key_version !== checkpoint.cursor_hmac_key_version) throw unavailable();
         const stages = await tx.select({id:appAttachmentStages.id}).from(appAttachmentStages).where(and(eq(appAttachmentStages.org_id,target.org_id),eq(appAttachmentStages.run_id,recoveryRunId!))).limit(1);
@@ -240,7 +247,7 @@ export class AppResourceSyncAdmissionService {
       const inputFingerprint = this.runSecrets.fingerprintJson('input', request);
       const runId = randomUUID();
       const inputExpiresAt = new Date(Math.min(retentionDeadline('standard', now).getTime(),
-        binding.consent_expires_at.getTime(),observation?Date.parse(observation.snapshot.expires_at):Infinity));
+        consentExpiry,observation?appConsentDeadline(observation.snapshot.expires_at,observation.snapshot.consent_lifetime):Infinity));
       const actor = { actor_type: 'system' as const, system_id: binding.id };
       const baseAuthorization = this.internalMode === 'attachment_v3'
         ? buildAttachmentSyncAuthorizationSnapshot(await loadLiveAttachmentSyncBindingAuthority(tx,{ ...target,clock:this.clock }).then(live => { if (!live) throw unavailable(); return live; }))
@@ -289,7 +296,7 @@ export class AppResourceSyncAdmissionService {
       const completedAt = this.clock();
       assertWithinBudget();
       if (!attemptId || !Number.isFinite(completedAt.getTime())
-        || inputExpiresAt <= completedAt || binding.consent_expires_at <= completedAt) throw unavailable();
+        || inputExpiresAt <= completedAt || consentExpiry<=completedAt.getTime()) throw unavailable();
       await finalAttachment([inputExpiresAt,run.result_expires_at]);
       return Object.freeze({ state: 'created', run_id: runId, attempt_id: attemptId });
     });

@@ -1,3 +1,4 @@
+import { AppConsentLifetimeSchema, AppConsentExpirySchema, appConsentDeadline, appConsentExpiryValid } from './consent-lifetime.js';
 import {z} from 'zod';
 import {AppConnectionSessionScopeSchema} from './connection-session.js';
 import {canonicalAppDataJson} from './app-data-json.js';
@@ -21,9 +22,9 @@ export const AppRecordPrepareChangeInputSchema=AppRecordChangeReferenceSchema.ex
 export const AppRecordApplyChangeInputSchema=AppRecordChangeReferenceSchema.extend({operation_key:key,source:AppRecordChangeReferenceSchema,prepared_id:id,prepared_digest:digest,invocation_mode:z.literal('initial').optional(),parameters:AppRecordChangeParametersSchema.optional()})
  .refine(input=>input.store_key!==input.source.store_key,'Changes must name distinct source and destination stores')
  .refine(input=>input.invocation_mode===undefined||input.parameters===undefined,'Initial changes cannot receive manual parameter values');
-const proofFields={store_key:key,consent_id:id,consent_digest:digest,data_policy_digest:digest,consent_expires_at:z.iso.datetime()};
+const proofFields={store_key:key,consent_id:id,consent_digest:digest,data_policy_digest:digest,consent_expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional()};
 export const AppRecordChangeAuthoritiesSchema=z.tuple([
- z.strictObject({role:z.literal('destination'),...proofFields}),z.strictObject({role:z.literal('source'),...proofFields})
+ z.strictObject({role:z.literal('destination'),...proofFields}).refine(v=>appConsentExpiryValid(v.consent_expires_at,v.consent_lifetime)),z.strictObject({role:z.literal('source'),...proofFields}).refine(v=>appConsentExpiryValid(v.consent_expires_at,v.consent_lifetime))
 ]).refine(([a,b])=>a.store_key!==b.store_key);
 const connection=z.strictObject({session_id:id,session_revision:revision,runtime_session_ref:z.string().min(1).max(512).regex(/^[A-Za-z0-9_-]+$/u),account_ref:z.string().min(1).max(512).regex(/^[A-Za-z0-9_-]+$/u)});
 const runtime={request_id:id,scope:AppConnectionSessionScopeSchema,connection,record_authorities:AppRecordChangeAuthoritiesSchema,expires_at:z.iso.datetime()};
@@ -31,10 +32,10 @@ export const AppRecordChangeRuntimeRequestSchema=z.discriminatedUnion('operation
  z.strictObject({schema_version:z.literal('deft.app_data_runtime.v2'),...runtime,operation:z.literal('record_prepare_change'),input:AppRecordPrepareChangeInputSchema}),
  z.strictObject({schema_version:z.literal('deft.app_data_runtime.v2'),...runtime,operation:z.literal('record_apply_change'),input:AppRecordApplyChangeInputSchema})
 ]).refine(input=>input.record_authorities[0].store_key===input.input.store_key&&input.record_authorities[1].store_key===input.input.source.store_key)
- .refine(input=>Date.parse(input.expires_at)<=Math.min(Date.parse(input.scope.consent_expires_at),...input.record_authorities.map(proof=>Date.parse(proof.consent_expires_at))));
+ .refine(input=>Date.parse(input.expires_at)<=Math.min(appConsentDeadline(input.scope.consent_expires_at, input.scope.consent_lifetime),...input.record_authorities.map(proof=>appConsentDeadline(proof.consent_expires_at, proof.consent_lifetime))));
 export const AppRecordChangeAuthorityRequestSchema=z.strictObject({schema_version:z.literal('deft.app_data_authority.v2'),...runtime,
  operation:z.enum(['record_prepare_change','record_apply_change']),input_digest:digest})
- .refine(input=>Date.parse(input.expires_at)<=Math.min(Date.parse(input.scope.consent_expires_at),...input.record_authorities.map(proof=>Date.parse(proof.consent_expires_at))));
+ .refine(input=>Date.parse(input.expires_at)<=Math.min(appConsentDeadline(input.scope.consent_expires_at, input.scope.consent_lifetime),...input.record_authorities.map(proof=>appConsentDeadline(proof.consent_expires_at, proof.consent_lifetime))));
 export const AppRecordChangeAuthorityResultSchema=AppRecordChangeAuthorityRequestSchema.safeExtend({allowed:z.literal(true)});
 const boundedValue=z.record(z.string(),z.unknown()).refine(value=>{try{return new TextEncoder().encode(canonicalAppDataJson(value)).length<=491520;}catch{return false;}});
 const preparedFields={prepared_id:id,prepared_digest:digest,

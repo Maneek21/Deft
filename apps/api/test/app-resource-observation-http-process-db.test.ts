@@ -23,6 +23,7 @@ const runtimeRoot = process.env.DEFT_E2_RUNTIME_ROOT;
 const actionProof=true;
 const reattachedProof=process.env.DEFT_E3_OBSERVATION_REATTACHED==='true';
 const sendFocused=true;
+const persistentProof=process.env.DEFT_E3_PERSISTENT_CONSENT==='true';
 function externalRuntimeAvailable() {
   const hostRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
   return !!runtimeRoot && isAbsolute(runtimeRoot) && !resolve(runtimeRoot).startsWith(hostRoot)
@@ -30,7 +31,7 @@ function externalRuntimeAvailable() {
 }
 
 // Real host routes/PG and actual child runtime. Only provider fetches and TLS routing are synthetic.
-test('reviewed observation uses public owner consent and the retained v3 Run channel in isolated PostgreSQL',
+test(persistentProof?'explicit persistent account, data and observation grants use public HTTP and bounded renewable channels in isolated PostgreSQL':'reviewed observation uses public owner consent and the retained v3 Run channel in isolated PostgreSQL',
   { skip: !disposableDatabase() || !externalRuntimeAvailable(), timeout: 600000 }, async t => {
     Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_PRIVATE_STATE_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true',
       DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true', DEFT_APP_ATTACHMENT_BROKER_ENABLED: 'true', DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'true',
@@ -101,7 +102,7 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
     fixture.manifest.sync_descriptors=[{...EMAIL_METADATA_DESCRIPTOR,key:'inbox'}];
     fixture.manifest.id = 'community.example.e2data.a' + org.replaceAll('-', '');
     fixture.manifest.owner_connections = [{ key: 'mailbox', resource_key: 'inbox', action_keys: ['send_message'],
-      max_consent_seconds: 86400, provider_profile_key: 'google_mail', runtime_requirement_key: 'sync_provider' }];
+      ...(persistentProof?{allow_until_revoked:true}:{}),max_consent_seconds: 86400, provider_profile_key: 'google_mail', runtime_requirement_key: 'sync_provider' }];
     fixture.manifest.record_stores=[{schema_version:'deft.app_record_store.v1',key:'drafts',resource_key:'inbox',runtime_requirement_key:'sync_provider',
       max_record_bytes:491520,max_files:32,max_file_bytes:26214400,max_total_file_bytes:26214400,
       resource_content:{max_presentation_bytes:262144,max_source_bytes:36700160,max_file_bytes:26214400,max_image_bytes:2097152}}];
@@ -133,7 +134,7 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
       operator_user_id: people.owner, runtime_requirement_key: 'sync_provider', resource_key: 'inbox', action_keys: ['send_message'],
       authorization_origin: 'https://accounts.google.com', credential_custody: 'runtime', executable: false };
     const authorityToken = 'a'.repeat(43), runtimeToken = 'b'.repeat(43);
-    let entry = { org_id: org, installation_id: installed.id, runtime_registration_id: randomUUID(), runtime_epoch: 1, profile,
+    let entry = { ...(persistentProof?{connection_protocol:'v2' as const}:{}),org_id: org, installation_id: installed.id, runtime_registration_id: randomUUID(), runtime_epoch: 1, profile,
       endpoint: 'https://synthetic-runtime.example.test/v1/connections', runtime_auth_token: runtimeToken,
       authority_token_sha256: 'sha256:' + createHash('sha256').update(authorityToken).digest('hex') };
     let secondEntry: typeof entry | undefined;
@@ -165,11 +166,11 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
     secondEntry = {...entry, runtime_registration_id: secondBinding.registration_id}; await writeConfig();
     // Genuine DB epoch/profile setup metadata is available before enrollment;
     // it cannot grant Begin or perform external I/O.
-    const enrolledEntry=entry;entry={...entry,runtime_registration_id:randomUUID()};await writeConfig();
+    if(!persistentProof){const enrolledEntry=entry;entry={...entry,runtime_registration_id:randomUUID()};await writeConfig();
     const bootstrap=await call(`/api/app-connection-sessions/installations/${installed.id}/context`,undefined,tokens.member);
     assert.equal(bootstrap.targets[0].scope.runtime_registration_id,binding.registration_id);assert.equal(bootstrap.targets[0].scope.runtime_epoch,1);
     assert.equal(bootstrap.targets[0].runtime_ready,false);assert.equal(bootstrap.targets[0].session,null);
-    entry=enrolledEntry;await writeConfig();
+    entry=enrolledEntry;await writeConfig();}
     let actionBinding:any,actionRuntimeSession:any;
     if(actionProof){const actionInput={...admission,owner_resource_binding_id:binding.binding_id,action_key:'send_message'};
       const review=await call('/api/app-owner-connections/actions/review',actionInput,tokens.member);
@@ -204,11 +205,12 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
       redirect_uri: 'https://host.example/apps/connections/callback'}), {mode: 0o600});
     await writeFile(runtimeConfigPath, JSON.stringify({listen_port: 0, store_root: storeRoot, key_id: 'fixture-key-v1',
       encryption_key_hex: randomBytes(32).toString('hex'), runtime_auth_token: runtimeToken, authority_token: authorityToken,
-      authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/authority`, reattach_authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/reattach-authority`, data_authority_url: `http://127.0.0.1:${hostPort}/api/app-data/runtime/authority`, gmail_client_file: clientPath,
-      registrations: [{org_id: org, runtime_registration_id: binding.registration_id, operator_user_id: people.owner,
+      authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/authority`,
+      ...(persistentProof?{authority_v2_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/authority-v2`,consent_continuation_authority_url:`http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/consent-continuation-authority`}:{}), reattach_authority_url: `http://127.0.0.1:${hostPort}/api/app-connection-sessions/runtime/reattach-authority`, data_authority_url: `http://127.0.0.1:${hostPort}/api/app-data/runtime/authority`, gmail_client_file: clientPath,
+      registrations: [{...(persistentProof?{connection_protocol:'v2'}:{}),org_id: org, runtime_registration_id: binding.registration_id, operator_user_id: people.owner,
         runtime_epoch: entry.runtime_epoch, profile_digest: connectionProfileDigest(profile as any),
         target_key: resourceInput.target_key, resource_key: 'inbox'},
-        {org_id: org, runtime_registration_id: secondBinding.registration_id, operator_user_id: people.owner,
+        {...(persistentProof?{connection_protocol:'v2'}:{}),org_id: org, runtime_registration_id: secondBinding.registration_id, operator_user_id: people.owner,
           runtime_epoch: secondEntry.runtime_epoch, profile_digest: connectionProfileDigest(profile as any),
           target_key: secondResourceInput.target_key, resource_key: 'inbox'}]}), {mode: 0o600});
     async function bootRuntime() {
@@ -260,8 +262,9 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
       {token:tokens.other!,user:people.other,target:secondResourceInput.target_key,code:'fixture-second-account',label:'second@example.test'}];
     let currentSessions:any[]=[];
     for(const person of peopleScopes){
-      const begin=await call(base+'/begin',{installation_id:installed.id,target_key:person.target},person.token);
-      const connected=await call(base+'/callback',{session_id:begin.session_id,state:begin.callback_state,outcome:'authorized',code:person.code},person.token);
+      const begin=await call(base+(persistentProof?'/v2':'')+'/begin',{installation_id:installed.id,target_key:person.target},person.token);
+      assert.equal(begin.state,'awaiting_callback','synthetic OAuth begins with a finite request');
+      const connected=await call(base+(persistentProof?'/v2':'')+'/callback',{session_id:begin.session_id,state:begin.callback_state,outcome:'authorized',code:person.code},person.token);
       assert.equal(connected.state,'connected');assert.equal(connected.account.label,person.label);currentSessions.push(connected);
     }
     if(reattachedProof){
@@ -297,6 +300,62 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
         assert.equal(connected.state,'connected');assert.equal(connected.account.account_ref,priorSessions[index].account.account_ref);currentSessions.push(connected);
       }
       assert.equal(moves,2);assert.equal(providerRequests.length,providerBefore,'reattachment carries custody without repeating OAuth/provider reads');
+    }
+    if(persistentProof){
+      const beforeProvider=providerRequests.length,old=currentSessions[0];
+      const input={installation_id:installed.id,target_key:resourceInput.target_key,source_session_id:old.session_id,
+        request_id:randomUUID(),consent_expires_at:null,consent_lifetime:'until_revoked'};
+      assert.equal((await request(base+'/consent-continuation/review',{...input,consent_lifetime:undefined},tokens.member)).status,400);
+      assert.equal((await request(base+'/consent-continuation/review',{...input,consent_expires_at:new Date(Date.now()+86400000).toISOString()},tokens.member)).status,400);
+      assert.equal((await request(base+'/consent-continuation/review',input,tokens.other)).status,403);
+      const review=await call(base+'/consent-continuation/review',input,tokens.member);
+      assert.equal(review.scope.consent_expires_at,null);assert.equal(review.scope.consent_lifetime,'until_revoked');
+      assert.ok(Date.parse(review.expires_at)>Date.now()&&Date.parse(review.expires_at)<=Date.now()+120000);
+      assert.equal((await request(base+'/consent-continuation/activate',{session_id:review.session_id,review_digest:'sha256:'+'0'.repeat(64)},tokens.member)).status,403);
+      const connected=await call(base+'/consent-continuation/activate',{session_id:review.session_id,review_digest:review.review_digest},tokens.member);
+      assert.equal(connected.state,'connected');assert.equal(connected.expires_at,null);
+      assert.equal(connected.account.account_ref,old.account.account_ref);assert.equal(connected.scope.consent_lifetime,'until_revoked');
+      currentSessions[0]=connected;
+      const dataBase=`/api/app-data/connections/${connected.session_id}/consent`;
+      assert.equal((await request(dataBase+'/review',{store_key:'drafts',expires_at:null},tokens.member)).status,400);
+      const dataReview=await call(dataBase+'/review',{store_key:'drafts',expires_at:null,consent_lifetime:'until_revoked'},tokens.member);
+      assert.equal(dataReview.snapshot.expires_at,null);assert.equal(dataReview.snapshot.consent_lifetime,'until_revoked');
+      assert.ok(Date.parse(dataReview.snapshot.review_expires_at)>Date.now()&&Date.parse(dataReview.snapshot.review_expires_at)<=Date.now()+300000);
+      const dataGrant=await call(dataBase+'/activate',{store_key:'drafts',consent_id:dataReview.snapshot.consent_id,
+        expires_at:null,consent_lifetime:'until_revoked',expected_review_digest:dataReview.review_digest,accept_host_policy:true},tokens.member);
+      assert.equal(dataGrant.expires_at,null);assert.equal(dataGrant.consent_lifetime,'until_revoked');
+      const observationBase='/api/app-resource-observations/consent',obsInput={connection_session_id:connected.session_id,
+        request_id:randomUUID(),interval_seconds:60,expires_at:null,consent_lifetime:'until_revoked'};
+      assert.equal((await request(observationBase+'/review',{...obsInput,consent_lifetime:undefined},tokens.member)).status,400);
+      const observation=await call(observationBase+'/review',obsInput,tokens.member);
+      assert.deepEqual(await call(observationBase+'/review',obsInput,tokens.member),observation,'lost persistent review ACK retains its original finite review deadline');
+      assert.equal(observation.expires_at,null);assert.equal(observation.consent_lifetime,'until_revoked');
+      assert.ok(Date.parse(observation.review_expires_at)>Date.now()&&Date.parse(observation.review_expires_at)<=Date.now()+300000);
+      await call(observationBase+'/activate',{consent_id:observation.consent_id,review_digest:observation.review_digest},tokens.member);
+      const issued=(await call(`/api/apps/blob/sync/bindings/${binding.binding_id}/sessions`,
+        {technical_renewal:{renewal_lifetime:'until_revoked',requested_until:null}},tokens.owner)).session;
+      assert.equal(issued.renewable_until,null);assert.equal(issued.renewal_lifetime,'until_revoked');
+      assert.ok(Date.parse(issued.expires_at)>Date.now()&&Date.parse(issued.expires_at)<=Date.now()+900000);
+      const {createDeftResourceSyncClientV3}=await import('@deft/app-kit');
+      const client=createDeftResourceSyncClientV3({channel_url:`http://127.0.0.1:${hostPort}/api/app-resource-sync-channel/v3`,
+        credential:{session_id:issued.session_id,session_token:issued.session_token},fetch:realFetch});
+      // Revoke the issuing browser SID, not the durable permission or transport.
+      const principal=await web.verifyWebAccess(tokens.owner!);
+      await db.update(s.webSessions).set({revoked_at:new Date()}).where(eq(s.webSessions.id,principal.sid));
+      const renewed=await client.renew({expected_expires_at:issued.expires_at});
+      assert.equal(renewed.session_id,issued.session_id);assert.equal(renewed.renewable_until,null);
+      assert.equal(renewed.renewal_lifetime,'until_revoked');assert.ok(Date.parse(renewed.expires_at)<=Date.now()+900000);
+      assert.deepEqual(await client.renew({expected_expires_at:issued.expires_at}),renewed,'lost renewal ACK keeps the current finite lease');
+      await db.update(s.orgMembers).set({is_active:false}).where(and(eq(s.orgMembers.org_id,org),eq(s.orgMembers.user_id,people.owner)));
+      await assert.rejects(client.renew({expected_expires_at:renewed.expires_at}),'current operator membership is required independently of original SID');
+      await call(dataBase+'/revoke',{consent_id:dataGrant.consent_id},tokens.member);
+      assert.equal((await call(observationBase+'/revoke',{consent_id:observation.consent_id},tokens.member)).state,'revoked');
+      assert.equal((await call(observationBase+'/status',{consent_id:observation.consent_id},tokens.member)).state,'unavailable','operator membership loss keeps the revoked grant unavailable');
+      assert.equal(providerRequests.length,beforeProvider,'permission continuation and renewal have no provider I/O');
+      console.log('# persistent public HTTP proof '+JSON.stringify({account_continuation:true,same_account:true,data_grant:true,
+        observation_grant:true,explicit_null_only:true,finite_review_deadlines:true,v3_same_credential_renewal:true,
+        original_browser_revoked:true,current_member_required:true,revocation:true,provider_calls:0}));
+      return;
     }
     const observationBase='/api/app-resource-observations/consent',observationContext=`/api/app-resource-observations/installations/${installed.id}/context`;
     const beforeConsent=await call(observationContext,undefined,tokens.member);assert.equal(beforeConsent.targets.length,1);assert.equal(beforeConsent.targets[0].consent,null);assert.equal(beforeConsent.targets[0].attachment_mode,'unsupported');
@@ -340,7 +399,8 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
     const {AppResourceSyncAdmissionService}=await import('../src/lib/app-resource-sync-admission.js');
     const {AppRunSecretService}=await import('../src/lib/app-run-secrets.js'),{AppRunSecretRepository}=await import('../src/lib/app-run-secret-repository.js'),{AppResourceSyncSecretService}=await import('../src/lib/app-resource-sync-secrets.js');
     const secrets=new AppRunSecretService(attachment.keys);
-    const earlierAdmission=new AppResourceSyncAdmissionService(attachment.repository,new AppRunSecretRepository(secrets),secrets,new AppResourceSyncSecretService(attachment.keys),attachment.runner,()=>new Date(Date.now()-61000),()=>true,'attachment_v3');
+    let admissionLag=121000;
+    const earlierAdmission=new AppResourceSyncAdmissionService(attachment.repository,new AppRunSecretRepository(secrets),secrets,new AppResourceSyncSecretService(attachment.keys),attachment.runner,()=>new Date(Date.now()-admissionLag),()=>true,'attachment_v3');
     const scanned=await scanner.scanAppResourceSyncBindings({id:job.id,lockToken:job.lockToken!},(await runtime.getAppRunRuntime()).resourceSyncAdmission,earlierAdmission);
     assert.equal(scanned.created,1);assert.ok(scanned.rejected>=0);assert.equal(await queues.completeJob(job.id,job.lockToken!),true);
     const links=await db.select().from(obsTables.appResourceObservationRuns).where(eq(obsTables.appResourceObservationRuns.consent_id,review.consent_id));assert.equal(links.length,1);
@@ -366,7 +426,24 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
     // A fresh reviewed read Run, through the existing recovery fingerprint,
     // does not replay or alter the terminal predecessor.
     await assert.rejects(attachment.admission.resumeObservation({...nomination,previous_run_id:claim.run_id},{owner_user_id:people.member,guard:async()=>{}}),'manual recovery cannot shed the observation policy pin');
-    const recovery=await attachment.admission.admitObservation(nomination);assert.equal(recovery.state,'created');
+    admissionLag=61000;
+    const sameConsent=await earlierAdmission.admitObservation(nomination);assert.equal(sameConsent.state,'created');
+    const nextClaim=await sdk.claim();assert.ok(nextClaim);assert.equal(nextClaim.run_id,sameConsent.run_id);
+    const nextStarted=await sdk.start(nextClaim);await sdk.result(nextClaim,nextStarted,{status:'indeterminate'});
+    const priorRecovery=await db.select().from(s.appRuns).where(eq(s.appRuns.id,nextClaim.run_id));
+    const priorRecoveryAttempts=await db.select().from(s.appRunAttempts).where(eq(s.appRunAttempts.run_id,nextClaim.run_id));
+    const checkpointBeforeRenewal=await db.select().from(s.appSyncCheckpoints).where(eq(s.appSyncCheckpoints.resource_binding_id,binding.binding_id));
+    await call(observationBase+'/revoke',{consent_id:review.consent_id},tokens.member);
+    const recoveryReview=await call(observationBase+'/review',{...reviewInput,request_id:randomUUID()},tokens.member);
+    await call(observationBase+'/activate',{consent_id:recoveryReview.consent_id,review_digest:recoveryReview.review_digest},tokens.member);
+    await assert.rejects(observationSdk.authorize(nextClaim),'new consent cannot authorize the old unknown attempt');
+    const recovery=await attachment.admission.admitObservation(nomination);assert.equal(recovery.state,'created','new current consent admits a NEW read without reviving the revoked predecessor');
+    assert.notEqual(recovery.run_id,nextClaim.run_id);
+    const [recoveryLink]=await db.select().from(obsTables.appResourceObservationRuns).where(eq(obsTables.appResourceObservationRuns.run_id,recovery.run_id!));
+    assert.equal(recoveryLink!.consent_id,recoveryReview.consent_id);assert.equal(recoveryLink!.consent_digest,recoveryReview.review_digest);
+    assert.deepEqual(await db.select().from(s.appSyncCheckpoints).where(eq(s.appSyncCheckpoints.resource_binding_id,binding.binding_id)),checkpointBeforeRenewal,'admission cannot reset or advance the checkpoint');
+    assert.deepEqual(await db.select().from(s.appRuns).where(eq(s.appRuns.id,nextClaim.run_id)),priorRecovery,'revoked predecessor remains byte-identical');
+    assert.deepEqual(await db.select().from(s.appRunAttempts).where(eq(s.appRunAttempts.run_id,nextClaim.run_id)),priorRecoveryAttempts,'revoked predecessor attempts are never replayed');
     assert.equal((await attachment.admission.admitObservation(nomination)).state,'existing','one active successor only');
     await assert.rejects(sdk.result(claim,started,{status:'returned',provider_succeeded:true,page:{schema_version:'deft.app_sync_page.v2',upserts:[],tombstones:[],next_cursor:null,has_more:false}}),'stale predecessor cannot publish a late page');
     await writeFile(observationChannelPath,JSON.stringify({channel_url:`http://127.0.0.1:${hostPort}/api/app-resource-sync-channel/v3`,observation_authority_url:`http://127.0.0.1:${hostPort}/api/app-resource-observations/runtime`,credential:{session_id:issued.session_id,session_token:issued.session_token},registration:{org_id:org,runtime_registration_id:binding.registration_id,operator_user_id:people.owner,runtime_epoch:entry.runtime_epoch,profile_digest:connectionProfileDigest(profile as any),target_key:resourceInput.target_key,resource_key:'inbox'}}),{mode:0o600});
@@ -384,7 +461,7 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
     const providerCount=providerRequests.length;assert.equal((await externalObservation()).status,'no_claim');assert.equal(providerRequests.length,providerCount);
     await stopRuntime();await bootRuntime();assert.equal((await externalObservation()).status,'no_claim');assert.equal(providerRequests.length,providerCount,'restart cannot repeat a completed or unknown provider read');
     const notDue=await attachment.admission.admitObservation(nomination);assert.equal(notDue.state,'not_due','current bounded interval is retained');
-    await call(observationBase+'/revoke',{consent_id:review.consent_id},tokens.member);
+    await call(observationBase+'/revoke',{consent_id:recoveryReview.consent_id},tokens.member);
     assert.equal((await call(observationBase+'/status',{consent_id:review.consent_id},tokens.member)).state,'revoked');
     assert.equal((await call(observationContext,undefined,tokens.member)).targets[0].consent.state,'revoked');
     await assert.rejects(attachment.admission.admitObservation(nomination),'opt-out cannot create another Run');
@@ -443,5 +520,5 @@ test('reviewed observation uses public owner consent and the retained v3 Run cha
     assert.equal((await request(`/api/apps/blob/sync/bindings/${binding.binding_id}/sync`,{continue:true},tokens.member)).status,403);
     assert.equal((await db.select({id:s.appRuns.id}).from(s.appRuns)).length,runsBeforeDenied,'revoked observation cannot downgrade to a manual continuation');
     assert.equal(providerRequests.length,providerBeforeContinuation,'continuation authority proof has no provider invocation');
-    console.log('# observation host proof '+JSON.stringify({accounts:2,reattached:reattachedProof,custody_generation:reattachedProof?2:null,reviewed_consents:2,scheduled_runs:4,human_continuation_pin:true,revoked_continuation_denied:true,unknown_predecessor_preserved:true,external_v3_success:true,metadata_only:true,restart_provider_replay:0,provider_send_requests:0}));
+    console.log('# observation host proof '+JSON.stringify({accounts:2,reattached:reattachedProof,custody_generation:reattachedProof?2:null,reviewed_consents:3,scheduled_runs:5,revoked_consent_recovery:true,human_continuation_pin:true,revoked_continuation_denied:true,unknown_predecessor_preserved:true,external_v3_success:true,metadata_only:true,restart_provider_replay:0,provider_send_requests:0}));
   });

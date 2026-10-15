@@ -1,3 +1,4 @@
+import {AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalCapabilityJson } from '@deft/shared';
@@ -33,7 +34,7 @@ export const ExposureResourceSchema = z.strictObject({ resource_key: key, bindin
   allowed_fields: z.array(z.string().min(1).max(48)).min(1).max(32)
     .refine(v => new Set(v).size === v.length && v.every((s, i) => !i || v[i - 1]! < s)),
   content_policy: ResourceContentPolicySchema.optional(),
-  consent_expires_at: timestamp });
+  consent_expires_at: AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional() }).refine(v=>appConsentExpiryValid(v.consent_expires_at,v.consent_lifetime));
 export const ExposureSnapshotSchema = z.strictObject({ schema_version: z.enum([EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, STATE_EXPOSURE_VERSION]),
   payload_policy_version: z.literal(PAYLOAD_VERSION), visibility: z.literal('user_private'),
   destination: z.literal('verified_installed_experience_worker'),

@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {and,eq,inArray,notInArray,or,ne} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -62,8 +63,8 @@ export async function appConnectionUpgradeRuntimeAuthority(raw:unknown,authoriza
   ||source.runtime_session_ref!==data.source.runtime_session_ref||source.account?.account_ref!==data.source.account_ref
   ||registry.transportDigest(source.scope.org_id,source.scope.installation_id,source.profile)!==data.transport_digest)throw denied();
  if(input.operation!=='status'||input.close_expired)await assertNoActiveConnectionUpgradeEffects(source,current,record.session_id);
- const expiry=Math.min(Date.parse(input.expires_at),current.expires_at,Date.parse(record.scope.consent_expires_at),
-  input.operation==='status'?Infinity:Date.parse(data.review_expires_at),...(input.operation==='status'?[]:input.action_consents.map(item=>Date.parse(item.expires_at))));
+ const expiry=Math.min(Date.parse(input.expires_at),current.expires_at,appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
+  input.operation==='status'?Infinity:Date.parse(data.review_expires_at),...(input.operation==='status'?[]:input.action_consents.map(item=>appConsentDeadline(item.expires_at,item.consent_lifetime))));
  const after=await store.metadata(locator),sourceAfter=await store.metadata({org_id:locator.org_id,owner_user_id:locator.owner_user_id,session_id:source.session_id});
  if(expiry<=Date.now()||after?.revision!==row.revision||sourceAfter?.revision!==source.revision)throw denied();enabled();
  registry.authenticate(current.scope,authorization);return AppConnectionUpgradeAuthorityResultSchema.parse({...input,allowed:true,expires_at:new Date(expiry).toISOString()});
@@ -78,8 +79,8 @@ export async function appConnectionRuntimeV2Authority(raw:unknown,authorization:
   ||input.operation==='callback'&&!record.callback_consumed)throw denied();
  const caller={org_id:locator.org_id,user_id:locator.owner_user_id,sid:row.web_session_id,access_expires_at:row.access_expires_at.getTime()};
  const current=await currentAppConnectionSessionV2Authority(caller,{installation_id:record.scope.installation_id,target_key:record.scope.target_key},retainedWebGuard(caller));
- const expiry=Math.min(Date.parse(input.expires_at),current.expires_at,Date.parse(record.scope.consent_expires_at),
-  ...(['begin','callback'].includes(input.operation)?[Date.parse(record.callback_expires_at),...input.action_consents.map(item=>Date.parse(item.expires_at))]:[]));
+ const expiry=Math.min(Date.parse(input.expires_at),current.expires_at,appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
+  ...(['begin','callback'].includes(input.operation)?[Date.parse(record.callback_expires_at),...input.action_consents.map(item=>appConsentDeadline(item.expires_at,item.consent_lifetime))]:[]));
  if(!isDeepStrictEqual(current.scope,record.scope)||['begin','callback'].includes(input.operation)&&!isDeepStrictEqual(current.action_consents,record.action_consents)
   ||(await store.metadata(locator))?.revision!==row.revision||expiry<=Date.now())throw denied();enabled();
  return AppConnectionRuntimeV2AuthorityResultSchema.parse({...input,allowed:true,expires_at:new Date(expiry).toISOString()});

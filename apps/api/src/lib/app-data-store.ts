@@ -1,3 +1,4 @@
+import {AppDataConsentSnapshotSchema,appConsentDeadline} from '@deft/app-kit';
 import {humanRecordSaveReceipt} from './app-data-human-save.js';
 import {and,eq,sql} from 'drizzle-orm';
 import {appDataConsents,appDataInvocations} from '@deft/db/schema';
@@ -7,11 +8,11 @@ export class PostgresAppDataStore {
   constructor(readonly caller:Pick<ExperienceCaller,'org_id'|'user_id'>,readonly database:typeof db=db){}
   private owner(table:typeof appDataConsents|typeof appDataInvocations){return and(eq(table.org_id,this.caller.org_id),eq(table.owner_user_id,this.caller.user_id));}
   async consent(id:string){const [row]=await this.database.select().from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id)));return row??null;}
-  async activeConsent(session:string,store:string){const rows=await this.database.select().from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.connection_session_id,session),eq(appDataConsents.store_key,store),eq(appDataConsents.state,'active')));return rows.filter(row=>row.expires_at.getTime()>Date.now());}
+  async activeConsent(session:string,store:string){const rows=await this.database.select().from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.connection_session_id,session),eq(appDataConsents.store_key,store),eq(appDataConsents.state,'active')));return rows.filter(row=>appConsentDeadline(row.expires_at,AppDataConsentSnapshotSchema.parse(row.snapshot).consent_lifetime)>Date.now());}
   async propose(values:typeof appDataConsents.$inferInsert){await this.database.insert(appDataConsents).values(values);}
   async activate(id:string,digest:string){return this.database.transaction(async tx=>{
     const [row]=await tx.select().from(appDataConsents).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id))).for('update');
-    if(!row||row.state!=='proposed'||row.consent_digest!==digest||row.expires_at.getTime()<=Date.now())return false;
+    if(!row||row.state!=='proposed'||row.consent_digest!==digest||appConsentDeadline(row.expires_at,AppDataConsentSnapshotSchema.parse(row.snapshot).consent_lifetime)<=Date.now()||AppDataConsentSnapshotSchema.parse(row.snapshot).review_expires_at!==undefined&&Date.parse(AppDataConsentSnapshotSchema.parse(row.snapshot).review_expires_at!)<=Date.now())return false;
     await tx.update(appDataConsents).set({state:'revoked',updated_at:new Date()}).where(and(this.owner(appDataConsents),eq(appDataConsents.connection_session_id,row.connection_session_id),eq(appDataConsents.store_key,row.store_key),eq(appDataConsents.state,'active')));
     await tx.update(appDataConsents).set({state:'active',updated_at:new Date()}).where(and(this.owner(appDataConsents),eq(appDataConsents.consent_id,id)));return true;
   });}

@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHash,randomBytes,timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { AppConnectionUpgradeReviewRequestSchema,AppConnectionUpgradeBeginRequestSchema,
@@ -50,7 +51,7 @@ export class AppConnectionUpgradeService{
   const current=await this.ports.currentAuthority(caller,nomination);
   if(current.scope.org_id!==caller.org_id||current.scope.owner_user_id!==caller.user_id||current.scope.installation_id!==nomination.installation_id
     ||current.scope.target_key!==nomination.target_key||!Number.isFinite(caller.access_expires_at)||!Number.isFinite(current.expires_at)
-    ||Math.min(current.expires_at,caller.access_expires_at!,Date.parse(current.scope.consent_expires_at))<=this.clock()
+    ||Math.min(current.expires_at,caller.access_expires_at!,appConsentDeadline(current.scope.consent_expires_at, current.scope.consent_lifetime))<=this.clock()
     ||expected&&(!isDeepStrictEqual(expected.scope,current.scope)||!isDeepStrictEqual(expected.profile,current.profile)
       ||!history&&!isDeepStrictEqual(expected.action_consents,current.action_consents)))throw denied();
   return {...current,expires_at:Math.min(current.expires_at,caller.access_expires_at!)};
@@ -84,8 +85,8 @@ export class AppConnectionUpgradeService{
  }
  private async invoke(caller:ExperienceCaller,record:AppConnectionSessionRecord,operation:AppConnectionUpgradeRuntimeRequest['operation'],extra:Record<string,unknown>={}){
   const history=operation==='status',authority=await this.authority(caller,this.nomination(record),record,history),data=record.upgrade!;
-  let deadline=Math.min(this.clock()+30_000,authority.expires_at,Date.parse(record.scope.consent_expires_at),
-   history?Infinity:Date.parse(data.review_expires_at),...(history?[]:record.action_consents!.map(item=>Date.parse(item.expires_at))));
+  let deadline=Math.min(this.clock()+30_000,authority.expires_at,appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
+   history?Infinity:Date.parse(data.review_expires_at),...(history?[]:record.action_consents!.map(item=>appConsentDeadline(item.expires_at,item.consent_lifetime))));
   if(deadline<=this.clock())throw denied();
   const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined,committed:AppConnectionSessionRecord|undefined;
   let rejectTimeout:((error:unknown)=>void)|undefined;
@@ -143,7 +144,7 @@ export class AppConnectionUpgradeService{
    ||['org_id','owner_user_id','installation_id','target_key','resource_key','operator_user_id'].some(key=>a[key as keyof typeof a]!==b[key as keyof typeof b])
    ||['provider_id','credential_custody','runtime_requirement_key','resource_key','operator_user_id'].some(key=>source.profile[key as keyof typeof source.profile]!==authority.profile[key as keyof typeof authority.profile]))throw denied();
   await this.ports.assertNoActiveEffects(source,authority);
-  const now=this.clock(),expiry=Math.min(now+300_000,authority.expires_at,Date.parse(b.consent_expires_at),...authority.action_consents.map(item=>Date.parse(item.expires_at)));
+  const now=this.clock(),expiry=Math.min(now+300_000,authority.expires_at,appConsentDeadline(b.consent_expires_at, b.consent_lifetime),...authority.action_consents.map(item=>appConsentDeadline(item.expires_at,item.consent_lifetime)));
   const record=AppConnectionSessionRecordSchema.parse({session_id:input.request_id,revision:0,scope:b,profile:authority.profile,
    state:'starting',callback_state_hash:stateHash(randomBytes(32).toString('base64url')),callback_consumed:false,callback_expires_at:new Date(expiry).toISOString(),
    runtime_session_ref:null,account:null,created_at:new Date(now).toISOString(),updated_at:new Date(now).toISOString(),action_consents:authority.action_consents,

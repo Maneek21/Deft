@@ -189,3 +189,10 @@ test('recovery snapshot returns fresh revision and file custody and enforces the
  mismatch=true;await assert.rejects(client.ports.recoverySnapshot!(owned,signal));
  const aborted=new AbortController();aborted.abort();await assert.rejects(client.ports.recoverySnapshot!(owned,aborted.signal));
 });
+
+
+test('actual data client admits explicit until-revoked draft consent but never missing mode or revoked store',async()=>{
+ for(const mode of ['persistent','missing','revoked'] as const){let reads=0;const value:any=context();value.targets[0].stores[0].consent=mode==='revoked'?null:{consent_id:id,consent_digest:hash,expires_at:null,...(mode==='persistent'?{consent_lifetime:'until_revoked'}:{})};
+ const client=createExperienceDataClient({installationId:installation,targetKey:'mailbox',current:()=>true,fetch:async(path,options)=>{if(path.endsWith('/context')||path.endsWith('/resolve'))return json(value);reads++;return json(await result(JSON.parse(String(options.body))));}});
+ if(mode==='persistent'){const opened=await client.ports.load(node,new AbortController().signal);assert.equal(opened.record.value.subject,row().value.subject);assert.equal(reads,1);}else{await assert.rejects(client.ports.load(node,new AbortController().signal));assert.equal(reads,0);}}
+});

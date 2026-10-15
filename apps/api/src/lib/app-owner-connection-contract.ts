@@ -1,3 +1,4 @@
+import {AppConsentLifetimeSchema,AppConsentExpirySchema,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
 import { z } from 'zod';
 import { OwnerConnectionPolicyDeclarationSchema, AttachmentPolicySchema, AppConnectionProfileSchema } from '@deft/app-kit';
 import type { OwnerConnectionPolicyDeclaration } from '@deft/app-kit';
@@ -50,15 +51,15 @@ export const OwnerConnectionAdmissionSnapshotSchema = z.strictObject({ schema_ve
   && (value.connection_profile === undefined) === (value.connection_transport_digest === undefined));
 export type OwnerConnectionAdmissionSnapshot = z.infer<typeof OwnerConnectionAdmissionSnapshotSchema>;
 export const OwnerConnectionResourceRequestSchema = z.strictObject({ ...OwnerConnectionAdmissionReferenceSchema.shape,
-  target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/), consent_expires_at: z.iso.datetime(),
-  limits: AppResourceSyncConsentLimitsSchema, attachment_policy: AttachmentPolicySchema });
+  target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/), consent_expires_at: AppConsentExpirySchema, consent_lifetime: AppConsentLifetimeSchema.optional(),
+  limits: AppResourceSyncConsentLimitsSchema, attachment_policy: AttachmentPolicySchema }).refine(v=>appConsentExpiryValid(v.consent_expires_at,v.consent_lifetime));
 export const OwnerConnectionActionRequestSchema = z.strictObject({ ...OwnerConnectionAdmissionReferenceSchema.shape,
   owner_resource_binding_id: id, action_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/) });
 export type OwnerConnectionContext = Readonly<{ schema_version: 'deft.owner_connection_context.v1'; installation_id: string;
   policies: readonly Readonly<{ policy: OwnerConnectionPolicyDeclaration; status: 'admitted' | 'deployment_review_required';
     admission: null | (OwnerConnectionAdmissionReference & { operator_user_id: string; operator_label: string;
       resource_request: z.infer<typeof OwnerConnectionResourceRequestSchema> });
-    bindings: readonly Readonly<{ binding_id: string; target_key: string; state: string; consent_expires_at: string | null;
+    bindings: readonly Readonly<{ binding_id: string; target_key: string; state: string; consent_expires_at: string | null; consent_lifetime?:AppConsentLifetime;
       actions: readonly Readonly<{ action_key: string; binding_id: string; state: string }>[] }>[] }>[] }>;
 export type OwnerConnectionResourceActivation = Readonly<{ registration_id: string; binding_id: string; checkpoint_id: string;
   app_version_id: string; grant_snapshot_id: string; resource_key: string; review_digest: string }>;

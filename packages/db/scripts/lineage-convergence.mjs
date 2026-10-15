@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {readCatalog,readLedger} from './lineage-catalog.mjs';
 
 const directory=resolve(dirname(fileURLToPath(import.meta.url)),'../upgrades');
-const PLAN_SHA256='6e9fa881110a2b6846926842b1f5a80de8e9a8823495b41fc4a2e089ca59eff7';
+const PLAN_SHA256='dc52eb76b0c1acc1b5fdca5705cb07a4b9dd0901aa484fa1ee97c7fa2ed6d086';
 const LOCK_ID=7314029421;
 const hex=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
 const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;
@@ -58,12 +58,14 @@ export async function assertReviewedCurrent(client){
 // catalog/ledger may be committed before the normal forward118 convergence.
 export async function assertReviewedFreshBootstrap(client){
  const plan=loadReviewedPlan();const selected=selectReviewedHistory(await snapshot(client),plan);
- if(selected.name!=='fresh-current-contracts-complete-schema116-schema117'
-  ||selected.stage!=='current'||selected.append.length!==2
+ if(!['fresh-current-contracts-complete-schema116-schema117','fresh-current-persistent-columns-schema117'].includes(selected.name)
+  ||selected.stage!=='current'||selected.append.length!==3
   ||selected.append[0].version!=='0.3.0-preview.118'
   ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql'
   ||selected.append[1].version!=='0.3.0-preview.119'
-  ||selected.append[1].file!=='0.3.0-preview.119-app-resource-observation-continuation-receipts.sql')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
+  ||selected.append[1].file!=='0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'
+  ||selected.append[2].version!=='0.3.0-preview.120'
+  ||selected.append[2].file!=='0.3.0-preview.120-app-persistent-consent.sql')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
  return selected;
 }
 export async function convergeReviewedRelease(client,{status=false,dryRun=false}={}){

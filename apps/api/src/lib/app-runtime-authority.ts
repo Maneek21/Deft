@@ -18,10 +18,10 @@ import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js
 import type { ReviewedRuntimeAction } from './app-runtime-review.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { isAppV5RuntimeActionsEnabled } from './env.js';
-import {runtimeRenewalOptedIn,runtimeRenewalPrincipal,runtimeRenewalTargetOwner,runtimeRenewalTargetDeadline,runtimeRenewalDeadline} from './app-runtime-renewal.js';
+import {runtimeRenewalOptedIn,runtimeRenewalPrincipal,runtimeRenewalPersistentPrincipal,runtimeRenewalTargetOwner,runtimeRenewalTargetDeadline,runtimeRenewalDeadline} from './app-runtime-renewal.js';
 
 const runtimeLiveAuthorizer = new PostgresAppRunLiveAuthorization();
-type CurrentRuntimeAction = ReviewedRuntimeAction & Readonly<{ protocol_version: string; owner_target_consent_expires_at?: Date }>;
+type CurrentRuntimeAction = ReviewedRuntimeAction & Readonly<{ protocol_version: string; owner_target_consent_expires_at?: Date;owner_target_consent_lifetime?:'until_revoked' }>;
 
 export function hashAppRuntimeToken(token: string): string {
   return `sha256:${createHash('sha256').update('deft.app_runtime.session.v1\0').update(token).digest('hex')}`;
@@ -40,7 +40,7 @@ export type LiveRuntimeAuthority = Readonly<{
   retention_class: typeof appRuntimeBindings.$inferSelect['retention_class'];
   prelocked_run_actor_id?: string;
   attachment_authority?: Readonly<{ participants: readonly string[]; session_expires_at: Date }>;
-  renewal?:Readonly<{renewable_until:Date;principal_expires_at:Date;target_expires_at?:Date;expires_at:Date}>;
+  renewal?:Readonly<{renewable_until:Date|null;principal_expires_at:Date|null;target_expires_at?:Date;expires_at:Date;renewal_lifetime?:'until_revoked'}>;
 }>;
 
 /** This private candidate slice accepts a human-origin Run fixture only. A
@@ -99,6 +99,7 @@ export async function runtimeRunMatchesAuthority(
         && canonicalCapabilityJson(snapshot.data.authority_refs)
           === canonicalCapabilityJson(current.authorization_snapshot.authority_refs);
       return matches ? Object.freeze({ ...current.action, protocol_version: current.protocol_version,
+        ...(current.owner_target_consent_lifetime?{owner_target_consent_lifetime:current.owner_target_consent_lifetime}:{}),
         ...(current.owner_target_consent_expires_at ? { owner_target_consent_expires_at: current.owner_target_consent_expires_at } : {}) }) : null;
     }
     const isAgent = run.initiating_actor_type === 'agent_employee';
@@ -132,7 +133,8 @@ export async function runtimeRunMatchesAuthority(
       && canonicalCapabilityJson(snapshot.data.authority_refs)
         === canonicalCapabilityJson(current.authorization_snapshot.authority_refs);
     return matches ? Object.freeze({ ...current.action, protocol_version: current.protocol_version,
-      ...(current.owner_target_consent_expires_at ? { owner_target_consent_expires_at: current.owner_target_consent_expires_at } : {}) }) : null;
+      ...(current.owner_target_consent_lifetime?{owner_target_consent_lifetime:current.owner_target_consent_lifetime}:{}),
+        ...(current.owner_target_consent_expires_at ? { owner_target_consent_expires_at: current.owner_target_consent_expires_at } : {}) }) : null;
   } catch { return null; }
 }
 
@@ -280,11 +282,13 @@ export async function loadLiveRuntimeAuthority(
   let renewal:LiveRuntimeAuthority['renewal'];
   if(runtimeRenewalOptedIn(session)){
     try {
-    if(!session.renewable_until||!session.renewal_web_session_id||!session.renewal_operator_role)return null;
-    const target_expires_at=await runtimeRenewalTargetDeadline(tx,binding,registration,memberIds);
-    const principal_expires_at=await runtimeRenewalPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,sid:session.renewal_web_session_id,role:session.renewal_operator_role},now());
-    if(!principal_expires_at||!runtimeRenewalDeadline({now:now(),current_expires_at:session.expires_at,expected_expires_at:session.expires_at,renewable_until:session.renewable_until,principal_expires_at,target_expires_at}))return null;
-    renewal={renewable_until:session.renewable_until,principal_expires_at,target_expires_at,expires_at:session.expires_at};
+    if(!session.renewal_web_session_id||!session.renewal_operator_role||session.renewal_lifetime!=='until_revoked'&&!session.renewable_until)return null;
+    const target_expires_at=await runtimeRenewalTargetDeadline(tx,binding,registration,memberIds,session.renewal_lifetime==='until_revoked');
+    const persistent=session.renewal_lifetime==='until_revoked';
+    if(persistent&&!await runtimeRenewalPersistentPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,role:session.renewal_operator_role}))return null;
+    const principal_expires_at=persistent?null:await runtimeRenewalPrincipal(tx,{org_id:orgId,operator_user_id:session.operator_user_id,sid:session.renewal_web_session_id,role:session.renewal_operator_role},now());
+    if(!persistent&&!principal_expires_at||!runtimeRenewalDeadline({now:now(),current_expires_at:session.expires_at,expected_expires_at:session.expires_at,renewable_until:session.renewable_until,principal_expires_at,target_expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})}))return null;
+    renewal={renewable_until:session.renewable_until,principal_expires_at,target_expires_at,expires_at:session.expires_at,...(persistent?{renewal_lifetime:'until_revoked' as const}:{})};
     } catch { return null; }
   }
   if (session.expires_at <= now()) return null;
@@ -321,13 +325,13 @@ export async function issueAppRuntimeSession(input: Readonly<{
   operator_user_id: string;
   now?: Date;
   guard?: WebAuthorityGuard;
-  technical_renewal?:Readonly<{requested_until:Date;sid:string;role:string}>;
-}>): Promise<Readonly<{ session_id: string; session_token: string; expires_at: Date;renewable_until?:Date }> | null> {
+  technical_renewal?:Readonly<{requested_until:Date|null;sid:string;role:string;renewal_lifetime?:'until_revoked'}>;
+}>): Promise<Readonly<{ session_id: string; session_token: string; expires_at: Date;renewable_until?:Date|null;renewal_lifetime?:'until_revoked' }> | null> {
   const now = input.now ?? new Date();
   const sessionId = crypto.randomUUID();
   const sessionToken = randomBytes(32).toString('base64url');
   let issued = false;
-  let expiresAt=new Date(now.getTime()+APP_RUNTIME_SESSION_MS),renewableUntil:Date|undefined;
+  let expiresAt=new Date(now.getTime()+APP_RUNTIME_SESSION_MS),renewableUntil:Date|null|undefined;
   try { issued = await db.transaction(async (tx) => {
     const [binding] = await tx.select().from(appRuntimeBindings).where(and(
       eq(appRuntimeBindings.org_id, input.org_id), eq(appRuntimeBindings.id, input.runtime_binding_id),
@@ -366,14 +370,15 @@ export async function issueAppRuntimeSession(input: Readonly<{
     const bootstrapTokenHash = hashAppRuntimeToken(sessionToken);
     if(input.technical_renewal){
       if(!input.guard)throw Error('APP_RUNTIME_AUTHORITY_STALE');
-      const target=await runtimeRenewalTargetDeadline(tx,lockedBinding,lockedRegistration,participants);
+      const target=await runtimeRenewalTargetDeadline(tx,lockedBinding,lockedRegistration,participants,input.technical_renewal.renewal_lifetime==='until_revoked');
       // This is a tentative ceiling only. The inserted session's full live
       // check locks/rechecks the SID last, then the original web guard runs.
       const principal=await runtimeRenewalPrincipal(tx,{org_id:input.org_id,operator_user_id:input.operator_user_id,sid:input.technical_renewal.sid,role:input.technical_renewal.role},input.now??new Date(),false);
-      const requested=input.technical_renewal.requested_until.getTime();
-      if(!principal||!Number.isFinite(requested))throw Error('APP_RUNTIME_AUTHORITY_STALE');
-      renewableUntil=new Date(Math.min(requested,principal.getTime(),target?.getTime()??Infinity));
-      if(renewableUntil<=now)throw Error('APP_RUNTIME_AUTHORITY_STALE');expiresAt=new Date(Math.min(expiresAt.getTime(),renewableUntil.getTime()));
+      const persistent=input.technical_renewal.renewal_lifetime==='until_revoked';
+      const requested=input.technical_renewal.requested_until?.getTime()??Infinity;
+      if(!principal||(!persistent&&!Number.isFinite(requested))||(persistent&&input.technical_renewal.requested_until!==null))throw Error('APP_RUNTIME_AUTHORITY_STALE');
+      renewableUntil=persistent?null:new Date(Math.min(requested,principal.getTime(),target?.getTime()??Infinity));
+      if(renewableUntil&&renewableUntil<=now)throw Error('APP_RUNTIME_AUTHORITY_STALE');expiresAt=new Date(Math.min(expiresAt.getTime(),renewableUntil?.getTime()??Infinity));
     }
     // The live check runs after insertion in the same transaction, so a stale
     // registration, grant, membership or installation cannot mint authority.
@@ -384,7 +389,7 @@ export async function issueAppRuntimeSession(input: Readonly<{
       runtime_epoch: lockedRegistration.runtime_epoch,
       lifecycle_epoch: installation.lifecycle_epoch, grant_epoch: installation.grant_epoch,
       expires_at: expiresAt,
-      ...(renewableUntil?{renewable_until:renewableUntil,renewal_web_session_id:input.technical_renewal!.sid,renewal_operator_role:input.technical_renewal!.role}:{}),
+      ...(input.technical_renewal?{renewable_until:renewableUntil,...(input.technical_renewal.renewal_lifetime?{renewal_lifetime:input.technical_renewal.renewal_lifetime}:{}),renewal_web_session_id:input.technical_renewal!.sid,renewal_operator_role:input.technical_renewal!.role}:{}),
       created_at: now, updated_at: now,
     });
     if (!await loadLiveRuntimeAuthority(tx, input.org_id, sessionId, bootstrapTokenHash,
@@ -406,7 +411,7 @@ export async function issueAppRuntimeSession(input: Readonly<{
     return true;
   }); } catch { return null; }
   return issued ? Object.freeze({ session_id: sessionId, session_token: sessionToken,
-    expires_at: expiresAt,...(renewableUntil?{renewable_until:renewableUntil}:{}) }) : null;
+    expires_at: expiresAt,...(input.technical_renewal?{renewable_until:renewableUntil,...(input.technical_renewal.renewal_lifetime?{renewal_lifetime:input.technical_renewal.renewal_lifetime}:{})}:{}) }) : null;
 }
 
 /** Only extends an explicitly enrolled, still-live session; attempt identity is immutable. */
@@ -422,7 +427,7 @@ export async function renewAppRuntimeSession(input:{session_id:string;session_to
   const next=runtimeRenewalDeadline({now:renewedAt,current_expires_at:live.renewal.expires_at,expected_expires_at:new Date(input.expected_expires_at),...live.renewal});if(!next)return null;
   await tx.update(appRuntimeSessions).set({expires_at:next,updated_at:clock()}).where(and(eq(appRuntimeSessions.org_id,locator.org_id),eq(appRuntimeSessions.id,input.session_id),eq(appRuntimeSessions.token_hash,tokenHash)));
   if(!await loadLiveRuntimeAuthority(tx,locator.org_id,input.session_id,tokenHash,clock))throw Error('APP_RUNTIME_AUTHORITY_STALE');
-  return {session_id:input.session_id,expires_at:next.toISOString(),renewable_until:live.renewal.renewable_until.toISOString()};
+  return {session_id:input.session_id,expires_at:next.toISOString(),renewable_until:live.renewal.renewable_until?.toISOString()??null,...(live.renewal.renewal_lifetime?{renewal_lifetime:live.renewal.renewal_lifetime}:{})};
  }); } catch(error) {
   if(error instanceof Error && error.message==='APP_RUNTIME_AUTHORITY_STALE')return null;
   throw error;

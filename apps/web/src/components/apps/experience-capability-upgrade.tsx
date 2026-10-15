@@ -12,8 +12,8 @@ export function ExperienceCapabilityUpgradeReview({review,now,disabled,onAllow,o
  return <section aria-label="Review account update" className="space-y-3 rounded-xl bg-[var(--surface-container-low)] p-4 text-sm leading-6">
   <h4 className="font-semibold">Update existing account access</h4><p className="break-words font-medium">{review.account.label}</p>
   <p>Your saved records and drafts stay with this same account. Continue to the provider to approve the listed access.</p>
-  <dl className="space-y-2"><div><dt className="font-medium">Read account records</dt><dd>Until {new Date(review.scope.consent_expires_at).toLocaleString()}</dd></div>
-   {review.action_consents.map(consent=><div key={consent.action_key}><dt className="font-medium capitalize">{consent.action_key.replaceAll('_',' ')}</dt><dd>Separately reviewed until {new Date(consent.expires_at).toLocaleString()}</dd></div>)}</dl>
+  <dl className="space-y-2"><div><dt className="font-medium">Read account records</dt><dd>{review.scope.consent_lifetime==='until_revoked'?'Until revoked':`Until ${new Date(review.scope.consent_expires_at!).toLocaleString()}`}</dd></div>
+   {review.action_consents.map(consent=><div key={consent.action_key}><dt className="font-medium capitalize">{consent.action_key.replaceAll('_',' ')}</dt><dd>{consent.consent_lifetime==='until_revoked'?'Separately reviewed until revoked':`Separately reviewed until ${new Date(consent.expires_at!).toLocaleString()}`}</dd></div>)}</dl>
   <p>Only these reviewed permissions are included. Each action still requires its own confirmation. Draft access and background refresh remain separate.</p>
   <p className="text-xs text-[var(--on-surface-variant)]">To change permissions, review their account bindings separately, then review this update again.</p>
   {expired&&<p role="status">This review expired. Check status before reviewing again.</p>}

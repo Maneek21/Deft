@@ -1,3 +1,4 @@
+
 import {and,eq,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {appConnectionConsentContinuations as journals} from '@deft/db/schema';
@@ -21,6 +22,6 @@ export async function validateContinuationCarrier(tx:AppRunTransaction,record:Ap
  if(r.state!=='connected'||r.result?.state!=='connected'||!r.review||!r.activation_started||record.state!=='connected'
    ||!isDeepStrictEqual(r.scope,record.scope)||!isDeepStrictEqual(r.profile,record.profile)||!isDeepStrictEqual(r.action_consents,record.action_consents)
    ||!isDeepStrictEqual(r.result.account,record.account)||r.result.runtime_session_ref!==record.runtime_session_ref
-   ||r.result.receipt_digest!==continuationDigest(appConnectionConsentContinuationReceiptValue(continuationRequest(r,'status',Date.parse(r.scope.consent_expires_at)),r.review,r.result.runtime_session_ref)))throw continuationDenied();
+   ||r.result.receipt_digest!==continuationDigest(appConnectionConsentContinuationReceiptValue(continuationRequest(r,'status',Date.parse(r.review_expires_at)),r.review,r.result.runtime_session_ref)))throw continuationDenied();
  return {custody_generation:r.result.custody_generation,receipt_digest:r.result.receipt_digest};
 }

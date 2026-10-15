@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {isDeepStrictEqual} from 'node:util';
 import {AppConnectionFormAuthorityRequestSchema,AppConnectionFormAuthorityResultSchema} from '../../../../packages/app-kit/src/connection-form.js';
 import {db} from './db.js';
@@ -40,9 +41,9 @@ export async function appConnectionFormRuntimeAuthority(raw:unknown,authorizatio
  const caller={org_id:q.org_id,user_id:q.owner_user_id,sid:row.web_session_id,access_expires_at:row.access_expires_at.getTime()},current=await authority(caller,{installation_id:record.scope.installation_id,target_key:record.scope.target_key},retainedWebGuard(caller));
  if(!isDeepStrictEqual(current.scope,record.scope)||current.transport_digest!==record.transport_digest||current.authorization_origin!==record.authorization_origin)throw denied();
  if(['begin','submit'].includes(input.operation)&&!isDeepStrictEqual(current.action_consents,record.action_consents))throw denied();
- const deadline=Math.min(Date.parse(input.expires_at),current.expires_at,Date.parse(record.scope.consent_expires_at),Date.now()+(input.operation==='submit'?60000:30000),
+ const deadline=Math.min(Date.parse(input.expires_at),current.expires_at,appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),Date.now()+(input.operation==='submit'?60000:30000),
   ['begin','submit'].includes(input.operation)?Date.parse(record.input_expires_at):Infinity,
-  ...(['begin','submit'].includes(input.operation)?record.action_consents.map(c=>Date.parse(c.expires_at)):[]));
+  ...(['begin','submit'].includes(input.operation)?record.action_consents.map(c=>appConsentDeadline(c.expires_at,c.consent_lifetime)):[]));
  const after=await store.metadata(q);if(!after||after.revision!==row.revision||deadline<=Date.now())throw denied();
  (await getAppConnectionSessionRegistry()).authenticate(current.scope,authorization);
  return AppConnectionFormAuthorityResultSchema.parse({...input,allowed:true,expires_at:new Date(deadline).toISOString()});

@@ -1,3 +1,4 @@
+import { appConsentDeadline} from './consent-lifetime.js';
 import {z} from 'zod';
 import {canonicalAppDataJson,AppDataConnectionSchema,AppDataAuthorityPinsSchema,AppDataResultSchema,AppDataSourceReferenceSchema} from './app-data.js';
 import {AppConnectionSessionScopeSchema} from './connection-session.js';
@@ -44,7 +45,7 @@ const envelope={request_id:z.uuid(),scope:AppConnectionSessionScopeSchema,connec
  tool_key:key,tool_operation:z.enum(APP_INTEGRATION_TOOL_OPERATIONS),store_key:key,expires_at:z.iso.datetime(),prepare_expires_at:z.iso.datetime().optional(),
  source_refs:z.array(AppDataSourceReferenceSchema).max(25)};
 export const AppIntegrationToolRuntimeRequestSchema=z.strictObject({schema_version:z.literal('deft.app_integration_tool_runtime.v1'),...envelope,input:boundedObject})
- .refine(row=>Date.parse(row.expires_at)<=Date.parse(row.scope.consent_expires_at)
+ .refine(row=>Date.parse(row.expires_at)<=appConsentDeadline(row.scope.consent_expires_at, row.scope.consent_lifetime)
   &&row.source_refs.every(ref=>ref.resource_key===row.scope.resource_key)
   &&new Set(row.source_refs.map(ref=>ref.record_id)).size===row.source_refs.length
   &&(row.tool_operation==='triage'||row.source_refs.length<=1));

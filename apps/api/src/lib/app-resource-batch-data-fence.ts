@@ -1,3 +1,4 @@
+import {appConsentDeadline,AppDataConsentSnapshotSchema} from '@deft/app-kit';
 import {and,eq} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {appConnectionSessions,appDataConsents} from '@deft/db/schema';
@@ -16,7 +17,7 @@ export async function captureResourceBatchDataFence(caller:ExperienceCaller,auth
  if(!carrier||!consent)throw appDataDenied();const record=AppConnectionSessionRecordSchema.parse(carrier.record);
  if(record.state!=='connected'||carrier.revision!==authority.connection.session_revision||record.runtime_session_ref!==authority.connection.runtime_session_ref||record.account?.account_ref!==authority.connection.account_ref||!isDeepStrictEqual(record.scope,authority.scope)||consent.state!=='active'||consent.connection_session_id!==locator.session_id||consent.store_key!==authority.store.key||consent.consent_digest!==authority.consent.consent_digest)throw appDataDenied();
  const form=await db.transaction(tx=>validateStoredFormConnection(tx,locator,carrier.record));
- return {locator,carrier:record,consent:consent.snapshot,consent_id:consent.consent_id,consent_digest:consent.consent_digest,form_receipt:form?.receipt??null,expires_at:Math.min(authority.expires_at,consent.expires_at.getTime())};
+ return {locator,carrier:record,consent:consent.snapshot,consent_id:consent.consent_id,consent_digest:consent.consent_digest,form_receipt:form?.receipt??null,expires_at:Math.min(authority.expires_at,appConsentDeadline(consent.expires_at,AppDataConsentSnapshotSchema.parse(consent.snapshot).consent_lifetime))};
 }
 export async function assertResourceBatchDataFence(tx:AppRunTransaction,capture:Awaited<ReturnType<typeof captureResourceBatchDataFence>>){
  const q=capture.locator;
@@ -26,5 +27,5 @@ export async function assertResourceBatchDataFence(tx:AppRunTransaction,capture:
  const form=await validateStoredFormConnection(tx,q,carrier.record);
  if(!isDeepStrictEqual(form?.receipt??null,capture.form_receipt)||form&&form.state!=='connected')throw appDataDenied();
  const [consent]=await tx.select().from(appDataConsents).where(and(eq(appDataConsents.org_id,q.org_id),eq(appDataConsents.owner_user_id,q.owner_user_id),eq(appDataConsents.consent_id,capture.consent_id))).limit(1).for('share');
- if(!consent||consent.state!=='active'||consent.consent_digest!==capture.consent_digest||consent.connection_session_id!==q.session_id||consent.expires_at.getTime()<=Date.now()||!isDeepStrictEqual(consent.snapshot,capture.consent))throw appDataDenied();
+ if(!consent||consent.state!=='active'||consent.consent_digest!==capture.consent_digest||consent.connection_session_id!==q.session_id||appConsentDeadline(consent.expires_at,AppDataConsentSnapshotSchema.parse(consent.snapshot).consent_lifetime)<=Date.now()||!isDeepStrictEqual(consent.snapshot,capture.consent))throw appDataDenied();
 }

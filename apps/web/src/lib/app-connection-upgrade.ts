@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import {appConnectionReattachmentMetadata} from './app-connection-reattachment';
 import {canonicalAppDataJson} from '../../../../packages/app-kit/src/app-data';
 import {AppConnectionUpgradeContextSchema,type AppConnectionUpgradeContext} from '../../../../packages/app-kit/src/connection-session-upgrade-context';
@@ -34,7 +35,7 @@ export function parseConnectionUpgradeContext(raw:unknown,identity:AppConnection
   if(target.reattachment)target.reattachment=appConnectionReattachmentMetadata(target.reattachment,target);
   if(target.profile.label.length>200||/[\u0000-\u001f\u007f<>]/u.test(target.profile.label)||target.profile.authorization_origin.length>512
    ||target.session?.state==='connected'&&!target.session.account||target.session&&target.session.state!=='connected'&&target.session.state!=='indeterminate'&&target.session.account
-   ||target.session&&Date.parse(target.session.expires_at)>Date.parse(target.scope.consent_expires_at))fail();
+   ||target.session&&appConsentDeadline(target.session.expires_at,target.session.expires_at===null?target.session.scope.consent_lifetime:undefined)>appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime))fail();
  }
  return value;
 }
@@ -58,13 +59,13 @@ export function createConnectionUpgradeFlow(ports:Ports){
    source_session_id:review?.source_session_id??null,source_revision:review?.source_revision??null,account:review?.account??target.session?.account??null,
    phase:value.callback_consumed?'consumed':value.begin_consumed?'starting':review?'reviewed':'reviewing'};
  }
- function ready(target:AppConnectionTarget){ports.current();if(!target.upgrade||!target.runtime_ready||Date.parse(target.scope.consent_expires_at)<=now())fail();}
+ function ready(target:AppConnectionTarget){ports.current();if(!target.upgrade||!target.runtime_ready||appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime)<=now())fail();}
  function accept(raw:unknown,target:AppConnectionTarget,expected:Intent,allowReview:boolean){
   if((raw as {schema_version?:string})?.schema_version==='deft.app_connection_upgrade_review.v1'){
    const value=AppConnectionUpgradeReviewViewSchema.parse(raw);
    if(!allowReview||['starting','awaiting','consumed'].includes(expected.phase)||target.upgrade?.pending?.begin_consumed||value.session_id!==expected.session_id
     ||!same(value.scope,target.scope)||expected.source_session_id!==null&&value.source_session_id!==expected.source_session_id||expected.source_revision!==null&&value.source_revision!==expected.source_revision
-    ||expected.account&&!same(value.account,expected.account)||Date.parse(value.expires_at)>Date.parse(target.scope.consent_expires_at))fail();
+    ||expected.account&&!same(value.account,expected.account)||Date.parse(value.expires_at)>appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime))fail();
    target.upgrade={candidate:null,pending:{session_id:value.session_id,state:'upgrade_reviewed',begin_consumed:false,callback_consumed:false,review:value}};
    target.session={schema_version:'deft.app_connection_session.v1',session_id:value.session_id,state:'indeterminate',scope:value.scope,account:null,expires_at:value.scope.consent_expires_at};
    write(target,{...expected,source_session_id:value.source_session_id,source_revision:value.source_revision,account:value.account,phase:'reviewed'});return value;
@@ -78,7 +79,7 @@ export function createConnectionUpgradeFlow(ports:Ports){
    raw={schema_version:'deft.app_connection_session.v1',session_id:closed.session_id,scope:closed.scope,state:closed.state,account:null,expires_at:closed.expires_at};verifiedClosure=true;
   }
   const value=AppConnectionSessionViewSchema.parse(raw);
-  if(value.session_id!==expected.session_id||!same(value.scope,target.scope)||Date.parse(value.expires_at)>Date.parse(target.scope.consent_expires_at)
+  if(value.session_id!==expected.session_id||!same(value.scope,target.scope)||appConsentDeadline(value.expires_at,value.expires_at===null?value.scope.consent_lifetime:undefined)>appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime)
    ||value.state==='connected'&&!value.account||value.state!=='connected'&&value.state!=='indeterminate'&&value.account
    ||expected.account&&value.account&&!same(value.account,expected.account)
    ||['starting','awaiting','consumed'].includes(expected.phase)&&value.state==='not_connected'&&!verifiedClosure)fail();
@@ -107,7 +108,7 @@ export function createConnectionUpgradeFlow(ports:Ports){
    try{const raw=await ports.post('upgrade/begin',{session_id:expected.session_id,review_digest:value.review_digest});ready(target);
     const begun=AppConnectionUpgradeBegunSchema.parse(raw),url=new URL(begun.authorization_url);
     if(begun.session_id!==expected.session_id||!same(begun.scope,target.scope)||!same(ports.target(targetKey).scope,target.scope)||begun.account!==null
-     ||Date.parse(begun.expires_at)<=now()||Date.parse(begun.expires_at)>Date.parse(target.scope.consent_expires_at)||url.origin!==target.profile.authorization_origin||url.searchParams.getAll('state').length!==1||url.searchParams.get('state')!==begun.callback_state)fail();
+     ||typeof begun.expires_at!=='string'||Date.parse(begun.expires_at)<=now()||Date.parse(begun.expires_at)>appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime)||url.origin!==target.profile.authorization_origin||url.searchParams.getAll('state').length!==1||url.searchParams.get('state')!==begun.callback_state)fail();
     const pointer={...expected,phase:'awaiting' as const,state:begun.callback_state,expires_at:begun.expires_at};ports.storage.setItem(APP_CONNECTION_UPGRADE_PENDING_KEY,JSON.stringify(pointer));write(target,{...expected,phase:'awaiting'});
     target.session={schema_version:'deft.app_connection_session.v1',session_id:begun.session_id,state:begun.state,scope:begun.scope,account:null,expires_at:begun.expires_at};return url.href;
    }finally{busy=false;}
@@ -144,7 +145,7 @@ export async function completeConnectionUpgrade(ports:CallbackPorts){
  const result=AppConnectionSessionViewSchema.parse(raw);
  if(!ports.current()||result.session_id!==pointer.session_id||!same(result.scope,pointer.scope)||result.state==='connected'&&!result.account
   ||result.state!=='connected'&&result.state!=='indeterminate'&&result.account
-  ||result.account&&pointer.account&&!same(result.account,pointer.account)||Date.parse(result.expires_at)>Date.parse(pointer.scope.consent_expires_at))fail();
+  ||result.account&&pointer.account&&!same(result.account,pointer.account)||appConsentDeadline(result.expires_at,result.expires_at===null?result.scope.consent_lifetime:undefined)>appConsentDeadline(pointer.scope.consent_expires_at,pointer.scope.consent_lifetime))fail();
  if(['connected','not_connected','disconnected'].includes(result.state))ports.storage.removeItem(APP_CONNECTION_UPGRADE_PENDING_KEY);
  return result;
 }

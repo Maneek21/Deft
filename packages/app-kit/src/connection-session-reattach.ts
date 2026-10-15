@@ -1,3 +1,4 @@
+import { appConsentDeadline} from './consent-lifetime.js';
 import { z } from 'zod';
 import { AppConnectionActionConsentsSchema } from './connection-session-v2.js';
 import { AppConnectionActionConsentSchema, AppConnectionSessionScopeSchema, AppConnectionSessionViewSchema } from './connection-session.js';
@@ -48,10 +49,10 @@ const runtimeVariants = [
   z.strictObject({ ...envelope, operation: z.literal('activate'), review: AppConnectionReattachStoredReviewSchema }),
   z.strictObject({ ...envelope, operation: z.literal('status'), review: AppConnectionReattachStoredReviewSchema.nullable() }),
 ] as const;
-const withinDeadline = (value: { operation: 'prepare' | 'activate' | 'status'; expires_at: string; review_expires_at: string; scope: { consent_expires_at: string } }) =>
+const withinDeadline = (value: { operation: 'prepare' | 'activate' | 'status'; expires_at: string; review_expires_at: string; scope: { consent_expires_at: string | null; consent_lifetime?: 'until_revoked' } }) =>
   Number.isFinite(Date.parse(value.review_expires_at))
-  && Date.parse(value.review_expires_at) <= Date.parse(value.scope.consent_expires_at)
-  && Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at)
+  && Date.parse(value.review_expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
+  && Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
   && (value.operation === 'status' || Date.parse(value.expires_at) <= Date.parse(value.review_expires_at));
 export const AppConnectionReattachRuntimeRequestSchema = z.discriminatedUnion('operation', runtimeVariants)
   .refine(withinDeadline, 'Reattachment call exceeds reviewed deadlines');
@@ -90,7 +91,7 @@ export const AppConnectionReattachAnyReviewViewSchema=z.union([AppConnectionReat
 const v2Envelope={schema_version:z.literal('deft.app_connection_reattach_runtime.v2'),action_consents:AppConnectionActionConsentsSchema};
 const v2Variants=[runtimeVariants[0].omit({action_consent:true}).extend(v2Envelope),runtimeVariants[1].omit({action_consent:true}).extend(v2Envelope),runtimeVariants[2].omit({action_consent:true}).extend(v2Envelope)] as const;
 const v2Deadline=(value:{operation:string;expires_at:string;action_consents:z.infer<typeof AppConnectionActionConsentsSchema>})=>
- value.operation==='status'||value.action_consents.every(consent=>Date.parse(value.expires_at)<=Date.parse(consent.expires_at));
+ value.operation==='status'||value.action_consents.every(consent=>Date.parse(value.expires_at)<=appConsentDeadline(consent.expires_at, consent.consent_lifetime));
 export const AppConnectionReattachV2RuntimeRequestSchema=z.union([v2Variants[0]!,v2Variants[1]!,v2Variants[2]!]).refine(withinDeadline).refine(v2Deadline);
 export const AppConnectionReattachV2AuthorityResultSchema=z.union([v2Variants[0]!.extend({allowed:z.literal(true)}),v2Variants[1]!.extend({allowed:z.literal(true)}),v2Variants[2]!.extend({allowed:z.literal(true)})]).refine(withinDeadline).refine(v2Deadline);
 export const AppConnectionReattachV2RuntimeResultSchema=z.union([

@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { digestResourceSyncDescriptorV2 } from '@deft/app-kit';
 import { assertAttachmentBrokerEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-reviewed.js';
@@ -134,7 +135,7 @@ export class AppResourceSyncManagement {
         resource_key: appResourceBindings.resource_key, state: appResourceBindings.state,
         operator_user_id: appRuntimeRegistrations.operator_user_id,
         registration_state: appRuntimeRegistrations.state,
-        consent_expires_at: appResourceBindings.consent_expires_at })
+        consent_expires_at: appResourceBindings.consent_expires_at,consent_lifetime:appResourceBindings.consent_lifetime })
         .from(appResourceBindings).innerJoin(appRuntimeRegistrations, and(
           eq(appRuntimeRegistrations.org_id, appResourceBindings.org_id),
           eq(appRuntimeRegistrations.id, appResourceBindings.runtime_registration_id)))
@@ -191,9 +192,8 @@ export class AppResourceSyncManagement {
               consent_expires_at: binding.consent_expires_at?.toISOString() ?? null,
               can_issue_session: binding.operator_user_id === actor.actor_id
                 && binding.registration_state === 'active' && binding.state === 'active'
-                && binding.consent_expires_at !== null && binding.consent_expires_at > now,
-              requires_revoke: binding.state !== 'active' || !binding.consent_expires_at
-                || binding.consent_expires_at <= now } : null };
+                && appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)>now.getTime(),
+              requires_revoke: binding.state !== 'active'||appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=now.getTime() } : null };
         }),
       };
     });
@@ -217,14 +217,17 @@ export class AppResourceSyncManagement {
     if (admission && (this.internalMode !== 'attachment_v3' || admission.row.app_installation_id !== installation.id
       || admission.policy.resource_key !== descriptor.key || admission.row.operator_user_id !== input.operator_user_id
       || !ownerConnectionLimitsWithin(input.limits, admission.snapshot.limits)
-      || Date.parse(input.consent_expires_at) - this.clock().getTime() > admission.policy.max_consent_seconds * 1000)) throw denied();
+      || appConsentDeadline(input.consent_expires_at, input.consent_lifetime) - this.clock().getTime() > admission.policy.max_consent_seconds * 1000)) throw denied();
     if (version.id !== input.expected_app_version_id
       || version.package_digest !== input.expected_package_digest
       || grant.snapshot_digest !== input.expected_grant_snapshot_digest
       || installation.lifecycle_epoch !== input.expected_lifecycle_epoch
       || installation.grant_epoch !== input.expected_grant_epoch) throw stale();
+    // Initial enrollment remains finite; existing accounts opt into persistent
+    // consent through the separately authenticated two-minute continuation.
+    if(input.consent_expires_at===null||input.consent_lifetime!==undefined)throw denied();
     let expiresAt: Date;
-    try { expiresAt = assertResourceSyncConsentWindow(input.consent_expires_at, this.clock()); }
+    try { expiresAt = assertResourceSyncConsentWindow(input.consent_expires_at, this.clock())!; }
     catch { throw activation ? stale() : new AppError('Invalid private sync consent window',
       'APP_ACTION_INVALID', 400); }
     const legacyReview = { schema_version: 'deft.app_resource_sync_consent_review.v1' as const,
@@ -255,8 +258,8 @@ export class AppResourceSyncManagement {
     return managementTransaction(guard, async (tx) => (await this.#reviewContext(tx, actor, input, false, ownerAdmission)).review,
       async (_result, tx) => {
         if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
-        await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at)]);
-        assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
+        await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at!)]);
+        assertBeforeDeadline(new Date(input.consent_expires_at!), this.clock);
       });
   }
 
@@ -342,12 +345,12 @@ export class AppResourceSyncManagement {
         review_digest: review.review_digest });
     }, async (_result, tx) => {
       if (!await resourceSyncParticipantsAreHuman(tx, actor.actor_id, input.operator_user_id)) throw denied();
-      await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at)]);
-        assertBeforeDeadline(new Date(input.consent_expires_at), this.clock);
+      await this.#final(tx, [actor.actor_id, input.operator_user_id], guard, [new Date(input.consent_expires_at!)]);
+        assertBeforeDeadline(new Date(input.consent_expires_at!), this.clock);
     });
   }
 
-  async issueOperatorSession(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard) {
+  async issueOperatorSession(actor: ModuleActor, bindingId: string, guard?: ResourceSyncManagementGuard,persistentRenewal?:{sid:string;role:string}) {
     operator(actor);
     bindingId = Id.parse(bindingId);
     const sessionId = randomUUID();
@@ -359,9 +362,10 @@ export class AppResourceSyncManagement {
         resource_binding_id: bindingId, clock: this.clock });
       if (!live || live.registration.operator_user_id !== actor.actor_id) throw denied();
       const checkedAt = this.clock();
-      if (live.binding.consent_expires_at === null || live.binding.consent_expires_at <= checkedAt) throw stale();
+      if(appConsentDeadline(live.binding.consent_expires_at,live.binding.consent_lifetime??undefined)<=checkedAt.getTime())throw stale();
+      if(persistentRenewal&&(!guard||this.internalMode!=='attachment_v3'||live.binding.consent_lifetime!=='until_revoked'||persistentRenewal.role!==actor.role||!persistentRenewal.sid))throw denied();
       const expiresAt = new Date(Math.min(checkedAt.getTime() + APP_RESOURCE_SYNC_SESSION_MS,
-        live.binding.consent_expires_at.getTime()));
+        appConsentDeadline(live.binding.consent_expires_at,live.binding.consent_lifetime??undefined)));
       await tx.insert(appRuntimeSessions).values({ id: sessionId, org_id: actor.org_id,
         runtime_registration_id: live.registration.id, runtime_binding_id: null,
         resource_binding_id: live.binding.id, operator_user_id: actor.actor_id,
@@ -369,6 +373,7 @@ export class AppResourceSyncManagement {
         runtime_epoch: live.registration.runtime_epoch,
         lifecycle_epoch: live.installation.lifecycle_epoch,
         grant_epoch: live.installation.grant_epoch, expires_at: expiresAt,
+        ...(persistentRenewal?{renewal_lifetime:'until_revoked' as const,renewable_until:null,renewal_web_session_id:persistentRenewal.sid,renewal_operator_role:persistentRenewal.role}:{}),
         created_at: checkedAt, updated_at: checkedAt });
       if (!await this.#loadSession(tx, { org_id: actor.org_id,
         session_id: sessionId, token_hash: tokenHash, clock: this.clock })) throw stale();
@@ -386,7 +391,7 @@ export class AppResourceSyncManagement {
       await this.#final(tx, [result.ownerUserId, result.operatorUserId], guard, [result.expiresAt]);
       assertBeforeDeadline(result.expiresAt, this.clock);
     });
-    return Object.freeze({ session_id: sessionId, session_token: token, expires_at: issued.expiresAt });
+    return Object.freeze({ session_id: sessionId, session_token: token, expires_at: issued.expiresAt,...(persistentRenewal?{renewal_lifetime:'until_revoked' as const,renewable_until:null}:{}) });
   }
 
   /** The private owner can end consent without retaining a live App grant. */

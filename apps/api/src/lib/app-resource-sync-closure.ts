@@ -44,7 +44,7 @@ async function closureAuthorization(tx:AppRunTransaction,stored:typeof appRuns.$
   ||row.owner_user_id!==authority.binding.owner_user_id||row.resource_binding_id!==authority.binding.id)throw stale();
  const snapshot=ResourceObservationSnapshotSchema.parse(row.snapshot);
  if(digestAppGrantValue(snapshot)!==row.consent_digest||row.connection_session_id!==snapshot.connection.session_id
-  ||row.expires_at.toISOString()!==snapshot.expires_at||snapshot.scope.org_id!==stored.org_id
+  ||(row.expires_at?.toISOString()??null)!==snapshot.expires_at||snapshot.scope.org_id!==stored.org_id
   ||snapshot.scope.owner_user_id!==authority.binding.owner_user_id||snapshot.scope.resource_binding_id!==authority.binding.id
   ||snapshot.resource_policy_digest!==await observationPolicyDigest(authority))throw stale();
  const record=await loadObservationConnection(tx,authority,snapshot.connection.session_id),receipt=record.credential_repair?.receipt??record.upgrade?.receipt??record.reattachment?.receipt;
@@ -137,7 +137,7 @@ export class AppResourceSyncClosureService {
       installation_id: installation.id, app_version_id: version.id, grant_snapshot_id: grant.id,
       package_digest: version.package_digest, grant_snapshot_digest: grant.snapshot_digest, descriptor_digest: authority.descriptor_digest,
       lifecycle_epoch: installation.lifecycle_epoch, grant_epoch: installation.grant_epoch, runtime_epoch: registration.runtime_epoch,
-      target_key: binding.target_key, consent_expires_at: binding.consent_expires_at!.toISOString(),
+      target_key: binding.target_key, consent_expires_at: binding.consent_expires_at?.toISOString()??null,...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{}),
       state: 'unknown_outcome' as const, unknown_outcome_at: run.unknown_outcome_at.toISOString(), attempt_id: attempt.id,
       attempt_digest: digestAppGrantValue({ id: attempt.id, attempt_number: attempt.attempt_number, state: attempt.state,
         resource_binding_id: attempt.resource_binding_id, runtime_epoch: attempt.runtime_epoch,

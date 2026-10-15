@@ -1,3 +1,4 @@
+import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
 import {validateContinuationCarrier} from './app-connection-consent-continuation-fence.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
 import {AppRecordChangeAuthorityRequestSchema,AppRecordChangeAuthorityResultSchema} from '@deft/app-kit';
@@ -50,18 +51,19 @@ export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_
  const policy=manifest.owner_connections?.find(item=>item.resource_key===current.scope.resource_key&&item.provider_profile_key===current.profile.key
   &&item.runtime_requirement_key===current.profile.runtime_requirement_key);if(!policy)throw appDataDenied();
  const connection=AppDataConnectionSchema.parse({session_id:sessionId,session_revision:session.revision,runtime_session_ref:session.runtime_session_ref,account_ref:session.account.account_ref});
- const policyDigest=appDataDigest(store);let consent:null|{consent_id:string;consent_digest:string;expires_at:Date}=null;
+ const policyDigest=appDataDigest(store);let consent:null|{consent_id:string;consent_digest:string;expires_at:Date|null;consent_lifetime?:AppConsentLifetime}=null;
  if(requireConsent){const rows=await new PostgresAppDataStore(caller).activeConsent(sessionId,storeKey);
   const valid=rows.filter(row=>{const snap=AppDataConsentSnapshotSchema.parse(row.snapshot);return (!expectedConsentId||row.consent_id===expectedConsentId)
    &&isDeepStrictEqual(snap.scope,current.scope)&&snap.connection.session_id===connection.session_id&&snap.connection.runtime_session_ref===connection.runtime_session_ref
    &&snap.connection.account_ref===connection.account_ref&&isDeepStrictEqual(snap.store,store)&&snap.data_policy_digest===policyDigest&&appDataDigest(snap)===row.consent_digest
-   &&row.expires_at.getTime()<=Date.parse(current.scope.consent_expires_at)&&row.expires_at.getTime()<=row.created_at.getTime()+policy.max_consent_seconds*1000;});
-  if(rows.length!==valid.length||valid.length>1||valid.length===0&&(requireConsent===true||expectedConsentId!==undefined))throw appDataDenied();consent=valid[0]??null;
+   &&appConsentDeadline(row.expires_at,snap.consent_lifetime)<=appConsentDeadline(current.scope.consent_expires_at,current.scope.consent_lifetime)
+   &&(snap.consent_lifetime==='until_revoked'?policy.allow_until_revoked===true:row.expires_at!.getTime()<=row.created_at.getTime()+policy.max_consent_seconds*1000);});
+  if(rows.length!==valid.length||valid.length>1||valid.length===0&&(requireConsent===true||expectedConsentId!==undefined))throw appDataDenied();consent=valid[0]?{...valid[0],...(AppDataConsentSnapshotSchema.parse(valid[0].snapshot).consent_lifetime?{consent_lifetime:'until_revoked' as const}:{})}:null;
  }
  const after=await sessions.read(locator,'data');if(!after||after.state!=='connected'||after.revision!==session.revision)throw appDataDenied();
- const expires_at=Math.min(current.expires_at,Date.parse(current.scope.consent_expires_at),consent?.expires_at.getTime()??Infinity);
+ const expires_at=Math.min(current.expires_at,appConsentDeadline(current.scope.consent_expires_at,current.scope.consent_lifetime),consent?appConsentDeadline(consent.expires_at,consent.consent_lifetime):Infinity);
  if(expires_at<=Date.now())throw appDataDenied();return {...current,store,connection,consent,data_policy_digest:policyDigest,expires_at,
-  consent_max_seconds:policy.max_consent_seconds};
+  consent_max_seconds:policy.max_consent_seconds,allow_until_revoked:policy.allow_until_revoked};
 }
 export type CurrentAppDataAuthority=Awaited<ReturnType<typeof currentAppDataAuthority>>;
 export function appDataRequiresConsent(operation:string){return !operation.startsWith('resource_')&&operation!=='connection_metadata'&&!['run_inspect','run_inspection_status'].includes(operation);}
@@ -134,7 +136,7 @@ export async function authorizeReleasedAppDataAction(nomination:{org_id:string;o
   const caller={org_id:nomination.org_id,user_id:nomination.owner_id,sid:row.web_session_id,access_expires_at:row.access_expires_at.getTime()};
   const current=await currentAppDataAuthority(caller,input.connection_session_id,input.record_store_key,appDataRetainedGuard(caller),true,input.data_consent_id);
   verifiedRetainedPreparedRecordAction(row.result!.prepared,nomination.runtime_binding_id,current.store);
-  if(prepared.required_action_consents?.some(required=>!current.action_consents?.some(active=>isDeepStrictEqual(active,required))||Date.parse(required.expires_at)<=Date.now()))return false;
+  if(prepared.required_action_consents?.some(required=>!current.action_consents?.some(active=>isDeepStrictEqual(active,required))||appConsentDeadline(required.expires_at, required.consent_lifetime)<=Date.now()))return false;
   return current.scope.installation_id===nomination.installation_id&&current.scope.app_version_id===nomination.app_version_id
    &&current.scope.grant_snapshot_id===nomination.grant_snapshot_id&&current.connection.session_revision===input.connection_revision
    &&current.consent?.consent_id===input.data_consent_id&&current.consent.consent_digest===input.data_consent_digest
@@ -210,7 +212,7 @@ async function appRecordChangeRuntimeAuthority(raw:unknown,authorization:string|
   const current=await currentAppDataAuthority(caller,input.connection.session_id,proof.store_key,guard,true,proof.consent_id,appDataConnectionActionSelection(input.operation));
   if(!isDeepStrictEqual(current.scope,input.scope)||!isDeepStrictEqual(current.connection,input.connection)||!current.consent
    ||current.consent.consent_id!==proof.consent_id||current.consent.consent_digest!==proof.consent_digest||current.data_policy_digest!==proof.data_policy_digest
-   ||current.consent.expires_at.toISOString()!==proof.consent_expires_at)throw appDataDenied();authorities.push(current);
+   ||(current.consent.expires_at?.toISOString()??null)!==proof.consent_expires_at||current.consent.consent_lifetime!==proof.consent_lifetime)throw appDataDenied();authorities.push(current);
  }
  const destination=authorities[0]!,source=authorities[1]!;
  // The immutable input_digest pins the key validated at dispatch; changed

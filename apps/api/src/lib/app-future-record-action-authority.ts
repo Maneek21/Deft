@@ -1,3 +1,4 @@
+import {appConsentDeadline,AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit';
 import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {z} from 'zod';
 import {and,eq,sql} from 'drizzle-orm';
@@ -19,14 +20,14 @@ export const ReviewedFutureRecordActionAuthoritySchema=z.strictObject({
  purpose_identity:z.strictObject({consent_grant_id:id.nullable(),consent_epoch:z.number().int().min(0).nullable(),exposure_id:id,exposure_epoch:z.number().int().min(0)}),
  connection:AppDataConnectionSchema,store_key:z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u),
  data_consent_id:id,data_consent_digest:digest,data_policy_digest:digest,
- data_consent_expires_at:z.iso.datetime(),policy:AppFutureRecordActionDeclarationSchema,policy_digest:digest,
+ data_consent_expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional(),policy:AppFutureRecordActionDeclarationSchema,policy_digest:digest,
  action_consents:z.array(AppConnectionActionConsentSchema).min(1).max(9)
   .refine(rows=>new Set(rows.map(row=>row.action_key)).size===rows.length&&rows.every((row,i)=>i===0||rows[i-1]!.action_key<row.action_key)),
  custody_generation:z.number().int().min(1).max(2147483646).nullable(),custody_receipt_digest:digest.nullable(),
  authority_expires_at:z.iso.datetime(),
-}).refine(row=>row.action_consents.some(consent=>consent.action_key===row.policy.action_key)
- &&row.action_consents.every(consent=>Date.parse(consent.expires_at)>=Date.parse(row.authority_expires_at))
- &&Date.parse(row.authority_expires_at)<=Math.min(Date.parse(row.scope.consent_expires_at),Date.parse(row.data_consent_expires_at))
+}).refine(row=>appConsentExpiryValid(row.data_consent_expires_at,row.consent_lifetime)&&row.action_consents.some(consent=>consent.action_key===row.policy.action_key)
+ &&row.action_consents.every(consent=>appConsentDeadline(consent.expires_at,consent.consent_lifetime)>=Date.parse(row.authority_expires_at))
+ &&Date.parse(row.authority_expires_at)<=Math.min(appConsentDeadline(row.scope.consent_expires_at, row.scope.consent_lifetime),appConsentDeadline(row.data_consent_expires_at,row.consent_lifetime))
  &&(row.custody_generation===null)===(row.custody_receipt_digest===null));
 export type ReviewedFutureRecordActionAuthority=z.infer<typeof ReviewedFutureRecordActionAuthoritySchema>;
 /** Shared live readers check owner membership, installed version/grant,
@@ -52,8 +53,8 @@ export async function currentFutureRecordActionAuthority(tx:AppRunTransaction,ra
  ||appDataDigest(store)!==pins.data_policy_digest||!isDeepStrictEqual(policy,pins.policy))throw appDataDenied();
  const [consent]=await tx.select().from(appDataConsents).where(and(eq(appDataConsents.org_id,pins.scope.org_id),
  eq(appDataConsents.owner_user_id,pins.scope.owner_user_id),eq(appDataConsents.consent_id,pins.data_consent_id),eq(appDataConsents.state,'active'))).for('share');
- if(!consent||consent.expires_at.toISOString()!==pins.data_consent_expires_at||consent.consent_digest!==pins.data_consent_digest
- ||consent.expires_at<=now||appDataDigest(consent.snapshot)!==pins.data_consent_digest)throw appDataDenied();
+ if(!consent||(consent.expires_at?.toISOString()??null)!==pins.data_consent_expires_at||consent.consent_digest!==pins.data_consent_digest
+ ||appConsentDeadline(consent.expires_at,AppDataConsentSnapshotSchema.parse(consent.snapshot).consent_lifetime)<=now.getTime()||appDataDigest(consent.snapshot)!==pins.data_consent_digest)throw appDataDenied();
  const data=AppDataConsentSnapshotSchema.parse(consent.snapshot);
  if(!isDeepStrictEqual(data.scope,pins.scope)||!isDeepStrictEqual(data.store,store)
  ||data.connection.session_id!==pins.connection.session_id||data.connection.runtime_session_ref!==pins.connection.runtime_session_ref
@@ -64,7 +65,7 @@ export async function currentFutureRecordActionAuthority(tx:AppRunTransaction,ra
   if(reviewed.protocol_version!=='7'||reviewed.binding.action_key!==consent.action_key
   ||reviewed.binding.owner_resource_binding_id!==pins.scope.resource_binding_id||reviewed.operator_user_id!==pins.scope.operator_user_id
   ||reviewed.registration.runtime_epoch!==consent.authority_epoch||digestAppGrantValue(reviewed.authorization_snapshot)!==consent.consent_digest
-  ||!reviewed.owner_target_consent_expires_at||reviewed.owner_target_consent_expires_at.getTime()<Date.parse(pins.authority_expires_at))throw appDataDenied();
+  ||reviewed.owner_target_consent_lifetime!=='until_revoked'&&(!reviewed.owner_target_consent_expires_at||reviewed.owner_target_consent_expires_at.getTime()<Date.parse(pins.authority_expires_at)))throw appDataDenied();
  }
  if(prepared!==undefined)verifiedPreparedRecordAction(prepared,undefined,store);
  if(clock().getTime()>=Date.parse(pins.authority_expires_at))throw appDataDenied();

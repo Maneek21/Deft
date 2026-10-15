@@ -73,7 +73,7 @@ test('actual review renders separate exact permissions without implying Send, an
 });
 test('callback protocol coexistence keeps own upgrade nonce strict while independent native/generic callbacks remain reachable',()=>{
  const stored=JSON.stringify({state:nonce});assert.equal(appConnectionCallbackUsesGeneric('?state='+nonce+'&code=x',stored,true,true),true);assert.equal(appConnectionCallbackUsesGeneric('?state=independent&code=x',stored,false,true),false);
- const callback=readFileSync(new URL('../app/(app)/apps/connections/callback/page.tsx',import.meta.url),'utf8');assert.ok(callback.indexOf('completeConnectionUpgrade(')<callback.indexOf('completeDirectEmailConnection('));assert.match(callback,/legacyMatches\|\|genericMatches/u);
+ const callback=readFileSync(new URL('../app/(app)/apps/connections/callback/page.tsx',import.meta.url),'utf8');assert.match(callback,/completeConnectionUpgrade\(/);assert.doesNotMatch(callback,/completeDirectEmailConnection|email-connection/);assert.ok(callback.indexOf('completeConnectionUpgrade(')<callback.indexOf('const stored = sessionStorage.getItem(APP_CONNECTION_PENDING_KEY)'));assert.match(callback,/legacyMatches\|\|genericMatches/u);
 });
 
 

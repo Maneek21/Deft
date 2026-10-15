@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {and,eq,sql,desc} from 'drizzle-orm';
 import {appConnectionSessions} from '@deft/db/schema';
 import {appResourceObservationConsents} from '../../../../packages/db/src/resource-observation-schema.js';
@@ -26,7 +27,7 @@ export class AppResourceObservationService{
   const snapshot=ResourceObservationSnapshotSchema.parse(row.snapshot);
   return ResourceObservationReviewSchema.parse({schema_version:'deft.app_resource_observation_review.v1',consent_id:row.consent_id,
    review_digest:row.consent_digest,attachment_mode:'unsupported',scope:snapshot.scope,connection_session_id:snapshot.connection.session_id,account:{account_ref:snapshot.connection.account_ref,label:account.account_ref===snapshot.connection.account_ref?account.label:'Previously connected account'},
-   expected_custody_generation:snapshot.connection.expected_custody_generation,interval_seconds:snapshot.interval_seconds,expires_at:snapshot.expires_at});
+   expected_custody_generation:snapshot.connection.expected_custody_generation,interval_seconds:snapshot.interval_seconds,expires_at:snapshot.expires_at,...(snapshot.consent_lifetime?{consent_lifetime:snapshot.consent_lifetime,review_expires_at:snapshot.review_expires_at}:{})});
  }
  async context(actor:ModuleActor,installationId:string,guard:WebAuthorityGuard){
   assertAttachmentBrokerEnabled();this.assertHuman(actor);assertResourceObservationEnabled();
@@ -49,7 +50,7 @@ export class AppResourceObservationService{
      const consent=consents[0];let state=consent?.state;
      if(consent){try{await observationSnapshotIsCurrent(tx,ResourceObservationSnapshotSchema.parse(consent.snapshot),authority,this.clock);}catch(error){if(!(error instanceof AppError))throw error;state='unavailable';}}
      targets.push({target_key:current.scope.target_key,scope:current.scope,connection_session_id:current.session_id,account:current.account,
-      min_interval_seconds:Math.max(60,authority.binding.min_interval_seconds),attachment_mode:'unsupported',consent:consent?{consent_id:consent.consent_id,state}:null});seen.add(current.scope.target_key);
+      min_interval_seconds:Math.max(60,authority.binding.min_interval_seconds),attachment_mode:'unsupported',...(current.scope.consent_lifetime==='until_revoked'?{allow_until_revoked:true}:{}),consent:consent?{consent_id:consent.consent_id,state}:null});seen.add(current.scope.target_key);
     }catch(error){if(!(error instanceof AppError))throw error;}
    }
    await guard(tx);assertResourceObservationEnabled();
@@ -68,21 +69,23 @@ export class AppResourceObservationService{
    const authority=await resourceObservationBindingAuthority(tx,actor.org_id,nomination.scope.resource_binding_id,this.clock);
    if(authority.binding.owner_user_id!==actor.actor_id||input.request_id===authority.binding.id)throw observationDenied();
    const record=await loadObservationConnection(tx,authority,input.connection_session_id);
-   const expiry=Math.min(Date.parse(input.expires_at),Date.parse(record.scope.consent_expires_at));
-   if(!Number.isFinite(expiry)||expiry<=this.clock().getTime()||input.interval_seconds<authority.binding.min_interval_seconds)throw observationDenied();
+   const expiry=Math.min(appConsentDeadline(input.expires_at,input.consent_lifetime),appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime));
+   if(input.consent_lifetime==='until_revoked'&&record.scope.consent_lifetime!=='until_revoked'||expiry<=this.clock().getTime()||input.interval_seconds<authority.binding.min_interval_seconds)throw observationDenied();
    const receipt=record.connection_receipt;
+   const existing=await tx.select().from(appResourceObservationConsents).where(and(
+    eq(appResourceObservationConsents.org_id,actor.org_id),eq(appResourceObservationConsents.consent_id,input.request_id))).limit(1);
+   const prior=existing[0]?ResourceObservationSnapshotSchema.parse(existing[0].snapshot):undefined;
    const snapshot=ResourceObservationSnapshotSchema.parse({schema_version:'deft.app_resource_observation_consent.v1',consent_id:input.request_id,
     scope:record.scope,connection:{session_id:record.session_id,runtime_session_ref:record.runtime_session_ref,account_ref:record.account!.account_ref,
      expected_custody_generation:receipt?.custody_generation??null,receipt_digest:receipt?.receipt_digest??null},
-    resource_policy_digest:await observationPolicyDigest(authority),interval_seconds:input.interval_seconds,expires_at:new Date(expiry).toISOString()});
+    resource_policy_digest:await observationPolicyDigest(authority),interval_seconds:input.interval_seconds,expires_at:Number.isFinite(expiry)?new Date(expiry).toISOString():null,...(input.consent_lifetime?{consent_lifetime:input.consent_lifetime,review_expires_at:prior?.review_expires_at??new Date(this.clock().getTime()+300000).toISOString()}:{})});
    await observationSnapshotIsCurrent(tx,snapshot,authority,this.clock);
    if(!await attachmentFinalAuthorityIsCurrent(tx,[actor.actor_id,authority.registration.operator_user_id],{guard,clock:this.clock}))throw observationDenied();
-   const digest=digestAppGrantValue(snapshot),existing=await tx.select().from(appResourceObservationConsents).where(and(
-    eq(appResourceObservationConsents.org_id,actor.org_id),eq(appResourceObservationConsents.consent_id,input.request_id))).limit(1);
+   const digest=digestAppGrantValue(snapshot);
    if(existing.length){if(existing[0]!.owner_user_id!==actor.actor_id||existing[0]!.consent_digest!==digest)throw conflict();return this.reviewView(existing[0]!,record.account!);}
    const now=this.clock();const [row]=await tx.insert(appResourceObservationConsents).values({org_id:actor.org_id,owner_user_id:actor.actor_id,
     consent_id:input.request_id,resource_binding_id:authority.binding.id,connection_session_id:record.session_id,state:'proposed',consent_digest:digest,
-    snapshot,expires_at:new Date(expiry),created_at:now,updated_at:now}).returning();
+    snapshot,expires_at:Number.isFinite(expiry)?new Date(expiry):null,created_at:now,updated_at:now}).returning();
    assertResourceObservationEnabled();return this.reviewView(row!,record.account!);
   });
  }
@@ -95,6 +98,7 @@ export class AppResourceObservationService{
    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('deft.resource_observation.activate.v1'),hashtext(${actor.org_id+':'+row.resource_binding_id}))`);
    const [locked]=await tx.select().from(appResourceObservationConsents).where(and(eq(appResourceObservationConsents.org_id,actor.org_id),
     eq(appResourceObservationConsents.consent_id,input.consent_id))).limit(1).for('update');
+   if(snapshot.review_expires_at!==undefined&&Date.parse(snapshot.review_expires_at)<=this.clock().getTime())throw conflict();
    if(!locked||locked.state!=='proposed'||locked.consent_digest!==input.review_digest||row.consent_digest!==input.review_digest)throw conflict();
    if(!await attachmentFinalAuthorityIsCurrent(tx,[actor.actor_id,authority.registration.operator_user_id],{guard,clock:this.clock}))throw observationDenied();
    await tx.update(appResourceObservationConsents).set({state:'revoked',updated_at:this.clock()}).where(and(eq(appResourceObservationConsents.org_id,actor.org_id),

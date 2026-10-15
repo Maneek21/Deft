@@ -24,7 +24,7 @@ import { issueAppRuntimeSession } from './app-runtime-authority.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { isAppV5RuntimeActionsEnabled } from './env.js';
 
-type RuntimeManagementOptions = Readonly<{ guard?: WebAuthorityGuard; ownerAdmission?: OwnerConnectionAdmissionReference;technical_renewal?:Readonly<{requested_until:Date;sid:string}> }>;
+type RuntimeManagementOptions = Readonly<{ guard?: WebAuthorityGuard; ownerAdmission?: OwnerConnectionAdmissionReference;technical_renewal?:Readonly<{requested_until:Date|null;sid:string;renewal_lifetime?:'until_revoked'}> }>;
 async function finalComposition(tx: Parameters<Parameters<typeof db.transaction>[0]>[0],protocol:string,
   participants:readonly string[],options:RuntimeManagementOptions) {
   if(protocol!=='7')return;

@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import {and,eq} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {AppDataConsentSnapshotSchema,parseAttachmentAppManifest} from '@deft/app-kit';
@@ -29,9 +30,9 @@ export async function currentLocalJobSchedule(tx:AppRunTransaction,snapshot:AppL
   ||!store.local_job_operations?.some(row=>row.key===snapshot.operation_key&&row.local_only===true)||appDataDigest(store)!==snapshot.record_authority.data_policy_digest)throw localJobDenied();
  const rows=await tx.select().from(appDataConsents).where(and(eq(appDataConsents.org_id,snapshot.scope.org_id),eq(appDataConsents.owner_user_id,snapshot.scope.owner_user_id),eq(appDataConsents.consent_id,snapshot.record_authority.consent_id),eq(appDataConsents.state,'active'))).limit(2).for('share');
  if(rows.length!==1)throw localJobDenied();const row=rows[0]!,proof=AppDataConsentSnapshotSchema.parse(row.snapshot),now=clock().getTime();
- if(!Number.isFinite(now)||row.consent_digest!==snapshot.record_authority.consent_digest||appDataDigest(proof)!==row.consent_digest||row.expires_at.getTime()<=now
-  ||row.expires_at.toISOString()!==snapshot.record_authority.consent_expires_at||!isDeepStrictEqual(proof.scope,snapshot.scope)||!isDeepStrictEqual(proof.store,store)
+ if(!Number.isFinite(now)||row.consent_digest!==snapshot.record_authority.consent_digest||appDataDigest(proof)!==row.consent_digest||appConsentDeadline(row.expires_at,proof.consent_lifetime)<=now
+  ||(row.expires_at?.toISOString()??null)!==snapshot.record_authority.consent_expires_at||proof.consent_lifetime!==snapshot.record_authority.consent_lifetime||!isDeepStrictEqual(proof.scope,snapshot.scope)||!isDeepStrictEqual(proof.store,store)
   ||proof.connection.session_id!==snapshot.connection.session_id||proof.connection.runtime_session_ref!==snapshot.connection.runtime_session_ref||proof.connection.account_ref!==snapshot.connection.account_ref
-  ||row.expires_at.getTime()>row.created_at.getTime()+policy.max_consent_seconds*1000||Date.parse(snapshot.job.expires_at)>Math.min(row.expires_at.getTime(),Date.parse(snapshot.scope.consent_expires_at))||Date.parse(snapshot.job.expires_at)<=now)throw localJobDenied();
- return Math.min(row.expires_at.getTime(),Date.parse(snapshot.scope.consent_expires_at),Date.parse(snapshot.job.expires_at));
+  ||(proof.consent_lifetime==='until_revoked'?policy.allow_until_revoked!==true:appConsentDeadline(row.expires_at,proof.consent_lifetime)>row.created_at.getTime()+policy.max_consent_seconds*1000)||Date.parse(snapshot.job.expires_at)>Math.min(appConsentDeadline(row.expires_at,proof.consent_lifetime),appConsentDeadline(snapshot.scope.consent_expires_at, snapshot.scope.consent_lifetime))||Date.parse(snapshot.job.expires_at)<=now)throw localJobDenied();
+ return Math.min(appConsentDeadline(row.expires_at,proof.consent_lifetime),appConsentDeadline(snapshot.scope.consent_expires_at, snapshot.scope.consent_lifetime),Date.parse(snapshot.job.expires_at));
 }
