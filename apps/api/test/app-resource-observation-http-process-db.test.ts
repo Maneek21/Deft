@@ -55,6 +55,11 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     app.route('/api/app-resource-observations',(await import('../src/routes/app-resource-observations.js')).appResourceObservationRoutes);
     app.route('/api/app-resource-sync-channel/v3',(await import('../src/routes/app-attachment-sync-channel.js')).appAttachmentSyncChannelRoutes);
     if(persistentProof)app.route('/api/app-resource-sync-management',(await import('../src/routes/app-resource-sync-management.js')).appResourceSyncManagementRoutes);
+    if(persistentProof){
+      const {resourceSyncWebAuthority}=await import('../src/lib/app-resource-sync-web-authority.js');
+      const human=async(c:import('hono').Context)=>{const auth=await resourceSyncWebAuthority(c.req.header('authorization'));return {org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};};
+      app.route('/api/app-integrations/permissions',(await import('../src/routes/app-integration-permissions.js')).appIntegrationPermissionRoutes(human));
+    }
     const directory = await mkdtemp(join(tmpdir(), 'deft-e2-session-test-'));
     const observationChannelPath=join(directory,'observation-channel.json');
     const configPath = join(directory, 'reviewed-http.json'), previousConfig = process.env.DEFT_APP_CONNECTION_HTTP_CONFIG;
@@ -361,6 +366,14 @@ test(persistentProof?'explicit persistent account, data and observation grants u
         expires_at:null,consent_lifetime:'until_revoked',expected_review_digest:dataReview.review_digest,accept_host_policy:true},tokens.member);
       assert.equal(dataGrant.expires_at,null);assert.equal(dataGrant.consent_lifetime,'until_revoked');
       if(process.env.DEFT_E3_DATA_REPAIR_PROOF==='true'){
+        const principal=await web.verifyWebAccess(tokens.member!);
+        const {getAppIntegrationDataGateway}=await import('../src/lib/app-integration-runtime-gateway.js');
+        const actor={kind:'human' as const,org_id:org,user_id:people.member,principal_id:principal.sid,access_expires_at:principal.exp*1000};
+        const account={installation_id:installed.id,account_ref:connected.account.account_ref,store_key:'drafts'};
+        assert.equal((await call('/api/app-integrations/permissions/context',account,tokens.member)).resource_binding_id,binding.binding_id,'public JWT caller resolves original persistent account');
+        assert.equal((await request('/api/app-integrations/permissions/context',account,tokens.other)).status,403);
+        const integration=await getAppIntegrationDataGateway().currentAccount(actor,account,'read');
+        assert.equal(integration.resource_binding_id,binding.binding_id,'concrete integration account reader accepts persistent original owner');
         const dataRows=await import('../../../packages/db/src/app-data-schema.js');
         const originalRows=await db.select().from(dataRows.appDataConsents).where(eq(dataRows.appDataConsents.consent_id,dataGrant.consent_id));
         const recordId=randomUUID(),value={mode:'compose',to:'',cc:'',bcc:'',subject:'Repair continuity',body:'Retained draft',body_html:'',reply_record_id:'',attachments:[]};
@@ -375,6 +388,9 @@ test(persistentProof?'explicit persistent account, data and observation grants u
         assert.equal(repaired.state,'connected');
         repaired=await call(base+'/upgrade/status',{mode:'credential_repair',session_id:repaired.session_id},tokens.member);
         assert.equal(repaired.state,'connected');assert.equal(repaired.account.account_ref,connected.account.account_ref);
+        assert.equal((await call('/api/app-integrations/permissions/context',account,tokens.member)).resource_binding_id,binding.binding_id,'public JWT caller resolves repaired account');
+        const repairedIntegration=await getAppIntegrationDataGateway().currentAccount(actor,account,'transfer');
+        assert.equal(repairedIntegration.connection.session_id,repaired.session_id,'concrete integration transfer resolves repaired current account');
         const context=await call(`/api/app-data/installations/${installed.id}/context?target_key=${resourceInput.target_key}`,undefined,tokens.member);
         assert.equal(context.targets.length,1);assert.equal(context.targets[0].session_id,repaired.session_id);
         assert.equal(context.targets[0].stores[0].consent?.consent_id,dataGrant.consent_id,'same immutable grant is visible after acknowledged repair');
@@ -386,6 +402,14 @@ test(persistentProof?'explicit persistent account, data and observation grants u
         await call(`/api/app-data/connections/${repaired.session_id}/consent/revoke`,{consent_id:dataGrant.consent_id},tokens.member);
         assert.deepEqual(await call(`/api/app-data/connections/${repaired.session_id}/consent/revoke`,{consent_id:dataGrant.consent_id},tokens.member),{revoked:true},'lost revoke ACK can be reconciled without restoring a grant');
         assert.equal((await request(`/api/app-data/connections/${repaired.session_id}/requests`,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'record_read',input:{store_key:'drafts',record_id:recordId}},tokens.member)).status,403,'original revocation remains effective through repair');
+        // Synthetic duplicate goes through the ordinary session INSERT/CAS
+        // constraints. It has the same CURRENT authority, not an old scope.
+        const [carrier]=await db.select().from(s.appConnectionSessions).where(and(eq(s.appConnectionSessions.org_id,org),eq(s.appConnectionSessions.session_id,connected.session_id)));assert.ok(carrier);
+        const duplicateId=randomUUID(),created=new Date(),initial={...(carrier.record as Record<string,unknown>),session_id:duplicateId,revision:0,state:'starting',account:null,runtime_session_ref:null,callback_consumed:false,created_at:created.toISOString(),updated_at:created.toISOString()};
+        await db.insert(s.appConnectionSessions).values({...carrier,session_id:duplicateId,revision:0,record:initial,created_at:created,updated_at:created});
+        await db.update(s.appConnectionSessions).set({revision:1,record:{...initial,revision:1,state:'connected',callback_consumed:true,account:repaired.account,runtime_session_ref:'synthetic_current_duplicate'},updated_at:created}).where(and(eq(s.appConnectionSessions.org_id,org),eq(s.appConnectionSessions.session_id,duplicateId)));
+        await assert.rejects(getAppIntegrationDataGateway().currentAccount(actor,account,'transfer'),/App data access ended/,'two genuinely current account candidates remain ambiguous');
+        assert.equal((await request('/api/app-integrations/permissions/context',account,tokens.member)).status,403,'public route also denies genuine current ambiguity');
         console.log('# persistent data repair HTTP proof '+JSON.stringify({same_grant:true,immutable_snapshot:true,same_draft:true,current_runtime_authority:true,wrong_owner_denied:true,foreign_chain_denied:true,revoke_through_current:true}));
         return;
       }

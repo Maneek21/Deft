@@ -9,6 +9,7 @@ import {AppDataRuntimeAuthorityRequestSchema,type AppDataRuntimeRequest} from '@
 import {appConnectionSessions,orgMembers,users} from '@deft/db/schema';
 import {db} from './db.js';
 import {currentConnectionSessionLocators} from './app-connection-current-locators.js';
+import {AppError} from './app-errors.js';
 import {currentAppDataAuthority,appDataDenied,appDataDigest} from './app-data-authority.js';
 import type {AppIntegrationToolOperation} from '../../../../packages/app-kit/src/app-integration-tools.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
@@ -34,8 +35,7 @@ export function createPostgresAppIntegrationDataGateway(options:{policyAuthority
   const candidates=await currentConnectionSessionLocators(tx??db,owner,target.installation_id).limit(17);
   if(candidates.length>16)throw appDataDenied();
   const matches=candidates.filter(({session})=>{const row=session.record as {account?:{account_ref?:string}};return row.account?.account_ref===target.account_ref;});
-  if(matches.length!==1)throw appDataDenied();const stored=matches[0]!.session;
-  const record=stored.record as {scope:{resource_binding_id:string};session_id:string;revision:number};
+  if(!matches.length)throw appDataDenied();
   // The ordinary reviewed account reader is reused with an actual principal
   // guard. A web session is required only for actual human browser callers.
   const access=actor.access_expires_at??Date.now()+30000;
@@ -52,8 +52,19 @@ export function createPostgresAppIntegrationDataGateway(options:{policyAuthority
    const result=await currentAppIntegrationToolPrincipal(transaction,actor as AppIntegrationToolCaller);
    principalIdentity=result.identity;principalExpiry=Math.min(principalExpiry,result.expires_at);
   },{current_web_session_expires_at:()=>new Date(principalExpiry)});
-  const reviewed=await currentAppDataAuthority({...owner,access_expires_at:access},stored.session_id,target.store_key,guard,false,undefined,tool?.action??'none');
-  if(reviewed.connection.account_ref!==target.account_ref||reviewed.scope.resource_binding_id!==record.scope.resource_binding_id)throw appDataDenied();
+  // Retained continuation sources can share the same account/App/grant while
+  // carrying an obsolete consent scope. Count only independently current
+  // authority; two genuinely current connections must still be ambiguous.
+  const verified=[];
+  for(const {session:stored}of matches){
+   try{
+    const reviewed=await currentAppDataAuthority({...owner,access_expires_at:access},stored.session_id,target.store_key,guard,false,undefined,tool?.action??'none');
+    const record=stored.record as {scope:{resource_binding_id:string};session_id:string;revision:number};
+    if(reviewed.connection.account_ref!==target.account_ref||reviewed.scope.resource_binding_id!==record.scope.resource_binding_id)throw appDataDenied();
+    verified.push({stored,reviewed});
+   }catch(error){if(!(error instanceof AppError)||error.code!=='APP_ACCESS_DENIED'||error.status!==403)throw error;}
+  }
+  if(verified.length!==1)throw appDataDenied();const {stored,reviewed}=verified[0]!;
   if(tx){
    const locked=await currentAppConnectionReadAuthority({...owner,access_expires_at:access},{installation_id:reviewed.scope.installation_id,target_key:reviewed.scope.target_key},guard,tool?.action??'none',tx);
    if(!isDeepStrictEqual(locked.scope,reviewed.scope)||!isDeepStrictEqual(locked.action_consents??[],reviewed.action_consents??[])
