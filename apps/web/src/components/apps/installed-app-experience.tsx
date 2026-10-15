@@ -165,7 +165,6 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   useEffect(() => { if (source) sourceBack.current?.focus(); }, [source]);
   const reviewGeneration = useRef(0);
   const stopWorker = useRef<((retireSession?: boolean) => void) | null>(null);
-  const iframeHost = useRef<HTMLDivElement>(null);
   const viewHost = useRef<HTMLDivElement>(null);
   const closeRunReview = () => {
     const target = runReviewOpener.current;
@@ -492,7 +491,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   }, [session, exposure]);
 
   useEffect(() => {
-    if (!session || !iframeHost.current || !viewHost.current || !sessionCacheScope
+    if (!session || !viewHost.current || !sessionCacheScope
       || document.hidden || !experienceLifetimeIsCurrent(session.expires_at, exposure?.expires_at)
       || (!!session.bundle.state_keys?.length && !recoveryReady)
       || ((session.bundle.resource_keys.length > 0 || !!session.bundle.state_keys?.length || !!session.bundle.record_store_keys?.length) && !exposure)) return;
@@ -698,7 +697,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     frame.sandbox.add('allow-scripts');
     frame.referrerPolicy = 'no-referrer';
     frame.setAttribute('aria-hidden', 'true');
-    frame.style.cssText = 'position:absolute;width:1px;height:1px;border:0;opacity:0;pointer-events:none';
+    frame.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none';
     // Transport diagnostics only: never retain message data, origins or identity values.
     const bootstrapDiagnostic = { load_observed: false, ready_candidate_seen: false,
       ready_source_match: false, ready_origin_opaque: false, ready_shape_exact: false,
@@ -1032,7 +1031,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     addEventListener('message', onBootstrapReady);
     frame.addEventListener('load', onBootstrapLoad);
     frame.src = '/app-experience-bootstrap';
-    iframeHost.current.append(frame);
+    // This transport has no React-rendered contents; its lifetime owns the node.
+    document.body.append(frame);
     const checkConnection = () => { void connection.check(); };
     const poll = setInterval(checkConnection, 5000);
     addEventListener('online', checkConnection);
@@ -1205,7 +1205,6 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     </section>}
     <ExperienceRecordIntake prepare={suggestion=>{if(!intakePrepare.current)return Promise.reject(Error('Review account access'));return intakePrepare.current(suggestion);}}/>
     {settingsOpen&&session?.bundle.record_intakes?.length===1&&<ExperienceMailtoRegistration/>}
-    <div ref={iframeHost} aria-hidden="true" />
     {resourceBatch&&session&&!error&&<ExperienceResourceActionBatch request={resourceBatch}/>}
     {resourceAction&&session&&!error&&<ExperienceResourceAction request={resourceAction} onRun={run=>{void readRunReview(run.id).then(setRunReview).catch(()=>setRenewalNotice('Open Activity to check this action.'));}}/>}
     {recordAction&&session&&!error&&<ExperienceRecordAction request={recordAction} onRun={run=>{void readRunReview(run.id).then(setRunReview).catch(()=>setRenewalNotice('The submission was accepted. Open Activity to check its current status.'));}}/>}
