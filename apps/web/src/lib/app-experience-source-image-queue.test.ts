@@ -45,7 +45,7 @@ function fixture(images:SourcePresentation['images'],readBinary:NonNullable<Para
 const image=(character:string,index:number,kind:'remote'|'cid'='remote')=>({image_ref:character.repeat(64),kind,index,alt:''});
 const loadButton=(wrap:Element)=>{const button=descendants(wrap).find(node=>node.textContent==='Load external images');assert.ok(button?.onclick);return button;};
 
-test('actual image queue starts only one request until its predecessor settles',async()=>{
+test('actual image queue starts at most two requests until a predecessor settles',async()=>{
   const pending:{ref:string;value:ReturnType<typeof deferred>}[]=[];let active=0,maximum=0;
   const f=fixture([image('a',0),image('b',1),image('c',2)],async input=>{
     assert.equal(input.operation,'read_image');active++;maximum=Math.max(maximum,active);
@@ -55,13 +55,13 @@ test('actual image queue starts only one request until its predecessor settles',
   let loading:Promise<void>|undefined;
   try{
     await flush();loading=loadButton(f.wrap).onclick!();await flush();
-    assert.equal(pending.length,1,'a second request must not spend its authority deadline waiting behind the first');
+    assert.equal(pending.length,2,'two guarded requests may overlap, while a third must wait for a free slot');
     for(let index=0;index<3;index++){
-      assert.equal(pending.length,index+1);assert.equal(pending[index].ref,['a','b','c'][index].repeat(64));
+      assert.equal(pending.length,Math.min(3,index+2));assert.equal(pending[index].ref,['a','b','c'][index].repeat(64));
       const bytes=new Uint8Array([index+1]);pending[index].value.resolve({bytes,media_type:'image/png'});
       await flush();assert.deepEqual([...bytes],[0],'response bytes are erased after rendering');
     }
-    await loading;assert.equal(maximum,1);assert.equal(f.created.length,3);
+    await loading;assert.equal(maximum,2);assert.equal(f.created.length,3);
     assert.ok(descendants(f.wrap).some(node=>node.textContent==='External images loaded for this message.'));
   }finally{
     f.mount();for(const item of pending)item.value.resolve({bytes:new Uint8Array([1]),media_type:'image/png'});
@@ -90,21 +90,22 @@ test('one failed image preserves successful images and retries only the failed r
 
 test('revocation or disposal discards a late image and revokes previously rendered URLs',async()=>{
   for(const stop of ['revoke','dispose'] as const){
-    const late=deferred(),lateBytes=new Uint8Array([3,4]);let signal:AbortSignal|undefined;const calls:string[]=[];
-    const f=fixture([image('a',0,'cid'),image('b',1),image('c',2)],async(input,requestSignal)=>{
+    const late=[deferred(),deferred()],lateBytes=[new Uint8Array([3,4]),new Uint8Array([5,6])];let signal:AbortSignal|undefined;const calls:string[]=[];
+    const f=fixture([image('a',0,'cid'),image('b',1),image('c',2),image('d',3)],async(input,requestSignal)=>{
       calls.push(input.image_ref!);signal=requestSignal;
       if(input.image_ref==='a'.repeat(64))return{bytes:new Uint8Array([1]),media_type:'image/png'};
-      return late.promise;
+      return late[input.image_ref==='b'.repeat(64)?0:1].promise;
     });
     let loading:Promise<void>|undefined;
     try{
       await flush();assert.equal(f.created.length,1);loading=loadButton(f.wrap).onclick!();await flush();
+      assert.deepEqual(calls,['a','b','c'].map(value=>value.repeat(64)),'exactly two remote reads are already pending before authority ends');
       if(stop==='revoke')f.revoke();else f.mount();
-      late.resolve({bytes:lateBytes,media_type:'image/png'});await loading;
+      late.forEach((value,index)=>value.resolve({bytes:lateBytes[index],media_type:'image/png'}));await loading;
       assert.equal(signal?.aborted,true);assert.equal(f.created.length,1,'late result must not create an object URL');
-      assert.deepEqual(f.revoked,f.created);assert.deepEqual([...lateBytes],[0,0]);
-      assert.deepEqual(calls,['a','b'].map(value=>value.repeat(64)),'no next image may start after authority ends');
+      assert.deepEqual(f.revoked,f.created);assert.deepEqual(lateBytes.map(bytes=>[...bytes]),[[0,0],[0,0]]);
+      assert.deepEqual(calls,['a','b','c'].map(value=>value.repeat(64)),'two remote reads start before revocation; the fourth image must never start after authority ends');
       if(stop==='revoke')assert.ok(descendants(f.wrap).some(node=>node.textContent.includes('access expired')));
-    }finally{f.mount();late.resolve({bytes:lateBytes,media_type:'image/png'});await loading;f.restore();}
+    }finally{f.mount();late.forEach((value,index)=>value.resolve({bytes:lateBytes[index],media_type:'image/png'}));await loading;f.restore();}
   }
 });
