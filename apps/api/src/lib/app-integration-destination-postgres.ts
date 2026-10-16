@@ -15,8 +15,8 @@ const where=(caller:AppIntegrationSourceCaller,id:string)=>and(eq(receipts.org_i
 export function appIntegrationDestinationPostgres(input:{
  task?:Pick<AppIntegrationDestinationPorts<Tx>,'audience'|'create'>;
 }):Pick<AppIntegrationDestinationPorts<Tx>,'audience'|'receipt'|'reserve'|'complete'|'create'|'visibleResult'>{return {
- async audience(tx,caller,destination){
-  if(destination.kind==='task'){if(!input.task)throw deny();return input.task.audience(tx,caller,destination);}
+ async audience(tx,caller,destination,taskDetails){
+  if(destination.kind==='task'){if(!input.task)throw deny();return input.task.audience(tx,caller,destination,taskDetails);}
   const members=await tx.select({id:orgMembers.id,user_id:orgMembers.user_id,version:orgMembers.app_run_authorization_version,role:orgMembers.role}).from(orgMembers).where(and(eq(orgMembers.org_id,caller.org_id),eq(orgMembers.is_active,true))).for('share');members.sort((a,b)=>a.id.localeCompare(b.id));
   if(!members.some(row=>row.user_id===caller.user_id&&row.role!=='guest'))throw deny();
   if(destination.kind==='note'&&destination.visibility!=='space')return {visibility:destination.visibility,label:destination.visibility==='private'?'Only you':'Organization members',member_count:destination.visibility==='private'?1:members.length,identity:destination.visibility==='private'?members.filter(m=>m.user_id===caller.user_id):members};

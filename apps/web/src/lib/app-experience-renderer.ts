@@ -21,6 +21,7 @@ type RecordDocumentNode=Extract<ExperienceNode,{kind:'record_document'}>;
 export type ExperienceRendererOptions = ExperienceViewOptions & Readonly<{
   enhanceDocument?: (node: DocumentNode, wrapper: HTMLElement) => void | (() => void);
   printDocument?: (node: Extract<ExperienceNode, { kind: 'document' }>) => boolean;
+  openRecordIntegration?: (node:RecordDocumentNode,kind:'task'|'knowledge',context:ExperienceDocumentContext)=>Promise<void>;
   resolveResourceDocument?: (node: ResourceDocumentNode, context: ExperienceDocumentContext) => Promise<DocumentNode>;
   enhanceResourceDocument?: (node: ResourceDocumentNode, resolved: DocumentNode, wrapper: HTMLElement,
     context: ExperienceDocumentContext) => void | (() => void);
@@ -35,6 +36,7 @@ export type ExperienceRendererOptions = ExperienceViewOptions & Readonly<{
 }>;
 type RendererContext = ExperienceRendererOptions & Readonly<{
   printControls: ReadonlyMap<string, DocumentNode | ResourceDocumentNode | RecordDocumentNode>;
+  recordDocuments: ReadonlyMap<string,RecordDocumentNode>;
   resolvedDocuments: Map<string, DocumentNode>;
   signal: AbortSignal;
   addDisposer: (dispose: void | (() => void)) => void;
@@ -348,7 +350,9 @@ function renderNode(node: ExperienceNode, emit: ExperienceEventDelivery, deliver
   if(node.kind==='menu'){
     const wrap=el('div','ex-menu');wrap.dataset.renderKey=node.id;
     if(!options.mountMenu){wrap.textContent='Menu unavailable.';return wrap;}
-    options.addDisposer(options.mountMenu(node,wrap,id=>{const item=node.items.find(row=>row.id===id);if(!node.disabled&&item&&!item.disabled)return activateControl(id,emit,delivery,options);},{signal:options.signal,current:options.current}));return wrap;
+    options.addDisposer(options.mountMenu(node,wrap,id=>{const item=node.items.find(row=>row.id===id);if(!options.current()||options.signal.aborted||node.disabled||!item||item.disabled)return;
+      if(item.integration){const target=options.recordDocuments.get(item.integration.document_id);if(target&&options.resolvedDocuments.has(target.id))return options.openRecordIntegration?.(target,item.integration.kind,{signal:options.signal,current:options.current});return;}
+      return activateControl(id,emit,delivery,options);},{signal:options.signal,current:options.current}));return wrap;
   }
   if(node.kind==='record_mirror_control'){const wrap=document.createElement('section');if(!options.mountRecordMirrorControl){wrap.textContent='Sync settings unavailable.';return wrap;}options.addDisposer(options.mountRecordMirrorControl(node,wrap,event=>options.current()?emit(event):undefined,{signal:options.signal,current:options.current}));return wrap;}
   if(node.kind==='local_job_schedule'||node.kind==='local_job_list'){
@@ -606,7 +610,8 @@ export function renderExperienceView(
   const printControls = new Map<string, DocumentNode | ResourceDocumentNode | RecordDocumentNode>();
   const collectPrint = (node: ExperienceNode) => { if ((node.kind === 'document' || node.kind === 'resource_document'||node.kind==='record_document') && node.printable && node.print_control_id) printControls.set(node.print_control_id, node); else if (node.kind === 'stack') node.children.forEach(collectPrint); };
   collectPrint(parsed.root);
-  const context: RendererContext = { ...options, printControls, resolvedDocuments: new Map(), signal: lifecycle.controller.signal,
+  const recordDocuments=new Map<string,RecordDocumentNode>();const collectRecords=(node:ExperienceNode)=>{if(node.kind==='record_document')recordDocuments.set(node.id,node);else if(node.kind==='stack')node.children.forEach(collectRecords);};collectRecords(parsed.root);
+  const context: RendererContext = { ...options, printControls, recordDocuments, resolvedDocuments: new Map(), signal: lifecycle.controller.signal,
     addDisposer: dispose => { if (dispose) lifecycle.disposers.push(dispose); },
     current: () => renderGenerations.get(container) === generation };
   let delivery = inputDeliveries.get(container);

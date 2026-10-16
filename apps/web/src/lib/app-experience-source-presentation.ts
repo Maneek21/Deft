@@ -5,7 +5,7 @@ import {readSourceBinary,type SourcePresentation} from './app-experience-source-
 import type {ExperienceLease} from './app-experience-lease';
 import type {ExperienceNode} from './app-experience-bridge';
 type Options={wrap:HTMLElement;node:Extract<ExperienceNode,{kind:'document'}>;scope:{exposure_id:string;exposure_epoch:number;review_digest?:string};sessionId:string;resourceKey:string;recordId:string;current:()=>boolean;load:(signal:AbortSignal)=>Promise<{presentation:SourcePresentation;expires_at:string}>;registerPrint?:(print:()=>boolean)=>()=>void;
- readBinary?:(input:{operation:'read_image'|'read_source';image_ref?:string},signal:AbortSignal)=>Promise<{bytes:Uint8Array;media_type:string}>;maxSourceBytes?:number;authorizedLifetime?:()=>ExperienceLease|undefined;automaticImages?:(signal:AbortSignal)=>Promise<boolean>};
+ readBinary?:(input:{operation:'read_image'|'read_source';image_ref?:string},signal:AbortSignal)=>Promise<{bytes:Uint8Array;media_type:string}>;maxSourceBytes?:number;authorizedLifetime?:()=>ExperienceLease|undefined;automaticImages?:(signal:AbortSignal)=>Promise<boolean|undefined>};
 
 /** The App's document body is only a matching key. Source bytes, nomination
  * references and object URLs remain entirely in this trusted host surface. */
@@ -39,7 +39,7 @@ export function mountExperienceSourcePresentation(options:Options):(()=>void)&{a
  const path=`/api/app-experiences/sessions/${encodeURIComponent(options.sessionId)}/resources/${encodeURIComponent(options.resourceKey)}/content`;
  const render=()=>{if(!presentation||!valid()||!wrap.isConnected)return;const next=createExperiencePresentationElement(presentation,presentation.images,urls,imageStates);if(body?.parentElement===wrap){body.replaceWith(next);}else{const old=wrap.querySelector('.ex-safe-document');if(old)old.replaceWith(next);else wrap.append(next);}body=next;};
  const savedChoice=async()=>{
-  try{if(options.automaticImages&&await options.automaticImages(controller.signal)&&valid())return true;}catch{/* Missing current preference is never automatic authority. */}
+  try{const choice=await options.automaticImages?.(controller.signal);if((choice??presentation?.external_images==='always')&&valid())return true;}catch{/* Unavailable saved choices never fall back to the source default. */}
   automaticDenied=true;if(valid()&&presentation){for(const image of presentation.images.filter(item=>item.kind==='remote')){const url=urls.get(image.image_ref);if(url){URL.revokeObjectURL(url);urls.delete(image.image_ref);}imageStates.delete(image.image_ref);}
    imageStatus.textContent='Your saved image choice changed or is unavailable. External images remain blocked.';render();}return false;
  };
@@ -79,7 +79,7 @@ export function mountExperienceSourcePresentation(options:Options):(()=>void)&{a
   if(presentation.images.some(image=>image.kind==='remote')){const button=document.createElement('button');button.type='button';button.className='ex-button-ghost';button.textContent='Load external images';button.setAttribute('aria-label','Load external images for this message');remoteAction=async(automatic=false)=>{if(!valid()||button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');await loadImages('remote',automatic);if(valid()){button.disabled=budgetExceeded;button.removeAttribute('aria-busy');if(presentation!.images.filter(image=>image.kind==='remote').every(image=>urls.has(image.image_ref))){button.remove();}else{button.textContent=budgetExceeded?'Image limit reached':'Retry external images';button.setAttribute('aria-label',budgetExceeded?'Image limit reached for this message':'Retry external images for this message');}}};button.onclick=()=>{automaticDenied=false;return remoteAction?.()??Promise.resolve();};controls.append(button);}
   await loadImages('cid');
   if(valid()){
-   if(options.automaticImages){try{if(await options.automaticImages(controller.signal)&&valid()){imageStatus.textContent='External images load automatically using your saved choice for this account.';await remoteAction?.(true);}}catch{if(valid())imageStatus.textContent='Your saved image choice is unavailable. External images remain blocked.';}}
+   if(options.automaticImages){try{const choice=await options.automaticImages(controller.signal);if((choice??presentation.external_images==='always')&&valid()){imageStatus.textContent='Loading external images…';await remoteAction?.(true);}}catch{if(valid())imageStatus.textContent='Your saved image choice is unavailable. External images remain blocked.';}}
    else if(presentation.external_images==='always')await remoteAction?.();
   }
  }).catch(()=>{if(valid()&&wrap.isConnected)notice.textContent=wrap.querySelector('.ex-safe-document')?.textContent?.trim()?'Full message formatting is unavailable. The loaded text is still shown.':'Message content is unavailable. Refresh the mailbox, then load this message again.';});

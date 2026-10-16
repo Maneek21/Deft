@@ -19,7 +19,9 @@ async function fixture(width=1100,coarse=false){
    stack('document',[stack('reader_bar',[stack('reader_back',[button('back','Back','back')],{layout:'horizontal',mobile:'only'}),{kind:'text',id:'subject',text:'A long current document subject',tone:'heading'},stack('reader_actions',[button('reader_archive','Archive','archive'),button('reader_read','Mark as unread','unread'),menuNode('reader_more')],{layout:'horizontal'})],{layout:'toolbar'})],{surface:'document'})
   ],{layout:'split'})
  ],{layout:'workspace'})},()=>true,{capabilities:['menu.v1'],...createExperienceMenuHost()});
- window.Probe={mount,bars,clear:()=>clearExperienceView(container),suspend:()=>suspendExperienceView(container),disable:()=>{disabled=true;mount();},read:()=>({events,prints})};`,resolveDir:web,loader:'tsx'},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',alias:{'@':path.join(web,'src')},define:{'process.env.NODE_ENV':'"test"'}});
+ const integrations=[],saved=[],governed={kind:'record_document',id:'mail_body',profile_version:'deft.record_document.v1',store_key:'drafts',resource_key:'inbox',record_id:'11111111-1111-4111-8111-111111111111',content_digest:'sha256:'+'a'.repeat(64)};
+ const native=(disabled=false)=>renderExperienceView(container,{schema_version:'deft.experience_view.v2',capabilities:['menu.v1','record_document.v1'],root:{kind:'stack',id:'root',children:[{kind:'menu',id:'more',label:'Native actions',disabled,items:[{id:'task',label:'Create task',integration:{kind:'task',document_id:'mail_body'}},{id:'knowledge',label:'Capture knowledge',integration:{kind:'knowledge',document_id:'mail_body'}},{id:'denied',label:'Disabled native',disabled:true,integration:{kind:'task',document_id:'mail_body'}}]},governed]}},event=>events.push(event),{capabilities:['menu.v1','record_document.v1'],storeKeys:['drafts'],resourceKeys:['inbox'],...createExperienceMenuHost(),mountMenu:(node,wrap,select,context)=>{saved.push(select);return createExperienceMenuHost().mountMenu(node,wrap,select,context);},resolveRecordDocument:async()=>({kind:'document',id:'mail_body_rendered',format:'plain',content:'Current governed source'}),openRecordIntegration:async(node,kind,context)=>{if(context.current()&&!context.signal.aborted)integrations.push({node,kind});}});
+ window.Probe={mount,bars,native,nativeRead:()=>({integrations,events}),oldNative:()=>saved[0]('task'),clear:()=>clearExperienceView(container),suspend:()=>suspendExperienceView(container),disable:()=>{disabled=true;mount();},read:()=>({events,prints})};`,resolveDir:web,loader:'tsx'},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',alias:{'@':path.join(web,'src')},define:{'process.env.NODE_ENV':'"test"'}});
  const browser=await chromium.launch({headless:true,...(process.env.DEFT_TEST_BROWSER_EXECUTABLE?{executablePath:process.env.DEFT_TEST_BROWSER_EXECUTABLE}:{})}),page=await browser.newPage({viewport:{width,height:800},hasTouch:coarse});page.setDefaultTimeout(6000);
  await page.route('**/*',(route:any)=>route.request().url().startsWith('http://127.0.0.1/')?route.fulfill({contentType:'text/html',body:'<div id="root"></div><button id="outside">Outside</button>'}):route.abort());await page.goto('http://127.0.0.1/');await page.addScriptTag({content:bundle.outputFiles[0].text});await page.evaluate(()=>(window as any).Probe.mount());
  return {page,close:()=>browser.close()};
@@ -63,4 +65,18 @@ test('selection and reader toolbars keep compact icon controls on one row at 350
    for(const row of rows){assert.equal(new Set(row.controls.map((control:{top:number})=>control.top)).size,1,JSON.stringify(row));assert.equal(row.overflow,false,JSON.stringify(row));for(const control of row.controls){assert.ok(control.left>=row.left-1&&control.right<=row.right+1,JSON.stringify(row));assert.ok(control.width<=44,JSON.stringify(row));if(coarse){assert.ok(control.width>=44&&control.height>=44,JSON.stringify(row));}}}
   }finally{await f.close();}
  }
+});
+
+test('native menu binds exact resolved document and refuses stale, suspended or disabled selections',async()=>{
+ const f=await fixture();const {page}=f;
+ try{
+  await page.evaluate(()=>(window as any).Probe.native());await page.getByText('Current governed source').waitFor();
+  await page.getByRole('button',{name:'Native actions',exact:true}).click();await page.getByRole('menuitem',{name:'Create task',exact:true}).click();
+  let actual=await page.evaluate(()=>(window as any).Probe.nativeRead());assert.equal(actual.integrations.length,1);assert.equal(actual.integrations[0].node.id,'mail_body');assert.equal(actual.integrations[0].node.record_id,'11111111-1111-4111-8111-111111111111');assert.equal(actual.integrations[0].kind,'task');assert.deepEqual(actual.events,[]);
+  await page.getByRole('button',{name:'Native actions',exact:true}).click();assert.equal(await page.getByRole('menuitem',{name:'Disabled native'}).isDisabled(),true);await page.getByRole('menuitem',{name:'Capture knowledge',exact:true}).click();
+  assert.equal((await page.evaluate(()=>(window as any).Probe.nativeRead())).integrations[1].kind,'knowledge');
+  await page.evaluate(()=>(window as any).Probe.native(true));await page.evaluate(()=>(window as any).Probe.oldNative());assert.equal(await page.getByRole('button',{name:'Native actions',exact:true}).isDisabled(),true);
+  await page.evaluate(()=>(window as any).Probe.suspend());await page.evaluate(()=>(window as any).Probe.oldNative());
+  actual=await page.evaluate(()=>(window as any).Probe.nativeRead());assert.equal(actual.integrations.length,2);assert.deepEqual(actual.events,[]);
+ }finally{await f.close();}
 });

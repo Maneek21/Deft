@@ -112,8 +112,20 @@ test('automatic app-data images require current saved-choice checks before I/O a
  const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>{proofs++;return proofs<3;},readBinary:async()=>{reads++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}});
  try{await flush();assert.equal(reads,1);assert.equal(created,0);assert.equal(revoked,0);assert.ok(descendants(f.wrap).some(n=>n.textContent.includes('saved image choice changed')));assert.equal(descendants(f.wrap).some(n=>n.textContent==='External images loaded for this message.'),false);}finally{f.mount();URL.createObjectURL=originalCreate;URL.revokeObjectURL=originalRevoke;}
 });
-test('missing automatic choice blocks provider reads, while explicit per-message choice still works',async()=>{
+test('explicit blocking choice overrides the source default, while per-message loading still works',async()=>{
  let reads=0;const images=[{image_ref:'a'.repeat(64),kind:'remote' as const,index:0,alt:''}];
  const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>false,readBinary:async()=>{reads++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}});
  try{await flush();assert.equal(reads,0);assert.ok(descendants(f.wrap).some(n=>n.textContent.includes('blocked until')));await descendants(f.wrap).find(n=>n.textContent==='Load external images')!.onclick!();assert.equal(reads,1);}finally{f.mount();}
+});
+
+test('an absent saved preference uses the source automatic-image default',async()=>{
+ let reads=0;const images=[{image_ref:'a'.repeat(64),kind:'remote' as const,index:0,alt:''}];
+ const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>undefined,readBinary:async()=>{reads++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}});
+ try{await flush();assert.equal(reads,1);assert.ok(descendants(f.wrap).some(n=>n.textContent==='External images loaded for this message.'));}finally{f.mount();}
+});
+
+test('an unavailable saved preference never falls back to automatic images',async()=>{
+ let reads=0;const images=[{image_ref:'a'.repeat(64),kind:'remote' as const,index:0,alt:''}];
+ const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>{throw Error('unavailable');},readBinary:async()=>{reads++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}});
+ try{await flush();assert.equal(reads,0);assert.ok(descendants(f.wrap).some(n=>n.textContent.includes('choice is unavailable')));}finally{f.mount();}
 });

@@ -117,3 +117,15 @@ test('actual SDK, bridge, routing and data client dispatch two nominated mailbox
   assert.equal(counts.sender.request+counts.recipient.request,2);
  }finally{sdk.close();bridge.revoke();routing.close();}
 });
+
+test('readonly source operation keeps exact child identity with only dispatch and disclosure validations',async()=>{
+ const f=fixture(),active=signal(),owner=await f.routing.child('sender',active);f.calls.length=0;let work=0;
+ assert.equal(await f.routing.read(owner,active,async()=>{work++;return 'current source';}),'current source');assert.equal(f.calls.filter(call=>call==='validate:sender').length,2);assert.equal(work,1);
+ await assert.rejects(f.routing.read({...owner},active,async()=>{work++;return 'forged';}),/Source account changed/);assert.equal(work,1);
+ f.routing.forget('sender');await f.routing.child('sender',active);await assert.rejects(f.routing.read(owner,active,async()=>{work++;return 'stale';}),/Source account changed/);assert.equal(work,1);
+ f.routing.close();
+});
+test('readonly source revocation at either boundary discards data without retaining it',async()=>{
+ for(const denyAt of [1,2]){const f=fixture(),active=signal(),owner=await f.routing.child('sender',active);let checks=0,work=0;f.setValidate(async()=>++checks!==denyAt);
+ await assert.rejects(f.routing.read(owner,active,async()=>{work++;return 'protected';}),/Account visibility ended/);assert.equal(work,denyAt===1?0:1);f.routing.close();}
+});

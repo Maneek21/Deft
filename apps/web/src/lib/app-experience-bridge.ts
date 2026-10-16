@@ -286,6 +286,13 @@ export function parseExperienceView(value: unknown, options: ExperienceViewOptio
   const collect = (node: ExperienceNode) => { if (ids.has(node.id)) duplicate = true; ids.add(node.id); if (node.kind === 'stack') node.children.forEach(collect); else if(node.kind==='menu')node.items.forEach(item=>collect({kind:'button',...item,disabled:node.disabled||item.disabled})); };
   collect(root);
   if (duplicate) return null;
+  const recordDocuments=new Set<string>(),integrationDocuments:string[]=[],integrationControls=new Set<string>();
+  const collectIntegrations=(node:ExperienceNode)=>{
+    if(node.kind==='record_document')recordDocuments.add(node.id);
+    else if(node.kind==='menu'){for(const item of node.items)if(item.integration){integrationDocuments.push(item.integration.document_id);integrationControls.add(item.id);}}
+    else if(node.kind==='stack')node.children.forEach(collectIntegrations);
+  };
+  collectIntegrations(root);if(integrationDocuments.some(id=>!recordDocuments.has(id)))return null;
   let keyboard: DeftExperienceKeyboard | undefined;
   if (value.keyboard !== undefined) {
     if (!selected.includes('keyboard_controls.v1')) return null;
@@ -313,7 +320,7 @@ export function parseExperienceView(value: unknown, options: ExperienceViewOptio
     visit(tree);
     return documents.every(node => {
       if (node.print_control_id === undefined) return true;
-      if (!buttons.has(node.print_control_id) || linked.has(node.print_control_id)) return false;
+      if (!buttons.has(node.print_control_id) || linked.has(node.print_control_id)||integrationControls.has(node.print_control_id)) return false;
       linked.add(node.print_control_id); return true;
     });
   };

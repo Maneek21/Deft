@@ -5,9 +5,8 @@ import {appConsentDeadline} from '../../../../../packages/app-kit/src/consent-li
 import {createExperienceAccountRouting,resolveExperienceActionAccount,type AccountReference,type AccountChild} from '../../lib/app-experience-account-routing';
 import {createExperienceRecordMirrorHost} from '../../lib/app-experience-record-mirror';
 import {createExperienceLocalJobHost} from '../../lib/app-experience-local-jobs';
-import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount} from './integrations/source-nomination';
+import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount,createSourceNominationLoader} from './integrations/source-nomination';
 import {SourceNominationPanel,type NominatedSourceSurface} from './integrations/source-nomination-panel';
-import {mountRecordTaskEntry} from './integrations/record-task-entry';
 import {CurrentIntegrationAccessSettings} from './integrations/integration-access-settings';
 import {appDataInputDigest} from '@/lib/app-experience-data-client';
 import {boundedConfirmationJson} from '@/lib/app-experience-action-confirmation';
@@ -91,6 +90,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const [startupDiagnostic, setStartupDiagnostic] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [nominatedSource,setNominatedSource]=useState<NominatedSourceSurface|null>(null);
+  const [sourceOpening,setSourceOpening]=useState<'pending'|'failed'|null>(null);
+  const retrySourceNomination=useRef<(()=>void)|null>(null);
   const [preferencesNode,setPreferencesNode]=useState<ExperienceNode|null>(null);
   const intakePrepare=useRef<((suggestion:ExperienceMailtoSuggestion)=>Promise<{account:string;intake:ReturnType<typeof createRecordIntake>}>)|null>(null);
   const preferencesEvent=useRef<((event:unknown)=>void)|null>(null);
@@ -108,6 +109,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
 
   const [visibleEpoch, setVisibleEpoch] = useState(0);
   const [suspended, setSuspended] = useState(false);
+  const [resumeUnavailable,setResumeUnavailable]=useState(false);
+  const retryResume=useRef<(()=>void)|null>(null);
   const [connectionUnavailable, setConnectionUnavailable] = useState(false);
   const [review, setReview] = useState<ExperienceExposureReview | null>(null);
   const [exposure, setExposure] = useState<ExperienceExposureStatus | null>(null);
@@ -609,22 +612,25 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         const [liveResponse,exposureResponse]=await Promise.all([api.fetch(livePath(child.value.session.pin.session_id),{signal,cache:'no-store'}),api.fetch(`${root}/sessions/${encodeURIComponent(child.value.session.pin.session_id)}/exposure`,{signal,cache:'no-store'})]);signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid()||[liveResponse,exposureResponse].some(response=>[401,403,404,410].includes(response.status)))return false;if(!liveResponse.ok||!exposureResponse.ok)throw Error('Account temporarily unavailable');const current=normalizeExperienceExposureStatus(await exposureResponse.json());signal.throwIfAborted();const effective=child.value.lease.value.exposure;return locallyCurrent()&&child.value.lease.valid()&&Date.parse(current.expires_at)>Date.now()&&current.exposure_id===effective.exposure_id&&current.exposure_epoch===effective.exposure_epoch&&current.review_digest===effective.review_digest;},
       retire:child=>{if(child.value.session.pin.session_id!==session.pin.session_id){child.value.lease.dispose();void retireSession(child.value.session.pin.session_id);}for(const [id,owner]of createdRecords)if(owner.targetKey===child.targetKey)createdRecords.delete(id);for(const [id,owner]of routedRuns)if(owner.targetKey===child.targetKey)routedRuns.delete(id);},
     });
-    const nominateSource=async(nomination:NonNullable<ReturnType<typeof parseSourceNomination>>,owner:AccountChild<ChildValue>,current:()=>boolean,signal:AbortSignal,taskOnly=false)=>{
+    const nominateSource=async(nomination:NonNullable<ReturnType<typeof parseSourceNomination>>,owner:AccountChild<ChildValue>,current:()=>boolean,signal:AbortSignal,focusedKind?:'task'|'knowledge',surfaceSignal:AbortSignal=signal)=>{
       const sourceClient=owner.value.client;
-      const presentation=await openSourceNomination(nomination,{current,storeKeys:owner.value.session.bundle.record_store_keys??[],resourceKeys:owner.value.session.bundle.resource_keys,select:sourceClient.select,read:async(ref,signal)=>{const result=await accounts.execute(owner,signal,()=>sourceClient.request(ref.store_key,'resource_read_presentation',ref,signal));if(!result.presentation)throw Error('Source unavailable');return parseExperienceDataPresentation(result.presentation,owner.value.exposure,owner.value.lease.value.exposure.expires_at).presentation;}},signal);
+      const presentation=await openSourceNomination(nomination,{current,storeKeys:owner.value.session.bundle.record_store_keys??[],resourceKeys:owner.value.session.bundle.resource_keys,select:sourceClient.select,read:async(ref,signal)=>{const result=await accounts.read(owner,signal,()=>sourceClient.request(ref.store_key,'resource_read_presentation',ref,signal));if(!result.presentation)throw Error('Source unavailable');return parseExperienceDataPresentation(result.presentation,owner.value.exposure,owner.value.lease.value.exposure.expires_at).presentation;}},signal);
       const exactSource={resource_key:nomination.resource_key,record_id:nomination.record_id,content_digest:nomination.content_digest};accounts.retain(owner,[exactSource]);
       const calendarOwner=async(signal:AbortSignal)=>{const target=await sourceClient.select('drafts',signal),owner=await accounts.child(target.target_key,signal);if(!locallyCurrent()||signal.aborted||owner.accountRef!==nomination.account_ref)throw Error('Invitation account changed');return owner;};
       const replyInput=(intent:Record<string,unknown>)=>({store_key:'drafts',value:intent,source_refs:[exactSource]});
-      if(current()&&!signal.aborted)setNominatedSource({nomination,installationId,scopeKey:JSON.stringify([sessionCacheScope,session.pin.org_id,session.pin.user_id,installationId]),presentation,taskOnly,current:()=>current()&&owner.value.lease.valid()&&!signal.aborted,signal,calendar:{
+      if(current()&&!signal.aborted&&!surfaceSignal.aborted)setNominatedSource({nomination,installationId,scopeKey:JSON.stringify([sessionCacheScope,session.pin.org_id,session.pin.user_id,installationId]),presentation,focusedKind,current:()=>current()&&owner.value.lease.valid()&&!surfaceSignal.aborted,signal:surfaceSignal,calendar:{
         listFiles:async signal=>{const result=await sourceClient.request(nomination.store_key,'resource_list_files',{store_key:nomination.store_key,...exactSource},signal);if((await sourceClient.select(nomination.store_key,signal)).account.account_ref!==nomination.account_ref)throw Error('Invitation account changed');return result.files??[];},
         createReply:async(intent,requestId,signal)=>{const owner=await calendarOwner(signal),result=await owner.value.client.request('drafts','record_create',replyInput(intent),signal,requestId);if(!result.record||result.record.store_key!=='drafts'||(await calendarOwner(signal)).accountRef!==owner.accountRef)throw Error('Response draft unconfirmed');createdRecords.set(result.record.record_id,owner);return result.record.record_id;},
         replyStatus:async(intent,requestId,signal)=>{const owner=await calendarOwner(signal),result=await owner.value.client.request('drafts','request_status',{store_key:'drafts',request_id:requestId},signal),status=result.request_status;if(!status||status.state!=='completed')return null;if(status.request_id!==requestId||status.operation!=='record_create'||status.input_digest!==await appDataInputDigest('record_create',replyInput(intent))||!status.record_id)throw Error('Response draft changed');const record=await owner.value.client.request('drafts','record_read',{store_key:'drafts',record_id:status.record_id},signal);if(!record.record||(await calendarOwner(signal)).accountRef!==owner.accountRef)throw Error('Response draft changed');createdRecords.set(status.record_id,owner);return status.record_id;},
       }});
     };
-    if(exposure){void (async()=>{const nomination=parseSourceNomination(new URLSearchParams(location.search));if(!nomination)return;
-      const owner=await resolveSourceNominationAccount(nomination,{current:locallyCurrent,catalog:accounts.catalog,child:accounts.child},sourceNominationAbort.signal);
-      await nominateSource(nomination,owner,locallyCurrent,sourceNominationAbort.signal);
-    })().catch(()=>{if(locallyCurrent())setRenewalNotice('The original source is unavailable or this account needs review.');});}
+    const sourceLoader=createSourceNominationLoader({current:locallyCurrent,signal:sourceNominationAbort.signal,change:state=>setSourceOpening(state==='opened'?null:state),load:async signal=>{
+      const nomination=parseSourceNomination(new URLSearchParams(location.search));if(!nomination)return;
+      const owner=await resolveSourceNominationAccount(nomination,{current:locallyCurrent,catalog:accounts.catalog,child:accounts.child},signal);
+      await nominateSource(nomination,owner,locallyCurrent,signal,undefined,sourceNominationAbort.signal);
+    }});
+    retrySourceNomination.current=()=>{void sourceLoader.run();};
+    if(exposure)void sourceLoader.run();
     const sourceChild=(refs:readonly AccountReference[],signal:AbortSignal)=>accounts.source(refs,signal);
     const recordClient=async(node:{record_id:string;resource_key?:string;content_digest?:string},signal:AbortSignal)=>{
       if(node.resource_key&&node.content_digest)return (await sourceChild([{resource_key:node.resource_key,record_id:node.record_id,content_digest:node.content_digest}],signal)).value.client;
@@ -663,12 +669,18 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           list:async signal=>{const result=await (await recordClient(reference,signal)).request(reference.store_key,'resource_list_files',input,signal);await recordClient(reference,signal);return result.files?.map(file=>AppDataSourceFileSchema.parse(file))??[];},
           read:async(file,signal)=>sourceCall(reference,signal,client=>client.binary(reference.store_key,'resource_read_file',{...input,file_ref:file.file_ref},signal)),
           source:async signal=>sourceCall(reference,signal,client=>client.sourceBinary(reference,{operation:'read_source'},signal))});
-        const task=mountRecordTaskEntry({wrapper:wrap,reference,current,signal:controller.signal,
-          owner:(ref,signal)=>sourceChild([ref],signal),
-          open:(nomination,owner,signal)=>nominateSource(nomination,owner,current,signal,true)});
-        return()=>{controller.abort();task();presentation();files();};
+        return()=>{controller.abort();presentation();files();};
       }});
     const rendererOptions={...createExperienceMenuHost(),capabilities:session.experience.capabilities,resourceKeys:session.bundle.resource_keys,stateKeys:session.bundle.state_keys,storeKeys:session.bundle.record_store_keys,actionKeys:session.bundle.action_keys,...resourceDocuments,...fieldControls,...localJobControls,...recordMirrorControls,...recordForms,...recordDocuments,
+      openRecordIntegration:async(node:Extract<ExperienceNode,{kind:'record_document'}>,kind:'task'|'knowledge',context:{signal:AbortSignal;current:()=>boolean})=>{
+        const current=()=>locallyCurrent()&&context.current()&&!context.signal.aborted;if(!current())return;
+        const signal=AbortSignal.any([context.signal,AbortSignal.timeout(30000)]);
+        let rejectAborted!:()=>void;const aborted=new Promise<never>((_,reject)=>{rejectAborted=()=>reject(signal.reason);signal.addEventListener('abort',rejectAborted,{once:true});});
+        try{await Promise.race([(async()=>{const owner=await sourceChild([node],signal);if(!current()||signal.aborted)return;
+          await nominateSource({...node,account_ref:owner.accountRef},owner,current,signal,kind,context.signal);
+        })(),aborted]);}catch{if(current())setRenewalNotice('The original source is unavailable or its account needs review. Try the source action again.');}
+        finally{signal.removeEventListener('abort',rejectAborted);}
+      },
       printDocument:(node:Extract<ExperienceNode,{kind:'document'}>)=>presentationPrinters.get(node.id)?.()??false,enhanceDocument:(node:Extract<ExperienceNode,{kind:'document'}>,wrap:HTMLElement)=>{
       const known=trustedDocument;if(session.experience.renderer_version!=='deft.trusted_renderer.v1'||!known||known.format!==node.format||known.content!==node.content||!locallyCurrent()||!exposure)return;
       const mountKey=`${known.key}/${known.recordId}/${node.id}`;usedPresentations.add(mountKey);const existing=presentationDisposals.get(mountKey);if(existing?.document===known){existing.mount.attach(wrap);return;}existing?.mount();
@@ -792,8 +804,9 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           if(request.operation==='connection_metadata'&&request.input.seed!==undefined)throw Error('Trusted seed metadata only');
           const refs=request.input.source_refs as readonly AccountReference[]|undefined,recordOwner=typeof request.input.record_id==='string'?createdRecords.get(request.input.record_id):undefined;
           let owner:AccountChild<ChildValue>,result:AppDataResult;
-          if(requestedTarget!==undefined){
-            try{({owner,result}=await accounts.listTarget(requestedTarget as string,signal,child=>child.value.client.request(key,request.operation,request.input,signal,request.request_id)));}
+          if(requestedTarget!==undefined||['resource_list','record_list'].includes(request.operation)&&!refs?.length&&!recordOwner&&!request.input.anchor_record_id){
+            const listTarget=(requestedTarget as string|undefined)??session.resource_target_key??resourceTarget;
+            try{({owner,result}=await accounts.listTarget(listTarget,signal,child=>child.value.client.request(key,request.operation,request.input,signal,request.request_id)));}
             catch(error){if(error instanceof Error&&error.message==='Account visibility ended')return {outcome:'not_found',items:[],account_state:'denied'};throw error;}
           }else{
             try{owner=refs?.length?await sourceChild(refs,signal):recordOwner?await accounts.child(recordOwner.targetKey,signal):request.input.anchor_record_id?await sourceChild([accounts.reference(String(request.input.resource_key),String(request.input.anchor_record_id))],signal):await accounts.child(session.resource_target_key??resourceTarget,signal);}catch(error){if(['resource_list','record_list'].includes(request.operation)&&error instanceof Error&&error.message==='Account visibility ended')return {outcome:'not_found',items:[],account_state:'denied'};throw error;}
@@ -1002,7 +1015,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if (stopped) return;
       startup.dispose();
       frame.removeEventListener('load', onBootstrapLoad);
-      sourceNominationAbort.abort();setNominatedSource(null);
+      sourceNominationAbort.abort();sourceLoader.dispose();retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
       stopped = true; latestView = null;trustedDocument=null;sourceReview.clear();sourcePresentations.clear();for(const entry of presentationDisposals.values())entry.mount();presentationDisposals.clear();setPreferencesNode(null);preferencesEvent.current=null;intakePrepare.current=null;readingPreferencesChanged.current=null; setSuspended(false); setSource(null); setRunReview(null);
       clearInterval(childTimer);accounts.close();connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null; setConnectionUnavailable(false);
       clearNavigation(navigationOwner);
@@ -1073,12 +1086,13 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     const onAppChange = checkConnection;
     socket?.on('app:changed', onAppChange);
     const suspension = createExperienceSuspension({
-      current: authorityCurrent, live:async()=>{if(!await live())return false;const ended=await accounts.sweep(AbortSignal.timeout(10000));if(ended.length){latestView=null;for(const target of ended){setResourceBatch(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setResourceAction(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setRecordAction(current=>{if(current?.targetKey===target){current.finish(false);return null;}return current;});await bridge.sendUiEvent({kind:'click',node_id:'account_visibility_'+target});}}return locallyCurrent();}, hidden: () => document.hidden,
+      current: authorityCurrent, live:async(signal)=>{if(!await live(signal))return false;const ended=await accounts.sweep(signal);if(ended.length){latestView=null;for(const target of ended){setResourceBatch(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setResourceAction(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setRecordAction(current=>{if(current?.targetKey===target){current.finish(false);return null;}return current;});await bridge.sendUiEvent({kind:'click',node_id:'account_visibility_'+target});}}return locallyCurrent();}, hidden: () => document.hidden,
       flush: () => { if (viewHost.current) flushExperienceInputs(viewHost.current); },
-      clear: () => { clearNavigation(navigationOwner); setSuspended(true); setSource(null); setRunReview(null); if (viewHost.current) suspendExperienceView(viewHost.current); rendered.current = false; },
-      restore: () => { setSuspended(false); startWorker(); if (latestView && viewHost.current) { publishViewNavigation(latestView); renderHostView(latestView); rendered.current = true; } },
-      end: stop,
+      clear: () => { setResumeUnavailable(false);clearNavigation(navigationOwner); setSuspended(true); setSource(null); setRunReview(null); if (viewHost.current) suspendExperienceView(viewHost.current); rendered.current = false; },
+      restore: () => { setResumeUnavailable(false);setSuspended(false); startWorker(); if (latestView && viewHost.current) { publishViewNavigation(latestView); renderHostView(latestView); rendered.current = true; } },
+      end: stop,unavailable:()=>setResumeUnavailable(true),
     });
+    retryResume.current=()=>{setResumeUnavailable(false);void suspension.show();};
     const hidden = () => { if (document.hidden) suspension.hide(); else void suspension.show(); };
     document.addEventListener('visibilitychange', hidden);
     const pageHide = () => stop(connectionSessionRetirementRequired(connectionNavigation.current, session.pin.session_id));
@@ -1089,18 +1103,17 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     return () => {
       startup.dispose();
       frame.removeEventListener('load', onBootstrapLoad);
-      clearInterval(poll); removeEventListener('online', checkConnection); suspension.dispose();
+      clearInterval(poll); removeEventListener('online', checkConnection); suspension.dispose();retryResume.current=null;
       removeEventListener('message', onBootstrapReady);
       removeEventListener('storage', onStorage);
       socket?.off('app:changed', onAppChange);
       document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', pageHide); clearTimeout(expiry);
       stopped = true;
-      sourceNominationAbort.abort();setNominatedSource(null);
+      sourceNominationAbort.abort();sourceLoader.dispose();retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
       connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null;
       refreshNavigation.current = null;
       if (leaseCurrent.current === lease) leaseCurrent.current = null;
       clearNavigation(navigationOwner);
-      sourceNominationAbort.abort();setNominatedSource(null);
       frame.contentWindow?.postMessage({ kind: 'stop', session_id: session.pin.session_id }, '*');
       bridge.revoke();
       port.port2.close();
@@ -1166,8 +1179,9 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     <style>{EXPERIENCE_RENDERER_CSS}</style>
     <h1 className="sr-only">{session?.experience.label ?? 'Account setup'}</h1>
     {renewalNotice && <p role="alert" className="shrink-0 px-5 py-3 text-sm">{renewalNotice}</p>}
-    {connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Connection interrupted. Reconnecting... Your saved work is kept.</p>}
-    {suspended && !connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Resuming app…</p>}
+    {sourceOpening&&!error&&!nominatedSource&&<div role="status" className="shrink-0 px-6 py-3 text-sm">{sourceOpening==='pending'?'Opening the original source…':<>The original source could not open. <button type="button" className="underline" onClick={()=>retrySourceNomination.current?.()}>Retry source</button></>}</div>}
+    {connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">Connection interrupted. Reconnecting... Your saved work is kept. {resumeUnavailable&&<button type="button" className="underline" onClick={()=>retryResume.current?.()}>Retry connection</button>}</p>}
+    {suspended && !connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">{resumeUnavailable?<>The app could not resume. <button type="button" className="underline" onClick={()=>retryResume.current?.()}>Retry connection</button></>:'Resuming app…'}</p>}
     {session&&(error||!exposure)&&!settingsOpen&&<div className="shrink-0 px-5 py-2"><button type="button" className="deft-pill min-h-11" disabled={connectionSetupBusy||!!composer}
       onClick={()=>void showSettings(true)}>Account settings</button></div>}
     {error && session && !accountSetupOpen ? <p role="alert" data-experience-startup-phase={startupPhase ?? undefined} data-experience-startup-diagnostic={startupPhase ? startupDiagnostic ?? undefined : undefined} className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
@@ -1195,7 +1209,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     {!settingsOpen&&session&&exposure&&!error&&!suspended&&!connectionUnavailable&&!!session.bundle.record_store_keys?.length&&<ExperienceDataConsent installationId={installationId}
       targetKey={session.resource_target_key??resourceTarget} storeKeys={session.bundle.record_store_keys} scopeKey={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`}
       onOpenSettings={()=>void showSettings(true,'access')} onChanged={()=>setOpening(value=>value+1)}/>}
-    {nominatedSource&&!settingsOpen&&!error&&!suspended&&!connectionUnavailable&&<div className="min-h-0 flex-1 overflow-auto"><SourceNominationPanel surface={nominatedSource} onClose={()=>setNominatedSource(null)}/></div>}
+    {nominatedSource&&!settingsOpen&&!error&&!suspended&&!connectionUnavailable&&<div className="min-h-0 flex-1 overflow-auto"><SourceNominationPanel key={JSON.stringify([nominatedSource.nomination,nominatedSource.focusedKind])} surface={nominatedSource} onClose={()=>setNominatedSource(null)}/></div>}
     <div ref={viewHost} className="min-h-0 flex-1 overflow-auto" style={nominatedSource || source || settingsOpen || accountSetupOpen ? { display: 'none' } : undefined} aria-label="App Experience" />
     {settingsOpen && session && <div className="min-h-0 flex-1 overflow-hidden">
       <ExperienceSettings key={settingsSection} initialSection={settingsSection} preferences={preferencesNode&&exposure&&!error&&!connectionUnavailable&&!suspended?<ExperiencePreferences node={preferencesNode} onEvent={event=>preferencesEvent.current?.(event)}/>:undefined} experienceLabel={appName} onBack={() => void showSettings(false)}

@@ -5,7 +5,7 @@ import {AppIntegrationSourceIdentitySchema,type AppIntegrationSourceIdentity,typ
 import type {AppDataRuntimeRequest} from '../../../../packages/app-kit/src/app-data.js';
 import type {AppRunKeyProvider} from './app-run-keyrings.js';
 import type {AppRunTransaction as Tx} from './app-run-repository.js';
-import {createAppIntegrationSource,appIntegrationSourceDigest,type AppIntegrationSourceCaller,type AppIntegrationSourceAuthority} from './app-integration-source.js';
+import {createAppIntegrationSource,appIntegrationSourceDigest,type AppIntegrationSourceCaller,type AppIntegrationSourceAuthority,type AppIntegrationSourceSnapshot} from './app-integration-source.js';
 import {createAppIntegrationPublicationReader} from './app-integration-source-publication.js';
 import {createAppIntegrationSourceDispatcher} from './app-integration-source-dispatch.js';
 import {createAppIntegrationCaptureStore} from './app-integration-capture-store.js';
@@ -14,6 +14,7 @@ import {appIntegrationCaptureEvidence,extractAppIntegrationKnowledge} from './ap
 import {loadAppIntegrationCitationSources,decorateAppIntegrationKnowledgeCitations,readAppIntegrationRelatedKnowledge} from './app-integration-knowledge-citations.js';
 
 import {enqueue,enqueueOrRearmFailed,QUEUE_NAMES,RetryLaterJobError} from './queues.js';
+import {hasAnyAIProvider} from './org-ai-config.js';
 import type {JobData} from '../workers/types.js';
 import {assertAppIntegrationCaptureDelivery,APP_INTEGRATION_CAPTURE_JOB} from './app-integration-capture-authority.js';
 
@@ -66,13 +67,14 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
  const readIdentity=async(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity)=>human.source.read(caller,await human.resolve(caller,identity),'read');
  const schedule=async(policy:{org_id:string;id:string;revision:number},tx?:Tx)=>enqueueOrRearmFailed(QUEUE_NAMES.SCHEDULED_JOBS,APP_INTEGRATION_CAPTURE_JOB,{policy_id:policy.id,policy_revision:policy.revision},{orgId:policy.org_id,dedupeKey:appIntegrationSourceDigest([APP_INTEGRATION_CAPTURE_JOB,policy.id,policy.revision]),maxAttempts:5,executor:tx});
  let repairAfter:string|null=null;
- const openIdentity=async(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity)=>{
-   const snapshot=await readIdentity(caller,identity);
-   const navigation=await input.transaction(async tx=>{await human.source.guard(tx,caller,snapshot,'read');const [row]=await tx.select({manifest:appVersions.manifest}).from(appInstallations).innerJoin(appVersions,and(eq(appVersions.id,appInstallations.active_version_id),eq(appVersions.org_id,caller.org_id),eq(appVersions.state,'active'))).where(and(eq(appInstallations.org_id,caller.org_id),eq(appInstallations.id,snapshot.publication.target.installation_id),eq(appInstallations.state,'active'))).limit(1);
+ const openSnapshot=async(caller:AppIntegrationSourceCaller,snapshot:AppIntegrationSourceSnapshot)=>{
+   const purpose=snapshot.purpose;if(purpose!=='read'&&purpose!=='transfer')throw denied();
+   const navigation=await input.transaction(async tx=>{await human.source.guard(tx,caller,snapshot,purpose);const [row]=await tx.select({manifest:appVersions.manifest}).from(appInstallations).innerJoin(appVersions,and(eq(appVersions.id,appInstallations.active_version_id),eq(appVersions.org_id,caller.org_id),eq(appVersions.state,'active'))).where(and(eq(appInstallations.org_id,caller.org_id),eq(appInstallations.id,snapshot.publication.target.installation_id),eq(appInstallations.state,'active'))).limit(1);
     const manifest=row?.manifest as {record_stores?:Array<{key:string;source_projection?:{navigation_entry_key?:string}}>;experiences?:Array<{key:string}>}|undefined;
     const entry=manifest?.record_stores?.find(store=>store.key===snapshot.publication.target.store_key)?.source_projection?.navigation_entry_key;if(!entry||!manifest?.experiences?.some(value=>value.key===entry))throw denied();return entry;});
    return `/apps/${encodeURIComponent(snapshot.publication.target.installation_id)}/${encodeURIComponent(navigation)}?account_ref=${encodeURIComponent(snapshot.publication.target.account_ref)}&source_store_key=${encodeURIComponent(snapshot.publication.target.store_key)}&source_resource_key=${encodeURIComponent(snapshot.publication.target.ref.resource_key)}&source_record_id=${encodeURIComponent(snapshot.publication.target.ref.record_id)}&source_digest=${encodeURIComponent(snapshot.publication.target.ref.content_digest)}`;
  };
+ const openIdentity=async(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity)=>openSnapshot(caller,await readIdentity(caller,identity));
  return {
   policyAuthority:async(caller:AppIntegrationSourceCaller,account:AppIntegrationSourceAccount,tx?:Tx)=>{const check=async(transaction:Tx)=>{const value=await policyGuard(transaction,caller,account);return {identity:appIntegrationSourceDigest([value.policy.id,value.policy.revision,caller.capture_delivery]),expires_at:value.expires};};return tx?check(tx):input.transaction(check);},
   source:human.source,resolve:human.resolve,readIdentity,metadataSource:metadata.source,resolveMetadata:metadata.resolve,
@@ -88,11 +90,11 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
    if(after.resource_binding_id!==current.resource_binding_id||after.resource_key!==current.resource_key||after.identity!==current.identity||after.expires_at<=now())throw denied();
    return snapshot;
   },
-  async settings(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity){const snapshot=await readIdentity(caller,identity);return input.transaction(async tx=>{await human.source.guard(tx,caller,snapshot,'read');const result=await store.settings(tx,caller,snapshot.publication.target);await human.source.guard(tx,caller,snapshot,'read');return result;});},
-  async write(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity,policy:unknown){const snapshot=await readIdentity(caller,identity);return store.writePolicy(caller,snapshot.publication.target,policy,tx=>human.source.guard(tx,caller,snapshot,'read'),async(tx,value)=>{if(value.enabled)await schedule({org_id:caller.org_id,id:value.id,revision:value.revision},tx);});},
+  async settings(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity){const snapshot=await metadata.source.read(caller,await metadata.resolve(caller,identity),'read');return input.transaction(async tx=>{await metadata.source.guard(tx,caller,snapshot,'read');const result=await store.settings(tx,caller,snapshot.publication.target);await metadata.source.guard(tx,caller,snapshot,'read');return result;});},
+  async write(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity,policy:unknown){const snapshot=await metadata.source.read(caller,await metadata.resolve(caller,identity),'read');return store.writePolicy(caller,snapshot.publication.target,policy,tx=>metadata.source.guard(tx,caller,snapshot,'read'),async(tx,value)=>{if(value.enabled)await schedule({org_id:caller.org_id,id:value.id,revision:value.revision},tx);});},
   async related(caller:AppIntegrationSourceCaller,identity:AppIntegrationSourceIdentity){const snapshot=await readIdentity(caller,identity);return input.transaction(tx=>readAppIntegrationRelatedKnowledge(tx,caller,snapshot,()=>human.source.guard(tx,caller,snapshot,'read')));},
   async citations<T extends {source_type:string;source_id:string}>(caller:AppIntegrationSourceCaller,citations:T[]){const records=await input.transaction(tx=>loadAppIntegrationCitationSources(tx,caller,citations.filter(row=>row.source_type==='app_integration').slice(0,32).map(row=>row.source_id)));return decorateAppIntegrationKnowledgeCitations({caller,citations,records,read:readIdentity});},
-  openIdentity,
+  openIdentity,openSnapshot,
   async open(caller:AppIntegrationSourceCaller,id:string){const [record]=await input.transaction(tx=>loadAppIntegrationCitationSources(tx,caller,[id]));if(!record||record.owner_user_id!==caller.user_id)throw denied();
    const href=await openIdentity(caller,record.target as AppIntegrationSourceIdentity);
    const [current]=await input.transaction(tx=>loadAppIntegrationCitationSources(tx,caller,[id]));if(!current||current.owner_user_id!==caller.user_id)throw denied();return href;
@@ -101,6 +103,10 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
   async run(job:JobData){if(!job.lockToken||job.name!==APP_INTEGRATION_CAPTURE_JOB||typeof job.data.policy_id!=='string'||!Number.isSafeInteger(job.data.policy_revision))throw denied();
    const [row]=await input.transaction(tx=>tx.select().from(policies).where(and(eq(policies.id,job.data.policy_id),eq(policies.revision,job.data.policy_revision),eq(policies.enabled,true))).limit(1));if(!row)return;
    const caller:AppIntegrationSourceCaller={org_id:row.org_id,user_id:row.owner_user_id,kind:'capture_policy',principal_id:row.id,capture_delivery:{job_id:job.id,lock_token:job.lockToken,policy_revision:row.revision}};await input.transaction(tx=>policyGuard(tx,caller,row,job));
+   // Missing workspace AI is recoverable setup, not a failed message claim.
+   // Wait before reserving budget or consuming an observation so configuring a
+   // provider can resume the same source without losing its capture attempt.
+   if(!await hasAnyAIProvider(row.org_id))throw new RetryLaterJobError('App Knowledge needs an AI provider',60000);
    const current=await input.gateway.currentAccount(caller,row,'knowledge_capture'),batch=await publication.candidates(caller,{...row,resource_key:current.resource_key},current.resource_binding_id,{checkpoint_id:row.scan_checkpoint_id,after:row.scan_after_projection_id});
    const capture=components(job),service=createAppIntegrationCapture({...store,source:capture.source,evidence:appIntegrationCaptureEvidence,extract:extractAppIntegrationKnowledge});
    const result=batch.target?await service.process(caller,batch.target,row.revision,job.signal):{state:'idle'};

@@ -70,7 +70,7 @@ pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.35.tgz
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.36`. Package metadata,
+This review candidate is `0.1.0-alpha.37`. Package metadata,
 `DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
@@ -363,3 +363,9 @@ document may use an item ID as its existing `print_control_id`; printing stays
 with the Host and does not emit a Worker click. The shared Host menu supplies
 keyboard navigation, dismissal, focus return and the mobile sheet. Menus are
 currently available in the main view, not the separate preferences surface.
+### Reviewed Tasks from an App source
+
+A menu item may nominate its rendered source document for the trusted Host Task form. The Host resolves that document's governed account and exact record reference; the App cannot substitute a destination API call or grant itself source access. Users choose a project, edit the title and description, and choose an assignee, creation status, priority, and due date in the normal Deft Task form before reviewing the destination audience.
+
+The destination review/commit input accepts optional `task_details` only with `destination.kind: 'task'`: `description` (up to 20,000 characters), `status` (`backlog`, `todo`, `in_progress`, or `in_review`), `priority` (`p0`–`p3`), nullable `assignee_id` (UUID), and `due_date` (`YYYY-MM-DD`). Exact details participate in both review and request digests. The Host rechecks project/current assignee membership and source access in the transaction; the native Task keeps an access-controlled original-source link. An unknown create result is recovered with the original request ID, never submitted as a second Task.
+Menu items may also include `integration: { kind: 'task' | 'knowledge', document_id }`, where `document_id` names a `record_document` in the same current view. The Host requires that document's resolved governed record, retains its account/source identity, and opens the focused native review. The author supplies no URL, body, or authority and receives no Worker click for this item; nomination itself performs no native write. Ordinary click and Print items retain their existing behavior. Missing, plain-document, unknown, extra-field, and ambiguous Print/integration links are rejected.

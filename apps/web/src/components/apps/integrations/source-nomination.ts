@@ -25,3 +25,18 @@ export async function resolveSourceNominationAccount<T extends {accountRef:strin
  for(const row of rows){check();let child:T;try{child=await ports.child(row.key,signal);}catch{check();continue;}check();if(child.accountRef!==nomination.account_ref)continue;if(selected)throw Error('Source account ambiguous');selected=child;selectedKey=row.key;}
  check();if(!selected||!selectedKey)throw Error('Source account review required');const current=await ports.child(selectedKey,signal);check();if(current.accountRef!==nomination.account_ref)throw Error('Source account changed');return current;
 }
+
+/** Retry only the readonly nomination. Every attempt re-enters current account
+ * resolution and source authorization; no review/commit or authority is cached. */
+export function createSourceNominationLoader(ports:{current:()=>boolean;signal:AbortSignal;load:(signal:AbortSignal)=>Promise<void>;change:(state:'pending'|'failed'|'opened')=>void}){
+ let pending=false;const controller=new AbortController();
+ const current=()=>ports.current()&&!ports.signal.aborted&&!controller.signal.aborted;
+ return {async run(){
+  if(pending||!current())return;pending=true;ports.change('pending');
+  const signal=AbortSignal.any([ports.signal,controller.signal,AbortSignal.timeout(30000)]);
+  let rejectAborted!:()=>void;const aborted=new Promise<never>((_,reject)=>{rejectAborted=()=>reject(signal.reason);signal.addEventListener('abort',rejectAborted,{once:true});});
+  try{await Promise.race([ports.load(signal),aborted]);signal.throwIfAborted();if(current())ports.change('opened');}
+  catch{if(current())ports.change('failed');}
+  finally{signal.removeEventListener('abort',rejectAborted);pending=false;}
+ },dispose(){controller.abort();}};
+}

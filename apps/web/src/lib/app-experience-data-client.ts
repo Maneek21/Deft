@@ -182,7 +182,7 @@ export function createExperienceDataClient(options:{installationId:string;target
  const documentInput=(node:DeftExperienceRecordDocumentNode)=>({store_key:node.store_key,resource_key:node.resource_key,record_id:node.record_id,content_digest:node.content_digest});
  return {context,select,request,binary,ports,
   async automaticImages(node:DeftExperienceRecordDocumentNode,signal:AbortSignal){
-   const policy=node.image_policy;if(!policy)return false;const documentTarget=await select(node.store_key,signal),target=await select(policy.store_key,signal);
+   const policy=node.image_policy;if(!policy)return undefined;const documentTarget=await select(node.store_key,signal),target=await select(policy.store_key,signal);
    const source=target.stores.find(item=>item.declaration.key===policy.store_key),destination=documentTarget.stores.find(item=>item.declaration.key===node.store_key);
    if(target.session_id!==documentTarget.session_id||target.account.account_ref!==documentTarget.account.account_ref||target.resource_key!==node.resource_key
     ||!source?.consent||appConsentDeadline(source.consent.expires_at,source.consent.consent_lifetime)<=Date.now()||source.declaration.resource_key!==destination?.declaration.resource_key||source.declaration.runtime_requirement_key!==destination.declaration.runtime_requirement_key)return false;
