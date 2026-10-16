@@ -5,7 +5,7 @@ import {appConsentDeadline} from '../../../../../packages/app-kit/src/consent-li
 import {createExperienceAccountRouting,resolveExperienceActionAccount,type AccountReference,type AccountChild} from '../../lib/app-experience-account-routing';
 import {createExperienceRecordMirrorHost} from '../../lib/app-experience-record-mirror';
 import {createExperienceLocalJobHost} from '../../lib/app-experience-local-jobs';
-import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount,createSourceNominationLoader} from './integrations/source-nomination';
+import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount,createSourceNominationNavigation,sourceNominationQuery} from './integrations/source-nomination';
 import {SourceNominationPanel,type NominatedSourceSurface} from './integrations/source-nomination-panel';
 import {CurrentIntegrationAccessSettings} from './integrations/integration-access-settings';
 import {appDataInputDigest} from '@/lib/app-experience-data-client';
@@ -13,6 +13,7 @@ import {boundedConfirmationJson} from '@/lib/app-experience-action-confirmation'
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import {useSearchParams} from 'next/navigation';
 import { api, isSameWebSession, refreshAccessToken, SessionRefreshUnavailableError } from '@/lib/api';
 import { settleDispatchedExperienceWrites } from '@/lib/app-experience-renewal';
 import { createExperienceLease, normalizeExperienceLeaseRefresh } from '@/lib/app-experience-lease';
@@ -26,7 +27,7 @@ import type { ExperienceNode, ExperienceView } from '@/lib/app-experience-bridge
 import { createExperienceBridge } from '@/lib/app-experience-bridge';
 import { buildExperienceBootstrapSrcdoc } from '@/lib/app-experience-bootstrap-srcdoc';
 import { createExperienceStartup, experienceStartupStatus } from '@/lib/app-experience-startup';
-import { renderExperienceView, clearExperienceView, suspendExperienceView, flushExperienceInputs, EXPERIENCE_RENDERER_CSS } from '@/lib/app-experience-renderer';
+import { renderExperienceView, clearExperienceView, suspendExperienceView, flushExperienceInputs, EXPERIENCE_RENDERER_CSS,type ExperienceRendererOptions } from '@/lib/app-experience-renderer';
 import { normalizeInstalledExperienceSession, experienceLifetimeIsCurrent,
   normalizeExperienceExposureStatus, normalizeExperienceExposureReview, normalizeExperienceAccess, type ExperienceExposureStatus,
   type ExperienceExposureReview, type InstalledExperienceSession } from '@/lib/app-experience-session';
@@ -92,6 +93,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const [nominatedSource,setNominatedSource]=useState<NominatedSourceSurface|null>(null);
   const [sourceOpening,setSourceOpening]=useState<'pending'|'failed'|null>(null);
   const retrySourceNomination=useRef<(()=>void)|null>(null);
+  const sourceQuery=sourceNominationQuery(useSearchParams()),sourceNavigationChanged=useRef<((query:string)=>void)|null>(null);
+  useEffect(()=>{sourceNavigationChanged.current?.(sourceQuery);},[sourceQuery]);
   const [preferencesNode,setPreferencesNode]=useState<ExperienceNode|null>(null);
   const intakePrepare=useRef<((suggestion:ExperienceMailtoSuggestion)=>Promise<{account:string;intake:ReturnType<typeof createRecordIntake>}>)|null>(null);
   const preferencesEvent=useRef<((event:unknown)=>void)|null>(null);
@@ -576,7 +579,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       }});
     type ChildValue={session:InstalledExperienceSession;exposure:ExperienceExposureStatus;lease:ReturnType<typeof createExperienceLease>;client:typeof dataClient};
     const createdRecords=new Map<string,AccountChild<ChildValue>>(),routedRuns=new Map<string,AccountChild<ChildValue>>();
-    const accounts=createExperienceAccountRouting<ChildValue>({current:locallyCurrent,
+    const accounts=createExperienceAccountRouting<ChildValue,Awaited<ReturnType<typeof dataClient.select>>>({current:locallyCurrent,
       catalog:async signal=>{const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/targets`,{signal,cache:'no-store'});if(!response.ok)throw Error('Account catalog unavailable');const body=await response.json();if(body.schema_version!=='deft.experience_targets.v1'||!Array.isArray(body.targets))throw Error('Account catalog invalid');return body.targets;},
       open:async(targetKey,signal)=>{
         if(targetKey===(session.resource_target_key??resourceTarget)){if(!exposure||!lease)throw Error('Account review required');const target=await dataClient.select(session.bundle.record_store_keys?.[0]??'drafts',signal);return {targetKey,accountRef:target.account.account_ref,label:target.account.label,value:{session,exposure,lease,client:dataClient}};}
@@ -596,14 +599,15 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           }});
           return {targetKey,accountRef:target.account.account_ref,label:target.account.label,value:{session:child,exposure:access.exposure,lease:childLease,client}};
         }catch(error){void retireSession(child.pin.session_id);throw error;}
-      },validate:async(child,signal)=>{signal.throwIfAborted();
+      },validate:async(child,signal,selection)=>{signal.throwIfAborted();
+        if(selection&&(selection.target_key!==child.targetKey||selection.account.account_ref!==child.accountRef))return false;
         if(child.value.session.pin.session_id===session.pin.session_id){
           if(!locallyCurrent())return false;
           const pending=new AbortController(),combined=AbortSignal.any([signal,pending.signal]);let denied=false;
           try{
             // Independent readonly resolution overlaps the first authority read;
             // a separate final live check still precedes release to the caller.
-            const [available,target]=await Promise.all([live(combined).then(allowed=>{if(!allowed){denied=true;pending.abort();}return allowed;}),child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',combined)]);
+            const [available,target]=await Promise.all([live(combined).then(allowed=>{if(!allowed){denied=true;pending.abort();}return allowed;}),selection?Promise.resolve(selection):child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',combined)]);
             signal.throwIfAborted();if(!available||!locallyCurrent()||!child.value.lease.valid()||target.account.account_ref!==child.accountRef)return false;
             return live(signal);
           }catch(error){if(denied&&!signal.aborted)return false;throw error;}finally{pending.abort();}
@@ -615,7 +619,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           // Resolve the exact account and read both current authority gates in
           // parallel. No result is usable until every check and final pin passes.
           const [target,[liveResponse,exposureResponse]]=await Promise.all([
-            child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',combined),
+            selection?Promise.resolve(selection):child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',combined),
             Promise.all([api.fetch(livePath(child.value.session.pin.session_id),{signal:combined,cache:'no-store'}),api.fetch(`${root}/sessions/${encodeURIComponent(child.value.session.pin.session_id)}/exposure`,{signal:combined,cache:'no-store'})]),
           ]);
           signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid()||target.account.account_ref!==child.accountRef||[liveResponse,exposureResponse].some(response=>[401,403,404,410].includes(response.status)))return false;
@@ -628,7 +632,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     });
     const nominateSource=async(nomination:NonNullable<ReturnType<typeof parseSourceNomination>>,owner:AccountChild<ChildValue>,current:()=>boolean,signal:AbortSignal,focusedKind?:'task'|'knowledge',surfaceSignal:AbortSignal=signal)=>{
       const sourceClient=owner.value.client;
-      const presentation=await openSourceNomination(nomination,{current,storeKeys:owner.value.session.bundle.record_store_keys??[],resourceKeys:owner.value.session.bundle.resource_keys,select:sourceClient.select,read:async(ref,signal)=>{const result=await accounts.read(owner,signal,()=>sourceClient.request(ref.store_key,'resource_read_presentation',ref,signal));if(!result.presentation)throw Error('Source unavailable');return parseExperienceDataPresentation(result.presentation,owner.value.exposure,owner.value.lease.value.exposure.expires_at).presentation;}},signal);
+      const presentation=await openSourceNomination(nomination,{current,storeKeys:owner.value.session.bundle.record_store_keys??[],resourceKeys:owner.value.session.bundle.resource_keys,readCurrent:async(ref,signal)=>{const selected=await sourceClient.select(ref.store_key,signal);if(selected.account.account_ref!==nomination.account_ref)throw Error('Source account changed');const result=await accounts.readSelected(owner,signal,selected,()=>sourceClient.request(ref.store_key,'resource_read_presentation',ref,signal,undefined,undefined,false,selected));if(!result.presentation)throw Error('Source unavailable');return {account_ref:owner.accountRef,result:parseExperienceDataPresentation(result.presentation,owner.value.exposure,owner.value.lease.value.exposure.expires_at).presentation};}},signal);
       const exactSource={resource_key:nomination.resource_key,record_id:nomination.record_id,content_digest:nomination.content_digest};accounts.retain(owner,[exactSource]);
       const calendarOwner=async(signal:AbortSignal)=>{const target=await sourceClient.select('drafts',signal),owner=await accounts.child(target.target_key,signal);if(!locallyCurrent()||signal.aborted||owner.accountRef!==nomination.account_ref)throw Error('Invitation account changed');return owner;};
       const replyInput=(intent:Record<string,unknown>)=>({store_key:'drafts',value:intent,source_refs:[exactSource]});
@@ -638,13 +642,12 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         replyStatus:async(intent,requestId,signal)=>{const owner=await calendarOwner(signal),result=await owner.value.client.request('drafts','request_status',{store_key:'drafts',request_id:requestId},signal),status=result.request_status;if(!status||status.state!=='completed')return null;if(status.request_id!==requestId||status.operation!=='record_create'||status.input_digest!==await appDataInputDigest('record_create',replyInput(intent))||!status.record_id)throw Error('Response draft changed');const record=await owner.value.client.request('drafts','record_read',{store_key:'drafts',record_id:status.record_id},signal);if(!record.record||(await calendarOwner(signal)).accountRef!==owner.accountRef)throw Error('Response draft changed');createdRecords.set(status.record_id,owner);return status.record_id;},
       }});
     };
-    const sourceLoader=createSourceNominationLoader({current:locallyCurrent,signal:sourceNominationAbort.signal,change:state=>setSourceOpening(state==='opened'?null:state),load:async signal=>{
-      const nomination=parseSourceNomination(new URLSearchParams(location.search));if(!nomination)return;
+    const sourceLoader=createSourceNominationNavigation({current:locallyCurrent,signal:sourceNominationAbort.signal,clear:()=>{setSourceOpening(null);setNominatedSource(null);},change:state=>setSourceOpening(state==='opened'?null:state),load:async(nomination,signal,lifetime)=>{
       const owner=await resolveSourceNominationAccount(nomination,{current:locallyCurrent,catalog:accounts.catalog,child:accounts.child},signal);
-      await nominateSource(nomination,owner,locallyCurrent,signal,undefined,sourceNominationAbort.signal);
+      await nominateSource(nomination,owner,locallyCurrent,signal,undefined,lifetime);
     }});
-    retrySourceNomination.current=()=>{void sourceLoader.run();};
-    if(exposure)void sourceLoader.run();
+    retrySourceNomination.current=()=>{void sourceLoader.run();};sourceNavigationChanged.current=value=>sourceLoader.reset(value);
+    if(exposure)sourceLoader.reset(location.search);
     const sourceChild=(refs:readonly AccountReference[],signal:AbortSignal)=>accounts.source(refs,signal);
     const recordClient=async(node:{record_id:string;resource_key?:string;content_digest?:string},signal:AbortSignal)=>{
       if(node.resource_key&&node.content_digest)return (await sourceChild([{resource_key:node.resource_key,record_id:node.record_id,content_digest:node.content_digest}],signal)).value.client;
@@ -667,6 +670,11 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       },
     });
     flushRecordWrites.current=recordForms.flushRecordForms;
+    const recordDocumentScope=(reference:Parameters<NonNullable<ExperienceRendererOptions['recordDocumentScope']>>[0])=>{
+      const owner=accounts.retainedOwner(reference);if(!locallyCurrent()||!owner||!owner.value.lease.valid())return;
+      const exposure=owner.value.lease.value.exposure;
+      return JSON.stringify([owner.accountRef,owner.value.session.pin.session_id,exposure.exposure_id,exposure.exposure_epoch,exposure.review_digest]);
+    };
     const recordDocuments=createExperienceRecordDocumentHost({storeKeys:session.bundle.record_store_keys??[],resourceKeys:session.bundle.resource_keys,current:locallyCurrent,
       load:async(reference,signal)=>{
         if(!exposure)throw Error('Source unavailable');const client=await recordClient(reference,signal),result=await client.presentation(reference,signal);
@@ -685,7 +693,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           source:async signal=>sourceCall(reference,signal,client=>client.sourceBinary(reference,{operation:'read_source'},signal))});
         return()=>{controller.abort();presentation();files();};
       }});
-    const rendererOptions={...createExperienceMenuHost(),capabilities:session.experience.capabilities,resourceKeys:session.bundle.resource_keys,stateKeys:session.bundle.state_keys,storeKeys:session.bundle.record_store_keys,actionKeys:session.bundle.action_keys,...resourceDocuments,...fieldControls,...localJobControls,...recordMirrorControls,...recordForms,...recordDocuments,
+    const rendererOptions={...createExperienceMenuHost(),capabilities:session.experience.capabilities,resourceKeys:session.bundle.resource_keys,stateKeys:session.bundle.state_keys,storeKeys:session.bundle.record_store_keys,actionKeys:session.bundle.action_keys,...resourceDocuments,...fieldControls,...localJobControls,...recordMirrorControls,...recordForms,...recordDocuments,recordDocumentScope,
       openRecordIntegration:async(node:Extract<ExperienceNode,{kind:'record_document'}>,kind:'task'|'knowledge',context:{signal:AbortSignal;current:()=>boolean})=>{
         const current=()=>locallyCurrent()&&context.current()&&!context.signal.aborted;if(!current())return;
         const signal=AbortSignal.any([context.signal,AbortSignal.timeout(30000)]);
@@ -1029,7 +1037,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       if (stopped) return;
       startup.dispose();
       frame.removeEventListener('load', onBootstrapLoad);
-      sourceNominationAbort.abort();sourceLoader.dispose();retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
+      sourceNominationAbort.abort();sourceLoader.dispose();sourceNavigationChanged.current=null;retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
       stopped = true; latestView = null;trustedDocument=null;sourceReview.clear();sourcePresentations.clear();for(const entry of presentationDisposals.values())entry.mount();presentationDisposals.clear();setPreferencesNode(null);preferencesEvent.current=null;intakePrepare.current=null;readingPreferencesChanged.current=null; setSuspended(false); setSource(null); setRunReview(null);
       clearInterval(childTimer);accounts.close();connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null; setConnectionUnavailable(false);
       clearNavigation(navigationOwner);
@@ -1123,7 +1131,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       socket?.off('app:changed', onAppChange);
       document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', pageHide); clearTimeout(expiry);
       stopped = true;
-      sourceNominationAbort.abort();sourceLoader.dispose();retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
+      sourceNominationAbort.abort();sourceLoader.dispose();sourceNavigationChanged.current=null;retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
       connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null;
       refreshNavigation.current = null;
       if (leaseCurrent.current === lease) leaseCurrent.current = null;

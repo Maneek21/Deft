@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after, type TestContext } from 'node:test';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -28,9 +28,11 @@ function externalRuntimeAvailable() {
     && ['server.mjs', 'test-support.mjs', 'contract.mjs'].every(file => existsSync(join(runtimeRoot, file)));
 }
 
+let closeFixtureDatabase: (() => Promise<void>) | undefined;
+after(async()=>{await closeFixtureDatabase?.();});
+
 // Real host routes/PG and actual child runtime. Only provider fetches and TLS routing are synthetic.
-test('app-owned data uses real host PG and external runtime CAS, files and durable reconciliation across restart',
-  { skip: !disposableDatabase() || !externalRuntimeAvailable(), timeout: 600000 }, async t => {
+async function runDataProcessFixture(t:TestContext,contextOnly=false) {
     Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_PRIVATE_STATE_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true',
       DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true', DEFT_APP_ATTACHMENT_BROKER_ENABLED: 'true', DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'true',
       DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED: 'true', DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: 'true',
@@ -42,6 +44,7 @@ test('app-owned data uses real host PG and external runtime CAS, files and durab
       import('hono'), import('../src/lib/db.js'), import('@deft/db/schema'), import('drizzle-orm'), import('../src/lib/web-sessions.js'),
       import('../src/routes/app-owner-connections.js'), import('../src/routes/app-attachments.js'), import('../src/routes/app-connection-sessions.js'),
       import('../src/lib/app-run-runtime.js'), import('../src/lib/app-attachment-runtime.js')]);
+    closeFixtureDatabase=closeDb;
     const app = new Hono(); app.route('/api/apps/blob', blob.appAttachmentRoutes);
     app.route('/api/app-owner-connections', owner.appOwnerConnectionRoutes);
     app.route('/api/app-connection-sessions', connections.appConnectionSessionRoutes);
@@ -71,7 +74,7 @@ test('app-owned data uses real host PG and external runtime CAS, files and durab
       await stopRuntime(); if (hostServer) await new Promise<void>((done, reject) => hostServer!.close(error => error ? reject(error) : done()));
       if (previousConfig === undefined) delete process.env.DEFT_APP_CONNECTION_HTTP_CONFIG; else process.env.DEFT_APP_CONNECTION_HTTP_CONFIG = previousConfig;
       await rm(directory, { recursive: true, force: true });
-      await attachments.shutdownAppAttachmentRuntime(); await runtime.shutdownAppRunRuntime(); await closeDb(); });
+      await attachments.shutdownAppAttachmentRuntime(); await runtime.shutdownAppRunRuntime(); });
     process.env.DEFT_APP_CONNECTION_HTTP_CONFIG = configPath;
     const org = randomUUID(), people = { owner: randomUUID(), member: randomUUID(), other: randomUUID() };
     await db.insert(s.orgs).values({ id: org, name: 'Synthetic E2 HTTP', slug: 'e2-http-' + org });
@@ -98,6 +101,11 @@ test('app-owned data uses real host PG and external runtime CAS, files and durab
     fixture.manifest.record_stores=[{schema_version:'deft.app_record_store.v1',key:'drafts',resource_key:'inbox',runtime_requirement_key:'sync_provider',
       max_record_bytes:491520,max_files:32,max_file_bytes:26214400,max_total_file_bytes:26214400,
       resource_content:{max_presentation_bytes:262144,max_source_bytes:36700160,max_file_bytes:26214400,max_image_bytes:2097152}}];
+    // Only the separate context proof needs eleven stores. The full CAS/files proof keeps its original one-store fixture.
+    if(contextOnly){
+      fixture.manifest.record_stores.push(...Array.from({length:10},(_,index)=>({...fixture.manifest.record_stores[0],key:'context_store_'+index})));
+      fixture.manifest.record_stores.sort((a,b)=>a.key.localeCompare(b.key));
+    }
     const experience=await prepareDeftExperienceArtifact('experiences/main.json',{schema_version:'deft.experience_bundle.v3',worker_source:'self.onmessage=()=>{};',entry_view:'main',
       resource_keys:['inbox'],action_keys:['send_message'],state_keys:[],record_store_keys:['drafts']});
     delete fixture.manifest.private_state;fixture.artifacts=[experience];fixture.manifest.experiences=[{key:'main',label:'Synthetic full native records',artifact_path:experience.path,
@@ -108,6 +116,10 @@ test('app-owned data uses real host PG and external runtime CAS, files and durab
       for(const field of ['content_digest','file_manifest_digest','mime_digest','payload_digest','data_consent_digest','prepared_digest'])properties[field]={type:'string',minLength:71,maxLength:71};
       properties.source_digest={type:'string',maxLength:71};properties.record_action_version={type:'string',maxLength:64};properties.record_store_key={type:'string',maxLength:48};
       fixture.manifest.private_capabilities.find((capability:any)=>capability.key==='send_message').input_schema={type:'object',properties,required:Object.keys(properties),additionalProperties:false};
+      fixture.manifest.private_capabilities.find((capability:any)=>capability.key==='send_message').output_schema={type:'object',properties:{
+        operation_id:{type:'string',maxLength:120},primary_outcome:{type:'string',maxLength:40},
+        effect_outcome:{type:'string',maxLength:40},inspection_available:{type:'boolean'}},
+        required:['operation_id','primary_outcome','effect_outcome','inspection_available'],additionalProperties:false};
     }
     let packed:string;
     try{packed=(await buildDeftAppPackage({ manifest: fixture.manifest, artifacts: fixture.artifacts })).json;}
@@ -350,6 +362,25 @@ test('app-owned data uses real host PG and external runtime CAS, files and durab
       assert.deepEqual((await call(base + '/status', {session_id: session.begun.session_id}, session.owner.token)).account, session.connected.account);
     }
     assert.ok(crossSessionDenied && unknownRegistrationDenied && crossAccountDenied);
+    if(contextOnly){
+    await t.test('eleven-store context shares only within-disclosure connection work and rechecks real current authority',async()=>{
+      const {resourceSyncWebAuthority}=await import('../src/lib/app-resource-sync-web-authority.js');
+      const {currentAppDataContext}=await import('../src/lib/app-data-authority.js');
+      const {withAppDataDiagnostic}=await import('../src/lib/app-data-diagnostics.js');
+      const auth=await resourceSyncWebAuthority('Bearer '+sessions[0]!.owner.token);
+      const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
+      let observed:any;
+      const collected=await withAppDataDiagnostic('context',()=>currentAppDataContext(caller,sessions[0]!.begun.session_id,auth.guard,{includeIdentities:false},async()=>{throw Error('No identity IO for scoped context');}),undefined,event=>{observed=event;});
+      assert.equal(collected.authorities.length,11);assert.equal(observed.timings.connection_authority.calls,2);assert.equal(observed.timings.consent_read.calls,1);
+      assert.ok(collected.authorities.every(item=>item.consent===null));
+      const path=`/api/app-data/installations/${installed.id}/context?target_key=${sessions[0]!.owner.resource.target_key}`;
+      assert.equal((await call(path,undefined,sessions[0]!.owner.token)).targets[0].stores.length,11);
+      assert.equal((await call(path,undefined,tokens.owner)).targets.length,0,'another owner cannot enumerate private context');
+      const selected=await call(`/api/app-data/installations/${installed.id}/resolve`,{schema_version:'deft.app_data_resolve.v1',target_key:sessions[0]!.owner.resource.target_key,store_key:'drafts'},sessions[0]!.owner.token);
+      assert.deepEqual(selected.targets[0].stores.map((item:any)=>item.declaration.key),['drafts']);
+    });
+    return;
+    }
     const dataBase='/api/app-data',records=new Map<string,any>();
     const data=async(session:typeof sessions[number],operation:string,input:unknown,requestId=randomUUID())=>
       call(`${dataBase}/connections/${session.begun.session_id}/requests`,{schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input},session.owner.token);
@@ -543,4 +574,9 @@ test('app-owned data uses real host PG and external runtime CAS, files and durab
     for(const session of sessions)assert.equal((await call(contextPath,undefined,session.owner.token)).targets.length,0,'revoked admission removes current context');
     for (const session of sessions) assert.equal((await request(base + '/status', {session_id: session.begun.session_id}, session.owner.token)).status, 403);
     assert.equal(transportCalls, 11);
-  });
+  }
+
+test('app-owned data uses real host PG and external runtime CAS, files and durable reconciliation across restart',
+  { skip: !disposableDatabase() || !externalRuntimeAvailable(), timeout: 600000 }, async t => runDataProcessFixture(t));
+test('eleven-store context uses real host PG with two fresh authority captures',
+  { skip: !disposableDatabase() || !externalRuntimeAvailable(), timeout: 120000 }, async t => runDataProcessFixture(t,true));

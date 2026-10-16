@@ -8,6 +8,7 @@ import { appRunAttempts, appRuns, appRuntimeSessions,appConnectionSessions } fro
 import type { createBoundedAppRunDatabase } from './app-run-bounded-db.js';
 import { isAppAttachmentBrokerEnabled } from './env.js';
 import type { AppRunAttemptRunner } from './app-run-attempt-runner.js';
+import { resourceSyncClaimContext, type ResourceSyncClaimRequest } from './app-resource-sync-claim-budget.js';
 import { hashAppAttachmentSessionToken } from './app-attachment-policy.js';
 import {
   ResourceSyncClaimRequestV3Schema, ResourceSyncHeartbeatRequestV3Schema,
@@ -49,12 +50,13 @@ export class AppAttachmentSyncChannel {
     });
   }
 
-  async claim(value: unknown) {
+  async claim(value: unknown, options: ResourceSyncClaimRequest = {}) {
     if (!appAttachmentSyncChannelEnabled()) return null;
+    const context = resourceSyncClaimContext(this.database, options);
     const request = ResourceSyncClaimRequestV3Schema.parse(value);
-    const identity = await this.#session(request.session_id, request.session_token);
+    const identity = await this.#session(request.session_id, request.session_token, context.transaction);
     if (!identity) return null;
-    const candidates = await this.#read(db => db.select({
+    const candidates = await context.transaction(db => db.select({
       run_id: appRunAttempts.run_id, attempt_id: appRunAttempts.id,
     }).from(appRunAttempts).innerJoin(appRuns, and(
       eq(appRuns.org_id, appRunAttempts.org_id), eq(appRuns.id, appRunAttempts.run_id),
@@ -67,11 +69,13 @@ export class AppAttachmentSyncChannel {
       isNotNull(appRuns.execution_released_at), gt(appRuns.input_expires_at, new Date()),
     )).orderBy(asc(appRunAttempts.created_at)).limit(8));
     for (const candidate of candidates) {
+      context.check();
       const claimed = await this.runner.claimResourceSyncAttempt({
         org_id: identity.org_id, run_id: candidate.run_id,
         attempt_id: candidate.attempt_id, session_id: request.session_id,
         token_hash: identity.token_hash,
-      });
+      }, { transaction: context.transaction });
+      context.check();
       if (claimed) return claimed;
     }
     return null;
@@ -111,11 +115,12 @@ export class AppAttachmentSyncChannel {
     });
   }
 
-  async #session(sessionId: string, token: string): Promise<Readonly<{
+  async #session(sessionId: string, token: string,
+    read = this.#read.bind(this)): Promise<Readonly<{
     org_id: string; resource_binding_id: string; token_hash: string;
   }> | null> {
     const tokenHash = hashAppAttachmentSessionToken(token);
-    const [session] = await this.#read(db => db.select({
+    const [session] = await read(db => db.select({
       org_id: appRuntimeSessions.org_id,
       resource_binding_id: appRuntimeSessions.resource_binding_id,
       token_hash: appRuntimeSessions.token_hash,

@@ -1,4 +1,4 @@
-import {test} from 'node:test';import assert from 'node:assert/strict';import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount,createSourceNominationLoader} from './source-nomination';
+import {test} from 'node:test';import assert from 'node:assert/strict';import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount,createSourceNominationLoader,createSourceNominationNavigation} from './source-nomination';
 const q=()=>new URLSearchParams({account_ref:'account_one',source_store_key:'drafts',source_resource_key:'inbox',source_record_id:'00000000-0000-4000-8000-000000000001',source_digest:'sha256:'+'a'.repeat(64)});
 test('closed nominations reject duplicate and missing source fields',()=>{assert.equal(parseSourceNomination(new URLSearchParams()),null);const query=q();query.append('account_ref','other');assert.throws(()=>parseSourceNomination(query));query.delete('source_digest');assert.throws(()=>parseSourceNomination(query));});
 test('current exact account and signed declarations precede reviewed read',async()=>{const nomination=parseSourceNomination(q())!;let reads=0;const ports={current:()=>true,storeKeys:['drafts'],resourceKeys:['inbox'],select:async()=>({account:{account_ref:'foreign'}}),read:async()=>{reads++;return 'private'}};await assert.rejects(openSourceNomination(nomination,ports,new AbortController().signal));assert.equal(reads,0);ports.select=async()=>({account:{account_ref:'account_one'}});assert.equal(await openSourceNomination(nomination,ports,new AbortController().signal),'private');assert.equal(reads,1);});
@@ -34,7 +34,7 @@ test('actual successful native source surface outlives only its read deadline, n
  for(const parentEndsBeforePublish of [false,true]){
   const read=new AbortController(),parent=new AbortController(),nomination=parseSourceNomination(q())!;let surface:any;
   const owner={accountRef:nomination.account_ref,value:{client:{select:async()=>({account:{account_ref:nomination.account_ref}}),request:async()=>{if(parentEndsBeforePublish)parent.abort();return {presentation:{plain_text:'Current governed source'}};}},session:{bundle:{record_store_keys:['drafts'],resource_keys:['inbox']}},lease:{valid:()=>true,value:{exposure:{expires_at:new Date(Date.now()+600000).toISOString()}}},exposure:{}}};
-  const nominate=new Function('openSourceNomination','accounts','parseExperienceDataPresentation','setNominatedSource','installationId','sessionCacheScope','session','locallyCurrent','appDataInputDigest','createdRecords',code)(openSourceNomination,{read:async(_owner:unknown,_signal:unknown,work:()=>Promise<unknown>)=>work(),retain:()=>{}},(presentation:unknown)=>({presentation}),(value:unknown)=>{surface=value;},'installation','scope',{pin:{org_id:'org',user_id:'owner'}},()=>true,()=>{},new Map());
+  const nominate=new Function('openSourceNomination','accounts','parseExperienceDataPresentation','setNominatedSource','installationId','sessionCacheScope','session','locallyCurrent','appDataInputDigest','createdRecords',code)(openSourceNomination,{readSelected:async(_owner:unknown,_signal:unknown,_selection:unknown,work:()=>Promise<unknown>)=>work(),retain:()=>{}},(presentation:unknown)=>({presentation}),(value:unknown)=>{surface=value;},'installation','scope',{pin:{org_id:'org',user_id:'owner'}},()=>true,()=>{},new Map());
   await nominate(nomination,owner,()=>true,read.signal,'task',parent.signal);
   if(parentEndsBeforePublish){assert.equal(surface,undefined);continue;}
   assert.equal(surface.current(),true);read.abort();assert.equal(surface.current(),true,'completed read deadline is not the native panel lifetime');assert.equal(surface.signal,parent.signal);parent.abort();assert.equal(surface.current(),false);
@@ -85,4 +85,17 @@ test('disposing a source loader aborts both pending account candidates without o
   await resolveSourceNominationAccount(parseSourceNomination(q())!,{current:()=>true,catalog:async()=>[{key:'sender'},{key:'recipient'},{key:'never'}],child:async key=>{started++;await held;return {accountRef:key==='sender'?'account_one':'other'};}},signal);
  }});
  const pending=loader.run();await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(started,2);loader.dispose();await pending;release();await new Promise<void>(resolve=>setImmediate(resolve));assert.deepEqual(states,['pending']);assert.equal(started,2);
+});
+
+
+test('removing source query clears its error and aborts only the navigation while retaining the Experience',async()=>{
+ const parent=new AbortController(),states:(string|null)[]=[],signals:AbortSignal[]=[],lifetimes:AbortSignal[]=[];let release!:()=>void,loads=0;
+ const navigation=createSourceNominationNavigation({current:()=>true,signal:parent.signal,clear:()=>states.push(null),change:state=>states.push(state),load:async(_nomination,signal,lifetime)=>{loads++;signals.push(signal);lifetimes.push(lifetime);await new Promise<void>(done=>{release=done;});signal.throwIfAborted();}});
+ navigation.reset(q().toString());await Promise.resolve();assert.equal(loads,1);navigation.reset('');assert.equal(signals[0].aborted,true);assert.equal(lifetimes[0].aborted,true);assert.equal(parent.signal.aborted,false);release();await new Promise<void>(done=>setImmediate(done));assert.deepEqual(states,[null,'pending',null]);await navigation.run();assert.equal(loads,1);
+ navigation.reset(q().toString());await Promise.resolve();assert.equal(loads,2);release();await new Promise<void>(done=>setImmediate(done));assert.equal(states.at(-1),'opened');navigation.dispose();assert.equal(lifetimes[1].aborted,true);
+});
+test('failed source removal cannot leave Retry state or publish an old result after the next nomination',async()=>{
+ const parent=new AbortController(),states:(string|null)[]=[];let calls=0;
+ const navigation=createSourceNominationNavigation({current:()=>true,signal:parent.signal,clear:()=>states.push(null),change:state=>states.push(state),load:async()=>{calls++;throw Error('synthetic read failure');}});
+ navigation.reset(q().toString());await new Promise<void>(done=>setImmediate(done));assert.equal(states.at(-1),'failed');navigation.reset('unrelated=1');assert.equal(states.at(-1),null);await navigation.run();assert.equal(calls,1);navigation.dispose();navigation.reset(q().toString());assert.equal(calls,1);
 });

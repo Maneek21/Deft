@@ -1,3 +1,4 @@
+import {beginExperienceReadTrace,traceExperienceRead} from './app-experience-read-trace';
 import { parseExperienceView, type ExperienceNode, type ExperienceView, type ExperienceViewOptions } from './app-experience-bridge';
 import { createExperienceDocumentElement, printExperienceDocument } from './app-experience-safe-document';
 import { bindExperienceKeyboard, cancelExperienceKeyboardFocus } from './app-experience-keyboard';
@@ -31,6 +32,8 @@ export type ExperienceRendererOptions = ExperienceViewOptions & Readonly<{
   mountRecordMirrorControl?:(node:Extract<ExperienceNode,{kind:'record_mirror_control'}>,wrapper:HTMLElement,emit:(event:ExperienceUiEvent)=>unknown,context:ExperienceDocumentContext)=>void|(()=>void);
   mountLocalJobControl?:(node:Extract<ExperienceNode,{kind:'local_job_schedule'|'local_job_list'}>,wrapper:HTMLElement,emit:(event:ExperienceUiEvent)=>unknown,context:ExperienceDocumentContext)=>void|(()=>void);
   mountRecordForm?:(node:Extract<ExperienceNode,{kind:'record_form'}>,wrapper:HTMLElement,emit:(event:ExperienceUiEvent)=>unknown,context:ExperienceDocumentContext)=>void|(()=>void);
+  /** Trusted lifetime/account/exposure key. Omission retains per-render disposal. */
+  recordDocumentScope?:(node:RecordDocumentNode)=>string|undefined;
   resolveRecordDocument?:(node:RecordDocumentNode,context:ExperienceDocumentContext)=>Promise<DocumentNode>;
   enhanceRecordDocument?:(node:RecordDocumentNode,resolved:DocumentNode,wrapper:HTMLElement,context:ExperienceDocumentContext)=>void|(()=>void);
 }>;
@@ -38,6 +41,7 @@ type RendererContext = ExperienceRendererOptions & Readonly<{
   printControls: ReadonlyMap<string, DocumentNode | ResourceDocumentNode | RecordDocumentNode>;
   recordDocuments: ReadonlyMap<string,RecordDocumentNode>;
   resolvedDocuments: Map<string, DocumentNode>;
+  retainedDocuments: Map<string,RetainedDocument>;
   signal: AbortSignal;
   addDisposer: (dispose: void | (() => void)) => void;
   current: () => boolean;
@@ -293,7 +297,13 @@ type InputDelivery = { values: Map<string, string>; authored: Map<string, string
 const inputDeliveries = new WeakMap<HTMLElement, InputDelivery>();
 const renderGenerations = new WeakMap<HTMLElement, object>();
 const documentLifecycles = new WeakMap<HTMLElement, { controller: AbortController; disposers: (() => void)[] }>();
-function disposeDocuments(container: HTMLElement): void {
+type RetainedDocument={scope:string;fingerprint:string;controller:AbortController;wrapper:HTMLElement;disposers:(()=>void)[];resolved?:DocumentNode;scopeCurrent:()=>boolean};
+const retainedDocuments=new WeakMap<HTMLElement,Map<string,RetainedDocument>>();
+const documentFingerprint=(node:RecordDocumentNode)=>JSON.stringify(node);
+const recordScope=(options:ExperienceRendererOptions,node:RecordDocumentNode)=>{try{return options.recordDocumentScope?.(node);}catch{return undefined;}};
+const disposeRecord=(entry:RetainedDocument)=>{entry.controller.abort();for(const dispose of entry.disposers){try{dispose();}catch{/* Release other source handles. */}}entry.disposers.length=0;};
+function disposeDocuments(container: HTMLElement,preserveRecords=false): void {
+  if(!preserveRecords){const records=retainedDocuments.get(container);retainedDocuments.delete(container);for(const entry of records?.values()??[])disposeRecord(entry);}
   renderGenerations.delete(container);
   const lifecycle = documentLifecycles.get(container);
   documentLifecycles.delete(container);
@@ -338,7 +348,7 @@ function activateControl(id:string,emit:ExperienceEventDelivery,delivery:InputDe
   if(!options.current()||options.signal.aborted)return;
   const linked=options.printControls.get(id);
   if(linked){
-    const document=linked.kind==='resource_document'||linked.kind==='record_document'?options.resolvedDocuments.get(linked.id):linked;
+    const document=linked.kind==='resource_document'||linked.kind==='record_document'?(options.resolvedDocuments.get(linked.id)??options.retainedDocuments.get(linked.id)?.resolved):linked;
     if(linked.kind==='resource_document'||linked.kind==='record_document'){if(document)options.printDocument?.(document);return;}
     if(document&&!options.printDocument?.(document))printExperienceDocument({format:document.format,content:document.content,...(document.truncated===undefined?{}:{truncated:document.truncated})},document.title,document.metadata);
     return;
@@ -372,18 +382,29 @@ function renderNode(node: ExperienceNode, emit: ExperienceEventDelivery, deliver
   }
   if (node.kind === 'resource_document'||node.kind==='record_document') {
     const wrap = el('section', 'ex-document-view'); wrap.dataset.renderKey = node.id;
+    let retained:RetainedDocument|undefined;
+    if(node.kind==='record_document'){
+      const scope=recordScope(options,node),prior=options.retainedDocuments.get(node.id);
+      if(prior&&scope===prior.scope&&documentFingerprint(node)===prior.fingerprint&&!prior.controller.signal.aborted){if(prior.resolved)options.resolvedDocuments.set(node.id,prior.resolved);return prior.wrapper;}
+      if(scope){
+        const controller=new AbortController(),scopeOptions=options;
+        retained={scope,fingerprint:documentFingerprint(node),controller,wrapper:wrap,disposers:[],scopeCurrent:()=>recordScope(scopeOptions,node)===scope};
+        const entry=retained;options.retainedDocuments.set(node.id,entry);beginExperienceReadTrace(controller.signal,'reader.lifecycle');
+        options={...options,signal:controller.signal,current:()=>!controller.signal.aborted&&scopeOptions.retainedDocuments.get(node.id)===entry&&entry.scopeCurrent(),addDisposer:dispose=>{if(dispose)entry.disposers.push(dispose);}};
+      }
+    }
     wrap.setAttribute('aria-busy', 'true'); wrap.textContent = 'Loading document…';
     const context: ExperienceDocumentContext = { signal: options.signal, current: options.current };
     void Promise.resolve().then(() => {
       if (!options.current() || options.signal.aborted) return undefined;
-      return node.kind==='record_document'?options.resolveRecordDocument?.(node,context):options.resolveResourceDocument?.(node, context);
+      return traceExperienceRead(context.signal,'reader.presentation',async()=>node.kind==='record_document'?options.resolveRecordDocument?.(node,context):options.resolveResourceDocument?.(node, context));
     }).then(resolved => {
       if (!options.current() || options.signal.aborted) return;
       const parsed = resolved && parseExperienceView({ root: { ...resolved, id: node.id, printable: false, print_control_id: undefined } });
       if (!parsed || parsed.root.kind !== 'document') throw Error('APP_DOCUMENT_UNAVAILABLE');
       const documentNode: DocumentNode = { ...parsed.root, printable: node.printable,
         ...(node.print_control_id ? { print_control_id: node.print_control_id } : {}) };
-      options.resolvedDocuments.set(node.id, documentNode);
+      options.resolvedDocuments.set(node.id, documentNode);if(retained)retained.resolved=documentNode;
       // Existing safe-document rendering remains the only author-content sink.
       const content = renderNode(documentNode, emit, delivery, { ...options, enhanceDocument: undefined,
         // Resolved private bytes are never a fallback print authority. The host
@@ -603,15 +624,18 @@ export function renderExperienceView(
 ): void {
   const parsed = parseExperienceView(view, options);
   if (!parsed) { clearExperienceView(container); return; }
-  disposeDocuments(container);
+  const records=new Map<string,RecordDocumentNode>();const collect=(node:ExperienceNode)=>{if(node.kind==='record_document')records.set(node.id,node);else if(node.kind==='stack')node.children.forEach(collect);};collect(parsed.root);
+  const kept=retainedDocuments.get(container)??new Map<string,RetainedDocument>();
+  for(const [id,entry]of kept){const next=records.get(id);if(!next||recordScope(options,next)!==entry.scope||documentFingerprint(next)!==entry.fingerprint){disposeRecord(entry);kept.delete(id);}else entry.scopeCurrent=()=>recordScope(options,next)===entry.scope;}
+  retainedDocuments.set(container,kept);disposeDocuments(container,true);
   const generation = {}; renderGenerations.set(container, generation);
   const lifecycle = { controller: new AbortController(), disposers: [] as (() => void)[] };
   documentLifecycles.set(container, lifecycle);
   const printControls = new Map<string, DocumentNode | ResourceDocumentNode | RecordDocumentNode>();
   const collectPrint = (node: ExperienceNode) => { if ((node.kind === 'document' || node.kind === 'resource_document'||node.kind==='record_document') && node.printable && node.print_control_id) printControls.set(node.print_control_id, node); else if (node.kind === 'stack') node.children.forEach(collectPrint); };
   collectPrint(parsed.root);
-  const recordDocuments=new Map<string,RecordDocumentNode>();const collectRecords=(node:ExperienceNode)=>{if(node.kind==='record_document')recordDocuments.set(node.id,node);else if(node.kind==='stack')node.children.forEach(collectRecords);};collectRecords(parsed.root);
-  const context: RendererContext = { ...options, printControls, recordDocuments, resolvedDocuments: new Map(), signal: lifecycle.controller.signal,
+  const recordDocuments=new Map<string,RecordDocumentNode>();const collectRecords=(node:ExperienceNode)=>{if(node.kind==='record_document')recordDocuments.set(node.id,node);else if(node.kind==='stack')node.children.forEach(collectRecords);};collectRecords(parsed.root);if(recordDocuments.size&&!options.recordDocumentScope)beginExperienceReadTrace(lifecycle.controller.signal,'reader.lifecycle');
+  const context: RendererContext = { ...options, printControls, recordDocuments, resolvedDocuments: new Map(),retainedDocuments:kept, signal: lifecycle.controller.signal,
     addDisposer: dispose => { if (dispose) lifecycle.disposers.push(dispose); },
     current: () => renderGenerations.get(container) === generation };
   let delivery = inputDeliveries.get(container);

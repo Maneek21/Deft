@@ -3,6 +3,9 @@ import { appRunAttempts, appRuns, appRuntimeSessions } from '@deft/db/schema';
 import { db } from './db.js';
 import { isAppResourceSyncChannelEnabled } from './env.js';
 import type { AppRunAttemptRunner } from './app-run-attempt-runner.js';
+import { resourceSyncClaimContext, type ResourceSyncClaimRequest } from './app-resource-sync-claim-budget.js';
+import { resourceSyncClaimDatabase } from './app-resource-sync-claim-db.js';
+import type { AppRunTransaction } from './app-run-repository.js';
 import { hashAppResourceSyncToken } from './app-resource-sync-policy.js';
 import {
   AppResourceSyncClaimRequestSchema, AppResourceSyncHeartbeatRequestSchema,
@@ -17,12 +20,13 @@ export function appResourceSyncChannelEnabled(): boolean {
 export class AppResourceSyncChannel {
   constructor(private readonly runner: AppRunAttemptRunner) {}
 
-  async claim(value: unknown) {
+  async claim(value: unknown, options: ResourceSyncClaimRequest = {}) {
     if (!appResourceSyncChannelEnabled()) return null;
+    const context = resourceSyncClaimContext(resourceSyncClaimDatabase(), options);
     const request = AppResourceSyncClaimRequestSchema.parse(value);
-    const identity = await this.#session(request.session_id, request.session_token);
+    const identity = await this.#session(request.session_id, request.session_token, context.transaction);
     if (!identity) return null;
-    const candidates = await db.select({
+    const candidates = await context.transaction(async tx => tx.select({
       run_id: appRunAttempts.run_id, attempt_id: appRunAttempts.id,
     }).from(appRunAttempts).innerJoin(appRuns, and(
       eq(appRuns.org_id, appRunAttempts.org_id), eq(appRuns.id, appRunAttempts.run_id),
@@ -33,13 +37,15 @@ export class AppResourceSyncChannel {
       eq(appRuns.review_scope, 'reviewed_resource_sync'),
       isNull(appRuns.origin_runtime_binding_id),
       isNotNull(appRuns.execution_released_at), gt(appRuns.input_expires_at, new Date()),
-    )).orderBy(asc(appRunAttempts.created_at)).limit(8);
+    )).orderBy(asc(appRunAttempts.created_at)).limit(8));
     for (const candidate of candidates) {
+      context.check();
       const claimed = await this.runner.claimResourceSyncAttempt({
         org_id: identity.org_id, run_id: candidate.run_id,
         attempt_id: candidate.attempt_id, session_id: request.session_id,
         token_hash: identity.token_hash,
-      });
+      }, { transaction: context.transaction });
+      context.check();
       if (claimed) return claimed;
     }
     return null;
@@ -79,11 +85,12 @@ export class AppResourceSyncChannel {
     });
   }
 
-  async #session(sessionId: string, token: string): Promise<Readonly<{
+  async #session(sessionId: string, token: string,
+    transaction?: <T>(work: (tx: AppRunTransaction) => Promise<T>) => Promise<T>): Promise<Readonly<{
     org_id: string; resource_binding_id: string; token_hash: string;
   }> | null> {
     const tokenHash = hashAppResourceSyncToken(token);
-    const [session] = await db.select({
+    const read = async (source: typeof db | AppRunTransaction) => source.select({
       org_id: appRuntimeSessions.org_id,
       resource_binding_id: appRuntimeSessions.resource_binding_id,
       token_hash: appRuntimeSessions.token_hash,
@@ -92,6 +99,7 @@ export class AppResourceSyncChannel {
       eq(appRuntimeSessions.audience, 'app_resource_sync'),
       isNull(appRuntimeSessions.runtime_binding_id),
     )).limit(1);
+    const [session] = transaction ? await transaction(read) : await read(db);
     if (!session?.resource_binding_id) return null;
     return { ...session, resource_binding_id: session.resource_binding_id };
   }

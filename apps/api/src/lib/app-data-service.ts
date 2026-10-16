@@ -1,3 +1,4 @@
+import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
 import {appConsentDeadline} from '@deft/app-kit';
 import {assertFutureRecordActionLocalRequest,acknowledgeFutureRecordActionLocal} from './app-future-record-action-local.js';
 import {futureRecordActionWindowDeadline,assertPreparedFutureRecordAction} from './app-future-record-action-window.js';
@@ -5,17 +6,16 @@ import {invokeRecordChange} from './app-data-record-change-service.js';
 import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {randomUUID,createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {and,eq} from 'drizzle-orm';
 import {AppDataRequestSchema,AppDataOperationInputSchema,AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema,
  AppDataConsentSnapshotSchema,AppDataConsentReviewRequestSchema,AppDataConsentActivateRequestSchema,AppDataContextSchema,AppDataResolveInputSchema,
- APP_DATA_LIMITS,type AppDataResult,type AppDataRequest} from '@deft/app-kit';
+ type AppDataRequest} from '@deft/app-kit';
 import {currentConnectionSessionLocators} from './app-connection-current-locators.js';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';
 import {AppConnectionSessionRecordSchema} from './app-connection-session-service.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
 import {PostgresAppDataStore} from './app-data-store.js';
-import {appDataDenied,appDataDigest,appDataRequiresConsent,currentAppDataAuthority,type CurrentAppDataAuthority} from './app-data-authority.js';
+import {appDataDenied,appDataDigest,appDataRequiresConsent,currentAppDataAuthority,currentAppDataContext,type CurrentAppDataAuthority} from './app-data-authority.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 import type {WebAuthorityGuard} from './app-resource-sync-web-authority.js';
 import {withAppDataBinaryIo} from './app-data-io-limits.js';
@@ -26,7 +26,7 @@ const invalid=()=>new AppError('Invalid App data request','APP_ACTION_INVALID',4
 const conflict=()=>new AppError('App data request already exists; reconcile its status','APP_STATE_CONFLICT',409);
 export class AppDataService {
  constructor(readonly caller:ExperienceCaller,readonly guard:WebAuthorityGuard){}
- async current(session:string,store:string,requiresConsent:boolean|'optional'=true,operation?:string,expectedConsentId?:string){return currentAppDataAuthority(this.caller,session,store,this.guard,requiresConsent,expectedConsentId,appDataConnectionActionSelection(operation));}
+ async current(session:string,store:string,requiresConsent:boolean|'optional'=true,operation?:string,expectedConsentId?:string){return measureAppDataPhase('current',()=>currentAppDataAuthority(this.caller,session,store,this.guard,requiresConsent,expectedConsentId,appDataConnectionActionSelection(operation)));}
  async review(sessionId:string,raw:unknown){const input=AppDataConsentReviewRequestSchema.parse(raw),authority=await this.current(sessionId,input.store_key,false);
   const expiry=appDataConsentExpiry(input.expires_at,authority.scope.consent_expires_at,authority.consent_max_seconds,Date.now(),input.consent_lifetime,authority.scope.consent_lifetime,authority.allow_until_revoked===true);
   const snapshot=AppDataConsentSnapshotSchema.parse({schema_version:'deft.app_data_consent.v1',consent_id:randomUUID(),scope:authority.scope,
@@ -47,7 +47,7 @@ export class AppDataService {
  }
  async revoke(sessionId:string,id:string){const store=new PostgresAppDataStore(this.caller),row=await store.consent(id);if(!row)throw appDataDenied();if(row.connection_session_id!==sessionId){const authority=await this.current(sessionId,row.store_key,false);if(!authority.consent_connection_ids.includes(row.connection_session_id))throw appDataDenied();}await store.revoke(id);return {revoked:true};}
  async invoke(sessionId:string,raw:unknown,bytes?:Uint8Array,signal?:AbortSignal){
-  const request=AppDataRequestSchema.parse(raw);return withAppDataBinaryIo(this.caller,request.operation,()=>this.invokeOwned(sessionId,request,bytes,signal));
+  const request=AppDataRequestSchema.parse(raw);return withAppDataDiagnostic('invoke',()=>withAppDataBinaryIo(this.caller,request.operation,()=>this.invokeOwned(sessionId,request,bytes,signal)),request.request_id);
  }
  private async invokeOwned(sessionId:string,raw:unknown,bytes?:Uint8Array,signal?:AbortSignal){
   const input=AppDataRequestSchema.parse(raw),operation=AppDataOperationInputSchema.parse({operation:input.operation,input:input.input}),storeKey=operation.input.store_key;
@@ -85,7 +85,7 @@ export class AppDataService {
   const controller=new AbortController(),abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});const timer=setTimeout(abort,Math.max(1,deadline-Date.now()));
   try{
    await this.assertCurrent(authority,sessionId,storeKey,input.operation);controller.signal.throwIfAborted();
-   const reply=await (await getAppConnectionSessionRegistry()).dataRuntime(authority.scope,authority.profile).request(request,controller.signal,bytes);
+   const reply=await measureAppDataPhase('runtime_request',async()=>(await getAppConnectionSessionRegistry()).dataRuntime(authority.scope,authority.profile).request(request,controller.signal,bytes));
    controller.signal.throwIfAborted();await this.assertCurrent(authority,sessionId,storeKey,input.operation);
    const envelope=reply.result??reply.metadata;if(!envelope||envelope.request_id!==input.request_id||envelope.operation!==input.operation||envelope.input_digest!==digest)throw invalid();
    if(reply.metadata){const meta=reply.metadata,cap=input.operation==='resource_read_source'?authority.store.resource_content!.max_source_bytes:
@@ -153,22 +153,20 @@ export class AppDataService {
   if(result.targets.length!==1||!target||!target.stores.some(store=>store.declaration.key===input.store_key))throw appDataDenied();
   return result;
  }
- async context(installationId:string,options:{targetKey?:string;storeKey?:string;includeIdentities?:boolean}={}){const rows=await currentConnectionSessionLocators(db,this.caller,installationId,options.targetKey).limit(33);
+ async context(installationId:string,options:{targetKey?:string;storeKey?:string;includeIdentities?:boolean}={}){return withAppDataDiagnostic(options.storeKey?'resolve':'context',()=>this.contextOwned(installationId,options));}
+ private async contextOwned(installationId:string,options:{targetKey?:string;storeKey?:string;includeIdentities?:boolean}){const rows=await currentConnectionSessionLocators(db,this.caller,installationId,options.targetKey).limit(33);
   if(rows.length>32)throw invalid();
   const targets=[];for(const {session:row} of rows){const session=AppConnectionSessionRecordSchema.parse(row.record);if(session.scope.installation_id!==installationId||session.state!=='connected'||!session.account)continue;
-   const {appVersions}=await import('@deft/db/schema');const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,this.caller.org_id),eq(appVersions.id,session.scope.app_version_id)));
-   const {parseAttachmentAppManifest}=await import('@deft/app-kit');const declarations=parseAttachmentAppManifest(version?.manifest).record_stores??[],stores=[];
-   // Resolve nominates one declared store; preserve its signed saved-content
-   // dependencies for trusted forms without reading every unrelated store.
-   const requested=options.storeKey===undefined?undefined:declarations.find(item=>item.key===options.storeKey&&item.resource_key===session.scope.resource_key);
-   const selected=options.storeKey===undefined?null:new Set([options.storeKey,...(requested?.record_changes??[]).map(change=>change.source_store_key)]);
-   let identities:NonNullable<AppDataResult['identities']>=[];for(const declaration of declarations){if(declaration.resource_key!==session.scope.resource_key||selected&&!selected.has(declaration.key))continue;
-    try{const authority=await this.current(session.session_id,declaration.key,'optional','connection_metadata');const consent=authority.consent?{consent_id:authority.consent.consent_id,consent_digest:authority.consent.consent_digest,expires_at:authority.consent.expires_at?.toISOString()??null,...(authority.consent.consent_lifetime?{consent_lifetime:authority.consent.consent_lifetime}:{})}:null;
-     if(options.includeIdentities!==false&&!identities.length){const metadata=await this.invoke(session.session_id,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'connection_metadata',input:{store_key:declaration.key}});identities=metadata.result?.identities??[];}
-     stores.push({declaration:authority.store,consent});
-    }catch(error){if(!(error instanceof AppError))throw error;}
-   }
-   if(stores.length)targets.push({session_id:session.session_id,target_key:session.scope.target_key,account:session.account,resource_key:session.scope.resource_key,identities,...(session.scope.consent_lifetime==='until_revoked'?{allow_until_revoked:true}:{}),stores});
+   try{
+    const result=await currentAppDataContext(this.caller,session.session_id,this.guard,options,async storeKey=>{
+     const metadata=await this.invoke(session.session_id,{schema_version:'deft.app_data_request.v1',request_id:randomUUID(),operation:'connection_metadata',input:{store_key:storeKey}});
+     return metadata.result?.identities??[];
+    });
+    const current=result.session;
+    if(current.scope.installation_id!==installationId||!current.account)throw appDataDenied();
+    const stores=result.authorities.map(authority=>({declaration:authority.store,consent:authority.consent?{consent_id:authority.consent.consent_id,consent_digest:authority.consent.consent_digest,expires_at:authority.consent.expires_at?.toISOString()??null,...(authority.consent.consent_lifetime?{consent_lifetime:authority.consent.consent_lifetime}:{})}:null}));
+    if(stores.length)targets.push({session_id:current.session_id,target_key:current.scope.target_key,account:current.account,resource_key:current.scope.resource_key,identities:result.identities,...(current.scope.consent_lifetime==='until_revoked'?{allow_until_revoked:true}:{}),stores});
+   }catch(error){if(!(error instanceof AppError))throw error;}
   }return AppDataContextSchema.parse({schema_version:'deft.app_data_context.v1',installation_id:installationId,targets});
  }
 }

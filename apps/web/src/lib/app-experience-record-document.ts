@@ -1,3 +1,4 @@
+import {inheritExperienceReadTrace} from './app-experience-read-trace';
 import type {ExperienceNode} from './app-experience-bridge';
 import type {ExperienceDocumentContext,ExperienceRendererOptions} from './app-experience-renderer';
 import type {SourcePresentation} from './app-experience-source-view';
@@ -28,7 +29,7 @@ export function createExperienceRecordDocumentHost(options:{storeKeys:readonly s
   enhanceRecordDocument(node,resolved,wrapper,context){const saved=fetched.get(context);saved?.cleanup();if(!valid(node,context))return;
    if(!saved||saved.fingerprint!==fingerprint(node)||!available(node,context,saved.value,context.signal)||['id','format','content','truncated'].some(key=>resolved[key as keyof Document]!==saved.leaf[key as keyof Document]))throw Error('Record document changed');
    const nomination=saved.fingerprint;let pending:Presentation|undefined=saved.value;
-   const dispose=options.mount(node,resolved,wrapper,()=>valid(node,context),async signal=>{const value=pending;pending=undefined;await Promise.resolve();
+   const dispose=options.mount(node,resolved,wrapper,()=>valid(node,context),async signal=>{inheritExperienceReadTrace(context.signal,signal);const value=pending;pending=undefined;await Promise.resolve();
     if(!value||nomination!==fingerprint(node)||!available(node,context,value,signal))throw Error('Record document unavailable');return value;});let disposed=false;
    const close=()=>{if(disposed)return;disposed=true;pending=undefined;context.signal.removeEventListener('abort',close);dispose();};
    context.signal.addEventListener('abort',close,{once:true});if(!valid(node,context))close();return close;

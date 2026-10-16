@@ -1,3 +1,4 @@
+import {traceExperienceRead} from './app-experience-read-trace';
 import {experienceAuthorityResponse,ExperienceAuthorityUnavailable} from './app-experience-connection';
 import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import {createRecordSeedLocator} from './app-experience-record-seed';
@@ -29,9 +30,9 @@ export function createExperienceDataClient(options:{installationId:string;target
  const context=async(signal:AbortSignal,storeKey?:string)=>{check(signal);
   const resolve=options.targetKey!==undefined&&storeKey!==undefined;
   const input=resolve?AppDataResolveInputSchema.parse({schema_version:'deft.app_data_resolve.v1',target_key:options.targetKey,store_key:storeKey}):null;
-  const response=await options.fetch(`/api/app-data/installations/${encodeURIComponent(options.installationId)}/${resolve?'resolve':'context'}`,{signal,cache:'no-store',...(input?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)}:{})});
+  const response=await traceExperienceRead(signal,resolve?'data.resolve':'data.context',()=>options.fetch(`/api/app-data/installations/${encodeURIComponent(options.installationId)}/${resolve?'resolve':'context'}`,{signal,cache:'no-store',...(input?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)}:{})}));
   if(experienceAuthorityResponse(response)==='unavailable')throw new ExperienceAuthorityUnavailable();
-  const bytes=await boundedBytes(response,65536,signal);try{const value=AppDataContextSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes)));check(signal);
+  const bytes=await traceExperienceRead(signal,'data.body',()=>boundedBytes(response,65536,signal));try{const value=AppDataContextSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes)));check(signal);
    if(value.installation_id!==options.installationId||input&&(value.targets.length!==1||value.targets[0].target_key!==input.target_key||!value.targets[0].stores.some(store=>store.declaration.key===input.store_key)))throw Error('App data scope changed');return value;}finally{bytes.fill(0);}};
  const select=async(storeKey:string,signal:AbortSignal)=>{const value=await context(signal,storeKey),candidates=value.targets.filter(target=>target.stores.some(store=>store.declaration.key===storeKey));
   const exact=options.targetKey?candidates.filter(target=>target.target_key===options.targetKey):candidates;
@@ -40,19 +41,19 @@ export function createExperienceDataClient(options:{installationId:string;target
   check(signal);const target=selected??await select(storeKey,signal),data=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input});
   let frame:Uint8Array|undefined,bytes:Uint8Array|undefined;
   try{if(upload){bytes=new Uint8Array(await upload.arrayBuffer());frame=frameAppData(data,bytes);}
-   const response=await options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/${upload?'binary':'requests'}`,{
-    method:'POST',signal,headers:{'Content-Type':upload?APP_DATA_FRAME_MEDIA_TYPE:'application/json'},body:frame?new Uint8Array(frame).buffer:JSON.stringify(data)});
+   const response=await traceExperienceRead(signal,'data.request',()=>options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/${upload?'binary':'requests'}`,{
+    method:'POST',signal,headers:{'Content-Type':upload?APP_DATA_FRAME_MEDIA_TYPE:'application/json'},body:frame?new Uint8Array(frame).buffer:JSON.stringify(data)}),requestId);
    if(response.headers.get('content-type')?.split(';')[0]!=='application/json')throw Error('App data result unavailable');
-   const resultBytes=await boundedBytes(response,APP_DATA_LIMITS.result_json_bytes,signal);try{const result=AppDataResultSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(resultBytes)));check(signal);
+   const resultBytes=await traceExperienceRead(signal,'data.body',()=>boundedBytes(response,APP_DATA_LIMITS.result_json_bytes,signal));try{const result=AppDataResultSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(resultBytes)));check(signal);
     if(result.request_id!==requestId||result.operation!==operation||result.input_digest!==await appDataInputDigest(operation,input)||result.outcome!=='completed'&&!(allowSettled&&['conflict','not_found'].includes(result.outcome))||result.record&&input.store_key!==undefined&&result.record.store_key!==input.store_key)throw Error('App data result not confirmed');return result;
    }finally{resultBytes.fill(0);}
   }finally{bytes?.fill(0);frame?.fill(0);}
  };
  const binary=async(storeKey:string,operation:AppDataRequest['operation'],input:Record<string,unknown>,signal:AbortSignal)=>{
   check(signal);const target=await select(storeKey,signal),requestId=crypto.randomUUID(),data=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input});
-  const response=await options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/requests`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  const response=await traceExperienceRead(signal,'data.binary',()=>options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/requests`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),requestId);
   if(response.headers.get('content-type')?.split(';')[0]!==APP_DATA_FRAME_MEDIA_TYPE)throw Error('App data frame unavailable');
-  const raw=await boundedBytes(response,4+APP_DATA_LIMITS.frame_header_bytes+APP_DATA_LIMITS.source_bytes,signal);
+  const raw=await traceExperienceRead(signal,'data.body',()=>boundedBytes(response,4+APP_DATA_LIMITS.frame_header_bytes+APP_DATA_LIMITS.source_bytes,signal));
   try{const parsed=parseAppDataFrame(raw),header=AppDataBinaryMetadataSchema.parse(parsed.header);check(signal);
    if(header.request_id!==requestId||header.operation!==operation||header.input_digest!==await appDataInputDigest(operation,input)
     ||header.record_id!==input.record_id||header.size_bytes!==parsed.bytes.length||header.sha256!==await sha(parsed.bytes)

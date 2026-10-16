@@ -6,6 +6,7 @@ import { readAttachmentFrame } from '../lib/app-attachment-frame.js';
 import { AppError } from '../lib/app-errors.js';
 import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 } from '@deft/app-kit';
 import { markAuthenticatedResourceSyncHeartbeat } from '../middleware/app-resource-sync-limits.js';
+import { RESOURCE_SYNC_CLAIM_BUDGET_MS } from '../lib/app-resource-sync-claim-budget.js';
 const APP_RESOURCE_SYNC_AUDIENCE='app_resource_sync' as const;
 const APP_RESOURCE_SYNC_CHANNEL_VERSION=APP_RESOURCE_SYNC_CHANNEL_VERSION_V3;
 
@@ -101,8 +102,9 @@ appAttachmentSyncChannelRoutes.post('/renew',async c=>{
 });
 appAttachmentSyncChannelRoutes.post('/claim', async (c) => {
   try {
+    const deadline = performance.now() + RESOURCE_SYNC_CLAIM_BUDGET_MS;
     const payload = await request(c, 4096);
-    const claim = await (await getAppAttachmentRuntime()).channel.claim(payload);
+    const claim = await (await getAppAttachmentRuntime()).channel.claim(payload, { signal: c.req.raw.signal, deadline });
     return c.json({ ...identity, claim });
   } catch (error) { return failure(c, error); }
 });

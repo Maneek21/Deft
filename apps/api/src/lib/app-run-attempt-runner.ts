@@ -1097,10 +1097,11 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   async claimResourceSyncAttempt(input: Readonly<{
     org_id: string; run_id: string; attempt_id: string;
     session_id: string; token_hash: string;
-  }>) {
+  }>, options: AppRunRecoveryOptions = {}) {
     if (!this.#syncEnabled()) return null;
-    await this.recoverRun(input.org_id, input.run_id, input.attempt_id);
-    return this.repository.transaction(async (tx) => {
+    const transaction = options.transaction ?? this.repository.transaction.bind(this.repository);
+    await this.recoverRun(input.org_id, input.run_id, input.attempt_id, { transaction });
+    return transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.review_scope !== 'reviewed_resource_sync'
         || run.provider_kind !== 'app_runtime') return null;

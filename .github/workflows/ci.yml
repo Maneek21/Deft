@@ -75,11 +75,14 @@ jobs:
         run: >-
           pnpm --filter @deft/web exec tsx --test
           src/lib/app-experience-*.test.ts
+          src/components/apps/integrations/source-nomination.test.ts
           src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/app-runtime-setup.test.ts
           src/lib/private-state-adoption.test.ts
           src/lib/action-batch-review.test.ts
           src/lib/app-navigation.test.ts
+      - name: Test bounded resource observation claim deadlines
+        run: pnpm --filter @deft/api exec tsx --test src/lib/app-resource-sync-claim-budget.test.ts
       - name: Type check API
         run: pnpm --filter @deft/api typecheck
       - name: Type check Web

@@ -1,3 +1,5 @@
+import {collectAppDataContext} from './app-data-context-collection.js';
+import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
 import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
 import {validateContinuationCarrier} from './app-connection-consent-continuation-fence.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
@@ -9,7 +11,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {AppDataConnectionSchema,AppDataConsentSnapshotSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,
   canonicalAppDataJson,parseAttachmentAppManifest,AppResourceActionReleasedInputSchema,
-  type RecordStoreDeclaration,type AppDataRuntimeRequest} from '@deft/app-kit';
+  type AppDataResult} from '@deft/app-kit';
 import {appVersions,appGrantSnapshots,webSessions,users,orgMembers,appDataInvocations} from '@deft/db/schema';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';
@@ -34,13 +36,13 @@ export function appDataRetainedGuard(caller:ExperienceCaller):WebAuthorityGuard 
   expiry=Math.min(expiry,session.expires_at.getTime());if(expiry<=Date.now())throw appDataDenied();
  },{current_web_session_expires_at:()=>new Date(expiry)});
 }
-export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,storeKey:string,guard:WebAuthorityGuard,
- requireConsent:boolean|'optional',expectedConsentId?:string,requiredAction?:{action_key:string;action_binding_id:string}|'none'){
+async function currentAppDataBase(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,guard:WebAuthorityGuard,
+ requiredAction?:{action_key:string;action_binding_id:string}|'none'){
  if(process.env.DEFT_APPS_ENABLED!=='true'||!isAppOwnerConnectionsEnabled())throw appDataDenied();
  const sessions=new PostgresAppConnectionSessionStore(db),locator={org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId};
- const session=await sessions.read(locator,'data');if(!session||session.state!=='connected'||!session.runtime_session_ref||!session.account)throw appDataDenied();
+ const session=await measureAppDataPhase('session_read',()=>sessions.read(locator,'data'));if(!session||session.state!=='connected'||!session.runtime_session_ref||!session.account)throw appDataDenied();
  if(!await db.transaction(tx=>appConnectionUpgradeSourceIsAvailable(tx,{org_id:caller.org_id,owner_user_id:caller.user_id,session_id:sessionId,purpose:'saved_read'})))throw appDataDenied();
- const current=await currentAppConnectionReadAuthority(caller,{installation_id:session.scope.installation_id,target_key:session.scope.target_key},guard,requiredAction);
+ const current=await measureAppDataPhase('connection_authority',()=>currentAppConnectionReadAuthority(caller,{installation_id:session.scope.installation_id,target_key:session.scope.target_key},guard,requiredAction));
  if(!isDeepStrictEqual(current.scope,session.scope))throw appDataDenied();
  const declared=(await getAppConnectionSessionRegistry()).protocol(session.scope,session.profile);
  if(declared==='credential_form.v1')await db.transaction(async tx=>{if(!await validateStoredFormConnection(tx,locator,session))await validateContinuationCarrier(tx,session,true);});
@@ -48,13 +50,19 @@ export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_
  const [grant]=await db.select().from(appGrantSnapshots).where(and(eq(appGrantSnapshots.org_id,caller.org_id),eq(appGrantSnapshots.id,current.scope.grant_snapshot_id)));
  if(!version||!grant)throw appDataDenied();const manifest=parseAttachmentAppManifest(version.manifest);
  const declarations=manifest.record_stores??[];if(!isDeepStrictEqual(declarations,(grant.canonical_snapshot as Record<string,unknown>).record_stores??[]))throw appDataDenied();
- const store=declarations.find(item=>item.key===storeKey);if(!store||store.resource_key!==current.scope.resource_key||store.runtime_requirement_key!==current.profile.runtime_requirement_key)throw appDataDenied();
  const policy=manifest.owner_connections?.find(item=>item.resource_key===current.scope.resource_key&&item.provider_profile_key===current.profile.key
   &&item.runtime_requirement_key===current.profile.runtime_requirement_key);if(!policy)throw appDataDenied();
  const connection=AppDataConnectionSchema.parse({session_id:sessionId,session_revision:session.revision,runtime_session_ref:session.runtime_session_ref,account_ref:session.account.account_ref});
- const consentConnections=await appDataConsentConnections(session);
+ const consentConnections=await measureAppDataPhase('consent_connections',()=>appDataConsentConnections(session));
+ return {sessions,locator,session,current,declarations,policy,connection,consentConnections};
+}
+type AppDataBase=Awaited<ReturnType<typeof currentAppDataBase>>;
+function resolveAppDataStore(base:AppDataBase,storeKey:string,requireConsent:boolean|'optional',
+ consentRows:Awaited<ReturnType<PostgresAppDataStore['activeConsent']>>,expectedConsentId?:string){
+ const {current,declarations,policy,connection,consentConnections}=base;
+ const store=declarations.find(item=>item.key===storeKey);if(!store||store.resource_key!==current.scope.resource_key||store.runtime_requirement_key!==current.profile.runtime_requirement_key)throw appDataDenied();
  const policyDigest=appDataDigest(store);let consent:null|{consent_id:string;consent_digest:string;expires_at:Date|null;consent_lifetime?:AppConsentLifetime}=null;
- if(requireConsent){const rows=await new PostgresAppDataStore(caller).activeConsent(consentConnections.map(item=>item.session_id),storeKey);
+ if(requireConsent){const rows=consentRows;
   const valid=rows.filter(row=>{const snap=AppDataConsentSnapshotSchema.parse(row.snapshot);return (!expectedConsentId||row.consent_id===expectedConsentId)
    &&isDeepStrictEqual(snap.scope,current.scope)&&consentConnections.some(item=>item.session_id===snap.connection.session_id&&item.runtime_session_ref===snap.connection.runtime_session_ref&&item.account?.account_ref===snap.connection.account_ref&&snap.connection.session_revision<=item.revision)
    &&snap.connection.account_ref===connection.account_ref&&isDeepStrictEqual(snap.store,store)&&snap.data_policy_digest===policyDigest&&appDataDigest(snap)===row.consent_digest
@@ -62,14 +70,55 @@ export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_
    &&(snap.consent_lifetime==='until_revoked'?policy.allow_until_revoked===true:row.expires_at!.getTime()<=row.created_at.getTime()+policy.max_consent_seconds*1000);});
   if(rows.length!==valid.length||valid.length>1||valid.length===0&&(requireConsent===true||expectedConsentId!==undefined))throw appDataDenied();consent=valid[0]?{...valid[0],...(AppDataConsentSnapshotSchema.parse(valid[0].snapshot).consent_lifetime?{consent_lifetime:'until_revoked' as const}:{})}:null;
  }
- const after=await sessions.read(locator,'data');if(!after||after.state!=='connected'||after.revision!==session.revision)throw appDataDenied();
  const expires_at=Math.min(current.expires_at,appConsentDeadline(current.scope.consent_expires_at,current.scope.consent_lifetime),consent?appConsentDeadline(consent.expires_at,consent.consent_lifetime):Infinity);
  if(expires_at<=Date.now())throw appDataDenied();return {...current,store,connection,consent,consent_connection_ids:consentConnections.map(item=>item.session_id),data_policy_digest:policyDigest,expires_at,
   consent_max_seconds:policy.max_consent_seconds,allow_until_revoked:policy.allow_until_revoked};
 }
+async function finishAppDataBase(base:AppDataBase){
+ const after=await base.sessions.read(base.locator,'data');
+ if(!after||after.state!=='connected'||after.revision!==base.session.revision||base.current.expires_at<=Date.now())throw appDataDenied();
+}
+export async function currentAppDataAuthority(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,storeKey:string,guard:WebAuthorityGuard,
+ requireConsent:boolean|'optional',expectedConsentId?:string,requiredAction?:{action_key:string;action_binding_id:string}|'none'){
+ const base=await currentAppDataBase(caller,sessionId,guard,requiredAction);
+ const rows=requireConsent?await measureAppDataPhase('consent_read',()=>new PostgresAppDataStore(caller).activeConsent(base.consentConnections.map(item=>item.session_id),storeKey)):[];
+ const result=resolveAppDataStore(base,storeKey,requireConsent,rows,expectedConsentId);
+ await finishAppDataBase(base);if(result.expires_at<=Date.now())throw appDataDenied();return result;
+}
+
+/** Context-only batch. Connection authority is checked twice per account;
+ * every store still gets its own current consent/policy validation. This does
+ * not authorize later requests, cache a grant, or supply action authority. */
+export async function currentAppDataContext(caller:Pick<ExperienceCaller,'org_id'|'user_id'|'access_expires_at'>,sessionId:string,guard:WebAuthorityGuard,
+ options:{storeKey?:string;includeIdentities?:boolean},metadata:(store:string)=>Promise<NonNullable<AppDataResult['identities']>>){
+ const selected=(base:AppDataBase)=>{
+  const requested=options.storeKey===undefined?undefined:base.declarations.find(item=>item.key===options.storeKey&&item.resource_key===base.current.scope.resource_key);
+  const keys=options.storeKey===undefined?null:new Set([options.storeKey,...(requested?.record_changes??[]).map(change=>change.source_store_key)]);
+  return base.declarations.filter(item=>item.resource_key===base.current.scope.resource_key&&(!keys||keys.has(item.key)));
+ };
+ const result=await collectAppDataContext({
+  capture:()=>currentAppDataBase(caller,sessionId,guard,'none'),
+  identity:base=>({scope:base.current.scope,profile:base.current.profile,connection:base.connection,declarations:base.declarations,policy:base.policy,consentConnections:base.consentConnections}),
+  metadata:async base=>{if(options.includeIdentities===false)return [];for(const declaration of selected(base)){
+   try{const identities=await metadata(declaration.key);if(identities.length)return identities;}catch(error){if(!(error instanceof AppError))throw error;}
+  }return [];},
+  stores:async base=>{
+   const declarations=selected(base),keys=declarations.map(item=>item.key);
+   if(!keys.length)return [];
+   const rows=await measureAppDataPhase('consent_read',()=>new PostgresAppDataStore(caller).activeConsents(base.consentConnections.map(item=>item.session_id),keys));
+   const stores=[];for(const declaration of declarations){try{
+    const authority=resolveAppDataStore(base,declaration.key,'optional',rows.filter(row=>row.store_key===declaration.key));
+    stores.push(authority);
+   }catch(error){if(!(error instanceof AppError))throw error;}}
+   return stores;
+  },finish:finishAppDataBase,denied:appDataDenied,
+ });
+ return {session:result.base.session,authorities:result.stores,identities:result.identities};
+}
 export type CurrentAppDataAuthority=Awaited<ReturnType<typeof currentAppDataAuthority>>;
 export function appDataRequiresConsent(operation:string){return !operation.startsWith('resource_')&&operation!=='connection_metadata'&&!['run_inspect','run_inspection_status'].includes(operation);}
-export async function appDataRuntimeAuthority(raw:unknown,authorization:string|undefined){
+export async function appDataRuntimeAuthority(raw:unknown,authorization:string|undefined){const id=raw&&typeof raw==='object'&&(raw as Record<string,unknown>).request_id;return withAppDataDiagnostic('authority',()=>appDataRuntimeAuthorityOwned(raw,authorization),typeof id==='string'?id:undefined);}
+async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|undefined){
  if(raw&&typeof raw==='object'&&(raw as Record<string,unknown>).schema_version==='deft.app_data_authority.v2')return appRecordChangeRuntimeAuthority(raw,authorization);
  const delegated=await (await import('./app-integration-runtime-gateway.js')).maybeAppIntegrationDataRuntimeAuthority(raw,authorization);if(delegated)return delegated;
  const input=AppDataRuntimeAuthorityRequestSchema.parse(raw);const registry=await getAppConnectionSessionRegistry();registry.authenticate(input.scope,authorization);

@@ -171,6 +171,7 @@ export async function shutdownAppRunRuntime(): Promise<void> {
   runtimePromise = null;
   await (await import('./app-attachment-runtime.js')).shutdownAppAttachmentRuntime();
   await (await import('./app-native-execution-db.js')).closeNativeExecutionDatabase();
+  await (await import('./app-resource-sync-claim-db.js')).closeResourceSyncClaimDatabase();
   if (!pending) return;
   try {
     const runtime = await pending;

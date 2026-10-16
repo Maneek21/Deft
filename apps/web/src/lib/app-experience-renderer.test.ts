@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderExperienceView, clearExperienceView, flushExperienceInputs, suspendExperienceView, type ExperienceUiEvent } from './app-experience-renderer';
-import type { ExperienceView } from './app-experience-bridge';
+import { renderExperienceView, clearExperienceView, flushExperienceInputs, suspendExperienceView, type ExperienceUiEvent, type ExperienceDocumentContext } from './app-experience-renderer';
+import type { ExperienceView, ExperienceNode } from './app-experience-bridge';
 
 // Minimal DOM seam exercises native event delivery and replacement, rather than CSS.
 class Element {
@@ -273,4 +273,27 @@ test('menu dispatch rejects disabled parents/items, foreign IDs and callbacks fr
   suspendExperienceView(container);selects[1]('allowed');assert.equal(events.length,1);
   renderExperienceView(container,view(),event=>events.push(event),options);clearExperienceView(container);selects[2]('allowed');assert.equal(events.length,1);
  }finally{for(const [key,descriptor]of saved){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}}
+});
+
+
+test('trusted unchanged reader retains its delayed read across unrelated renders',async()=>{
+ const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));Object.assign(globalThis,{document:dom,HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ const container=new Element('div')as unknown as HTMLElement;let release!:(node:Extract<ExperienceNode,{kind:'document'}>)=>void,reads=0,mounts=0,disposed=0;const contexts:ExperienceDocumentContext[]=[];
+ const node={kind:'record_document' as const,id:'body',profile_version:'deft.record_document.v1' as const,store_key:'drafts',resource_key:'inbox',record_id:'11111111-1111-4111-8111-111111111111',content_digest:'sha256:'+'a'.repeat(64)},view={schema_version:'deft.experience_view.v2' as const,capabilities:['record_document.v1' as const],root:node};
+ const options={capabilities:['record_document.v1' as const],storeKeys:['drafts'],resourceKeys:['inbox'],recordDocumentScope:()=> 'trusted-account-exposure',resolveRecordDocument:async(_node:Extract<ExperienceNode,{kind:'record_document'}>,context:ExperienceDocumentContext)=>{reads++;contexts.push(context);return new Promise<Extract<ExperienceNode,{kind:'document'}>>(done=>{release=done;});},enhanceRecordDocument:()=>{mounts++;return()=>disposed++;}};
+ try{renderExperienceView(container,view,()=>{},options);await Promise.resolve();await Promise.resolve();const wrapper=(container as unknown as Element).children[0];renderExperienceView(container,view,()=>{},options);await Promise.resolve();assert.equal(reads,1);assert.equal(contexts[0].current(),true);assert.equal(contexts[0].signal.aborted,false);assert.equal((container as unknown as Element).children[0],wrapper);release({kind:'document',id:'body',format:'plain',content:'Exact current source'});await new Promise<void>(done=>setImmediate(done));assert.equal(mounts,1);clearExperienceView(container);assert.equal(disposed,1);assert.equal(contexts[0].current(),false);}
+ finally{clearExperienceView(container);for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
+});
+test('retention never survives changed record digest policy trusted scope suspension or clear',async()=>{
+ const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));Object.assign(globalThis,{document:dom,HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ try{for(const change of ['record','digest','policy','scope','revoked','suspend','clear']){
+  const container=new Element('div')as unknown as HTMLElement;let scope:string|undefined='account-session-exposure',reads=0,mounts=0;const contexts:ExperienceDocumentContext[]=[],releases:Array<(value:Extract<ExperienceNode,{kind:'document'}>)=>void>=[];
+  const node:Extract<ExperienceNode,{kind:'record_document'}>={kind:'record_document',id:'body',profile_version:'deft.record_document.v1',store_key:'drafts',resource_key:'inbox',record_id:'11111111-1111-4111-8111-111111111111',content_digest:'sha256:'+'a'.repeat(64)};
+  const view=()=>({schema_version:'deft.experience_view.v2' as const,capabilities:['record_document.v1' as const],root:{...node}});
+  const options={capabilities:['record_document.v1' as const],storeKeys:['drafts'],resourceKeys:['inbox'],recordDocumentScope:()=>scope,resolveRecordDocument:async(_node:Extract<ExperienceNode,{kind:'record_document'}>,context:ExperienceDocumentContext)=>{reads++;contexts.push(context);return new Promise<Extract<ExperienceNode,{kind:'document'}>>(done=>releases.push(done));},enhanceRecordDocument:()=>{mounts++;}};
+  renderExperienceView(container,view(),()=>{},options);await Promise.resolve();await Promise.resolve();
+  if(change==='record')node.record_id='22222222-2222-4222-8222-222222222222';if(change==='digest')node.content_digest='sha256:'+'b'.repeat(64);if(change==='policy')node.image_policy={store_key:'preferences',record_id:'33333333-3333-4333-8333-333333333333',expected_revision:2,content_digest:'sha256:'+'b'.repeat(64),field:'external_images',automatic_value:'always'};if(change==='scope')scope='other-account-session-exposure';if(change==='revoked')scope=undefined;
+  if(change==='suspend')suspendExperienceView(container);else if(change==='clear')clearExperienceView(container);else renderExperienceView(container,view(),()=>{},options);
+  assert.equal(contexts[0].signal.aborted,true,change);assert.equal(contexts[0].current(),false,change);releases[0]({kind:'document',id:'body',format:'plain',content:'MUST NOT REVEAL LATE SOURCE'});await new Promise<void>(done=>setImmediate(done));assert.equal((container as unknown as Element).children.some(child=>child.textContent==='MUST NOT REVEAL LATE SOURCE'),false,change);assert.equal(mounts,0,'late previous source must never mount: '+change);assert.ok(reads<=2);clearExperienceView(container);releases.slice(1).forEach(done=>done({kind:'document',id:'body',format:'plain',content:'late'}));
+ }}finally{for(const [key,descriptor]of saved)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
 });

@@ -129,3 +129,22 @@ test('readonly source revocation at either boundary discards data without retain
  for(const denyAt of [1,2]){const f=fixture(),active=signal(),owner=await f.routing.child('sender',active);let checks=0,work=0;f.setValidate(async()=>++checks!==denyAt);
  await assert.rejects(f.routing.read(owner,active,async()=>{work++;return 'protected';}),/Account visibility ended/);assert.equal(work,denyAt===1?0:1);f.routing.close();}
 });
+
+
+test('operation-local selected read reuses only dispatch selection and always validates disclosure afresh',async()=>{
+ for(const denied of ['none','entry','final']as const){
+  const selected={account:'sender'},seen:unknown[]=[],active=signal();let reads=0,retired=0,checks=0;
+  const routing=createExperienceAccountRouting<object,typeof selected>({current:()=>true,catalog:async()=>[{key:'sender',label:'sender'}],open:async()=>({targetKey:'sender',accountRef:'account:sender',label:'sender',value:{}}),validate:async(_owner,_signal,selection)=>{seen.push(selection);return ++checks!==(denied==='entry'?2:denied==='final'?3:-1);},retire:()=>{retired++;}});
+  const owner=await routing.child('sender',active);seen.length=0;
+  const read=routing.readSelected(owner,active,selected,async()=>{reads++;return 'private';});
+  if(denied==='none'){assert.equal(await read,'private');assert.deepEqual(seen,[selected,undefined]);assert.equal(reads,1);assert.equal(retired,0);}
+  else{await assert.rejects(read,/Account visibility ended/);assert.equal(reads,denied==='entry'?0:1);assert.equal(retired,1);}
+  routing.close();
+ }
+});
+test('retained source identity cannot survive digest changes retirement or replacement with the same account',async()=>{
+ const f=fixture(),active=signal(),owner=await f.routing.child('sender',active),ref={resource_key:'inbox',record_id:'one',content_digest:'digest'};
+ f.routing.retain(owner,[ref]);assert.equal(f.routing.retainedOwner(ref),owner);assert.equal(f.routing.retainedOwner({...ref,content_digest:'changed'}),undefined);
+ f.routing.forget('sender');assert.equal(f.routing.retainedOwner(ref),undefined);const next=await f.routing.child('sender',active);assert.notEqual(next,owner);assert.equal(f.routing.retainedOwner(ref),undefined);
+ f.routing.retain(next,[ref]);f.setCurrent(false);assert.equal(f.routing.retainedOwner(ref),undefined);f.routing.close();assert.equal(f.routing.retainedOwner(ref),undefined);
+});

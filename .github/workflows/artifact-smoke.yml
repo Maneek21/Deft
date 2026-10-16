@@ -10,6 +10,10 @@ on:
         description: Build a downloadable Actions artifact (no publication or deployment)
         type: boolean
         default: false
+      enable_experience_read_trace:
+        description: Enable bounded content-free browser read diagnostics for this image
+        type: boolean
+        default: false
       source_commit:
         description: Exact checked 40-character Host source commit
         type: string
@@ -61,6 +65,7 @@ jobs:
     env:
       REQUESTED_COMMIT: ${{ inputs.source_commit }}
       CHECKS_RUN_ID: ${{ inputs.checks_run_id }}
+      EXPERIENCE_READ_TRACE: ${{ inputs.enable_experience_read_trace && 'true' || 'false' }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -101,6 +106,7 @@ jobs:
             --build-arg NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC=true \
             --build-arg NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER=true \
             --build-arg NEXT_PUBLIC_DEFT_SELF_HOSTED=true \
+            --build-arg NEXT_PUBLIC_DEFT_EXPERIENCE_READ_TRACE="$EXPERIENCE_READ_TRACE" \
             --tag "$image" - 2>&1 | tee .host-artifact/docker-build.log
           docker image inspect "$image" > .host-artifact/image-inspect.json
       - name: Archive exact image, corresponding source and recipe pins
@@ -116,12 +122,14 @@ jobs:
           commit = os.environ['REQUESTED_COMMIT']
           assert image['Os'] == 'linux' and image['Architecture'] == 'amd64'
           assert image['Config']['Labels']['org.opencontainers.image.revision'] == commit
+          assert os.environ['EXPERIENCE_READ_TRACE'] in ('true', 'false')
           manifest = {
               'schema_version': 'deft.host_build_artifact.v1',
               'source_commit': commit, 'source_url': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/tree/{commit}',
               'checks_run_id': os.environ['CHECKS_RUN_ID'], 'image_id': image['Id'],
               'image_uncompressed_bytes': image['Size'], 'platform': 'linux/amd64',
               'recipe_pins': {name: digest(pathlib.Path(name)) for name in ('Dockerfile', 'pnpm-lock.yaml', 'package.json')},
+              'browser_diagnostics': {'experience_read_trace': os.environ['EXPERIENCE_READ_TRACE'] == 'true'},
               'archives': {name: {'sha256': digest(root / name), 'bytes': (root / name).stat().st_size}
                            for name in ('host-image.tar.gz', 'host-source.tar.gz')},
               'security_gate': 'Independent review required; this build does not waive findings.',
