@@ -70,7 +70,7 @@ pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.35.tgz
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.35`. Package metadata,
+This review candidate is `0.1.0-alpha.36`. Package metadata,
 `DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
@@ -334,3 +334,32 @@ remain inspectable in the trusted form. A fresh successful confirmation includes
 Recovered Run lookups may omit it; a mutable draft is not evidence of the submitted
 content. These additions require a host supporting the alpha.7-era contract or
 a host advertising the matching packed contract.
+
+### Generic menus (`menu.v1`, Kit alpha36)
+
+Declare `menu.v1` in the Experience renderer v2 capabilities and the emitted view.
+Older Hosts reject the required capability before mounting; deploy a compatible
+Host before upgrading the App. Existing alpha35 Apps remain supported.
+
+```ts
+import { createDeftMenuNode } from '@deft/app-kit/experience';
+const menu = createDeftMenuNode({
+  id: 'document_actions', label: 'Document actions', icon: 'more',
+  items: [
+    { id: 'archive_document', label: 'Archive', icon: 'archive' },
+    { id: 'delete_document', label: 'Delete', icon: 'trash', danger: true },
+  ],
+}, ['menu.v1']);
+```
+
+Menus contain 1–20 flat items. All menu and item IDs must be unique across the
+view, navigation and preferences; items count toward the existing node budget.
+Labels are nonempty and at most 128 characters. Icons are closed symbolic names,
+not author SVG or URLs. Parent or item `disabled` prevents selection; `danger`
+is visual styling only. Keyboard shortcuts may target the visible menu trigger,
+not hidden items; the open menu owns arrow-key navigation. Enabled items emit the same `{kind:'click',node_id}`
+event as buttons. They grant no access and bypass no action review. A printable
+document may use an item ID as its existing `print_control_id`; printing stays
+with the Host and does not emit a Worker click. The shared Host menu supplies
+keyboard navigation, dismissal, focus return and the mobile sheet. Menus are
+currently available in the main view, not the separate preferences surface.

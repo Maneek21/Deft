@@ -1,4 +1,5 @@
 'use client';
+import {createExperienceMenuHost} from './experience-menu';
 import {appConsentDeadline} from '../../../../../packages/app-kit/src/consent-lifetime';
 
 import {createExperienceAccountRouting,resolveExperienceActionAccount,type AccountReference,type AccountChild} from '../../lib/app-experience-account-routing';
@@ -667,7 +668,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           open:(nomination,owner,signal)=>nominateSource(nomination,owner,current,signal,true)});
         return()=>{controller.abort();task();presentation();files();};
       }});
-    const rendererOptions={capabilities:session.experience.capabilities,resourceKeys:session.bundle.resource_keys,stateKeys:session.bundle.state_keys,storeKeys:session.bundle.record_store_keys,actionKeys:session.bundle.action_keys,...resourceDocuments,...fieldControls,...localJobControls,...recordMirrorControls,...recordForms,...recordDocuments,
+    const rendererOptions={...createExperienceMenuHost(),capabilities:session.experience.capabilities,resourceKeys:session.bundle.resource_keys,stateKeys:session.bundle.state_keys,storeKeys:session.bundle.record_store_keys,actionKeys:session.bundle.action_keys,...resourceDocuments,...fieldControls,...localJobControls,...recordMirrorControls,...recordForms,...recordDocuments,
       printDocument:(node:Extract<ExperienceNode,{kind:'document'}>)=>presentationPrinters.get(node.id)?.()??false,enhanceDocument:(node:Extract<ExperienceNode,{kind:'document'}>,wrap:HTMLElement)=>{
       const known=trustedDocument;if(session.experience.renderer_version!=='deft.trusted_renderer.v1'||!known||known.format!==node.format||known.content!==node.content||!locallyCurrent()||!exposure)return;
       const mountKey=`${known.key}/${known.recordId}/${node.id}`;usedPresentations.add(mountKey);const existing=presentationDisposals.get(mountKey);if(existing?.document===known){existing.mount.attach(wrap);return;}existing?.mount();

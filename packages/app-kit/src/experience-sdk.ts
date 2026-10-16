@@ -1,3 +1,10 @@
+import {parseDeftExperienceMenuNode,type DeftExperienceMenuNode} from './experience-menu.js';
+export * from './experience-menu.js';
+export function createDeftMenuNode(input:Omit<DeftExperienceMenuNode,'kind'>,capabilities:readonly DeftExperienceCapability[]):DeftExperienceMenuNode {
+ if(!capabilities.includes('menu.v1'))throw Error('EXPERIENCE_CAPABILITY_UNAVAILABLE');
+ if(input&&Object.hasOwn(input,'kind'))throw Error('Invalid menu');
+ const node=parseDeftExperienceMenuNode({...input,kind:'menu'});if(!node)throw Error('Invalid menu');return node;
+}
 import type {DeftExperienceLocalJobScheduleNode,DeftExperienceLocalJobListNode} from './local-job-controls.js';
 export {inspectNativeComposeRaster,validateNativeComposeRaster} from './native-compose-raster.js';
 // Type-only imports keep the Worker leaf independent of the schema validator.

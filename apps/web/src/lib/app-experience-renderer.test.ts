@@ -257,3 +257,20 @@ test('toolbar buttons retain descriptions and disabled reasons as tooltips witho
  renderExperienceView(container,{root:{kind:'button',id:'card',label:'Message card',description:'Keep the card description.'}},()=>{});assert.equal((container as unknown as Element).querySelectorAll('*').find(child=>child.className==='ex-button-description')?.textContent,'Keep the card description.');
  }finally{clearExperienceView(container);Object.assign(globalThis,{document:original});}
 });
+
+
+test('menu dispatch rejects disabled parents/items, foreign IDs and callbacks from replaced or suspended views',()=>{
+ const saved=new Map(['document','HTMLElement','HTMLInputElement','HTMLTextAreaElement'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+ Object.assign(globalThis,{document:dom,HTMLElement:Element,HTMLInputElement:Input,HTMLTextAreaElement:Textarea});
+ try{
+  const container=new Element('div') as unknown as HTMLElement,events:ExperienceUiEvent[]=[],selects:Array<(id:string)=>unknown>=[];
+  const menu={kind:'menu' as const,id:'actions',label:'Actions',items:[{id:'allowed',label:'Allowed'},{id:'disabled',label:'Disabled',disabled:true}]};
+  const options={capabilities:['menu.v1'] as const,mountMenu:(_node:unknown,_wrapper:HTMLElement,select:(id:string)=>unknown)=>{selects.push(select);}};
+  const view=(disabled=false):ExperienceView=>({schema_version:'deft.experience_view.v2',capabilities:['menu.v1'],root:{...menu,disabled}});
+  renderExperienceView(container,view(true),event=>events.push(event),options);selects[0]('allowed');assert.equal(events.length,0);
+  renderExperienceView(container,view(),event=>events.push(event),options);selects[1]('disabled');selects[1]('foreign');selects[0]('allowed');assert.equal(events.length,0);
+  selects[1]('allowed');assert.deepEqual(events,[{kind:'click',node_id:'allowed'}]);
+  suspendExperienceView(container);selects[1]('allowed');assert.equal(events.length,1);
+  renderExperienceView(container,view(),event=>events.push(event),options);clearExperienceView(container);selects[2]('allowed');assert.equal(events.length,1);
+ }finally{for(const [key,descriptor]of saved){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}}
+});

@@ -24,6 +24,7 @@ export type ExperienceRendererOptions = ExperienceViewOptions & Readonly<{
   resolveResourceDocument?: (node: ResourceDocumentNode, context: ExperienceDocumentContext) => Promise<DocumentNode>;
   enhanceResourceDocument?: (node: ResourceDocumentNode, resolved: DocumentNode, wrapper: HTMLElement,
     context: ExperienceDocumentContext) => void | (() => void);
+  mountMenu?: (node:Extract<ExperienceNode,{kind:'menu'}>,wrapper:HTMLElement,select:(id:string)=>unknown,context:ExperienceDocumentContext)=>void|(()=>void);
   mountControl?: (node: Extract<ExperienceNode, {kind:'richtext_field'|'file_field'|'resource_refresh'}>,
     wrapper: HTMLElement, emit: (event: ExperienceUiEvent) => unknown, context: ExperienceDocumentContext) => void | (() => void);
   mountRecordMirrorControl?:(node:Extract<ExperienceNode,{kind:'record_mirror_control'}>,wrapper:HTMLElement,emit:(event:ExperienceUiEvent)=>unknown,context:ExperienceDocumentContext)=>void|(()=>void);
@@ -143,8 +144,8 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar > .ex-stack { gap:2px; min-width:0 }
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar > .ex-stack-horizontal { gap:4px; flex-wrap:nowrap }
 .deft-experience .ex-stack-sidebar > .ex-stack-toolbar .ex-text:not(.ex-text-caption) { font-size:16px; font-weight:600; letter-spacing:-.02em }
-.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive]) { width:36px; padding:8px; flex-shrink:0 }
-.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive]) .ex-button-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) { width:36px; padding:8px; flex-shrink:0 }
+.deft-experience .ex-stack-toolbar button:is([data-icon=refresh],[data-icon=search],[data-icon=back],[data-icon=close],[data-icon=select],[data-icon=more],[data-icon=archive],[data-icon=trash],[data-icon=mail],[data-icon=read],[data-icon=unread],[data-icon=check],[data-icon=chevron_down],[data-icon=star],[data-icon=folder],[data-icon=label],[data-icon=print]) .ex-button-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%) }
 .deft-experience .ex-stack-document { padding:0 28px 28px; gap:18px }
 .deft-experience .ex-stack-document > .ex-stack-toolbar { margin:0 -28px; padding:16px 28px; min-height:76px; align-items:center }
 .deft-experience .ex-stack-document > .ex-stack-toolbar .ex-text-heading { font-size:18px; line-height:1.4; flex:1; min-width:160px }
@@ -212,6 +213,10 @@ export const EXPERIENCE_RENDERER_CSS = `
 .deft-experience .ex-stack-document>.ex-text:first-child{margin-top:20px}
 .deft-experience .ex-stack-toolbar>.ex-text-heading{font-size:18px;line-height:1.35}
 .deft-experience .ex-stack-toolbar .ex-stack-horizontal{gap:4px}
+.deft-experience .ex-stack-toolbar:has(.ex-menu),.deft-experience .ex-stack-toolbar:has(.ex-menu) .ex-stack-horizontal{flex-wrap:nowrap}
+.deft-experience .ex-menu{display:inline-flex;flex-shrink:0}
+.deft-experience .ex-menu button{white-space:nowrap}
+.deft-experience .ex-stack-toolbar:has(.ex-menu)>.ex-text-heading{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:720px){.deft-experience .ex-stack-document{padding:0 16px 20px}.deft-experience .ex-stack-document>.ex-stack-toolbar{margin:0 -16px;padding:10px 16px}}
 `;
 
@@ -221,7 +226,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): 
   return element;
 }
 
-const ICON_PATHS = {
+export const EXPERIENCE_ICON_PATHS = {
   compose: 'M12 20H4V4h8 M16 3l5 5-9 9H7v-5z M14 5l5 5',
   refresh: 'M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-2l2 2 M4 17l2 2a7 7 0 0 0 12-2',
   search: 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
@@ -233,17 +238,27 @@ const ICON_PATHS = {
   select: 'M4 4h16v16H4z',
   check: 'M4 4h16v16H4z M7 12l3 3 7-7',
   more: 'M5 11h2v2H5z M11 11h2v2h-2z M17 11h2v2h-2z',
+  trash:'M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7',
+  mail:'M3 5h18v14H3z M3 5l9 7 9-7',
+  star:'M12 3l3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z',
+  folder:'M3 5h7l2 2h9v13H3z',
+  label:'M3 3h8l10 10-8 8L3 11z M7 7h.01',
+  chevron_down:'M6 9l6 6 6-6',
+  read:'M3 8l9-6 9 6v13H3z M3 8l9 6 9-6',
+  unread:'M3 5h18v14H3z M3 5l9 7 9-7',
+  print:'M6 8V3h12v5 M6 17H3V8h18v9h-3 M6 14h12v7H6z',
+
 } as const;
 
 /** Only host-owned paths enter SVG; authors choose a bounded symbolic name. */
-function renderIcon(name: keyof typeof ICON_PATHS): SVGSVGElement {
+function renderIcon(name: keyof typeof EXPERIENCE_ICON_PATHS): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
   svg.setAttribute('class', 'ex-icon');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', ICON_PATHS[name]); svg.append(path);
+  path.setAttribute('d', EXPERIENCE_ICON_PATHS[name]); svg.append(path);
   return svg;
 }
 
@@ -317,7 +332,24 @@ function flushInputs(delivery: InputDelivery): void {
   pending.forEach(([node_id, value]) => delivery.emit({ kind: 'input', node_id, value }));
 }
 
+function activateControl(id:string,emit:ExperienceEventDelivery,delivery:InputDelivery,options:RendererContext):unknown {
+  if(!options.current()||options.signal.aborted)return;
+  const linked=options.printControls.get(id);
+  if(linked){
+    const document=linked.kind==='resource_document'||linked.kind==='record_document'?options.resolvedDocuments.get(linked.id):linked;
+    if(linked.kind==='resource_document'||linked.kind==='record_document'){if(document)options.printDocument?.(document);return;}
+    if(document&&!options.printDocument?.(document))printExperienceDocument({format:document.format,content:document.content,...(document.truncated===undefined?{}:{truncated:document.truncated})},document.title,document.metadata);
+    return;
+  }
+  flushInputs(delivery);delivery.values.clear();return emit({kind:'click',node_id:id});
+}
+
 function renderNode(node: ExperienceNode, emit: ExperienceEventDelivery, delivery: InputDelivery, options: RendererContext, compactButtons = false): HTMLElement {
+  if(node.kind==='menu'){
+    const wrap=el('div','ex-menu');wrap.dataset.renderKey=node.id;
+    if(!options.mountMenu){wrap.textContent='Menu unavailable.';return wrap;}
+    options.addDisposer(options.mountMenu(node,wrap,id=>{const item=node.items.find(row=>row.id===id);if(!node.disabled&&item&&!item.disabled)return activateControl(id,emit,delivery,options);},{signal:options.signal,current:options.current}));return wrap;
+  }
   if(node.kind==='record_mirror_control'){const wrap=document.createElement('section');if(!options.mountRecordMirrorControl){wrap.textContent='Sync settings unavailable.';return wrap;}options.addDisposer(options.mountRecordMirrorControl(node,wrap,event=>options.current()?emit(event):undefined,{signal:options.signal,current:options.current}));return wrap;}
   if(node.kind==='local_job_schedule'||node.kind==='local_job_list'){
     const wrap=document.createElement('section');if(!options.mountLocalJobControl){wrap.textContent='Local job control unavailable.';return wrap;}options.addDisposer(options.mountLocalJobControl(node,wrap,event=>options.current()?emit(event):undefined,{signal:options.signal,current:options.current}));return wrap;
@@ -413,20 +445,10 @@ function renderNode(node: ExperienceNode, emit: ExperienceEventDelivery, deliver
     button.dataset.focusKey = node.id;
     button.addEventListener('click', () => {
       if (!options.current()) return;
-      const linkedDocument = options.printControls.get(node.id);
-      if (linkedDocument) {
-        const document = linkedDocument.kind === 'resource_document'||linkedDocument.kind==='record_document' ? options.resolvedDocuments.get(linkedDocument.id) : linkedDocument;
-        if (linkedDocument.kind === 'resource_document'||linkedDocument.kind==='record_document') { if (document) options.printDocument?.(document); return; }
-        if (document && !options.printDocument?.(document)) printExperienceDocument({format:document.format,content:document.content,...(document.truncated === undefined ? {} : {truncated:document.truncated})},document.title,document.metadata);
-        return;
-      }
-      flushInputs(delivery);
-      // An explicit author action may clear or replace fields, unlike a late input acknowledgement.
-      delivery.values.clear();
       button.disabled = true;
       button.setAttribute('aria-busy', 'true');
       try {
-        void Promise.resolve(emit({ kind: 'click', node_id: node.id })).catch(() => undefined).finally(() => {
+        void Promise.resolve(activateControl(node.id,emit,delivery,options)).catch(() => undefined).finally(() => {
           button.removeAttribute('aria-busy'); button.disabled = node.disabled ?? false;
         });
       } catch {

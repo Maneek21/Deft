@@ -432,13 +432,12 @@ export function AppMenu({
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    requestAnimationFrame(() => itemRefs.current.find(Boolean)?.focus());
-  }, [open]);
+  const focusMenu=useCallback((element:HTMLDivElement|null)=>{
+    if(element)requestAnimationFrame(()=>{if(element.isConnected)itemRefs.current.find(item=>item&&!item.disabled)?.focus();});
+  },[]);
 
   const content = useMemo(() => (
-    <div role={isMobile ? 'menu' : undefined} aria-label={isMobile ? ariaLabel : undefined}>
+    <div ref={focusMenu} role={isMobile ? 'menu' : undefined} aria-label={isMobile ? ariaLabel : undefined}>
       {header && (
         <div className="px-3 py-2" style={{ borderBottom: '1px solid var(--outline-variant)' }}>
           {header}
@@ -446,7 +445,7 @@ export function AppMenu({
       )}
       {items.map((item, index) => (
         <button
-          key={item.label}
+          key={index}
           ref={(node) => { itemRefs.current[index] = node; }}
           role="menuitem"
           disabled={item.disabled}
@@ -456,14 +455,13 @@ export function AppMenu({
             onClose();
           }}
           onKeyDown={(event) => {
-            if (event.key === 'ArrowDown') {
-              event.preventDefault();
-              itemRefs.current[(index + 1) % items.length]?.focus();
-            }
-            if (event.key === 'ArrowUp') {
-              event.preventDefault();
-              itemRefs.current[(index - 1 + items.length) % items.length]?.focus();
-            }
+            if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;
+            event.preventDefault();
+            const enabled=itemRefs.current.filter((item):item is HTMLButtonElement=>!!item&&!item.disabled);
+            if(!enabled.length)return;
+            const current=enabled.indexOf(event.currentTarget),step=event.key==='ArrowUp'?-1:1;
+            const next=event.key==='Home'?0:event.key==='End'?enabled.length-1:(current+step+enabled.length)%enabled.length;
+            enabled[next]?.focus();
           }}
           className="deft-menu-item mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2.5 px-3 py-2 text-left text-[0.8125rem] outline-none disabled:cursor-not-allowed disabled:opacity-45"
           style={item.danger ? { color: 'var(--danger)' } : undefined}
@@ -473,7 +471,7 @@ export function AppMenu({
         </button>
       ))}
     </div>
-  ), [ariaLabel, header, isMobile, items, onClose]);
+  ), [ariaLabel, focusMenu, header, isMobile, items, onClose]);
 
   if (isMobile) {
     return (

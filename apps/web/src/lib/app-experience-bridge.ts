@@ -1,3 +1,4 @@
+import {parseDeftExperienceMenuNode,isDeftExperienceIcon,type DeftExperienceIcon,type DeftExperienceMenuNode} from '../../../../packages/app-kit/src/experience-menu';
 import {DeftExperienceRecordMirrorControlNodeSchema,type DeftExperienceRecordMirrorControlNode} from '../../../../packages/app-kit/src/record-mirror-controls';
 import {DeftExperienceLocalJobScheduleNodeSchema,DeftExperienceLocalJobListNodeSchema,type DeftExperienceLocalJobScheduleNode,type DeftExperienceLocalJobListNode} from '../../../../packages/app-kit/src/local-job-controls';
 import {DeftExperienceKeyboardSchema,type DeftExperienceKeyboard} from '../../../../packages/app-kit/src/experience-keyboard';
@@ -18,6 +19,7 @@ export type ExperiencePin = Readonly<{
 }>;
 
 export type ExperienceNode =
+  | DeftExperienceMenuNode
   | DeftExperienceRecordMirrorControlNode
   | DeftExperienceLocalJobScheduleNode | DeftExperienceLocalJobListNode
   | DeftExperienceResourceDocumentNode
@@ -25,7 +27,7 @@ export type ExperienceNode =
   | DeftExperienceRecordFormV3Node | DeftExperienceRecordFormNode | DeftExperienceRecordFormV2Node | DeftExperienceRecordDocumentNode
   | Readonly<{ kind: 'document'; id: string; format: 'plain' | 'html'; content: string; truncated?: boolean; printable?: boolean; print_control_id?: string; title?: string; metadata?: readonly Readonly<{ label: string; value: string }>[] }>
   | Readonly<{ kind: 'text'; id: string; text: string; tone?: 'default' | 'muted' | 'heading' | 'caption' | 'body' }>
-  | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean; eyebrow?: string; icon?: 'compose' | 'refresh' | 'search' | 'reply' | 'archive' | 'back' | 'close' | 'send' | 'select' | 'check' | 'more' }>
+  | Readonly<{ kind: 'button'; id: string; label: string; variant?: 'primary' | 'secondary' | 'ghost' | 'list'; description?: string; meta?: string; selected?: boolean; disabled?: boolean; eyebrow?: string; icon?: DeftExperienceIcon }>
   | Readonly<{ kind: 'input'; id: string; label: string; value: string; multiline?: boolean; placeholder?: string; appearance?: 'search' | 'inline' | 'body' }>
   | Readonly<{ kind: 'stack'; id: string; title?: string; layout?: 'vertical' | 'horizontal' | 'split' | 'list' | 'workspace' | 'toolbar'; surface?: 'plain' | 'panel' | 'sidebar' | 'document'; mobile?: 'hidden' | 'only'; children: readonly ExperienceNode[] }>
   | Readonly<{ kind: 'grid'; id: string; columns: readonly string[];
@@ -167,6 +169,10 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
         && (input.tone === undefined || (typeof input.tone === 'string' && ['default', 'muted', 'heading', 'caption', 'body'].includes(input.tone)))
         ? { kind: 'text', id: input.id, text: input.text,
           ...(input.tone !== undefined ? { tone: input.tone as 'default' | 'muted' | 'heading' | 'caption' | 'body' } : {}) } : null;
+    case 'menu': {
+      if(!budget.capabilities?.includes('menu.v1'))return null;const menu=parseDeftExperienceMenuNode(input);
+      if(menu&&(budget.nodes+=menu.items.length)<=MAX_NODES)return menu;return null;
+    }
     case 'button':
       return exact(input, ['kind', 'id', 'label', 'variant', 'description', 'meta', 'selected', 'disabled', 'eyebrow', 'icon'])
         && text(input.label, 128)
@@ -176,7 +182,7 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
         && (input.selected === undefined || typeof input.selected === 'boolean')
         && (input.disabled === undefined || typeof input.disabled === 'boolean')
         && (input.eyebrow === undefined || text(input.eyebrow, 128))
-        && (input.icon === undefined || (typeof input.icon === 'string' && ['compose', 'refresh', 'search', 'reply', 'archive', 'back', 'close', 'send', 'select', 'check', 'more'].includes(input.icon)))
+        && (input.icon === undefined || isDeftExperienceIcon(input.icon))
         ? { kind: 'button', id: input.id, label: input.label,
           ...(input.variant !== undefined ? { variant: input.variant as 'primary' | 'secondary' | 'ghost' | 'list' } : {}),
           ...(input.description !== undefined ? { description: input.description as string } : {}),
@@ -184,7 +190,7 @@ function parseNode(input: unknown, depth: number, budget: { nodes: number; point
           ...(input.selected !== undefined ? { selected: input.selected as boolean } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled as boolean } : {}),
           ...(input.eyebrow !== undefined ? { eyebrow: input.eyebrow as string } : {}),
-          ...(input.icon !== undefined ? { icon: input.icon as 'compose' | 'refresh' | 'search' | 'reply' | 'archive' | 'back' | 'close' | 'send' | 'select' | 'check' | 'more' } : {}) } : null;
+          ...(input.icon !== undefined ? { icon: input.icon as DeftExperienceIcon } : {}) } : null;
     case 'input':
       return exact(input, ['kind', 'id', 'label', 'value', 'multiline', 'placeholder', 'appearance'])
         && text(input.label, 128) && text(input.value)
@@ -257,7 +263,7 @@ export function parseExperienceView(value: unknown, options: ExperienceViewOptio
   if (!record(value) || !exact(value, ['root', 'navigation', 'preferences', 'schema_version', 'capabilities', 'keyboard'])) return null;
   const v2 = value.schema_version === 'deft.experience_view.v2';
   if (value.schema_version !== undefined && !v2 || !v2 && value.capabilities !== undefined) return null;
-  if (v2 && (!Array.isArray(value.capabilities) || value.capabilities.length < 1 || value.capabilities.length > 12
+  if (v2 && (!Array.isArray(value.capabilities) || value.capabilities.length < 1 || value.capabilities.length > DeftExperienceCapabilitySchema.options.length
     || new Set(value.capabilities).size !== value.capabilities.length
     || value.capabilities.some(capability => !DeftExperienceCapabilitySchema.safeParse(capability).success
       || !options.capabilities?.includes(capability as DeftExperienceCapability)))) return null;
@@ -271,13 +277,13 @@ export function parseExperienceView(value: unknown, options: ExperienceViewOptio
   if(value.preferences!==undefined&&!preferences)return null;
   // Preferences currently has no scoped document/editor/file host adapter.
   // Fail admission here instead of accepting a control that cannot mount there.
-  const needsScopedHost = (node:ExperienceNode):boolean => ['record_mirror_control','local_job_schedule','local_job_list','resource_document','richtext_field','file_field','resource_refresh','record_form','record_document'].includes(node.kind)
+  const needsScopedHost = (node:ExperienceNode):boolean => ['menu','record_mirror_control','local_job_schedule','local_job_list','resource_document','richtext_field','file_field','resource_refresh','record_form','record_document'].includes(node.kind)
     || node.kind==='stack'&&node.children.some(needsScopedHost);
   if(preferences&&needsScopedHost(preferences))return null;
   if (value.navigation!==undefined&&(!Array.isArray(value.navigation) || value.navigation.length > 16)) return null;
   const ids = new Set<string>();
   let duplicate = false;
-  const collect = (node: ExperienceNode) => { if (ids.has(node.id)) duplicate = true; ids.add(node.id); if (node.kind === 'stack') node.children.forEach(collect); };
+  const collect = (node: ExperienceNode) => { if (ids.has(node.id)) duplicate = true; ids.add(node.id); if (node.kind === 'stack') node.children.forEach(collect); else if(node.kind==='menu')node.items.forEach(item=>collect({kind:'button',...item,disabled:node.disabled||item.disabled})); };
   collect(root);
   if (duplicate) return null;
   let keyboard: DeftExperienceKeyboard | undefined;
@@ -290,7 +296,7 @@ export function parseExperienceView(value: unknown, options: ExperienceViewOptio
     visit(root);
     if (parsed.data.bindings.some(binding => {
       const target = controls.get(binding.target_id);
-      return binding.behavior === 'activate' ? target?.kind !== 'button' : target?.kind !== 'button' && target?.kind !== 'input';
+      return binding.behavior === 'activate' ? target?.kind !== 'button' && target?.kind !== 'menu' : target?.kind !== 'button' && target?.kind !== 'menu' && target?.kind !== 'input';
     })) return null;
     if (parsed.data.navigation) {
       const list = controls.get(parsed.data.navigation.list_id);
@@ -303,7 +309,7 @@ export function parseExperienceView(value: unknown, options: ExperienceViewOptio
   }
   const validPrintControls = (tree: ExperienceNode): boolean => {
     const buttons = new Set<string>(), documents: Extract<ExperienceNode,{kind:'document'|'resource_document'|'record_document'}>[] = [], linked = new Set<string>();
-    const visit = (node: ExperienceNode) => { if (node.kind === 'button') buttons.add(node.id); else if (node.kind === 'document' || node.kind === 'resource_document'||node.kind==='record_document') documents.push(node); else if (node.kind === 'stack') node.children.forEach(visit); };
+    const visit = (node: ExperienceNode) => { if (node.kind === 'button') buttons.add(node.id); else if (node.kind === 'document' || node.kind === 'resource_document'||node.kind==='record_document') documents.push(node); else if (node.kind === 'stack') node.children.forEach(visit); else if(node.kind==='menu')node.items.forEach(item=>visit({kind:'button',...item,disabled:node.disabled||item.disabled})); };
     visit(tree);
     return documents.every(node => {
       if (node.print_control_id === undefined) return true;
