@@ -136,3 +136,37 @@ test('presentations without remote images skip automatic policy and never show r
   try{await flush();assert.equal(choices,0,'no remote image means no remote preference request');assert.equal(reads,images.length);assert.ok(!descendants(f.wrap).some(n=>/external images|saved image choice/i.test(n.textContent)));assert.equal(f.wrap.querySelector('.ex-safe-document')?.textContent,'Source text');}finally{f.mount();}
  }
 });
+
+
+test('image reads overlap only two at a time and keep every pre/post policy check',async()=>{
+ const originalCreate=URL.createObjectURL,originalRevoke=URL.revokeObjectURL;let inFlight=0,maximum=0,created=0,choices=0;
+ const pending:Array<(value:{bytes:Uint8Array;media_type:string})=>void>=[],buffers:Uint8Array[]=[];
+ URL.createObjectURL=()=>`blob:parallel/${++created}`;URL.revokeObjectURL=()=>{};
+ const images=Array.from({length:3},(_,index)=>({image_ref:String(index).repeat(64),kind:'remote' as const,index,alt:''}));
+ const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>{choices++;return true;},readBinary:async()=>{maximum=Math.max(maximum,++inFlight);try{return await new Promise(resolve=>pending.push(resolve));}finally{inFlight--;}}});
+ const release=()=>{const bytes=new Uint8Array([1]);buffers.push(bytes);pending.shift()!({bytes,media_type:'image/png'});};
+ try{await flush();assert.equal(pending.length,2,'two independent guarded reads should start before either settles');assert.equal(maximum,2);release();await flush();assert.equal(pending.length,2,'third starts only after one slot settles');release();release();await flush();assert.equal(created,3);assert.equal(choices,7);assert.ok(buffers.every(bytes=>bytes.every(byte=>byte===0)));}finally{f.mount();while(pending.length)release();await flush();URL.createObjectURL=originalCreate;URL.revokeObjectURL=originalRevoke;}
+});
+
+test('parallel image completions cannot disclose after another policy denial or disposal',async()=>{
+ const originalCreate=URL.createObjectURL,originalRevoke=URL.revokeObjectURL;let created=0;
+ URL.createObjectURL=()=>`blob:denied/${++created}`;URL.revokeObjectURL=()=>{};
+ for(const mode of ['policy','dispose'] as const){
+  let allowed=true;const pending:Array<(value:{bytes:Uint8Array;media_type:string})=>void>=[];
+  const images=Array.from({length:2},(_,index)=>({image_ref:String(index).repeat(64),kind:'remote' as const,index,alt:''}));
+  const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>allowed,readBinary:async()=>new Promise(resolve=>pending.push(resolve))});
+  const buffers:Uint8Array[]=[];
+  try{await flush();assert.equal(pending.length,2);if(mode==='dispose')f.mount();else allowed=false;
+   while(pending.length){const bytes=new Uint8Array([7]);buffers.push(bytes);pending.shift()!({bytes,media_type:'image/png'});}await flush();assert.equal(created,0);assert.ok(buffers.every(bytes=>bytes[0]===0));
+  }finally{f.mount();}
+ }URL.createObjectURL=originalCreate;URL.revokeObjectURL=originalRevoke;
+});
+
+
+test('a late positive policy result cannot reverse another parallel read denial',async()=>{
+ const originalCreate=URL.createObjectURL,originalRevoke=URL.revokeObjectURL;let choices=0,created=0,release!:(allowed:boolean)=>void;
+ URL.createObjectURL=()=>`blob:late/${++created}`;URL.revokeObjectURL=()=>{};
+ const images=Array.from({length:2},(_,index)=>({image_ref:String(index).repeat(64),kind:'remote' as const,index,alt:''}));
+ const buffers:Uint8Array[]=[];const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>{if(++choices===4)return new Promise(resolve=>{release=resolve;});return choices!==5;},readBinary:async()=>{const bytes=new Uint8Array([1]);buffers.push(bytes);return {bytes,media_type:'image/png'};}});
+ try{await flush();assert.equal(choices,5);assert.equal(created,0);release(true);await flush();assert.equal(created,0);assert.ok(buffers.every(bytes=>bytes[0]===0));assert.ok(descendants(f.wrap).some(node=>node.textContent.includes('saved image choice changed')));}finally{f.mount();URL.createObjectURL=originalCreate;URL.revokeObjectURL=originalRevoke;}
+});

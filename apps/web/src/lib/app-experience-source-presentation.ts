@@ -39,7 +39,7 @@ export function mountExperienceSourcePresentation(options:Options):(()=>void)&{a
  const path=`/api/app-experiences/sessions/${encodeURIComponent(options.sessionId)}/resources/${encodeURIComponent(options.resourceKey)}/content`;
  const render=()=>{if(!presentation||!valid()||!wrap.isConnected)return;const next=createExperiencePresentationElement(presentation,presentation.images,urls,imageStates);if(body?.parentElement===wrap){body.replaceWith(next);}else{const old=wrap.querySelector('.ex-safe-document');if(old)old.replaceWith(next);else wrap.append(next);}body=next;};
  const savedChoice=async()=>{
-  try{const choice=await options.automaticImages?.(controller.signal);if((choice??presentation?.external_images==='always')&&valid())return true;}catch{/* Unavailable saved choices never fall back to the source default. */}
+  try{const choice=await options.automaticImages?.(controller.signal);if(!automaticDenied&&(choice??presentation?.external_images==='always')&&valid())return true;}catch{/* Unavailable saved choices never fall back to the source default. */}
   automaticDenied=true;if(valid()&&presentation){for(const image of presentation.images.filter(item=>item.kind==='remote')){const url=urls.get(image.image_ref);if(url){URL.revokeObjectURL(url);urls.delete(image.image_ref);}imageStates.delete(image.image_ref);}
    imageStatus.textContent='Your saved image choice changed or is unavailable. External images remain blocked.';render();}return false;
  };
@@ -52,7 +52,7 @@ export function mountExperienceSourcePresentation(options:Options):(()=>void)&{a
    if(r.ok&&r.headers.get('x-deft-exposure-id')===scope.exposure_id&&r.headers.get('x-deft-exposure-epoch')===String(scope.exposure_epoch)&&r.headers.get('content-type')?.startsWith('image/')&&!['image/png','image/jpeg','image/gif','image/webp'].includes(r.headers.get('content-type')??'')){unsupported++;imageStates.set(image.image_ref,'unsupported');await r.body?.cancel();continue;}
    bytes=await readSourceBinary(r,scope,valid,{maxBytes:2097152,image:true});mediaType=r.headers.get('content-type')!;}
    try{if(!valid()||!wrap.isConnected)return;if(automatic&&(!await savedChoice()))throw Error('Saved image choice unavailable');if(loadedBytes+bytes.length>8388608){budgetExceeded=true;throw Error('Image budget exceeded');}const url=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:mediaType}));loadedBytes+=bytes.length;urls.set(image.image_ref,url);imageStates.delete(image.image_ref);render();}finally{bytes.fill(0);}}catch{failed++;imageStates.set(image.image_ref,budgetExceeded?'limit':'unavailable');}}};
-  await consume();if(valid()&&queue.length){
+  await Promise.all(Array.from({length:Math.min(2,queue.length)},()=>consume()));if(valid()&&queue.length){
    if(budgetExceeded){for(const image of presentation.images)if(!urls.has(image.image_ref)&&imageStates.get(image.image_ref)==='loading')imageStates.set(image.image_ref,'limit');}
    status.textContent=automaticDenied?'Your saved image choice changed or is unavailable. External images remain blocked.':budgetExceeded?'The 8 MiB image limit for this message was reached. Remaining images were not loaded.':failed||unsupported?[failed?'Some images could not be loaded. Retry to try them again.':'',unsupported?'Some image formats are unsupported. Download the original message to view them.':''].filter(Boolean).join(' '):kind==='remote'?'External images loaded for this message.':'';render();}
  };

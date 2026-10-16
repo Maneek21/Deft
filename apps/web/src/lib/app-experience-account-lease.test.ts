@@ -129,3 +129,19 @@ test('temporary failure at the final child check withholds the completed result 
  await assert.rejects(routing.read(child,new AbortController().signal,async()=>{work++;return 'must not disclose';}),ExperienceAuthorityUnavailable);
  assert.equal(work,1);assert.equal(retired,0);fail=false;assert.equal(await routing.child('sender',new AbortController().signal),child);
 });
+
+
+test('actual document host omits absent policy probes while retaining binary entry and final checks',async()=>{
+ const optionsSource=source.match(/const presentation=mountExperienceSourcePresentation\((\{wrap,node,scope:exposure,[\s\S]*?)\);\s*const input=/)?.[1];assert.ok(optionsSource);
+ for(const policy of [undefined,{store_key:'preferences'}]){
+  let validations=0,choices=0,binaries=0;
+  const client={automaticImages:async()=>{choices++;return true;},sourceBinary:async()=>{binaries++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}};
+  const recordClient=async()=>{validations++;return client;};
+  const sourceCall=async(reference:unknown,signal:AbortSignal,work:(value:typeof client)=>Promise<unknown>)=>{const result=await work(await recordClient());await recordClient();return result;};
+  const options:{automaticImages?:(signal:AbortSignal)=>Promise<boolean>;readBinary:(input:{operation:string;image_ref:string},signal:AbortSignal)=>Promise<unknown>}=new Function('wrap','node','exposure','session','reference','current','load','lease','recordClient','sourceCall','presentationPrinters',`return (${optionsSource.replace(/\(signal:AbortSignal\)/g,'(signal)')});`)({}, {id:'doc'}, {}, {pin:{session_id:'session'}},{resource_key:'inbox',record_id:'record',...(policy?{image_policy:policy}:{})},()=>true,()=>{},undefined,recordClient,sourceCall,new Map());
+  assert.equal(typeof options.automaticImages,policy?'function':'undefined');
+  if(options.automaticImages)await options.automaticImages(new AbortController().signal);
+  await options.readBinary({operation:'read_image',image_ref:'a'.repeat(64)},new AbortController().signal);
+  assert.equal(choices,policy?1:0);assert.equal(binaries,1);assert.equal(validations,policy?4:2);
+ }
+});

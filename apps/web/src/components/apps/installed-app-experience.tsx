@@ -675,7 +675,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       },mount:(reference,node,wrap,current,load)=>{
         if(!exposure)throw Error('Source unavailable');const controller=new AbortController();
         const presentation=mountExperienceSourcePresentation({wrap,node,scope:exposure,sessionId:session.pin.session_id,resourceKey:reference.resource_key,recordId:reference.record_id,current,load,maxSourceBytes:35*1048576,
-          authorizedLifetime:()=>lease?.value,automaticImages:async signal=>{const client=await recordClient(reference,signal),result=await client.automaticImages(reference,signal);await recordClient(reference,signal);return result;},
+          authorizedLifetime:()=>lease?.value,...(reference.image_policy?{automaticImages:async(signal:AbortSignal)=>{const client=await recordClient(reference,signal),result=await client.automaticImages(reference,signal);await recordClient(reference,signal);return result;}}:{}),
           readBinary:async(input,signal)=>sourceCall(reference,signal,client=>client.sourceBinary(reference,{...input,...(input.image_ref?{image_ref:'sha256:'+input.image_ref}:{})},signal)),
           registerPrint:print=>{presentationPrinters.set(node.id,print);return()=>{if(presentationPrinters.get(node.id)===print)presentationPrinters.delete(node.id);};}});
         const input={store_key:reference.store_key,resource_key:reference.resource_key,record_id:reference.record_id,content_digest:reference.content_digest};

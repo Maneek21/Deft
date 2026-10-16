@@ -60,12 +60,13 @@ test('saved automatic image choice requires exact current human receipt/account/
  const proof={request_id:id,store_key:'preferences',record_id:fileId,revision:2,content_digest:digest};
  const document={kind:'record_document' as const,id:'document',profile_version:'deft.record_document.v1' as const,store_key:'drafts',resource_key:'inbox',record_id:id,content_digest:hash,image_policy:{store_key:'preferences',record_id:fileId,expected_revision:2,content_digest:digest,field:'external_images',automatic_value:'always'}};
  const source={...store,key:'preferences',max_record_bytes:8192,max_files:0,max_file_bytes:1,max_total_file_bytes:1};
- for(const kind of ['valid','no_policy','forged_policy','no_receipt','old_revision','foreign_receipt','archived','ask','revoked','foreign_account','late'] as const){let live=true;
+ for(const kind of ['valid','no_policy','forged_policy','no_receipt','old_revision','foreign_receipt','archived','ask','revoked','foreign_account','late'] as const){let live=true,resolves=0;
   const client=createExperienceDataClient({installationId:installation,targetKey:'mailbox',current:()=>live,fetch:async(path,options)=>{
-   if(path.endsWith('/resolve')){const request=JSON.parse(String(options.body)),ctx=context();ctx.targets[0].stores.push({declaration:source,consent:kind==='revoked'?null:ctx.targets[0].stores[0].consent} as typeof ctx.targets[0]['stores'][number]);if(kind==='foreign_account'&&request.store_key==='preferences')ctx.targets[0].account.account_ref=fileId;return json(ctx);}
+   if(path.endsWith('/resolve')){resolves++;const request=JSON.parse(String(options.body)),ctx=context();ctx.targets[0].stores.push({declaration:source,consent:kind==='revoked'?null:ctx.targets[0].stores[0].consent} as typeof ctx.targets[0]['stores'][number]);if(kind==='foreign_account'&&request.store_key==='preferences')ctx.targets[0].account.account_ref=fileId;return json(ctx);}
    const request=JSON.parse(String(options.body));if(kind==='late')live=false;return json({...(kind==='no_policy'?{}:{document_policy:{schema_version:'deft.app_record_document_policy.v1',field:'external_images',automatic_value:kind==='forged_policy'?'ask':'always'}}),...await result(request,({...pref,...(kind==='old_revision'?{revision:1,content_revision:1}:kind==='archived'?{status:'archived'}:kind==='ask'?{value:{external_images:'ask'}}:{})})),...(kind==='no_receipt'?{}:{human_save:{...proof,...(kind==='foreign_receipt'?{record_id:id}:{})}})});
   }});
   if(kind==='late')await assert.rejects(client.automaticImages(document,new AbortController().signal));else assert.equal(await client.automaticImages(document,new AbortController().signal),kind==='valid',kind);
+  if(kind==='valid')assert.equal(resolves,2,'reuse the exact preference target already validated in this operation');
  }
 });
 test('initial source selection uses explicit verified primary instead of first alias and denies ambiguous identity rows',async()=>{
