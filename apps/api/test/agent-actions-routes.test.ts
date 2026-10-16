@@ -1133,7 +1133,9 @@ test('approval confirmation is authored by the proposing agent, not the human re
   const { actionId, approvalMessageId } = await withClient(async (c) => {
     const message = await c.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
-       VALUES (gen_random_uuid()::text, $1, $2, $3, 'Please create this task.', '{}'::jsonb)
+       VALUES (gen_random_uuid()::text, $1, $2, $3,
+         'Read [Playbook](/knowledge/verified). This is pending your approval before creation.',
+         '{"citations":[{"url":"/knowledge/verified","title":"Playbook"}]}'::jsonb)
        RETURNING id`,
       [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID],
     );
@@ -1168,6 +1170,12 @@ test('approval confirmation is authored by the proposing agent, not the human re
     assert.equal(confirmation.rows.length, 1);
     assert.equal(confirmation.rows[0].user_id, SHADOW_USER_ID);
     assert.equal(confirmation.rows[0].requested_by_user_id, APPROVER_USER_ID);
+    const original = await c.query('SELECT content, metadata FROM messages WHERE org_id=$1 AND id=$2', [ORG_ID, approvalMessageId]);
+    assert.match(original.rows[0].content, /Created/i);
+    assert.doesNotMatch(original.rows[0].content, /pending your approval/);
+    assert.match(original.rows[0].content, /\[Playbook\]\(\/knowledge\/verified\)/);
+    assert.deepEqual(original.rows[0].metadata.citations, [{ url: '/knowledge/verified', title: 'Playbook' }]);
+    assert.match(original.rows[0].metadata.approval_proposal_original_content, /pending your approval/);
   });
 });
 
@@ -1177,7 +1185,7 @@ test('the final rejected decision posts one settled-group confirmation', async (
       `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
        VALUES (gen_random_uuid()::text, $1, $2, $3, $4, '{}'::jsonb)
        RETURNING id`,
-      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID, `Please review ${label}.`],
+      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID, `Read [Playbook](/knowledge/verified). Please review ${label}. This is pending your approval before creation.`],
     );
     const actions = await c.query(
       `INSERT INTO agent_actions
@@ -1222,6 +1230,9 @@ test('the final rejected decision posts one settled-group confirmation', async (
     method: 'POST', body: JSON.stringify({ reason: 'skip first' }),
   })).status, 200);
   assert.equal((await confirmationFor(rejected.messageId)).rowCount, 0);
+  const partialProposal = await withClient(c => c.query('SELECT content, metadata FROM messages WHERE org_id=$1 AND id=$2', [ORG_ID, rejected.messageId]));
+  assert.match(partialProposal.rows[0].content, /pending your approval/);
+  assert.equal(partialProposal.rows[0].metadata.approval_resolution_message_id, undefined);
   assert.equal((await app().request(`/api/agent/actions/${rejected.actionIds[1]}/reject`, {
     method: 'POST', body: JSON.stringify({ reason: 'skip second' }),
   })).status, 200);
@@ -1229,6 +1240,13 @@ test('the final rejected decision posts one settled-group confirmation', async (
   assert.equal(rejectedConfirmation.rowCount, 1);
   assert.match(rejectedConfirmation.rows[0].content, /rejected 2 proposed actions/i);
   assert.equal(rejectedConfirmation.rows[0].user_id, SHADOW_USER_ID);
+  const resolvedProposal = await withClient(c => c.query('SELECT content, metadata FROM messages WHERE org_id=$1 AND id=$2', [ORG_ID, rejected.messageId]));
+  assert.match(resolvedProposal.rows[0].content, /\[Playbook\]\(\/knowledge\/verified\)/);
+  assert.doesNotMatch(resolvedProposal.rows[0].content, /pending your approval/);
+  assert.match(resolvedProposal.rows[0].metadata.approval_proposal_original_content, /pending your approval/);
+  assert.equal(resolvedProposal.rows[0].metadata.agent_blocks[0].text, resolvedProposal.rows[0].content);
+  const lateStreamOverwrite = await withClient(c => c.query("UPDATE messages SET content='Queued stale approval' WHERE org_id=$1 AND id=$2 AND metadata->>'approval_resolution_message_id' IS NULL RETURNING id", [ORG_ID, rejected.messageId]));
+  assert.equal(lateStreamOverwrite.rowCount, 0, 'resolved proposal fences a late streaming pending copy');
   assert.deepEqual(
     [...rejectedConfirmation.rows[0].metadata.rejected_action_ids].sort(),
     [...rejected.actionIds].sort(),

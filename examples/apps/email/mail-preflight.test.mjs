@@ -1,0 +1,6 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {createMailProvider} from './mail.mjs';import {MailPreEffectValidationError} from './runtime-effect.mjs';
+const endpoint={host:'127.0.0.1',port:9,tls:'none',auth:{user:'owner@example.test',password:'synthetic-only'}};
+const provider=createMailProvider({schema_version:'deft.email_account.v1',mode:'loopback_fixture',owner:'owner@example.test',fixture_recipient:'recipient@example.test',smtp:endpoint,imap:endpoint},{allowLoopbackFixture:true});
+const id='00000000-0000-4000-8000-000000000001';
+test('invalid address and fixture recipient rejection are tagged before any journal reservation',async()=>{for(const to of ['not-an-email','other@example.test']){let touched=0;const journal={latest:()=>undefined,reserve:()=>touched++,append:()=>touched++};await assert.rejects(provider.effect(journal,id,'send_message',{to,subject:'QA',body:'synthetic'}),MailPreEffectValidationError);assert.equal(touched,0);}});
+test('existing ambiguous journal is never a pre-effect rejection',async()=>{const journal={latest:()=>({digest:'changed',state:'sending'})};await assert.rejects(provider.effect(journal,id,'send_message',{to:'not-an-email',subject:'QA',body:'synthetic'}),error=>!(error instanceof MailPreEffectValidationError)&&error.message==='RUN_INPUT_CHANGED');});

@@ -7,7 +7,7 @@ export function composerCompletion(current: () => Readonly<{active:boolean;gener
 export type ExperienceComposeRequest = Readonly<{
   action_key: string; input?: ComposerInput; draft_state_key: string; draft_id: string;
 }>;
-export type ComposerField = Readonly<{ key: string; label: string; type: 'string' | 'number' | 'boolean'; maxLength?: number; minimum?: number; maximum?: number; required: boolean }>;
+export type ComposerField = Readonly<{ key: string; label: string; type: 'string' | 'number' | 'boolean'; maxLength?: number; minLength?: number; format?: 'email'; readOnly?: boolean; minimum?: number; maximum?: number; required: boolean }>;
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 export function composerFields(schema: unknown): readonly ComposerField[] {
   if (!object(schema) || schema.type !== 'object' || schema.additionalProperties !== false || !object(schema.properties)
@@ -17,7 +17,9 @@ export function composerFields(schema: unknown): readonly ComposerField[] {
     if (!/^[a-zA-Z0-9_]{1,80}$/.test(key) || !object(value) || !['string', 'number', 'integer', 'boolean'].includes(String(value.type))) throw new Error('Unsupported action fields.');
     if (value.type === 'string' && (!Number.isInteger(value.maxLength) || Number(value.maxLength) < 1 || Number(value.maxLength) > 16384)) throw new Error('Unsupported action fields.');
     const name = key.replaceAll('_', ' ').replace(/\bid\b/gi, 'ID');
-    return { key, label: name.charAt(0).toUpperCase() + name.slice(1), type: value.type === 'integer' ? 'number' : value.type as ComposerField['type'],
+    return { key, label: typeof value.title === 'string' ? value.title : name.charAt(0).toUpperCase() + name.slice(1), type: value.type === 'integer' ? 'number' : value.type as ComposerField['type'],
+      ...(typeof value.minLength === 'number' ? {minLength:value.minLength} : {}),
+      ...(value.format === 'email' ? {format:'email' as const} : {}), ...(value.readOnly === true ? {readOnly:true} : {}),
       ...(value.type === 'string' ? { maxLength: Number(value.maxLength) } : {}),
       ...(typeof value.minimum === 'number' ? { minimum: value.minimum } : {}),
       ...(typeof value.maximum === 'number' ? { maximum: value.maximum } : {}), required: required.includes(key) };
@@ -25,6 +27,17 @@ export function composerFields(schema: unknown): readonly ComposerField[] {
     const rank = (field: ComposerField) => field.type === 'string' && Number(field.maxLength) > 512 ? 2 : field.required ? 0 : 1;
     return rank(left) - rank(right) || (left.required && right.required ? required.indexOf(left.key) - required.indexOf(right.key) : 0);
   });
+}
+/** Early feedback; the host independently validates the contract before issuing a ticket. */
+export function composerValidationError(fields: readonly ComposerField[], input: ComposerInput): string | null {
+  for (const field of fields) {
+    const value=input[field.key];
+    if (field.type === 'string') {
+      if (typeof value !== 'string' || value.length < (field.minLength ?? 0) || value.length > (field.maxLength ?? 16384)) return `Check ${field.label.toLowerCase()}.`;
+      if (field.format === 'email' && !/^[^\s<>,;"@]+@[^\s<>,;"@]+\.[^\s<>,;"@]+$/.test(value)) return `Enter one valid email address for ${field.label.toLowerCase()}.`;
+    }
+  }
+  return null;
 }
 export function mergeComposerDraft(saved: ComposerInput, input: ComposerInput): ComposerInput {
   const value = { ...saved };

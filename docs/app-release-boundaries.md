@@ -1,7 +1,7 @@
 # App release boundaries
 
-The `0.3.0-preview.16` Deft host and `0.1.0-alpha.6` Author Kit are candidates
-with publication pending. Email `1.5.4` is a WIP example. These identities do
+The `0.3.0-preview.16` Deft host and `0.1.0-alpha.7` Author Kit are candidates
+with publication pending. Email `1.5.5` is a WIP example. These identities do
 not claim a published image, npm package, external mail delivery, or production
 mailbox certification.
 
@@ -30,7 +30,7 @@ From the exact reviewed source checkout:
 pnpm --dir packages/app-kit pack --pack-destination /absolute/path/to/artifacts
 ```
 
-The resulting candidate is `deft-app-kit-0.1.0-alpha.6.tgz`. Record its SHA256,
+The resulting candidate is `deft-app-kit-0.1.0-alpha.7.tgz`. Record its SHA256,
 retain that exact artifact, and install it in a clean author directory. Verify
 the public root and browser leaf exports and the `deft` CLI there. Do not use a
 workspace link, private host imports, or a changed artifact under the same

@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import {webcrypto} from 'node:crypto';
+const views=[];const port={onmessage:null,close(){},postMessage(m){if(m.kind==='view'){views.push(m.view);return;}let output;
+if(m.operation==='private_state')output={operation:'list',items:[]};
+else if(m.operation==='resource')output={schema_version:'deft.experience_resource_search_page.v1',operation:'search',items:[],next_cursor:null,scan:{records_scanned:0,complete:true},freshness:'unknown'};
+else throw Error('Unexpected operation');
+setTimeout(()=>port.onmessage({data:{version:m.version,session_id:m.session_id,kind:'response',request_id:m.request_id,ok:true,output}}),1);}};
+const self={};vm.runInNewContext(readFileSync('worker.bundle.js','utf8'),{self,TextEncoder,Map,Promise,setTimeout,clearTimeout,crypto:{getRandomValues:b=>webcrypto.getRandomValues(b)}});self.onmessage({data:{kind:'start',port,session_id:'mailbox_smoke'}});await new Promise(r=>setTimeout(r,120));
+assert.deepEqual(Array.from(views.at(-1).navigation,n=>n.label),['Inbox','Sent','Drafts','Archive']);
+const nodes=()=>{const all=[];const visit=n=>{all.push(n);n.children?.forEach(visit)};visit(views.at(-1).root);return all;};
+assert(nodes().some(n=>n.id==='requests'&&n.label==='Activity'));
+assert.equal(nodes().filter(n=>/No messages/.test(n.text||'')).length,1,'Empty mailbox notice rendered once');
+const click=async id=>{port.onmessage({data:{version:'deft.experience_bridge.v1',session_id:'mailbox_smoke',kind:'ui_event',event:{kind:'click',node_id:id}}});await new Promise(r=>setTimeout(r,120));};
+await click('drafts');assert.equal(views.at(-1).navigation.filter(n=>n.selected).length,1);assert(nodes().some(n=>n.id==='drafts_empty'));
+await click('requests');assert.equal(views.at(-1).navigation.filter(n=>n.selected).length,0);assert(nodes().some(n=>n.id==='requests_heading'&&n.text==='Activity'));
+console.log(JSON.stringify({passed:true,views:views.length,effects:0,four_native_folders:true,activity_outside_mailbox_navigation:true,empty_notice_once:true}));

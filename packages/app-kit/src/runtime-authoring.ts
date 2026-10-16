@@ -3,7 +3,9 @@ import { z } from 'zod';
 const key = z.string().min(1).max(48).regex(/^[a-z][a-z0-9_]*$/)
   .refine((value) => !['constructor', 'prototype', '__proto__'].includes(value));
 const field = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('string'), maxLength: z.number().int().min(1).max(16_384) }),
+  z.strictObject({ type: z.literal('string'), maxLength: z.number().int().min(1).max(16_384),
+    minLength: z.number().int().min(0).max(16_384).optional(), format: z.literal('email').optional(),
+    title: z.string().min(1).max(80).regex(/^[^\u0000-\u001f\u007f<>]+$/).optional(), readOnly: z.boolean().optional() }),
   z.strictObject({ type: z.literal('number'), minimum: z.number().finite(), maximum: z.number().finite() })
     .refine((value) => value.minimum <= value.maximum),
   z.strictObject({ type: z.literal('boolean') }),
@@ -16,6 +18,9 @@ export const RuntimeObjectSchema = z.strictObject({
   required: z.array(key).max(32),
   additionalProperties: z.literal(false),
 }).superRefine((value, ctx) => {
+  for (const [name, definition] of Object.entries(value.properties)) if (definition.type === 'string' && (definition.minLength ?? 0) > definition.maxLength) {
+    ctx.addIssue({code:'custom',path:['properties',name,'minLength'],message:'Minimum length exceeds maximum length'});
+  }
   if (Object.keys(value.properties).length > 32 || new Set(value.required).size !== value.required.length
     || value.required.some((name) => !Object.hasOwn(value.properties, name))) {
     ctx.addIssue({ code: 'custom', message: 'Runtime object fields must be bounded, unique and declared' });
@@ -27,9 +32,10 @@ export function parseRuntimeObjectInput(contract: RuntimeObjectContract, value: 
   const schema = RuntimeObjectSchema.parse(contract);
   const shape: Record<string, z.ZodType> = Object.create(null);
   for (const [name, definition] of Object.entries(schema.properties)) {
-    const validator = definition.type === 'string' ? z.string().max(definition.maxLength)
+    let validator: z.ZodType = definition.type === 'string' ? z.string().min(definition.minLength ?? 0).max(definition.maxLength)
       : definition.type === 'number' ? z.number().finite().min(definition.minimum).max(definition.maximum)
         : z.boolean();
+    if (definition.type === 'string' && definition.format === 'email') validator = z.string().min(definition.minLength ?? 0).max(definition.maxLength).email();
     shape[name] = schema.required.includes(name) ? validator : validator.optional();
   }
   return z.strictObject(shape).parse(value) as Record<string, string | number | boolean>;
