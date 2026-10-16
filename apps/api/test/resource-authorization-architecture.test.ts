@@ -32,9 +32,13 @@ test('Phase 4 Resource authorization stays closed and owns no external effect pa
 
   const routeConsumers: string[] = [];
   const generalizedResourceRoutes: string[] = [];
+  const consumesV1Resolver = (source: string) => /ResourceAuthorizationService|resourceAuthorizationService|ResourceRefV1/.test(source);
+  assert.equal(consumesV1Resolver("import { ResourceAuthorizationError } from '../lib/resource-authorization.js';"), false);
+  assert.equal(consumesV1Resolver('resourceAuthorizationService.resolve(context, ref)'), true);
   for (const path of await typescriptFiles(join(apiSourceRoot, 'routes'))) {
     const source = await readFile(path, 'utf8');
-    if (/resource-authorization|ResourceAuthorizationService|ResourceRefV1/.test(source)) {
+    // Sharing the error type with v2 does not make a route a v1 resolver consumer.
+    if (consumesV1Resolver(source)) {
       routeConsumers.push(relative(apiSourceRoot, path).replaceAll('\\', '/'));
     }
     if (/['"]\/api\/resources(?:\/|['"])/.test(source)) {

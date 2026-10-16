@@ -784,7 +784,8 @@ test('module fresh-install and supported-upgrade SQL stay identical and enforce 
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0081_modules_v1.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql, 'fresh installs and supported upgrades must create the same module schema');
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'),
+    'fresh installs and supported upgrades must create the same module schema');
   assert.match(
     applyExtrasSource,
     /'0081_modules_v1\.sql'/,
@@ -946,7 +947,7 @@ test('module relations/views fresh-install and supported-upgrade SQL stay identi
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0082_module_relations_views.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0082_module_relations_views\.sql'/);
   assert.match(
     upgradeSql,
@@ -1024,7 +1025,7 @@ test('Agent Channel lease schema converges across fresh installs and supported u
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0083_agent_channel_leases.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0083_agent_channel_leases\.sql'/);
   assert.match(upgradeSql, /claim_token text/i);
   assert.match(upgradeSql, /lease_expires_at timestamp/i);
@@ -1048,7 +1049,7 @@ test('wiki memory sync schema converges across fresh installs and supported upgr
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0084_wiki_memory_sync.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0084_wiki_memory_sync\.sql'/);
   assert.match(upgradeSql, /wiki_memory_sync_identity_unique/i);
   assert.match(upgradeSql, /content_digest/i);
@@ -1068,7 +1069,7 @@ test('runtime reconciliation outcome converges across fresh installs and support
     'utf8',
   );
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0085_agent_channel_runtime_reconciliation\.sql'/);
   assert.match(upgradeSql, /ADD COLUMN IF NOT EXISTS channel_event_id text/i);
   assert.match(upgradeSql, /agent_action_runtime_request_idx/i);
@@ -1086,7 +1087,7 @@ test('tenant-bound attachment links converge across fresh installs and supported
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0086_attachment_links.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0086_attachment_links\.sql'/);
   assert.match(upgradeSql, /INSERT INTO "message_attachments"/i);
   assert.match(upgradeSql, /INSERT INTO "task_attachments"/i);
@@ -1120,7 +1121,7 @@ test('bounded attachment processing converges across fresh installs and supporte
   const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
   const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0087_attachment_processing.sql'), 'utf8');
   const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
-  assert.equal(upgradeSql, freshSql);
+  assert.equal(upgradeSql.replace(/\r\n/g, '\n'), freshSql.replace(/\r\n/g, '\n'));
   assert.match(applyExtrasSource, /'0087_attachment_processing\.sql'/);
   assert.match(upgradeSql, /CREATE TYPE "attachment_processing_status"/i);
   assert.match(upgradeSql, /CREATE TABLE IF NOT EXISTS "attachment_derivatives"/i);
@@ -1159,4 +1160,22 @@ test('Agent Channel v2 is the fresh-install default and supported upgrade bounda
   const table = getTableConfig(agentChannelConnections);
   const protocolColumn = table.columns.find((column) => column.name === 'protocol_version');
   assert.equal(protocolColumn?.default, 'deft.agent_channel.v2');
+});
+
+
+test('preview53-56 private state, consent and batches share fresh and upgrade paths', async () => {
+  const schema = await import('../src/schema.ts');
+  const directory=dirname(fileURLToPath(import.meta.url));
+  const extras=readFileSync(resolve(directory,'apply-extras.ts'),'utf8');
+  assert.deepEqual([schema.appPrivateStateRecords,schema.appExperienceConsentGrants,schema.appActionBatches,schema.appActionBatchItems].map(t=>getTableConfig(t).name),['app_private_state_records','app_experience_consent_grants','app_action_batches','app_action_batch_items']);
+  const migrations=upgradeManifest.migrations.filter(m=>/^0\.3\.0-preview\.(53|54|55|56)$/.test(m.version));assert.equal(migrations.length,4);
+  const sql=migrations.map(m=>{assert.ok(extras.includes(m.file));return readFileSync(resolve(directory,'..','upgrades',m.file),'utf8');});
+  assert.match(sql[0]!,/revision BETWEEN 1 AND 2147483647/);
+  assert.match(sql[1]!,/Experience consent is immutable except explicit revocation/);
+  assert.match(sql[1]!,/NEW\.epoch<>OLD\.epoch\+1/);
+  assert.match(sql[2]!,/Action batch membership is immutable/);
+  assert.match(sql[2]!,/FOREIGN KEY\(org_id,run_id\)/);
+  assert.match(sql[2]!,/ordinal>=0 AND ordinal<10/);
+  assert.match(sql[3]!,/policy_revision integer NOT NULL DEFAULT -1/);
+  assert.equal(getTableConfig(schema.appActionBatches).columns.find(c=>c.name==='policy_revision')?.default,-1);
 });

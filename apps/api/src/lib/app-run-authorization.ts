@@ -35,7 +35,8 @@ function actorMatchesRun(actor: AppRunActor, run: AppRunSafeView): boolean {
       ? actor.agent_employee_id
       : actor.actor_type === 'system'
         ? actor.system_id
-        : actor.automation_id;
+        : actor.actor_type === 'automation' ? actor.automation_id : actor.ingress_id;
+  if (actor.actor_type === 'app_public') return false;
   return (
     actor.actor_type === run.initiating_actor_type && actorId === run.initiating_actor_id
   ) || (

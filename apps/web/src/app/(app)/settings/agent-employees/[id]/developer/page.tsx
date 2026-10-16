@@ -178,6 +178,7 @@ type DeveloperPayload = {
 
 type RegeneratePayload = {
   api_key: string;
+  mcp_token_id?: string;
   mcp_endpoint_url: string;
   employee: { id: string; slug: string; name?: string };
 };
@@ -197,6 +198,7 @@ export default function DeveloperPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newToken, setNewToken] = useState<string | null>(null);
+  const [newTokenId, setNewTokenId] = useState<string | null>(null);
   const [newChannelToken, setNewChannelToken] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regeneratingChannel, setRegeneratingChannel] = useState(false);
@@ -242,6 +244,7 @@ export default function DeveloperPage() {
       }
       const payload = (await res.json()) as RegeneratePayload;
       setNewToken(payload.api_key);
+      setNewTokenId(typeof payload.mcp_token_id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(payload.mcp_token_id) ? payload.mcp_token_id : null);
       setData((current) => current
         ? { ...current, mcp_endpoint_url: payload.mcp_endpoint_url, mcp_token_masked: '********' }
         : current);
@@ -520,6 +523,7 @@ export default function DeveloperPage() {
             </div>
           )}
         />
+        {newTokenId && <Field label="MCP credential ID (not its secret)" value={newTokenId} onCopy={() => copy('credential ID', newTokenId)} mono />}
         <Field
           label="Channel endpoint URL"
           value={data.channel_endpoint_url}

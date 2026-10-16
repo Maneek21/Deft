@@ -66,8 +66,25 @@ import {
   moduleIdempotencyDigest,
 } from '../lib/module-service.js';
 import { getActiveAgentChannelRuntimeCorrelation } from '../lib/agent-channel.js';
+import { McpRequestBodyError, readMcpRequestJson } from '../lib/mcp-request-body.js';
+import { dispatchPrivateMcpTool, isPrivateMcpTool, privateMcpCatalog } from '../lib/app-private-mcp-dispatch.js';
+import { isRuntimeWorkflowTool, runtimeWorkflowHasScopes, RUNTIME_WORKFLOW_SCOPES } from '../lib/app-runtime-workflow-tools.js';
 
 export const mcpServerV1Routes = new Hono();
+const requestBodies = new WeakMap<Request, Promise<unknown>>();
+function requestJson<T = unknown>(c: Context): Promise<T> {
+  let body = requestBodies.get(c.req.raw);
+  if (!body) {
+    body = readMcpRequestJson(c.req.raw);
+    requestBodies.set(c.req.raw, body);
+  }
+  return body as Promise<T>;
+}
+function requestBodyLimitResponse(c: Context, error: unknown) {
+  return error instanceof McpRequestBodyError && error.status === 413
+    ? c.json({ error: { code: 'request_too_large', message: error.message } }, 413)
+    : null;
+}
 export const HERMES_MCP_ENDPOINT_PATH = '/api/mcp/hermes/v1';
 
 export type McpResultProfile = 'canonical' | 'hermes';
@@ -174,8 +191,10 @@ function tokenBoundAgentCatalog(
   return tools.filter((tool) => {
     const nativeScopes = nativeMentionAgentToolScopes(tool.name);
     if (principal.token_id && nativeScopes && !nativeScopes.every(scope => principal.scopes?.includes(scope))) return false;
-    return !isAgentAppActionTool(tool.name)
-      || (Boolean(principal.token_id) && agentAppToolHasRequiredScope(principal.scopes ?? [], tool.name));
+    return isRuntimeWorkflowTool(tool.name)
+      ? Boolean(principal.token_id) && runtimeWorkflowHasScopes(tool.name, principal.scopes ?? [])
+      : !isAgentAppActionTool(tool.name)
+        || (Boolean(principal.token_id) && agentAppToolHasRequiredScope(principal.scopes ?? [], tool.name));
   }).map((tool) => {
     const inputSchema = { ...tool.inputSchema };
     const properties = isRecord(inputSchema.properties)
@@ -589,6 +608,9 @@ async function dispatchTool(
 ): Promise<ToolResult> {
   const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
   const handler: ToolHandler | undefined = ALL_TOOLS[canonicalToolName];
+  if (isRuntimeWorkflowTool(canonicalToolName) && (!ctx.token_id || !runtimeWorkflowHasScopes(canonicalToolName, ctx.scopes ?? []))) {
+    return { isError: true, content: [{ type: 'text', text: `Scoped employee credential required: ${RUNTIME_WORKFLOW_SCOPES[canonicalToolName].join(' and ')}` }] };
+  }
   const auditMetadata =
     canonicalToolName === toolName
       ? metadata
@@ -706,8 +728,10 @@ mcpServerV1Routes.post('/', async (c) => {
 
   let body: JsonRpcRequestBody;
   try {
-    body = await c.req.json();
-  } catch {
+    body = await requestJson<JsonRpcRequestBody>(c);
+  } catch (error) {
+    const limited = requestBodyLimitResponse(c, error);
+    if (limited) return limited;
     return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, 400);
   }
 
@@ -807,7 +831,7 @@ mcpServerV1Routes.post('/', async (c) => {
       const principal = await resolveMcpPrincipal(bearer);
       if (principal.kind === 'human' || principal.kind === 'oauth') {
         return {
-          tools: sortedCatalog(humanCatalog(principal.scopes)),
+          tools: sortedCatalog([...humanCatalog(principal.scopes), ...privateMcpCatalog(principal)]),
           ...(requestMetadata.era === 'modern'
             ? { ttlMs: 0, cacheScope: 'private' as const }
             : {}),
@@ -815,7 +839,7 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const resolved = principal as ResolvedGateway;
       const catalog = sortedCatalog(
-        tokenBoundAgentCatalog(toolSchemas, resolved).filter((t) => (
+        [...tokenBoundAgentCatalog(toolSchemas, resolved), ...privateMcpCatalog(principal)].filter((t) => (
           resolved.gateway_employees.every((employee) => (
             !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
           ))
@@ -854,6 +878,9 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const args = (params.arguments ?? {}) as Record<string, unknown>;
       const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
+      if (isPrivateMcpTool(canonicalToolName)) {
+        return dispatchPrivateMcpTool(principal, canonicalToolName, args, c.req.raw.signal);
+      }
       if (principal.kind === 'human' || principal.kind === 'oauth') {
         if (principal.kind === 'oauth' && !humanToolHasRequiredScope(principal.scopes, canonicalToolName)) {
           const challengeScope = humanToolChallengeScope(canonicalToolName, principal.scopes);
@@ -982,8 +1009,10 @@ mcpServerV1Routes.post('/', async (c) => {
 mcpServerV1Routes.post('/initialize', async (c) => {
   let requestBody: unknown;
   try {
-    requestBody = await c.req.json();
-  } catch {
+    requestBody = await requestJson(c);
+  } catch (error) {
+    const limited = requestBodyLimitResponse(c, error);
+    if (limited) return limited;
     requestBody = undefined;
   }
   const params = isRecord(requestBody) && 'params' in requestBody
@@ -1044,7 +1073,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   }
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {
-    return c.json({ tools: sortedCatalog(humanCatalog(principal.scopes)) });
+    return c.json({ tools: sortedCatalog([...humanCatalog(principal.scopes), ...privateMcpCatalog(principal)]) });
   }
 
   const resolved = principal as ResolvedGateway;
@@ -1053,7 +1082,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   // for the resolved caller at tools/call time. Conservative employees must
   // still be able to propose governed writes for human review.
   const catalog = sortedCatalog(
-    tokenBoundAgentCatalog(toolSchemas, resolved).filter((t) => (
+    [...tokenBoundAgentCatalog(toolSchemas, resolved), ...privateMcpCatalog(principal)].filter((t) => (
       resolved.gateway_employees.every((employee) => (
         !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
       ))
@@ -1090,14 +1119,21 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   // 2. Parse body
   let body: { name?: string; arguments?: Record<string, unknown> };
   try {
-    body = await c.req.json();
-  } catch {
+    body = await requestJson<typeof body>(c);
+  } catch (error) {
+    const limited = requestBodyLimitResponse(c, error);
+    if (limited) return limited;
     return errorResponse(c, 400, 'bad_request', 'Invalid JSON body');
   }
   const toolName = body?.name;
   const args = body?.arguments ?? {};
   if (!toolName || typeof toolName !== 'string') {
     return errorResponse(c, 400, 'bad_request', 'Missing tools/call.name');
+  }
+
+  const privateToolName = TOOL_ALIASES[toolName] ?? toolName;
+  if (isPrivateMcpTool(privateToolName)) {
+    return c.json(await dispatchPrivateMcpTool(principal, privateToolName, args, c.req.raw.signal));
   }
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {

@@ -87,6 +87,11 @@ async function writeStored(orgId: string, next: OrgAIConfigStored): Promise<void
  */
 export async function getOrgAIConfig(orgId: string): Promise<OrgAIConfigRuntime> {
   const stored = await readStored(orgId);
+  return decodeOrgAIConfig(stored);
+}
+
+/** Pure decoding for callers that already hold the exact organization's row lock. */
+export function decodeOrgAIConfig(stored: OrgAIConfigStored): OrgAIConfigRuntime {
   const api_keys: Partial<Record<LLMProvider, string>> = {};
   for (const p of PROVIDERS) {
     const decrypted = safeDecrypt(stored.api_keys?.[p]);
@@ -255,16 +260,15 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
  * Used by the provider-agnostic agent loop (agent-llm.ts).
  */
 export async function resolveReasonProvider(orgId: string | null | undefined): Promise<ResolvedReasonProvider> {
-  let route: ModelRoute | undefined;
-  let apiKeys: Partial<Record<LLMProvider, string>> = {};
-  let ollamaUrl: string | undefined;
+  const cfg = orgId ? await getOrgAIConfig(orgId).catch(() => null) : null;
+  return resolveReasonProviderFromConfig(cfg);
+}
 
-  if (orgId) {
-    const cfg = await getOrgAIConfig(orgId).catch(() => null);
-    route = cfg?.ai_models?.reason;
-    apiKeys = cfg?.api_keys ?? {};
-    ollamaUrl = cfg?.ollama_url;
-  }
+/** No I/O: private destination admission supplies its locked configuration. */
+export function resolveReasonProviderFromConfig(cfg: OrgAIConfigRuntime | null): ResolvedReasonProvider {
+  const route = cfg?.ai_models?.reason;
+  const apiKeys = cfg?.api_keys ?? {};
+  const ollamaUrl = cfg?.ollama_url;
 
   const selected = selectReasonProvider({
     route,

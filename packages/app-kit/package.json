@@ -1,6 +1,6 @@
 {
   "name": "@deft/app-kit",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.5",
   "description": "Portable authoring and packaging contract for declarative Deft apps.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -15,6 +15,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./experience": {
+      "types": "./dist/experience-sdk.d.ts",
+      "import": "./dist/experience-sdk.js"
+    },
+    "./experimental/resource-sync": {
+      "types": "./dist/experimental/resource-sync.d.ts",
+      "import": "./dist/experimental/resource-sync.js"
     }
   },
   "bin": {

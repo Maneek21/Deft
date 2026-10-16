@@ -25,7 +25,8 @@ export const noOpAppRunAttentionProjector: AppRunAttentionProjector = Object.fre
 });
 
 export class PostgresAppRunAttentionProjector implements AppRunAttentionProjector {
-  constructor(private readonly deliver = true) {}
+  constructor(private readonly deliver = true,
+    private readonly projectionOptions: Pick<NonNullable<Parameters<typeof upsertAttentionItem>[1]>, 'executor' | 'afterCommit'> = {}) {}
 
   async projectApprovalRequested(orgId: string, runId: string): Promise<void> {
     const [action] = await db.select().from(agentActions).where(and(
@@ -63,6 +64,7 @@ export class PostgresAppRunAttentionProjector implements AppRunAttentionProjecto
       sourceId: runId,
       resolution,
       actorUserId,
+      excludeKind: resolution === 'reconciled' ? 'app_run_reconciled' : undefined,
     });
   }
 
@@ -127,13 +129,13 @@ export class PostgresAppRunAttentionProjector implements AppRunAttentionProjecto
         risk_class: run.risk_class,
       },
       occurredAt: occurredAt ?? run.updated_at,
-    }, { deliver: this.deliver });
+    }, { deliver: this.deliver, ...this.projectionOptions });
   }
 
   async #recipientUserId(run: AppRunSafeView): Promise<string | null> {
     if (run.initiating_actor_type === 'human') return run.initiating_actor_id;
     if (run.initiating_actor_type !== 'agent_employee') return null;
-    const [employee] = await db.select({ user_id: agentEmployees.user_id })
+    const [employee] = await (this.projectionOptions.executor ?? db).select({ user_id: agentEmployees.user_id })
       .from(agentEmployees).where(and(
         eq(agentEmployees.org_id, run.org_id),
         eq(agentEmployees.id, run.initiating_actor_id),

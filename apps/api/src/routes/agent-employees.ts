@@ -1604,7 +1604,7 @@ async function issueMcpToken({
   appScopes?: readonly EmployeeMcpAppScope[];
   resourceScopes?: readonly EmployeeMcpResourceScope[];
   deactivateExisting?: boolean;
-}): Promise<{ raw: string; scopes: readonly EmployeeMcpScope[] }> {
+}): Promise<{ raw: string; tokenId: string; scopes: readonly EmployeeMcpScope[] }> {
   const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
   const rawApiKey = `deft_${keyId}`;
   const keyPrefix = rawApiKey.slice(0, 12);
@@ -1638,7 +1638,7 @@ async function issueMcpToken({
     created_by: createdBy,
   });
 
-  return { raw: rawApiKey, scopes: issued.scopes };
+  return { raw: rawApiKey, tokenId: issued.tokenId, scopes: issued.scopes };
 }
 
 async function installRequiredWorkspaceSkill(employeeId: string) {
@@ -1798,6 +1798,7 @@ agentEmployeeRoutes.post('/', async (c) => {
         employee: employee!,
         user_id: agentUser!.id,
         api_key: issuedMcpToken.raw,
+        mcp_token_id: issuedMcpToken.tokenId,
         mcp_scopes: issuedMcpToken.scopes,
         channel_key: channelToken.raw,
         channel_endpoint_url: agentChannelEndpointUrl(),
@@ -3478,6 +3479,7 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       },
       mcp_endpoint_url: mcpEndpointUrl(),
       api_key: issuedMcpToken.raw,
+      mcp_token_id: issuedMcpToken.tokenId,
       mcp_scopes: issuedMcpToken.scopes,
     });
   } catch (err) {

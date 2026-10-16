@@ -1,7 +1,7 @@
 import './fixtures/app-run-enabled-env.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -69,7 +69,9 @@ import { AppRunService } from '../src/lib/app-run-service.js';
 import { listManagedAppAutomations } from '../src/lib/app-automation-management-service.js';
 import { closeDb, db } from '../src/lib/db.js';
 import { runAppAutomationFire, runAppAutomationScan } from '../src/lib/app-automation-runtime.js';
-import { completeJob, dequeueJob, QUEUE_NAMES } from '../src/lib/queues.js';
+import { completeJob, dequeueJob, ensureCronJob, QUEUE_NAMES } from '../src/lib/queues.js';
+import { APP_AUTOMATION_SCAN_CRON } from '../src/lib/app-automation-scan-progress.js';
+import { _processDequeuedJobForTest } from '../src/workers/index.js';
 import { handleAppRunAttempt } from '../src/lib/app-run-worker-handler.js';
 import { getAppRunRuntime, shutdownAppRunRuntime } from '../src/lib/app-run-runtime.js';
 import { ModuleError } from '../src/lib/module-errors.js';
@@ -83,6 +85,10 @@ import {
 } from '../src/lib/app-service.js';
 import {
   activateConnectedAppInstallation,
+  activateConnectedAppUpgrade,
+  prepareConnectedAppUpgradeReview,
+  type ConnectedAppActivationRequest,
+  type AppReviewCapabilityPort,
   getConnectedAppGrantManagement,
   inspectConnectedAppHealth,
   prepareConnectedAppReview,
@@ -106,6 +112,13 @@ import { databaseCompleteAppRunTestKeyringFixture } from './fixtures/app-run-tes
 
 const DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL
   ?? (process.env.CI === 'true' ? process.env.DATABASE_URL : undefined);
+// Capacity uses fixed organization IDs and global row-count assertions. Require
+// its explicitly assigned fresh synthetic database before any fixture writes.
+if (process.env.DEFT_PREVIEW_CAPACITY_PROOF === 'true'
+  && (DATABASE_URL !== process.env.DATABASE_URL
+    || !/^postgresql:\/\/gate_g_test@127\.0\.0\.1:55435\/gate_g_20260926_capacity_test(?:_v[0-9]+)?$/.test(DATABASE_URL ?? ''))) {
+  throw new Error('A05 capacity proof requires matching URLs for the assigned fresh synthetic capacity database');
+}
 if (!DATABASE_URL) throw new Error('Connected App grant DB tests require DEFT_TEST_DATABASE_URL');
 if (process.env.CI !== 'true' && !/(?:test|ci|acceptance|phase5)/i.test(new URL(DATABASE_URL).pathname)) {
   throw new Error('Connected App grant DB tests require an explicitly disposable database');
@@ -124,6 +137,20 @@ function moduleRef(installationId: string, resourceType: string, resourceId: str
     resource_type: resourceType,
     resource_id: resourceId,
   };
+}
+
+async function activateReviewedConnectedUpgrade(actor: ReturnType<typeof humanModuleActor>, installationId: string,
+  request: ConnectedAppActivationRequest, capability: AppReviewCapabilityPort,
+  options?: { failBeforePointerSwap?: boolean }) {
+  const [prior] = await db.select().from(appInstallations).where(and(
+    eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installationId),
+  ));
+  assert.ok(prior?.active_version_id);
+  const upgrade = { ...request, schema_version: 'deft.connected_app_upgrade_request.v1' as const,
+    prior_app_version_id: prior.active_version_id, pending_work_policy: 'supersede_pending_work' as const };
+  const review = await prepareConnectedAppUpgradeReview(actor, installationId, upgrade, capability);
+  return activateConnectedAppUpgrade(actor, installationId, { ...upgrade,
+    expected_upgrade_review_digest: review.upgrade_review_digest }, capability, options);
 }
 
 async function relationPersistenceSnapshot(
@@ -611,6 +638,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   const providerRoot = resolve(import.meta.dirname, '..', '..', '..', 'examples', 'app-platform-sandbox-email-provider');
   const providerOutboxRoot = await mkdtemp(resolve(tmpdir(), 'deft-track-a-outbox-'));
   const providerOutbox = resolve(providerOutboxRoot, 'effects.jsonl');
+  const providerEffectCheckpoint = resolve(providerOutboxRoot, 'after-effect.json');
   const providerEnvironment = {
     selfHosted: process.env.DEFT_SELF_HOSTED,
     unsafeStdio: process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO,
@@ -623,7 +651,9 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     else process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = providerEnvironment.unsafeStdio;
     if (providerEnvironment.allowlist === undefined) delete process.env.MCP_STDIO_ALLOWED_COMMANDS;
     else process.env.MCP_STDIO_ALLOWED_COMMANDS = providerEnvironment.allowlist;
-    await rm(providerOutboxRoot, { recursive: true, force: true });
+    if (!process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE) {
+      await rm(providerOutboxRoot, { recursive: true, force: true });
+    }
   });
   process.env.DEFT_SELF_HOSTED = 'true';
   process.env.DEFT_MCP_ENABLE_UNSAFE_STDIO = 'true';
@@ -695,7 +725,9 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     server_url: null,
     transport: 'stdio',
     stdio_command: process.execPath,
-    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', providerOutbox],
+    stdio_args: [resolve(providerRoot, 'server.mjs'), '--outbox-file', providerOutbox,
+      ...(process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE
+        ? ['--pause-after-effect-file', providerEffectCheckpoint] : [])],
     auth_type: 'none',
     is_active: true,
     created_by: userId,
@@ -861,7 +893,9 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     }, { now: () => new Date(scheduledAt.getTime() + 60_000) })
   );
 
-  const primary = await createDefinition(1);
+  const primary = process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE
+    ? await createDefinition(1, 100, approvedAt, 3 * 24 * 60 * 60)
+    : await createDefinition(1);
   const definition = primary.definition;
   assert.equal(definition.state, 'active');
   assert.equal(definition.interface_identity, actionBinding.interface_identity);
@@ -870,6 +904,19 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal((definition.authorization_vector as any).organization_id, orgId);
   assert.equal((definition.authorization_vector as any).approver.user_id, userId);
   assert.equal((definition.authorization_vector as any).relation.revision, relation.revision);
+  if (process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE) {
+    await writeFile(process.env.DEFT_TRACK_A_BOOTSTRAP_STATE_FILE, JSON.stringify({
+      org_id: orgId, owner_user_id: userId,
+      app_installation_id: staged.id, definition_id: definition.id,
+      connection_id: connectionId,
+      definition_epoch: definition.definition_epoch,
+      scheduled_at: primary.scheduledAt.toISOString(),
+      provider_outbox: providerOutbox,
+      provider_effect_checkpoint: providerEffectCheckpoint,
+    }), { flag: 'wx' });
+    await (await import('@deft/mcp')).mcpClientManager.disconnect(connectionId);
+    return;
+  }
 
   const newerDefinitions = await Promise.all(Array.from({ length: 100 }, async (_value, index) => {
     const createdAt = new Date(approvedAt.getTime() + index + 1);
@@ -894,6 +941,8 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
   assert.equal(new Set(managedIds).size, managedIds.length, 'management cursor pages do not duplicate definitions');
 
   if (capacityMode) {
+    await t.test('A05 capacity mode pages 402 definitions across two organizations within frozen bounds', async (capacity) => {
+    capacity.after(async () => (await import('@deft/mcp')).mcpClientManager.disconnect(connectionId));
     const currentDue = await Promise.all(Array.from({ length: 23 }, (_value, index) => (
       createDefinition(1, 100, new Date(approvedAt.getTime() + index + 1))
     )));
@@ -926,6 +975,7 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
       eq(appGrantSnapshots.org_id, orgB), eq(appGrantSnapshots.id, versionB!.requested_grant_snapshot_id!),
     ));
     const connectionB = randomUUID();
+    capacity.after(async () => (await import('@deft/mcp')).mcpClientManager.disconnect(connectionB));
     await db.insert(mcpConnections).values({
       id: connectionB,
       org_id: orgB,
@@ -1039,7 +1089,17 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     }));
     const scanStarted = performance.now();
     const scanAt = new Date(scheduleBase + 2 * 60_000);
-    await runAppAutomationScan(scanAt);
+    await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'app-automation-scan', APP_AUTOMATION_SCAN_CRON, {}, 0);
+    let workerSlices = 0;
+    for (; workerSlices < 8; workerSlices++) {
+      const scanJob = await dequeueJob(QUEUE_NAMES.SCHEDULED_JOBS, { jobName: 'app-automation-scan' });
+      if (!scanJob) break;
+      await _processDequeuedJobForTest(QUEUE_NAMES.SCHEDULED_JOBS, scanJob, {
+        resolveHandler: async () => async job => runAppAutomationScan(scanAt, job.signal,
+          { id: job.id, lockToken: job.lockToken! }),
+      });
+    }
+    assert.ok(workerSlices < 8, 'leased scanner completes the two-lane pass');
     const scanMs = performance.now() - scanStarted;
     const p95 = managementP95;
     assert.equal((await db.select({ value: count() }).from(appAutomationDefinitions).where(
@@ -1062,11 +1122,13 @@ test('Protocol v2 review and automation lifecycle converge on one governed Run',
     console.log('PREVIEW_CAPACITY_RESULT', JSON.stringify({
       total: 402,
       active: 202,
+      leased_worker_slices: workerSlices,
       management_query_p95_ms: p95,
       full_scan_ms: scanMs,
       org_b_persist_enqueue_ms_max: scanMs,
       org_b_fire_id: orgBJob.data.fire_id,
     }));
+    });
     return;
   }
 
@@ -2128,7 +2190,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   ));
   try {
     await assert.rejects(
-      activateConnectedAppInstallation(actor, predecessor.id, {
+      activateReviewedConnectedUpgrade(actor, predecessor.id, {
         ...reviewRequest,
         expected_review_digest: review.review_digest,
         accept_host_policy: true,
@@ -2143,7 +2205,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     ));
   }
   await assert.rejects(
-    activateConnectedAppInstallation(actor, predecessor.id, {
+    activateReviewedConnectedUpgrade(actor, predecessor.id, {
       ...reviewRequest,
       expected_review_digest: review.review_digest,
       accept_host_policy: true,
@@ -2187,7 +2249,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
     eq(appGrantSnapshots.snapshot_kind, 'effective'),
   )))[0]?.value, 0);
 
-  await activateConnectedAppInstallation(actor, predecessor.id, {
+  await activateReviewedConnectedUpgrade(actor, predecessor.id, {
     ...reviewRequest,
     expected_review_digest: review.review_digest,
     accept_host_policy: true,
@@ -2366,7 +2428,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   );
   assert.equal(identicalReview.permission_diff.kind, 'unchanged');
   assert.equal(identicalReview.permission_diff.carry_forward_eligible, true);
-  await activateConnectedAppInstallation(actor, predecessor.id, {
+  await activateReviewedConnectedUpgrade(actor, predecessor.id, {
     ...identicalReviewRequest,
     expected_review_digest: identicalReview.review_digest,
     accept_host_policy: false,
@@ -2409,7 +2471,7 @@ test('reviewed v0-to-v1 upgrade atomically preserves App pointers, Module data, 
   assert.deepEqual(widenedReview.permission_diff.changed_atoms, ['resources', 'included_modules']);
   assert.equal(widenedReview.permission_diff.carry_forward_eligible, false);
   await assert.rejects(
-    activateConnectedAppInstallation(actor, predecessor.id, {
+    activateReviewedConnectedUpgrade(actor, predecessor.id, {
       ...widenedReviewRequest,
       expected_review_digest: widenedReview.review_digest,
       accept_host_policy: false,

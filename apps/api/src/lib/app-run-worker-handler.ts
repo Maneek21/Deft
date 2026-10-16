@@ -33,4 +33,13 @@ export const handleAppRunAttempt: JobHandler = async (job) => {
     `job:${job.id}`,
     job.signal,
   );
+  // The native effect transaction has committed and released all Run locks.
+  // Maintenance also discovers this retained association after queue loss.
+  try {
+    const [{ reconcilePublicCancellationForRun }, { AppRunSecretService }] = await Promise.all([
+      import('./app-public-cancellation-reconcile.js'), import('./app-run-secrets.js'),
+    ]);
+    await runtime.repository.transaction(tx => reconcilePublicCancellationForRun(tx, payload.orgId, payload.runId,
+      new AppRunSecretService(runtime.keys)));
+  } catch { console.warn('[app-public] Cancellation settlement requires maintenance repair'); }
 };

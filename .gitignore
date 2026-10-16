@@ -115,3 +115,6 @@ tmp/
 # Local package-manager cache and manually managed Git worktrees.
 .pnpm-store/
 .worktrees/
+
+# Ephemeral GitHub API fixture diagnostics.
+.ci-api-diagnostics/

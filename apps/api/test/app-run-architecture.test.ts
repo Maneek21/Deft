@@ -6,6 +6,36 @@ import test from 'node:test';
 
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url));
 
+const runSecretBoundary = new Set([
+  'lib/app-run-keyrings.ts', 'lib/app-run-secrets.ts', 'lib/app-run-secret-repository.ts',
+]);
+// Sync uses its own domain-bound envelope and only these reviewed persistence/read
+// boundaries transport it. This does not extend access to receipt signing material.
+const syncEnvelopeBoundary = new Set([
+  'lib/app-resource-sync-secrets.ts', 'lib/app-resource-sync-store.ts',
+  'lib/app-resource-sync-admission.ts', 'lib/app-resource-private-read.ts',
+]);
+// These are separate authenticated domains, not permission to open Run inputs.
+// Every exact path also has a required scope/domain anchor checked below; a
+// neighboring file or receipt-signing token remains denied by default.
+const domainEnvelopeBoundaries = new Map<string, readonly string[]>([
+  ['lib/app-attachment-capacity.ts', ['checkpoint_id', 'octet_length', 'APP_ATTACHMENT_RETAINED_STAGE_LIMIT']],
+  ['lib/app-attachment-custody.ts', ['attachmentStageContext', 'putExclusive', 'org_id']],
+  ['lib/app-attachment-owner.ts', ['attachmentStageContext', 'openBinary', 'org_id']],
+  ['lib/app-attachment-secrets.ts', ['deft.app_attachment.', 'fingerprintScopeSchema', 'setAAD']],
+  ['lib/app-private-defty-secrets.ts', ['deft.private_defty.message_aad.v1', 'PrivateDeftySecretContext.parse', 'setAAD']],
+  ['lib/app-private-defty-service.ts', ['PrivateDeftySecretService', 'owner_user_id', 'crypto.open']],
+  ['lib/app-resource-private-projection.ts', ["payload_kind: 'projection'", 'checkpoint_id: row.checkpoint_id', 'secrets.openJson']],
+]);
+const adoptionReviewSigner = 'lib/app-private-state-adoption-service.ts';
+function forbiddenSecretTokens(path: string, source: string): string[] {
+  return [...source.matchAll(/\b(?:ciphertext_b64|nonce_b64|auth_tag_b64|receipt_signing)\b/g)]
+    .filter(([token]) => !runSecretBoundary.has(path)
+      && !(token !== 'receipt_signing' && (syncEnvelopeBoundary.has(path) || domainEnvelopeBoundaries.has(path)))
+      && !(token === 'receipt_signing' && path === adoptionReviewSigner))
+    .map(([token]) => token);
+}
+
 async function typescriptFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
@@ -16,37 +46,63 @@ async function typescriptFiles(directory: string): Promise<string[]> {
   return nested.flat();
 }
 
-test('only the App Run secret boundary handles ciphertext and signing material', async () => {
-  const allowed = new Set([
-    'lib/app-run-keyrings.ts',
-    'lib/app-run-secrets.ts',
-    'lib/app-run-secret-repository.ts',
-  ]);
-  const forbidden = /\b(?:ciphertext_b64|nonce_b64|auth_tag_b64|receipt_signing)\b/g;
+test('encrypted domains and signing remain confined to their scoped owners', async () => {
   const violations: string[] = [];
 
   for (const path of await typescriptFiles(sourceRoot)) {
     const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
-    if (allowed.has(sourcePath)) continue;
     const source = await readFile(path, 'utf8');
-    for (const match of source.matchAll(forbidden)) {
-      violations.push(`${sourcePath}:${match.index ?? 0}:${match[0]}`);
-    }
+    for (const token of forbiddenSecretTokens(sourcePath, source)) violations.push(`${sourcePath}:${token}`);
   }
 
+  for (const [path, anchors] of domainEnvelopeBoundaries) {
+    const source = await readFile(join(sourceRoot, path), 'utf8');
+    for (const anchor of anchors) assert.ok(source.includes(anchor), `${path} lost its scoped purpose: ${anchor}`);
+    assert.deepEqual(forbiddenSecretTokens(path, 'receipt_signing'), ['receipt_signing']);
+    assert.deepEqual(forbiddenSecretTokens(path.replace('.ts', '-unreviewed.ts'),
+      'ciphertext_b64 receipt_signing'), ['ciphertext_b64', 'receipt_signing']);
+  }
+  const adoption = await readFile(join(sourceRoot, adoptionReviewSigner), 'utf8');
+  assert.match(adoption, /deft\.private_state\.adoption_review\.v1/);
+  assert.match(adoption, /this\.exposure\.withPrivateState/);
+  assert.match(adoption, /eq\(appPrivateStateRecords\.owner_user_id, caller\.user_id\)/);
+  assert.match(adoption, /finally \{ key\.key\.fill\(0\)/);
+  assert.deepEqual(forbiddenSecretTokens(adoptionReviewSigner, 'ciphertext_b64'), ['ciphertext_b64']);
   assert.deepEqual(violations, []);
+  // A neighboring path and a signing token in an allowed sync file still fail.
+  assert.deepEqual(forbiddenSecretTokens('lib/app-resource-sync-unreviewed.ts',
+    'ciphertext_b64 nonce_b64 auth_tag_b64 receipt_signing'),
+  ['ciphertext_b64', 'nonce_b64', 'auth_tag_b64', 'receipt_signing']);
+  assert.deepEqual(forbiddenSecretTokens('lib/app-resource-sync-store.ts', 'receipt_signing'),
+    ['receipt_signing']);
 });
 
-test('App Run engine flag and key material stay confined to environment and Run composition', async () => {
+test('Run secret composition stays in explicit domain owners; engine flags stay in worker composition', async () => {
+  const domainOwners = new Map<string, string>([
+    ['lib/app-resource-sync-admission.ts', 'this.runInputs.insertInput(tx'],
+    ['lib/app-attachment-runtime.ts', 'assertAttachmentBrokerEnabled()'],
+    ['lib/app-native-calendar-executor.ts', 'origin_native_binding_id'],
+    ['lib/app-public-cancellation-ancestry.ts', 'origin_native_binding_id'],
+    ['lib/app-public-cancellation-authority.ts', 'origin_native_binding_id'],
+    ['lib/app-public-cancellation-owner.ts', 'certifyRetainedCancellation'],
+    ['lib/app-public-cancellation-reconcile.ts', 'reconcile'],
+    ['lib/app-public-cancellation-settlement.ts', 'origin_native_binding_id'],
+  ]);
   const consumers: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
     const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
     if (sourcePath.startsWith('lib/app-run-') || sourcePath === 'lib/env.ts') continue;
     const source = await readFile(path, 'utf8');
-    if (/\b(?:AppRunSecretService|DEFT_APP_RUNS_ENABLED|APP_RUNS_ENABLED)\b/.test(source)) {
-      consumers.push(sourcePath);
+    if (/\b(?:DEFT_APP_RUNS_ENABLED|APP_RUNS_ENABLED)\b/.test(source)
+      && sourcePath !== 'workers/index.ts') consumers.push(`${sourcePath}:flag`);
+    if (/\bAppRunSecretService\b/.test(source)) {
+      const anchor = domainOwners.get(sourcePath);
+      if (!anchor || !source.includes(anchor)) consumers.push(`${sourcePath}:secret`);
     }
   }
+  const worker = await readFile(join(sourceRoot, 'workers/index.ts'), 'utf8');
+  assert.match(worker, /APP_RUNS_ENABLED \? import\('\.\.\/lib\/app-run-maintenance\.js'\)/);
+  assert.doesNotMatch(worker, /AppRunSecretService/);
   assert.deepEqual(consumers, []);
 });
 
@@ -137,15 +193,54 @@ test('only the MCP adapter calls the low-level client and governed execution is 
   assert.doesNotMatch(executor, /mcpClientManager/);
 });
 
-test('Run submission has one repository writer behind the advisory-lock service', async () => {
+test('Run submission is confined to the advisory-lock repository and checkpoint-locked host sync admission', async () => {
   const violations: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
     const sourcePath = relative(sourceRoot, path).replaceAll('\\', '/');
-    if (sourcePath === 'lib/app-run-repository.ts') continue;
+    if (sourcePath === 'lib/app-run-repository.ts'
+      || sourcePath === 'lib/app-resource-sync-admission.ts') continue;
     const source = await readFile(path, 'utf8');
     if (/\.insert\(appRuns\)/.test(source)) violations.push(sourcePath);
   }
   assert.deepEqual(violations, []);
+  const admission = await readFile(join(sourceRoot, 'lib/app-resource-sync-admission.ts'), 'utf8');
+  const authority = await readFile(join(sourceRoot, 'lib/app-resource-sync-authority.ts'), 'utf8');
+  const reviewed = await readFile(join(sourceRoot, 'lib/app-resource-sync-reviewed.ts'), 'utf8');
+  const runtime = await readFile(join(sourceRoot, 'lib/app-run-runtime.ts'), 'utf8');
+  // The second writer is the already-reviewed host sync entrance. It serializes
+  // on checkpoint rather than reversing the Run-before-checkpoint completion lock.
+  assert.match(admission, /HostTargetSchema = z\.strictObject\(\{ org_id: z\.string\(\)\.uuid\(\),\s*resource_binding_id: z\.string\(\)\.uuid\(\) \}\)/);
+  assert.match(admission, /if \(!this\.enabled\(\)\) throw/);
+  assert.match(runtime, /new AppResourceSyncAdmissionService\([\s\S]*?isAppResourceSyncChannelEnabled\)/);
+  const environment = await readFile(join(sourceRoot, 'lib/env.ts'), 'utf8');
+  assert.match(environment, /function isAppResourceSyncChannelEnabled\(\): boolean \{\s*return APPS_ENABLED && APP_RUNS_ENABLED && APP_RUN_APP_ORIGIN_ENABLED\s*&& process\.env\.DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED === 'true';\s*\}/);
+  const authorityLoad = admission.indexOf('const authority = await (this.internalMode');
+  const resourceAuthority = admission.indexOf('loadLiveResourceSyncBindingAuthority)(tx', authorityLoad);
+  const attachmentAuthority = admission.indexOf('loadLiveAttachmentSyncBindingAuthority', authorityLoad);
+  const checkpointLock = admission.indexOf(".limit(1).for('update')", authorityLoad);
+  const runInsert = admission.indexOf('tx.insert(appRuns)');
+  assert.ok(authorityLoad > 0 && resourceAuthority > authorityLoad
+    && attachmentAuthority > authorityLoad && checkpointLock > resourceAuthority
+    && checkpointLock > attachmentAuthority && runInsert > checkpointLock);
+  assert.match(authority, /SELECT id FROM org_members[\s\S]*?FOR SHARE/);
+  assert.ok(authority.indexOf('SELECT id FROM org_members')
+    < authority.indexOf('reviewed = await loadReviewedResourceSyncDescriptor'));
+  assert.match(reviewed, /from\(appInstallations\)[\s\S]*?\.for\('share'\)/);
+  assert.match(admission, /this\.repository\.transaction\(async \(tx\)/);
+  assert.match(admission, /await finalAttachment\(\[active\[0\]!\.expires_at\]\);\s*return Object\.freeze\(\{state:'existing',run_id:active\[0\]!\.run_id\}\)/);
+  assert.match(admission, /active\.length !== 1 \|\| active\[0\]!\.expires_at <= now/);
+  assert.match(admission, /if \(prior\.length && !recoveryRunId\)/);
+  const recoveryStart = admission.indexOf('if (recoveryRunId) {');
+  const predecessorLock = admission.indexOf(".limit(1).for('update')", recoveryStart);
+  assert.ok(recoveryStart > 0 && predecessorLock > recoveryStart && predecessorLock < authorityLoad,
+    'terminal recovery preserves Run-before-authority-before-checkpoint lock order');
+  assert.match(admission, /eq\(appSyncIntents\.expected_cursor_sequence,\s*checkpoint\.cursor_sequence\)/);
+  assert.match(admission, /this\.runInputs\.insertInput\(tx/);
+  assert.match(admission, /tx\.insert\(appSyncIntents\)/);
+  assert.match(admission, /scheduleResourceSyncInTransaction\(tx, run, now\)/);
+  assert.deepEqual([...admission.matchAll(/tx\.insert\((\w+)\)/g)].map((match) => match[1]),
+    ['appRuns', 'appSyncIntents']);
+  assert.doesNotMatch(admission, /\b(?:fetch|executeTool|executePinned|mcpClientManager|AppRunProviderExecutor|pgTable)\b/);
 });
 
 test('the App Run approval bridge has one safe compatibility writer and no executor', async () => {

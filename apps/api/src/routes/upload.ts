@@ -3,15 +3,18 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { attachmentDerivatives, files, messageAttachments, taskAttachments } from '@deft/db/schema';
 import { basename } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   canAccessAttachmentMessage,
   canAccessAttachmentTask,
   getVisibleAttachment,
+  authorizeAttachmentDownload,
+  AttachmentDownloadAuthorityError,
 } from '../lib/attachment-access.js';
 import { localFileStore } from '../lib/file-store.js';
 import { MAX_ATTACHMENT_BYTES, processAttachment } from '../lib/attachment-processor.js';
 import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
+import { verifyWebAccess } from '../lib/web-sessions.js';
 
 export const uploadRoutes = new Hono();
 export const fileServingRoutes = new Hono();
@@ -163,9 +166,16 @@ fileServingRoutes.delete('/:id', async (c) => {
 
 // GET /api/files/:id — serve a file visible to the authenticated caller.
 fileServingRoutes.get('/:id', async (c) => {
+  c.header('Cache-Control', 'private, no-store');
   try {
     const user = c.get('user');
     const fileId = c.req.param('id');
+    const authorization = c.req.header('Authorization');
+    let current: Awaited<ReturnType<typeof verifyWebAccess>>;
+    try {
+      current = await verifyWebAccess(authorization?.startsWith('Bearer ') ? authorization.slice(7) : '');
+      if (current.id !== user.id || current.org_id !== user.org_id || current.sid !== user.sid) throw new Error('Session changed');
+    } catch { return c.json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401); }
 
     const fileRecord = await getVisibleAttachment(fileId, user.org_id, user.id);
     if (!fileRecord) {
@@ -176,16 +186,25 @@ fileServingRoutes.get('/:id', async (c) => {
     }
 
     try {
-      const data = await localFileStore.get(fileRecord.storage_key);
+      const signal = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(10_000)]);
+      if (fileRecord.size_bytes < 0 || fileRecord.size_bytes > MAX_ATTACHMENT_BYTES) throw new Error('Invalid file size');
+      const data = await localFileStore.get(fileRecord.storage_key, { signal, maxBytes: MAX_ATTACHMENT_BYTES });
+      if (data.length !== fileRecord.size_bytes || (fileRecord.content_sha256
+        && fileRecord.content_sha256 !== `sha256:${createHash('sha256').update(data).digest('hex')}`)) throw new Error('Stored file changed');
+      const delivery = await authorizeAttachmentDownload({ org_id: user.org_id, user_id: user.id, sid: user.sid,
+        jwt_expires_at: current.exp * 1000, file: fileRecord, signal });
+      signal.throwIfAborted();
+      if (delivery.expires_at <= Date.now()) throw new AttachmentDownloadAuthorityError('INVALID_TOKEN', 401);
       return new Response(new Uint8Array(data), {
         headers: {
-          'Content-Type': fileRecord.detected_mime_type || 'application/octet-stream',
-          'Content-Disposition': `attachment; filename="${encodeURIComponent(fileRecord.filename)}"`,
+          'Content-Type': delivery.file.detected_mime_type || 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="${encodeURIComponent(delivery.file.filename)}"`,
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
         },
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AttachmentDownloadAuthorityError) return c.json({ error: error.message, code: error.code }, error.status);
       return c.json({ error: 'File not found on disk', code: 'FILE_MISSING' }, 404);
     }
   } catch (err) {

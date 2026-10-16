@@ -1,3 +1,4 @@
+import './fixtures/app-run-enabled-env.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +11,7 @@ import { appInstallations, appGrantSnapshots, appVersions, mcpConnections, modul
 import { db, closeDb } from '../src/lib/db.js';
 import { createModuleRecord, getModuleRecord, humanModuleActor } from '../src/lib/module-service.js';
 import { activateAppInstallation, stageAppPackage, stageAppUpgrade } from '../src/lib/app-service.js';
-import { activateConnectedAppInstallation, prepareConnectedAppReview } from '../src/lib/app-review-service.js';
+import { activateConnectedAppUpgrade, prepareConnectedAppUpgradeReview } from '../src/lib/app-review-service.js';
 import { linkModuleRecordToTask, listModuleRecordTaskLinks } from '../src/lib/module-task-links.js';
 import { buildContactsCrmManifest } from '../../../modules/projects/contacts/author/manifest.mjs';
 import { safeTestDatabaseUrl } from './fixtures/safe-test-database.js';
@@ -110,9 +111,9 @@ test('CRM base installs records and links, then reviewed connected activation pr
   const connectionId = randomUUID();
   await db.insert(mcpConnections).values({ id: connectionId, org_id: orgId, name: 'CRM proof sandbox', slug: `crm-proof-${suffix}`, server_url: 'https://crm-proof.example.test/mcp', transport: 'streamable-http', auth_type: 'none', is_active: true, enabled_tools: ['send_email'], created_by: userId });
   const { capability } = await sandboxReviewCapability(orgId, connectionId);
-  const reviewRequest = { app_version_id: upgrade.version_id, expected_package_digest: upgrade.package_digest, expected_requested_snapshot_digest: requested!.snapshot_digest, expected_lifecycle_epoch: upgrade.lifecycle_epoch, expected_grant_epoch: upgrade.grant_epoch, connector_selections: [{ connector_requirement_key: 'mail_provider', mcp_connection_id: connectionId }] };
-  const review = await prepareConnectedAppReview(actor, active.id, reviewRequest, capability);
-  await activateConnectedAppInstallation(actor, active.id, { ...reviewRequest, expected_review_digest: review.review_digest, accept_host_policy: true }, capability);
+  const reviewRequest = { schema_version: 'deft.connected_app_upgrade_request.v1' as const, prior_app_version_id: active.active_version_id!, pending_work_policy: 'supersede_pending_work' as const, app_version_id: upgrade.version_id, expected_package_digest: upgrade.package_digest, expected_requested_snapshot_digest: requested!.snapshot_digest, expected_lifecycle_epoch: upgrade.lifecycle_epoch, expected_grant_epoch: upgrade.grant_epoch, connector_selections: [{ connector_requirement_key: 'mail_provider', mcp_connection_id: connectionId }] };
+  const review = await prepareConnectedAppUpgradeReview(actor, active.id, reviewRequest, capability);
+  await activateConnectedAppUpgrade(actor, active.id, { ...reviewRequest, expected_review_digest: review.connected_review.review_digest, expected_upgrade_review_digest: review.upgrade_review_digest, accept_host_policy: true }, capability);
   const after = await getModuleRecord(actor, contact.record.id);
   assert.equal(after.id, before.id);
   assert.equal(after.relations.find((group) => group.field_key === 'company_id')?.records[0]?.id, company.record.id);

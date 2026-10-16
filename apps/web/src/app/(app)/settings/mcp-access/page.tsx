@@ -29,7 +29,7 @@ const WRITE_SCOPES = [
 ];
 const COLLABORATE_SCOPES = [...READ_SCOPES, 'write:tasks', 'write:messages', 'write:wiki', 'write:modules'];
 const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES];
-const APP_SCOPES = ['read:apps', 'invoke:apps', 'read:app-runs'];
+const APP_SCOPES = ['read:apps', 'invoke:apps', 'read:app-runs', 'read:app-private-resources'];
 const APP_WORK_SCOPES = ['read:modules', 'write:modules', 'read:tasks', 'write:tasks', ...APP_SCOPES];
 const AVAILABLE_SCOPES = [...ALL_SCOPES, ...APP_SCOPES];
 
@@ -389,6 +389,7 @@ function permissionLabel(scope: string) {
     'read:apps': 'View installed apps, permissions and health',
     'invoke:apps': 'Prepare and invoke reviewed app actions',
     'read:app-runs': 'Read authorized app run status and results',
+    'read:app-private-resources': 'Use separately reviewed private App context grants for this exact credential',
   };
   return labels[scope] ?? scope;
 }
@@ -920,6 +921,9 @@ export default function McpAccessPage() {
                             ? ` · Token ${connection.token_prefix}…`
                             : ` · ${connection.connector_profile}`}
                         </p>
+                        {connection.kind === 'token' && (
+                          <p className="break-all text-xs" style={muted}>Credential ID (not its secret): {connection.id}</p>
+                        )}
                         {confirmRevoke === connection.key ? (
                           <div className="rounded-lg border p-3" style={border}>
                             {error && (

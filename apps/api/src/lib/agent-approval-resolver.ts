@@ -1,3 +1,4 @@
+import type { AppRunTransaction } from './app-run-repository.js';
 /**
  * Phase 6.5 — approval resolver.
  *
@@ -820,7 +821,7 @@ async function dispatchAction(
 export async function approveAction(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean } = {},
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> } = {},
 ): Promise<ApprovalResolverResult> {
   const result = await withDbAdvisoryLock(
     `agent-approval:${actionId}`,
@@ -835,7 +836,7 @@ export async function approveAction(
 async function approveActionLocked(
   actionId: string,
   approverUserId: string,
-  options: { internal?: boolean },
+  options: { internal?: boolean; appRunFinalGuard?: (tx: AppRunTransaction) => Promise<void> },
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -884,7 +885,7 @@ async function approveActionLocked(
   }
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
-    return (await appRunApprovalResolver()).approve(actionId, approverUserId);
+    return (await appRunApprovalResolver()).approve(actionId, approverUserId, options.appRunFinalGuard);
   }
 
   const resumesApprovedModule = isModuleMutation

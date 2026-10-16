@@ -79,7 +79,10 @@ function normalizeHandle(value: string): string {
     .replace(/-{2,}/g, '-');
 }
 
-function canSeeTeam(access: TeamAccessContext, row: Omit<TeamListRow, 'resources_by_type'>): boolean {
+export function canSeeTeam(
+  access: TeamAccessContext,
+  row: Pick<TeamListRow, 'visibility' | 'lead_user_id' | 'current_user_role'>,
+): boolean {
   if (isAdmin(access)) return true;
   if (row.visibility === 'org') return true;
   if (access.user_id && row.lead_user_id === access.user_id) return true;

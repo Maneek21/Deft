@@ -96,7 +96,7 @@ const NonEmptyExactStringSchema = z
 // Phase 2 seam must not reject a value that the legacy path can execute.
 const ProviderOwnedNameSchema = z.string().min(1);
 
-export const CapabilityProviderKindSchema = z.enum(['mcp']);
+export const CapabilityProviderKindSchema = z.enum(['mcp', 'app_runtime']);
 export type CapabilityProviderKind = z.infer<typeof CapabilityProviderKindSchema>;
 
 export const CapabilityProviderIdentitySchema = z.object({
@@ -230,9 +230,9 @@ export const CapabilityInvocationErrorCodeSchema = z.enum([
 export type CapabilityInvocationErrorCode = z.infer<typeof CapabilityInvocationErrorCodeSchema>;
 
 export const CapabilityInvocationProviderRefSchema = z.object({
-  provider_kind: CapabilityProviderKindSchema,
+  provider_kind: z.literal('mcp'),
   requested_provider_key: ProviderOwnedNameSchema,
-  resolved_provider: CapabilityProviderIdentitySchema.optional(),
+  resolved_provider: CapabilityProviderIdentitySchema.extend({ provider_kind: z.literal('mcp') }).optional(),
 }).strict();
 export type CapabilityInvocationProviderRef = z.infer<typeof CapabilityInvocationProviderRefSchema>;
 

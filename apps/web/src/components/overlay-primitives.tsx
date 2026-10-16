@@ -146,6 +146,7 @@ export function AppDialog({
   children,
   footer,
   width = 420,
+  presentation = 'dialog',
   danger = false,
   initialFocusRef,
   returnFocusRef,
@@ -157,6 +158,7 @@ export function AppDialog({
   children: ReactNode;
   footer?: ReactNode;
   width?: number;
+  presentation?: 'dialog' | 'editor';
   danger?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
   returnFocusRef?: RefObject<HTMLElement | null>;
@@ -194,21 +196,22 @@ export function AppDialog({
   if (!mounted || !open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4 py-6">
-      <AppBackdrop onClose={onClose} />
+    <div className={`fixed inset-0 z-[100] flex ${presentation === 'editor' ? 'items-stretch justify-center sm:items-end sm:justify-end sm:p-6' : 'items-center justify-center px-4 py-6'}`}>
+      <AppBackdrop onClose={onClose} subtle={presentation === 'editor'} />
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
         aria-describedby={description ? descriptionId : undefined}
-        className="relative flex max-h-[min(90vh,760px)] w-full flex-col overflow-hidden rounded-2xl outline-none"
+        className={`relative flex w-full flex-col overflow-hidden outline-none ${presentation === 'editor' ? 'h-dvh max-h-dvh rounded-none sm:h-[min(80dvh,760px)] sm:max-h-[min(80dvh,760px)] sm:max-w-[var(--dialog-width)] sm:rounded-2xl' : 'max-h-[min(90vh,760px)] rounded-2xl'}`}
         style={{
-          maxWidth: width,
+          maxWidth: presentation === 'editor' ? undefined : width,
+          '--dialog-width': `${width}px`,
           background: 'var(--surface-container)',
           border: '1px solid var(--outline-variant)',
           boxShadow: 'var(--glass-shadow)',
-        }}
+        } as CSSProperties}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => handleFocusTrap(event, panelRef.current)}
       >

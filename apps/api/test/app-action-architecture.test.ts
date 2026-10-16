@@ -153,6 +153,10 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
     // The connector management route must prevent deletion of a connector
     // retained by an immutable reviewed App binding.
     ['routes/mcp-connections.ts', new Set(['appActionBindings'])],
+    // Approval carries immutable participant locators into the governed final
+    // authority fence; attachment invoke checks protocol/operator after capture.
+    ['routes/agent.ts', new Set(['appRuns', 'appVersions'])],
+    ['routes/app-attachments.ts', new Set(['appVersions'])],
   ]);
   const authorityImportViolations: string[] = [];
   const appActionBypassViolations: string[] = [];
@@ -198,6 +202,14 @@ test('routes, agent, MCP, and App lifecycle code cannot bypass the AppActionServ
     }
   }
 
+  for (const path of ['routes/agent.ts', 'routes/app-attachments.ts']) {
+    const source = await readFile(join(sourceRoot, path), 'utf8');
+    assert.doesNotMatch(source, /\.(?:insert|update|delete)\s*\(\s*(?:appRuns|appVersions)\b/,
+      `${path} may locate authority but cannot create or mutate it`);
+    assert.match(source, /eq\(appRuns\.org_id, user\.org_id\)|eq\(appRuntimeBindings\.org_id,actor\.org_id\)/);
+    assert.match(source, /attachmentFinalAuthorityIsCurrent/);
+    assert.match(source, /(?:nativeGuard|guard)[\s\S]*?attachmentFinalAuthorityIsCurrent/);
+  }
   assert.deepEqual(authorityImportViolations, []);
   assert.deepEqual(appActionBypassViolations, []);
   assert.deepEqual(reviewManagementConsumers, ['routes/apps.ts']);
@@ -265,11 +277,17 @@ test('automation worker cutover is host-only and reuses AppAction plus AppRun wi
   assert.doesNotMatch(runtime, /capabilityService\.invoke|\.executeTool\s*\(|\.insert\s*\(\s*appRuns/);
   assert.match(runtime, /enqueueOrRearmFailed/);
   assert.match(runtime, /attempt:\$\{fire\.attempt_count\}/);
-  assert.match(
-    runtime,
-    /deliverFire:[\s\S]*?db\.transaction\(async \(tx\)[\s\S]*?enqueueOrRearmFailed\([\s\S]*?executor: tx[\s\S]*?chargeFailedAppAutomationFireDeliveryWithExecutor\(tx/,
-    'queue rearm and domain attempt charging must share one transaction',
-  );
+  const reconcile = runtime.slice(runtime.indexOf('const reconcileFire ='),
+    runtime.indexOf('const result = await scanAppAutomationSlice'));
+  assert.match(runtime, /appAutomationScanDatabase\(\)\.transaction\(run, scanSignal, deadline\)/);
+  assert.match(runtime, /deliverFire: reconcileFire/);
+  assert.match(reconcile, /await transaction\(async tx =>/);
+  assert.match(reconcile, /enqueueOrRearmFailed\([\s\S]*?executor: tx[\s\S]*?chargeFailedAppAutomationFireDeliveryWithExecutor\(tx/,
+    'queue rearm and attempt charging use the same bounded transaction');
+  assert.match(reconcile, /getAppAutomationDefinitionWithExecutor\(tx,[\s\S]*?lock: true/);
+  assert.match(reconcile, /getAppAutomationFireWithExecutor\(tx,[\s\S]*?lock: true/);
+  assert.match(reconcile, /if \(currentTime\(\) >= definition\.valid_until \|\| catchUpExpired\(\)\) \{\s*throw/,
+    'a queue-lock wait must not commit delivery after authority expiry');
   const queues = await readFile(join(sourceRoot, 'lib/queues.ts'), 'utf8');
   assert.match(queues, /export async function enqueueOrRearmFailed/);
   assert.match(queues, /AND status = 'failed'/);

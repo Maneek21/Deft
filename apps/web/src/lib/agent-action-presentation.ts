@@ -433,6 +433,8 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     const preview = params.safe_preview && typeof params.safe_preview === 'object' && !Array.isArray(params.safe_preview)
       ? params.safe_preview as Record<string, unknown>
       : {};
+    const previewFields = objectValue(preview.fields);
+    const isRuntime = previewFields?.provider_kind === 'app_runtime';
     const isSandboxEmail = capability === 'send_email';
     const resourceRefs = Array.isArray(preview.resource_refs) ? preview.resource_refs : [];
     for (const candidate of resourceRefs) {
@@ -444,18 +446,23 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     return {
       kind: 'app_run',
       icon: 'generic',
-      eyebrow: 'Connected App action',
-      headline: 'An App prepared a governed action',
+      eyebrow: isRuntime ? 'Runtime App action' : 'Connected App action',
+      headline: isRuntime ? 'A Runtime App prepared an external action' : 'An App prepared a governed action',
       title: previewTitle || capability || 'Run App action',
-      summary: isSandboxEmail
+      summary: isRuntime
+        ? 'Review the exact input and external-write policy before approving this invocation.'
+        : isSandboxEmail
         ? 'Sandbox only. Review the exact recipient and message before approving; no external message will be delivered.'
         : previewSummary ? truncateApprovalText(previewSummary, 150) : 'Review the safe preview before Deft releases this action to the selected provider.',
-      approveLabel: 'Approve App action',
+      approveLabel: isRuntime ? 'Approve Runtime action' : 'Approve App action',
       doneLabel: 'App action approved',
-      sourceLabel: isSandboxEmail ? 'Provider: Deft email sandbox' : provider ? `Provider: ${provider}` : 'Source: Connected App',
-      detailsLabel: 'Safe App preview',
-      emptyDetails: 'Provider input remains sealed. Deft revalidates App, grant, connector, and resource authority before execution.',
-      badge: isSandboxEmail ? 'Sandbox' : 'App action',
+      sourceLabel: isRuntime ? 'Source: reviewed Runtime App'
+        : isSandboxEmail ? 'Provider: Deft email sandbox' : provider ? `Provider: ${provider}` : 'Source: Connected App',
+      detailsLabel: isRuntime ? 'Runtime action review' : 'Safe App preview',
+      emptyDetails: isRuntime
+        ? 'Open the exact input below. Deft rechecks the current App, grant, binding, and policy before execution.'
+        : 'Provider input remains sealed. Deft revalidates App, grant, connector, and resource authority before execution.',
+      badge: isRuntime ? 'Runtime' : isSandboxEmail ? 'Sandbox' : 'App action',
       badgeTone: 'caution',
       chips,
     };

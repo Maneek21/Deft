@@ -771,7 +771,10 @@ export async function persistAppAutomationFire(
       | Readonly<{ kind: 'dst_gap' }>;
     terminal_reason?: 'dst_gap' | 'misfire_skipped';
   }>,
-  options: Readonly<{ now?: () => Date }> = {},
+  options: Readonly<{
+    now?: () => Date;
+    executor?: Parameters<Parameters<typeof db.transaction>[0]>[0];
+  }> = {},
 ): Promise<AppAutomationFireRow> {
   const logicalLocalDate = LogicalLocalDateSchema.parse(input.logical_local_date);
   if ((input.resolution.kind === 'dst_gap') !== (input.terminal_reason === 'dst_gap')) {
@@ -780,7 +783,7 @@ export async function persistAppAutomationFire(
   if (input.terminal_reason === 'misfire_skipped' && input.resolution.kind !== 'resolved') {
     invalid('Misfire skips require a resolved UTC occurrence');
   }
-  return db.transaction(async (tx) => {
+  const persist = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     const definition = await getAppAutomationDefinitionWithExecutor(
       tx,
       input.organization_id,
@@ -791,7 +794,7 @@ export async function persistAppAutomationFire(
     if (definition.state !== 'active' || definition.definition_epoch !== input.expected_epoch) {
       stale('App automation definition is not eligible for this fire');
     }
-    const now = (options.now ?? (() => new Date()))();
+    let now = (options.now ?? (() => new Date()))();
     if (now < definition.valid_from || now >= definition.valid_until) {
       stale('App automation definition is outside its approved validity window');
     }
@@ -823,6 +826,18 @@ export async function persistAppAutomationFire(
       || decision.kind === 'future'
       || decision.kind === 'not_eligible'
     ) stale('App automation occurrence is not eligible for the requested fire state');
+    const refreshPolicyTime = () => {
+      now = (options.now ?? (() => new Date()))();
+      const currentDecision = classifyAppAutomationOccurrence({
+        occurrence: canonicalOccurrence, now, eligible_after: eligibleAfter,
+        eligible_before: definition.valid_until, catch_up_window_minutes: 15,
+      });
+      if (now < definition.valid_from || now >= definition.valid_until
+        || currentDecision.kind !== decision.kind
+        || (currentDecision.kind === 'skipped' && currentDecision.reason !== input.terminal_reason)) {
+        stale('App automation occurrence changed while waiting for persistence');
+      }
+    };
     const fireIdentity = digestAppAutomationFireIdentity({
       organization_id: input.organization_id,
       definition_id: definition.id,
@@ -836,17 +851,20 @@ export async function persistAppAutomationFire(
       fire_identity: fireIdentity,
     });
     if (existing) {
+      refreshPolicyTime();
       if (decision.kind === 'skipped'
         && decision.reason === 'misfire_skipped'
         && existing.state === 'pending'
         && existing.attempt_count === 0) {
-        return await terminalizeUnclaimedAppAutomationFireMisfireWithExecutor(tx, {
+        const terminalized = await terminalizeUnclaimedAppAutomationFireMisfireWithExecutor(tx, {
           organization_id: input.organization_id,
           definition_id: definition.id,
           fire_id: existing.id,
           expected_epoch: definition.definition_epoch,
           terminal_at: now,
         }) ?? existing;
+        refreshPolicyTime();
+        return terminalized;
       }
       return existing;
     }
@@ -864,7 +882,10 @@ export async function persistAppAutomationFire(
         stale('App automation pending-fire budget is exhausted');
       }
     }
-    return insertAppAutomationFireIdempotentlyWithExecutor(tx, {
+    // Lock acquisition and budget reads can cross expiry or the catch-up edge.
+    // Re-evaluate policy after those waits rather than persisting stale time.
+    refreshPolicyTime();
+    const created = await insertAppAutomationFireIdempotentlyWithExecutor(tx, {
       id: randomUUID(),
       org_id: input.organization_id,
       definition_id: definition.id,
@@ -886,7 +907,10 @@ export async function persistAppAutomationFire(
       created_at: now,
       updated_at: now,
     });
-  });
+    refreshPolicyTime();
+    return created;
+  };
+  return options.executor ? persist(options.executor) : db.transaction(persist);
 }
 
 export function digestAppAutomationFireIdentity(input: Readonly<{

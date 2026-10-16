@@ -7,4 +7,5 @@ export * from './capabilities';
 export * from './modules';
 export * from './resources';
 export * from './resources-v2';
+export * from './app-platform-authority';
 export * from './native-mentions';

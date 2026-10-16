@@ -52,31 +52,56 @@ export type AppAutomationScanResult = Readonly<{
   pending: number;
   skipped: number;
   recovered: number;
+  errors: Readonly<{ definitions: number; occurrences: number; expired_claims: number; deliveries: number }>;
 }>;
 
+function propagateCancellation(error: unknown, signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+  if (error instanceof Error && error.name === 'AbortError') throw error;
+}
+
 /** Reconcile schedule truth into the durable fire ledger. Queue rows only
- * deliver pending fire IDs and never determine whether an occurrence exists. */
+ * deliver pending fire IDs and never determine whether an occurrence exists.
+ * Item failures leave durable identity intact for the next pass. Page-list
+ * failures remain fatal: there is no safe continuation without a known page. */
 export async function scanAppAutomations(
   port: AppAutomationScannerPort,
   now = new Date(),
+  options: Readonly<{ signal?: AbortSignal; now?: () => Date }> = {},
 ): Promise<AppAutomationScanResult> {
+  const currentTime = () => {
+    options.signal?.throwIfAborted();
+    return options.now?.() ?? now;
+  };
+  currentTime();
   let definitionCount = 0;
   let occurrences = 0;
   let pending = 0;
   let skipped = 0;
   let recovered = 0;
+  const errors = { definitions: 0, occurrences: 0, expired_claims: 0, deliveries: 0 };
 
   const deliver = async (fire: AppAutomationFireRow): Promise<void> => {
-    await port.deliverFire(fire, now);
+    try { await port.deliverFire(fire, currentTime()); }
+    catch (error) {
+      propagateCancellation(error, options.signal);
+      errors.deliveries += 1;
+    }
   };
 
   let fireAfter: AppAutomationFireScanCursor | undefined;
   do {
-    const expired = await port.listExpiredClaims(now, APP_AUTOMATION_SCAN_LIMIT, fireAfter);
+    const expired = await port.listExpiredClaims(currentTime(), APP_AUTOMATION_SCAN_LIMIT, fireAfter);
     for (const fire of expired) {
-      const reconciled = await port.reconcileExpiredClaim(fire, now);
-      if (reconciled?.state === 'pending') await deliver(reconciled);
+      let reconciled: AppAutomationFireRow | null;
+      try { reconciled = await port.reconcileExpiredClaim(fire, currentTime()); }
+      catch (error) {
+        propagateCancellation(error, options.signal);
+        errors.expired_claims += 1;
+        continue;
+      }
       if (reconciled) recovered += 1;
+      if (reconciled?.state === 'pending') await deliver(reconciled);
     }
     const last = expired.at(-1);
     fireAfter = expired.length === APP_AUTOMATION_SCAN_LIMIT && last
@@ -86,54 +111,62 @@ export async function scanAppAutomations(
 
   let after: AppAutomationDefinitionScanCursor | undefined;
   do {
-    const definitions = await port.listEligibleDefinitions(now, APP_AUTOMATION_SCAN_LIMIT, after);
+    const definitions = await port.listEligibleDefinitions(currentTime(), APP_AUTOMATION_SCAN_LIMIT, after);
     definitionCount += definitions.length;
     for (const definition of definitions) {
       const eligibleAfter = definition.state_changed_at > definition.valid_from
         ? definition.state_changed_at
         : definition.valid_from;
-      const dates = listAppAutomationLogicalDates({
-        eligible_after: eligibleAfter,
-        now,
-        timezone: definition.timezone,
-      });
+      let dates: string[];
+      try {
+        dates = listAppAutomationLogicalDates({
+          eligible_after: eligibleAfter, now: currentTime(), timezone: definition.timezone,
+        });
+      } catch (error) {
+        propagateCancellation(error, options.signal);
+        errors.definitions += 1;
+        continue;
+      }
       for (const logicalLocalDate of dates) {
-        const occurrence = resolveAppAutomationOccurrence({
-          logical_local_date: logicalLocalDate,
-          local_time: definition.local_time,
-          timezone: definition.timezone,
-        });
-        const decision = classifyAppAutomationOccurrence({
-          occurrence,
-          now,
-          eligible_after: eligibleAfter,
-          eligible_before: definition.valid_until,
-          catch_up_window_minutes: 15,
-        });
-        if (decision.kind === 'future' || decision.kind === 'not_eligible') continue;
+        try {
+          const occurrenceTime = currentTime();
+          const occurrence = resolveAppAutomationOccurrence({
+            logical_local_date: logicalLocalDate,
+            local_time: definition.local_time,
+            timezone: definition.timezone,
+          });
+          const decision = classifyAppAutomationOccurrence({
+            occurrence, now: occurrenceTime, eligible_after: eligibleAfter,
+            eligible_before: definition.valid_until, catch_up_window_minutes: 15,
+          });
+          if (decision.kind === 'future' || decision.kind === 'not_eligible') continue;
 
-        let fire = await port.ensureFire({
-          organization_id: definition.org_id,
-          definition_id: definition.id,
-          expected_epoch: definition.definition_epoch,
-          logical_local_date: logicalLocalDate,
-          resolution: occurrence.resolution,
-          ...(decision.kind === 'skipped' ? { terminal_reason: decision.reason } : {}),
-        }, now);
-        if (!fire) continue;
-        if (fire.state === 'claimed'
-          && fire.claim_token
-          && fire.lease_expires_at
-          && fire.lease_expires_at <= now) {
-          fire = await port.recoverFire(fire, now);
+          let fire = await port.ensureFire({
+            organization_id: definition.org_id,
+            definition_id: definition.id,
+            expected_epoch: definition.definition_epoch,
+            logical_local_date: logicalLocalDate,
+            resolution: occurrence.resolution,
+            ...(decision.kind === 'skipped' ? { terminal_reason: decision.reason } : {}),
+          }, currentTime());
           if (!fire) continue;
-        }
-        occurrences += 1;
-        if (fire.state === 'pending') {
-          pending += 1;
-          await deliver(fire);
-        } else if (fire.state === 'skipped') {
-          skipped += 1;
+          if (fire.state === 'claimed'
+            && fire.claim_token
+            && fire.lease_expires_at
+            && fire.lease_expires_at <= currentTime()) {
+            fire = await port.recoverFire(fire, currentTime());
+            if (!fire) continue;
+          }
+          occurrences += 1;
+          if (fire.state === 'pending') {
+            pending += 1;
+            await deliver(fire);
+          } else if (fire.state === 'skipped') {
+            skipped += 1;
+          }
+        } catch (error) {
+          propagateCancellation(error, options.signal);
+          errors.occurrences += 1;
         }
       }
     }
@@ -143,5 +176,6 @@ export async function scanAppAutomations(
       : undefined;
   } while (after);
 
-  return { definitions: definitionCount, occurrences, pending, skipped, recovered };
+  currentTime();
+  return { definitions: definitionCount, occurrences, pending, skipped, recovered, errors };
 }
