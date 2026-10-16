@@ -78,13 +78,14 @@ type TransportBody={children:TransportFrame[];append(frame:TransportFrame):void}
 function mountTransport(body:TransportBody,sessionId:string){
  const context=vm.createContext({body,sessionId});
  const code=`
- let stopped=false,started=false,bootstrapReady=false,unavailable=false,latestView=null,trustedDocument=null,revoked=false,disposed=false,retired=0;
+ let stopped=false,started=false,bootstrapReady=false,unavailable=false,latestView=null,trustedDocument=null,revoked=false,disposed=false,retired=0;let sourceLoadsDisposed=0,sourceOpening='pending';
  const transfers=[],listeners=new Set(),document={body,hidden:false,removeEventListener(){},createElement(){const handlers=new Map();return {title:'',sandbox:{values:[],add(value){this.values.push(value);}},style:{cssText:''},attributes:{},setAttribute(key,value){this.attributes[key]=value;},addEventListener(key,value){handlers.set(key,value);},removeEventListener(key,value){if(handlers.get(key)===value)handlers.delete(key);},get listenerCount(){return handlers.size;},remove(){const at=body.children.indexOf(this);if(at>=0)body.children.splice(at,1);this.parentNode=null;},contentWindow:{postMessage(...args){transfers.push(args);}}};}};
  const frame=${transport.frame};${frameSetup.join('\n')}
  const bootstrapDiagnostic=${diagnostics.bootstrapDiagnostic},onBootstrapLoad=${diagnostics.onBootstrapLoad};
  const identityCurrent=()=>!stopped,authorityCurrent=()=>identityCurrent(),locallyCurrent=()=>authorityCurrent()&&!unavailable&&!document.hidden;
  const startup={ready(){},started(){},fail(){},dispose(){disposed=true;}},experienceStartupStatus=()=>null,port={port2:{close(){}}},session={pin:{session_id:sessionId},bundle:{worker_source:'reviewed'}},viewHost={current:null};
  const noop=()=>{},setNominatedSource=noop,setPreferencesNode=noop,setSuspended=noop,setSource=noop,setRunReview=noop,setConnectionUnavailable=noop,setError=noop,clearNavigation=noop,closeComposer=noop,closeConfirmation=noop;
+ const sourceLoader={dispose(){sourceLoadsDisposed++;}},retrySourceNomination={current:()=>{}},retryResume={current:null},setSourceOpening=value=>{sourceOpening=value;};
  const sourceNominationAbort={abort:noop},sourceReview={clear:noop},sourcePresentations=new Map(),presentationDisposals=new Map(),preferencesEvent={current:null},intakePrepare={current:null},readingPreferencesChanged={current:null},ensureAuthority={current:null};
  const accounts={close:noop},connection={dispose:noop},lease=null,navigationOwner={},rendered={current:false},bridge={revoke(){revoked=true;}},api={fetch(){retired++;return Promise.resolve();}},root='/synthetic',childTimer=0;let flushRecordWrites={current:null};
  const stop=${transport.stop},startWorker=${callbacks.startWorker},onBootstrapReady=${callbacks.onBootstrapReady};
@@ -92,10 +93,10 @@ function mountTransport(body:TransportBody,sessionId:string){
  const poll=0,checkConnection=noop,onStorage=noop,socket=null,onAppChange=noop,suspension={dispose:noop},hidden=noop,pageHide=noop,expiry=undefined,refreshNavigation={current:null},leaseCurrent={current:null},stopWorker={current:stop},connectionNavigation={current:null},connectionSessionRetirementRequired=()=>false,retireSession=noop;
  const cleanup=${transport.cleanup};
  addEventListener('message',onBootstrapReady);frame.addEventListener('load',onBootstrapLoad);${transport.append}
- globalThis.controls={frame,ready(patch={}){onBootstrapReady({source:frame.contentWindow,origin:'null',data:{kind:'deft_experience_bootstrap_ready.v1'},...patch});},stop:()=>stop(false),cleanup,state:()=>({starts:transfers.filter(args=>args[0].kind==='start').length,stops:transfers.filter(args=>args[0].kind==='stop').length,revoked,disposed,retired,loadListeners:frame.listenerCount,messageListeners:listeners.size})};
+ globalThis.controls={frame,ready(patch={}){onBootstrapReady({source:frame.contentWindow,origin:'null',data:{kind:'deft_experience_bootstrap_ready.v1'},...patch});},stop:()=>stop(false),cleanup,state:()=>({starts:transfers.filter(args=>args[0].kind==='start').length,stops:transfers.filter(args=>args[0].kind==='stop').length,revoked,disposed,retired,sourceLoadsDisposed,sourceOpening,sourceRetryCleared:retrySourceNomination.current===null,loadListeners:frame.listenerCount,messageListeners:listeners.size})};
  `;
  vm.runInContext(ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText,context);
- return context.controls as {frame:TransportFrame;ready(patch?:Record<string,unknown>):void;stop():void;cleanup():void;state():{starts:number;stops:number;revoked:boolean;disposed:boolean;retired:number;loadListeners:number;messageListeners:number}};
+ return context.controls as {frame:TransportFrame;ready(patch?:Record<string,unknown>):void;stop():void;cleanup():void;state():{starts:number;stops:number;revoked:boolean;disposed:boolean;retired:number;sourceLoadsDisposed:number;sourceOpening:string|null;sourceRetryCleared:boolean;loadListeners:number;messageListeners:number}};
 }
 
 test('actual transport attach uses stable body and both retirement paths remove only their own opaque frame',()=>{
@@ -105,7 +106,7 @@ test('actual transport attach uses stable body and both retirement paths remove 
   const page=mountTransport(body,'11111111-1111-4111-8111-111111111111');
   assert.equal(page.frame.parentNode,body);assert.equal(page.frame.src,undefined,'transport must not trigger HTTP frame navigation');assert.equal(page.frame.sandbox.values.join(','),'allow-scripts');assert.equal(page.frame.attributes['aria-hidden'],'true');
   assert.match(page.frame.style.cssText,/position:fixed;top:0;left:0;/);assert.equal(page.frame.referrerPolicy,'no-referrer');
-  page.ready();assert.equal(page.state().starts,1);page[cleanup]();assert.equal(body.children.length,0);assert.equal(page.state().loadListeners,0);assert.equal(page.state().disposed,true);assert.equal(page.state().revoked,true);assert.equal(page.state().retired,0);
+  page.ready();assert.equal(page.state().starts,1);page[cleanup]();assert.equal(body.children.length,0);assert.equal(page.state().loadListeners,0);assert.equal(page.state().disposed,true);assert.equal(page.state().revoked,true);assert.equal(page.state().retired,0);assert.equal(page.state().sourceLoadsDisposed,1);assert.equal(page.state().sourceOpening,null);assert.equal(page.state().sourceRetryCleared,true);
   page.ready();assert.equal(page.state().starts,1,'retired frame cannot transfer again');
   if(cleanup==='cleanup')assert.equal(page.state().messageListeners,0);
  }
