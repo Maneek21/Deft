@@ -52,3 +52,37 @@ test('reader menu nominates only declared source fields through the actual stric
  const result=await openSourceNomination(nomination,{current:()=>true,storeKeys:['drafts'],resourceKeys:['inbox'],select:async()=>{selections++;return {account:{account_ref:nomination.account_ref}};},read:async input=>{AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:'00000000-0000-4000-8000-000000000002',operation:'resource_read_presentation',input});reads++;assert.deepEqual(Object.keys(input).sort(),['content_digest','record_id','resource_key','store_key']);return 'current presentation';}},new AbortController().signal);
  assert.equal(result,'current presentation');assert.equal(reads,1);assert.equal(selections,2);
 });
+
+test('source account candidates overlap at most two and selected account is freshly revalidated',async()=>{
+ const n=parseSourceNomination(q())!,counts=new Map<string,number>(),seen:string[]=[];let active=0,maximum=0;
+ const result=await resolveSourceNominationAccount(n,{current:()=>true,catalog:async()=>['one','two','three','four','sender'].map(key=>({key})),child:async key=>{
+  counts.set(key,(counts.get(key)??0)+1);seen.push(key);active++;maximum=Math.max(maximum,active);await new Promise<void>(resolve=>setImmediate(resolve));active--;
+  return {accountRef:key==='sender'?'account_one':'other',key};
+ }},new AbortController().signal);
+ assert.equal(result.key,'sender');assert.equal(maximum,2);assert.deepEqual([...counts.values()],[1,1,1,1,2]);assert.equal(seen.at(-1),'sender');
+});
+
+test('concurrent account traversal retains failed candidates ambiguity and final revocation denial',async()=>{
+ const n=parseSourceNomination(q())!,signal=new AbortController().signal;
+ const rows=['unavailable','foreign','sender'].map(key=>({key}));
+ const owner=await resolveSourceNominationAccount(n,{current:()=>true,catalog:async()=>rows,child:async key=>{if(key==='unavailable')throw Error('unavailable');return {key,accountRef:key==='sender'?'account_one':'foreign'};}},signal);assert.equal(owner.key,'sender');
+ await assert.rejects(resolveSourceNominationAccount(n,{current:()=>true,catalog:async()=>rows,child:async key=>({accountRef:key==='foreign'?'foreign':'account_one'})},signal),/ambiguous/);
+ let calls=0;await assert.rejects(resolveSourceNominationAccount(n,{current:()=>true,catalog:async()=>rows,child:async key=>{if(key==='sender'&&++calls===2)throw Error('revoked');return {accountRef:key==='sender'?'account_one':'foreign'};}},signal),/revoked/);
+});
+
+test('concurrent account traversal cannot disclose after abort or replaced session',async()=>{
+ for(const mode of ['abort','replaced']){
+  const controller=new AbortController();let current=true,started=0;
+  await assert.rejects(resolveSourceNominationAccount(parseSourceNomination(q())!,{current:()=>current,catalog:async()=>[{key:'sender'},{key:'recipient'},{key:'never'}],child:async key=>{
+   started++;await Promise.resolve();if(key==='recipient'){if(mode==='abort')controller.abort();else current=false;}return {accountRef:key==='sender'?'account_one':'other'};
+  }},controller.signal));assert.ok(started<=2,'no later candidate starts after authority ends');
+ }
+});
+
+test('disposing a source loader aborts both pending account candidates without opening a late source',async()=>{
+ const states:string[]=[],controller=new AbortController();let release!:()=>void,started=0;const held=new Promise<void>(resolve=>{release=resolve;});
+ const loader=createSourceNominationLoader({current:()=>true,signal:controller.signal,change:state=>states.push(state),load:async signal=>{
+  await resolveSourceNominationAccount(parseSourceNomination(q())!,{current:()=>true,catalog:async()=>[{key:'sender'},{key:'recipient'},{key:'never'}],child:async key=>{started++;await held;return {accountRef:key==='sender'?'account_one':'other'};}},signal);
+ }});
+ const pending=loader.run();await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(started,2);loader.dispose();await pending;release();await new Promise<void>(resolve=>setImmediate(resolve));assert.deepEqual(states,['pending']);assert.equal(started,2);
+});

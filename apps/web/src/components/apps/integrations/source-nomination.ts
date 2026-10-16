@@ -22,7 +22,10 @@ export async function resolveSourceNominationAccount<T extends {accountRef:strin
  const check=()=>{signal.throwIfAborted();if(!ports.current())throw Error('Source account review required');};
  check();const rows=await ports.catalog(signal);check();if(rows.length>32||new Set(rows.map(row=>row.key)).size!==rows.length)throw Error('Source account catalog invalid');
  let selected:T|undefined,selectedKey:string|undefined;
- for(const row of rows){check();let child:T;try{child=await ports.child(row.key,signal);}catch{check();continue;}check();if(child.accountRef!==nomination.account_ref)continue;if(selected)throw Error('Source account ambiguous');selected=child;selectedKey=row.key;}
+ for(let offset=0;offset<rows.length;offset+=2){
+  const candidates=await Promise.all(rows.slice(offset,offset+2).map(async row=>{check();try{const child=await ports.child(row.key,signal);check();return {key:row.key,child};}catch{check();return null;}}));
+  for(const candidate of candidates){check();if(!candidate||candidate.child.accountRef!==nomination.account_ref)continue;if(selected)throw Error('Source account ambiguous');selected=candidate.child;selectedKey=candidate.key;}
+ }
  check();if(!selected||!selectedKey)throw Error('Source account review required');const current=await ports.child(selectedKey,signal);check();if(current.accountRef!==nomination.account_ref)throw Error('Source account changed');return current;
 }
 
