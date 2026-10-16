@@ -49,17 +49,23 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.5.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.6.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This checkout contains the unreleased `0.1.0-alpha.5` contract. Use its exact
+This checkout contains the unreleased `0.1.0-alpha.6` contract. Use its exact
 packed artifact with a host advertising that version; published preview.15
 uses `0.1.0-alpha.2`. A version identifies a released contract: do not distribute
 changed contracts under an existing version. Preserve the supplied artifact and
 the consumer lockfile for reproducible installs instead of repacking a different
 checkout under the same package version.
+
+The matching host `0.3.0-preview.16` is a release preparation candidate;
+publication is pending. No npm package publication is claimed by these pack
+instructions. Email under `examples/apps/email` is a WIP reference example,
+with separate operator setup and validation limits. See
+[release boundaries](../../docs/app-release-boundaries.md).
 
 ## Browser Experience SDK
 

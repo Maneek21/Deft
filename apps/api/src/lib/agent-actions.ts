@@ -895,7 +895,7 @@ export async function claimModuleBulkCreateAgentAction(params: {
         if (!retry) throw new Error('Failed to create module bulk-create retry action log');
         return { action: retry, reused: false, retry: true };
       }
-      return { action: existing, reused: true };
+      return { action: existing, reused: true, retry: bulkRetryOfActionId(existingParams) !== null };
     }
 
     const actor = await buildModuleActionActor(
