@@ -1,3 +1,4 @@
+import { appConsentDeadline} from './consent-lifetime.js';
 import { z } from 'zod';
 import { AppConnectionActionConsentSchema, AppConnectionRuntimeRequestSchema,
   AppConnectionRuntimeResultSchema, AppConnectionSessionScopeSchema } from './connection-session.js';
@@ -20,10 +21,10 @@ const authority = { schema_version: z.literal('deft.app_connection_runtime_autho
   session_id: z.string().uuid(), scope: AppConnectionSessionScopeSchema,
   action_consents: AppConnectionActionConsentsSchema,
   operation: z.enum(['begin', 'callback', 'status', 'disconnect']), expires_at: z.iso.datetime() };
-const deadline = (value: { operation: string; expires_at: string; scope: { consent_expires_at: string };
-  action_consents: AppConnectionActionConsents }) => Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at)
+const deadline = (value: { operation: string; expires_at: string; scope: { consent_expires_at: string | null; consent_lifetime?: 'until_revoked' };
+  action_consents: AppConnectionActionConsents }) => Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
     && (!['begin', 'callback'].includes(value.operation)
-      || value.action_consents.every(consent => Date.parse(value.expires_at) <= Date.parse(consent.expires_at)));
+      || value.action_consents.every(consent => Date.parse(value.expires_at) <= appConsentDeadline(consent.expires_at, consent.consent_lifetime)));
 export const AppConnectionRuntimeV2AuthorityRequestSchema = z.strictObject(authority).refine(deadline);
 export const AppConnectionRuntimeV2AuthorityResultSchema = z.strictObject({ ...authority, allowed: z.literal(true) }).refine(deadline);
 export type AppConnectionRuntimeV2Request = Readonly<z.infer<typeof AppConnectionRuntimeV2RequestSchema>>;

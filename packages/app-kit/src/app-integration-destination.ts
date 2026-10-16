@@ -7,10 +7,16 @@ export const AppIntegrationDestinationSchema=z.discriminatedUnion('kind',[
  z.strictObject({kind:z.literal('chat'),space_id:z.uuid()}),
  z.strictObject({kind:z.literal('task'),project_id:z.uuid()}),
 ]);
+export const AppIntegrationTaskDetailsSchema=z.strictObject({
+ description:z.string().max(20000).refine(v=>!v.includes('\0')).optional(),status:z.enum(['backlog','todo','in_progress','in_review']).optional(),
+ priority:z.enum(['p0','p1','p2','p3']).optional(),assignee_id:z.uuid().nullable().optional(),due_date:z.iso.date().optional(),
+});
+export type AppIntegrationTaskDetails=z.infer<typeof AppIntegrationTaskDetailsSchema>;
 export const AppIntegrationDestinationReviewInputSchema=z.strictObject({source:AppIntegrationSourceIdentitySchema,
  destination:AppIntegrationDestinationSchema,title:z.string().trim().min(1).max(512),mode:z.enum(['source_link','excerpt']),
- excerpt:z.string().min(1).max(20000).refine(v=>!v.includes('\0')).optional()})
- .refine(v=>(v.mode==='excerpt')===(v.excerpt!==undefined));
+ task_details:AppIntegrationTaskDetailsSchema.optional(),excerpt:z.string().min(1).max(20000).refine(v=>!v.includes('\0')).optional()})
+ .refine(v=>(v.mode==='excerpt')===(v.excerpt!==undefined))
+ .refine(v=>v.task_details===undefined||v.destination.kind==='task');
 export const AppIntegrationDestinationCommitInputSchema=AppIntegrationDestinationReviewInputSchema.safeExtend({request_id:z.uuid(),review_digest:digest});
 export type AppIntegrationDestination=z.infer<typeof AppIntegrationDestinationSchema>;
 export type AppIntegrationDestinationReviewInput=z.infer<typeof AppIntegrationDestinationReviewInputSchema>;

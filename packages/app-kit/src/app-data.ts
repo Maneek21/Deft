@@ -1,3 +1,4 @@
+import { AppConsentLifetimeSchema, AppConsentExpirySchema, appConsentDeadline, appConsentExpiryValid } from './consent-lifetime.js';
 import {AppIntegrationSourceMappingSchema} from './app-integration-source-mapping.js';
 import {AppRecordMirrorDeclarationsSchema} from './record-mirror.js';
 import {AppFutureRecordActionDeclarationsSchema,AppFutureExecutionWindowSchema,AppPreparedFutureReleaseSchema,AppPreparedActionLifecycleInputSchema,AppPreparedActionLifecycleReceiptSchema} from './future-record-action.js';
@@ -107,7 +108,7 @@ const runtimeBase = {schema_version:z.literal('deft.app_data_runtime.v1'),reques
 export const AppDataRuntimeRequestSchema = z.strictObject({...runtimeBase,operation:operations,input:z.record(z.string(),z.unknown())})
   .superRefine((row,ctx) => {if (['record_prepare_change','record_apply_change'].includes(row.operation)||!AppDataOperationInputSchema.safeParse({operation:row.operation,input:row.input}).success)
     ctx.addIssue({code:'custom',message:'Operation input does not match the public contract'});
-    if (Date.parse(row.expires_at)>Date.parse(row.scope.consent_expires_at)) ctx.addIssue({code:'custom',message:'Data request exceeds consent'});});
+    if (Date.parse(row.expires_at)>appConsentDeadline(row.scope.consent_expires_at, row.scope.consent_lifetime)) ctx.addIssue({code:'custom',message:'Data request exceeds consent'});});
 export type AppDataRuntimeRequest = z.infer<typeof AppDataRuntimeRequestSchema>;
 export const AppDataRuntimeAuthorityRequestSchema = z.strictObject({...runtimeBase,schema_version:z.literal('deft.app_data_authority.v1'),
   operation:z.union([operations,z.enum(['run_inspect','run_inspection_status'])]),input_digest:digest}).refine(row=>!['record_prepare_change','record_apply_change'].includes(row.operation));
@@ -138,7 +139,7 @@ export const AppDataPreparedRecordActionSchema=z.strictObject({schema_version:z.
   },'A supplemental effect requires its exact reviewed input pins').refine(row=>{
     if(row.future_release&&Date.parse(row.expires_at)!==Date.parse(row.future_release.execution_window.dispatch_expires_at))return false;
     const fields=['sent_copy_version','sent_copy_mode','sent_copy_plan_digest'];
-    if(row.required_action_consents?.some(consent=>consent.action_key===row.action_key||Date.parse(consent.expires_at)<Date.parse(row.expires_at)))return false;
+    if(row.required_action_consents?.some(consent=>consent.action_key===row.action_key||appConsentDeadline(consent.expires_at, consent.consent_lifetime)<Date.parse(row.expires_at)))return false;
     if(!row.copy_effect)return fields.every(field=>!Object.hasOwn(row.input,field));
     const pins=AppPreparedCopyEffectInputSchema.safeParse(Object.fromEntries(fields.map(field=>[field,row.input[field]])));
     return pins.success&&pins.data.sent_copy_version===row.copy_effect.schema_version
@@ -174,13 +175,14 @@ export const AppDataResultSchema = z.strictObject({schema_version:z.literal('def
 export type AppDataResult = z.infer<typeof AppDataResultSchema>;
 export const AppDataConsentSnapshotSchema = z.strictObject({schema_version:z.literal('deft.app_data_consent.v1'),
   consent_id:id,scope:AppConnectionSessionScopeSchema,connection:AppDataConnectionSchema,store:RecordStoreDeclarationSchema,
-  data_policy_digest:digest,purpose:z.literal('human_record_write'),expires_at:z.iso.datetime()});
-export const AppDataConsentReviewRequestSchema = z.strictObject({store_key:key,expires_at:z.iso.datetime()});
-export const AppDataConsentActivateRequestSchema = AppDataConsentReviewRequestSchema.extend({consent_id:id,expected_review_digest:digest,accept_host_policy:z.literal(true)});
-export const AppDataConsentReferenceSchema = z.strictObject({consent_id:id,consent_digest:digest,expires_at:z.iso.datetime()});
+  data_policy_digest:digest,purpose:z.literal('human_record_write'),expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional(),review_expires_at:z.iso.datetime().optional()}).refine(v=>appConsentExpiryValid(v.expires_at,v.consent_lifetime) && (v.consent_lifetime===undefined ? v.review_expires_at===undefined : v.review_expires_at!==undefined),{abort:true})
+ .refine(v=>appConsentDeadline(v.expires_at,v.consent_lifetime)<=appConsentDeadline(v.scope.consent_expires_at,v.scope.consent_lifetime));
+export const AppDataConsentReviewRequestSchema = z.strictObject({store_key:key,expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional()}).refine(v=>appConsentExpiryValid(v.expires_at,v.consent_lifetime));
+export const AppDataConsentActivateRequestSchema = AppDataConsentReviewRequestSchema.safeExtend({consent_id:id,expected_review_digest:digest,accept_host_policy:z.literal(true)});
+export const AppDataConsentReferenceSchema = z.strictObject({consent_id:id,consent_digest:digest,expires_at:AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional()}).refine(v=>appConsentExpiryValid(v.expires_at,v.consent_lifetime));
 export const AppDataContextSchema = z.strictObject({schema_version:z.literal('deft.app_data_context.v1'),installation_id:id,
   targets:z.array(z.strictObject({session_id:id,target_key:key,account:z.strictObject({account_ref:opaque,label}),resource_key:key,
-    identities:identities,stores:z.array(z.strictObject({declaration:RecordStoreDeclarationSchema,consent:AppDataConsentReferenceSchema.nullable()})).max(16)})).max(32)});
+    identities:identities,allow_until_revoked:z.literal(true).optional(),stores:z.array(z.strictObject({declaration:RecordStoreDeclarationSchema,consent:AppDataConsentReferenceSchema.nullable()})).max(16)})).max(32)});
 export const DeftExperienceRecordFormProfileSchema = z.strictObject({schema_version:z.literal('deft.record_form_profile.v1'),
   max_record_bytes:z.number().int().min(1).max(APP_DATA_LIMITS.record_bytes),
   addresses:z.array(z.strictObject({field:key,label,optional:z.boolean()})).max(16),

@@ -1,6 +1,7 @@
+import { appConsentDeadline} from './consent-lifetime.js';
 import { z } from 'zod';
 const accountRef=z.string().min(1).max(512).regex(/^[A-Za-z0-9_-]+$/u);
-import { AppConnectionSessionScopeSchema, AppConnectionSessionViewSchema,
+import { appConnectionSessionViewDeadline, AppConnectionSessionScopeSchema, AppConnectionSessionViewSchema,
   AppConnectionSessionCallbackSchema, AppConnectionSessionBegunSchema } from './connection-session.js';
 import { AppConnectionReattachSourceSchema, AppConnectionReattachEligibilitySchema } from './connection-session-reattach.js';
 import { AppConnectionActionConsentsSchema } from './connection-session-v2.js';
@@ -42,13 +43,13 @@ export const AppConnectionUpgradeReviewViewSchema = z.strictObject({
   account, custody_generation: generation, action_consents: AppConnectionActionConsentsSchema,
   review_digest: digest, expires_at: z.iso.datetime(),
 });
-export const AppConnectionUpgradeBegunSchema = AppConnectionSessionBegunSchema.extend({
-  schema_version: z.literal('deft.app_connection_upgrade_session.v1') });
-export const AppConnectionUpgradeClosedViewSchema = AppConnectionSessionViewSchema.extend({
+export const AppConnectionUpgradeBegunSchema = z.strictObject({ ...AppConnectionSessionBegunSchema.shape,
+  schema_version: z.literal('deft.app_connection_upgrade_session.v1') }).refine(appConnectionSessionViewDeadline);
+export const AppConnectionUpgradeClosedViewSchema = z.strictObject({ ...AppConnectionSessionViewSchema.shape,
   schema_version: z.literal('deft.app_connection_upgrade_closed.v1'), state: z.literal('not_connected'), account: z.null(),
   source_session_id: id, source_revision: z.number().int().nonnegative().max(2_147_483_646), account_ref: accountRef,
   review_expires_at: z.iso.datetime(), closure: AppConnectionUpgradeClosureSchema,
-});
+}).refine(appConnectionSessionViewDeadline);
 const envelope = { schema_version: z.literal('deft.app_connection_upgrade_runtime.v1'), session_id: id,
   scope: AppConnectionSessionScopeSchema, source: AppConnectionUpgradeSourceSchema, transport_digest: digest,
   review_expires_at: z.iso.datetime(), expires_at: z.iso.datetime(), action_consents: AppConnectionActionConsentsSchema };
@@ -64,11 +65,11 @@ const variants = [
     runtime_session_ref: opaque.nullable(), close_expired: z.literal(true).optional() }),
 ] as const;
 const deadline = (value: { operation: string; expires_at: string; review_expires_at: string;
-  scope: { consent_expires_at: string }; action_consents: z.infer<typeof AppConnectionActionConsentsSchema> }) =>
-  Date.parse(value.review_expires_at) <= Date.parse(value.scope.consent_expires_at)
-  && Date.parse(value.expires_at) <= Date.parse(value.scope.consent_expires_at)
+  scope: { consent_expires_at: string | null; consent_lifetime?: 'until_revoked' }; action_consents: z.infer<typeof AppConnectionActionConsentsSchema> }) =>
+  Date.parse(value.review_expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
+  && Date.parse(value.expires_at) <= appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)
   && (value.operation === 'status' || Date.parse(value.expires_at) <= Date.parse(value.review_expires_at)
-    && value.action_consents.every(consent => Date.parse(value.expires_at) <= Date.parse(consent.expires_at)));
+    && value.action_consents.every(consent => Date.parse(value.expires_at) <= appConsentDeadline(consent.expires_at, consent.consent_lifetime)));
 export const AppConnectionUpgradeRuntimeRequestSchema = z.discriminatedUnion('operation', variants).refine(deadline);
 export type AppConnectionUpgradeRuntimeRequest = Readonly<z.infer<typeof AppConnectionUpgradeRuntimeRequestSchema>>;
 export const AppConnectionUpgradeAuthorityRequestSchema = AppConnectionUpgradeRuntimeRequestSchema;
