@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { OverflowMenu } from '@/components/overflow-menu';
+import { AppIntegrationKnowledgeCitation } from '@/lib/app-experience-knowledge-citation';
 
 const TYPE_CONFIG: Record<string, { label: string; color: string; icon: React.ComponentType<any> }> = {
   concept: { label: 'Concepts', color: '#8B5CF6', icon: Brain },
@@ -1061,7 +1062,9 @@ export default function KnowledgePage() {
                   {detail.citations.map(cit => (
                     <div key={cit.id} className="p-2 rounded-lg text-[11px]"
                       style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                      {cit.source_type === 'email' && cit.source_url ? (
+                      {cit.source_type === 'app_integration' ? (
+                        <AppIntegrationKnowledgeCitation source_url={cit.source_url} source_label={cit.source_label} />
+                      ) : cit.source_type === 'email' && cit.source_url ? (
                         <a href={cit.source_url} className="inline-flex items-center gap-1 font-medium hover:underline"
                           style={{ color: 'var(--accent)' }} title="Opening the original email requires mailbox access">
                           Source email <ArrowUpRight size={10} />
