@@ -85,7 +85,7 @@ function mountTransport(body:TransportBody,sessionId:string){
  const identityCurrent=()=>!stopped,authorityCurrent=()=>identityCurrent(),locallyCurrent=()=>authorityCurrent()&&!unavailable&&!document.hidden;
  const startup={ready(){},started(){},fail(){},dispose(){disposed=true;}},experienceStartupStatus=()=>null,port={port2:{close(){}}},session={pin:{session_id:sessionId},bundle:{worker_source:'reviewed'}},viewHost={current:null};
  const noop=()=>{},setNominatedSource=noop,setPreferencesNode=noop,setSuspended=noop,setSource=noop,setRunReview=noop,setConnectionUnavailable=noop,setError=noop,clearNavigation=noop,closeComposer=noop,closeConfirmation=noop;
- const sourceLoader={dispose(){sourceLoadsDisposed++;}},retrySourceNomination={current:()=>{}},retryResume={current:null},setSourceOpening=value=>{sourceOpening=value;};
+ const sourceLoader={dispose(){sourceLoadsDisposed++;}},retrySourceNomination={current:()=>{}},sourceNavigationChanged={current:()=>{}},retryResume={current:null},setSourceOpening=value=>{sourceOpening=value;};
  const sourceNominationAbort={abort:noop},sourceReview={clear:noop},sourcePresentations=new Map(),presentationDisposals=new Map(),preferencesEvent={current:null},intakePrepare={current:null},readingPreferencesChanged={current:null},ensureAuthority={current:null};
  const accounts={close:noop},connection={dispose:noop},lease=null,navigationOwner={},rendered={current:false},bridge={revoke(){revoked=true;}},api={fetch(){retired++;return Promise.resolve();}},root='/synthetic',childTimer=0;let flushRecordWrites={current:null};
  const stop=${transport.stop},startWorker=${callbacks.startWorker},onBootstrapReady=${callbacks.onBootstrapReady};
