@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {ExperienceAuthorityUnavailable} from './app-experience-connection';
 import {createExperienceDataClient,appDataInputDigest} from './app-experience-data-client';
 import {APP_DATA_FRAME_MEDIA_TYPE,frameAppData,parseAppDataFrame,type AppDataRequest,type DeftExperienceRecordFormNode,type RecordStoreDeclaration} from '../../../../packages/app-kit/src/app-data';
 import type {RecordFormFile} from './app-experience-record-form';
@@ -195,4 +196,16 @@ test('actual data client admits explicit until-revoked draft consent but never m
  for(const mode of ['persistent','missing','revoked'] as const){let reads=0;const value:any=context();value.targets[0].stores[0].consent=mode==='revoked'?null:{consent_id:id,consent_digest:hash,expires_at:null,...(mode==='persistent'?{consent_lifetime:'until_revoked'}:{})};
  const client=createExperienceDataClient({installationId:installation,targetKey:'mailbox',current:()=>true,fetch:async(path,options)=>{if(path.endsWith('/context')||path.endsWith('/resolve'))return json(value);reads++;return json(await result(JSON.parse(String(options.body))));}});
  if(mode==='persistent'){const opened=await client.ports.load(node,new AbortController().signal);assert.equal(opened.record.value.subject,row().value.subject);assert.equal(reads,1);}else{await assert.rejects(client.ports.load(node,new AbortController().signal));assert.equal(reads,0);}}
+});
+
+
+test('temporary account resolution blocks every record request without treating the account as revoked',async()=>{
+ for(const status of [408,429,500,503,401,403,404,410]){
+  let requests=0;const client=createExperienceDataClient({installationId:installation,targetKey:'mailbox',current:()=>true,fetch:async path=>{
+   if(path.endsWith('/resolve'))return new Response('{}',{status});requests++;throw Error('Record request must not dispatch');
+  }});
+  await assert.rejects(client.request('drafts','record_read',{store_key:'drafts',record_id:id},new AbortController().signal),error=>{
+   assert.equal(error instanceof ExperienceAuthorityUnavailable,[408,429,500,503].includes(status));return true;
+  });assert.equal(requests,0);
+ }
 });

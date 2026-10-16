@@ -1,3 +1,4 @@
+import {experienceAuthorityResponse,ExperienceAuthorityUnavailable} from './app-experience-connection';
 import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import {createRecordSeedLocator} from './app-experience-record-seed';
 import {AppPreparedRecordChangeSchema,AppRecordPrepareChangeInputSchema,AppRecordApplyChangeInputSchema} from '../../../../packages/app-kit/src/record-change';
@@ -29,6 +30,7 @@ export function createExperienceDataClient(options:{installationId:string;target
   const resolve=options.targetKey!==undefined&&storeKey!==undefined;
   const input=resolve?AppDataResolveInputSchema.parse({schema_version:'deft.app_data_resolve.v1',target_key:options.targetKey,store_key:storeKey}):null;
   const response=await options.fetch(`/api/app-data/installations/${encodeURIComponent(options.installationId)}/${resolve?'resolve':'context'}`,{signal,cache:'no-store',...(input?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)}:{})});
+  if(experienceAuthorityResponse(response)==='unavailable')throw new ExperienceAuthorityUnavailable();
   const bytes=await boundedBytes(response,65536,signal);try{const value=AppDataContextSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes)));check(signal);
    if(value.installation_id!==options.installationId||input&&(value.targets.length!==1||value.targets[0].target_key!==input.target_key||!value.targets[0].stores.some(store=>store.declaration.key===input.store_key)))throw Error('App data scope changed');return value;}finally{bytes.fill(0);}};
  const select=async(storeKey:string,signal:AbortSignal)=>{const value=await context(signal,storeKey),candidates=value.targets.filter(target=>target.stores.some(store=>store.declaration.key===storeKey));

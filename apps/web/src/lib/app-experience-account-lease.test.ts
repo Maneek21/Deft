@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createExperienceLease} from './app-experience-lease';
 import {createExperienceAccountRouting} from './app-experience-account-routing';
+import {ExperienceAuthorityUnavailable} from './app-experience-connection';
 
 const source=readFileSync(new URL('../components/apps/installed-app-experience.tsx',import.meta.url),'utf8');
 const body=source.match(/\},validate:async\(child,signal\)=>\{([\s\S]*?)\},\s*retire:child=>/)?.[1];
@@ -27,14 +28,34 @@ test('actual child validator retains root account after successfully renewed roo
  assert.equal(routing.reference('inbox','record').record_id,'record');
 });
 
-test('transient validation failure independently retires a child before its captured expiry',async()=>{
- let failed=false;
- const retired:string[]=[];
- const child={targetKey:'sender',accountRef:'account',label:'sender',value:{}};
- const routing=createExperienceAccountRouting({current:()=>true,catalog:async()=>[{key:'sender',label:'sender'}],open:async()=>child,validate:async()=>{if(failed)throw Error('Transient HTTP503');return true;},retire:c=>retired.push(c.targetKey)});
- await routing.child('sender',new AbortController().signal);failed=true;
- assert.deepEqual(await routing.sweep(new AbortController().signal),['sender']);
- assert.deepEqual(retired,['sender']);
+test('actual nonroot transient status and cancellation retain the child without releasing work, and recover on a fresh check',async()=>{
+ for(const failure of [408,429,500,503,'network','cancelled'] as const){
+  let status:number|string=200,retired=0,work=0;
+  const validate:(child:unknown,signal:AbortSignal)=>Promise<boolean>=new Function('Date','session','live','api','root','livePath','normalizeExperienceExposureStatus','locallyCurrent','ExperienceAuthorityUnavailable',`return async(child,signal)=>{${body}}`)({now:()=>0,parse:Date.parse},{pin:{session_id:'root'}},async()=>true,{fetch:async(path:string)=>{
+   if(path.endsWith('/exposure')&&status==='network')throw new TypeError('Failed to fetch');
+   if(path.endsWith('/exposure')&&status==='cancelled')throw new DOMException('Cancelled probe','AbortError');
+   return {status:path.endsWith('/exposure')?status:200,ok:!path.endsWith('/exposure')||status===200,json:async()=>initial.exposure};
+  }},'',()=>'/live',(v:unknown)=>v,()=>true,ExperienceAuthorityUnavailable);
+  const child={targetKey:'sender',accountRef:'account',label:'sender',value:{session:{pin:{session_id:'child'},bundle:{record_store_keys:['drafts']}},lease:{ensure:async()=>true,valid:()=>true,value:initial},client:{select:async()=>({account:{account_ref:'account'}})}}};
+  const routing=createExperienceAccountRouting({current:()=>true,catalog:async()=>[{key:'sender',label:'sender'}],open:async()=>child,validate,retire:()=>{retired++;}});
+  await routing.child('sender',new AbortController().signal);routing.retain(child,[{resource_key:'inbox',record_id:'one',content_digest:'digest'}]);status=failure;
+  await assert.rejects(routing.sweep(new AbortController().signal));
+  await assert.rejects(routing.read(child,new AbortController().signal,async()=>{work++;return 'private';}));
+  assert.equal(work,0);assert.equal(retired,0);assert.equal(routing.reference('inbox','one').content_digest,'digest');status=200;
+  assert.deepEqual(await routing.sweep(new AbortController().signal),[]);assert.equal(await routing.child('sender',new AbortController().signal),child);
+  assert.equal(await routing.read(child,new AbortController().signal,async()=>{work++;return 'fresh';}),'fresh');assert.equal(work,1);
+ }
+});
+
+test('actual nonroot definitive denial retires and clears retained ownership',async()=>{
+ for(const denied of [401,403,404,410]){
+  let status=200,retired=0;
+  const validate:(child:unknown,signal:AbortSignal)=>Promise<boolean>=new Function('Date','session','live','api','root','livePath','normalizeExperienceExposureStatus','locallyCurrent',`return async(child,signal)=>{${body}}`)({now:()=>0,parse:Date.parse},{pin:{session_id:'root'}},async()=>true,{fetch:async()=>({status,ok:status===200,json:async()=>initial.exposure})},'',()=>'/live',(v:unknown)=>v,()=>true);
+  const child={targetKey:'sender',accountRef:'account',label:'sender',value:{session:{pin:{session_id:'child'},bundle:{record_store_keys:['drafts']}},lease:{ensure:async()=>true,valid:()=>true,value:initial},client:{select:async()=>({account:{account_ref:'account'}})}}};
+  const routing=createExperienceAccountRouting({current:()=>true,catalog:async()=>[{key:'sender',label:'sender'}],open:async()=>child,validate,retire:()=>{retired++;}});
+  await routing.child('sender',new AbortController().signal);routing.retain(child,[{resource_key:'inbox',record_id:'one',content_digest:'digest'}]);status=denied;
+  assert.deepEqual(await routing.sweep(new AbortController().signal),['sender']);assert.equal(retired,1);assert.throws(()=>routing.reference('inbox','one'));
+ }
 });
 
 test('actual nonroot child renews independently; review mismatch, page end and abort cannot admit',async()=>{
@@ -85,4 +106,26 @@ test('actual concurrent root validation stays closed on revocation, wrong accoun
   assert.ok(selectedSignal?.aborted,'temporary concurrent work is cancelled when the validation turn ends');
   assert.equal(liveCalls,mode==='final_denied'?2:1);
  }
+});
+
+
+test('actual nonroot resolution overlaps current authority reads but cannot settle before exact selection',async()=>{
+ let resolveTarget!:(v:unknown)=>void,selected=false,settled=false;const paths:string[]=[],signals:AbortSignal[]=[];
+ const target=new Promise(resolve=>resolveTarget=resolve);
+ const validate:(child:unknown,signal:AbortSignal)=>Promise<boolean>=new Function('Date','session','live','api','root','livePath','normalizeExperienceExposureStatus','locallyCurrent',`return async(child,signal)=>{${body}}`)({now:()=>0,parse:Date.parse},{pin:{session_id:'root'}},async()=>true,{fetch:async(path:string,options:{signal:AbortSignal})=>{paths.push(path);signals.push(options.signal);return {status:200,ok:true,json:async()=>initial.exposure};}},'',()=>'/live',(v:unknown)=>v,()=>true);
+ const child={accountRef:'account',value:{session:{pin:{session_id:'child'},bundle:{record_store_keys:['drafts']}},lease:{ensure:async()=>true,valid:()=>true,value:initial},client:{select:async(_key:string,signal:AbortSignal)=>{selected=true;signals.push(signal);return target;}}}};
+ const work=validate(child,new AbortController().signal).then(result=>{settled=true;return result;});await new Promise(resolve=>setImmediate(resolve));
+ try{assert.equal(selected,true);assert.equal(paths.length,2,'both authority reads start while exact target resolution is pending');assert.equal(settled,false);}
+ finally{resolveTarget({account:{account_ref:'account'}});}
+ assert.equal(await work,true);assert.ok(signals.every(signal=>signal.aborted),'the temporary operation group is closed after validation');
+});
+
+
+test('temporary failure at the final child check withholds the completed result without retiring the child',async()=>{
+ let checks=0,retired=0,fail=false,work=0;
+ const child={targetKey:'sender',accountRef:'account',label:'sender',value:{}};
+ const routing=createExperienceAccountRouting({current:()=>true,catalog:async()=>[{key:'sender',label:'sender'}],open:async()=>child,validate:async()=>{if(fail&&++checks===2)throw new ExperienceAuthorityUnavailable();return true;},retire:()=>{retired++;}});
+ await routing.child('sender',new AbortController().signal);fail=true;
+ await assert.rejects(routing.read(child,new AbortController().signal,async()=>{work++;return 'must not disclose';}),ExperienceAuthorityUnavailable);
+ assert.equal(work,1);assert.equal(retired,0);fail=false;assert.equal(await routing.child('sender',new AbortController().signal),child);
 });
