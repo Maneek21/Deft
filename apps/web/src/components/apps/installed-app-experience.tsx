@@ -592,7 +592,19 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           }});
           return {targetKey,accountRef:target.account.account_ref,label:target.account.label,value:{session:child,exposure:access.exposure,lease:childLease,client}};
         }catch(error){void retireSession(child.pin.session_id);throw error;}
-      },validate:async(child,signal)=>{signal.throwIfAborted();if(!locallyCurrent()||!await (child.value.session.pin.session_id===session.pin.session_id?live(signal):child.value.lease.ensure()))return false;signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid())return false;const target=await child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',signal);signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid()||target.account.account_ref!==child.accountRef)return false;if(child.value.session.pin.session_id===session.pin.session_id)return live(signal);
+      },validate:async(child,signal)=>{signal.throwIfAborted();
+        if(child.value.session.pin.session_id===session.pin.session_id){
+          if(!locallyCurrent())return false;
+          const pending=new AbortController(),combined=AbortSignal.any([signal,pending.signal]);let denied=false;
+          try{
+            // Independent readonly resolution overlaps the first authority read;
+            // a separate final live check still precedes release to the caller.
+            const [available,target]=await Promise.all([live(combined).then(allowed=>{if(!allowed){denied=true;pending.abort();}return allowed;}),child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',combined)]);
+            signal.throwIfAborted();if(!available||!locallyCurrent()||!child.value.lease.valid()||target.account.account_ref!==child.accountRef)return false;
+            return live(signal);
+          }catch(error){if(denied&&!signal.aborted)return false;throw error;}finally{pending.abort();}
+        }
+        if(!locallyCurrent()||!await child.value.lease.ensure())return false;signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid())return false;const target=await child.value.client.select(child.value.session.bundle.record_store_keys?.[0]??'drafts',signal);signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid()||target.account.account_ref!==child.accountRef)return false;if(child.value.session.pin.session_id===session.pin.session_id)return live(signal);
         const [liveResponse,exposureResponse]=await Promise.all([api.fetch(livePath(child.value.session.pin.session_id),{signal,cache:'no-store'}),api.fetch(`${root}/sessions/${encodeURIComponent(child.value.session.pin.session_id)}/exposure`,{signal,cache:'no-store'})]);signal.throwIfAborted();if(!locallyCurrent()||!child.value.lease.valid()||[liveResponse,exposureResponse].some(response=>[401,403,404,410].includes(response.status)))return false;if(!liveResponse.ok||!exposureResponse.ok)throw Error('Account temporarily unavailable');const current=normalizeExperienceExposureStatus(await exposureResponse.json());signal.throwIfAborted();const effective=child.value.lease.value.exposure;return locallyCurrent()&&child.value.lease.valid()&&Date.parse(current.expires_at)>Date.now()&&current.exposure_id===effective.exposure_id&&current.exposure_epoch===effective.exposure_epoch&&current.review_digest===effective.review_digest;},
       retire:child=>{if(child.value.session.pin.session_id!==session.pin.session_id){child.value.lease.dispose();void retireSession(child.value.session.pin.session_id);}for(const [id,owner]of createdRecords)if(owner.targetKey===child.targetKey)createdRecords.delete(id);for(const [id,owner]of routedRuns)if(owner.targetKey===child.targetKey)routedRuns.delete(id);},
     });

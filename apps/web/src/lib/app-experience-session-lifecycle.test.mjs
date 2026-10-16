@@ -9,7 +9,7 @@ const base=new URL('../',import.meta.url);
 const source=path=>readFileSync(new URL(path,base),'utf8');
 function compile(text,names,globals={}){
   const code=stripTypeScriptTypes(text.replace(/^import .*;\r?\n/gm,''),{mode:'transform'}).replace(/\bexport /g,'');
-  return vm.runInNewContext(code+'\n;({'+names.join(',')+'})',{Response,AbortSignal,setTimeout,Date,Error,TypeError,DOMException,console,...globals});
+  return vm.runInNewContext(code+'\n;({'+names.join(',')+'})',{Response,AbortSignal,AbortController,setTimeout,Date,Error,TypeError,DOMException,console,...globals});
 }
 const iso=n=>new Date(n).toISOString();
 const initial={session_expires_at:iso(100000),exposure:{active:true,exposure_id:'exposure',exposure_epoch:1,review_digest:'sha256:'+'a'.repeat(64),expires_at:iso(100000)}};
@@ -42,7 +42,7 @@ async function scenario({race=false,revoked=false,changeIdentity=false,expireRes
       if(++exposureReads===1){exposureStarted();await new Promise(resolve=>finishExposure=resolve);}
       return (exposureReads===1?bodyResponse:undefined)??(revoked?new Response(null,{status:403}):Response.json({...captured,active:true,...pinChange,expires_at:expireResponse?iso(1):captured.expires_at}));
     }}};
-  const read=vm.runInNewContext(stripTypeScriptTypes('('+readText+')',{mode:'transform'}),{Response,AbortSignal,setTimeout,Error,TypeError,DOMException,...globals});
+  const read=vm.runInNewContext(stripTypeScriptTypes('('+readText+')',{mode:'transform'}),{Response,AbortSignal,AbortController,setTimeout,Error,TypeError,DOMException,...globals});
   const connection=connectionFns.createExperienceConnection({current:()=>current,valid:authorityCurrent,read,
     change:state=>{if(state==='denied'){retired++;current=false;}}});
   const check=connection.check();await started;
@@ -50,7 +50,7 @@ async function scenario({race=false,revoked=false,changeIdentity=false,expireRes
   if(race){
     now=15000;
     const validate=vm.runInNewContext(stripTypeScriptTypes('(async(child,signal)=>{'+validateBody+'})',{mode:'transform'}),
-      {Response,AbortSignal,Error,TypeError,DOMException,...globals,locallyCurrent:authorityCurrent,live:connection.ensure});
+      {Response,AbortSignal,AbortController,Error,TypeError,DOMException,...globals,locallyCurrent:authorityCurrent,live:connection.ensure});
     const child={accountRef:'account',value:{lease,session:{pin:{session_id:'original'},bundle:{record_store_keys:['drafts']}},
       client:{select:async()=>({account:{account_ref:'account'}})}}};
     validating=validate(child,new AbortController().signal);

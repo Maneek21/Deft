@@ -37,7 +37,7 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
   if(job&&job.name!==APP_INTEGRATION_CAPTURE_JOB)throw denied();return assertAppIntegrationCaptureDelivery(tx,caller,target,now());
  };
  const components=(job?:JobData,content:'presentation'|'metadata'='presentation')=>{
-  const runtime=createAppIntegrationSourceDispatcher(input.gateway,content);
+  const runtime=createAppIntegrationSourceDispatcher(input.gateway,content),resolveRuntime=createAppIntegrationSourceDispatcher(input.gateway,'metadata');
   const authority=async(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,purpose:AppIntegrationSourcePurpose,tx?:Tx):Promise<AppIntegrationSourceAuthority>=>{
    const check=async(transaction:Tx)=>{
     if((purpose==='knowledge_capture')!==(caller.kind==='capture_policy')
@@ -56,7 +56,7 @@ export function createAppIntegrationCaptureRuntime(input:{transaction<T>(fn:(tx:
    // No header, Message-ID, address or historical binding is a locator authority.
    const provisional={...identity,resource_binding_id:current.resource_binding_id,projection_id:'00000000-0000-4000-8000-000000000000'};
    if(caller.kind==='capture_policy')await input.transaction(tx=>policyGuard(tx,caller,identity,job));
-   const fresh=await runtime(caller,provisional,purpose,signal);
+   const fresh=await resolveRuntime(caller,provisional,purpose,signal);
    const target=await publication.resolve(caller,identity,current.resource_binding_id,fresh.resource);
    await authority(caller,target,purpose);return target;
   };

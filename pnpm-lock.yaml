@@ -7,6 +7,7 @@ settings:
 overrides:
   '@hono/node-server': ^2.0.12
   body-parser: ^2.3.0
+  braces: npm:@dieub/braces-depth-guard@3.0.3-pn.3
   brace-expansion@<2.0.0: ^1.1.18
   brace-expansion@>=4.0.0 <6.0.0: ^5.0.9
   engine.io: ^6.6.7
@@ -482,6 +483,10 @@ packages:
 
   '@cacheable/utils@2.5.0':
     resolution: {integrity: sha512-buipgOVDkkPXNR5+xBpDw7Zk2n1EvU7qBJCNUcL7rhQ//kfpOXPAvQ511Os0vpLYJ1pZnvudNytkQt2hst3wqA==}
+
+  '@dieub/braces-depth-guard@3.0.3-pn.3':
+    resolution: {integrity: sha512-QY+Uq4s42STyIMPoRkBuUZfYyvz0uZuwuUburLwMx5N+lWqnHHaBxcKPtgKVKjTyFnS1q4ivKu9Wxi4VG7FE9Q==}
+    engines: {node: '>=8'}
 
   '@dnd-kit/accessibility@3.1.1':
     resolution: {integrity: sha512-2P+YgaXF+gRsIihwwY1gCsQSYnu9Zyj2py8kY5fFvUM1qm2WA2u639R6YNVfU4GWr+ZM5mqEsfHZZLoRONbemw==}
@@ -1778,10 +1783,6 @@ packages:
   brace-expansion@5.0.12:
     resolution: {integrity: sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==}
     engines: {node: 20 || >=22}
-
-  braces@3.0.3:
-    resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
-    engines: {node: '>=8'}
 
   browserslist@4.29.1:
     resolution: {integrity: sha512-AUdjuRyCNGUYtqpqfTmWyM4fXay8yIQhmLnvYe/THMGfT9B/34X7xQd3ifKxwyNPPpowVBjLb+64BN9Rn1mizw==}
@@ -3900,6 +3901,10 @@ snapshots:
       hashery: 1.5.1
       keyv: 5.6.0
 
+  '@dieub/braces-depth-guard@3.0.3-pn.3':
+    dependencies:
+      fill-range: 7.1.1
+
   '@dnd-kit/accessibility@3.1.1(react@19.3.0)':
     dependencies:
       react: 19.3.0
@@ -5041,10 +5046,6 @@ snapshots:
   brace-expansion@5.0.12:
     dependencies:
       balanced-match: 4.0.4
-
-  braces@3.0.3:
-    dependencies:
-      fill-range: 7.1.1
 
   browserslist@4.29.1:
     dependencies:
@@ -6538,7 +6539,7 @@ snapshots:
 
   micromatch@4.0.8:
     dependencies:
-      braces: 3.0.3
+      braces: '@dieub/braces-depth-guard@3.0.3-pn.3'
       picomatch: 2.3.2
 
   mime-db@1.52.0: {}

@@ -63,3 +63,26 @@ test('actual retirement disposes only the retired child lease and clears its ret
  assert.equal(child.value.lease.valid(),false);assert.equal(root.value.lease.valid(),true);assert.equal(records.size,0);assert.equal(runs.size,0);assert.deepEqual(retired,['child']);
  retire(root);assert.equal(root.value.lease.valid(),true);
 });
+
+
+test('actual root validator overlaps first live check and readonly selection, then performs fresh final live check',async()=>{
+ let releaseLive!:(v:boolean)=>void,releaseTarget!:(v:unknown)=>void,liveCalls=0,selected=false;
+ const first=new Promise<boolean>(resolve=>releaseLive=resolve),target=new Promise(resolve=>releaseTarget=resolve);
+ const validate=new Function('session','live','locallyCurrent',`return async(child,signal)=>{${body}}`)({pin:{session_id:'root'}},async()=>++liveCalls===1?first:true,()=>true);
+ const child={accountRef:'account',value:{session:{pin:{session_id:'root'},bundle:{record_store_keys:['drafts']}},lease:{valid:()=>true},client:{select:async()=>{selected=true;return target;}}}};
+ const work=validate(child,new AbortController().signal);await new Promise(resolve=>setImmediate(resolve));
+ try{assert.equal(selected,true,'readonly selection must start while first live check is pending');assert.equal(liveCalls,1,'final authority check must wait for both inputs');}
+ finally{releaseLive(true);releaseTarget({account:{account_ref:'account'}});}
+ assert.equal(await work,true);assert.equal(liveCalls,2);
+});
+
+test('actual concurrent root validation stays closed on revocation, wrong account, scope, lease or abort',async()=>{
+ for(const mode of ['revoked','foreign','scope','lease','abort','selection_failure','authority_failure','final_denied']){
+  const controller=new AbortController();let current=true,valid=true,liveCalls=0,selectedSignal:AbortSignal|undefined;
+  const validate=new Function('session','live','locallyCurrent',`return async(child,signal)=>{${body}}`)({pin:{session_id:'root'}},async()=>{liveCalls++;if(mode==='authority_failure')throw Error('authority failed');return mode==='final_denied'?liveCalls===1:mode!=='revoked';},()=>current);
+  const child={accountRef:'account',value:{session:{pin:{session_id:'root'},bundle:{record_store_keys:['drafts']}},lease:{valid:()=>valid},client:{select:async(_store:string,signal:AbortSignal)=>{selectedSignal=signal;if(mode==='scope')current=false;if(mode==='lease')valid=false;if(mode==='abort')controller.abort();if(mode==='selection_failure')throw Error('selection failed');return {account:{account_ref:mode==='foreign'?'foreign':'account'}};}}}};
+  if(['abort','selection_failure','authority_failure'].includes(mode))await assert.rejects(validate(child,controller.signal));else assert.equal(await validate(child,controller.signal),false,mode);
+  assert.ok(selectedSignal?.aborted,'temporary concurrent work is cancelled when the validation turn ends');
+  assert.equal(liveCalls,mode==='final_denied'?2:1);
+ }
+});
