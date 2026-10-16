@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildDeftAppPackage } from '@deft/app-kit';
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
@@ -94,6 +95,47 @@ test('public production routes bind reviewed profile, real owner admission/PG se
     const { binding } = await call('/api/app-owner-connections/resources/activate', { ...resourceInput,
       expected_review_digest: resourceReview.review_digest, accept_host_policy: true }, tokens.member);
     entry = { ...entry, runtime_registration_id: binding.registration_id }; await writeConfig();
+    // Count real admission queries in this exact held authority transaction.
+    const { currentAppConnectionReadAuthority, retainedWebGuard } = await import('../src/lib/app-connection-session-authority.js');
+    const claims = await web.verifyWebAccess(tokens.member!);
+    const caller = { org_id: org, user_id: people.member!, sid: claims.sid, access_expires_at: claims.exp! * 1000 };
+    let admissionQueries = 0;
+    const readAuthority = (beforeFreshRegistry?: () => void) => db.transaction(async tx => {
+      let humanQueries = 0;
+      const counted = new Proxy(tx, { get(target, property, receiver) {
+        if (property !== 'select') { const value = Reflect.get(target, property, receiver); return typeof value === 'function' ? value.bind(target) : value; }
+        return (...args: Parameters<typeof tx.select>) => {
+          const query = tx.select(...args);
+          return new Proxy(query, { get(builder, key, queryReceiver) {
+            if (key === 'from') return (table: Parameters<typeof query.from>[0]) => {
+              if (table === s.appOwnerConnectionAdmissions) admissionQueries++;
+              if (table === s.users && ++humanQueries === 2) beforeFreshRegistry?.();
+              return query.from(table);
+            };
+            const value = Reflect.get(builder, key, queryReceiver); return typeof value === 'function' ? value.bind(builder) : value;
+          } });
+        };
+      } });
+      return currentAppConnectionReadAuthority(caller, { installation_id: installed.id, target_key: resourceInput.target_key }, retainedWebGuard(caller), 'none', counted);
+    });
+    const authority = await readAuthority();
+    assert.equal(authority.scope.resource_binding_id, binding.binding_id);
+    assert.equal(admissionQueries, 1, 'one owner admission query per held authority transaction');
+    // Change deployment bytes after the binding reader's locked admission
+    // check but before the connection reader loads its fresh registry.
+    for (const changed of [{ ...entry, endpoint: 'https://replacement-runtime.example.test/v1/connections' },
+      { ...entry, profile: { ...profile, authorization_origin: 'https://replacement-provider.example.test' } }]) {
+      await assert.rejects(readAuthority(() => writeFileSync(configPath, JSON.stringify({
+        schema_version: 'deft.app_connection_http_registrations.v1', entries: [changed] }), { mode: 0o600 })),
+        (error: unknown) => error instanceof Error && 'code' in error && error.code === 'APP_ACCESS_DENIED');
+      await writeConfig();
+    }
+    await db.update(s.orgMembers).set({ is_active: false }).where(and(eq(s.orgMembers.org_id, org), eq(s.orgMembers.user_id, people.member!)));
+    await assert.rejects(readAuthority());
+    await db.update(s.orgMembers).set({ is_active: true }).where(and(eq(s.orgMembers.org_id, org), eq(s.orgMembers.user_id, people.member!)));
+    await db.update(s.webSessions).set({ revoked_at: new Date() }).where(eq(s.webSessions.id, caller.sid));
+    await assert.rejects(readAuthority());
+    await db.update(s.webSessions).set({ revoked_at: null }).where(eq(s.webSessions.id, caller.sid));
     let providerCalls = 0, introspectionChecks = 0;
     globalThis.fetch = (async (url, options) => {
       assert.equal(url, entry.endpoint); assert.equal(options?.redirect, 'error');

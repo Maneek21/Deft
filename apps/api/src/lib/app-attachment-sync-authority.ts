@@ -24,6 +24,7 @@ type Reviewed = Awaited<ReturnType<typeof loadReviewedAttachmentSyncDescriptor>>
 
 export type LiveAttachmentSyncBindingAuthority = Readonly<Reviewed & {
   connection_profile_required: boolean;
+  owner_connection_admission?: Awaited<ReturnType<typeof assertOwnerConnectionRegistration>>;
   registration: Registration;
   binding: Binding;
   provider_snapshot: ProviderSnapshot;
@@ -203,6 +204,7 @@ async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   if (!checkedAt || !continuationIdentityOnly && appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=checkedAt.getTime()
     || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: continuationIdentityOnly||binding.consent_lifetime==='until_revoked' ? [] : [binding.consent_expires_at!] })) return null;
   return Object.freeze({ ...reviewed, registration, binding, provider_snapshot: providerSnapshot,
+    owner_connection_admission: ownerAdmission,
     connection_profile_required: ownerAdmission?.snapshot.connection_profile !== undefined,
     checked_at: checkedAt });
 }

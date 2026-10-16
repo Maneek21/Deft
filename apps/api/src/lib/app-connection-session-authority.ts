@@ -1,5 +1,4 @@
 import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
-import {assertOwnerConnectionRegistration} from './app-owner-connection-authority.js';
 import {selectAdmittedConnectionPolicy} from './app-connection-admitted-policy.js';
 import { and, eq } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
@@ -46,13 +45,19 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
     if (!current || current.binding.owner_user_id !== caller.user_id || current.binding.target_key !== nomination.target_key
       || !current.registration.owner_connection_admission_id || !appConsentExpiryValid(current.binding.consent_expires_at,current.binding.consent_lifetime??undefined)) throw denied();
     const manifest = parseAttachmentAppManifest(current.version.manifest);
-    const admission=await assertOwnerConnectionRegistration(tx,current.registration,{owner_user_id:caller.user_id,resource_key:current.binding.resource_key,lockedReviewed:current});
+    // The binding reader validated and share-locked this admission and its
+    // participants in this same transaction. Deployment configuration remains fresh.
+    const admission=current.owner_connection_admission;
+    if(!admission)throw denied();
     const policy=selectAdmittedConnectionPolicy(manifest.owner_connections??[],admission.policy,{resource_key:current.binding.resource_key,runtime_requirement_key:current.descriptor.runtime_requirement_key});
     if(!policy)throw denied();
     // The live reader validates the admin admission snapshot including the
     // profile digest. Deployment configuration is an additional current pin.
     const registry = await getAppConnectionSessionRegistry();
     const profile = registry.profile(caller.org_id, nomination.installation_id, policy, current.registration.operator_user_id);
+    if(admission.snapshot.connection_profile_digest!==connectionProfileDigest(profile)
+      ||admission.snapshot.connection_transport_digest!==registry.transportDigest(caller.org_id,nomination.installation_id,profile)
+      ||!isDeepStrictEqual(admission.snapshot.connection_profile,profile))throw denied();
     const scope: AppConnectionSessionScope = { org_id: caller.org_id, owner_user_id: caller.user_id,
       installation_id: current.installation.id, app_version_id: current.version.id, grant_snapshot_id: current.grant.id,
       package_digest: current.version.package_digest, grant_snapshot_digest: current.grant.snapshot_digest,
