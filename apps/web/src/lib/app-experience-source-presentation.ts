@@ -78,7 +78,7 @@ export function mountExperienceSourcePresentation(options:Options):(()=>void)&{a
   let remoteAction:((automatic?:boolean)=>Promise<void>)|undefined;
   if(presentation.images.some(image=>image.kind==='remote')){const button=document.createElement('button');button.type='button';button.className='ex-button-ghost';button.textContent='Load external images';button.setAttribute('aria-label','Load external images for this message');remoteAction=async(automatic=false)=>{if(!valid()||button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');await loadImages('remote',automatic);if(valid()){button.disabled=budgetExceeded;button.removeAttribute('aria-busy');if(presentation!.images.filter(image=>image.kind==='remote').every(image=>urls.has(image.image_ref))){button.remove();}else{button.textContent=budgetExceeded?'Image limit reached':'Retry external images';button.setAttribute('aria-label',budgetExceeded?'Image limit reached for this message':'Retry external images for this message');}}};button.onclick=()=>{automaticDenied=false;return remoteAction?.()??Promise.resolve();};controls.append(button);}
   await loadImages('cid');
-  if(valid()){
+  if(valid()&&remoteAction){
    if(options.automaticImages){try{const choice=await options.automaticImages(controller.signal);if((choice??presentation.external_images==='always')&&valid()){imageStatus.textContent='Loading external images…';await remoteAction?.(true);}}catch{if(valid())imageStatus.textContent='Your saved image choice is unavailable. External images remain blocked.';}}
    else if(presentation.external_images==='always')await remoteAction?.();
   }

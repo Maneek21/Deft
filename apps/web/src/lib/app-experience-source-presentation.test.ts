@@ -129,3 +129,10 @@ test('an unavailable saved preference never falls back to automatic images',asyn
  const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>{throw Error('unavailable');},readBinary:async()=>{reads++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}});
  try{await flush();assert.equal(reads,0);assert.ok(descendants(f.wrap).some(n=>n.textContent.includes('choice is unavailable')));}finally{f.mount();}
 });
+
+test('presentations without remote images skip automatic policy and never show remote loading',async()=>{
+ for(const images of [[],[{image_ref:'c'.repeat(64),kind:'cid' as const,index:0,alt:''}]]){
+  let choices=0,reads=0;const f=fixture({...p(images),external_images:'always'},undefined,()=>true,{automaticImages:async()=>{choices++;return true;},readBinary:async()=>{reads++;return {bytes:new Uint8Array([1]),media_type:'image/png'};}});
+  try{await flush();assert.equal(choices,0,'no remote image means no remote preference request');assert.equal(reads,images.length);assert.ok(!descendants(f.wrap).some(n=>/external images|saved image choice/i.test(n.textContent)));assert.equal(f.wrap.querySelector('.ex-safe-document')?.textContent,'Source text');}finally{f.mount();}
+ }
+});

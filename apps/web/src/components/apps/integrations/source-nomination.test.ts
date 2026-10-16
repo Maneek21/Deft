@@ -45,3 +45,10 @@ test('a cancelled source load releases its pending UI even when a shared read ig
  const controller=new AbortController(),states:string[]=[];const loader=createSourceNominationLoader({current:()=>true,signal:controller.signal,change:state=>states.push(state),load:()=>new Promise<void>(()=>{})});
  const pending=loader.run();controller.abort();await pending;assert.deepEqual(states,['pending']);loader.dispose();
 });
+
+import {AppDataRequestSchema} from '../../../../../../packages/app-kit/src/app-data';
+test('reader menu nominates only declared source fields through the actual strict data contract',async()=>{
+ const nomination={...parseSourceNomination(q())!,kind:'record_document',id:'mail_body',image_policy:'always'};let reads=0,selections=0;
+ const result=await openSourceNomination(nomination,{current:()=>true,storeKeys:['drafts'],resourceKeys:['inbox'],select:async()=>{selections++;return {account:{account_ref:nomination.account_ref}};},read:async input=>{AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:'00000000-0000-4000-8000-000000000002',operation:'resource_read_presentation',input});reads++;assert.deepEqual(Object.keys(input).sort(),['content_digest','record_id','resource_key','store_key']);return 'current presentation';}},new AbortController().signal);
+ assert.equal(result,'current presentation');assert.equal(reads,1);assert.equal(selections,2);
+});

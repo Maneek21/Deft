@@ -13,7 +13,7 @@ export async function openSourceNomination<T>(nomination:SourceNomination,ports:
  read:(ref:Omit<SourceNomination,'account_ref'>,signal:AbortSignal)=>Promise<T>},signal:AbortSignal){
  const check=()=>{signal.throwIfAborted();if(!ports.current()||!ports.storeKeys.includes(nomination.store_key)||!ports.resourceKeys.includes(nomination.resource_key))throw Error('Source account review required');};
  check();if((await ports.select(nomination.store_key,signal)).account.account_ref!==nomination.account_ref)throw Error('Source account review required');check();
- const {account_ref:unused,...ref}=nomination;void unused;const result=await ports.read(ref,signal);check();if((await ports.select(nomination.store_key,signal)).account.account_ref!==nomination.account_ref)throw Error('Source account changed');check();return result;
+ const ref={store_key:nomination.store_key,resource_key:nomination.resource_key,record_id:nomination.record_id,content_digest:nomination.content_digest};const result=await ports.read(ref,signal);check();if((await ports.select(nomination.store_key,signal)).account.account_ref!==nomination.account_ref)throw Error('Source account changed');check();return result;
 }
 
 /** Nomination is only a selector. Each candidate must be admitted by the current
