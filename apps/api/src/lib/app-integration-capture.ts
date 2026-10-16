@@ -25,6 +25,19 @@ export interface AppIntegrationCapturePorts<Tx> {
  evidence:AppIntegrationCaptureEvidence;extracted:AppIntegrationCaptureExtraction;prior:AppIntegrationCaptureThread|null}):Promise<{state:string;page_id?:string}>;
  failed(claim_id:string,caller:AppIntegrationSourceCaller,error:string):Promise<void>;
 }
+/** Recover only a unique whitespace-equivalent quote as verbatim source bytes.
+ * No case, punctuation or semantic matching; citations still use literal spans. */
+function groundedExcerpt(body:string,excerpt:string):string|null{
+ if(body.length>16000||excerpt.length<20||excerpt.length>1200)return null;
+ if(body.includes(excerpt))return excerpt;
+ const needle=excerpt.replace(/\s+/gu,' ').trim();if(!needle)return null;
+ let compact='';const offsets:number[]=[],space=/\s/u;
+ // Each source code unit is visited once; offsets keep the original whitespace.
+ for(let i=0;i<body.length;){const start=i;if(space.test(body[i]!)){while(i<body.length&&space.test(body[i]!))i++;compact+=' ';}else{compact+=body[i]!;i++;}offsets.push(start);}
+ const start=compact.indexOf(needle);if(start<0||compact.indexOf(needle,start+1)>=0)return null;
+ const quote=body.slice(offsets[start],offsets[start+needle.length-1]!+1);
+ return quote.length>=20&&quote.length<=1200&&body.includes(quote)?quote:null;
+}
 const denied=()=>new Error('APP_INTEGRATION_CAPTURE_CHANGED_OR_DENIED');
 export function createAppIntegrationCapture<Tx>(ports:AppIntegrationCapturePorts<Tx>){
  return {async process(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,revision:number,signal?:AbortSignal):Promise<{state:string;page_id?:string;reason?:string}>{
@@ -66,9 +79,11 @@ export function createAppIntegrationCapture<Tx>(ports:AppIntegrationCapturePorts
   if(prepared.state!=='ready')return {state:prepared.state};
   try{
    signal?.throwIfAborted();
-   const extracted=AppIntegrationCaptureExtractionSchema.parse(await ports.extract({org_id:caller.org_id,org_config:prepared.org_config,
+   const parsed=AppIntegrationCaptureExtractionSchema.parse(await ports.extract({org_id:caller.org_id,org_config:prepared.org_config,
     body:evidence.body,sender:evidence.sender??'Unknown sender',date:evidence.received_at??null,previous:prepared.prior?.content.slice(0,10000)??null}));
-   if(extracted.capture&&(!extracted.title.trim()||!extracted.content.trim()||extracted.excerpt.length<20||!evidence.body.includes(extracted.excerpt)))throw new Error('APP_INTEGRATION_CAPTURE_INVALID_EVIDENCE');
+   const quote=parsed.capture?groundedExcerpt(evidence.body,parsed.excerpt):parsed.excerpt;
+   const extracted={...parsed,excerpt:quote??parsed.excerpt};
+   if(extracted.capture&&(!extracted.title.trim()||!extracted.content.trim()||quote===null||extracted.excerpt.length<20||extracted.excerpt.length>1200||!evidence.body.includes(extracted.excerpt)))throw new Error('APP_INTEGRATION_CAPTURE_INVALID_EVIDENCE');
    // New exact public Runtime read after extraction, outside destination locks.
    const fresh=await ports.source.read(caller,target,'knowledge_capture',signal);
    return await ports.transaction(async tx=>{
