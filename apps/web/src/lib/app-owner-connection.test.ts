@@ -28,6 +28,20 @@ test('owner setup context is bounded and refuses owner/operator nomination or am
       attachment_policy: { ...attachment_policy, allowed_media_types: ['text/html'] } } } }] } ]) assert.throws(() => ownerConnectionContext(changed, installationId));
 });
 
+test('owner setup context accepts legacy and profile-backed policies but rejects incomplete or malformed profile bindings', () => {
+  const parsePolicy = (candidate: Record<string, unknown>) => ownerConnectionContext({ ...context,
+    policies: [{ ...context.policies[0], policy: candidate }] }, installationId)[0]!.policy;
+  assert.deepEqual(parsePolicy(policy), policy);
+  assert.deepEqual(parsePolicy({ ...policy, provider_profile_key: 'google_mail', runtime_requirement_key: 'sync_provider' }), policy);
+  for (const candidate of [
+    { ...policy, provider_profile_key: 'google_mail' },
+    { ...policy, runtime_requirement_key: 'sync_provider' },
+    { ...policy, provider_profile_key: 'Google Mail', runtime_requirement_key: 'sync_provider' },
+    { ...policy, provider_profile_key: 'google_mail', runtime_requirement_key: '__proto__' },
+    { ...policy, provider_profile_key: 'google_mail', runtime_requirement_key: 'sync_provider', operator_user_id: id(99) },
+  ]) assert.throws(() => parsePolicy(candidate));
+});
+
 test('member requests use only admitted resource/action references and refuse expired or unrelated bindings', () => {
   const selected = ownerConnectionContext(context, installationId)[0]!;
   const request = ownerResourceRequest(selected, now); assert.deepEqual(request, resource_request);

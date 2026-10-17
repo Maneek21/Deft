@@ -50,7 +50,11 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
   if (row.schema_version !== 'deft.owner_connection_context.v1' || row.installation_id !== installationId) fail();
   const policies = array(row.policies, 16).map(value => {
     const entry = object(value); keys(entry, 'policy,status,admission,bindings'); const policy = object(entry.policy);
-    keys(policy, 'key,resource_key,action_keys,max_consent_seconds','allow_until_revoked');if(policy.allow_until_revoked!==undefined&&policy.allow_until_revoked!==true)fail();
+    keys(policy, 'key,resource_key,action_keys,max_consent_seconds','allow_until_revoked,provider_profile_key,runtime_requirement_key');
+    if(policy.allow_until_revoked!==undefined&&policy.allow_until_revoked!==true)fail();
+    const profileKey=policy.provider_profile_key,runtimeRequirementKey=policy.runtime_requirement_key;
+    if((profileKey===undefined)!==(runtimeRequirementKey===undefined))fail();
+    if(profileKey!==undefined){key(profileKey);key(runtimeRequirementKey);}
     const actions = array(policy.action_keys, 16).map(key); if (actions.some((action, i) => i > 0 && action <= actions[i - 1]!)) fail();
     const selected = { key: key(policy.key), resource_key: key(policy.resource_key), action_keys: actions, max_consent_seconds: integer(policy.max_consent_seconds, 1, 90 * 86400),...(policy.allow_until_revoked===true?{allow_until_revoked:true as const}:{}) };
     if (entry.status !== 'admitted' && entry.status !== 'deployment_review_required') fail();
