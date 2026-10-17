@@ -432,7 +432,7 @@ export function createExperienceBridge(input: Readonly<{
     if ((operation === 'private_state' && (!id(key) || !stateKeys.has(key)))
       ||operation==='app_data'&&(!id(key)||!storeKeys.has(key)||!record(value.input)
         ||!['record_list','record_read','record_create','record_archive','resource_list','resource_refresh','connection_metadata','request_status','account_catalog'].includes(String(value.input.operation)))
-      ||operation==='app_data'&&record(value.input)&&value.input.target_key!==undefined&&(!['resource_list','record_list'].includes(String(value.input.operation))||typeof value.input.target_key!=='string'||! /^[a-z][a-z0-9_]{0,47}$/.test(value.input.target_key))
+      ||operation==='app_data'&&record(value.input)&&value.input.target_key!==undefined&&(!['resource_list','record_list','resource_refresh'].includes(String(value.input.operation))||typeof value.input.target_key!=='string'||! /^[a-z][a-z0-9_]{0,47}$/.test(value.input.target_key))
       || ((operation === 'resource' || operation === 'open_resource') && (!id(key) || !resourceKeys.has(key)))
       || (operation === 'action' && (!id(key) || !actionKeys.has(key)))
       || (operation === 'navigate' && (!id(key) || !navigationKeys.has(key)))

@@ -2,7 +2,7 @@
 import {createExperienceMenuHost} from './experience-menu';
 import {appConsentDeadline} from '../../../../../packages/app-kit/src/consent-lifetime';
 
-import {createExperienceAccountRouting,resolveExperienceActionAccount,type AccountReference,type AccountChild} from '../../lib/app-experience-account-routing';
+import {createExperienceAccountRouting,ExperienceAccountVisibilityEndedError,resolveExperienceActionAccount,type AccountReference,type AccountChild} from '../../lib/app-experience-account-routing';
 import {createExperienceRecordMirrorHost} from '../../lib/app-experience-record-mirror';
 import {createExperienceLocalJobHost} from '../../lib/app-experience-local-jobs';
 import {parseSourceNomination,openSourceNomination,resolveSourceNominationAccount,createSourceNominationNavigation,sourceNominationQuery} from './integrations/source-nomination';
@@ -820,18 +820,18 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
           const intent=input as Record<string,unknown>;
           if(intent.operation==='account_catalog'){if(Object.keys(intent).sort().join(',')!=='input,operation')throw Error('Account catalog intent denied');const rows=await accounts.catalog(signal);return {targets:rows,selected_target_key:session.resource_target_key??resourceTarget};}
           if(Object.keys(intent).some(field=>!['input','operation','target_key'].includes(field)))throw Error('App data intent denied');const {target_key:requestedTarget,...releasedIntent}=intent;
-          if(requestedTarget!==undefined&&(typeof requestedTarget!=='string'||!['resource_list','record_list'].includes(String(intent.operation))))throw Error('Only readonly account nomination is allowed');const request=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:crypto.randomUUID(),...releasedIntent});
+          if(requestedTarget!==undefined&&(typeof requestedTarget!=='string'||!['resource_list','record_list','resource_refresh'].includes(String(intent.operation))))throw Error('Only readonly account nomination is allowed');const request=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:crypto.randomUUID(),...releasedIntent});
           if(request.input.store_key!==key||!['record_list','record_read','record_create','record_archive','resource_list','resource_refresh','connection_metadata','request_status'].includes(request.operation)
             ||request.input.resource_key!==undefined&&!session.bundle.resource_keys.includes(String(request.input.resource_key)))throw Error('App data operation denied');
           if(request.operation==='connection_metadata'&&request.input.seed!==undefined)throw Error('Trusted seed metadata only');
           const refs=request.input.source_refs as readonly AccountReference[]|undefined,recordOwner=typeof request.input.record_id==='string'?createdRecords.get(request.input.record_id):undefined;
           let owner:AccountChild<ChildValue>,result:AppDataResult;
-          if(requestedTarget!==undefined||['resource_list','record_list'].includes(request.operation)&&!refs?.length&&!recordOwner&&!request.input.anchor_record_id){
+          if(requestedTarget!==undefined||['resource_list','record_list','resource_refresh'].includes(request.operation)&&!refs?.length&&!recordOwner&&!request.input.anchor_record_id){
             const listTarget=(requestedTarget as string|undefined)??session.resource_target_key??resourceTarget;
             try{({owner,result}=await accounts.listTarget(listTarget,signal,child=>child.value.client.request(key,request.operation,request.input,signal,request.request_id)));}
-            catch(error){if(error instanceof Error&&error.message==='Account visibility ended')return {outcome:'not_found',items:[],account_state:'denied'};throw error;}
+            catch(error){if(error instanceof ExperienceAccountVisibilityEndedError)return {outcome:'not_found',items:[],account_state:'denied'};throw error;}
           }else{
-            try{owner=refs?.length?await sourceChild(refs,signal):recordOwner?await accounts.child(recordOwner.targetKey,signal):request.input.anchor_record_id?await sourceChild([accounts.reference(String(request.input.resource_key),String(request.input.anchor_record_id))],signal):await accounts.child(session.resource_target_key??resourceTarget,signal);}catch(error){if(['resource_list','record_list'].includes(request.operation)&&error instanceof Error&&error.message==='Account visibility ended')return {outcome:'not_found',items:[],account_state:'denied'};throw error;}
+            try{owner=refs?.length?await sourceChild(refs,signal):recordOwner?await accounts.child(recordOwner.targetKey,signal):request.input.anchor_record_id?await sourceChild([accounts.reference(String(request.input.resource_key),String(request.input.anchor_record_id))],signal):await accounts.child(session.resource_target_key??resourceTarget,signal);}catch(error){if(['resource_list','record_list'].includes(request.operation)&&error instanceof ExperienceAccountVisibilityEndedError)return {outcome:'not_found',items:[],account_state:'denied'};throw error;}
             result=await accounts.execute(owner,signal,()=>owner.value.client.request(key,request.operation,request.input,signal,request.request_id));
           }
           if(owner&&request.operation==='resource_list'&&result.items)accounts.retain(owner,result.items.map(item=>({resource_key:String(request.input.resource_key),record_id:item.record_id,content_digest:item.content_digest})));

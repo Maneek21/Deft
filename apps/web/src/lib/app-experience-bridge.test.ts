@@ -517,3 +517,12 @@ test('actual SDK account catalog and readonly target nominations reach the bridg
 test('actual bridge denies target nominations on record writes before dispatch',async()=>{const port=new FakePort();let calls=0;const bridge=createExperienceBridge({port,pin,resourceKeys:[],storeKeys:['drafts'],actionKeys:[],broker:{isLive:()=>true,appData:async()=>{calls++;return {}; }},onView:()=>{}});port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input:{operation:'record_create',target_key:'secondary',input:{store_key:'drafts',record_id:'11111111-1111-4111-8111-111111111111',value:{}}}}));await delay();assert.equal(bridge.active,false);assert.equal(calls,0);});
 
 test('generic original Run inspection dispatch is bounded and passes only its UUID', async()=>{const host=new FakePort(),author=new FakePort();host.postMessage=value=>author.receive(structuredClone(value));author.postMessage=value=>host.receive(structuredClone(value));let calls=0;const bridge=createExperienceBridge({port:host,pin,resourceKeys:[],actionKeys:[],readTimeoutMs:20,broker:{isLive:()=>true,runInspect:async(_pin,input,signal)=>{calls++;assert.deepEqual(input,{run_id:'original_run'});return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted')),{once:true}));}},onView:()=>{}});const sdk=createDeftExperienceSdk(author,pin.session_id);try{await assert.rejects(sdk.request('run_inspect',undefined,{run_id:'original_run'}));assert.equal(calls,1);}finally{sdk.close();bridge.revoke();}});
+
+
+test('actual bridge admits a nominated resource refresh without widening record writes',async()=>{
+ const port=new FakePort(),calls:unknown[]=[];
+ const bridge=createExperienceBridge({port,pin,resourceKeys:['inbox'],storeKeys:['drafts'],actionKeys:[],broker:{isLive:()=>true,appData:async(_pin,_key,input)=>{calls.push(input);return {outcome:'completed'};}},onView:()=>{}});
+ const input={operation:'resource_refresh',target_key:'secondary',input:{store_key:'drafts',resource_key:'inbox'}};
+ port.receive(message(1,{kind:'request',request_id:'request_1',operation:'app_data',key:'drafts',input}));
+ await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(calls,[input]);assert.equal(bridge.active,true);bridge.revoke();
+});
