@@ -11,5 +11,7 @@ export function appDataConnectionActionSelection(operation?:string):'none'|undef
  * independently check the selected action before/after preparation and release.
  * Keep the outer record-operation selection unchanged. */
 export function appDataRuntimeConnectionActionSelection(operation:string):'none'|undefined {
- return operation==='prepare_action'||operation==='read_prepared'?'none':appDataConnectionActionSelection(operation);
+ // File writes and their receipts are governed by current private-store consent;
+ // this callback returns no action authority. Outer operation checks stay intact.
+ return ['prepare_action','read_prepared','file_upload','file_detach','file_copy','request_status'].includes(operation)?'none':appDataConnectionActionSelection(operation);
 }

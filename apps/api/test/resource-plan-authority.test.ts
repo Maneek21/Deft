@@ -64,4 +64,10 @@ test('immutable record callback introspection omits unrelated actions without ch
  for(const op of ['prepare_action','read_prepared']){assert.equal(appDataRuntimeConnectionActionSelection(op),'none');assert.equal(appDataConnectionActionSelection(op),undefined);}
  for(const op of ['prepared_action_commit','prepared_action_restore','unrecognized'])assert.equal(appDataRuntimeConnectionActionSelection(op),undefined);
 });
+test('private file callbacks retain data authority without recapturing unrelated action grants',()=>{
+ for(const op of ['file_upload','file_detach','file_copy','request_status']){
+  assert.equal(appDataRuntimeConnectionActionSelection(op),'none');
+  assert.equal(appDataConnectionActionSelection(op),undefined);
+ }
+});
 test('inner resource preparation uses data-only expiry preflight',async()=>{const selections:unknown[]=[];const authority={expires_at:Date.now()+60000};class Probe extends AppDataService {override async current(...args:any[]):Promise<any>{selections.push(appDataConnectionActionSelection(args[3]));return authority;}override async invoke():Promise<any>{return {result:{outcome:'completed',prepared_resource:{expires_at:new Date(Date.now()+60000).toISOString()}},authority};}}await new Probe(caller,(async()=>{}) as any).prepareResource(session,{store_key:'drafts'});assert.deepEqual(selections,['none']);});
