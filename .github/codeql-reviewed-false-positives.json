@@ -1,7 +1,7 @@
 {
   "schema_version": "deft.codeql_false_positives.v1",
-  "review_source_commit": "477a2141f9bfb7d017c49e46d6088d9f2a1ee696",
-  "review_original_sarif_sha256": "d067fab997fffc61966ece483347c01319fd1489d156d4194c9a0b3046ca53cf",
+  "review_source_commit": "f3f897514a5ee6a25b956f0f953c894c8fd275c2",
+  "review_original_sarif_sha256": "74fca9d731caa803a9b62d44951053656b5eb7a9202823acbd908dea9a09f6ea",
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
     "apps/api/src/lib/agent-actions.ts": "6c8d739c34939f7c0ca38771a4dafa7328f7dfd3ac15f809c1d3c49bc20f136c",
@@ -14,8 +14,8 @@
     "examples/apps/email/providers/native-connection-retained.mjs": "cf64c2a178f6589b9760f3055f14d0d51e9bbee6e81524a5971182e09b50773a",
     "examples/apps/email/providers/oauth-contract.mjs": "c5b15eaf82a258f6ea13d78d03a0debb7bd21e66341bf3bd8e96db53b3e37192",
     "examples/apps/email/providers/oauth-provider.mjs": "8144e4db2cf56f9ff2ffa41efcb2a811497778db8d30354ae9c148cc092e85b7",
-    "apps/web/src/components/apps/installed-app-experience.tsx": "675fc25b44edb3b2eaddd2f3b96af70ea1e8ca9ad9f0d63d63d6df0a347bb35e",
-    "apps/web/src/lib/app-experience-bridge.ts": "eb11c51d7db02fd7d8740d3271027c1ae3bb005cdc00c2813e69b190b1f1e8ee",
+    "apps/web/src/components/apps/installed-app-experience.tsx": "2fd09bd25069d824acf7b9cb5b4f57bccc52632fb84d6e8174d491f375a97078",
+    "apps/web/src/lib/app-experience-bridge.ts": "9fcb307f4b3054e1a5ebba5ec05a02aefc28e020a4b1224c67a023c3838561ef",
     "apps/web/src/lib/app-experience-lease.ts": "1fd793057125771dc4b5efc311e26287f38935e301af689a090bc922706ee7d0",
     "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",
     "apps/web/src/app/app-experience-bootstrap/route.ts": "dbc44b388b0078e9c312d5adc92f5861fac4e10b7ca381e5b5257b1bc4f23077",
@@ -189,7 +189,7 @@
         "apps/web/src/app/app-experience-bootstrap.js/route.ts",
         "apps/web/next.config.ts"
       ],
-      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged."
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes."
     },
     {
       "id": "FP-013",
@@ -210,7 +210,7 @@
         "apps/web/src/app/app-experience-bootstrap.js/route.ts",
         "apps/web/next.config.ts"
       ],
-      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged."
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes."
     },
     {
       "id": "FP-014",
@@ -231,7 +231,7 @@
         "apps/web/src/app/app-experience-bootstrap.js/route.ts",
         "apps/web/next.config.ts"
       ],
-      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged."
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes."
     },
     {
       "id": "FP-015",
