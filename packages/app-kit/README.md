@@ -1,8 +1,16 @@
 # `@deft/app-kit`
 
+The alpha.35 candidate adds explicit persistent permission and retains alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. The historical App1.9.0-preview.5 / Runtime0.4.0-preview.3 proof uses alpha.33; current external Email review remains in [Email PR1](https://github.com/Maneek21/deft-email/pull/1). Existing sealed alpha.30/alpha.32 packages and their exact proofs remain historical inputs.
+
+Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
+
+A record store may declare `supplemental_effects` with a closed bounded `RuntimeObjectSchema`. `parseAppPreparedEffectDetails` checks declared detail fields; the Host also verifies the canonical plan digest, account, action binding, custody generation and exact prepared input. `deft.app_run_inspection_result.v2` carries generic primary/effect outcomes and immutable receipt pins, with automatic retry forbidden. Old sent-copy contracts remain for historical metadata, not the new execution path.
+
+Authors build against the packed package without a Deft checkout. Existing programmatic protocol 7 packaging APIs and public sideload review remain the install path; this change adds no CLI or implicit activation. The candidate requires a compatible Host implementation, including database grant validation, and fresh installation evidence before independence acceptance. Schema 118 corrected the historical `supplemental_effects` activation refusal and accepted the preceding App preview.3. Current exact-head Host/Email checks, complete live acceptance and fresh independent installation remain pending. Sealed Kit33 archives preserve their original README and producer identity; this repository guidance does not rewrite those bytes.
+
 Portable, deterministic authoring and packaging contracts for declarative Deft
 Apps. The package includes the `deft` CLI, strict App Protocol v0, v1, and v2
-validators, requested-authority projection helpers, developer-host
+validators plus programmatic Protocol 7 packaging, requested-authority projection helpers, developer-host
 compatibility helpers, frozen sandbox-email conformance vectors, and a
 non-executable bounded-automation simulator.
 
@@ -11,6 +19,14 @@ static Module validity using the same pure semantic validator as the host.
 Installation compatibility, required setup, authorization, effective grants,
 tenant isolation, dependency and connector selection, activation, and execution
 remain host responsibilities.
+
+Alpha.35 aligns the packed JavaScript with the reviewed source, including existing finite ISO-offset compatibility. The preserved alpha.34 candidate is historical; its packed helper had not incorporated that source correction.
+
+## Explicit persistent permission (alpha.35 candidate)
+
+A signed owner policy may opt in with `allow_until_revoked: true`. An existing connected account can then receive a fresh consent-continuation review with `consent_lifetime: 'until_revoked'` and `consent_expires_at: null`. Initial account enrollment remains finite. Data and observation grants use the same explicit mode with `expires_at: null`; null without the mode, or the mode with a finite deadline, is invalid. Existing finite grants omit the mode and retain their original bytes and limits.
+
+Persistent permission does not make requests indefinite: continuation reviews last two minutes, data/observation reviews five minutes, and technical channel leases remain finite (at most fifteen minutes). The existing credential can renew only while its Host lease and current account, installation, custody and human membership remain valid. Revocation still denies subsequent use. `appConsentDeadline`, `appConsentIsCurrent` and `appConsentWithin` validate these pairs; only explicit mode plus null represents a persistent durable deadline. Exact-message Send review remains separate. Alpha.35 persistent grants require a compatible Host with the additive consent migration and a Runtime that understands explicit lifetimes; alpha.33 archives remain unchanged. Contract tests do not establish live provider acceptance.
 
 ## Module validation
 
@@ -28,7 +44,7 @@ const result = validateDeftModuleManifest(moduleManifest, {
 if (!result.success) console.error(result.issues);
 ```
 
-The published package contains a build-time copy of the authoritative pure
+The packed package contains a build-time copy of the authoritative pure
 contract from `@deft/shared`; it has no runtime workspace link or private host
 import. Static validity does not imply that a particular host supports the App,
 that required dependencies are installed, or that a caller has permission to
@@ -36,7 +52,7 @@ install or operate it.
 
 ## Install the packed kit
 
-From a Deft checkout, create the exact package artifact:
+Authors install the reviewed packed artifact; no Deft checkout is required. SDK maintainers can optionally rebuild it from the complete corresponding source:
 
 ```sh
 pnpm --dir packages/app-kit pack --pack-destination /absolute/path/to/artifacts
@@ -49,23 +65,62 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.6.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.35.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This checkout contains the unreleased `0.1.0-alpha.6` contract. Use its exact
-packed artifact with a host advertising that version; published preview.15
-uses `0.1.0-alpha.2`. A version identifies a released contract: do not distribute
-changed contracts under an existing version. Preserve the supplied artifact and
-the consumer lockfile for reproducible installs instead of repacking a different
-checkout under the same package version.
+This review candidate is `0.1.0-alpha.38`. Package metadata,
+`DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
+retains connection v2 sessions and independent action consents, reviewed
+same-account upgrade/reattachment, consent continuation and credential repair,
+resource data/content contracts, attachments, safe compose HTML, and generic
+source/Task integration. These are contracts; a compatible Host must advertise
+and authorize the corresponding operations.
 
-The matching host `0.3.0-preview.16` is a release preparation candidate;
-publication is pending. No npm package publication is claimed by these pack
-instructions. Email under `examples/apps/email` is a WIP reference example,
-with separate operator setup and validation limits. See
-[release boundaries](../../docs/app-release-boundaries.md).
+`sdk.refreshDataResource(storeKey, resourceKey, targetKey?)` optionally nominates
+one currently admitted account, matching resource lists. Omitting the target
+keeps the selected-account behavior. The Host must support targeted refresh and
+revalidate the account at dispatch and disclosure; a target key grants no access
+and cannot route record writes or provider actions.
+
+### Historical recovery artifacts
+
+The matching historical external Email review is
+[deft-email PR #1](https://github.com/Maneek21/deft-email/pull/1). Its
+[historical setup instructions](https://github.com/Maneek21/deft-email/blob/4c33dca127f799ff43a318625319808266799366/docs/setup.md)
+retain the exact frozen consumer proof.
+The frozen Email browser package `1.8.0-preview.1` uses **alpha.30**, while its
+independent Runtime `0.3.1-e5.9` uses **alpha.32**. Do not replace the browser
+Kit or regenerate its accepted App package merely to make both versions equal.
+
+[Historical recovery Email setup](https://github.com/Maneek21/deft-email/blob/015e60ae0fd500ab3bf5f8df4140a93572d65671/docs/setup.md)
+is pinned to the reviewed recovery source: App `1.8.0-preview.2` still uses
+**alpha.30**; Runtime `0.3.1-e5.11`, including the Refresh UUID fix, still uses
+**alpha.32**. This updates the consumer pointer, not the SDK matrix or frozen
+artifacts; Host/fresh-install acceptance remains a separate gate.
+
+The recorded alpha.32 tarball SHA256 is
+`44a4419d6f40320650f20f89d6a99ee3ee0631e613843439fc349849f5a35ddb`;
+retain its hash and the external consumer lockfile. Those recovery documentation
+updates did not change the SDK executable; rebuilding today's package does not reproduce the old
+README bytes and must not overwrite that frozen archive.
+
+The matching Host review follows this Author Kit PR in the Deft review stack.
+The tested Host image metadata is `0.3.0-preview.16`, while database schema and
+runtime readiness report `0.3.0-preview.117`; those versions are distinct.
+Public `master` and a Kit install alone do not provide the required Host gates,
+owner admission/resource/action reviews, operator registry, keyring, or OAuth
+connection authority. Check the host's public developer compatibility before
+staging. New accounts use ordinary public connection begin/callback; existing
+account continuity uses the separately reviewed current-authority flow.
+
+Packing includes repository `LICENSE` and `NOTICE`; the package remains
+`AGPL-3.0-only`. No npm publication, tag, release, merge or automatic merge is
+part of this review. Historical package archives remain unchanged. Alpha.8 and
+alpha.9 are not advertised because their recorded compatibility identity was
+not reconciled; use the exported compatibility list rather than assuming
+all lower numbers are supported.
 
 ## Browser Experience SDK
 
@@ -161,13 +216,9 @@ Personal MCP connections act with their user's access and explicit scopes;
 the Module's `agent_access` policy controls Defty and agent employees. Linked
 native tasks retain their own visibility rules.
 
-Connected Apps currently request the closed `sandbox_email_send` interface.
-Operators select a compatible provider and grant authority in Deft. An author
-cannot introduce a new executable interface merely by naming an MCP tool.
-Supporting another capability requires a host contract implementation and
-conformance checks. Sandbox acceptance does not establish message delivery.
+The protocol 1/2 connected templates and `sandbox_email_send` examples below retain frozen parsing/proof and historical-reader compatibility. Current Host policy rejects new legacy connected admission; the following install table describes the historical Host, not a current onboarding guarantee. They are not the current independent Email onboarding path and do not restore the built-in mailbox product. Current independent Email uses protocol 7 declarations, external Runtime custody and public stage/review/activation. Provider behavior belongs to the App Runtime; naming a capability or MCP tool grants no authority. Historical sandbox acceptance never established message delivery.
 
-## Authoring loop
+## Historical CLI authoring loop
 
 ```sh
 # Protocol v0; omitting --template remains the byte-identical default.
@@ -287,4 +338,40 @@ Scalar string contracts may declare `minLength`, `format: 'email'`, `title`, and
 remain inspectable in the trusted form. A fresh successful confirmation includes
 `submitted_input`, the exact authorized scalar values, for accurate app history.
 Recovered Run lookups may omit it; a mutable draft is not evidence of the submitted
-content. These additions require the matching alpha.7 host and Kit candidate.
+content. These additions require a host supporting the alpha.7-era contract or
+a host advertising the matching packed contract.
+
+### Generic menus (`menu.v1`, Kit alpha36)
+
+Declare `menu.v1` in the Experience renderer v2 capabilities and the emitted view.
+Older Hosts reject the required capability before mounting; deploy a compatible
+Host before upgrading the App. Existing alpha35 Apps remain supported.
+
+```ts
+import { createDeftMenuNode } from '@deft/app-kit/experience';
+const menu = createDeftMenuNode({
+  id: 'document_actions', label: 'Document actions', icon: 'more',
+  items: [
+    { id: 'archive_document', label: 'Archive', icon: 'archive' },
+    { id: 'delete_document', label: 'Delete', icon: 'trash', danger: true },
+  ],
+}, ['menu.v1']);
+```
+
+Menus contain 1–20 flat items. All menu and item IDs must be unique across the
+view, navigation and preferences; items count toward the existing node budget.
+Labels are nonempty and at most 128 characters. Icons are closed symbolic names,
+not author SVG or URLs. Parent or item `disabled` prevents selection; `danger`
+is visual styling only. Keyboard shortcuts may target the visible menu trigger,
+not hidden items; the open menu owns arrow-key navigation. Enabled items emit the same `{kind:'click',node_id}`
+event as buttons. They grant no access and bypass no action review. A printable
+document may use an item ID as its existing `print_control_id`; printing stays
+with the Host and does not emit a Worker click. The shared Host menu supplies
+keyboard navigation, dismissal, focus return and the mobile sheet. Menus are
+currently available in the main view, not the separate preferences surface.
+### Reviewed Tasks from an App source
+
+A menu item may nominate its rendered source document for the trusted Host Task form. The Host resolves that document's governed account and exact record reference; the App cannot substitute a destination API call or grant itself source access. Users choose a project, edit the title and description, and choose an assignee, creation status, priority, and due date in the normal Deft Task form before reviewing the destination audience.
+
+The destination review/commit input accepts optional `task_details` only with `destination.kind: 'task'`: `description` (up to 20,000 characters), `status` (`backlog`, `todo`, `in_progress`, or `in_review`), `priority` (`p0`–`p3`), nullable `assignee_id` (UUID), and `due_date` (`YYYY-MM-DD`). Exact details participate in both review and request digests. The Host rechecks project/current assignee membership and source access in the transaction; the native Task keeps an access-controlled original-source link. An unknown create result is recovered with the original request ID, never submitted as a second Task.
+Menu items may also include `integration: { kind: 'task' | 'knowledge', document_id }`, where `document_id` names a `record_document` in the same current view. The Host requires that document's resolved governed record, retains its account/source identity, and opens the focused native review. The author supplies no URL, body, or authority and receives no Worker click for this item; nomination itself performs no native write. Ordinary click and Print items retain their existing behavior. Missing, plain-document, unknown, extra-field, and ambiguous Print/integration links are rejected.

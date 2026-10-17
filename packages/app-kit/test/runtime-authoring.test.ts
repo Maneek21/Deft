@@ -6,6 +6,15 @@ import { buildDeftAppPackage, parseDeftAppManifest, verifyDeftAppPackageJson,
 const object = { type: 'object' as const, properties: { shipment_id: { type: 'string' as const, maxLength: 120 } },
   required: ['shipment_id'], additionalProperties: false as const };
 
+test('single-line fields reject header injection and honor declared subject limits', () => {
+  const contract = { type: 'object', properties: { subject: { type: 'string', maxLength: 200, minLength: 1, format: 'single_line' } },
+    required: ['subject'], additionalProperties: false };
+  for (const subject of ['', 'x'.repeat(201), 'x\r\nBcc: injected@example.test', 'x\0y']) {
+    assert.throws(() => parseRuntimeObjectInput(contract as never, { subject }));
+  }
+  assert.deepEqual(parseRuntimeObjectInput(contract as never, { subject: 'x'.repeat(200) }), { subject: 'x'.repeat(200) });
+});
+
 test('declared email format rejects invalid recipients before action admission', () => {
   const contract = { type:'object', properties:{ destination:{type:'string',maxLength:200,minLength:1,format:'email',title:'Recipient'},
     reference:{type:'string',maxLength:200,readOnly:true,title:'Source reference'} }, required:['destination'],additionalProperties:false };

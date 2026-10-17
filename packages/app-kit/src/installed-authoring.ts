@@ -5,7 +5,7 @@ import { RuntimeAuthoringShape, RuntimeAuthoringSchema } from './runtime-authori
 const key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/)
   .refine((value) => !['constructor', 'prototype'].includes(value));
 export const PUBLIC_AVAILABILITY_SCALAR_TYPES = Object.freeze(['text', 'number', 'boolean', 'date', 'datetime', 'single_select']);
-export const InstalledExperienceSchema = DeftExperienceReferenceSchema.extend({
+export const InstalledExperienceSchema = DeftExperienceReferenceSchema.safeExtend({
   key, label: z.string().min(1).max(80).regex(/^[^\u0000-\u001f\u007f<>]+$/),
 });
 export const PublicAvailabilityPolicySchema = z.strictObject({

@@ -118,7 +118,7 @@ Modules add domain records, relationships, and native views. Apps package Module
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 
-See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for the authoring contract, native UI conventions, permissions and current execution limits.
+See [Deft, App Kit and domain App boundaries](docs/app-boundaries.md) for the authoring contract, native UI conventions, permissions and current execution limits. The review candidate additionally exposes generic Protocol 7 trusted forms, external Runtime and source contracts through packed Kit alpha.33; use the [connected App author guide](docs/connected-app-author-guide.md), not the published preview.15 or historical Protocol 1/2 tutorial, for external Email. Its compatible database contract and installed acceptance remain pending.
 
 ## Product surfaces
 

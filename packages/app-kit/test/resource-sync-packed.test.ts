@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { seedPackedConsumerLock } from './fixtures/packed-consumer-lock.js';
 
 const packageRoot = resolve(import.meta.dirname, '..');
 const repositoryRoot = resolve(packageRoot, '..', '..');
@@ -35,7 +36,9 @@ test('packed experimental sync subpath resolves from an offline external consume
           '@deft/app-kit': `file:${resolve(artifacts, archives[0]!).replace(/\\/gu, '/')}`,
         },
       }), 'utf8');
-      runPnpm(['--dir', consumer, 'install', '--ignore-workspace', '--offline']);
+      await seedPackedConsumerLock({ packageRoot, consumerDir: consumer,
+        archive: resolve(artifacts, archives[0]!) });
+      runPnpm(['--dir', consumer, 'install', '--ignore-workspace', '--offline', '--frozen-lockfile']);
       const installed = await realpath(resolve(consumer, 'node_modules', '@deft', 'app-kit'));
       assert.equal(installed.startsWith(await realpath(consumer)), true);
       const metadata = JSON.parse(await readFile(resolve(installed, 'package.json'), 'utf8')) as {
