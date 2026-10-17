@@ -10,6 +10,15 @@ class Port {
   close() { this.closed = true; }
   receive(value: unknown) { this.onmessage?.({ data:value } as MessageEvent); }
 }
+test('SDK refresh optionally nominates one account while preserving the default request',async()=>{
+ const port=new Port(),sdk=createDeftExperienceSdk(port,'session_12345678');
+ for(const [index,target]of [undefined,'secondary'].entries()){
+  const pending=sdk.refreshDataResource('drafts','inbox',target);
+  assert.deepEqual((port.sent[index] as {input:unknown}).input,{operation:'resource_refresh',input:{store_key:'drafts',resource_key:'inbox'},...(target===undefined?{}:{target_key:target})});
+  port.receive({version:'deft.experience_bridge.v1',kind:'response',session_id:'session_12345678',request_id:`request_${index+1}`,ok:true,output:{outcome:'completed'}});await pending;
+ }
+ assert.throws(()=>sdk.refreshDataResource('drafts','inbox','foreign/account'));sdk.close();
+});
 test('SDK named triage options and typed search nominate only the exact reviewed resource',async()=>{
  const port=new Port(),sdk=createDeftExperienceSdk(port,'session_12345678'),id='00000000-0000-4000-8000-000000000001';
  const output={schema_version:'deft.experience_triage_options.v1',account_id:'a',provider:'gmail',destinations:[{id:'INBOX',label:'Inbox',kind:'folder'}],labels:[{id:'Label_1',label:'Review queue'}],complete:true,labels_supported:true};

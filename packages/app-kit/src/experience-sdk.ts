@@ -300,8 +300,8 @@ export function createDeftExperienceSdk(port: ExperienceSdkPort, sessionId: stri
     listDataResources(storeKey:string,resource:string,cursor:string|null=null,query?:string,targetKey?:string):Promise<AppDataResult> {
       resourceKey(storeKey);resourceKey(resource);return request('app_data',storeKey,{operation:'resource_list',input:{store_key:storeKey,resource_key:resource,cursor,limit:10,...(query===undefined?{}:{query})},...(targetKey===undefined?{}:{target_key:(resourceKey(targetKey),targetKey)})}) as Promise<AppDataResult>;
     },
-    refreshDataResource(storeKey:string,resource:string):Promise<AppDataResult> {
-      resourceKey(storeKey);resourceKey(resource);return request('app_data',storeKey,{operation:'resource_refresh',input:{store_key:storeKey,resource_key:resource}}) as Promise<AppDataResult>;
+    refreshDataResource(storeKey:string,resource:string,targetKey?:string):Promise<AppDataResult> {
+      resourceKey(storeKey);resourceKey(resource);return request('app_data',storeKey,{operation:'resource_refresh',input:{store_key:storeKey,resource_key:resource},...(targetKey===undefined?{}:{target_key:(resourceKey(targetKey),targetKey)})}) as Promise<AppDataResult>;
     },
     listPrivateState(key: string): Promise<ExperiencePrivateStateList> {
       resourceKey(key);
