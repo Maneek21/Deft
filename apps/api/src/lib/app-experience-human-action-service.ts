@@ -42,7 +42,7 @@ export type HumanActionSourceRecord = Readonly<{ record_id: string; resource_key
 export interface HumanActionAuthorityPort {
   withHumanAction<T>(caller: ExperienceCaller, sessionId: string, actionKey: string,
     use: (tx: AppRunTransaction, authority: HumanActionAuthority,
-      finalGuard: (tx: AppRunTransaction, additionalFinalCheck?: () => void) => Promise<void>) => Promise<T>, signal?: AbortSignal, draftStateKey?: string, suppliedTransaction?: AppRunTransaction, transactionPurpose?: 'human_action_confirmation'): Promise<T>;
+      finalGuard: (tx: AppRunTransaction, additionalFinalCheck?: () => void) => Promise<void>) => Promise<T>, signal?: AbortSignal, draftStateKey?: string, suppliedTransaction?: AppRunTransaction, transactionPurpose?: 'human_action_preparation' | 'human_action_confirmation'): Promise<T>;
 }
 
 /** This service is reachable only from authenticated host HTTP, never a Worker operation. */
@@ -205,7 +205,7 @@ export class AppExperienceHumanActionService {
         contract_digest: capture.action.contract_digest, runtime_binding_id: authority.runtime_binding_id,
         app_version_id: authority.session.app_version_id, grant_snapshot_id: authority.session.grant_snapshot_id,
         expires_at: authority.current_authority_expires_at.toISOString() };
-    }, signal);
+    }, signal, undefined, undefined, 'human_action_preparation');
   }
 
   async snapshot(caller: ExperienceCaller, sessionId: string, actionKey: string, raw: unknown, signal?: AbortSignal) {
@@ -239,7 +239,7 @@ export class AppExperienceHumanActionService {
       bindDeadline(snapshotExpiry); await final(tx, check); check();
       return { schema_version: 'deft.experience_human_action_snapshot.v1' as const, snapshot_ref, draft_ref: request.draft_ref,
         input_digest, expires_at: snapshotExpiry.toISOString(), preview };
-    }, signal, request.draft_ref.draft_state_key);
+    }, signal, request.draft_ref.draft_state_key, undefined, 'human_action_preparation');
     afterCommit(); return result;
   }
 
@@ -311,7 +311,7 @@ export class AppExperienceHumanActionService {
       await final(tx, afterCommit);
       return { schema_version: 'deft.experience_human_action_ticket.v1' as const, ticket, input_digest, expires_at,
         ...(request.snapshot_ref ? { snapshot_ref: request.snapshot_ref } : {}) };
-    }, signal, request.draft_ref?.draft_state_key);
+    }, signal, request.draft_ref?.draft_state_key, undefined, 'human_action_preparation');
     afterCommit(); return result;
   }
 

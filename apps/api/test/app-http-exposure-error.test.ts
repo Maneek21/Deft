@@ -3,6 +3,19 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 import { ExperienceExposureError } from '../src/lib/app-experience-exposure-contract.js';
 import { appHttpFailure } from '../src/routes/app-http-errors.js';
+import { ExperienceExposureBusyError } from '../src/lib/app-experience-exposure-db-error.js';
+
+for (const reason of ['acquisition', 'deadline'] as const) {
+  test(`App action exposes ${reason} saturation as a retryable 503`, async () => {
+    const app = new Hono();
+    app.post('/prepare', c => appHttpFailure(c,
+      new ExperienceExposureBusyError(reason, { cause: new Error('private SQL diagnostic') }), 'App action', 'app-actions'));
+    const response = await app.request('/prepare', { method: 'POST' });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '1');
+    assert.deepEqual(await response.json(), { error: 'App access is busy. Please try again.', code: 'APP_EXPERIENCE_BUSY', retryable: true });
+  });
+}
 
 for (const [code, status] of [
   ['APP_EXPERIENCE_RESOURCE_UNAVAILABLE', 404],

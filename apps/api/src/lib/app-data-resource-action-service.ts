@@ -18,7 +18,7 @@ export class AppDataResourceActionService extends AppDataActionService {
   const references=[...(request.record_sources??[]),...(request.destination?[request.destination]:[]),...(request.labels?[...request.labels.add,...request.labels.remove]:[])];
   const recheckReferences=async()=>{for(const store of new Set(references.map(ref=>ref.store_key))){const current=await this.data.current(request.connection_session_id,store,true,'prepare_resource_action');if(current.connection.account_ref!==before.connection.account_ref||current.connection.session_id!==before.connection.session_id||current.connection.session_revision!==before.connection.session_revision||!current.consent)throw appDataDenied();}signal?.throwIfAborted();};
   await recheckReferences();
-  await this.assertTarget(sessionId,target,action,before,signal);signal?.throwIfAborted();
+  await this.assertTarget(sessionId,target,action,before,signal,undefined,undefined,'human_action_preparation');signal?.throwIfAborted();
   const {prepared:rawPrepared,authority}=await this.data.prepareResource(request.connection_session_id,{
     store_key:request.store_key,resource_key:request.resource_key,action_key:action,operation_key:request.operation_key,sources:request.sources,...(request.record_sources?{record_sources:request.record_sources}:{}),...(request.parameters?{parameters:request.parameters}:{}),
     ...(request.destination?{destination:request.destination}:{}),...(request.labels?{labels:request.labels}:{}),...(request.undo?{undo:request.undo}:{})});
@@ -28,7 +28,7 @@ export class AppDataResourceActionService extends AppDataActionService {
     ||prepared.source_manifest_digest!==appDataDigest(request.sources)||prepared.item_count!==request.sources.length+(request.record_sources?.length??0)
     ||!isDeepStrictEqual(prepared.preview.items.map(item=>item.record_id),[...request.sources,...(request.record_sources??[])].map(source=>source.record_id))
     ||!isDeepStrictEqual(prepared.record_refs??[],references))throw appDataDenied();
-  await this.assertTarget(sessionId,target,action,authority,signal);signal?.throwIfAborted();
+  await this.assertTarget(sessionId,target,action,authority,signal,undefined,undefined,'human_action_preparation');signal?.throwIfAborted();
   await recheckReferences();
   const input=AppResourceActionReleasedInputSchema.parse({...prepared.input,resource_action_version:prepared.schema_version,
     resource_store_key:request.store_key,connection_session_id:authority.connection.session_id,
@@ -37,7 +37,7 @@ export class AppDataResourceActionService extends AppDataActionService {
   const ticket=await this.human.prepareReviewedResource(this.data.caller,sessionId,action,{input,idempotency_key:request.idempotency_key},signal);
   const expires_at=new Date(Math.min(Date.parse(ticket.expires_at),Date.parse(prepared.expires_at),authority.expires_at)).toISOString();
   if(Date.parse(expires_at)<=Date.now())throw appDataDenied();
-  await this.assertTarget(sessionId,target,action,await this.data.current(request.connection_session_id,request.store_key,true,'prepare_resource_action'),signal);
+  await this.assertTarget(sessionId,target,action,await this.data.current(request.connection_session_id,request.store_key,true,'prepare_resource_action'),signal,undefined,undefined,'human_action_preparation');
   return AppResourceActionReviewSchema.parse({schema_version:'deft.app_resource_action_review.v1',prepared,input,
     ticket:ticket.ticket,input_digest:ticket.input_digest,expires_at});
  }
@@ -55,7 +55,7 @@ export class AppDataResourceActionService extends AppDataActionService {
     ||ticket.input_digest!==request.expected_input_digest||ticket.input_digest!==humanActionDigest(ticket.input)
     ||Date.parse(ticket.expires_at)<=Date.now())throw appDataDenied();
   const input=AppResourceActionReleasedInputSchema.parse(ticket.input),before=await this.data.current(input.connection_session_id,input.resource_store_key);
-  await this.assertTarget(sessionId,target,ticket.action_key,before,signal);
+  await this.assertTarget(sessionId,target,ticket.action_key,before,signal,undefined,undefined,'human_action_confirmation');
   const {prepared:rawPrepared,authority}=await this.data.readPreparedResource(input.connection_session_id,{
     store_key:input.resource_store_key,resource_key:before.scope.resource_key,snapshot_id:input.snapshot_id,snapshot_digest:input.prepared_digest});
   const prepared=AppDataPreparedResourceActionSchema.parse(rawPrepared);
@@ -65,7 +65,7 @@ export class AppDataResourceActionService extends AppDataActionService {
     connection_revision:authority.connection.session_revision,data_consent_id:authority.consent?.consent_id,
     data_consent_digest:authority.consent?.consent_digest,prepared_digest:prepared.snapshot_digest});
   if(prepared.action_key!==ticket.action_key||!isDeepStrictEqual(input,expected)||Date.parse(prepared.expires_at)<=Date.now())throw appDataDenied();
-  await this.assertTarget(sessionId,target,ticket.action_key,authority,signal);signal?.throwIfAborted();
+  await this.assertTarget(sessionId,target,ticket.action_key,authority,signal,undefined,undefined,'human_action_confirmation');signal?.throwIfAborted();
   const fence=await captureResourceBatchDataFence(caller,authority);
   return {request,ticket,input,authority,prepared,fence,sessionId,target};
  }

@@ -12,11 +12,43 @@ test('throwing timing observer cannot alter transaction result or release',async
  try{const r=await db.transaction(tx=>tx.execute(sql`SELECT 1`),undefined,undefined,()=>{throw Error('synthetic-observer-failure');});assert.equal(r.rows.length,1);assert.deepEqual(events,['false']);}
  finally{pg.Pool.prototype.connect=original;await db.close();}
 });
-test('abort keeps discard and release guards when timing observer is active',async()=>{
+test('abort rolls back before healthy release when timing observer is active',async()=>{
  const original=pg.Pool.prototype.connect,controller=new AbortController(),events:string[]=[],samples:any[]=[];const client={query:async(query:any)=>{const text=typeof query==='string'?query:query.text;events.push(text);if(text.startsWith('SELECT'))controller.abort();return {rows:[],rowCount:0};},end:async()=>{events.push('discard');},release:(b:boolean)=>events.push('release:'+b)};pg.Pool.prototype.connect=async()=>client as any;const db=createExperienceExposureDatabase('postgres://synthetic:synthetic@127.0.0.1/synthetic');
- try{await assert.rejects(db.transaction(tx=>tx.execute(sql`SELECT 1`),controller.signal,undefined,s=>samples.push(s)));assert.ok(events.includes('discard'));assert.equal(events.at(-1),'release:true');assert.ok(samples.some(x=>x.kind==='query'));}
+ try{await assert.rejects(db.transaction(tx=>tx.execute(sql`SELECT 1`),controller.signal,undefined,s=>samples.push(s)));assert.deepEqual(events,['begin','SELECT 1','rollback','release:false']);assert.ok(samples.some(x=>x.kind==='query'));}
  finally{pg.Pool.prototype.connect=original;await db.close();}
 });
+
+for (const boundary of ['begin', 'before_commit', 'commit'] as const) {
+  test(`cancellation at ${boundary} preserves transaction settlement`, async () => {
+    const original = pg.Pool.prototype.connect;
+    const controller = new AbortController(), events: string[] = [];
+    const client = {
+      query: async (query: string | pg.QueryConfig) => {
+        const text = typeof query === 'string' ? query : query.text;
+        events.push(text);
+        if (text === boundary) controller.abort(new Error('synthetic boundary cancellation'));
+        return { rows: [], rowCount: 0 };
+      },
+      end: async () => { events.push('discard'); },
+      release: (broken: boolean) => { events.push(`release:${broken}`); },
+    };
+    pg.Pool.prototype.connect = async () => client as any;
+    const database = createExperienceExposureDatabase('postgres://synthetic:synthetic@127.0.0.1/synthetic');
+    try {
+      const running = database.transaction(async () => {
+        if (boundary === 'before_commit') controller.abort(new Error('synthetic boundary cancellation'));
+        return 42;
+      }, controller.signal);
+      if (boundary === 'commit') {
+        assert.equal(await running, 42, 'an acknowledged COMMIT is not undone by later cancellation');
+        assert.deepEqual(events, ['begin', 'commit', 'release:false']);
+      } else {
+        await assert.rejects(running, /synthetic boundary cancellation/);
+        assert.deepEqual(events.map(event => event.toLowerCase()), ['begin', 'rollback', 'release:false']);
+      }
+    } finally { pg.Pool.prototype.connect = original; await database.close(); }
+  });
+}
 
 test('failed pool acquisition emits duration without changing original error',async()=>{
  const original=pg.Pool.prototype.connect,samples:any[]=[];pg.Pool.prototype.connect=async()=>{throw Error('synthetic-acquisition-failure');};const db=createExperienceExposureDatabase('postgres://synthetic:synthetic@127.0.0.1/synthetic');

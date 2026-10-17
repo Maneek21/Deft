@@ -14,6 +14,7 @@ import { HumanActionConfirmSchema, humanActionDigest, openHumanActionTicket } fr
 import { verifiedExperienceBundle } from './app-experience-service.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
+import type { AppRunTransaction } from './app-run-repository.js';
 
 const id = z.string().uuid(), key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/u);
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -29,7 +30,8 @@ export class AppDataActionService {
   constructor(protected readonly data: AppDataService, protected readonly human: AppExperienceHumanActionService,
     protected readonly authority: HumanActionAuthorityPort, protected readonly keys: AppRunKeyProvider) {}
 
-  protected async assertTarget(sessionId: string, target: string, action: string, current: CurrentAppDataAuthority, signal?: AbortSignal, prepared?:unknown) {
+  protected async assertTarget(sessionId: string, target: string, action: string, current: CurrentAppDataAuthority, signal?: AbortSignal, prepared?:unknown, transaction?: AppRunTransaction,
+    transactionPurpose?: 'human_action_preparation' | 'human_action_confirmation') {
     const caller = this.data.caller;
     await this.authority.withHumanAction(caller, sessionId, action, async (tx, authority, final) => {
       const session = authority.session;
@@ -47,13 +49,13 @@ export class AppDataActionService {
       const { bundle } = await verifiedExperienceBundle(version, session.experience_key);
       if (bundle.schema_version!=='deft.experience_bundle.v3'&&bundle.schema_version!=='deft.experience_bundle.v4' || !bundle.record_store_keys?.includes(current.store.key)) throw appDataDenied();
       await final(tx);
-    }, signal);
+    }, signal, undefined, transaction, transactionPurpose);
   }
 
   async prepare(sessionId: string, target: string, action: string, raw: unknown, signal?: AbortSignal) {
     const request = RecordActionPrepareSchema.parse(raw);
     const before = await this.data.current(request.connection_session_id, request.store_key);
-    await this.assertTarget(sessionId, target, action, before, signal);
+    await this.assertTarget(sessionId, target, action, before, signal, undefined, undefined, 'human_action_preparation');
     signal?.throwIfAborted();
     const { prepared: rawPrepared, authority } = await this.data.prepare(request.connection_session_id, {
       store_key: request.store_key, record_id: request.record_id, expected_revision: request.expected_revision,
@@ -63,7 +65,7 @@ export class AppDataActionService {
     if (prepared.record_content_digest!==undefined&&prepared.record_content_digest!==request.content_digest)throw appDataDenied();
     if (!authority.consent || prepared.action_key !== action || prepared.record_id !== request.record_id
       || prepared.revision !== request.expected_revision || recordFields.some(field => Object.hasOwn(prepared.input, field))) throw appDataDenied();
-    await this.assertTarget(sessionId, target, action, authority, signal,prepared);
+    await this.assertTarget(sessionId, target, action, authority, signal, prepared, undefined, 'human_action_preparation');
     const input = { ...prepared.input, record_action_version: prepared.schema_version, record_store_key: request.store_key,
       connection_session_id: authority.connection.session_id, connection_revision: authority.connection.session_revision,
       data_consent_id: authority.consent.consent_id, data_consent_digest: authority.consent.consent_digest,
@@ -71,7 +73,7 @@ export class AppDataActionService {
     let future:ReviewedFutureRecordActionTicket|undefined;
     if(prepared.future_release)future=await this.authority.withHumanAction(this.data.caller,sessionId,action,async(tx,human,final)=>{
       const captured=await captureFutureRecordActionReview(tx,authority,prepared,request.idempotency_key,human.session.id,human.authorization_identity);await final(tx);return captured;
-    },signal);
+    },signal,undefined,undefined,'human_action_preparation');
     const ticket=future?await this.human.prepareReviewedFutureRecord(this.data.caller,sessionId,action,{input,idempotency_key:request.idempotency_key},future,signal)
       :await this.human.prepareReviewedRecord(this.data.caller,sessionId,action,{input,idempotency_key:request.idempotency_key},signal);
     const expires_at = new Date(Math.min(Date.parse(ticket.expires_at), Date.parse(prepared.expires_at), authority.expires_at)).toISOString();
@@ -101,7 +103,7 @@ export class AppDataActionService {
       || authority.consent?.consent_id !== input.data_consent_id || authority.consent?.consent_digest !== input.data_consent_digest
       || Object.keys(prepared.input).some(field => input[field] !== prepared.input[field])
       || Object.keys(input).some(field => !recordFields.includes(field as typeof recordFields[number]) && !Object.hasOwn(prepared.input, field))) throw appDataDenied();
-    await this.assertTarget(sessionId, target, ticket.action_key, authority, signal,prepared);
+    await this.assertTarget(sessionId, target, ticket.action_key, authority, signal, prepared, undefined, 'human_action_confirmation');
     signal?.throwIfAborted();
     if(prepared.future_release){
       if(!ticket.future_record_action||ticket.future_record_action.prepared_digest!==prepared.snapshot_digest)throw appDataDenied();

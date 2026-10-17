@@ -1139,7 +1139,7 @@ export class AppExperienceExposureService {
 
     run: (tx: Tx, authority: HumanActionAuthority,
 
-      finalGuard: (tx: Tx, additionalFinalCheck?: () => void) => Promise<void>) => Promise<T>, signal?: AbortSignal, draftStateKey?: string, suppliedTransaction?: Tx, transactionPurpose?: 'human_action_confirmation'): Promise<T> {
+      finalGuard: (tx: Tx, additionalFinalCheck?: () => void) => Promise<void>) => Promise<T>, signal?: AbortSignal, draftStateKey?: string, suppliedTransaction?: Tx, transactionPurpose?: 'human_action_preparation' | 'human_action_confirmation'): Promise<T> {
 
     this.enabled(caller, signal); resourceKey.parse(actionKey);
 

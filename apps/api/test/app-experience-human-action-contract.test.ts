@@ -15,6 +15,28 @@ const input = { recipient: 'synthetic@example.test', body: 'Private exact text' 
 const ticket = { org_id: randomUUID(), user_id: randomUUID(), sid: randomUUID(), session_id: randomUUID(),
   action_key: 'write', runtime_binding_id: randomUUID(), authority_digest: humanActionDigest({ version: 'v1' }),
   input, input_digest: humanActionDigest(input), idempotency_key: 'host:one', expires_at: new Date(Date.now() + 60_000).toISOString() };
+test('review context, snapshot, preparation and confirmation explicitly reserve capacity while lookup and policy do not', async () => {
+  const stopped = new Error('synthetic authority boundary'), purposes: unknown[] = [];
+  const authority: HumanActionAuthorityPort = {
+    async withHumanAction(_caller, _session, _action, _use, _signal, _draft, _transaction, purpose) {
+      purposes.push(purpose); throw stopped;
+    },
+  };
+  const service = new AppExperienceHumanActionService(authority, { keys } as AppRunRuntime);
+  const caller = { org_id: ticket.org_id, user_id: ticket.user_id, sid: ticket.sid };
+  const draft_ref = { draft_state_key: 'drafts', draft_id: randomUUID(), expected_revision: 1 };
+  const calls = [
+    () => service.context(caller, ticket.session_id, ticket.action_key),
+    () => service.snapshot(caller, ticket.session_id, ticket.action_key, { input, draft_ref }),
+    () => service.prepare(caller, ticket.session_id, ticket.action_key, { input, idempotency_key: 'host:one' }),
+    () => service.confirm(caller, ticket.session_id, { ticket: sealHumanActionTicket(keys, ticket), expected_input_digest: ticket.input_digest }),
+    () => service.lookup(caller, ticket.session_id, ticket.action_key, randomUUID()),
+    () => service.agentPolicy(caller, ticket.session_id, ticket.action_key),
+  ];
+  for (const call of calls) await assert.rejects(async () => call(), error => error === stopped);
+  assert.deepEqual(purposes, ['human_action_preparation', 'human_action_preparation', 'human_action_preparation',
+    'human_action_confirmation', undefined, undefined]);
+});
 test('sealed ticket roundtrip hides exact private input and retains authority', () => {
   const sealed = sealHumanActionTicket(keys, ticket);
   assert(!sealed.includes(input.body)); assert(!sealed.includes(input.recipient));
