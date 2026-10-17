@@ -69,6 +69,7 @@ export class AppConnectionConsentContinuationService{
  constructor(private caller:ExperienceCaller,private guard:WebAuthorityGuard){}
  private locator(session_id:string):ContinuationLocator{return {org_id:this.caller.org_id,owner_user_id:this.caller.user_id,session_id};}
  private async row(session_id:string){const row=await this.store.metadata(this.locator(session_id));if(!row)throw continuationDenied();return row;}
+ private async retainWebOwner(r:ConsentContinuationRecord){await db.transaction(tx=>assertFreshContinuation(tx,this.caller,this.guard,r));}
  private async retainFreshOwner(r:ConsentContinuationRecord,operation:'prepare'|'activate'|'status'){
   return db.transaction(async tx=>{const q=this.locator(r.session_id),row=await this.store.metadata(q,tx,true);if(!row||row.revision!==r.revision)throw continuationDenied();
    const current=await assertFreshContinuation(tx,this.caller,this.guard,r);
@@ -176,6 +177,10 @@ export class AppConnectionConsentContinuationService{
     await assertContinuationClosureIdentity(tx,this.caller,this.guard,r);return this.store.cas(tx,q,r,{...r,state:'not_connected',revision:r.revision+1,updated_at:new Date().toISOString()});});
    return continuationSessionView(r);
   }
+  // A reviewed but unactivated continuation has no publication authority.
+  // Avoid sending its review to Runtime; the Runtime authority endpoint also
+  // enforces this gate for every status check in a recovery publication.
+  if(!r.activation_started&&r.review){await this.retainWebOwner(r);return continuationSessionView(r);}
   r=await this.retainFreshOwner(r,'status');
   try{const response=await this.invoke(r,'status');r=await this.finish(q,r,response.request,response.result);}
   catch{await this.markIndeterminate(q,r);r=(await this.row(input.session_id)).record;}
