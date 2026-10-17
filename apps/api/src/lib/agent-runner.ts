@@ -1,6 +1,7 @@
 import { NATIVE_MENTION_AGENT_GUIDANCE } from './native-mention-agent-contract.js';
 import { nativeMentionsEnabled } from './native-mentions.js';
 import { validateNativeAgentMentionWrite } from './native-mention-agent-writes.js';
+import { emailKnowledgeAudienceCondition } from './email-knowledge-visibility.js';
 // Reusable agent reasoning engine — used by @agent mentions in chat and other background jobs.
 // Supports two modes:
 //   'chat_mention' (default): write actions are skipped (safety for @mentions)
@@ -13,6 +14,7 @@ import { eq, and, or, desc, sql } from 'drizzle-orm';
 import { resolveReasonProvider, getOrgAIConfig } from './org-ai-config.js';
 import { createAgentMessage } from './agent-llm.js';
 import { llm } from './llm.js';
+import { selectVerifiedResponse } from './agent-response-verification.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
@@ -201,18 +203,14 @@ Citations: ${citations.length > 0 ? citations.slice(0, 5).map((c: any) => c.titl
 
 Check: Does it answer the question? Any fabricated claims? Anything important missing?
 
-If good, reply exactly: VERIFIED
-If issues, provide a corrected version (same style/length).`,
+Return only a JSON object. If the answer is good, return {"verdict":"verified"}.
+If correction is needed, return {"verdict":"corrected","response":"the complete corrected answer to the original question, in the same style and length"}.
+The response field must answer the user directly. Never put reviewer commentary, an assessment of the answer, or a statement that it is valid in that field.`,
       }],
       orgConfig: orgConfig as any,
     });
 
-    const text = verificationResult.text?.trim() || 'VERIFIED';
-    // Pass if the first word is VERIFIED — Haiku often appends meta-commentary
-    // like "VERIFIED\n\nThe response accurately..." which would otherwise
-    // replace the real answer with a self-review.
-    const firstWord = text.toUpperCase().match(/^[A-Z]+/)?.[0];
-    return firstWord === 'VERIFIED' ? response : text;
+    return selectVerifiedResponse(response, verificationResult.text ?? '');
   } catch (err) {
     console.warn('[agent-runner] Verification failed:', err);
     return response;
@@ -296,6 +294,10 @@ export async function runAgentQuery(params: {
 
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
+  const {installedToolSchemas}=await import('./app-installed-tool-discovery.js');
+  const installedSchemas=await installedToolSchemas({kind:'defty',org_id:orgId,user_id:userId,conversation_id:params.conversationId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
+  const installedWrites=new Set(installedSchemas.filter(tool=>!tool.annotations.readOnlyHint).map(tool=>tool.name));
+  tools=[...tools,...installedSchemas.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.inputSchema as Anthropic.Tool['input_schema']}))];
   const readOnlyRequest = isReadOnlyAgentRequest(content);
   const allActionTools = new Set([...ACTION_TOOLS]);
   const actionApprovalTiers = new Map<string, ApprovalTier>();
@@ -329,7 +331,7 @@ export async function runAgentQuery(params: {
   }
 
   let connectionInfo = '\nYou can read native Deft calendar events and imported ICS calendar feeds with check_calendar.';
-  const incidentalWrites = new Set(['remember', 'create_plan', 'wiki_suggest_update', 'app_binding_invoke', 'app_runtime_action_request', 'app_action_batch_propose', 'app_action_batch_cancel']);
+  const incidentalWrites = new Set(['remember', 'create_plan', 'wiki_suggest_update', 'app_binding_invoke', 'app_runtime_action_request', 'app_action_batch_propose', 'app_action_batch_cancel',...installedWrites]);
   if (readOnlyRequest) {
     tools = tools.filter((tool) => !allActionTools.has(tool.name) && !incidentalWrites.has(tool.name));
   }
@@ -404,6 +406,7 @@ export async function runAgentQuery(params: {
             .where(and(
               eq(wikiPages.org_id, orgId),
               eq(wikiPages.is_deleted, false),
+              emailKnowledgeAudienceCondition(orgId, userId, params.conversationId, agentEmployeeId),
               or(...terms.map((term) => {
                 const pattern = `%${term}%`;
                 return sql`(
@@ -420,6 +423,7 @@ export async function runAgentQuery(params: {
         query: searchQuery,
         org_id: orgId,
         user_id: userId,
+        conversation_id: params.conversationId,
         agent_employee_id: agentEmployeeId,
         types: ['wiki'],
         limit: 3,
@@ -780,7 +784,7 @@ export async function runAgentQuery(params: {
           params: tool.input,
           success: !(result && typeof result === 'object' && 'error' in result),
           result,
-          readOnly: !['app_action_batch_propose', 'app_action_batch_cancel'].includes(tool.name),
+          readOnly: !installedWrites.has(tool.name) && !['app_action_batch_propose', 'app_action_batch_cancel'].includes(tool.name),
         });
 
         const formatted = await nativeAgentToolResult({

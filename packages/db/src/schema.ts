@@ -3,6 +3,23 @@
 
 import { pgTable, bigserial, text, timestamp, boolean, integer, jsonb, pgEnum, index, unique, uniqueIndex, real, vector, check, primaryKey, numeric, customType, foreignKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
+export * from './email-schema.js';
+export * from './email-account-consent-schema.js';
+export * from './email-native-connection-schema.js';
+export * from './email-operation-schema.js';
+export * from './email-attachment-schema.js';
+export * from './email-outbox-schema.js';
+export * from './email-template-schema.js';
+export * from './email-signature-schema.js';
+export * from './email-imap-alias-schema.js';
+export * from './email-timer-schema.js';
+export * from './email-presentation-cache-schema.js';
+export * from './email-notification-schema.js';
+export * from './email-calendar-invitation-schema.js';
+export * from './email-context-transfer-schema.js';
+export * from './email-rule-schema.js';
+export * from './email-rule-receipt-schema.js';
+export * from './email-agent-grant-schema.js';
 
 // ═══ HELPERS ═══
 const id = () => ({ id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()) });
@@ -16,6 +33,7 @@ const tsvector = customType<{ data: string }>({
     return 'tsvector';
   },
 });
+const privateCiphertext = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
 
 // ═══ ENUMS ═══
 export const orgRoleEnum = pgEnum('org_role', ['owner', 'admin', 'member', 'guest']);
@@ -98,6 +116,7 @@ export type UserNotificationPreferences = {
   };
   push: {
     enabled: boolean;
+    email: boolean;
     chat: boolean;
     tasks: boolean;
     approvals: boolean;
@@ -122,6 +141,7 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: UserNotificationPreferences = {
   },
   push: {
     enabled: false,
+    email: false,
     chat: true,
     tasks: true,
     approvals: true,
@@ -812,7 +832,7 @@ export const appRuns = pgTable('app_runs', {
   idempotency_expires_at: timestamp('idempotency_expires_at').notNull(),
   attempt_limit: integer('attempt_limit').notNull(),
   execution_release_kind: text('execution_release_kind')
-    .$type<'policy_satisfied' | 'approved' | 'approved_automation_definition'>(),
+    .$type<'policy_satisfied' | 'approved' | 'approved_automation_definition' | 'record_mirror'>(),
   execution_released_at: timestamp('execution_released_at'),
   budget_reserved_at: timestamp('budget_reserved_at'),
   budget_reserved_count: integer('budget_reserved_count'),
@@ -1165,7 +1185,7 @@ export const appRuns = pgTable('app_runs', {
         (
           ${t.review_requirement} = 'always'
           AND ${t.review_scope} = 'per_invocation'
-          AND ${t.execution_release_kind} = 'approved'
+          AND ${t.execution_release_kind} IN ('approved', 'record_mirror')
         )
         OR (
           ${t.review_requirement} = 'always'
@@ -1295,7 +1315,7 @@ export const appRunSecretPayloads = pgTable('app_run_secret_payloads', {
   ...orgId(),
   run_id: text('run_id').notNull(),
   attempt_id: text('attempt_id'),
-  payload_kind: text('payload_kind').$type<'input' | 'output'>().notNull(),
+  payload_kind: text('payload_kind').$type<'input' | 'output' | 'action_resources'>().notNull(),
   envelope_version: text('envelope_version').notNull(),
   algorithm: text('algorithm').$type<'aes-256-gcm'>().notNull(),
   key_version: text('key_version').notNull(),
@@ -1322,10 +1342,12 @@ export const appRunSecretPayloads = pgTable('app_run_secret_payloads', {
   uniqueIndex('app_run_secret_payloads_output_unique')
     .on(t.org_id, t.attempt_id, t.payload_kind)
     .where(sql`${t.payload_kind} = 'output'`),
+  uniqueIndex('app_run_secret_payloads_action_resources_unique').on(t.org_id,t.run_id,t.payload_kind).where(sql`${t.payload_kind} = 'action_resources'`),
   index('app_run_secret_payloads_expiry_idx').on(t.expires_at),
   check('app_run_secret_payloads_kind_shape_check', sql`
     (${t.payload_kind} = 'input' AND ${t.attempt_id} IS NULL AND ${t.payload_bytes} BETWEEN 1 AND 262144)
     OR (${t.payload_kind} = 'output' AND ${t.attempt_id} IS NOT NULL AND ${t.payload_bytes} BETWEEN 1 AND 1048576)
+    OR (${t.payload_kind} = 'action_resources' AND ${t.attempt_id} IS NULL AND ${t.payload_bytes} BETWEEN 1 AND 196608)
   `),
   check('app_run_secret_payloads_envelope_check', sql`
     ${t.envelope_version} = 'deft.secret.v1'
@@ -2285,6 +2307,30 @@ export const appActionBindings = pgTable('app_action_bindings', {
 // Reviewed runtime ownership is separate from released App Kit v0-v2 actions.
 // Registrations and bindings are dormant until a host-reviewed contract is
 // explicitly activated. These rows are not another Run or scheduling ledger.
+export const appOwnerConnectionAdmissions = pgTable('app_owner_connection_admissions', {
+  ...id(), ...orgId(), app_installation_id: text('app_installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(), grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  operator_user_id: text('operator_user_id').notNull(), policy_key: text('policy_key').notNull(),
+  review_digest: text('review_digest').notNull(), snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull(),
+  reviewed_by_user_id: text('reviewed_by_user_id').notNull(), reviewed_at: timestamp('reviewed_at', { withTimezone: true }).notNull(),
+  state: text('state').$type<'active' | 'revoked'>().default('active').notNull(),
+  revoked_at: timestamp('revoked_at', { withTimezone: true }), ...timestamps(),
+}, t => [
+  foreignKey({ name: 'app_owner_connection_admissions_version_fk', columns: [t.org_id, t.app_installation_id, t.app_version_id],
+    foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_owner_connection_admissions_operator_fk', columns: [t.org_id, t.operator_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_owner_connection_admissions_grant_fk', columns: [t.org_id, t.app_installation_id, t.app_version_id, t.grant_snapshot_id],
+    foreignColumns: [appGrantSnapshots.org_id, appGrantSnapshots.app_installation_id, appGrantSnapshots.app_version_id, appGrantSnapshots.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_owner_connection_admissions_reviewer_fk', columns: [t.org_id, t.reviewed_by_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id] }).onDelete('restrict'),
+  unique('app_owner_connection_admissions_exact_unique').on(t.org_id, t.app_installation_id, t.app_version_id, t.grant_snapshot_id, t.operator_user_id, t.id, t.review_digest),
+  uniqueIndex('app_owner_connection_admissions_current_unique').on(t.org_id, t.app_installation_id, t.grant_snapshot_id, t.policy_key).where(sql`${t.state} = 'active'`),
+  check('app_owner_connection_admissions_identity_check', sql`${t.policy_key} ~ '^[a-z][a-z0-9_]{0,47}$' AND ${t.review_digest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_owner_connection_admissions_snapshot_check', sql`jsonb_typeof(${t.snapshot}) = 'object' AND octet_length(${t.snapshot}::text) <= 32768`),
+  check('app_owner_connection_admissions_state_check', sql`(${t.state} = 'active' AND ${t.revoked_at} IS NULL) OR (${t.state} = 'revoked' AND ${t.revoked_at} IS NOT NULL)`),
+]);
+
 export const appRuntimeRegistrations = pgTable('app_runtime_registrations', {
   ...id(),
   ...orgId(),
@@ -2293,6 +2339,8 @@ export const appRuntimeRegistrations = pgTable('app_runtime_registrations', {
   grant_snapshot_id: text('grant_snapshot_id').notNull(),
   grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
   operator_user_id: text('operator_user_id').notNull(),
+  owner_connection_admission_id: text('owner_connection_admission_id'),
+  owner_connection_admission_digest: text('owner_connection_admission_digest'),
   contract_version: text('contract_version').notNull(),
   state: text('state').$type<'disabled' | 'active' | 'revoked'>().default('disabled').notNull(),
   runtime_epoch: integer('runtime_epoch').default(0).notNull(),
@@ -2300,6 +2348,12 @@ export const appRuntimeRegistrations = pgTable('app_runtime_registrations', {
   reviewed_at: timestamp('reviewed_at'),
   ...timestamps(),
 }, (t) => [
+  foreignKey({ name: 'app_runtime_registrations_owner_admission_fk', columns: [t.org_id, t.app_installation_id, t.app_version_id, t.grant_snapshot_id,
+    t.operator_user_id, t.owner_connection_admission_id, t.owner_connection_admission_digest],
+    foreignColumns: [appOwnerConnectionAdmissions.org_id, appOwnerConnectionAdmissions.app_installation_id, appOwnerConnectionAdmissions.app_version_id,
+      appOwnerConnectionAdmissions.grant_snapshot_id, appOwnerConnectionAdmissions.operator_user_id, appOwnerConnectionAdmissions.id, appOwnerConnectionAdmissions.review_digest] }).onDelete('restrict'),
+  check('app_runtime_registrations_owner_admission_check', sql`(${t.owner_connection_admission_id} IS NULL AND ${t.owner_connection_admission_digest} IS NULL)
+    OR (${t.owner_connection_admission_id} IS NOT NULL AND ${t.owner_connection_admission_digest} IS NOT NULL AND ${t.owner_connection_admission_digest} ~ '^sha256:[a-f0-9]{64}$')`),
   foreignKey({ columns: [t.org_id, t.app_installation_id, t.app_version_id],
     foreignColumns: [appVersions.org_id, appVersions.installation_id, appVersions.id],
     name: 'app_runtime_registrations_version_fk' }).onDelete('restrict'),
@@ -2336,6 +2390,8 @@ export const appRuntimeBindings = pgTable('app_runtime_bindings', {
   registration_contract_version: text('registration_contract_version')
     .$type<'deft.app_runtime_channel.v1'>().default('deft.app_runtime_channel.v1').notNull(),
   action_key: text('action_key').notNull(),
+  // Forward composite resource FK is installed by apply-extras/preview.57.
+  owner_resource_binding_id: text('owner_resource_binding_id'),
   interface_identity: text('interface_identity').notNull(),
   provider_kind: text('provider_kind').$type<'app_runtime'>().default('app_runtime').notNull(),
   provider_instance_id: text('provider_instance_id').notNull(),
@@ -2461,6 +2517,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
   provider_instance_id: text('provider_instance_id').notNull(),
   provider_snapshot_id: text('provider_snapshot_id').notNull(),
   resource_key: text('resource_key').notNull(),
+  target_key: text('target_key').default('primary').notNull(),
   resource_family: text('resource_family').notNull(),
   operation_name: text('operation_name').notNull(),
   interface_identity: text('interface_identity').notNull(),
@@ -2481,6 +2538,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
   max_retained_bytes: integer('max_retained_bytes').notNull(),
   min_interval_seconds: integer('min_interval_seconds').notNull(),
   consent_expires_at: timestamp('consent_expires_at'),
+  consent_lifetime: text('consent_lifetime').$type<'until_revoked'>(),
   state: text('state').$type<'disabled' | 'active' | 'revoked'>().default('disabled').notNull(),
   reviewed_by_user_id: text('reviewed_by_user_id'),
   reviewed_at: timestamp('reviewed_at'),
@@ -2518,7 +2576,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     t.risk_class, t.review_requirement, t.review_scope, t.retry_class, t.retention_class),
   index('app_resource_bindings_owner_idx').on(t.org_id, t.owner_user_id, t.state),
   uniqueIndex('app_resource_bindings_one_current_consent_unique')
-    .on(t.org_id, t.app_installation_id, t.grant_snapshot_id, t.owner_user_id, t.resource_key)
+    .on(t.org_id, t.app_installation_id, t.grant_snapshot_id, t.owner_user_id, t.resource_key, t.target_key)
     .where(sql`${t.state} <> 'revoked'`),
   check('app_resource_bindings_identity_check', sql`
     ${t.grant_snapshot_kind} = 'effective'
@@ -2527,6 +2585,7 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     AND ${t.provider_instance_id} = ${t.runtime_registration_id}
     AND ${t.owner_scope} = 'private_user'
     AND ${t.resource_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.target_key} ~ '^[a-z][a-z0-9_]{0,47}$'
     AND ${t.resource_family} ~ '^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$'
     AND octet_length(${t.resource_family}) <= 64
     AND ${t.operation_name} = 'sync_' || ${t.resource_key}
@@ -2576,10 +2635,10 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
       AND (${t.attachment_policy}->>'retention_days')::numeric = trunc((${t.attachment_policy}->>'retention_days')::numeric)
       AND (${t.attachment_policy}->>'retention_days')::numeric <= ((${t.reviewed_descriptor}->'attachments')->>'retention_days')::numeric
       AND jsonb_typeof((${t.attachment_policy}->'allowed_media_types')) = 'array'
-      AND jsonb_array_length((${t.attachment_policy}->'allowed_media_types')) BETWEEN 1 AND 7
-      AND (${t.attachment_policy}->'allowed_media_types') <@ '["text/plain","text/csv","application/json","image/png","image/jpeg","image/gif","image/webp"]'::jsonb
+      AND jsonb_array_length((${t.attachment_policy}->'allowed_media_types')) BETWEEN 1 AND 8
+      AND (${t.attachment_policy}->'allowed_media_types') <@ '["text/plain","text/csv","application/json","image/png","image/jpeg","image/gif","image/webp","application/pdf"]'::jsonb
       AND (${t.attachment_policy}->'allowed_media_types') <@ ((${t.reviewed_descriptor}->'attachments')->'allowed_media_types')
-      AND jsonb_array_length((${t.attachment_policy}->'allowed_media_types')) = (((${t.attachment_policy}->'allowed_media_types') @> '["text/plain"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["text/csv"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["application/json"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/png"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/jpeg"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/gif"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/webp"]'::jsonb)::integer)), false))
+      AND jsonb_array_length((${t.attachment_policy}->'allowed_media_types')) = (((${t.attachment_policy}->'allowed_media_types') @> '["text/plain"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["text/csv"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["application/json"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/png"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/jpeg"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/gif"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["image/webp"]'::jsonb)::integer + ((${t.attachment_policy}->'allowed_media_types') @> '["application/pdf"]'::jsonb)::integer)), false))
   `),
   check('app_resource_bindings_policy_check', sql`
     ${t.risk_class} = 'internal_write' AND ${t.review_requirement} = 'policy'
@@ -2594,13 +2653,15 @@ export const appResourceBindings = pgTable('app_resource_bindings', {
     AND ${t.min_interval_seconds} BETWEEN 60 AND 86400
   `),
   check('app_resource_bindings_review_check', sql`
-    (${t.state} = 'disabled' AND ${t.reviewed_by_user_id} IS NULL
-      AND ${t.reviewed_at} IS NULL AND ${t.consent_expires_at} IS NULL)
+    COALESCE(((${t.state} = 'disabled' AND ${t.reviewed_by_user_id} IS NULL
+      AND ${t.reviewed_at} IS NULL AND ${t.consent_expires_at} IS NULL AND ${t.consent_lifetime} IS NULL)
     OR (${t.state} IN ('active','revoked') AND ${t.reviewed_by_user_id} IS NOT NULL
       AND ${t.reviewed_by_user_id} = ${t.owner_user_id}
-      AND ${t.reviewed_at} IS NOT NULL AND ${t.consent_expires_at} IS NOT NULL
+      AND ${t.reviewed_at} IS NOT NULL AND ((${t.consent_lifetime} IS NULL AND ${t.consent_expires_at} IS NOT NULL
       AND ${t.consent_expires_at} > ${t.reviewed_at}
       AND ${t.consent_expires_at} <= ${t.reviewed_at} + interval '90 days')
+      OR (${t.consent_lifetime}='until_revoked' AND ${t.consent_expires_at} IS NULL)))
+),false)
   `),
 ]);
 
@@ -2619,6 +2680,10 @@ export const appRuntimeSessions = pgTable('app_runtime_sessions', {
   grant_epoch: integer('grant_epoch').notNull(),
   next_sequence: integer('next_sequence').default(1).notNull(),
   expires_at: timestamp('expires_at').notNull(),
+  renewable_until: timestamp('renewable_until', { withTimezone: true }),
+  renewal_lifetime: text('renewal_lifetime').$type<'until_revoked'>(),
+  renewal_web_session_id: text('renewal_web_session_id'),
+  renewal_operator_role: text('renewal_operator_role'),
   revoked_at: timestamp('revoked_at'),
   ...timestamps(),
 }, (t) => [
@@ -2644,6 +2709,7 @@ export const appRuntimeSessions = pgTable('app_runtime_sessions', {
   `),
   check('app_runtime_sessions_epoch_check', sql`${t.session_epoch} >= 0 AND ${t.runtime_epoch} >= 0 AND ${t.lifecycle_epoch} >= 0 AND ${t.grant_epoch} >= 0 AND ${t.next_sequence} >= 1`),
   check('app_runtime_sessions_token_check', sql`${t.token_hash} ~ '^sha256:[a-f0-9]{64}$'`),
+  check('app_runtime_sessions_renewal_check', sql`(((${t.renewal_lifetime} IS NULL AND ${t.renewable_until} IS NULL AND ${t.renewal_web_session_id} IS NULL AND ${t.renewal_operator_role} IS NULL) OR (${t.renewal_web_session_id} IS NOT NULL AND length(${t.renewal_web_session_id}) > 0 AND ${t.renewal_operator_role} IS NOT NULL AND ${t.renewal_operator_role} IN ('owner','admin','member') AND ((${t.renewal_lifetime} IS NULL AND ${t.audience}='app_runtime' AND ${t.renewable_until} IS NOT NULL AND (${t.expires_at} AT TIME ZONE 'UTC') <= ${t.renewable_until} AND ${t.renewable_until} > (${t.created_at} AT TIME ZONE 'UTC')) OR (${t.renewal_lifetime}='until_revoked' AND ${t.audience} IN ('app_runtime','app_resource_sync') AND ${t.renewable_until} IS NULL AND isfinite(${t.expires_at}) AND isfinite(${t.created_at}) AND ${t.expires_at}>${t.created_at})))) IS TRUE)`),
 ]);
 
 // ═══ APP AUTOMATION FOUNDATION (DORMANT TRACK A) ═══
@@ -5408,6 +5474,7 @@ export const appExperienceSessions = pgTable('app_experience_sessions', {
   grant_snapshot_id: text('grant_snapshot_id').notNull(),
   grant_snapshot_kind: text('grant_snapshot_kind').$type<'effective'>().default('effective').notNull(),
   experience_key: text('experience_key').notNull(),
+  resource_target_key: text('resource_target_key').default('primary').notNull(),
   artifact_digest: text('artifact_digest').notNull(),
   lifecycle_epoch: integer('lifecycle_epoch').notNull(),
   grant_epoch: integer('grant_epoch').notNull(),
@@ -5434,6 +5501,7 @@ export const appExperienceSessions = pgTable('app_experience_sessions', {
     t.app_installation_id, t.expires_at),
   index('app_experience_sessions_expires_idx').on(t.expires_at),
   check('app_experience_sessions_key_check', sql`${t.experience_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
+  check('app_experience_sessions_target_key_check', sql`${t.resource_target_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
   check('app_experience_sessions_digest_check', sql`${t.artifact_digest} ~ '^sha256:[a-f0-9]{64}$'`),
   check('app_experience_sessions_epoch_check', sql`${t.lifecycle_epoch} >= 0 AND ${t.grant_epoch} >= 0`),
   check('app_experience_sessions_kind_check', sql`${t.grant_snapshot_kind} = 'effective'`),
@@ -5498,13 +5566,88 @@ export const appActionBatchItems = pgTable('app_action_batch_items', {
   check('app_action_batch_items_label_check',sql`length(${t.label})<=200`),check('app_action_batch_items_ordinal_check',sql`${t.ordinal}>=0 AND ${t.ordinal}<10`),
 ]);
 
+/** Generic owner-private custody. Binary ciphertext never enters scalar state or projections. */
+export const appPrivateFiles = pgTable('app_private_files', {
+  ...id(), ...orgId(), owner_user_id: text('owner_user_id').notNull(), installation_id: text('installation_id').notNull(),
+  resource_target_key: text('resource_target_key').notNull(), state_key: text('state_key').notNull(), record_id: text('record_id').notNull(),
+  artifact_digest: text('artifact_digest').notNull(), declaration_digest: text('declaration_digest').notNull(),
+  upload_operation_id: text('upload_operation_id').notNull(), upload_revision: integer('upload_revision').notNull(),
+  content_digest: text('content_digest').notNull(), byte_length: integer('byte_length').notNull(),
+  metadata_envelope: jsonb('metadata_envelope').$type<Record<string, unknown>>(),
+  ciphertext: privateCiphertext('ciphertext'), key_version: text('key_version'), nonce_b64: text('nonce_b64'), auth_tag_b64: text('auth_tag_b64'),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(), detached_at: timestamp('detached_at', { withTimezone: true }),
+  purged_at: timestamp('purged_at', { withTimezone: true }),
+}, t => [
+  unique('app_private_files_org_owner_id_unique').on(t.org_id, t.owner_user_id, t.id),
+  unique('app_private_files_operation_unique').on(t.org_id, t.owner_user_id, t.installation_id, t.upload_operation_id),
+  foreignKey({ name: 'app_private_files_installation_fk', columns: [t.org_id, t.installation_id], foreignColumns: [appInstallations.org_id, appInstallations.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_private_files_owner_user_id_fkey', columns: [t.owner_user_id], foreignColumns: [users.id] }).onDelete('restrict'),
+  check('app_private_files_identity_check', sql`${t.resource_target_key} ~ '^[a-z][a-z0-9_]{0,47}$' AND ${t.state_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.artifact_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.declaration_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.content_digest} ~ '^[a-f0-9]{64}$' AND ${t.upload_revision} BETWEEN 1 AND 2147483646 AND ${t.byte_length} BETWEEN 1 AND 2097152`),
+  check('app_private_files_body_check', sql`(${t.purged_at} IS NULL AND ${t.ciphertext} IS NOT NULL AND octet_length(${t.ciphertext})=${t.byte_length}
+    AND ${t.key_version} IS NOT NULL AND ${t.nonce_b64} IS NOT NULL AND ${t.auth_tag_b64} IS NOT NULL AND ${t.nonce_b64} ~ '^[A-Za-z0-9+/]{16}$' AND ${t.auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'
+    AND ${t.metadata_envelope} IS NOT NULL AND jsonb_typeof(${t.metadata_envelope})='object' AND octet_length(${t.metadata_envelope}::text)<=24576)
+    OR (${t.purged_at} IS NOT NULL AND ${t.ciphertext} IS NULL AND ${t.key_version} IS NULL AND ${t.nonce_b64} IS NULL AND ${t.auth_tag_b64} IS NULL AND ${t.metadata_envelope} IS NULL)`),
+  check('app_private_files_expiry_check', sql`${t.expires_at}>${t.created_at} AND ${t.expires_at}<=${t.created_at}+interval '30 days'`),
+  index('app_private_files_scope_idx').on(t.org_id, t.owner_user_id, t.installation_id, t.state_key, t.record_id),
+  index('app_private_files_expiry_idx').on(t.expires_at),
+]);
+
+export const appActionPayloads = pgTable('app_action_payloads', {
+  ...id(), ...orgId(), owner_user_id: text('owner_user_id').notNull(), installation_id: text('installation_id').notNull(),
+  app_version_id: text('app_version_id').notNull(), grant_snapshot_id: text('grant_snapshot_id').notNull(),
+  resource_target_key: text('resource_target_key').notNull(), state_key: text('state_key').notNull(), draft_id: text('draft_id').notNull(),
+  draft_revision: integer('draft_revision').notNull(), artifact_digest: text('artifact_digest').notNull(), declaration_digest: text('declaration_digest').notNull(),
+  runtime_binding_id: text('runtime_binding_id').notNull(), action_key: text('action_key').notNull(), action_contract_digest: text('action_contract_digest').notNull(),
+  input_digest: text('input_digest').notNull(), snapshot_digest: text('snapshot_digest').notNull(), bytes_digest: text('bytes_digest').notNull(),
+  byte_length: integer('byte_length').notNull(), metadata_envelope: jsonb('metadata_envelope').$type<Record<string, unknown>>(),
+  ciphertext: privateCiphertext('ciphertext'), key_version: text('key_version'), nonce_b64: text('nonce_b64'), auth_tag_b64: text('auth_tag_b64'),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(), updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  expires_at: timestamp('expires_at', { withTimezone: true }).notNull(), purged_at: timestamp('purged_at', { withTimezone: true }),
+}, t => [
+  unique('app_action_payloads_org_owner_id_unique').on(t.org_id, t.owner_user_id, t.id),
+  unique('app_action_payloads_exact_reference_unique').on(t.org_id, t.owner_user_id, t.id, t.snapshot_digest),
+  unique('app_action_payloads_equivalent_unique').on(t.org_id, t.owner_user_id, t.installation_id, t.snapshot_digest),
+  foreignKey({ name: 'app_action_payloads_installation_fk', columns: [t.org_id, t.installation_id], foreignColumns: [appInstallations.org_id, appInstallations.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_action_payloads_owner_user_id_fkey', columns: [t.owner_user_id], foreignColumns: [users.id] }).onDelete('restrict'),
+  check('app_action_payloads_identity_check', sql`${t.resource_target_key} ~ '^[a-z][a-z0-9_]{0,47}$' AND ${t.state_key} ~ '^[a-z][a-z0-9_]{0,47}$'
+    AND ${t.action_key} ~ '^[a-z][a-z0-9_]{0,47}$' AND ${t.draft_revision} BETWEEN 1 AND 2147483646
+    AND ${t.artifact_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.declaration_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.action_contract_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.input_digest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.snapshot_digest} ~ '^[a-f0-9]{64}$' AND ${t.bytes_digest} ~ '^[a-f0-9]{64}$' AND ${t.byte_length} BETWEEN 1 AND 8388608`),
+  check('app_action_payloads_body_check', sql`(${t.purged_at} IS NULL AND ${t.ciphertext} IS NOT NULL AND octet_length(${t.ciphertext})=${t.byte_length}
+    AND ${t.key_version} IS NOT NULL AND ${t.nonce_b64} IS NOT NULL AND ${t.auth_tag_b64} IS NOT NULL AND ${t.nonce_b64} ~ '^[A-Za-z0-9+/]{16}$' AND ${t.auth_tag_b64} ~ '^[A-Za-z0-9+/]{22}==$'
+    AND ${t.metadata_envelope} IS NOT NULL AND jsonb_typeof(${t.metadata_envelope})='object' AND octet_length(${t.metadata_envelope}::text)<=98304)
+    OR (${t.purged_at} IS NOT NULL AND ${t.ciphertext} IS NULL AND ${t.key_version} IS NULL AND ${t.nonce_b64} IS NULL AND ${t.auth_tag_b64} IS NULL AND ${t.metadata_envelope} IS NULL)`),
+  check('app_action_payloads_expiry_check', sql`${t.expires_at}>${t.created_at} AND ${t.expires_at}<=${t.created_at}+interval '30 days'`),
+  index('app_action_payloads_scope_idx').on(t.org_id, t.owner_user_id, t.installation_id, t.state_key),
+  index('app_action_payloads_expiry_idx').on(t.expires_at),
+]);
+
+export const appActionPayloadFiles = pgTable('app_action_payload_files', {
+  ...orgId(), owner_user_id: text('owner_user_id').notNull(), snapshot_id: text('snapshot_id').notNull(), file_id: text('file_id').notNull(),
+  position: integer('position').notNull(),
+}, t => [
+  primaryKey({ name: 'app_action_payload_files_pkey', columns: [t.org_id, t.snapshot_id, t.file_id] }),
+  unique('app_action_payload_files_position_unique').on(t.org_id, t.snapshot_id, t.position),
+  foreignKey({ name: 'app_action_payload_files_payload_fk', columns: [t.org_id, t.owner_user_id, t.snapshot_id], foreignColumns: [appActionPayloads.org_id, appActionPayloads.owner_user_id, appActionPayloads.id] }).onDelete('restrict'),
+  foreignKey({ name: 'app_action_payload_files_file_fk', columns: [t.org_id, t.owner_user_id, t.file_id], foreignColumns: [appPrivateFiles.org_id, appPrivateFiles.owner_user_id, appPrivateFiles.id] }).onDelete('restrict'),
+  check('app_action_payload_files_position_check', sql`${t.position} BETWEEN 0 AND 7`),
+]);
+
 export const appRunHumanAuthorizations = pgTable('app_run_human_authorizations', {
   ...orgId(), run_id: text('run_id').notNull(), owner_user_id: text('owner_user_id').notNull(),
   consent_grant_id: text('consent_grant_id'), consent_epoch: integer('consent_epoch'),
   exposure_id: text('exposure_id'), exposure_epoch: integer('exposure_epoch'),
+  snapshot_id: text('snapshot_id'), snapshot_digest: text('snapshot_digest'),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, t => [
   primaryKey({ name: 'app_run_human_authorizations_pkey', columns: [t.org_id, t.run_id] }),
+  foreignKey({ name: 'app_run_human_authorizations_payload_fk', columns: [t.org_id, t.owner_user_id, t.snapshot_id, t.snapshot_digest], foreignColumns: [appActionPayloads.org_id, appActionPayloads.owner_user_id, appActionPayloads.id, appActionPayloads.snapshot_digest] }).onDelete('restrict'),
+  check('app_run_human_authorizations_payload_check', sql`(${t.snapshot_id} IS NULL AND ${t.snapshot_digest} IS NULL) OR (${t.snapshot_id} IS NOT NULL AND ${t.snapshot_digest} IS NOT NULL AND ${t.snapshot_digest} ~ '^[a-f0-9]{64}$')`),
   foreignKey({ columns: [t.org_id, t.run_id], foreignColumns: [appRuns.org_id, appRuns.id], name: 'app_run_human_authorizations_run_fk' }).onDelete('restrict'),
   foreignKey({ columns: [t.org_id, t.consent_grant_id, t.owner_user_id], foreignColumns: [appExperienceConsentGrants.org_id, appExperienceConsentGrants.id, appExperienceConsentGrants.owner_user_id], name: 'app_run_human_authorizations_consent_fk' }).onDelete('restrict'),
   foreignKey({ columns: [t.org_id, t.exposure_id, t.owner_user_id], foreignColumns: [appExperienceResourceExposures.org_id, appExperienceResourceExposures.id, appExperienceResourceExposures.owner_user_id], name: 'app_run_human_authorizations_exposure_fk' }).onDelete('restrict'),
@@ -5857,6 +6000,7 @@ export const appPrivateMcpGrants = pgTable('app_private_mcp_grants', {
 export const appPrivateStateRecords = pgTable('app_private_state_records', {
   ...orgId(), owner_user_id: text('owner_user_id').notNull(), installation_id: text('installation_id').notNull(),
   state_key: text('state_key').notNull(), record_id: text('record_id').notNull(),
+  resource_target_key: text('resource_target_key').default('primary').notNull(),
   artifact_digest: text('artifact_digest').notNull(), declaration_digest: text('declaration_digest').notNull(),
   revision: integer('revision').notNull(), body: jsonb('body').$type<Record<string, unknown>>(),
   key_version: text('key_version'), byte_length: integer('byte_length').notNull(),
@@ -5868,9 +6012,24 @@ export const appPrivateStateRecords = pgTable('app_private_state_records', {
   foreignKey({ name: 'app_private_state_records_installation_fk', columns: [t.org_id, t.installation_id], foreignColumns: [appInstallations.org_id, appInstallations.id] }).onDelete('restrict'),
   foreignKey({ name: 'app_private_state_records_owner_fk', columns: [t.owner_user_id], foreignColumns: [users.id] }).onDelete('restrict'),
   check('app_private_state_records_key_check', sql`${t.state_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
+  check('app_private_state_records_target_key_check', sql`${t.resource_target_key} ~ '^[a-z][a-z0-9_]{0,47}$'`),
   check('app_private_state_records_digest_check', sql`${t.artifact_digest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.declaration_digest} ~ '^sha256:[a-f0-9]{64}$'`),
   check('app_private_state_records_revision_check', sql`${t.revision} BETWEEN 1 AND 2147483647`),
   check('app_private_state_records_body_check', sql`(${t.deleted_at} IS NULL AND ${t.body} IS NOT NULL AND ${t.key_version} IS NOT NULL AND ${t.byte_length} BETWEEN 1 AND 16384 AND octet_length(${t.body}::text)<=24576) OR (${t.deleted_at} IS NOT NULL AND ${t.body} IS NULL AND ${t.key_version} IS NULL AND ${t.byte_length}=0)`),
   check('app_private_state_records_expiry_check', sql`${t.expires_at}>${t.created_at} AND ${t.expires_at}<=${t.created_at}+interval '30 days'`),
   index('app_private_state_records_expiry_idx').on(t.expires_at),
 ]);
+
+export * from './email-knowledge-schema.js';
+export * from './app-connection-session-schema.js';
+export * from './app-data-schema.js';
+export * from './resource-observation-schema.js';
+export * from './schema/app-connection-forms.js';
+
+export * from './app-integration-capture-schema.js';
+export * from './app-integration-destination-schema.js';
+export * from './app-integration-notification-schema.js';
+
+export * from './app-connection-consent-continuation-schema.js';
+
+export * from './native-email-adoption-schema.js';

@@ -1,0 +1,327 @@
+name: Email preview stack checks
+
+on:
+  push:
+    branches:
+      - codex/author-kit-external-email-alpha32
+      - codex/email-preview-host-reviewed-20261013
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact 40-character source commit to check
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: email-preview-stack-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      NEXT_TELEMETRY_DISABLED: '1'
+      RAYON_NUM_THREADS: '1'
+      UV_THREADPOOL_SIZE: '1'
+      NEXT_PUBLIC_APP_URL: __DEFT_APP_URL__
+      NEXT_PUBLIC_API_URL: __DEFT_API_URL__
+      NEXT_PUBLIC_WS_URL: __DEFT_WS_URL__
+      NEXT_PUBLIC_FEATURE_APPS: 'true'
+      NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC: 'true'
+      NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER: 'true'
+      NEXT_PUBLIC_DEFT_SELF_HOSTED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - name: Record source and runner capacity
+        env:
+          REQUESTED_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          mkdir -p .ci-diagnostics
+          git rev-parse HEAD > .ci-diagnostics/source-commit.txt
+          free -m > .ci-diagnostics/memory-before.txt
+          df -m . > .ci-diagnostics/disk-before.txt
+          requested="$REQUESTED_COMMIT"
+          if [ -n "$requested" ]; then
+            [[ "$requested" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git rev-parse HEAD)" = "$requested"
+          fi
+          test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 8388608
+          test "$(df -Pk . | awk 'NR==2 {print $4}')" -ge 8388608
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install exact dependency graph
+        id: install
+        run: |
+          set -o pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee .ci-diagnostics/install.log
+      - name: Full Kit normal and packed consumer suite
+        id: kit
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/app-kit test 2>&1 | tee .ci-diagnostics/kit-normal-packed.log
+      - name: Full candidate API typecheck
+        id: api
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/api exec tsc -p tsconfig.typecheck.json --incremental false 2>&1 | tee .ci-diagnostics/api-typecheck.log
+      - name: Full candidate Web typecheck
+        id: web
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/web exec tsc --noEmit --incremental false 2>&1 | tee .ci-diagnostics/web-typecheck.log
+      - name: Exposure error mapping and schema contract regressions
+        id: focused
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm exec playwright install --with-deps chromium 2>&1 | tee .ci-diagnostics/browser-install.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-http-exposure-error.test.ts test/email-account-catalog.test.ts 2>&1 | tee .ci-diagnostics/host-focused.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-prepared-effect-boundary.test.ts test/app-installed-tool-discovery.test.ts test/app-connection-registry.test.ts test/app-experience-provider-browse.test.ts test/app-experience-resource-content.test.ts 2>&1 | tee .ci-diagnostics/installed-app-boundary.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 src/lib/app-data-copy-effect.test.ts src/lib/app-integration-source-dispatch.test.ts 2>&1 | tee .ci-diagnostics/installed-app-capture.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 src/lib/app-resource-sync-claim-budget.test.ts 2>&1 | tee .ci-diagnostics/resource-sync-claim-budget.log
+          pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/native-mention-agent-catalog.test.ts test/app-attachment-default-off.test.ts test/app-runtime-action-discovery.test.ts 2>&1 | tee .ci-diagnostics/host-cold-native.log
+          node --test apps/api/test/app-owner-context-history.test.mjs 2>&1 | tee .ci-diagnostics/owner-context-history.log
+          node --test scripts/email-preview-test-databases.test.mjs 2>&1 | tee .ci-diagnostics/api-isolation-guards.log
+          pnpm --filter @deft/api exec tsx --experimental-test-module-mocks --test --test-concurrency=1 test/app-connection-custody-classification.test.ts 2>&1 | tee .ci-diagnostics/custody-classification.log
+          node --test packages/db/scripts/fresh-schema-contracts.test.mjs packages/db/scripts/fresh-native-bootstrap.test.mjs packages/db/scripts/fresh-bootstrap-sql.test.mjs 2>&1 | tee .ci-diagnostics/schema-contracts.log
+          node --test packages/db/scripts/reviewed-lineage-artifacts.test.mjs 2>&1 | tee .ci-diagnostics/reviewed-lineage-artifacts.log
+          pnpm --filter @deft/shared exec tsx --test test/native-mentions.test.ts 2>&1 | tee .ci-diagnostics/native-mention-contracts.log
+          pnpm --filter @deft/web exec tsx --test src/lib/app-experience-bootstrap-browser.test.mjs src/lib/app-navigation.test.ts src/lib/app-experience-record-form-v3.test.tsx src/lib/app-experience-record-form-v3-mounted.test.ts src/lib/app-integration-choice-response.test.ts src/lib/app-experience-action-confirmation.test.ts 2>&1 | tee .ci-diagnostics/installed-app-navigation.log
+          pnpm --filter @deft/web exec tsx --test src/lib/app-experience-read-trace.test.ts src/lib/app-experience-account-routing.test.ts src/lib/app-experience-data-client.test.ts src/lib/app-experience-record-document.test.ts src/lib/app-experience-renderer.test.ts src/components/apps/integrations/source-nomination.test.ts 2>&1 | tee .ci-diagnostics/foreground-read-lifecycle.log
+          pnpm --filter @deft/web exec tsx --test src/lib/app-experience-source-image-queue.test.ts src/lib/app-experience-source-presentation.test.ts src/lib/app-experience-source-policy.test.ts src/lib/app-experience-source-view.test.ts 2>&1 | tee .ci-diagnostics/source-image-queue.log
+          node --test apps/web/src/lib/app-experience-consent-presentation.test.mjs 2>&1 | tee .ci-diagnostics/consent-presentation.log
+      - name: Compile production Web
+        id: build
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/web exec next build --webpack 2>&1 | tee .ci-diagnostics/web-build.log
+      - name: Report every gate and fail incomplete closure
+        if: always()
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          KIT: ${{ steps.kit.outcome }}
+          API: ${{ steps.api.outcome }}
+          WEB: ${{ steps.web.outcome }}
+          FOCUSED: ${{ steps.focused.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+        run: |
+          mkdir -p .ci-diagnostics
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          const gates=Object.fromEntries(['INSTALL','KIT','API','WEB','FOCUSED','BUILD'].map(key=>[key,process.env[key]]));
+          writeFileSync('.ci-diagnostics/gates.json',JSON.stringify(gates,null,2)+'\n');
+          console.log(gates);
+          if(Object.values(gates).some(value=>value!=='success'))process.exitCode=1;
+          NODE
+      - name: Preserve diagnostics on success or failure
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: email-preview-stack-${{ github.run_id }}
+          path: .ci-diagnostics/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  api-regressions:
+    needs: closure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    services:
+      postgres:
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+          --label deft.test_fixture=email-preview-api
+          --label deft.test_run=${{ github.run_id }} --label deft.test_attempt=${{ github.run_attempt }}
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
+      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
+      JWT_SECRET: ci-test-secret-not-for-prod
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
+      ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
+      DEFT_TEST_TIMEOUT_MS: '1800000'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Record exact source and initialize test diagnostics
+        run: |
+          mkdir -p .ci-api-diagnostics
+          git rev-parse HEAD > .ci-api-diagnostics/source-commit.txt
+          free -m > .ci-api-diagnostics/memory-before.txt
+          test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 8388608
+      - name: Install exact dependency graph
+        id: api_install
+        run: |
+          set -o pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee .ci-api-diagnostics/install.log
+      - name: Build current SDK and install locked active Email test dependencies
+        id: api_legacy
+        run: |
+          set -o pipefail
+          pnpm --filter @deft/app-kit build 2>&1 | tee .ci-api-diagnostics/kit-build.log
+          npm exec --yes --package=pnpm@10.33.1 -- pnpm --dir examples/apps/email install --ignore-workspace --frozen-lockfile 2>&1 | tee .ci-api-diagnostics/legacy-email-install.log
+      - name: Start exact loopback mailbox predecessor and verify server identity
+        id: api_predecessor
+        run: |
+          set -euo pipefail
+          name="email-mailbox-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach --name "$name" --network host \
+            --label deft.test_fixture=email-mailbox-predecessor --label deft.test_run="$GITHUB_RUN_ID" --label deft.test_attempt="$GITHUB_RUN_ATTEMPT" \
+            --env POSTGRES_USER=gate_g_test --env POSTGRES_DB=email_stage34_test \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b \
+            postgres -c listen_addresses=127.0.0.1 -p 55435
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec "$name" pg_isready -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -AtF '|' \
+            -c 'SELECT current_database(),current_user,inet_server_port(),host(inet_server_addr())' \
+            | tee .ci-api-diagnostics/mailbox-predecessor-identity.txt
+          test "$(cat .ci-api-diagnostics/mailbox-predecessor-identity.txt)" = 'email_stage34_test|gate_g_test|55435|127.0.0.1'
+          test "$(docker exec "$name" psql -h 127.0.0.1 -p 55435 -U gate_g_test -d email_stage34_test -At \
+            -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")" = '0'
+      - name: Initialize disposable reviewed schema and fixtures
+        id: api_schema
+        run: |
+          set -o pipefail
+          pnpm db:push-full 2>&1 | tee .ci-api-diagnostics/fresh-schema.log
+          pnpm db:seed 2>&1 | tee .ci-api-diagnostics/seed-platform.log
+      - name: Preserve disposable catalog after schema success or refusal
+        if: always() && steps.api_install.outcome == 'success'
+        run: |
+          pnpm --filter @deft/db exec node --input-type=module <<'NODE'
+          import pg from 'pg';
+          import {writeFileSync} from 'node:fs';
+          import {readCatalog} from './scripts/lineage-catalog.mjs';
+          const client=new pg.Client({connectionString:process.env.DATABASE_URL});
+          await client.connect();
+          try{
+            await client.query('BEGIN');
+            const present=(await client.query("SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS present")).rows[0].present;
+            if(!present)await client.query(`CREATE TABLE deft_schema_migrations (
+              version text PRIMARY KEY, description text NOT NULL, checksum text NOT NULL,
+              kind text NOT NULL CHECK (kind IN ('baseline', 'migration')),
+              applied_at timestamptz NOT NULL DEFAULT now())`);
+            const value={...(await readCatalog(client)),temporary_ledger_shell:!present};
+            writeFileSync(process.env.GITHUB_WORKSPACE+'/.ci-api-diagnostics/catalog-after-schema.json',JSON.stringify(value,null,2)+'\n');
+            console.log('Disposable structural catalog:',value.digest);
+          }finally{await client.query('ROLLBACK');await client.end();}
+          NODE
+      - name: Full API regression suite
+        id: api_suite
+        env:
+          DEFT_PREVIEW_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -o pipefail
+          pnpm run test:email-preview-api 2>&1 | tee .ci-api-diagnostics/api-suite.log
+      - name: Preserve actual API gate outcomes
+        if: always()
+        env:
+          INSTALL: ${{ steps.api_install.outcome }}
+          LEGACY: ${{ steps.api_legacy.outcome }}
+          PREDECESSOR: ${{ steps.api_predecessor.outcome }}
+          SCHEMA: ${{ steps.api_schema.outcome }}
+          API: ${{ steps.api_suite.outcome }}
+        run: |
+          mkdir -p .ci-api-diagnostics
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          const gates=Object.fromEntries(['INSTALL','LEGACY','PREDECESSOR','SCHEMA','API'].map(key=>[key,process.env[key]]));
+          writeFileSync('.ci-api-diagnostics/gates.json',JSON.stringify(gates,null,2)+'\n');
+          console.log(gates);
+          if(Object.values(gates).some(value=>value!=='success'))process.exitCode=1;
+          NODE
+      - name: Preserve predecessor logs and stop only this ephemeral runner container
+        if: always()
+        run: |
+          name="email-mailbox-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker inspect "$name" >/dev/null 2>&1; then
+            docker logs "$name" > .ci-api-diagnostics/mailbox-predecessor-server.log 2>&1
+            docker rm --force "$name"
+          fi
+      - name: Preserve API diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: email-preview-api-${{ github.run_id }}
+          path: .ci-api-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  security:
+    needs: closure
+    if: always() && needs.closure.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4.38.1
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v4.38.1
+        with:
+          output: .ci-security-diagnostics
+          upload: never
+          upload-database: false
+      - name: Fail unreviewed or changed security findings and preserve exact dispositions
+        run: |
+          node --test scripts/codeql-reviewed-findings.test.mjs
+          node scripts/codeql-reviewed-findings.mjs .ci-security-diagnostics
+      - name: Preserve original SARIF and separately reviewed dispositions
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: email-preview-security-${{ github.run_id }}
+          path: .ci-security-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

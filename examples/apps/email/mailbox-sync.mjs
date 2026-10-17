@@ -60,9 +60,18 @@ export async function readMailboxSyncPage(client,{request,cachePath,cacheScope,c
     let bodyStatus='oversize',parsed,source;
     if(Number.isSafeInteger(row.size)&&row.size>=0&&row.size<=MAIL_SYNC_LIMITS.source_bytes){
      if(sourceBytes+row.size+1>MAIL_SYNC_LIMITS.page_source_bytes)break;
-     const fetched=await client.fetchOne(row.uid,{source:{start:0,maxLength:Math.min(row.size+1,MAIL_SYNC_LIMITS.source_bytes+1)}},{uid:true});
-     sourceBytes+=fetched?.source?.byteLength??0;
-     if(fetched?.source&&fetched.uid===row.uid&&fetched.source.byteLength===row.size){source=fetched.source;try{parsed=await simpleParser(source);bodyStatus='available';}catch{bodyStatus='unavailable';}}else bodyStatus='unavailable';
+     bodyStatus='unavailable';
+     try{
+      const fetched=await client.fetchOne(row.uid,{source:{start:0,maxLength:Math.min(row.size+1,MAIL_SYNC_LIMITS.source_bytes+1)}},{uid:true});
+      if(Buffer.isBuffer(fetched?.source)){
+       sourceBytes+=fetched.source.byteLength;
+       if(fetched.uid===row.uid&&fetched.source.byteLength===row.size){source=fetched.source;parsed=await simpleParser(source);bodyStatus='available';}
+      }
+     }catch{
+      // A source failure is local to this message. Keep its bounded metadata
+      // and continue; failed bodies remain eligible for a later refresh.
+      parsed=undefined;
+     }
     }
     const candidateBudget={...budget},collected=collectEmailAttachments(parsed,policy,candidateBudget),{attachments,skipped:originalSkipped,original_downloadable_count,...body}=collected;
     if(parsed&&body.body_truncated)bodyStatus='truncated';let skipped=originalSkipped;
@@ -74,7 +83,7 @@ export async function readMailboxSyncPage(client,{request,cachePath,cacheScope,c
     // Reserve 4KiB for cursor/page envelope. A declined candidate advances
     // neither cache nor UID cursor and consumes no staged attachment allowance.
     if(Buffer.byteLength(JSON.stringify([...upserts,candidate].map(stagedWireRow)))>MAIL_SYNC_LIMITS.page_bytes-4096)break;
-    Object.assign(budget,candidateBudget);upserts.push(candidate);entries.delete(id);entries.set(id,metadataDigest);state.after=row.uid;
+    Object.assign(budget,candidateBudget);upserts.push(candidate);entries.delete(id);if(bodyStatus!=='unavailable')entries.set(id,metadataDigest);state.after=row.uid;
     await onProgress?.();
    }
    if(metadata.length===0||state.after>=end||metadata.every(row=>row.uid<=state.after))state.after=end;

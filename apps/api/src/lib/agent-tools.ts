@@ -118,7 +118,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_task_detail',
-    description: 'Get detailed info about a specific task including comments and activity.',
+    description: 'Get current task details, readable subtasks with their statuses and owners, comments, activity, and exact record URLs. Use this for questions about remaining subtasks; do not infer them from the description or old comments. Use returned URLs when linking records.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -634,7 +634,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'wiki_read',
     description:
-      'Read the full content of a wiki page including its linked pages, backlinks, and source citations. Use after wiki_search to get details on a specific topic.',
+      'Read the full content of a wiki page including its exact URL, linked pages, backlinks, and source citations. Use after wiki_search to get details on a specific topic. Link the returned URL; do not invent a wiki route.',
     input_schema: {
       type: 'object' as const,
       properties: {

@@ -23,9 +23,15 @@ const domainEnvelopeBoundaries = new Map<string, readonly string[]>([
   ['lib/app-attachment-custody.ts', ['attachmentStageContext', 'putExclusive', 'org_id']],
   ['lib/app-attachment-owner.ts', ['attachmentStageContext', 'openBinary', 'org_id']],
   ['lib/app-attachment-secrets.ts', ['deft.app_attachment.', 'fingerprintScopeSchema', 'setAAD']],
+  ['lib/app-integration-source-publication.ts', ['loadLiveAttachmentSyncBindingAuthority', 'owner_user_id!==caller.user_id', 'decodePrivateProjection']],
   ['lib/app-private-defty-secrets.ts', ['deft.private_defty.message_aad.v1', 'PrivateDeftySecretContext.parse', 'setAAD']],
   ['lib/app-private-defty-service.ts', ['PrivateDeftySecretService', 'owner_user_id', 'crypto.open']],
+  ['lib/app-private-file-custody.ts', ['deft.private_file.', 'PrivateFileScopeSchema.parse', 'owner_user_id']],
   ['lib/app-resource-private-projection.ts', ["payload_kind: 'projection'", 'checkpoint_id: row.checkpoint_id', 'secrets.openJson']],
+  ['lib/email-attachment-crypto.ts', ['deft.email.attachment.bytes.v1', 'draft_id:string;file_id:string', 'setAAD']],
+  ['lib/email-imap-custody.ts', ['deft.email.imap.credentials.v1', 'owner_user_id: Identifier', 'account_id: Identifier']],
+  ['lib/email-mailbox-crypto.ts', ['EmailMailboxCrypto', 'owner_user_id', 'account_id', 'setAAD']],
+  ['lib/email-outbox-crypto.ts', ['deft.email.outbox.mime.v1', 'EmailOutboxScopeSchema.extend', 'setAAD']],
 ]);
 const adoptionReviewSigner = 'lib/app-private-state-adoption-service.ts';
 function forbiddenSecretTokens(path: string, source: string): string[] {
@@ -87,6 +93,7 @@ test('Run secret composition stays in explicit domain owners; engine flags stay 
     ['lib/app-public-cancellation-owner.ts', 'certifyRetainedCancellation'],
     ['lib/app-public-cancellation-reconcile.ts', 'reconcile'],
     ['lib/app-public-cancellation-settlement.ts', 'origin_native_binding_id'],
+    ['lib/app-resource-sync-closure.ts', 'loadAttachmentSyncClosureBindingAuthority'],
   ]);
   const consumers: string[] = [];
   for (const path of await typescriptFiles(sourceRoot)) {
@@ -239,7 +246,9 @@ test('Run submission is confined to the advisory-lock repository and checkpoint-
   assert.match(admission, /tx\.insert\(appSyncIntents\)/);
   assert.match(admission, /scheduleResourceSyncInTransaction\(tx, run, now\)/);
   assert.deepEqual([...admission.matchAll(/tx\.insert\((\w+)\)/g)].map((match) => match[1]),
-    ['appRuns', 'appSyncIntents']);
+    ['appRuns', 'appResourceObservationRuns', 'appSyncIntents']);
+  assert.match(admission, /if\(observation\)await tx\.insert\(appResourceObservationRuns\)\.values\(\{org_id:target\.org_id,run_id:runId,[\s\S]*?consent_id:observation\.row\.consent_id,consent_digest:observation\.row\.consent_digest/);
+  assert.match(admission, /activeResourceObservation\(tx,authority/);
   assert.doesNotMatch(admission, /\b(?:fetch|executeTool|executePinned|mcpClientManager|AppRunProviderExecutor|pgTable)\b/);
 });
 

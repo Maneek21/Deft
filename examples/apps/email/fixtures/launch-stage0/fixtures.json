@@ -1,0 +1,192 @@
+{
+  "fixture_version": 1,
+  "purpose": "Synthetic launch Stage 0 inputs, not provider response or public contract schemas.",
+  "synthetic": true,
+  "scope": {
+    "org_id": "00000000-0000-4000-8000-000000000100",
+    "owner_id": "00000000-0000-4000-8000-000000000101"
+  },
+  "accounts": [
+    {
+      "id": "gmail-personal",
+      "provider_hint": "gmail",
+      "address": "personal@example.test",
+      "display_name": "Synthetic Personal"
+    },
+    {
+      "id": "gmail-work",
+      "provider_hint": "gmail",
+      "address": "work@example.test",
+      "display_name": "Synthetic Work"
+    },
+    {
+      "id": "microsoft",
+      "provider_hint": "microsoft",
+      "address": "microsoft@example.test",
+      "display_name": "Synthetic Microsoft"
+    },
+    {
+      "id": "imap",
+      "provider_hint": "imap",
+      "address": "imap@example.test",
+      "display_name": "Synthetic IMAP"
+    }
+  ],
+  "messages": [
+    {
+      "id": "review-001",
+      "account_id": "gmail-personal",
+      "conversation_id": "personal-review",
+      "folder": "inbox",
+      "source": "gmail-personal-inbox.eml",
+      "message_id": "<stage0-review-001@example.test>",
+      "locator": {
+        "message_id": "synthetic-gmail-personal-001",
+        "thread_id": "synthetic-gmail-thread-personal",
+        "label_ids": [
+          "INBOX",
+          "STARRED"
+        ]
+      }
+    },
+    {
+      "id": "review-002",
+      "account_id": "gmail-personal",
+      "conversation_id": "personal-review",
+      "folder": "sent",
+      "source": "gmail-personal-sent.eml",
+      "message_id": "<stage0-review-002@example.test>",
+      "locator": {
+        "message_id": "synthetic-gmail-personal-002",
+        "thread_id": "synthetic-gmail-thread-personal",
+        "label_ids": [
+          "SENT"
+        ]
+      }
+    },
+    {
+      "id": "review-003",
+      "account_id": "gmail-personal",
+      "conversation_id": "personal-review",
+      "folder": "inbox",
+      "source": "gmail-personal-followup.eml",
+      "message_id": "<stage0-review-003@example.test>",
+      "locator": {
+        "message_id": "synthetic-gmail-personal-003",
+        "thread_id": "synthetic-gmail-thread-personal",
+        "label_ids": [
+          "INBOX"
+        ]
+      }
+    },
+    {
+      "id": "work-001",
+      "account_id": "gmail-work",
+      "conversation_id": "work-review",
+      "folder": "inbox",
+      "source": "gmail-work-inbox.eml",
+      "message_id": "<stage0-work-001@example.test>",
+      "locator": {
+        "message_id": "synthetic-gmail-work-001",
+        "thread_id": "synthetic-gmail-thread-work",
+        "label_ids": [
+          "INBOX"
+        ]
+      }
+    },
+    {
+      "id": "microsoft-001",
+      "account_id": "microsoft",
+      "conversation_id": "microsoft-check",
+      "folder": "inbox",
+      "source": "microsoft-inbox.eml",
+      "message_id": "<stage0-microsoft-001@example.test>",
+      "locator": {
+        "message_id": "synthetic-graph-message-001",
+        "conversation_id": "synthetic-graph-conversation-001",
+        "folder_id": "synthetic-graph-inbox"
+      }
+    },
+    {
+      "id": "imap-stable-001",
+      "account_id": "imap",
+      "conversation_id": "imap-stable",
+      "folder": "inbox",
+      "source": "imap-locator-change.eml",
+      "message_id": "<stage0-imap-stable-001@example.test>",
+      "locator": {
+        "resource_id": "inbox:3001:1",
+        "mailbox": "INBOX"
+      }
+    },
+    {
+      "id": "untrusted-001",
+      "account_id": "gmail-personal",
+      "conversation_id": "personal-untrusted",
+      "folder": "inbox",
+      "source": "untrusted-html.eml",
+      "message_id": "<stage0-untrusted-001@example.test>",
+      "locator": {
+        "message_id": "synthetic-gmail-untrusted-001",
+        "thread_id": "synthetic-gmail-thread-untrusted",
+        "label_ids": [
+          "INBOX"
+        ]
+      }
+    }
+  ],
+  "reply_candidates": {
+    "parent_id": "review-001",
+    "reply_to": [
+      "review-queue@example.test"
+    ],
+    "reply_all_cc": [
+      "collaborator@example.test"
+    ],
+    "owner_sent_bcc": [
+      "blind-reviewer@example.test"
+    ],
+    "received_bcc": []
+  },
+  "locator_changes": [
+    {
+      "message_id": "imap-stable-001",
+      "logical_id": "synthetic-logical-imap-001",
+      "before": {
+        "resource_id": "inbox:3001:1",
+        "mailbox": "INBOX"
+      },
+      "after": {
+        "resource_id": "archive:3003:27",
+        "mailbox": "Archive"
+      }
+    }
+  ],
+  "attachments": [
+    {
+      "message_id": "review-001",
+      "source": "synthetic-brief.pdf",
+      "filename": "synthetic-brief.pdf",
+      "media_type": "application/pdf",
+      "bytes": 1840,
+      "sha256": "7dcd3e988227137bbea91d996b903482a80f1f49ca3fdebd5ad6db9242b6669f",
+      "current_runtime_outcome": "skipped_unsupported_media_type"
+    }
+  ],
+  "failed_messages": [
+    {
+      "id": "malformed-001",
+      "account_id": "gmail-personal",
+      "source": "malformed-message.eml",
+      "failure_kind": "malformed_mime_and_message_id",
+      "current_runtime_expectation": "parser_may_recover_but_reply_parent_rejected"
+    },
+    {
+      "id": "source-unavailable-001",
+      "account_id": "imap",
+      "source": "imap-locator-change.eml",
+      "failure_kind": "source_read_truncated",
+      "current_runtime_expectation": "metadata_retained_body_unavailable"
+    }
+  ]
+}

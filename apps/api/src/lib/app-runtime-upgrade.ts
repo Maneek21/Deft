@@ -200,7 +200,21 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
   // Never lock Runs here: settlement takes Run before App SHARE.
   const counts = await tx.select({ state: appRuns.state, count: sql<number>`count(*)::int` }).from(appRuns).where(and(
     eq(appRuns.org_id, actor.org_id), eq(appRuns.origin_app_installation_id, installationId),
-    eq(appRuns.origin_app_version_id, prior.id), inArray(appRuns.state, nonterminal))).groupBy(appRuns.state);
+    eq(appRuns.origin_app_version_id, prior.id), inArray(appRuns.state, nonterminal),
+    // Attachment adoption retains terminal unknown history; it never replays it.
+    // All attempts must be terminal and every retained claim lease must have ended.
+    // Other upgrade modes keep the existing unknown-outcome blocker unchanged.
+    mode === 'attachment' ? sql`(${appRuns.state} <> 'unknown_outcome' OR (
+      ${appRuns.unknown_outcome_at} IS NULL
+      OR NOT EXISTS (SELECT 1 FROM app_run_attempts a
+        WHERE a.org_id = ${appRuns.org_id} AND a.run_id = ${appRuns.id}
+          AND a.state = 'unknown_outcome')
+      OR EXISTS (SELECT 1 FROM app_run_attempts a
+        WHERE a.org_id = ${appRuns.org_id} AND a.run_id = ${appRuns.id}
+          AND (a.state NOT IN ('succeeded','failed','cancelled','unknown_outcome')
+            OR a.lease_expires_at > clock_timestamp()
+            OR (a.state = 'unknown_outcome' AND (a.claimed_at IS NULL OR a.lease_expires_at IS NULL))))
+    ))` : undefined)).groupBy(appRuns.state);
   const [dependencies] = await tx.select({ count: sql<number>`count(*)::int` }).from(appDependencyLocks)
     .innerJoin(appInstallations, and(eq(appInstallations.org_id, appDependencyLocks.org_id),
       eq(appInstallations.id, appDependencyLocks.app_installation_id), eq(appInstallations.active_version_id, appDependencyLocks.app_version_id)))

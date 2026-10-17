@@ -1,4 +1,4 @@
-import { after, test } from 'node:test';
+import { after, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   REMOTE_MCP_AUTHORIZATION_SCOPES,
@@ -18,6 +18,7 @@ import {
   buildHumanToolSchemas,
   humanToolChallengeScope,
   humanToolHasRequiredScope,
+  humanWorkspaceCapabilities,
 } from '../src/lib/mcp-tools/human.js';
 import {
   READ_ONLY_TOOLS,
@@ -35,7 +36,7 @@ import {
   MODULE_OPERATION_DEFINITIONS,
   MODULE_OPERATION_NAMES,
 } from '@deft/shared/modules';
-import { closeDb } from '../src/lib/db.js';
+import { closeDb, db } from '../src/lib/db.js';
 import { RUNTIME_WORKFLOW_SCOPES } from '../src/lib/app-runtime-workflow-tools.js';
 
 after(async () => closeDb());
@@ -198,7 +199,8 @@ test('every operational tool is registered, classified, and advertised once', ()
   const schemaByName = new Map(schemas.map((schema) => [String(schema.name), schema]));
   assert.equal(new Set(schemas.map((schema) => String(schema.name))).size, schemas.length);
   for (const name of [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS]) {
-    assert.ok(HUMAN_TOOL_SCOPES[name] || Object.hasOwn(RUNTIME_WORKFLOW_SCOPES, name),
+    assert.ok(HUMAN_TOOL_SCOPES[name]
+      || Object.hasOwn(RUNTIME_WORKFLOW_SCOPES, name),
       `${name} must have an explicit scope or independently governed authority contract`);
   }
 
@@ -215,6 +217,26 @@ test('every operational tool is registered, classified, and advertised once', ()
     assert.ok((schema.inputSchema as any)?.properties?.idempotency_key, `${name} must advertise retry safety`);
   }
   assert.equal((schemaByName.get('calendar_event_cancel')?.annotations as any)?.destructiveHint, true);
+});
+
+test('workspace capabilities omit ungranted App tools and OAuth never loads App grants', async () => {
+  const token = { id: 'fixture-personal-token', agent_employee_id: null, app_run_authorization_version: 1 };
+  const select = mock.method(db, 'select', (() => ({ from: () => ({ where: async () => [token] }) })) as any);
+  const execute = mock.method(db, 'execute', (async () => ({ rows: [] })) as any);
+  try {
+    const ctx = { org_id: 'fixture-org', user_id: 'fixture-owner', role: 'member' as const,
+      scopes: ['read:workspace'], token_id: token.id, principal_kind: 'human' as const };
+    const result = await humanWorkspaceCapabilities({}, ctx);
+    const available = JSON.parse(result.content[0]!.text).available_tools as string[];
+    assert.ok(available.includes('workspace_capabilities'));
+    assert.ok(available.every(name => !name.startsWith('email_')));
+    assert.equal(select.mock.callCount(), 1);
+    assert.equal(execute.mock.callCount(), 1);
+    const oauth = await humanWorkspaceCapabilities({}, { ...ctx, principal_kind: 'oauth' });
+    assert.ok((JSON.parse(oauth.content[0]!.text).available_tools as string[]).every(name => !name.startsWith('email_')));
+    assert.equal(select.mock.callCount(), 1);
+    assert.equal(execute.mock.callCount(), 1);
+  } finally { select.mock.restore(); execute.mock.restore(); }
 });
 
 test('module MCP exposes every static operation from the shared contract exactly once', () => {

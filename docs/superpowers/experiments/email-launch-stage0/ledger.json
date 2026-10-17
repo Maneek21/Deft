@@ -1,0 +1,376 @@
+{
+  "schema_version": "deft.email_launch_execution_ledger.v1",
+  "date": "2026-09-30",
+  "batch": "X00",
+  "status": "done",
+  "status_reason": "Isolated pgvector database established in WSL; fresh schemas, supported upgrades and real HTTP security tests execute. Original Stage 0 baseline evidence is preserved separately from Stage 1.",
+  "scope": "Stage 0 baseline, synthetic fixtures, minimum design contracts, compatibility and ownership; no Stage 1 production implementation.",
+  "source": {
+    "worktree": "C:/tmp/deft-gate-g-integration-20260924",
+    "branch": "codex/email-wip-example",
+    "head": "0c611bb4b1a000e8b4a066f71974137e5c0f31cd",
+    "email_version": "1.5.5",
+    "kit_version": "0.1.0-alpha.7",
+    "preserved_changes": [
+      "apps/web/next-env.d.ts"
+    ],
+    "new_changes_are_uncommitted": true
+  },
+  "stack": {
+    "pr_url": "https://github.com/Maneek21/Deft/pull/347",
+    "state": "OPEN",
+    "draft": true,
+    "mergeable": "MERGEABLE",
+    "merge_state": "CLEAN",
+    "base_branch": "codex/apps-demo-release-prep",
+    "base_head": "153614ee373a874bd88e9119c0ec028f03b69ef8",
+    "remote_heads_match": true,
+    "base_is_merge_base": true,
+    "reported_checks": 0,
+    "certification_claim": false
+  },
+  "subtasks": [
+    {
+      "id": "S00-01",
+      "title": "Current source and stack",
+      "owner": "Lead",
+      "status": "done"
+    },
+    {
+      "id": "S00-02",
+      "title": "Independent pinned Email consumer",
+      "owner": "Lead",
+      "status": "done"
+    },
+    {
+      "id": "S00-03",
+      "title": "Synthetic provider and failure fixtures",
+      "owner": "stage0_fixtures",
+      "status": "done"
+    },
+    {
+      "id": "S00-04",
+      "title": "Minimum contract and architecture handoff",
+      "owner": "Lead",
+      "status": "done",
+      "implementation_status": "design_contracts_only"
+    },
+    {
+      "id": "S00-05",
+      "title": "Provider/deployment/role compatibility matrix",
+      "owner": "Lead",
+      "status": "done",
+      "implementation_status": "target_and_evidence_status_only"
+    },
+    {
+      "id": "S00-06",
+      "title": "Deft UI and installed documentation kickoff",
+      "owner": "stage0_ui_kickoff",
+      "status": "done",
+      "dedicated_ui_design_skill": "unavailable_reported"
+    },
+    {
+      "id": "S00-07",
+      "title": "Isolated pgvector database",
+      "owner": "Lead",
+      "status": "done",
+      "dependency": "Resolved through isolated WSL PostgreSQL 16/pgvector at loopback55435"
+    },
+    {
+      "id": "S00-08",
+      "title": "Exclusive next-stage file ownership and proving checks",
+      "owner": "Lead",
+      "status": "done"
+    }
+  ],
+  "consumer": {
+    "path": "C:/tmp/deft-email-launch-stage0-consumer-20260930",
+    "source_copy": "Tracked Email source from recorded HEAD, plus new synthetic fixture pack.",
+    "node": "24.14.0",
+    "pnpm": "10.33.1",
+    "install_command": "pnpm install --frozen-lockfile",
+    "install_exit_code": 0,
+    "kit_tarball": "deft-app-kit-0.1.0-alpha.7.tgz",
+    "kit_tarball_sha256": "48a6ad355ede34131305def92b13af7db19c1a67ee143605f637c3f793cacc89",
+    "package_digest": "sha256:9491a7a69d97f89d4da706cdf1e4199df85f31827ab4314ff782a1bcb92e79e5",
+    "artifact_digest": "sha256:198cde04fad0c96f799123332f2fd7814d037c5e376ce4111d7ed37fe3232b5f",
+    "worker_sha256": "55d6b9c4103c523b0d87aaf282789acf72330adbc9215ed669f13dc85ac5f9cd",
+    "matches_audited_package_digest": true
+  },
+  "checks": [
+    {
+      "id": "T01",
+      "cwd": "consumer",
+      "command": "pnpm test",
+      "exit_code": 0,
+      "passed": 30,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_type": "existing Example tests"
+    },
+    {
+      "id": "T02",
+      "cwd": "consumer",
+      "command": "pnpm run build",
+      "exit_code": 0,
+      "evidence_type": "independent candidate build"
+    },
+    {
+      "id": "T03",
+      "cwd": "consumer",
+      "command": "pnpm run smoke:mailbox",
+      "exit_code": 0,
+      "evidence_type": "simulated UI/runtime",
+      "observed": {
+        "views": 5,
+        "effects": 0
+      }
+    },
+    {
+      "id": "T04",
+      "cwd": "consumer",
+      "command": "pnpm run smoke:activity",
+      "exit_code": 0,
+      "evidence_type": "simulated UI/runtime",
+      "observed": {
+        "initial_retry_once": true,
+        "refresh_recovered": true,
+        "unknown_retained": true,
+        "writes": 0,
+        "effects": 0,
+        "views": 6
+      }
+    },
+    {
+      "id": "T05",
+      "cwd": "source",
+      "command": "pnpm exec tsx --test apps/api/test/app-experience-human-action-contract.test.ts apps/api/test/app-private-defty-contract.test.ts apps/api/test/app-private-defty-model.test.ts apps/web/src/lib/app-experience-action-composer.test.ts",
+      "exit_code": 0,
+      "passed": 25,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_type": "focused contracts and local model stub; no DB races"
+    },
+    {
+      "id": "T06",
+      "cwd": "consumer",
+      "command": "node --test fixtures/launch-stage0/verify.test.mjs",
+      "exit_code": 0,
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_type": "actual pinned parser/runtime with in-memory doubles; no network"
+    },
+    {
+      "id": "T07",
+      "command": "Strict PDF structural parse and rendered inspection",
+      "status": "passed",
+      "owner": "stage0_fixtures",
+      "scope": "synthetic one-page fixture only"
+    }
+  ],
+  "fixture_directory": "examples/apps/email/fixtures/launch-stage0",
+  "fixture_files": 15,
+  "contracts": "../../specs/2026-09-30-email-launch-stage0-contracts.md",
+  "handoff": "../../plans/2026-09-30-email-launch-stage0.md",
+  "architecture_decisions": [
+    {
+      "id": "A01",
+      "choice": "Email-owned logical mail index with generic host connection custody and account-target routing",
+      "spike_batch": "X01",
+      "status": "chosen_pending_implementation_proof"
+    },
+    {
+      "id": "A02",
+      "choice": "Focused generic trusted rich host controls and typed lazy file/body handles",
+      "spike_batch": "X03",
+      "status": "chosen_pending_implementation_proof"
+    },
+    {
+      "id": "A03",
+      "choice": "Host-resolved immutable outgoing snapshot preserving one-click exact human Send",
+      "spike_batch": "X03",
+      "status": "chosen_pending_implementation_proof"
+    },
+    {
+      "id": "A04",
+      "choice": "Revocable account/binding-scoped sync service authority with supervised refresh",
+      "spike_batch": "X10",
+      "early_scope": "Required before real background operation in X06",
+      "status": "chosen_pending_implementation_proof"
+    }
+  ],
+  "ui": {
+    "dedicated_design_skill": "Not available in current catalog/local roots; requirement reported unmet.",
+    "next_version": "16.3.5",
+    "consulted_guides": [
+      "installed server/client component guide",
+      "installed CSS guide",
+      "installed accessibility guide"
+    ],
+    "refs_directory": "C:/Users/Osheen Pradhan/Documents/Codex/2026-09-30/email-launch-audit/screenshots",
+    "refs": [
+      "38-deft-tasks-reference.jpg",
+      "39-deft-chat-reference.jpg"
+    ],
+    "new_ui_changes": 0,
+    "new_rendered_ui_claim": false
+  },
+  "blockers": [
+    {
+      "id": "B06-PROVIDERS",
+      "kind": "external_access",
+      "blocks": [
+        "X06 real-provider journey",
+        "X16 provider certification"
+      ],
+      "evidence": "Sender and controlled recipient nominated; recipient Gmail connector profile verified. Deft sender connection, normal OAuth onboarding and supervised custody remain absent. Connector access is separate from Deft.",
+      "next": "Finish Stage1 host/onboarding code, obtain deployment-owned provider configuration and connect two controlled accounts through Deft."
+    },
+    {
+      "id": "B04-UI-SKILL",
+      "kind": "workflow_capability",
+      "blocks": [],
+      "unmet_user_requirement": true,
+      "evidence": "No relevant installed frontend/UI design skill found; Deft references/instructions and rendered checks remain required.",
+      "next": "Use an appropriate frontend design skill if one becomes available; do not repeat discovery without environment change."
+    }
+  ],
+  "boundaries": {
+    "live_mail_sent": 0,
+    "live_permissions_changed": false,
+    "production_code_changed": false,
+    "production_schema_changed": false,
+    "pr_merged": false,
+    "published": false,
+    "database_backed_tests_executed": true,
+    "database_backed_tests_scope": "Stage1 readiness closure:18 real HTTP checks; original67 baseline test count remains historical."
+  },
+  "next_assignment_order": [
+    "Stage1 foundations implemented; continue its remaining host/file/snapshot/onboarding critical path",
+    "Run controlled real-provider X06 only through Deft after those seams work"
+  ],
+  "fixture_manifest": [
+    {
+      "name": ".gitattributes",
+      "bytes": 25,
+      "sha256": "70e659d5e64fd8baf606de924626b1fea2eabb8c9679eb9eebe9f56de4265fba"
+    },
+    {
+      "name": ".gitignore",
+      "bytes": 21,
+      "sha256": "9f5c592c515b3cad4d5bc9d271f19a70541d93b79601999e7afd2aa637e2540e"
+    },
+    {
+      "name": "fixtures.json",
+      "bytes": 5532,
+      "sha256": "720d32bb4c8bab7b477c266e8195ddf50ae2633960f885d06561bc266d0aa24d"
+    },
+    {
+      "name": "gmail-personal-followup.eml",
+      "bytes": 549,
+      "sha256": "2233f8a8c3eb1fb85735ec3f657c8be8b92c43e0466917feff792d6543e6efc7"
+    },
+    {
+      "name": "gmail-personal-inbox.eml",
+      "bytes": 3314,
+      "sha256": "14c255f91a5991cef8d0cf5599cd83d83a369d13dab947e9e9b278998bef3568"
+    },
+    {
+      "name": "gmail-personal-sent.eml",
+      "bytes": 589,
+      "sha256": "eed431e8097cc2c6a6c96202cdfe7b6a3482e1ce9a05d6d9039ba5d6ddb7ea15"
+    },
+    {
+      "name": "gmail-work-inbox.eml",
+      "bytes": 363,
+      "sha256": "a2a30d64fc6aa48d60a7f4858be97439bde90cb164869a36296c9a75a517e80d"
+    },
+    {
+      "name": "imap-locator-change.eml",
+      "bytes": 375,
+      "sha256": "76171a22af2a773a1c2a457c52c832a44080b917ed21947a7e34bb5e78b95a2b"
+    },
+    {
+      "name": "interrupted-operations.json",
+      "bytes": 1469,
+      "sha256": "02b23e67b6922994c4e4034a09d85ab258685c9da2d7be1e7bea883ee100525f"
+    },
+    {
+      "name": "malformed-message.eml",
+      "bytes": 347,
+      "sha256": "55aa86bdef422108222334e7b9eb2858d4ffa5829270ffc800d67ef317467be7"
+    },
+    {
+      "name": "microsoft-inbox.eml",
+      "bytes": 375,
+      "sha256": "12dff82d6a10a4f0fdae7f30179384314e4b9ee0f96f4c7985479faa5101afe0"
+    },
+    {
+      "name": "README.md",
+      "bytes": 2312,
+      "sha256": "15799b3ab2e2774db471c47d3aec287f02fd717547b2aabf62943a07444771d9"
+    },
+    {
+      "name": "synthetic-brief.pdf",
+      "bytes": 1840,
+      "sha256": "7dcd3e988227137bbea91d996b903482a80f1f49ca3fdebd5ad6db9242b6669f"
+    },
+    {
+      "name": "untrusted-html.eml",
+      "bytes": 1007,
+      "sha256": "b4eab519c94af690741379c8ee8fbf2af45aee03aac5e58491b403907d683f9f"
+    },
+    {
+      "name": "verify.test.mjs",
+      "bytes": 13284,
+      "sha256": "5493bc81415c13365c7e272a8799e1592bc3690c8512ca3105c3e30e5a85bca6"
+    }
+  ],
+  "fixture_consumer_byte_match": true,
+  "evidence_phase": "Historical Stage 0 baseline with database prerequisite closure during Stage 1",
+  "resolved_blockers": [
+    {
+      "id": "B00-DB",
+      "kind": "local_environment",
+      "blocks": [
+        "X00 isolated DB setup",
+        "DB-backed authorization/concurrency proof"
+      ],
+      "evidence": "Docker Linux engine named pipe absent; backend startup log reports ingest socket open/rename error. Native PostgreSQL 16 lacks vector.control and vector.dll.",
+      "root_cause_limit": "Socket startup failure observed; underlying Windows cause not established.",
+      "candidate_target": "postgres://gate_g_test@127.0.0.1:55435/gate_g_20260928_experience_consent_test_v30",
+      "target_created": false,
+      "next": "Healthy pgvector PostgreSQL service, new unused guarded database, db:assert-fresh then db:push-full and ledger/extension verification.",
+      "status": "resolved",
+      "resolution": "Existing Deft-CRM-Test WSL distro supplies PostgreSQL16/pgvector0.6.0; no Docker reset/system configuration/live data change."
+    }
+  ],
+  "fixture_manifest_status": "Historical Stage0 bytes; current Stage1 verifier/README evolved with PDF support. See Stage1 source manifest for current hashes.",
+  "database_closure": {
+    "postgres": "16",
+    "vector": "0.6.0",
+    "host": "127.0.0.1",
+    "port": 55435,
+    "user": "gate_g_test",
+    "test_database": "gate_g_20260928_experience_consent_test_v30",
+    "fresh_database": "gate_g_email_stage1_pdf_fresh_20260930",
+    "upgrade_command": "pnpm db:upgrade",
+    "fresh_commands": [
+      "pnpm db:assert-fresh",
+      "pnpm db:push-full"
+    ],
+    "exit_code": 0,
+    "readback": {
+      "ledger_versions": 56,
+      "preview57": 1,
+      "preview58": 1,
+      "target_columns": 4,
+      "target_triggers": 4,
+      "pdf_binding_guard": true,
+      "pdf_grant_guard": true
+    },
+    "live_data_touched": false,
+    "environment_files_changed": false
+  }
+}

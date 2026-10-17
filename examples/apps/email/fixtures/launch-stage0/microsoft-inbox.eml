@@ -1,0 +1,9 @@
+MIME-Version: 1.0
+From: Synthetic Scheduler <scheduler@example.test>
+To: Synthetic Microsoft <microsoft@example.test>
+Subject: Synthetic account smoke check
+Date: Tue, 29 Sep 2026 10:00:00 +0000
+Message-ID: <stage0-microsoft-001@example.test>
+Content-Type: text/plain; charset=utf-8
+
+Microsoft account identity scenario only. No access token or live Graph response.

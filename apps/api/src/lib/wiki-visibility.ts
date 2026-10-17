@@ -2,7 +2,7 @@ import { and, eq, or, sql } from 'drizzle-orm';
 import { spaceMembers, spaces, wikiPages } from '@deft/db/schema';
 
 export function visibleWikiPageCondition(userId: string, orgId?: string) {
-  return or(
+  const ordinary = or(
     eq(wikiPages.scope, 'org'),
     eq(wikiPages.user_id, userId),
     orgId ? sql`exists (
@@ -16,6 +16,25 @@ export function visibleWikiPageCondition(userId: string, orgId?: string) {
       where ${spaceMembers.space_id} = ${wikiPages.space_id}
         and ${spaceMembers.user_id} = ${userId}
     )`,
+  );
+  // Routed Email copies belong to their destination audience. Retaining the
+  // capturing owner for attribution must not bypass later space removal.
+  const emailDestination = and(
+    sql`exists (select 1 from org_members om where om.org_id = ${wikiPages.org_id}
+      and om.user_id = ${userId} and om.is_active = true)`,
+    orgId ? eq(wikiPages.org_id, orgId) : undefined,
+    or(
+      and(eq(wikiPages.scope, 'user'), eq(wikiPages.user_id, userId)),
+      and(eq(wikiPages.scope, 'space'), sql`exists (
+        select 1 from spaces s join space_members sm on sm.space_id = s.id
+        where s.id = ${wikiPages.space_id} and s.org_id = ${wikiPages.org_id}
+          and s.is_archived = false and sm.user_id = ${userId}
+      )`),
+    ),
+  );
+  return or(
+    and(sql`${wikiPages.created_via} IS DISTINCT FROM 'email_knowledge_auto' AND ${wikiPages.created_via} IS DISTINCT FROM 'app_integration_capture' AND ${wikiPages.created_via} IS DISTINCT FROM 'app_integration_transfer'`, ordinary),
+    and(or(eq(wikiPages.created_via, 'email_knowledge_auto'), eq(wikiPages.created_via, 'app_integration_capture'), eq(wikiPages.created_via, 'app_integration_transfer')), emailDestination),
   );
 }
 

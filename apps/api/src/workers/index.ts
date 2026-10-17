@@ -45,6 +45,7 @@ const CRON_DELAYS: Record<string, number> = {
   'ics-sync': 60_000,
   'chat-observation-backfill': 5 * 60_000,
   'chat-knowledge-batch': 30 * 60_000,
+  'app-integration-knowledge-repair': 60_000,
   'attention-maintenance': 15 * 60_000,
   'app-automation-scan': 60_000,
 };
@@ -65,6 +66,7 @@ const CRON_KEYS: Record<string, string> = {
   'ics-sync': 'cron:ics-sync',
   'chat-observation-backfill': 'cron:chat-observation-backfill',
   'chat-knowledge-batch': 'cron:chat-knowledge-batch',
+  'app-integration-knowledge-repair': 'cron:app-integration-knowledge-repair',
   'attention-maintenance': 'cron:attention-maintenance',
   'app-automation-scan': 'cron:app-automation-scan',
 };
@@ -308,6 +310,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
 
 async function getScheduledJobHandler(jobName: string): Promise<JobHandler | null> {
   switch (jobName) {
+    case 'app-integration-knowledge':
+    case 'app-integration-knowledge-repair': {
+      return (await import('../lib/app-integration-capture-service.js')).handleAppIntegrationKnowledge;
+    }
     case 'app-resource-sync-scan': {
       const mod = await import('./handlers/app-resource-sync-scan.js');
       return mod.handleAppResourceSyncScan;
@@ -398,6 +404,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     case 'attention-maintenance': {
       const mod = await import('./handlers/attention-maintenance.js');
       return mod.handleAttentionMaintenance;
+    }
+    case 'app-integration-notification': {
+      const mod = await import('../lib/app-integration-notification-service.js');
+      return mod.handleAppIntegrationNotification;
     }
     case 'attention-delivery': {
       const mod = await import('./handlers/attention-delivery.js');

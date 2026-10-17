@@ -1,0 +1,7 @@
+// A document leaf transports hostile text; only the host sanitizer renders it.
+export function emailDocumentNode(document,{id='mail_body',title='Message',printable=true,metadata,print_control_id}={}){
+ if(!document||!['plain','html'].includes(document.format)||typeof document.content!=='string'||document.content.length>16384||document.content.includes('\0')||typeof document.truncated!=='boolean'||typeof title!=='string'||title.length>200||title.includes('\0')||!/^[a-z][a-z0-9_]{0,63}$/.test(id)||typeof printable!=='boolean')throw Error('EMAIL_DOCUMENT_UNAVAILABLE');
+ if(metadata!==undefined&&(!Array.isArray(metadata)||metadata.length>16||metadata.some(row=>!row||Object.keys(row).some(key=>!['label','value'].includes(key))||typeof row.label!=='string'||typeof row.value!=='string'||row.label.length>200||row.value.length>2000||row.label.includes('\0')||row.value.includes('\0'))))throw Error('EMAIL_DOCUMENT_UNAVAILABLE');
+ if(print_control_id!==undefined&&(!printable||typeof print_control_id!=='string'||!/^[a-z][a-z0-9_]{0,63}$/.test(print_control_id)||print_control_id===id))throw Error('EMAIL_DOCUMENT_UNAVAILABLE');
+ return Object.freeze({kind:'document',id,format:document.format,content:document.content,truncated:document.truncated,printable,title,...(print_control_id===undefined?{}:{print_control_id}),...(metadata===undefined?{}:{metadata:Object.freeze(metadata.map(row=>Object.freeze({...row})))})});
+}

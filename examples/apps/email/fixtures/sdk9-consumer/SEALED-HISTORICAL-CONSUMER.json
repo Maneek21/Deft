@@ -1,0 +1,27 @@
+{
+  "schema": "deft.email.historical_sdk9_consumer.v1",
+  "baseline_commit": "f97daa49b02d310fedfb647c5d779ab57060cb4b",
+  "files": [
+    {
+      "original_path": "examples/apps/email/package.json",
+      "sealed_path": "examples/apps/email/fixtures/sdk9-consumer/package.json",
+      "bytes": 1593,
+      "sha256": "b0545b10b6e5757f735282544a6ef4e4239bc6c5eca5bd4178ea681b652fc941"
+    },
+    {
+      "original_path": "examples/apps/email/pnpm-lock.yaml",
+      "sealed_path": "examples/apps/email/fixtures/sdk9-consumer/pnpm-lock.yaml",
+      "bytes": 20122,
+      "sha256": "3e3d012fc3265fdffa1141d87b4366bcf3575d97b55481c9c5068e60dbb93b7e"
+    },
+    {
+      "original_path": "examples/apps/email/deft-app-kit-0.1.0-alpha.9.tgz",
+      "sealed_path": "examples/apps/email/fixtures/sdk9-consumer/deft-app-kit-0.1.0-alpha.9.tgz",
+      "bytes": 154511,
+      "sha256": "ac324a4906c4fade1e463a0808dc111cfa71dcd41901272c519cf6c4a73925bc"
+    }
+  ],
+  "corresponding_source": "../app-kit-alpha9-corresponding-source.tar.gz",
+  "corresponding_source_provenance": "../SDK9-PROVENANCE.json",
+  "supported_current_consumer": false
+}

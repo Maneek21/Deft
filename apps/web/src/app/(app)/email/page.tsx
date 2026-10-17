@@ -1,0 +1,2 @@
+import Link from 'next/link';
+export default function RetiredEmailPage(){return <main className="mx-auto max-w-xl space-y-4 p-6"><h1 className="text-xl font-semibold">Email has moved to connected apps</h1><p className="text-sm text-[var(--on-surface-variant)]">The built-in Email workspace is retired. Open your installed app to connect an account or access its records. Historical links remain subject to current account access.</p><Link href="/settings/apps" className="deft-pill inline-flex min-h-11 items-center">Open installed apps</Link></main>;}

@@ -1,0 +1,7 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {verifyPreparedRecordChange} from '../src/lib/app-data-record-change-guards';import {fixture,digest} from './app-data-record-changes-test-fixture';
+test('host binds exact entered parameters and V2 snapshot to both current authorities without changing V1',()=>{const f=fixture(),manual=f.prepare(),{prepared_digest,...old}=manual,input={...f.input,parameters:{name:'Ada'}},snapshot={...old,schema_version:'deft.app_prepared_record_change.v2',parameters:{name:'Ada'},parameter_fields:[{key:'name',label:'name',max_characters:8192}]},prepared={...snapshot,prepared_digest:digest(snapshot)};
+ assert.ok(verifyPreparedRecordChange(prepared,f.destination as any,f.source as any,input));assert.ok(verifyPreparedRecordChange(manual,f.destination as any,f.source as any,f.input));
+ for(const bad of [input,{...input,parameters:{name:'Other'}}])if(bad===input)assert.throws(()=>verifyPreparedRecordChange(manual,f.destination as any,f.source as any,bad));else assert.throws(()=>verifyPreparedRecordChange(prepared,f.destination as any,f.source as any,bad));
+ assert.throws(()=>verifyPreparedRecordChange(prepared,f.destination as any,f.source as any,f.input));assert.throws(()=>verifyPreparedRecordChange({...prepared,parameter_fields:[{key:'name',label:'altered',max_characters:8192}]},f.destination as any,f.source as any,input));assert.throws(()=>verifyPreparedRecordChange({...prepared,parameters:{name:'{{nested}}'}},f.destination as any,f.source as any,input));
+});

@@ -1,0 +1,22 @@
+import {and,eq,sql,or} from 'drizzle-orm';
+import {jobQueue,attentionItems,attentionDeliveries} from '@deft/db/schema';
+import {appIntegrationNotificationPolicies as policies} from '../../../../packages/db/src/app-integration-notification-schema.js';
+import type {AppRunTransaction as Tx} from './app-run-repository.js';
+import {appIntegrationSourceDigest,type AppIntegrationSourceCaller} from './app-integration-source.js';
+import {AppIntegrationSourceIdentitySchema,type AppIntegrationSourceIdentity} from '../../../../packages/app-kit/src/app-integration-source.js';
+export const APP_INTEGRATION_NOTIFICATION_JOB='app-integration-notification';
+/** Independent opt-in and actual governed job lease. Gateway obtains account,
+ * member and binding locks first, as for the existing capture queue. */
+export async function assertAppIntegrationNotificationDelivery(tx:Tx,caller:AppIntegrationSourceCaller,account:Pick<AppIntegrationSourceIdentity,'installation_id'|'account_ref'|'store_key'>,now=Date.now()){
+ const denied=()=>new Error('APP_INTEGRATION_NOTIFICATION_CHANGED_OR_DENIED'),delivery=caller.notification_delivery;
+ if(caller.kind!=='notification_policy'||!delivery||!delivery.job_id||!delivery.lock_token||!Number.isSafeInteger(delivery.policy_revision)||delivery.policy_revision<1)throw denied();
+ const [policy]=await tx.select().from(policies).where(and(eq(policies.org_id,caller.org_id),eq(policies.owner_user_id,caller.user_id),eq(policies.installation_id,account.installation_id),eq(policies.account_ref,account.account_ref),eq(policies.store_key,account.store_key),eq(policies.id,caller.principal_id),eq(policies.enabled,true),eq(policies.revision,delivery.policy_revision))).limit(1).for('share');if(!policy)throw denied();
+ const [job]=await tx.select({expires:jobQueue.lock_expires_at,name:jobQueue.name,data:jobQueue.data}).from(jobQueue).where(and(eq(jobQueue.id,delivery.job_id),eq(jobQueue.org_id,caller.org_id),eq(jobQueue.queue,'scheduled-jobs'),or(eq(jobQueue.name,APP_INTEGRATION_NOTIFICATION_JOB),eq(jobQueue.name,'attention-delivery')),eq(jobQueue.status,'running'),eq(jobQueue.lock_token,delivery.lock_token))).limit(1).for('share');if(!job?.expires||job.expires.getTime()<=now)throw denied();
+ const data=job.data as Record<string,unknown>;if(!data||typeof data!=='object'||Array.isArray(data))throw denied();
+ if(job.name===APP_INTEGRATION_NOTIFICATION_JOB){const source=AppIntegrationSourceIdentitySchema.parse(data.source);if(data.policy_id!==policy.id||data.policy_revision!==policy.revision||source.installation_id!==account.installation_id||source.account_ref!==account.account_ref||source.store_key!==account.store_key||'ref' in account&&appIntegrationSourceDigest(source.ref)!==appIntegrationSourceDigest(account.ref))throw denied();}
+ else{const [attention]=await tx.select({metadata:attentionItems.metadata}).from(attentionDeliveries).innerJoin(attentionItems,and(eq(attentionItems.id,attentionDeliveries.attention_item_id),eq(attentionItems.org_id,caller.org_id),eq(attentionItems.user_id,caller.user_id))).where(and(eq(attentionDeliveries.id,String(data.delivery_id)),eq(attentionDeliveries.org_id,caller.org_id),eq(attentionDeliveries.user_id,caller.user_id),eq(attentionDeliveries.status,'queued'),eq(attentionItems.source_type,'app_integration_source'),eq(attentionItems.state,'open_unseen'),sql`${attentionItems.version}=${attentionDeliveries.delivery_version}`)).limit(1).for('share');if(!attention||attention.metadata.policy_id!==policy.id||attention.metadata.policy_revision!==policy.revision)throw denied();const source=attention.metadata.app_integration_source as Record<string,unknown>|undefined;if(!source||source.installation_id!==account.installation_id||source.account_ref!==account.account_ref||source.store_key!==account.store_key)throw denied();}
+ return {policy,expires:job.expires.getTime()};
+}
+export function createAppIntegrationNotificationPolicyAuthority(input:{transaction<T>(fn:(tx:Tx)=>Promise<T>):Promise<T>;clock?:()=>number}){
+ return async(caller:AppIntegrationSourceCaller,account:Pick<AppIntegrationSourceIdentity,'installation_id'|'account_ref'|'store_key'>,tx?:Tx)=>{const check=async(transaction:Tx)=>{const value=await assertAppIntegrationNotificationDelivery(transaction,caller,account,(input.clock??Date.now)());return {identity:appIntegrationSourceDigest([value.policy.id,value.policy.revision,caller.notification_delivery]),expires_at:value.expires};};return tx?check(tx):input.transaction(check);};
+}

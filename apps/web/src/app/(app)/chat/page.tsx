@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect,useRef } from 'react';
+import { useRouter,useSearchParams } from 'next/navigation';
 import { SpaceChat } from '@/components/space-chat';
 import { ThreadPanel } from '@/components/thread-panel';
 import { api } from '@/lib/api';
@@ -9,6 +9,8 @@ import { useChatContext } from '@/lib/chat-context';
 
 export default function ChatPage() {
   const searchParams = useSearchParams();
+  const router=useRouter();
+  const currentSearch=useRef(searchParams.toString());currentSearch.current=searchParams.toString();
   const { activeSpaceId, syncActiveSpaceIdFromUrl, spaces, threadMessage, setThreadMessage } = useChatContext();
 
   const urlSpaceId = searchParams.get('space');

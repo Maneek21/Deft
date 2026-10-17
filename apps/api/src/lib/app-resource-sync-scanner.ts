@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt,or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appResourceBindings, jobQueue } from '@deft/db/schema';
 import { db } from './db.js';
@@ -47,6 +47,7 @@ type Delivery = Readonly<{ id: string; lockToken: string; signal?: AbortSignal }
 export async function scanAppResourceSyncBindings(
   delivery: Delivery,
   admission: Pick<AppResourceSyncAdmissionService, 'admitDue'>,
+  observationAdmission?:Pick<AppResourceSyncAdmissionService,'admitObservation'>,
 ): Promise<AppResourceSyncScanResult> {
   const result = { state: 'scanned' as AppResourceSyncScanResult['state'], inspected: 0,
     created: 0, existing: 0, blocked: 0, not_due: 0, rejected: 0, wrapped: false };
@@ -68,11 +69,16 @@ export async function scanAppResourceSyncBindings(
     if (!job) throw new Error('Resource sync scan lease unavailable');
     const cursor = CursorSchema.parse(job.data);
     const bindings = await lockTx.select({ org_id: appResourceBindings.org_id,
-      resource_binding_id: appResourceBindings.id }).from(appResourceBindings).where(and(
+      resource_binding_id: appResourceBindings.id,contract_version:appResourceBindings.registration_contract_version }).from(appResourceBindings).where(and(
       eq(appResourceBindings.state, 'active'),
-      // Channel3 remains explicitly owner-admitted in its first slice; never
-      // forward a new binding into the default closed channel2 scanner.
-      eq(appResourceBindings.registration_contract_version,'deft.app_runtime_channel.v2'),
+      // V3 requires its separately reviewed observation opt-in. Ordinary V3
+      // binding activation never enters the existing scanner by itself.
+      or(eq(appResourceBindings.registration_contract_version,'deft.app_runtime_channel.v2'),
+        observationAdmission?and(eq(appResourceBindings.registration_contract_version,'deft.app_runtime_channel.v3'),
+          sql`EXISTS(SELECT 1 FROM app_resource_observation_consents o WHERE o.org_id=${appResourceBindings.org_id}
+            AND o.resource_binding_id=${appResourceBindings.id} AND o.state='active'
+            AND ((o.snapshot->>'consent_lifetime'='until_revoked' AND o.expires_at IS NULL)
+              OR (NOT(o.snapshot?'consent_lifetime') AND o.expires_at>clock_timestamp())))`):undefined),
       cursor.after_binding_id ? gt(appResourceBindings.id, cursor.after_binding_id) : undefined,
     )).orderBy(asc(appResourceBindings.id)).limit(APP_RESOURCE_SYNC_SCAN_LIMIT + 1);
     const saveCursor = async (after: string | null) => {
@@ -92,12 +98,16 @@ export async function scanAppResourceSyncBindings(
     for (const target of bindings.slice(0, APP_RESOURCE_SYNC_SCAN_LIMIT)) {
       if (!canContinue()) return result;
       try {
-        const admitted = await admission.admitDue(target, {
+        const selected=target.contract_version==='deft.app_runtime_channel.v3'?observationAdmission:admission;
+        if(!selected)throw new Error('Observation admission unavailable');
+        const limits={
           lock_timeout_ms: 500, statement_timeout_ms: 2_000,
           deadline_at: new Date(Date.now() + Math.max(1,
             APP_RESOURCE_SYNC_SCAN_BUDGET_MS - (performance.now() - startedAt))),
           signal: delivery.signal,
-        });
+        };
+        const nomination={org_id:target.org_id,resource_binding_id:target.resource_binding_id};
+        const admitted='admitObservation' in selected?await selected.admitObservation(nomination,limits):await selected.admitDue(nomination,limits);
         result[admitted.state] += 1;
       } catch {
         // Denied/stale/expired/key-unavailable or contended bindings cannot

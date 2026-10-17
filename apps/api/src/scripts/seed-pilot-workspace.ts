@@ -2652,6 +2652,7 @@ function pilotNotificationPreferences(
   channels: PilotNotificationChannels;
   push: {
     enabled: boolean;
+    email: boolean;
     chat: boolean;
     tasks: boolean;
     approvals: boolean;
@@ -2672,6 +2673,7 @@ function pilotNotificationPreferences(
     },
     push: {
       enabled: false,
+      email: false,
       chat: true,
       tasks: true,
       approvals: true,

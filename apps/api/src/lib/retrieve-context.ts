@@ -26,6 +26,7 @@ import {
   type ModuleReadDiagnostic,
 } from './resource-search-service.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
+import { emailKnowledgeAudienceCondition, EMAIL_KNOWLEDGE_ORIGIN } from './email-knowledge-visibility.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -287,7 +288,7 @@ async function runWikiQuery(
             eq(wikiPages.is_deleted, false),
             sql`${wikiPages.type} != 'decision'`,
             ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
-            retrievalScope ?? eq(wikiPages.scope, 'org'),
+            retrievalScope ?? or(eq(wikiPages.scope, 'org'), ...(user_id ? [and(eq(wikiPages.created_via, EMAIL_KNOWLEDGE_ORIGIN), eq(wikiPages.user_id, user_id), eq(wikiPages.scope, 'user'))] : [])),
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
         )
@@ -584,7 +585,7 @@ async function fetchWikiIlike(
       db
         .select(selectColumns)
         .from(wikiPages)
-        .where(and(...baseConditions, retrievalScope ?? eq(wikiPages.scope, 'org')))
+        .where(and(...baseConditions, retrievalScope ?? or(eq(wikiPages.scope, 'org'), ...(user_id ? [and(eq(wikiPages.created_via, EMAIL_KNOWLEDGE_ORIGIN), eq(wikiPages.user_id, user_id), eq(wikiPages.scope, 'user'))] : []))))
         .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
         .limit(limit),
     ]);
@@ -1118,7 +1119,15 @@ export async function retrieveContextWithDiagnostics(
   ]);
 
   // 8. Merge, sort by score DESC, return top `limit`.
-  const results = [...wikiRows, ...decisionRows, ...memRows, ...noteRows, ...taskRows, ...moduleOutcome.results];
+  // Final current-audience check covers FTS, semantic and literal fallback
+  // paths together, including callers that only provide a conversation id.
+  const candidates = [...wikiRows, ...decisionRows];
+  const permitted = candidates.length ? await db.select({ id: wikiPages.id }).from(wikiPages)
+    .where(and(eq(wikiPages.org_id, org_id), eq(wikiPages.is_deleted, false),
+      inArray(wikiPages.id, candidates.map(row => row.source_id)),
+      emailKnowledgeAudienceCondition(org_id, user_id, space_id ?? conversation_id, agent_employee_id))) : [];
+  const allowedIds = new Set(permitted.map(row => row.id));
+  const results = [...candidates.filter(row => allowedIds.has(row.source_id)), ...memRows, ...noteRows, ...taskRows, ...moduleOutcome.results];
   results.sort((a, b) => b.score - a.score);
   return {
     results: results.slice(0, limit),

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { assertReviewedFreshBootstrap, convergeReviewedRelease } from './lineage-convergence.mjs';
+import { reconcileFreshSchemaContracts } from './fresh-schema-contracts.mjs';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
 import { LOCK_ID, baselineChecksum, sha256 } from './upgrade.ts';
 import { upgradeManifest } from '../upgrades/manifest.ts';
@@ -50,10 +52,10 @@ export async function main() {
 
       await run(['pnpm', 'exec', 'tsx', 'scripts/ensure-pgvector.ts']);
       await run(['pnpm', 'exec', 'drizzle-kit', 'push', '--force']);
-      await run(['pnpm', 'exec', 'tsx', 'scripts/apply-extras.ts']);
+      await run(['pnpm', 'exec', 'tsx', 'scripts/apply-extras.ts', '--fresh-init']);
 
       // Only this verified-empty invocation, after every schema step succeeds,
-      // may assert that the complete current manifest is present. A crash
+      // may attest the immutable schema117 bootstrap. A crash
       // before this transaction leaves an unledgered schema that both fresh
       // initialization and the upgrader refuse to auto-certify.
       await client.query('BEGIN');
@@ -68,22 +70,29 @@ export async function main() {
           kind text NOT NULL CHECK (kind IN ('baseline', 'migration')),
           applied_at timestamptz NOT NULL DEFAULT now()
         )`);
+        await reconcileFreshSchemaContracts(client);
         await client.query(`INSERT INTO deft_schema_migrations
           (version, description, checksum, kind) VALUES ($1,$2,$3,'baseline')`,
         [upgradeManifest.baseline.version,
           `Supported schema baseline ${upgradeManifest.baseline.releaseTag}`,
           baselineChecksum()]);
-        for (const migration of upgradeManifest.migrations) {
+        const bootstrapEnd = upgradeManifest.migrations.findIndex(row => row.version === '0.3.0-preview.117');
+        if (bootstrapEnd < 0) throw new Error('Reviewed schema117 bootstrap missing');
+        for (const migration of upgradeManifest.migrations.slice(0, bootstrapEnd + 1)) {
           await client.query(`INSERT INTO deft_schema_migrations
             (version, description, checksum, kind) VALUES ($1,$2,$3,'migration')`,
           [migration.version, migration.description,
             sha256(readFileSync(resolve(upgradesDir, migration.file), 'utf8'))]);
         }
+        await assertReviewedFreshBootstrap(client);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
         throw error;
       }
+      // A failure here leaves an exactly reviewed117 ledger that db:upgrade
+      // can recover. Never stamp118 before its SQL and final catalog succeed.
+      await convergeReviewedRelease(client);
       console.log(`[OK] Recorded ${upgradeManifest.migrations.length + 1} current schema ledger version(s).`);
     } finally {
       await client.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);

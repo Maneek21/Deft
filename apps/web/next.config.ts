@@ -28,7 +28,22 @@ try {
 const apiOrigin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 const nextConfig: NextConfig = {
+  webpack(config) {
+    config.resolve.extensionAlias = { ...config.resolve.extensionAlias, ".js": [".ts", ".tsx", ".js"] };
+    return config;
+  },
   transpilePackages: ['@deft/shared'],
+  // App Kit keeps .js specifiers for its emitted Node ESM package. The host
+  // imports these reviewed TypeScript sources directly, so resolve only those
+  // source-to-source requests to their existing .ts files for Turbopack.
+  turbopack: {
+    resolveAlias: {
+      './mailbox-list.js': '../../packages/app-kit/src/mailbox-list.ts',
+      './resource-record-list.js': '../../packages/app-kit/src/resource-record-list.ts',
+      './runtime-authoring.js': '../../packages/app-kit/src/runtime-authoring.ts',
+      './safe-compose-html.js': '../../packages/app-kit/src/safe-compose-html.ts',
+    },
+  },
   allowedDevOrigins: ['localhost', '127.0.0.1'],
   // Hide the floating Next.js dev-tools indicator — it overlapped composer/FAB
   // on mobile audits. The badge is dev-only either way; this also hides the
@@ -53,6 +68,10 @@ const nextConfig: NextConfig = {
             value: [
               "default-src 'self'",
               "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              // Next SPA navigation retains the original document policy.
+              // Trusted Host pages may create Blob Workers; opaque srcdoc children
+              // apply an additional hash-only/connect-none policy.
+              "worker-src 'self' blob:",
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data: https://fonts.gstatic.com",

@@ -7,6 +7,7 @@ import { useAuth } from '@/lib/auth-context';
 
 type PushPreferences = {
   enabled: boolean;
+  email: boolean;
   chat: boolean;
   tasks: boolean;
   approvals: boolean;
@@ -25,6 +26,7 @@ type Device = {
 
 const DEFAULT_PUSH: PushPreferences = {
   enabled: false,
+  email: false,
   chat: true,
   tasks: true,
   approvals: true,
@@ -33,7 +35,8 @@ const DEFAULT_PUSH: PushPreferences = {
   quiet_hours: { enabled: false, start: '22:00', end: '08:00' },
 };
 
-const CATEGORIES: Array<{ key: keyof Pick<PushPreferences, 'chat' | 'tasks' | 'approvals' | 'calendar' | 'agents'>; label: string }> = [
+const CATEGORIES: Array<{ key: keyof Pick<PushPreferences, 'email' | 'chat' | 'tasks' | 'approvals' | 'calendar' | 'agents'>; label: string }> = [
+  { key: 'email', label: 'Email' },
   { key: 'chat', label: 'Chat' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'approvals', label: 'Approvals' },

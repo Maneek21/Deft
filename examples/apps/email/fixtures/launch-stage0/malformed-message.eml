@@ -1,0 +1,12 @@
+MIME-Version: 1.0
+From: not-an-address
+To: personal@example.test
+Subject: Synthetic malformed message
+Date: invalid-date
+Message-ID: invalid-message-id
+Content-Type: multipart/mixed; boundary="never-closed"
+
+--never-closed
+Content-Type: text/plain; charset=utf-8
+
+Synthetic truncated MIME: the closing boundary is deliberately absent.

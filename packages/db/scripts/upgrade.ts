@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { convergeReviewedRelease } from './lineage-convergence.mjs';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
 import { upgradeManifest, type SchemaRequirement, type UpgradeMigration } from '../upgrades/manifest.ts';
 
@@ -273,6 +274,10 @@ export async function main(argv = process.argv.slice(2)) {
 
   try {
     const appliedBefore = await readApplied(client);
+    if (appliedBefore.length > 0) {
+      await convergeReviewedRelease(client, options);
+      return;
+    }
     const migrationChecksums = loadMigrationChecksums();
     validateAppliedMigrations(appliedBefore, upgradeManifest.migrations, migrationChecksums);
 

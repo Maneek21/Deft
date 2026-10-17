@@ -7,11 +7,31 @@ const ledger="SELECT version,checksum,kind FROM deft_schema_migrations ORDER BY 
 const fingerprint=value=>createHash('sha256').update(value).digest('hex');
 const waitBuffer=new Int32Array(new SharedArrayBuffer(4));
 
+/** Wait for a just-exited test process to disappear from pg_stat_activity.
+ * PostgreSQL can retain the backend for a few milliseconds after the Node
+ * child has exited. Keep the destructive guard fail-closed, revalidate the
+ * fixture identity before every observation, and never terminate a client. */
+export function waitForNoDatabaseClients({assertIdentity,count,timeoutMs=5000,
+ now=Date.now,pause=ms=>Atomics.wait(waitBuffer,0,0,ms),
+ diagnose=()=>'',
+ error='never force-disconnect another client during CI isolation'}){
+ assert.ok(Number.isSafeInteger(timeoutMs)&&timeoutMs>0);
+ const deadline=now()+timeoutMs;
+ while(true){
+  assertIdentity();
+  const clients=count();
+  assert.match(clients,/^\d+$/,'invalid active-client count');
+  if(clients==='0')return;
+  const remaining=deadline-now();
+  if(remaining<=0){const detail=diagnose();assert.fail(`${error}${detail?`: ${detail}`:''}`);}
+  pause(Math.min(100,remaining));
+ }
+}
+
 /** Destructive operations are confined to named ephemeral databases in the
  * exact GitHub service container. Never disconnect clients or disable guards. */
-export function testDatabaseIsolation({docker,mainContainer,predecessorContainer,runId,attempt,record=()=>{},expectedLedgerRows,
+export function testDatabaseIsolation({docker,mainContainer,predecessorContainer,runId,attempt,record=()=>{},
  now=Date.now,pause=ms=>Atomics.wait(waitBuffer,0,0,ms)}){
- assert.ok(Number.isSafeInteger(expectedLedgerRows)&&expectedLedgerRows>0);
  assert.match(mainContainer??'',/^[a-f0-9]{64}$/);
  assert.match(runId??'',/^\d+$/);assert.match(attempt??'',/^\d+$/);
  assert.equal(predecessorContainer,`email-mailbox-predecessor-${runId}-${attempt}`);
@@ -33,17 +53,10 @@ export function testDatabaseIsolation({docker,mainContainer,predecessorContainer
   assert.equal(main('deft_test',identity),'deft_test|postgres|5432|127.0.0.1');
  }
  function assertMain(){
-  const deadline=now()+5000;
-  while(true){
-   assertMainIdentity();
+  waitForNoDatabaseClients({assertIdentity:assertMainIdentity,
    // Every Docker call also checks the runner's unchanged aggregate deadline.
-   const clients=main('postgres',`SELECT count(*) FROM pg_stat_activity WHERE datname IN ('deft_test','${template}')`);
-   assert.match(clients,/^\d+$/,'invalid active-client count');
-   if(clients==='0')return;
-   const remaining=deadline-now();
-   assert.ok(remaining>0,'never force-disconnect another client during CI isolation');
-   pause(Math.min(100,remaining));
-  }
+   count:()=>main('postgres',`SELECT count(*) FROM pg_stat_activity WHERE datname IN ('deft_test','${template}')`),
+   now,pause});
  }
  function verifyLedger(database){
   const actual=fingerprint(main(database,ledger));
@@ -53,7 +66,7 @@ export function testDatabaseIsolation({docker,mainContainer,predecessorContainer
  function createTemplate(){
   assertMain();
   assert.equal(main('postgres',`SELECT count(*) FROM pg_database WHERE datname='${template}'`),'0');
-  assert.equal(main('deft_test','SELECT count(*) FROM deft_schema_migrations'),String(expectedLedgerRows));
+  assert.equal(main('deft_test','SELECT count(*) FROM deft_schema_migrations'),'116');
   assert.equal(main('deft_test','SELECT (SELECT count(*) FROM app_runs)+(SELECT count(*) FROM app_run_secret_payloads)+(SELECT count(*) FROM app_run_receipts)'),'0',
    'the seeded template must contain no retained Run authority or ciphertext');
   ledgerDigest=verifyLedger('deft_test');

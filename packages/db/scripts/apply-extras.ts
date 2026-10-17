@@ -3,6 +3,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
+import { freshBootstrapSql } from './fresh-bootstrap-sql.mjs';
+import { assertReviewedCurrent } from './lineage-convergence.mjs';
 
 const { Client } = pg;
 
@@ -33,9 +35,23 @@ async function main() {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    const ledgerExists = (await client.query<{ installed: boolean }>(`
+      SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS installed
+    `)).rows[0]?.installed === true;
+    const persistentConsentRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (SELECT 1 FROM deft_schema_migrations WHERE version='0.3.0-preview.120') AS installed
+    `)).rows[0]?.installed === true;
+    if (persistentConsentRecorded) {
+      // Legacy SQL predates explicit persistent consent. Never replay its finite
+      // CHECKs over reviewed120 rows or use extras as an implicit schema repair.
+      await assertReviewedCurrent(client);
+      console.log('[apply-extras] exact current120 catalog verified; no historical SQL replay');
+      return;
+    }
+    const freshInitialization = !ledgerExists && process.argv.includes('--fresh-init');
     for (const file of files) {
       const sql = readFileSync(resolve(drizzleDir, file), 'utf8');
-      await client.query(sql);
+      await client.query(freshInitialization ? freshBootstrapSql(file,sql) : sql);
       console.log(`[apply-extras] applied ${file}`);
     }
 
@@ -52,9 +68,6 @@ async function main() {
          WHERE tgname = 'app_grant_snapshots_lineage_trigger'
            AND NOT tgisinternal
       ) AS installed
-    `)).rows[0]?.installed === true;
-    const ledgerExists = (await client.query<{ installed: boolean }>(`
-      SELECT to_regclass('public.deft_schema_migrations') IS NOT NULL AS installed
     `)).rows[0]?.installed === true;
     const connectedLifecycleRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
       SELECT EXISTS (
@@ -139,9 +152,20 @@ async function main() {
     const nativeCreateFile = '0.3.0-preview.29-native-create-requests.sql';
     await client.query(readFileSync(resolve(upgradesDir, nativeCreateFile), 'utf8'));
     console.log(`[apply-extras] reconciled ${nativeCreateFile}`);
-    const nativeMentionsFile = '0.3.0-preview.61-native-mentions.sql';
-    await client.query(readFileSync(resolve(upgradesDir, nativeMentionsFile), 'utf8'));
-    console.log(`[apply-extras] reconciled ${nativeMentionsFile}`);
+
+    // Drizzle declares the native tables but cannot declare their GIN index
+    // or trigger function. Bootstrap only empty, unledgered fresh tables;
+    // retained databases must pass the unchanged migration114 shape guard.
+    if (!ledgerExists && process.argv.includes('--fresh-init')) {
+      const nativeRows = await client.query<{ present: boolean }>(`
+        SELECT EXISTS (SELECT 1 FROM native_reference_states LIMIT 1)
+          OR EXISTS (SELECT 1 FROM native_mention_deliveries LIMIT 1) AS present
+      `);
+      if (nativeRows.rows[0]?.present !== false) throw new Error('E5_FRESH_NATIVE_TABLE_NOT_EMPTY');
+      const nativeMentionsFile = '0.3.0-preview.61-native-mentions.sql';
+      await client.query(readFileSync(resolve(upgradesDir, nativeMentionsFile), 'utf8'));
+      console.log(`[apply-extras] reconciled ${nativeMentionsFile}`);
+    }
 
     // These additive, dormant surfaces must follow the historical App Run
     // reconciliations, which restore the predecessor's provider/ancestry checks.
@@ -172,10 +196,89 @@ async function main() {
       '0.3.0-preview.54-app-experience-consent.sql',
       '0.3.0-preview.55-app-action-batches.sql',
       '0.3.0-preview.56-app-action-batch-policy-revision.sql',
+      '0.3.0-preview.57-app-owner-targets.sql',
+      '0.3.0-preview.58-app-pdf-media.sql',
+      '0.3.0-preview.59-app-private-file-custody.sql',
+      '0.3.0-preview.60-app-owner-connections.sql',
+      '0.3.0-preview.61-owner-resource-page-limits.sql',
+      '0.3.0-preview.62-app-action-resources.sql',
+      '0.3.0-preview.63-native-email-mailbox.sql',
+      '0.3.0-preview.64-email-reading-preferences.sql',
+      '0.3.0-preview.65-email-imap-credentials.sql',
+      '0.3.0-preview.66-email-native-drafts.sql',
+      '0.3.0-preview.67-email-native-operations.sql',
+      '0.3.0-preview.68-email-native-send.sql',
+      '0.3.0-preview.69-email-native-attachments.sql',
+      '0.3.0-preview.70-email-provider-draft-mirrors.sql',
+      '0.3.0-preview.71-email-draft-sync-journal.sql',
+      '0.3.0-preview.72-email-outbox.sql',
+      '0.3.0-preview.73-email-outbox-attempt-markers.sql',
+      '0.3.0-preview.74-email-graph-send-upload.sql',
+      '0.3.0-preview.76-email-templates.sql',
+      '0.3.0-preview.77-email-signatures.sql',
+      '0.3.0-preview.78-email-imap-move-aliases.sql',
+      '0.3.0-preview.79-email-smtp-sent-copy.sql',
+      '0.3.0-preview.80-email-native-timers.sql',
+      '0.3.0-preview.81-email-presentation-cache.sql',
+      '0.3.0-preview.82-email-standalone-account-consent.sql',
+      '0.3.0-preview.83-email-rules.sql',
+      '0.3.0-preview.84-email-rule-receipts.sql',
+      '0.3.0-preview.85-email-native-connections.sql',
+      '0.3.0-preview.87-email-notifications-unread.sql',
+      '0.3.0-preview.88-email-calendar-invitations.sql',
+      '0.3.0-preview.89-email-context-transfers.sql',
+      '0.3.0-preview.90-email-context-transfer-chat.sql',
+      '0.3.0-preview.91-email-knowledge.sql',
+      '0.3.0-preview.92-email-agent-grants.sql',
+      '0.3.0-preview.93-email-folder-management.sql',
+      '0.3.0-preview.94-app-connection-sessions.sql',
+      '0.3.0-preview.95-app-data.sql',
+      '0.3.0-preview.96-app-data-identity-checks.sql',
+      '0.3.0-preview.97-app-connection-reattachment.sql',
+      '0.3.0-preview.98-app-resource-observation.sql',
+      '0.3.0-preview.99-app-connection-upgrade.sql',
+      '0.3.0-preview.100-app-record-changes.sql',
+      '0.3.0-preview.101-app-connection-forms.sql',
+      '0.3.0-preview.102-app-local-jobs.sql',
+      '0.3.0-preview.103-app-future-record-actions.sql',
+      '0.3.0-preview.104-app-resource-observation-connection-receipts.sql',
+      '0.3.0-preview.107-app-run-inspection-leases.sql',
+      '0.3.0-preview.105-prepared-resource-action-batches.sql',
+      '0.3.0-preview.108-app-connection-upgrade-expiry.sql',
+      '0.3.0-preview.109-app-runtime-renewal.sql',
+      '0.3.0-preview.110-app-integrations.sql',
+      '0.3.0-preview.111-app-connection-consent-continuation.sql',
+      '0.3.0-preview.112-native-email-adoption.sql',
+      '0.3.0-preview.113-owner-page-lineage-reconciliation.sql',
+      '0.3.0-preview.114-native-mentions-lineage-reconciliation.sql',
+      '0.3.0-preview.115-restore-safe-helper-references.sql',
+      '0.3.0-preview.116-app-connection-credential-repair.sql',
+      '0.3.0-preview.117-app-connection-uncertain-exchange.sql',
     ]) {
       await client.query(readFileSync(resolve(upgradesDir, platformFile), 'utf8'));
       console.log(`[apply-extras] reconciled ${platformFile}`);
     }
+
+    // Restore this guard only when its forward migration is already recorded.
+    // Fresh initialization must reach the unchanged117 catalog before convergence;
+    // standalone extras cannot silently upgrade a retained117 database.
+    const supplementalEffectsRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (SELECT 1 FROM deft_schema_migrations WHERE version='0.3.0-preview.118') AS installed
+    `)).rows[0]?.installed === true;
+    if (supplementalEffectsRecorded) {
+      await client.query(readFileSync(resolve(upgradesDir, '0.3.0-preview.118-app-supplemental-effects.sql'), 'utf8'));
+      console.log('[apply-extras] restored recorded supplemental effect guards');
+    }
+
+    // Never change the attested117 bootstrap or an un-upgraded retained DB.
+    const observationContinuationRecorded = ledgerExists && (await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (SELECT 1 FROM deft_schema_migrations WHERE version='0.3.0-preview.119') AS installed
+    `)).rows[0]?.installed === true;
+    if (observationContinuationRecorded) {
+      await client.query(readFileSync(resolve(upgradesDir, '0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'), 'utf8'));
+      console.log('[apply-extras] restored recorded observation continuation receipt guard');
+    }
+
 
     // Expression-based unique indexes can't be declared in schema.ts, so
     // `drizzle-kit push` silently drops them. Re-create the ones the app
@@ -193,7 +296,6 @@ async function main() {
       'app_attachment_stages_checkpoint_fk', 'app_attachment_stages_attempt_fk',
       'app_attachment_stages_projection_fk', 'app_attachment_stages_identity_check',
       'app_attachment_stages_metadata_check', 'app_attachment_stages_state_check',
-      'native_mention_source_org_fk',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -310,11 +412,6 @@ async function main() {
 
     const requiredIndexes = [
       'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_active_checkpoint_idx', 'app_attachment_stages_cleanup_idx', 'app_attachment_stages_parent_idx',
-      'native_reference_source_unique',
-      'native_reference_org_id_unique',
-      'native_reference_refs_gin',
-      'native_mention_delivery_unique',
-      'native_mention_recipient_idx',
       'org_member_unique',
       'module_installations_org_id_id_unique',
       'module_versions_org_installation_id_unique',
@@ -393,10 +490,6 @@ async function main() {
     const requiredAppRunTriggers = [
       'app_v7_effective_grant_shape_trigger', 'app_v7_effective_grant_shape_trigger', 'app_attachment_binding_policy_guard_trigger',
       'app_attachment_stage_guard_trigger', 'app_attachment_stage_capacity_trigger',
-      'native_reference_messages',
-      'native_reference_tasks',
-      'native_reference_task_comments',
-      'native_reference_wiki_pages',
       'capability_provider_snapshots_append_only_trigger',
       'app_runs_state_identity_trigger',
       'app_run_attempts_state_identity_trigger',

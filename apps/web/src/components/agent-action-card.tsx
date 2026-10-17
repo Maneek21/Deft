@@ -30,6 +30,7 @@ import { ReceiptViewer } from './receipt-viewer';
 import { AppRunInspector } from './apps/app-run-inspector';
 import { RuntimeAppInputReview, type RuntimeReviewIdentity } from './runtime-app-input-review';
 import { NativeAppInputReview, type NativeReviewIdentity } from './native-app-input-review';
+import { getActiveSessionCacheScope } from '@/lib/session-cache';
 import { useAuth } from '@/lib/auth-context';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
@@ -79,6 +80,7 @@ const ACTION_LABELS: Record<string, string> = {
   update_task_status: 'Update status',
   assign_task: 'Assign task',
   post_message: 'Post message',
+  email_send: 'Send email',
 };
 
 const CAPTURE_LABELS: Record<string, string> = {
@@ -500,17 +502,13 @@ export function AgentActionCard({
   const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localResult, setLocalResult] = useState<unknown>(null);
-  const [messageReview, setMessageReview] = useState<{ actionId: string; to: string; subject: string; body_text: string } | null>(null);
   const [taskLinkReview, setTaskLinkReview] = useState<{ actionId: string; record: { label: string; href: string }; task: { identifier: string; title: string; project_name: string; href: string } } | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const { user, org, sessionCacheScope } = useAuth();
+  // Retired historical effects stay visible, but cannot be approved as a new action.
+  const retiredEmailAction=action.action==='email_send'||(action.action==='app_run_invoke'&&action.params.capability_label==='send_email'&&action.params.safe_preview?.fields?.provider_kind!=='app_runtime');
   const [nativeReviewed, setNativeReviewed] = useState<(NativeReviewIdentity & { actionId: string }) | null>(null);
   const [runtimeReviewed, setRuntimeReviewed] = useState<(RuntimeReviewIdentity & { actionId: string }) | null>(null);
-  // Only the supported App-origin email contract has this message presenter.
-  // Other governed operations keep their existing review flow.
-  const needsMessageReview = action.action === 'app_run_invoke'
-    && action.params.capability_label === 'send_email'
-    && typeof action.params.safe_preview?.fields?.app_id === 'string';
   const needsRuntimeReview = action.action === 'app_run_invoke'
     && action.params.safe_preview?.fields?.provider_kind === 'app_runtime';
   const runtimeRunId = typeof action.params.run_id === 'string' ? action.params.run_id : null;
@@ -532,7 +530,6 @@ export function AgentActionCard({
   const onNativeReviewed = useCallback((identity: NativeReviewIdentity | null) => {
     setNativeReviewed(identity ? { actionId: action.id, ...identity } : null);
   }, [action.id]);
-  const reviewedMessage = messageReview?.actionId === action.id ? messageReview : null;
   const needsTaskLinkReview = action.action === 'module_record_task_link' || action.action === 'module_record_task_unlink';
   const reviewedTaskLink = taskLinkReview?.actionId === action.id ? taskLinkReview : null;
   const [showReceipt, setShowReceipt] = useState(false);
@@ -615,24 +612,6 @@ export function AgentActionCard({
   const isPossiblyStale = resolvedStatus === 'pending' && createdAtMs != null && Date.now() - createdAtMs > 60 * 60 * 1000;
   const isCompact = variant === 'compact';
 
-  async function loadMessageReview() {
-    setReviewLoading(true);
-    setLocalError(null);
-    setMessageReview(null);
-    try {
-      const response = await api.get(`/api/agent/actions/${encodeURIComponent(action.id)}/message-review`);
-      if (!response.ok) throw new Error('Message review unavailable');
-      const { message } = await response.json();
-      if (!message || typeof message.to !== 'string' || typeof message.subject !== 'string'
-        || typeof message.body_text !== 'string') throw new Error('Message review unavailable');
-      setMessageReview({ to: message.to, subject: message.subject, body_text: message.body_text, actionId: action.id });
-    } catch {
-      setLocalError('Message review is unavailable. The request may have expired or its access changed. Refresh the review or prepare a new action from the app.');
-    } finally {
-      setReviewLoading(false);
-    }
-  }
-
   const loadTaskLinkReview = useCallback(async () => {
     setReviewLoading(true);
     setLocalError(null);
@@ -654,21 +633,6 @@ export function AgentActionCard({
     if (needsTaskLinkReview && resolvedStatus === 'pending') void loadTaskLinkReview();
   }, [loadTaskLinkReview, needsTaskLinkReview, resolvedStatus]);
 
-  const messageReviewPanel = needsMessageReview ? (
-    <section aria-label="App message review" className="mt-3 rounded-xl border p-3 text-sm" style={{ borderColor: 'var(--border)' }}>
-      {reviewedMessage ? (
-        <dl className="space-y-2 break-words [overflow-wrap:anywhere]">
-          <div><dt className="font-medium">To</dt><dd>{reviewedMessage.to}</dd></div>
-          <div><dt className="font-medium">Subject</dt><dd>{reviewedMessage.subject}</dd></div>
-          <div><dt className="font-medium">Message</dt><dd className="max-h-72 overflow-y-auto whitespace-pre-wrap">{reviewedMessage.body_text}</dd></div>
-        </dl>
-      ) : <p>Review the recipient and exact message before approving.</p>}
-      <button type="button" onClick={loadMessageReview} disabled={reviewLoading || isBusy}
-        className="mt-2 min-h-9 rounded-md border px-3 py-1 text-xs disabled:opacity-60" style={{ borderColor: 'var(--border)' }}>
-        {reviewLoading ? 'Loading message…' : reviewedMessage ? 'Refresh message review' : 'Review recipient and message'}
-      </button>
-    </section>
-  ) : null;
   const taskLinkReviewPanel = needsTaskLinkReview ? (
     <section aria-label="Task link review" className="mt-3 rounded-xl border p-3 text-sm" style={{ borderColor: 'var(--border)' }}>
       {reviewedTaskLink ? (
@@ -704,7 +668,7 @@ export function AgentActionCard({
   ) : null;
 
   async function handleApprove() {
-    if (isBusy || (needsMessageReview && !reviewedMessage)
+    if (isBusy || retiredEmailAction
       || (needsTaskLinkReview && !reviewedTaskLink)
       || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && (!nativeReviewReady
         || !nativeReviewed || Date.now() >= nativeReviewed.expiresAt))) return;
@@ -1062,12 +1026,12 @@ export function AgentActionCard({
           )}
         </div>
 
-        {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}
+        {taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}{retiredEmailAction&&<p role="status">This historical action is unavailable. Use the installed connected app to review a new action.</p>}
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleApprove}
-            disabled={isBusy || (needsMessageReview && !reviewedMessage)
+            disabled={isBusy || retiredEmailAction
               || (needsTaskLinkReview && !reviewedTaskLink)
               || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
             className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm disabled:opacity-60"
@@ -1211,7 +1175,7 @@ export function AgentActionCard({
         </div>
       )}
 
-      {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview && !needsNativeReview && <>
+      {!retiredEmailAction && !needsTaskLinkReview && !needsRuntimeReview && !needsNativeReview && <>
       <div
         className="mt-3 rounded-md px-3 py-2 min-w-0"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
@@ -1284,7 +1248,7 @@ export function AgentActionCard({
       )}
 
       <div className="text-[12px] mt-2 space-y-1" style={{ color: 'var(--foreground-secondary)' }}>
-        {!needsMessageReview && !needsTaskLinkReview && !needsRuntimeReview && !needsNativeReview
+        {!retiredEmailAction && !needsTaskLinkReview && !needsRuntimeReview && !needsNativeReview
           && !(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
         {captureLabel && (
           <p style={{ color: 'var(--muted)' }}>
@@ -1319,11 +1283,11 @@ export function AgentActionCard({
         )}
       </div>
 
-      {messageReviewPanel}{taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}
+      {taskLinkReviewPanel}{runtimeReviewPanel}{nativeReviewPanel}{retiredEmailAction&&<p role="status">This historical action is unavailable. Use the installed connected app to review a new action.</p>}
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
         <button
           onClick={handleApprove}
-          disabled={isBusy || (needsMessageReview && !reviewedMessage)
+          disabled={isBusy || retiredEmailAction
             || (needsTaskLinkReview && !reviewedTaskLink)
             || (needsRuntimeReview && !runtimeReviewReady) || (needsNativeReview && !nativeReviewReady)}
           className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"

@@ -1,5 +1,6 @@
 'use client';
 
+import {appConsentDeadline} from '../../../../../packages/app-kit/src/consent-lifetime';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -40,7 +41,7 @@ function OwnerView({bindingId,projectionId,compact}:{bindingId:string;projection
     try{attachmentId(bindingId);if(projectionId)attachmentId(projectionId);
       const response=await api.fetch(projectionId?`${base}/${encodeURIComponent(projectionId)}`:`${base}?limit=25${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,{signal:stamp.controller.signal,cache:'no-store'});
       if(!response.ok)throw new Error('This saved private resource is unavailable.');const raw=await response.json();
-      const value=projectionId?attachmentParent(raw,projectionId):attachmentParentPage(raw);stamp.deadline=Math.min(stamp.deadline,Date.parse(value.consent_expires_at));
+      const value=projectionId?attachmentParent(raw,projectionId):attachmentParentPage(raw);stamp.deadline=Math.min(stamp.deadline,appConsentDeadline(value.consent_expires_at,value.consent_lifetime));
       if(current(stamp)){if(projectionId)setParent({value:value as AttachmentParent,stamp});else setPage({value:value as AttachmentParentPage,stamp});arm(stamp);}
     }catch{if(current(stamp))setError('This saved private resource is unavailable. Check your current owner session and connection.');}
     finally{if(!disposed.current&&stamp.generation===generation.current)setBusy(false);}};
@@ -73,7 +74,7 @@ function OwnerView({bindingId,projectionId,compact}:{bindingId:string;projection
       {busy&&<p role="status">Checking private access…</p>}{error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
       {visiblePage&&<section aria-label="Saved App records" className="space-y-3">{visiblePage.items.length?visiblePage.items.map(item=><Link key={item.projection_id} className="block break-words rounded border p-3" style={tap} href={`/app-attachments/${encodeURIComponent(bindingId)}/${encodeURIComponent(item.projection_id)}`}>{item.label}</Link>):<p>No saved records are available.</p>}
         {visiblePage.next_cursor&&<button className={button} style={tap} disabled={busy} onClick={()=>void load(visiblePage.next_cursor!)}>Next saved records</button>}</section>}
-      {visibleParent&&<><h2 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{visibleParent.label}</h2><p className="text-sm">Consent ends {new Date(visibleParent.consent_expires_at).toLocaleString()}.</p>
+      {visibleParent&&<><h2 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{visibleParent.label}</h2><p className="text-sm">{visibleParent.consent_lifetime==='until_revoked'?'Until revoked':`Consent ends ${new Date(visibleParent.consent_expires_at!).toLocaleString()}`}.</p>
         <details open={!compact}><summary className="min-h-11 cursor-pointer py-3 text-sm">Saved source details</summary><dl className="space-y-3">{Object.entries(visibleParent.data).map(([key,value])=><div key={key}><dt className="break-words text-xs font-semibold">{key}</dt><dd className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{String(value)}</dd></div>)}</dl></details>
         <section aria-label="Saved attachments" className="space-y-3"><h3 className="font-semibold">Attachments</h3>{visibleParent.attachments.length?visibleParent.attachments.map(a=><div key={a.attachment_id} className="flex min-w-0 flex-wrap items-center gap-3 border-b py-3">
           <div className="min-w-0 flex-1"><p className="break-words [overflow-wrap:anywhere]">{a.filename}</p><p className="text-xs">{a.media_type} · {a.size_bytes.toLocaleString()} bytes · {a.state}</p></div>

@@ -2,7 +2,16 @@ import { isIP } from 'node:net';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context, MiddlewareHandler } from 'hono';
 
-type Bucket = { window_start: number; count: number; in_flight: number };
+type Bucket = { window_start: number; generation: number; count: number; in_flight: number };
+const authenticatedHeartbeats = new WeakSet<Context>();
+const isHeartbeat = (c: Context) => c.req.method === 'POST'
+  && c.req.path === '/api/app-resource-sync-channel/v3/heartbeat';
+
+/** Only the channel handler may mark a renewal after current authority succeeds.
+ * Headers and request payloads cannot nominate this internal admission fact. */
+export function markAuthenticatedResourceSyncHeartbeat(c: Context): void {
+  if (isHeartbeat(c)) authenticatedHeartbeats.add(c);
+}
 export type AppResourceSyncLimitsOptions = Readonly<{
   /** Only the socket peer or an explicitly trusted host-proxy result. */
   peerAddress?: (c: Context) => string | null | undefined;
@@ -28,6 +37,7 @@ function peerKey(value: string | null | undefined) {
 function tick(bucket: Bucket, now: number) {
   if (now < bucket.window_start || now - bucket.window_start >= 60_000) {
     bucket.window_start = now;
+    bucket.generation += 1;
     bucket.count = 0;
   }
 }
@@ -49,9 +59,9 @@ export function createAppResourceSyncLimits(
   const globalConcurrent = positive(options.globalConcurrent, 32);
   const peerConcurrent = positive(options.peerConcurrent, 2);
   const maxPeerBuckets = positive(options.maxPeerBuckets, 1024);
-  const global: Bucket = { window_start: clock(), count: 0, in_flight: 0 };
-  const unknown: Bucket = { window_start: clock(), count: 0, in_flight: 0 };
-  const overflow: Bucket = { window_start: clock(), count: 0, in_flight: 0 };
+  const global: Bucket = { window_start: clock(), generation: 0, count: 0, in_flight: 0 };
+  const unknown: Bucket = { window_start: clock(), generation: 0, count: 0, in_flight: 0 };
+  const overflow: Bucket = { window_start: clock(), generation: 0, count: 0, in_flight: 0 };
   const peers = new Map<string, Bucket>();
   let admissions = 0;
   return async (c, next) => {
@@ -69,7 +79,7 @@ export function createAppResourceSyncLimits(
         }
       }
       peer = peers.size < maxPeerBuckets
-        ? { window_start: now, count: 0, in_flight: 0 } : overflow;
+        ? { window_start: now, generation: 0, count: 0, in_flight: 0 } : overflow;
       if (peer !== overflow) peers.set(key, peer);
     }
     tick(peer, now);
@@ -81,8 +91,19 @@ export function createAppResourceSyncLimits(
     }
     global.in_flight += 1;
     peer.in_flight += 1;
-    try { await next(); }
-    finally { global.in_flight -= 1; peer.in_flight -= 1; }
+    const generation = peer.generation;
+    let completed = false;
+    try { await next(); completed = true; }
+    finally {
+      // All requests retain their global charge. Only an authenticated successful
+      // renewal refunds its generic peer charge; it never bypasses admission or
+      // occupies a different concurrency budget. Late work cannot refund a new
+      // minute, including a clock rollback to an earlier window.
+      if (completed && c.res.status === 200 && isHeartbeat(c)
+        && authenticatedHeartbeats.has(c) && peer.generation === generation) peer.count -= 1;
+      authenticatedHeartbeats.delete(c);
+      global.in_flight -= 1; peer.in_flight -= 1;
+    }
   };
 }
 

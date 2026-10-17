@@ -1,0 +1,50 @@
+{
+  "fixture_version": 1,
+  "synthetic": true,
+  "run_id": "00000000-0000-4000-8000-000000000001",
+  "action": "send_message",
+  "input": {
+    "to": "review-queue@example.test",
+    "subject": "Synthetic interrupted operation",
+    "body": "Exact synthetic approved text."
+  },
+  "interrupted_transport_states": [
+    "prepared",
+    "sending",
+    "uncertain"
+  ],
+  "expected_replay_error": "TRANSPORT_OUTCOME_UNCERTAIN_NO_AUTOMATIC_RESEND",
+  "delivery_expectation": "unknown_not_proven_by_smtp_acceptance",
+  "accepted_receipt": {
+    "operation_id": "mail-00000000-0000-4000-8000-000000000001",
+    "transport_outcome": "smtp_accepted",
+    "sent_copy_outcome": "unknown"
+  },
+  "cases": [
+    {
+      "id": "smtp-response-lost",
+      "checkpoint": "sending",
+      "expected": "manual_reconciliation_no_resend"
+    },
+    {
+      "id": "sent-copy-response-lost",
+      "checkpoint": "append_started",
+      "expected": "smtp_accepted_sent_copy_unknown_no_resend"
+    },
+    {
+      "id": "runtime-result-lost",
+      "checkpoint": "provider_effect_returned",
+      "expected": "result_unconfirmed_no_retry"
+    },
+    {
+      "id": "attachment-stage-response-lost",
+      "checkpoint": "put_started",
+      "expected": "staging_unconfirmed_no_automatic_retry"
+    },
+    {
+      "id": "sync-result-lost",
+      "checkpoint": "prepared_page",
+      "expected": "checkpoint_unconfirmed_manual_recovery"
+    }
+  ]
+}

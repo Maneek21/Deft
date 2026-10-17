@@ -1,5 +1,6 @@
-import { SyncRequestV2Schema } from '@deft/app-kit';
+import { SyncRequestV2Schema,appConsentDeadline } from '@deft/app-kit';
 import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
+import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
@@ -21,6 +22,9 @@ import { PostgresAppRunRepository, safeRunSelection,
   type AppRunSafeView, type AppRunTransaction } from './app-run-repository.js';
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
+import {activeResourceObservation,observedResourceAuthorization,requireCurrentResourceObservationRun,hasResourceObservationPin} from './app-resource-observation-authority.js';
+import {appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
+import {requireObservationRecoveryPredecessor} from './app-resource-observation-recovery.js';
 
 const HostTargetSchema = z.strictObject({ org_id: z.string().uuid(),
   resource_binding_id: z.string().uuid() });
@@ -61,12 +65,28 @@ export class AppResourceSyncAdmissionService {
     private readonly internalMode: 'resource_v2' | 'attachment_v3' = 'resource_v2',
   ) {}
 
+  /** Host scanner only. Caller-selected observation/account pins are never accepted. */
+  async admitObservation(raw:unknown,limits?:ResourceSyncAdmissionLimits){
+    const target=HostTargetSchema.parse(raw),first=await this.admitDue(target,limits,undefined,undefined,true);
+    if(first.state!=='blocked')return first;
+    // Only a terminal linked read is eligible for a NEW Run. This nomination
+    // is untrusted until the existing recovery transaction rechecks all pins.
+    const predecessor=await this.repository.transaction(async tx=>{
+      const [row]=await tx.select({id:appRuns.id}).from(appRuns).innerJoin(appResourceObservationRuns,and(
+        eq(appResourceObservationRuns.org_id,appRuns.org_id),eq(appResourceObservationRuns.run_id,appRuns.id))).where(and(
+        eq(appRuns.org_id,target.org_id),eq(appRuns.origin_resource_binding_id,target.resource_binding_id),
+        inArray(appRuns.state,['unknown_outcome','expired']))).orderBy(desc(appRuns.created_at),desc(appRuns.id)).limit(1);return row;});
+    if(!predecessor)return first;
+    return this.admitDue(target,limits,undefined,predecessor.id,true);
+  }
+
   async resumeObservation(raw: unknown, caller: { owner_user_id: string; guard: WebAuthorityGuard }): Promise<ResourceSyncAdmissionResult> {
     const parsed = HostTargetSchema.extend({ previous_run_id: z.string().uuid() }).parse(raw);
     return this.admitDue({ org_id: parsed.org_id, resource_binding_id: parsed.resource_binding_id }, undefined, caller, parsed.previous_run_id);
   }
 
-  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits, attachmentCaller?: { owner_user_id: string; guard: WebAuthorityGuard }, recoveryRunId?: string): Promise<ResourceSyncAdmissionResult> {
+  async admitDue(raw: unknown, limits?: ResourceSyncAdmissionLimits, attachmentCaller?: { owner_user_id: string; guard: WebAuthorityGuard;
+    continue_committed_cursor?: true }, recoveryRunId?: string,observationMode=false): Promise<ResourceSyncAdmissionResult> {
     if (!this.enabled()) throw new AppError('Resource sync is disabled', 'APP_FEATURE_DISABLED', 503);
     const target = HostTargetSchema.parse(raw);
     const bounded = limits ? AdmissionLimitsSchema.parse({ lock_timeout_ms: limits.lock_timeout_ms,
@@ -85,13 +105,15 @@ export class AppResourceSyncAdmissionService {
       assertWithinBudget();
       // Recovery locks its terminal predecessor before authority and checkpoint.
       // It never modifies that Run, its receipt, or any cursor/projection.
+      let recoveryPredecessor:typeof appRuns.$inferSelect|undefined;
       let recoveryIntent: typeof appSyncIntents.$inferSelect | undefined;
       let recoveryCandidates: ReturnType<AppRunSecretService['fingerprintJsonCandidates']> = [];
       let recoveryFingerprint: ReturnType<AppRunSecretService['fingerprintJson']> | undefined;
       if (recoveryRunId) {
-        if (!attachmentCaller || this.internalMode !== 'attachment_v3') throw unavailable();
+        if ((!attachmentCaller&&!observationMode) || this.internalMode !== 'attachment_v3') throw unavailable();
         const [predecessor] = await tx.select().from(appRuns).where(and(eq(appRuns.org_id,target.org_id),eq(appRuns.id,recoveryRunId))).limit(1).for('update');
-        if (!predecessor || !['failed','cancelled','unknown_outcome'].includes(predecessor.state)) throw unavailable();
+        if (!predecessor || !(observationMode?['unknown_outcome','expired']:['failed','cancelled','unknown_outcome']).includes(predecessor.state)) throw unavailable();
+        recoveryPredecessor=predecessor;
         [recoveryIntent] = await tx.select().from(appSyncIntents).where(and(eq(appSyncIntents.org_id,target.org_id),eq(appSyncIntents.run_id,recoveryRunId),eq(appSyncIntents.resource_binding_id,target.resource_binding_id))).limit(1);
         if (!recoveryIntent) throw unavailable();
         const attempts = await tx.select({state:appRunAttempts.state}).from(appRunAttempts).where(and(eq(appRunAttempts.org_id,target.org_id),eq(appRunAttempts.run_id,recoveryRunId))).for('update');
@@ -107,19 +129,41 @@ export class AppResourceSyncAdmissionService {
       if (!authority || (attachmentCaller && (this.internalMode !== 'attachment_v3'
         || authority.binding.owner_user_id !== attachmentCaller.owner_user_id))) throw unavailable();
       const { binding, installation, version, grant, registration } = authority;
+      if(this.internalMode==='attachment_v3'&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:target.org_id,resource_binding_id:binding.id}))throw unavailable();
+      if(observationMode&&(this.internalMode!=='attachment_v3'||attachmentCaller))throw unavailable();
+      if(recoveryPredecessor&&!observationMode&&hasResourceObservationPin(recoveryPredecessor.authorization_snapshot,binding.id))throw unavailable();
+      const continuation = attachmentCaller?.continue_committed_cursor === true;
+      if (continuation && (recoveryRunId || this.internalMode !== 'attachment_v3'
+        || !registration.owner_connection_admission_id)) throw unavailable();
+      // A human baseline continuation is still an observation when the binding
+      // has independent observation consent. Carry its current immutable pin
+      // into the NEW Run; do not rewrite or recover the predecessor here.
+      const observation=(observationMode || continuation)?await activeResourceObservation(tx,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,this.clock):null;
+      if(observationMode&&!observation)throw unavailable();
+      if(observation&&recoveryRunId){
+        if(!recoveryPredecessor)throw unavailable();
+        await requireObservationRecoveryPredecessor(tx,recoveryRunId,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,
+          observation,recoveryPredecessor.authorization_snapshot);
+        const identity={domain:'deft.app_resource_observation.recovery.v1',org_id:target.org_id,
+          resource_binding_id:binding.id,previous_run_id:recoveryRunId,consent_id:observation.row.consent_id,consent_digest:observation.row.consent_digest};
+        recoveryCandidates=this.runSecrets.fingerprintJsonCandidates('idempotency',identity);
+        recoveryFingerprint=this.runSecrets.fingerprintJson('idempotency',identity);
+      }
       const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(
         eq(appSyncCheckpoints.org_id, target.org_id),
         eq(appSyncCheckpoints.resource_binding_id, binding.id),
       )).limit(1).for('update');
       const now = this.clock();
       assertWithinBudget();
+      const consentExpiry=appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined);
       if (!checkpoint || checkpoint.state !== 'active' || !Number.isFinite(now.getTime())
-        || !binding.consent_expires_at || binding.consent_expires_at <= now) throw unavailable();
-      const consentExpiry = binding.consent_expires_at;
+        || consentExpiry<=now.getTime()) throw unavailable();
       const finalAttachment = async (deadlines: readonly Date[] = []) => {
+        if(observation){const current=await activeResourceObservation(tx,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,this.clock);
+          if(!current||current.row.consent_id!==observation.row.consent_id||current.row.consent_digest!==observation.row.consent_digest)throw unavailable();}
         if (this.internalMode === 'attachment_v3' && !await attachmentFinalAuthorityIsCurrent(tx,
           [binding.owner_user_id,registration.operator_user_id], { guard:attachmentCaller?.guard,
-            clock:this.clock,signal:limits?.signal,expires_at:[consentExpiry,...deadlines] })) throw unavailable();
+            clock:this.clock,signal:limits?.signal,expires_at:[...(Number.isFinite(consentExpiry)?[new Date(consentExpiry)]:[]),...deadlines] })) throw unavailable();
       };
 
       // The checkpoint lock serializes host admission. Read existing Runs
@@ -128,8 +172,13 @@ export class AppResourceSyncAdmissionService {
       // authority; the channel always rechecks current state and intent.
       if (recoveryFingerprint) {
         const [replacement] = await tx.select(safeRunSelection).from(appRuns).where(and(eq(appRuns.org_id,target.org_id),or(...recoveryCandidates.map(f => and(eq(appRuns.idempotency_key_version,f.key_version),eq(appRuns.idempotency_fingerprint,f.fingerprint)))))).limit(1);
-        if (replacement) { await finalAttachment(); return Object.freeze({state:'existing',run_id:replacement.id}); }
+        if (replacement) { if(observation){const linked=await requireCurrentResourceObservationRun(tx,target.org_id,replacement.id,authority as import('./app-attachment-sync-authority.js').LiveAttachmentSyncBindingAuthority,this.clock);
+            if(linked.row.consent_id!==observation.row.consent_id||linked.row.consent_digest!==observation.row.consent_digest)throw unavailable();}
+          await finalAttachment(); return Object.freeze({state:'existing',run_id:replacement.id}); }
         if (!recoveryIntent || recoveryIntent.checkpoint_id !== checkpoint.id || recoveryIntent.generation !== checkpoint.generation
+          || recoveryIntent.app_installation_id!==installation.id||recoveryIntent.app_version_id!==version.id
+          || recoveryIntent.grant_snapshot_id!==grant.id||recoveryIntent.owner_user_id!==binding.owner_user_id
+          || recoveryIntent.provider_snapshot_id!==binding.provider_snapshot_id||recoveryIntent.descriptor_digest!==authority.descriptor_digest
           || recoveryIntent.expected_cursor_sequence !== checkpoint.cursor_sequence || recoveryIntent.expected_cursor_hmac !== checkpoint.cursor_hmac
           || recoveryIntent.expected_cursor_hmac_key_version !== checkpoint.cursor_hmac_key_version) throw unavailable();
         const stages = await tx.select({id:appAttachmentStages.id}).from(appAttachmentStages).where(and(eq(appAttachmentStages.org_id,target.org_id),eq(appAttachmentStages.run_id,recoveryRunId!))).limit(1);
@@ -151,14 +200,6 @@ export class AppResourceSyncAdmissionService {
         .from(appSyncIntents).where(and(eq(appSyncIntents.org_id, target.org_id),
           eq(appSyncIntents.resource_binding_id, binding.id)))
         .orderBy(desc(appSyncIntents.created_at)).limit(1);
-      if (latest) {
-        const due = new Date(latest.created_at.getTime() + binding.min_interval_seconds * 1_000);
-        if (due > now) {
-          await finalAttachment();
-          return Object.freeze({ state: 'not_due', due_at: due.toISOString() });
-        }
-      }
-
       const cursorContext = { org_id: target.org_id, resource_binding_id: binding.id,
         checkpoint_id: checkpoint.id, payload_kind: 'cursor' as const,
         generation: checkpoint.generation, cursor_sequence: checkpoint.cursor_sequence };
@@ -172,6 +213,28 @@ export class AppResourceSyncAdmissionService {
       const fingerprint = this.syncSecrets.cursorFingerprint(cursor, cursorContext,
         checkpoint.cursor_hmac_key_version);
       if (fingerprint.fingerprint !== checkpoint.cursor_hmac) throw unavailable();
+      if (continuation) {
+        // Only a successfully committed predecessor may authorize another baseline page.
+        // The checkpoint is locked; do not invert completion's Run-before-checkpoint lock order.
+        if (typeof cursor !== 'string' || checkpoint.cursor_state !== 'value' || checkpoint.cursor_sequence < 1
+          || !checkpoint.last_applied_run_id || !checkpoint.last_applied_page_digest) throw unavailable();
+        const [committed] = await tx.select({ state: appRuns.state, checkpoint_id: appSyncIntents.checkpoint_id,
+          generation: appSyncIntents.generation, sequence: appSyncIntents.expected_cursor_sequence,
+          authorization_snapshot: appRuns.authorization_snapshot })
+          .from(appSyncIntents).innerJoin(appRuns, and(eq(appRuns.org_id, appSyncIntents.org_id), eq(appRuns.id, appSyncIntents.run_id)))
+          .where(and(eq(appSyncIntents.org_id, target.org_id), eq(appSyncIntents.resource_binding_id, binding.id),
+            eq(appSyncIntents.run_id, checkpoint.last_applied_run_id))).limit(1);
+        if (!committed || committed.state !== 'succeeded' || committed.checkpoint_id !== checkpoint.id
+          || committed.generation !== checkpoint.generation || committed.sequence + 1 !== checkpoint.cursor_sequence) throw unavailable();
+        // Revoking/expiring independent consent must not turn an observed
+        // predecessor into an unobserved manual continuation. Generic resources
+        // without an observation predecessor retain their existing behavior.
+        if (hasResourceObservationPin(committed.authorization_snapshot,binding.id) && !observation) throw unavailable();
+      }
+      if (latest && !continuation) {
+        const due = new Date(latest.created_at.getTime() + Math.max(binding.min_interval_seconds,observation?.snapshot.interval_seconds??0) * 1_000);
+        if (due > now) { await finalAttachment(); return Object.freeze({ state: 'not_due', due_at: due.toISOString() }); }
+      }
       const request = this.internalMode === 'attachment_v3'
         ? SyncRequestV2Schema.parse({ schema_version: 'deft.app_sync_request.v2', cursor, max_items: binding.max_records_per_page,
           attachments: parseAttachmentConsentPolicy(binding.reviewed_descriptor.attachments,binding.attachment_policy) })
@@ -184,11 +247,12 @@ export class AppResourceSyncAdmissionService {
       const inputFingerprint = this.runSecrets.fingerprintJson('input', request);
       const runId = randomUUID();
       const inputExpiresAt = new Date(Math.min(retentionDeadline('standard', now).getTime(),
-        binding.consent_expires_at.getTime()));
+        consentExpiry,observation?appConsentDeadline(observation.snapshot.expires_at,observation.snapshot.consent_lifetime):Infinity));
       const actor = { actor_type: 'system' as const, system_id: binding.id };
-      const authorization = this.internalMode === 'attachment_v3'
+      const baseAuthorization = this.internalMode === 'attachment_v3'
         ? buildAttachmentSyncAuthorizationSnapshot(await loadLiveAttachmentSyncBindingAuthority(tx,{ ...target,clock:this.clock }).then(live => { if (!live) throw unavailable(); return live; }))
         : buildResourceSyncAuthorizationSnapshot(authority);
+      const authorization=observation?observedResourceAuthorization(baseAuthorization,observation.row):baseAuthorization;
       const [run] = await tx.insert(appRuns).values({ id: runId, org_id: target.org_id,
         contract_version: APP_RUN_CONTRACT_VERSIONS.run, origin_kind: 'app',
         initiating_actor_type: 'system', initiating_actor_id: binding.id,
@@ -212,6 +276,8 @@ export class AppResourceSyncAdmissionService {
         created_at: now, updated_at: now,
       }).returning(safeRunSelection);
       if (!run) throw unavailable();
+      if(observation)await tx.insert(appResourceObservationRuns).values({org_id:target.org_id,run_id:runId,
+        consent_id:observation.row.consent_id,consent_digest:observation.row.consent_digest,created_at:now,updated_at:now});
       await this.runInputs.insertInput(tx, { org_id: target.org_id, run_id: runId,
         value: request, expires_at: inputExpiresAt });
       await tx.insert(appSyncIntents).values({ id: randomUUID(), org_id: target.org_id,
@@ -230,7 +296,7 @@ export class AppResourceSyncAdmissionService {
       const completedAt = this.clock();
       assertWithinBudget();
       if (!attemptId || !Number.isFinite(completedAt.getTime())
-        || inputExpiresAt <= completedAt || binding.consent_expires_at <= completedAt) throw unavailable();
+        || inputExpiresAt <= completedAt || consentExpiry<=completedAt.getTime()) throw unavailable();
       await finalAttachment([inputExpiresAt,run.result_expires_at]);
       return Object.freeze({ state: 'created', run_id: runId, attempt_id: attemptId });
     });

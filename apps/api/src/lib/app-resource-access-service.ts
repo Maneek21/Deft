@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { appResourceAccessGrants as grants, appResourceProjections as projections, orgMembers, users, auditLog } from "@deft/db/schema";
@@ -157,7 +158,7 @@ export class AppResourceAccessService {
       if (fields.some(f => !Object.hasOwn(live.authority.descriptor.record_schema.properties, f))) {
         throw accessUnavailable();
       }
-      const now = this.issuance(tx), expires = new Date(Math.min(new Date(input.expires_at).getTime(), now.getTime() + ACCESS_LIMITS.grant_ms, live.authority.binding.consent_expires_at!.getTime()));
+      const now = this.issuance(tx), expires = new Date(Math.min(new Date(input.expires_at).getTime(), now.getTime() + ACCESS_LIMITS.grant_ms, appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined)));
       if (expires <= now) {
         throw accessUnavailable();
       }
@@ -219,7 +220,7 @@ export class AppResourceAccessService {
         throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_STALE", 409);
       }
       const now = this.current(tx);
-      if (new Date(s.review_expires_at) <= now || new Date(s.expires_at) > live.authority.binding.consent_expires_at!) {
+      if (new Date(s.review_expires_at) <= now || Date.parse(s.expires_at) > appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined)) {
         throw accessUnavailable();
       }
       const [prior] = await tx.select().from(grants).where(and(eq(grants.org_id, c.org_id), eq(grants.owner_user_id, c.user_id), eq(grants.review_digest, input.review_digest)));
@@ -227,11 +228,11 @@ export class AppResourceAccessService {
         if (prior.revoked_at || prior.expires_at <= now) {
           throw accessUnavailable();
         }
-        await this.final(tx, c, live.participants, new Date(Math.min(prior.expires_at.getTime(), Date.parse(s.review_expires_at), live.authority.binding.consent_expires_at!.getTime())), live);
+        await this.final(tx, c, live.participants, new Date(Math.min(prior.expires_at.getTime(), Date.parse(s.review_expires_at), appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined))), live);
         return { grant_id: prior.id, expires_at: prior.expires_at.toISOString() };
       }
       await assertPrivateAccessAdmission(tx, c.org_id, c.user_id, s.app_installation_id, s.recipient_user_id);
-      await this.final(tx, c, live.participants, new Date(Math.min(Date.parse(s.expires_at), Date.parse(s.review_expires_at), live.authority.binding.consent_expires_at!.getTime())), live);
+      await this.final(tx, c, live.participants, new Date(Math.min(Date.parse(s.expires_at), Date.parse(s.review_expires_at), appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined))), live);
       const id = randomUUID();
       await tx.execute(sql `INSERT INTO app_resource_access_grants(id,org_id,owner_user_id,recipient_user_id,app_installation_id,resource_binding_id,checkpoint_id,projection_id,review_digest,snapshot,accepted_at,expires_at) VALUES(${id},${c.org_id},${c.user_id},${s.recipient_user_id},${s.app_installation_id},${s.resource_binding_id},${s.checkpoint_id},${s.ref.resource_id},${input.review_digest},${JSON.stringify(s)}::jsonb,clock_timestamp(),${s.expires_at}::timestamptz)`);
       await tx.insert(auditLog).values({
@@ -249,7 +250,7 @@ export class AppResourceAccessService {
           purpose: s.purpose
         }
       });
-      await this.final(tx, c, live.participants, new Date(Math.min(Date.parse(s.expires_at), Date.parse(s.review_expires_at), live.authority.binding.consent_expires_at!.getTime())), live);
+      await this.final(tx, c, live.participants, new Date(Math.min(Date.parse(s.expires_at), Date.parse(s.review_expires_at), appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined))), live);
       return { grant_id: id, expires_at: s.expires_at };
     });
   }
@@ -298,7 +299,7 @@ export class AppResourceAccessService {
         throw new PrivateResourceAccessError("APP_RESOURCE_ACCESS_TOO_LARGE", 413);
       }
       await this.final(tx, c, live.participants, current.expires_at, live);
-      if (live.authority.binding.consent_expires_at! <= this.current(tx)) {
+      if (appConsentDeadline(live.authority.binding.consent_expires_at,live.authority.binding.consent_lifetime??undefined) <= this.current(tx).getTime()) {
         throw accessUnavailable();
       }
       return result;
@@ -442,7 +443,7 @@ export class AppResourceAccessService {
       }
       const more = (await tx.execute(sql `SELECT 1 FROM app_resource_access_grants WHERE org_id=${c.org_id} AND recipient_user_id=${c.user_id}
         AND resource_binding_id=${scope.resource_binding_id} AND accepted_sequence>${after}::bigint AND accepted_sequence<=${cutoff}::bigint LIMIT 1`)).rowCount !== 0;
-      await this.final(tx, c, liveAnchor.participants, new Date(Math.min(deliveryExpires, liveAnchor.authority.binding.consent_expires_at!.getTime(), cursor ? Date.parse(cursor.expires_at) : Infinity)), liveAnchor);
+      await this.final(tx, c, liveAnchor.participants, new Date(Math.min(deliveryExpires, appConsentDeadline(liveAnchor.authority.binding.consent_expires_at,liveAnchor.authority.binding.consent_lifetime??undefined), cursor ? Date.parse(cursor.expires_at) : Infinity)), liveAnchor);
       const next = more ? this.token({
         schema_version: "deft.app_resource_access_search_cursor.v1",
         org_id: c.org_id,

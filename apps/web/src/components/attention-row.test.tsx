@@ -1,0 +1,9 @@
+import assert from 'node:assert/strict';import test from 'node:test';
+import {createElement} from 'react';import {renderToStaticMarkup} from 'react-dom/server';
+import {AttentionRow} from './attention-row';import type {AttentionItem} from '@/hooks/use-attention';
+const id='mail_'+'a'.repeat(64),target={account_id:'account/one',logical_message_id:id};
+const item:AttentionItem={id:'attention',org_id:'org',user_id:'owner',kind:'email_new_message',lane:'updates',priority:'normal',state:'open_unseen',source_type:'email',source_id:id,title:'Sensitive subject',body:'Private sender and preview',link:'/email?account=account%2Fone&message='+id,metadata:{account_id:target.account_id},last_event_at:'2026-10-04T00:00:00Z',event_count:1,snoozed_until:null,created_at:'2026-10-04T00:00:00Z',approval:null};
+const render=(value:AttentionItem)=>renderToStaticMarkup(createElement(AttentionRow,{item:value,onSeen:()=>{},onAcknowledge:()=>{},onResolve:()=>{},onSnooze:()=>{}}));
+test('retired historical attention stays contentless and cannot open a removed mailbox',()=>{const markup=render(item);assert.match(markup,/Historical Email notification/);assert.doesNotMatch(markup,/Sensitive subject|Private sender|<a /);for(const link of ['https://outside.test/email','/email?account=other',null])assert.doesNotMatch(render({...item,link}),/<a /);});
+
+test('other attention items retain their existing title and preview',()=>{assert.match(render({...item,source_type:'task',kind:'task',title:'Task title',body:'Task details',link:'/tasks'}),/Task title/);assert.match(render({...item,source_type:'task',kind:'task',title:'Task title',body:'Task details',link:'/tasks'}),/Task details/);});

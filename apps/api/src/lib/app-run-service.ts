@@ -1,4 +1,7 @@
+import {optionalFutureRecordAction} from './app-future-record-action-dispatch.js';
+import {PostgresFutureRecordActionStore} from './app-future-record-action-store.js';
 import { parseNativeCalendarInput, parseNativeCalendarResult, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
+import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import { isAppNativeCalendarEnabled } from './env.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 import type { ReviewedNativeCapture, ReviewedPublicNativeCapture } from './app-native-run-authorization.js';
@@ -88,6 +91,9 @@ export type ReviewedRuntimeCapture = Readonly<{
     app_installation_id: string;
     app_version_id: string;
     grant_snapshot_id: string;
+    /** Present on current owner-scoped bindings captured from the DB. Legacy
+     * bindings have no owner resource custody to reserve. */
+    owner_resource_binding_id?: string | null;
     action_key: string;
     provider_kind: 'app_runtime';
     provider_instance_id: string;
@@ -667,6 +673,7 @@ export class AppRunService {
     hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
     hostFinalGuard?: (tx: AppRunTransaction) => Promise<void>,
     existingTx?: AppRunTransaction,
+    reviewedFutureInputExpiresAt?:Date,
   ): Promise<AppRunSafeView> {
     if (!this.appOriginEnabled() || !appRuntimeChannelEnabled()
       || !this.appLiveAuthorization?.captureReviewedRuntimeForPreparation
@@ -675,13 +682,14 @@ export class AppRunService {
     }
     let capture: ReviewedRuntimeCapture;
     try {
-      capture = await this.appLiveAuthorization.captureReviewedRuntimeForPreparation({
-        org_id: caller.org_id, user_id: caller.user_id,
-        runtime_binding_id: request.runtime_binding_id,
-      });
+      const locator={org_id:caller.org_id,user_id:caller.user_id,runtime_binding_id:request.runtime_binding_id};
+      capture = existingTx
+        ? await this.appLiveAuthorization.captureReviewedRuntimeInTransaction(existingTx,locator)
+        : await this.appLiveAuthorization.captureReviewedRuntimeForPreparation(locator);
     } catch {
       throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
     }
+    if(reviewedFutureInputExpiresAt&&(!existingTx||!hostFinalGuard||!Number.isFinite(reviewedFutureInputExpiresAt.getTime())||reviewedFutureInputExpiresAt<=this.now()||reviewedFutureInputExpiresAt.getTime()>this.now().getTime()+2*366*86400000+420000))throw new AppRunError('APP_RUN_ACCESS_DENIED');
     const binding = capture.binding;
     if(capture.protocol_version==='7'&&!hostFinalGuard)throw new AppRunError('APP_RUN_ACCESS_DENIED');
     if (binding.id !== request.runtime_binding_id || binding.org_id !== caller.org_id
@@ -744,7 +752,7 @@ export class AppRunService {
     };
     return this.#submit({ org_id: caller.org_id, initiating_actor: actor,
       execution_actor: actor }, submission, null, undefined, undefined, capture,
-      undefined, existingTx, hostAdmission, undefined, hostFinalGuard);
+      undefined, existingTx, hostAdmission, undefined, hostFinalGuard,reviewedFutureInputExpiresAt);
   }
 
   /** Internal hosted-agent intake. Model input cannot choose either actor or policy. */
@@ -1091,6 +1099,7 @@ export class AppRunService {
     hostAdmission?: (tx: AppRunTransaction) => Promise<void>,
     trustedNativeCapture?: ReviewedNativeCapture | ReviewedPublicNativeCapture,
     hostFinalGuard?: (tx: AppRunTransaction) => Promise<void>,
+    reviewedFutureInputExpiresAt?:Date,
   ): Promise<AppRunSafeView> {
     let submission: AppRunSubmission;
     try {
@@ -1136,9 +1145,9 @@ export class AppRunService {
     const inputCandidates = this.secrets.fingerprintJsonCandidates('input', submission.input);
     const lock = derivedSubmissionLock(submission, parentRunId);
     const runId = crypto.randomUUID();
-    const inputExpiresAt = retentionDeadline(submission.retention_class, now);
-    const resultExpiresAt = retentionDeadline(submission.retention_class, now);
-    const idempotencyExpiresAt = idempotencyDeadline(submission.retention_class, now);
+    const inputExpiresAt = reviewedFutureInputExpiresAt??retentionDeadline(submission.retention_class, now);
+    const resultExpiresAt = new Date(Math.max(retentionDeadline(submission.retention_class, now).getTime(),reviewedFutureInputExpiresAt?.getTime()??0));
+    const idempotencyExpiresAt = new Date(Math.max(idempotencyDeadline(submission.retention_class, now).getTime(),reviewedFutureInputExpiresAt?.getTime()??0));
 
     const submitInTransaction = async (tx: AppRunTransaction) => {
       await this.repository.acquireSubmissionLock(tx, lock);
@@ -1177,6 +1186,7 @@ export class AppRunService {
           throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
         }
         const binding = live.binding;
+        if(binding.owner_resource_binding_id&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:submission.org_id,resource_binding_id:binding.owner_resource_binding_id}))throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
         let inputMatches = false;
         try {
           inputMatches = canonicalCapabilityJson(parseRuntimeObjectInput(
@@ -1225,8 +1235,9 @@ export class AppRunService {
           throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
         }
         const binding = live.binding;
-        const matchingInput = canonicalCapabilityJson(live.public_input)
-          === canonicalCapabilityJson(submission.input);
+        const matchingInput = canonicalCapabilityJson(live.public_input) === canonicalCapabilityJson(submission.input);
+        // A begun OAuth upgrade cannot admit a public effect on its source.
+        if(binding.owner_resource_binding_id&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:submission.org_id,resource_binding_id:binding.owner_resource_binding_id}))throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
         if (canonicalAuthorization(live.authorization_snapshot)
           !== canonicalAuthorization(submission.authorization_snapshot)
           || runtimeCaptureIdentity(live) !== runtimeCaptureIdentity(trustedPublicCapture)
@@ -1434,6 +1445,11 @@ export class AppRunService {
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, runId);
       if (!run) throw new AppRunError('APP_RUN_ACCESS_DENIED');
+      const future=await optionalFutureRecordAction(tx,orgId,runId);
+      if(future){const store=new PostgresFutureRecordActionStore(),locked=(await store.lock(tx,orgId,runId))!;
+        const outcome=await store.cancelLocked(tx,locked,locked.request_id,locked.revision,locked.restore_request_id,this.now());
+        if(!outcome.cancelled)return run;
+      }
       if (run.state === 'pending' || run.state === 'pending_approval') {
         return this.repository.transition(tx, {
           run, state: 'cancelled', actor, now: this.now(), error_code: 'APP_RUN_CANCELLED',

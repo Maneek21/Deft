@@ -38,3 +38,11 @@ test('only authenticated denial is terminal; server overload and absence remain 
  for(const status of [408,429,500,502,503,504])assert.equal(experienceAuthorityResponse(new Response(null,{status})),'unavailable');
  assert.equal(experienceAuthorityResponse(null),'unavailable');assert.equal(experienceAuthorityResponse(new Response()),'available');
 });
+
+test('aborted read removes its recovery listener while an independent writer still waits',async()=>{
+ let answer:ExperienceAuthorityState='unavailable';const connection=createExperienceConnection({current:()=>true,valid:()=>true,read:async()=>answer,change:()=>{}});
+ const controller=new AbortController();let listeners=0;const add=controller.signal.addEventListener.bind(controller.signal),remove=controller.signal.removeEventListener.bind(controller.signal);
+ controller.signal.addEventListener=((...args:Parameters<AbortSignal['addEventListener']>)=>{listeners++;return add(...args);}) as AbortSignal['addEventListener'];
+ controller.signal.removeEventListener=((...args:Parameters<AbortSignal['removeEventListener']>)=>{listeners--;return remove(...args);}) as AbortSignal['removeEventListener'];
+ const read=connection.ensure(controller.signal);const rejected=assert.rejects(read,{name:'AbortError'});const writer=connection.ensure();await connection.check();await Promise.resolve();assert.equal(listeners,1);controller.abort();await rejected;assert.equal(listeners,0);answer='available';await connection.check();assert.equal(await writer,true);connection.dispose();
+});

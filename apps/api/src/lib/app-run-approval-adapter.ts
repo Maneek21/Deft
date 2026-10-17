@@ -152,6 +152,7 @@ export class PostgresAppRunApprovalResolver {
       }
 
       if ((run.provider_kind === 'native' || requiresWebGuard)
+        && (run.state !== 'pending_approval' || run.execution_release_kind === 'approved')
         && !await this.liveAuthorization.authorizeApprovalInTransaction(tx, run, this.now())) {
         return { status: 'error', code: 'INVALID_STATE', message: 'App Run approval is no longer valid' };
       }

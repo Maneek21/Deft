@@ -82,6 +82,13 @@ function failure(c: Context, error: unknown) {
   return c.json({ error: 'Runtime request failed', code: 'INTERNAL_ERROR' }, 500);
 }
 
+appRuntimeChannelRoutes.post('/renew',async c=>{
+  try{if(new URL(c.req.url).search)throw Error('JSON');const payload=await request(c,4096);
+    c.req.raw.signal.throwIfAborted();const renewed=await(await getAppRunRuntime()).runtimeChannel.renew(payload);
+    c.req.raw.signal.throwIfAborted();
+    return renewed?c.json({renewed}):c.json({error:'Runtime session renewal unavailable',code:'APP_RUNTIME_ACCESS_DENIED'},403);
+  }catch(error){return failure(c,error);}
+});
 appRuntimeChannelRoutes.post('/claim', async (c) => {
   try {
     const payload = await request(c, 4096);
@@ -103,6 +110,36 @@ appRuntimeChannelRoutes.post('/heartbeat', async (c) => {
     const renewed = await (await getAppRunRuntime()).runtimeChannel.heartbeat(payload);
     return renewed ? c.json({ renewed: true })
       : c.json({ error: 'Runtime claim unavailable', code: 'APP_RUNTIME_ACCESS_DENIED' }, 403);
+  } catch (error) { return failure(c, error); }
+});
+appRuntimeChannelRoutes.post('/authorize', async c => {
+  try {
+    const payload = await request(c, 4096);
+    const authorized = await (await getAppRunRuntime()).runtimeChannel.authorize(payload);
+    return authorized ? c.json({ authorized })
+      : c.json({ error: 'Runtime authority unavailable', code: 'APP_RUNTIME_ACCESS_DENIED' }, 403);
+  } catch (error) { return failure(c, error); }
+});
+appRuntimeChannelRoutes.post('/payload', async c => {
+  try {
+    const requestBody = await request(c, 4096);
+    const released = await (await getAppRunRuntime()).runtimeChannel.payload(requestBody, c.req.raw.signal);
+    if (!released) return c.json({ error: 'Runtime payload unavailable', code: 'APP_RUNTIME_ACCESS_DENIED' }, 403);
+    c.req.raw.signal.throwIfAborted();
+    if (released.kind === 'metadata') return c.json({ payload: released.payload });
+    return new Response(new Uint8Array(released.bytes), { headers: { 'Content-Type': 'application/octet-stream',
+      'Content-Length': String(released.byte_count), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+      'X-Deft-Payload-Digest': released.digest, 'X-Deft-Snapshot-Id': released.snapshot_ref.snapshot_id,
+      'X-Deft-Snapshot-Digest': released.snapshot_ref.digest } });
+  } catch (error) { return failure(c, error); }
+});
+appRuntimeChannelRoutes.post('/resources', async c => {
+  try {
+    const requestBody = await request(c, 4096);
+    const resources = await (await getAppRunRuntime()).runtimeChannel.resources(requestBody, c.req.raw.signal);
+    if (!resources) return c.json({ error: 'Runtime action resources unavailable', code: 'APP_RUNTIME_ACCESS_DENIED' }, 403);
+    c.req.raw.signal.throwIfAborted();c.header('Cache-Control','no-store');
+    return c.json({ resources });
   } catch (error) { return failure(c, error); }
 });
 appRuntimeChannelRoutes.post('/result', async (c) => {

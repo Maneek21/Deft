@@ -2,9 +2,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from '@deft/db/schema';
 import { env } from './env.js';
+import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
 
 export const APP_AUTOMATION_SCAN_DB_LIMITS = Object.freeze({
-  connections: 2,
+  connections: APP_DATABASE_POOL_BUDGET.automation_scan,
   acquisition_ms: 1_000,
   lock_ms: 250,
   statement_ms: 2_000,

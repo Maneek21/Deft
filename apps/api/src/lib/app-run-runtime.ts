@@ -6,8 +6,10 @@ import { AppRunError } from './app-run-errors.js';
 import { assertAppRunReferencedKeysAvailable, parseEnvironmentAppRunKeyrings,
   type EnvironmentAppRunKeyProvider } from './app-run-keyrings.js';
 import { listAppPrivateStateKeyReferences } from './app-private-state-key-references.js';
+import { AppPrivateFileCustody } from './app-private-file-custody.js';
 import { listAppResourceSyncKeyReferences } from './app-resource-sync-key-references.js';
 import { listPrivateDeftyKeyReferences } from './app-private-defty-key-references.js';
+import { listEmailMailboxKeyReferences } from './email-mailbox-key-references.js';
 import { privateSearchDatabase } from './app-resource-private-search-db.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
@@ -79,6 +81,9 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     attention,
     postgresAppRunAttemptQueue,
     resourceSyncStore,
+    'resource_v2',
+    new AppPrivateFileCustody(keys),
+    resourceSyncSecrets,
   );
   const service = new AppRunService(
     repository,
@@ -126,6 +131,8 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     // Permanent encrypted history retains keys even after its grant ends.
     assertAppRunReferencedKeysAvailable(keys, await privateSearchDatabase().transaction(
       tx => listPrivateDeftyKeyReferences(tx), AbortSignal.timeout(3000), performance.now() + 3000));
+    assertAppRunReferencedKeysAvailable(keys, await privateSearchDatabase().transaction(
+      tx => listEmailMailboxKeyReferences(tx), AbortSignal.timeout(3000), performance.now() + 3000));
   } catch (error) {
     keys.destroy();
     throw error;
@@ -164,6 +171,7 @@ export async function shutdownAppRunRuntime(): Promise<void> {
   runtimePromise = null;
   await (await import('./app-attachment-runtime.js')).shutdownAppAttachmentRuntime();
   await (await import('./app-native-execution-db.js')).closeNativeExecutionDatabase();
+  await (await import('./app-resource-sync-claim-db.js')).closeResourceSyncClaimDatabase();
   if (!pending) return;
   try {
     const runtime = await pending;

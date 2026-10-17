@@ -1,3 +1,4 @@
+import {AppConsentLifetimeSchema,AppConsentExpirySchema,appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -34,6 +35,7 @@ export const AppResourceSyncConsentLimitsSchema = z.strictObject({
 });
 
 export const AppResourceSyncConsentRequestSchema = z.strictObject({
+  target_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).optional(),
   installation_id: identity,
   resource_key: resourceKey,
   operator_user_id: identity,
@@ -42,10 +44,10 @@ export const AppResourceSyncConsentRequestSchema = z.strictObject({
   expected_grant_snapshot_digest: digest,
   expected_lifecycle_epoch: epoch,
   expected_grant_epoch: epoch,
-  consent_expires_at: z.string().max(40).datetime({ offset: true }),
+  consent_expires_at: z.string().max(40).datetime({offset:true}).nullable(), consent_lifetime: AppConsentLifetimeSchema.optional(),
   limits: AppResourceSyncConsentLimitsSchema,
-});
-export const AppResourceSyncConsentActivationSchema = AppResourceSyncConsentRequestSchema.extend({
+}).refine(v=>appConsentExpiryValid(v.consent_expires_at,v.consent_lifetime));
+export const AppResourceSyncConsentActivationSchema = AppResourceSyncConsentRequestSchema.safeExtend({
   expected_review_digest: digest,
   accept_host_policy: z.literal(true),
 });
@@ -53,7 +55,8 @@ export type AppResourceSyncConsentRequest = z.infer<typeof AppResourceSyncConsen
 
 /** Recheck at both preparation and activation; a review digest cannot extend
  * an expired window. The clock is host-owned and never taken from input. */
-export function assertResourceSyncConsentWindow(expiresAt: string, checkedAt: Date): Date {
+export function assertResourceSyncConsentWindow(expiresAt: string|null, checkedAt: Date,lifetime?:AppConsentLifetime): Date|null {
+  if(lifetime==='until_revoked'){appConsentDeadline(expiresAt,lifetime);return null;}
   const expiry = new Date(z.string().datetime({ offset: true }).parse(expiresAt));
   const remaining = expiry.getTime() - checkedAt.getTime();
   if (!Number.isFinite(remaining) || remaining <= 0 || remaining > APP_RESOURCE_SYNC_MAX_CONSENT_MS) {

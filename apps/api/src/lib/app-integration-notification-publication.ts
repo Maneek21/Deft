@@ -1,0 +1,12 @@
+import {loadLiveAttachmentSyncBindingAuthority,attachmentSyncParticipantsAreHuman} from './app-attachment-sync-authority.js';import {currentConnectionSessionLocators} from './app-connection-current-locators.js';import {enqueueAppIntegrationNotifications} from './app-integration-notification-service.js';import {appIntegrationNotificationPublicationSources,type RecordRow} from './app-integration-notification-publication-source.js';import type {AppRunTransaction as Tx} from './app-run-repository.js';
+export async function enqueueAppIntegrationPublishedNotifications(tx:Tx,input:{org_id:string;resource_binding_id:string;upserts:readonly RecordRow[];clock:()=>Date}){
+ const authority=await loadLiveAttachmentSyncBindingAuthority(tx,{org_id:input.org_id,resource_binding_id:input.resource_binding_id,clock:input.clock});if(!authority)throw Error('APP_INTEGRATION_NOTIFICATION_PUBLICATION_DENIED');
+ const manifest=authority.version.manifest as {record_stores?:Array<{key:string;resource_key:string;source_projection?:unknown}>};if(!manifest.record_stores?.some(store=>store.resource_key===authority.binding.resource_key&&store.source_projection))return;
+ if(!await attachmentSyncParticipantsAreHuman(tx,authority.binding.owner_user_id,authority.registration.operator_user_id))throw Error('APP_INTEGRATION_NOTIFICATION_PUBLICATION_DENIED');
+ const sessions=await currentConnectionSessionLocators(tx,{org_id:input.org_id,user_id:authority.binding.owner_user_id},authority.installation.id).limit(17);if(sessions.length>16)throw Error('APP_INTEGRATION_NOTIFICATION_PUBLICATION_DENIED');
+ const exact=sessions.filter(({session})=>(session.record as {scope?:{resource_binding_id?:string}}).scope?.resource_binding_id===input.resource_binding_id),accounts=[...new Set(exact.map(({session})=>(session.record as {account?:{account_ref?:string}}).account?.account_ref).filter((value):value is string=>!!value))];
+ // Without a current owned account there can be no notification projection.
+ if(!accounts.length)return;
+ const sources=appIntegrationNotificationPublicationSources({installation_id:authority.installation.id,resource_key:authority.binding.resource_key,descriptor_key:authority.descriptor.key,stores:manifest.record_stores??[],accounts,records:input.upserts});
+ for(const source of sources)await enqueueAppIntegrationNotifications(tx,{org_id:input.org_id,user_id:authority.binding.owner_user_id},source);
+}

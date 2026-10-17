@@ -1,0 +1,4 @@
+# Historical files are hash-pinned physical bytes, not editable active inputs.
+package.json -text
+pnpm-lock.yaml -text
+deft-app-kit-0.1.0-alpha.9.tgz -text

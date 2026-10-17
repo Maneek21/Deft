@@ -1,10 +1,12 @@
+import {preparedResourceBatchReleaseIsCurrent} from './app-prepared-resource-batch-live.js';
 import { sql } from 'drizzle-orm';
 import type { AppRunTransaction, AppRunSafeView } from './app-run-repository.js';
 /** Last per-effect fence: a batch is never a reusable consent or token grant. */
-export async function actionBatchReleaseIsCurrent(tx:AppRunTransaction,run:AppRunSafeView) {
+export async function actionBatchReleaseIsCurrent(tx:AppRunTransaction,run:AppRunSafeView,preparedResourceApprovalPhase=false) {
  if(run.provider_kind!=='app_runtime')return true;
  const exists=await tx.execute(sql<{present:boolean}>`SELECT to_regclass('app_action_batches') IS NOT NULL AS present`);if(!exists.rows[0]?.present)return true;
- const membership=await tx.execute(sql`SELECT batch_id FROM app_action_batch_items WHERE org_id=${run.org_id} AND run_id=${run.id}`);if(!membership.rows[0])return true;
+ const membership=await tx.execute(sql`SELECT i.batch_id,COALESCE(to_jsonb(b)->>'release_mode','parallel_approval') AS release_mode FROM app_action_batch_items i JOIN app_action_batches b ON b.org_id=i.org_id AND b.id=i.batch_id WHERE i.org_id=${run.org_id} AND i.run_id=${run.id}`);if(!membership.rows[0])return true;
+ if(membership.rows[0].release_mode==='prepared_resource_sequential')return preparedResourceBatchReleaseIsCurrent(tx,run,preparedResourceApprovalPhase);
  // Acquire the same mutable authority locks used by revocation before deciding.
  await tx.execute(sql`SELECT t.id FROM mcp_tokens t JOIN app_action_batches b ON b.org_id=t.org_id AND b.token_id=t.id AND b.token_kind='mcp' JOIN app_action_batch_items i ON i.org_id=b.org_id AND i.batch_id=b.id WHERE i.org_id=${run.org_id} AND i.run_id=${run.id} FOR SHARE OF t`);
  await tx.execute(sql`SELECT t.id,g.id FROM oauth_access_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN app_action_batches b ON b.org_id=t.org_id AND b.token_id=t.id AND b.token_kind='oauth' JOIN app_action_batch_items i ON i.org_id=b.org_id AND i.batch_id=b.id WHERE i.org_id=${run.org_id} AND i.run_id=${run.id} FOR SHARE OF t,g`);

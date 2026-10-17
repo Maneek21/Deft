@@ -46,14 +46,14 @@ export function ExperienceAgentPolicy({ sessionId, actions, ensureAuthority }: {
     finally { setBusy(false); }
   }
   if (!actions.length) return null;
-  return <section aria-label="Agent action permissions" className="space-y-3 border-t pt-3">
+  return <section aria-label="Agent action permissions" className="space-y-4 pt-5">
     <p className="font-medium">Agent requests</p>
     <p>Choose whether agents can request an action. Every permitted request still needs your approval.</p>
-    <label className="block">Action<select className="mt-1 min-h-11 w-full rounded border bg-transparent px-2" value={action} disabled={busy}
+    <label className="block">Action<select className="mt-2 min-h-11 w-full rounded-xl border border-transparent bg-[var(--surface-container-low)] px-3 focus-visible:ring-2 focus-visible:ring-[var(--primary)]" value={action} disabled={busy}
       onChange={event => { setAction(event.target.value); setPolicy(null); }}>
       {actions.map(key => <option key={key} value={key}>{key.replaceAll('_', ' ')}</option>)}
     </select></label>
-    <label className="block">Permission<select className="mt-1 min-h-11 w-full rounded border bg-transparent px-2" value={mode} disabled={!policy || busy}
+    <label className="block">Permission<select className="mt-2 min-h-11 w-full rounded-xl border border-transparent bg-[var(--surface-container-low)] px-3 focus-visible:ring-2 focus-visible:ring-[var(--primary)]" value={mode} disabled={!policy || busy}
       onChange={event => setMode(event.target.value as Policy['mode'])}>
       <option value="deny">Do not allow agent requests</option><option value="require_approval">Require my approval for every request</option>
     </select></label>

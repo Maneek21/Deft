@@ -5,7 +5,9 @@ import Link from 'next/link';
 import { api, isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { refreshApps } from '@/hooks/use-apps';
-import { appApiError, type AppInstallation } from '@/lib/apps';
+import { appApiError, normalizeAppOwnerConnections, normalizeAppPrivateState, normalizeAppResourceContentReview, type AppInstallation,
+  type AppPrivateStateDeclaration, type AppOwnerConnectionPolicy, type AppResourceContentDeclaration } from '@/lib/apps';
+import { canonicalCapabilityJson } from '@deft/shared';
 
 type Request = { schema_version:'deft.app_blob_review_request.v2';app_version_id:string;expected_package_digest:string;
   expected_requested_snapshot_digest:string;expected_lifecycle_epoch:number;expected_grant_epoch:number };
@@ -13,11 +15,19 @@ type Context = {schema_version:'deft.app_blob_review_context.v2';installation_id
   state:string;review_request:Request|null;current_activation:{grant_snapshot_id:string;review_digest:string}|null};
 type Review = {schema_version:'deft.app_blob_review.v2';installation_id:string;request:Request;review_digest:string;
   authority:{sync_descriptors:{key:string;resource_type:string;attachments:{allowed_media_types:string[];max_attachment_bytes:number;retention_days:number}}[];
-    private_state?:{key:string;label:string;max_records:number;max_record_bytes:number;max_total_bytes:number;retention_days:number}[];
+    private_state?:AppPrivateStateDeclaration[];
+    owner_connections?:AppOwnerConnectionPolicy[];
+    resource_content?:AppResourceContentDeclaration[];
     modules:{module_id:string;version:string;manifest_path:string;manifest_digest:string}[];
     runtime_actions:{key:string}[];experiences:{key:string;label:string}[];
     host_policy:{encrypted_custody:boolean;current_parent_required:boolean;provider_url_fetch:boolean;irrecoverable_host_purge:boolean;owner_only:boolean;stage_ceiling_seconds:number}}};
 const tap={minHeight:44};
+const consentDuration=(seconds:number)=>{
+  for(const [unit,label] of [[86400,'day'],[3600,'hour'],[60,'minute'],[1,'second']] as const){
+    if(seconds%unit===0){const count=seconds/unit;return `${count.toLocaleString()} ${label}${count===1?'':'s'}`;}
+  }
+  return `${seconds.toLocaleString()} seconds`;
+};
 async function result<T>(r:Response):Promise<T>{if(!r.ok)throw new Error(await appApiError(r,'This App review is unavailable.'));return r.json() as Promise<T>;}
 export function AttachmentAppReview({app}:{app:AppInstallation}){
   const {sessionCacheScope}=useAuth();if(!sessionCacheScope||app.manifest.schema_version!=='7')return null;
@@ -50,7 +60,17 @@ function Workspace({app}:{app:AppInstallation}){
         ||body.review.authority.host_policy.encrypted_custody!==true||body.review.authority.host_policy.current_parent_required!==true
         ||body.review.authority.host_policy.provider_url_fetch!==false||body.review.authority.host_policy.irrecoverable_host_purge!==true
         ||body.review.authority.host_policy.owner_only!==true||body.review.authority.host_policy.stage_ceiling_seconds!==3600)throw new Error('The App review changed. Refresh before activating.');
-      if(current(s))setReview(body.review);
+      const states = body.review.authority.private_state === undefined ? undefined : normalizeAppPrivateState(body.review.authority.private_state, body.review.authority.runtime_actions);
+      const declared = app.manifest.schema_version === '7' ? app.manifest.private_state : undefined;
+      if (canonicalCapabilityJson(states ?? []) !== canonicalCapabilityJson(declared ?? [])) throw new Error('The private storage review changed. Refresh before activating.');
+      const owners = body.review.authority.owner_connections === undefined ? undefined
+        : normalizeAppOwnerConnections(body.review.authority.owner_connections, body.review.authority.sync_descriptors, body.review.authority.runtime_actions);
+      const declaredOwners = app.manifest.schema_version === '7' ? app.manifest.owner_connections : undefined;
+      if (canonicalCapabilityJson(owners ?? []) !== canonicalCapabilityJson(declaredOwners ?? [])) throw new Error('The personal account setup review changed. Refresh before activating.');
+      const content = normalizeAppResourceContentReview(body.review.authority.resource_content,
+        app.manifest.schema_version === '7' ? app.manifest.resource_content : undefined, body.review.authority.sync_descriptors);
+      if(current(s))setReview({ ...body.review, authority: { ...body.review.authority,
+        ...(states ? { private_state: states } : {}), ...(owners ? { owner_connections: owners } : {}), ...(content ? {resource_content:content} : {}) } });
     }catch(e){if(current(s))setError(e instanceof Error?e.message:'App review unavailable.');}finally{if(current(s))setBusy(false);}};
   const activate=async()=>{if(!review)return;const expected=review,s=begin();setBusy(true);setError(null);
     try{await result(await api.fetch(`${base}/activate`,{method:'POST',signal:s.controller.signal,body:JSON.stringify({...expected.request,expected_review_digest:expected.review_digest,accept_host_policy:true})}));
@@ -64,7 +84,21 @@ function Workspace({app}:{app:AppInstallation}){
     {active?<><p>This reviewed App is active. Private resource consent and action operator consent are separate steps.</p><Link className="deft-pill" style={tap} href="/settings/apps/private-resources">Connect private resources</Link></>:review?<>
       <h3 className="font-semibold">Activate {app.name} {app.version}?</h3><p>This exact package declares saved private resources and the actions below. Activation does not grant access to your mailbox or attachments.</p>
       <ul className="space-y-2">{review.authority.sync_descriptors.map(d=><li key={d.key} className="break-words">{d.key} ({d.resource_type}) · declared attachment types: {d.attachments.allowed_media_types.join(', ')} · at most {d.attachments.max_attachment_bytes.toLocaleString()} bytes each, {d.attachments.retention_days} day retention ceiling</li>)}</ul>
-      {review.authority.private_state?.map(state=><p key={state.key}>Private App state: {state.label} · up to {state.max_records} encrypted records, {state.max_record_bytes} bytes each / {state.max_total_bytes} bytes total · {state.retention_days} days from creation. The owner must separately approve each session. Other artifacts cannot automatically adopt these records.</p>)}
+      {review.authority.owner_connections?.map(policy=><div key={policy.key} className="space-y-1">
+        <h4 className="font-medium">Personal account setup</h4>
+        <p>Members may connect their own {policy.resource_key} account after an admin approves its operator. Each member reviews their own access, for up to {consentDuration(policy.max_consent_seconds)}.</p>
+        <p>Available actions: {policy.action_keys.join(', ') || 'Read only'}. Connecting an account does not authorize these actions by itself.</p>
+      </div>)}
+      {review.authority.resource_content?.map(policy=><div key={policy.resource_key} className="space-y-1">
+        <h4 className="font-medium">Current document access</h4>
+        <p>Read {policy.resource_key} documents as plain text, up to {policy.document.max_characters.toLocaleString()} characters. Current owner access is required for every read.</p>
+        <p>Additional reviewed fields: {Object.keys(policy.document.metadata_schema?.properties ?? {}).join(', ') || 'None'}.</p>
+      </div>)}
+      {review.authority.private_state?.map(state=><div key={state.key} className="space-y-1">
+        <p>Private App state: {state.label} · up to {state.max_records} encrypted records, {state.max_record_bytes} bytes each / {state.max_total_bytes} bytes total · {state.retention_days} days from creation. The owner must separately approve each session. Other artifacts cannot automatically adopt these records.</p>
+        {state.files && <p>Files: up to {state.files.max_files_per_record} per record, {state.files.max_file_bytes.toLocaleString()} bytes each / {state.files.max_total_bytes_per_record.toLocaleString()} bytes per record. Types: {state.files.allowed_media_types.join(', ')}. Files cannot outlive their saved record.</p>}
+        {state.action_payloads?.map(payload=><p key={payload.action_key}>Captured action payload: {payload.action_key} · up to {payload.max_payload_bytes.toLocaleString()} bytes. Each action still requires current operator authority and confirmation.</p>)}
+      </div>)}
       <p>Declared actions: {review.authority.runtime_actions.map(a=>a.key).join(', ')||'None'}. Every effect requires its reviewed operator binding and normal approval.</p>
       <p>Activation installs or re-enables {review.authority.modules.length} declared workspace modules.</p>
       {review.authority.modules.length>0&&<ul>{review.authority.modules.map(m=><li key={m.module_id} className="break-words">{m.module_id} · version {m.version}<code className="block break-all text-xs">{m.manifest_digest}</code></li>)}</ul>}

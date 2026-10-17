@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {AttachmentPolicySchema} from '@deft/app-kit';
 
-export const EMAIL_MEDIA_TYPES=Object.freeze(['text/plain','text/csv','application/json','image/png','image/jpeg','image/gif','image/webp']);
+export const EMAIL_MEDIA_TYPES=Object.freeze(['text/plain','text/csv','application/json','image/png','image/jpeg','image/gif','image/webp','application/pdf']);
 const fixturePolicy={max_attachment_bytes:2097152,max_attachments_per_record:8,max_attachments_per_run:32,max_attachment_bytes_per_run:8388608,retention_days:1,allowed_media_types:['text/csv']};
 export const attachmentPolicy=value=>AttachmentPolicySchema.parse(value??fixturePolicy);
 
@@ -13,6 +13,11 @@ export function emailMediaAllowed(bytes,declared){
  if(declared==='image/jpeg')return value.length>=4&&starts([255,216,255])&&value[value.length-2]===255&&value[value.length-1]===217;
  if(declared==='image/gif')return value.length>=14&&['GIF87a','GIF89a'].includes(value.subarray(0,6).toString('ascii'))&&value[value.length-1]===59;
  if(declared==='image/webp')return value.length>=20&&value.subarray(0,4).toString('ascii')==='RIFF'&&value.subarray(8,12).toString('ascii')==='WEBP'&&value.readUInt32LE(4)===value.length-8;
+ if(declared==='application/pdf'){
+  if(value.length>2097152||!/^%PDF-(?:1\.[0-7]|2\.0)(?:\r\n|\r|\n)/u.test(value.subarray(0,10).toString('latin1')))return false;
+  const trailer=/(?:\r\n|\r|\n)startxref[\t \r\n]+([0-9]{1,10})[\t \r\n]+%%EOF[\t \r\n]*$/u.exec(value.subarray(-1024).toString('latin1'));
+  return trailer!==null&&Number(trailer[1])>0&&Number(trailer[1])<value.length;
+ }
  let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(value);}catch{return false;}
  if(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text)||/^\s*(?:<!doctype\s+html|<html(?:\s|>)|<svg(?:\s|>))/iu.test(text))return false;
  if(declared==='application/json'){try{JSON.parse(text);return true;}catch{return false;}}
