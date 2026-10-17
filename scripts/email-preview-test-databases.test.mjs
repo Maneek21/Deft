@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {TEST_POSTGRES_IMAGE,testDatabaseIsolation} from './email-preview-test-databases.mjs';
+import {TEST_POSTGRES_IMAGE,testDatabaseIsolation,waitForNoDatabaseClients} from './email-preview-test-databases.mjs';
 
 const id='a'.repeat(64),runId='1234',attempt='2';
 function fixture(overrides={}){
@@ -77,7 +77,7 @@ test('existing automation target is not overwritten',()=>{
  assert.equal(commands.filter(({args})=>args.includes('pg_dump')).length,0);
 });
 
-test('a transient client exits before the guarded database reset',()=>{
+test('a transient PostgreSQL backend close lag clears before the guarded database reset',()=>{
  const overrides={},state=fixture(overrides);state.instance.createTemplate();
  let observations=0;overrides.clients=()=>++observations===1?1:0;
  const start=state.commands.length;
@@ -122,4 +122,12 @@ test('an invalid active-client response fails closed before reset',()=>{
  const start=state.commands.length;
  assert.throws(()=>state.instance.restoreMain('next.test.ts','before'),/invalid active-client count/);
  assert.equal(destructive(state.commands.slice(start)).length,0);
+});
+
+test('a persistent backend is diagnosed once after the bounded idle wait',()=>{
+ let time=0,identities=0,diagnostics=0;
+ assert.throws(()=>waitForNoDatabaseClients({assertIdentity:()=>{identities++;},count:()=> '1',timeoutMs:100,
+  now:()=>time,pause:ms=>{time+=ms;},diagnose:()=>{diagnostics++;return 'pid=fixture,state=idle';},
+  error:'guarded fixture stayed busy'}),/guarded fixture stayed busy: pid=fixture,state=idle/);
+ assert.equal(time,100);assert.equal(identities,2);assert.equal(diagnostics,1);
 });

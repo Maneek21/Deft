@@ -3,7 +3,7 @@ import {readdirSync,readFileSync,appendFileSync,mkdirSync} from 'node:fs';
 import {dirname,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {testDatabaseIsolation} from './email-preview-test-databases.mjs';
+import {testDatabaseIsolation,waitForNoDatabaseClients} from './email-preview-test-databases.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const api=resolve(root,'apps/api'),directory=resolve(api,'test');
@@ -72,8 +72,18 @@ function assertPredecessor(){
   '-d',database,'--set','ON_ERROR_STOP=1','-AtF','|','-c',sql]);
  const identity="SELECT current_database(),current_user,inet_server_port(),host(inet_server_addr())";
  assert.equal(query('email_stage34_test',identity),'email_stage34_test|gate_g_test|55435|127.0.0.1');
- assert.equal(query('postgres',"SELECT count(*) FROM pg_stat_activity WHERE datname='email_stage34_test'"),'0',
-  'never force-disconnect another test while resetting this CI-owned fixture');
+ waitForNoDatabaseClients({
+  assertIdentity:()=>{
+   const [latest]=JSON.parse(docker(['inspect',container]));
+   assert.equal(latest.Id,current.Id);assert.equal(latest.State.Running,true);
+   assert.equal(latest.Config.Labels['deft.test_run'],process.env.GITHUB_RUN_ID);
+   assert.equal(latest.Config.Labels['deft.test_attempt'],process.env.GITHUB_RUN_ATTEMPT);
+  },
+  count:()=>query('postgres',"SELECT count(*) FROM pg_stat_activity WHERE datname='email_stage34_test'"),
+  diagnose:()=>query('postgres',"SELECT concat_ws(',',pid,usename,coalesce(application_name,''),state,backend_type,coalesce(host(client_addr),''),coalesce(wait_event,''),state_change) FROM pg_stat_activity WHERE datname='email_stage34_test' ORDER BY pid"),
+  timeoutMs:5000,
+  error:'never force-disconnect another test while resetting this CI-owned fixture',
+ });
  return query;
 }
 function resetPredecessor(){
