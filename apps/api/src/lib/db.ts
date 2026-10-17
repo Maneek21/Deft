@@ -5,11 +5,13 @@ import { env } from './env.js';
 import { closeAppAutomationScanDatabase } from './app-automation-scan-db.js';
 import { closeExperienceExposureDatabase } from './app-experience-exposure-db.js';
 import { closePrivateSearchDatabase } from './app-resource-private-search-db.js';
+import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
 
 const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
+  max: APP_DATABASE_POOL_BUDGET.ordinary,
 });
 
 // Session-scoped advisory locks must not consume the ordinary query pool;
@@ -17,7 +19,7 @@ const pool = new Pool({
 // connection while each waits for another query connection.
 const advisoryPool = new Pool({
   connectionString: env.DATABASE_URL,
-  max: 4,
+  max: APP_DATABASE_POOL_BUDGET.advisory,
 });
 
 export const db = drizzle(pool, { schema });

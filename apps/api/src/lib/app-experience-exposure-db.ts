@@ -3,10 +3,11 @@ import pg from 'pg';
 import * as schema from '@deft/db/schema';
 import { env } from './env.js';
 import { ExperienceExposureBusyError } from './app-experience-exposure-db-error.js';
+import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
 
 export const APP_EXPERIENCE_EXPOSURE_DB_LIMITS = Object.freeze({
-  connections: 2,
-  human_action_connections: 2,
+  connections: APP_DATABASE_POOL_BUDGET.experience_read,
+  human_action_connections: APP_DATABASE_POOL_BUDGET.experience_human_action,
   acquisition_ms: 1_000,
   lock_ms: 250,
   statement_ms: 2_000,
