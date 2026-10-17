@@ -16,7 +16,7 @@ import {appVersions,appGrantSnapshots,webSessions,users,orgMembers,appDataInvoca
 import {db} from './db.js';
 import {AppError} from './app-errors.js';
 import {currentAppConnectionReadAuthority} from './app-connection-session-authority.js';
-import {appDataConnectionActionSelection} from './app-data-read-authority.js';
+import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection} from './app-data-read-authority.js';
 import {PostgresAppConnectionSessionStore} from './app-connection-session-store.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
 import {appDataConsentConnections} from './app-data-consent-repair.js';
@@ -134,7 +134,7 @@ async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|und
  const [version]=await db.select().from(appVersions).where(and(eq(appVersions.org_id,owner.org_id),eq(appVersions.id,input.scope.app_version_id)));
  const declaration=parseAttachmentAppManifest(version?.manifest).record_stores?.find(item=>appDataDigest(item)===input.authority.data_policy_digest);
  if(!declaration)throw appDataDenied();
- const current=await currentAppDataAuthority(caller,input.connection.session_id,declaration.key,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,['prepare_resource_action','read_prepared_resource_action'].includes(input.operation)?'none':appDataConnectionActionSelection(input.operation));
+ const current=await currentAppDataAuthority(caller,input.connection.session_id,declaration.key,appDataRetainedGuard(caller),input.operation==='connection_metadata'?input.authority.consent_id!==null:appDataRequiresConsent(input.operation),input.authority.consent_id??undefined,appDataRuntimeConnectionActionSelection(input.operation));
  if(['prepared_action_commit','prepared_action_restore'].includes(input.operation)){
   const {assertFutureRecordActionLocalRequest,futureRecordActionLocalInput}=await import('./app-future-record-action-local.js');
   await db.transaction(async tx=>{

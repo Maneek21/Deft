@@ -3,7 +3,7 @@ import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {AppDataResourceActionService} from '../src/lib/app-data-resource-action-service.js';
 import {AppExperienceHumanActionService} from '../src/lib/app-experience-human-action-service.js';
-import {appDataConnectionActionSelection} from '../src/lib/app-data-read-authority.js';
+import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection} from '../src/lib/app-data-read-authority.js';
 import {AppDataService} from '../src/lib/app-data-service.js';
 import {appDataDigest} from '../src/lib/app-data-authority.js';
 const hash='sha256:'+'a'.repeat(64),session=randomUUID(),record=randomUUID(),account=randomUUID();
@@ -59,4 +59,9 @@ test('ordinary human scalar preparation cannot nominate either trusted plan mark
 
 test('resource review captures data-only authority at every data preflight, keeping action guards',async()=>{const f=fixture();await f.broker.prepareResource(randomUUID(),'target','organize_messages',f.request);assert.deepEqual(f.counts().selections,['none','none']);assert.equal(f.counts().guards,3);});
 test('resource plan operations omit unrelated actions but record effects retain them',()=>{for(const op of ['prepare_resource_action','read_prepared_resource_action'])assert.equal(appDataConnectionActionSelection(op),'none');for(const op of ['prepare_action','read_prepared','prepared_action_commit',undefined])assert.equal(appDataConnectionActionSelection(op),undefined);});
+
+test('immutable record callback introspection omits unrelated actions without changing outer review or effect authority',()=>{
+ for(const op of ['prepare_action','read_prepared']){assert.equal(appDataRuntimeConnectionActionSelection(op),'none');assert.equal(appDataConnectionActionSelection(op),undefined);}
+ for(const op of ['prepared_action_commit','prepared_action_restore','unrecognized'])assert.equal(appDataRuntimeConnectionActionSelection(op),undefined);
+});
 test('inner resource preparation uses data-only expiry preflight',async()=>{const selections:unknown[]=[];const authority={expires_at:Date.now()+60000};class Probe extends AppDataService {override async current(...args:any[]):Promise<any>{selections.push(appDataConnectionActionSelection(args[3]));return authority;}override async invoke():Promise<any>{return {result:{outcome:'completed',prepared_resource:{expires_at:new Date(Date.now()+60000).toISOString()}},authority};}}await new Probe(caller,(async()=>{}) as any).prepareResource(session,{store_key:'drafts'});assert.deepEqual(selections,['none']);});

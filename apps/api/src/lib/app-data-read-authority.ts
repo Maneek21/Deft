@@ -7,3 +7,9 @@ const dataOnlyOperations=new Set(['prepare_resource_action','read_prepared_resou
 export function appDataConnectionActionSelection(operation?:string):'none'|undefined {
  return operation!==undefined&&dataOnlyOperations.has(operation)?'none':undefined;
 }
+/** Callback introspection returns data authority only. Record review brokers
+ * independently check the selected action before/after preparation and release.
+ * Keep the outer record-operation selection unchanged. */
+export function appDataRuntimeConnectionActionSelection(operation:string):'none'|undefined {
+ return operation==='prepare_action'||operation==='read_prepared'?'none':appDataConnectionActionSelection(operation);
+}
