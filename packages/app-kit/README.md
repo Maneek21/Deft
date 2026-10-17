@@ -70,13 +70,19 @@ pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.35.tgz
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.37`. Package metadata,
+This review candidate is `0.1.0-alpha.38`. Package metadata,
 `DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
 resource data/content contracts, attachments, safe compose HTML, and generic
 source/Task integration. These are contracts; a compatible Host must advertise
 and authorize the corresponding operations.
+
+`sdk.refreshDataResource(storeKey, resourceKey, targetKey?)` optionally nominates
+one currently admitted account, matching resource lists. Omitting the target
+keeps the selected-account behavior. The Host must support targeted refresh and
+revalidate the account at dispatch and disclosure; a target key grants no access
+and cannot route record writes or provider actions.
 
 ### Historical recovery artifacts
 
