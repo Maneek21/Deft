@@ -422,6 +422,7 @@ async function buildTeamDashboard(orgId: string, teamId: string) {
       notes: [
         'Open task counts are computed live from linked projects.',
         'Context counts are computed from linked team resources.',
+        'Pending approvals are counted for team members across the workspace.',
         summary.latest_snapshot
           ? 'A dashboard snapshot is available, but trend rendering is still intentionally limited.'
           : 'No historical dashboard snapshot exists yet; treat this as a current-state summary, not trend analytics.',
