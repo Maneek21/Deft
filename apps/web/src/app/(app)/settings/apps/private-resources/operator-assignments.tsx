@@ -4,6 +4,7 @@ import {appConsentDeadline} from '../../../../../../../../packages/app-kit/src/c
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { api, isSameWebSession } from '@/lib/api';
+import { readPrivateResourceManagement } from '@/lib/private-resource-management-client';
 import { APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
 import { appApiError } from '@/lib/apps';
 
@@ -23,12 +24,12 @@ export function OperatorAssignments() {
     setBusy(true); setError(null); setAssignments([]);
     try {
       const base=attachment?'/api/apps/blob/sync':'/api/app-resource-sync-management';
-      const response = await api.get(`${base}/operator/assignments?limit=20${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`);
+      const response = await readPrivateResourceManagement(`${base}/operator/assignments?limit=20${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`);
       if (!response.ok) throw new Error(await appApiError(response, 'Unable to load operator assignments.'));
       const body = await response.json() as { assignments: Assignment[]; next_after: string | null };
       let items=body.assignments.map(item=>({...item,attachment}));
       if(!cursor&&!attachment&&APP_ATTACHMENT_BROKER_ENABLED){
-        const extra=await api.get('/api/apps/blob/sync/operator/assignments?limit=20');
+        const extra=await readPrivateResourceManagement('/api/apps/blob/sync/operator/assignments?limit=20');
         if(!extra.ok)throw new Error(await appApiError(extra,'Unable to load attachment assignments.'));
         const data=await extra.json() as {assignments:Assignment[];next_after:string|null};
         if(data.assignments.length>20)throw new Error('Attachment assignments exceeded the page limit.');

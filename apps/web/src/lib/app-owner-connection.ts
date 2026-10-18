@@ -88,9 +88,16 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
   if (policies.some((policy, i) => i > 0 && policy.policy.key <= policies[i - 1]!.policy.key)) fail();
   return policies;
 }
-export function ownerResourceRequest(policy: OwnerPolicy, now = Date.now()): OwnerResourceRequest {
+export function ownerResourceRequest(policy: OwnerPolicy, now = Date.now(), targetKey?: string): OwnerResourceRequest {
   const request = policy.admission?.resource_request; if (!request || appConsentDeadline(request.consent_expires_at,request.consent_lifetime) <= now) return fail();
-  return structuredClone(request);
+  if (targetKey !== undefined) key(targetKey);
+  return { ...structuredClone(request), ...(targetKey === undefined ? {} : { target_key: targetKey }) };
+}
+export function ownerRetainedTargets(value: unknown): string[] {
+  const row = object(value); keys(row, 'targets');
+  const targets = array(row.targets, 32).map(value => { const target = object(value); keys(target, 'key'); return key(target.key); });
+  if (new Set(targets).size !== targets.length) return fail();
+  return targets;
 }
 export function ownerActionRequest(policy: OwnerPolicy, binding: OwnerBinding, actionKey: string, now = Date.now()) {
   if (!policy.admission || !policy.bindings.some(item => item.binding_id === binding.binding_id) || binding.state !== 'active'

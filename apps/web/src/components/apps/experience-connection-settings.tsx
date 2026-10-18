@@ -16,7 +16,7 @@ import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
 import { appConnectionSessionTag, createAppConnectionSessionFlow, type AppConnectionContext } from '@/lib/app-connection-session-flow';
 import { appApiError } from '@/lib/apps';
-import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview,
+import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview, ownerRetainedTargets,
   type OwnerPolicy, type OwnerResourceRequest } from '@/lib/app-owner-connection';
 
 type SettingsProps = { onAccountLabels?:(labels:{key:string;label:string}[])=>void; appOwnedRecords?: boolean; sessionId?: string; targetKey?: string; installationId: string; experienceKey: string; ensureAuthority: () => Promise<boolean>;
@@ -249,6 +249,9 @@ const mediaLabels: Record<string, string> = { 'application/pdf': 'PDF', 'image/p
 function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: SettingsProps & { ownerId: string; orgId: string }) {
   const { installationId, disabled, onBusy } = props;
   const [policies, setPolicies] = useState<OwnerPolicy[] | null>(null), [selected, setSelected] = useState('');
+  const [accountIdentifier, setAccountIdentifier] = useState('');
+  const [retainedTargets, setRetainedTargets] = useState<string[]>([]);
+  const targetKey = props.targetKey ?? accountIdentifier;
   const [review, setReview] = useState<OwnerReview | null>(null), [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState(0);
   const [notice, setNotice] = useState('Checking account setup…'), [reload, setReload] = useState(0);
@@ -274,18 +277,26 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
       const response = await api.fetch(contextPath, { signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw Error(await appApiError(response, 'Personal account setup is unavailable.'));
       const value = ownerConnectionContext(await response.json(), installationId);
-      if (current()) { setPolicies(value); setCheckedAt(Date.now()); setSelected(previous => value.some(item => item.policy.key === previous) ? previous : value[0]?.policy.key ?? ''); setNotice(''); }
+      const retained = await api.fetch(`/api/app-owner-connections/${encodeURIComponent(installationId)}/connections`, { signal: controller.signal, cache: 'no-store' });
+      if (!retained.ok) throw Error(await appApiError(retained, 'Existing account identifiers are unavailable.'));
+      const targets = ownerRetainedTargets(await retained.json());
+      if (current()) { setRetainedTargets(targets); setPolicies(value); setCheckedAt(Date.now()); setSelected(previous => value.some(item => item.policy.key === previous) ? previous : value[0]?.policy.key ?? '');
+        const choices = [...targets, ...value.flatMap(item => item.bindings.map(binding => binding.target_key)), ...value.flatMap(item => item.admission ? [item.admission.resource_request.target_key] : [])];
+        setAccountIdentifier(previous => choices.includes(previous) ? previous : choices[0] ?? ''); setNotice(''); }
     }).catch(error => { if (current()) { setPolicies(null); setNotice(error instanceof Error ? error.message : 'Personal account setup is unavailable.'); } });
     return () => controller.abort();
   }, [contextPath, installationId, disabled, reload]);
   const policy = policies?.find(item => item.policy.key === selected);
-  const binding = policy?.bindings.find(item => (!props.targetKey || item.target_key === props.targetKey)
+  const accountChoices = [...new Set([...retainedTargets, ...(policy?.bindings.map(item => item.target_key) ?? []), ...(policy?.admission ? [policy.admission.resource_request.target_key] : [])])];
+  const binding = policy?.bindings.find(item => item.target_key === targetKey
     && item.state === 'active' && appConsentExpiryValid(item.consent_expires_at,item.consent_lifetime) && appConsentDeadline(item.consent_expires_at,item.consent_lifetime) > checkedAt);
   const missingActions = policy?.policy.action_keys.filter(key => !binding?.actions.some(action => action.action_key === key && action.state === 'active')) ?? [];
   async function requestReview(kind: OwnerReview['kind'], actionKey?: string) {
     if (!policy || busyRef.current || disabled || document.hidden) return;
     await operate(async (signal, current) => {
-      const request = kind === 'resources' ? ownerResourceRequest(policy) : binding && actionKey ? ownerActionRequest(policy, binding, actionKey) : null;
+      if (!/^[a-z][a-z0-9_]{0,47}$/.test(targetKey)) throw Error('Choose a valid account identifier before review.');
+      if (!props.targetKey && !accountChoices.includes(targetKey)) throw Error('Reload account setup before reviewing this account.');
+      const request = kind === 'resources' ? ownerResourceRequest(policy, Date.now(), targetKey) : binding && actionKey ? ownerActionRequest(policy, binding, actionKey) : null;
       if (!request) throw Error('Review account access before enabling an action.');
       const response = await api.fetch(`/api/app-owner-connections/${kind}/review`, { method: 'POST', body: JSON.stringify(request), signal });
       if (!response.ok) throw Error(await appApiError(response, 'Account access could not be reviewed.'));
@@ -316,6 +327,14 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
   }
   return <div className="min-w-0 space-y-3" aria-label="Set up your account">
     <h3 className="text-sm font-medium">Account access</h3>
+    {!props.targetKey && <label className="block space-y-1 text-sm">Account identifier
+      <select aria-label="Account identifier" className="w-full rounded border px-3 py-2" value={accountIdentifier}
+        disabled={busy || disabled} onChange={event => { setAccountIdentifier(event.target.value); setReview(null); }}>
+        {!accountChoices.length && <option value="">No account identifiers available</option>}
+        {accountChoices.map(target => <option key={target} value={target}>{target.replaceAll('_', ' ')}{retainedTargets.includes(target) ? ' (existing account)' : ''}</option>)}
+      </select>
+      <span className="block text-xs text-[var(--on-surface-variant)]">Choose an existing account to reconnect its saved records.</span>
+    </label>}
     {notice && <p role="status" className="break-words text-sm text-[var(--on-surface-variant)]">{notice}</p>}
     {!policies && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={busy || disabled} onClick={() => setReload(value => value + 1)}>Reload account setup</button>}
     {policies?.length === 0 && <p className="text-sm">This app needs an administrator to enable personal account setup.</p>}
@@ -329,6 +348,7 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
         <h4 className="text-base font-semibold">{review.kind === 'resources' ? 'Review account access' : `Review ${'action_key' in review.request ? review.request.action_key.replaceAll('_', ' ') : 'this action'}`}</h4>
         <p className="break-words">Account operator: <span className="font-medium">{policy.admission.operator_label}</span>, approved by your workspace.</p>
         {review.kind === 'resources' && 'target_key' in review.request ? <>
+          <p>Account identifier: <span className="font-medium">{review.request.target_key}</span></p>
           <p>The approved operator can save your account records {review.request.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(review.request.consent_expires_at!).toLocaleString()}`}. These records and attachments are private to you.</p>
           <p>Up to {review.request.limits.max_retained_records.toLocaleString()} saved records and {sizeLabel(review.request.limits.max_retained_bytes)} total;
             updates at most every {(review.request.limits.min_interval_seconds / 60).toLocaleString(undefined, { maximumFractionDigits: 1 })} minutes.</p>
