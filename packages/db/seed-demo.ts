@@ -120,7 +120,24 @@ async function seed() {
     DO $$
     DECLARE
       table_list text;
+      candidate record;
+      table_has_rows boolean;
+      application_has_rows boolean := false;
     BEGIN
+      -- Fresh initialization has a migration ledger but no application rows.
+      -- Prove that state before skipping the redundant destructive wipe. In
+      -- particular, adoption markers and destinations are never excluded: their
+      -- permanent retention triggers must continue to reject populated resets.
+      FOR candidate IN
+        SELECT schemaname, tablename FROM pg_tables
+        WHERE schemaname = 'public' AND tablename <> 'deft_schema_migrations'
+      LOOP
+        EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I.%I)', candidate.schemaname, candidate.tablename)
+          INTO table_has_rows;
+        IF table_has_rows THEN application_has_rows := true; EXIT; END IF;
+      END LOOP;
+      IF NOT application_has_rows THEN RETURN; END IF;
+
       SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
       INTO table_list
       FROM pg_tables
@@ -132,7 +149,7 @@ async function seed() {
     END $$;
   `);
 
-  console.log('Wiped existing data');
+  console.log('Demo database ready for seed data');
 
   // ── Users (1 manager + 5 employees) — all share password tomato123 ──
   const pw = await bcrypt.hash('tomato123', 12);
