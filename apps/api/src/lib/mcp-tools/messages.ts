@@ -13,6 +13,7 @@ import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { manifestsByMessageId } from '../attachment-manifests.js';
 import { boundMentionAttention } from './mention-attention.js';
+import { currentAgentActionSourceAuthoritySql } from '../agent-channel-authority.js';
 
 /**
  * Phase 12 review fix: before returning any thread content, verify the
@@ -272,8 +273,10 @@ export async function fetchUnread(
       .from(agentActions)
       .where(
         and(
+          eq(agentActions.org_id, ctx.org_id),
           eq(agentActions.agent_employee_id, ctx.employee_id),
           eq(agentActions.approval_status, 'pending'),
+          currentAgentActionSourceAuthoritySql(),
         ),
       )
       .orderBy(desc(agentActions.created_at))

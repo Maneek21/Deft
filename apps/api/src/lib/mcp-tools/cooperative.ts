@@ -30,6 +30,7 @@
 import { createHash } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db.js';
+import { currentAgentActionSourceAuthoritySql } from '../agent-channel-authority.js';
 import {
   agentActions,
   agentChannelEvents,
@@ -537,8 +538,10 @@ export async function pollPendingWork(
     .from(agentActions)
     .where(
       and(
+        eq(agentActions.org_id, ctx.org_id),
         eq(agentActions.agent_employee_id, ctx.employee_id),
         eq(agentActions.approval_status, 'pending'),
+        currentAgentActionSourceAuthoritySql(),
       ),
     )
     .orderBy(desc(agentActions.created_at))
