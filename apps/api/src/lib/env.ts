@@ -76,10 +76,45 @@ export function resolveEncryptionKey(
   return value || DEVELOPMENT_ENCRYPTION_KEY;
 }
 
+const DEV_JWT_SECRET = 'dev-jwt-secret-change-me';
+const DEV_JWT_REFRESH_SECRET = 'dev-refresh-secret-change-me';
+const templateIdentity = (value: string) => value.toLowerCase().replace(/[-_\s]+/g, '');
+const JWT_SECRET_TEMPLATES = new Set([
+  DEV_JWT_SECRET, DEV_JWT_REFRESH_SECRET,
+  'change-me-to-a-random-string', 'change-me-to-another-random-string',
+  'CHANGE_ME_JWT_SECRET', 'CHANGE_ME_JWT_REFRESH_SECRET',
+  'CHANGE_ME_WITH_AT_LEAST_32_RANDOM_CHARACTERS',
+].map(templateIdentity));
+
+export function resolveJwtSecret(
+  configured: string | undefined,
+  devDefault: string,
+  name: string,
+  nodeEnv = process.env.NODE_ENV,
+): string {
+  // Preserve existing development/test defaults and exact configured bytes.
+  if (nodeEnv !== 'production') return configured || devDefault;
+  if (!configured || configured !== configured.trim() || configured.length < 32
+    || JWT_SECRET_TEMPLATES.has(templateIdentity(configured))) {
+    throw new Error(`${name} must be a non-template secret of at least 32 characters without surrounding whitespace in production`);
+  }
+  return configured;
+}
+
+export function resolveJwtSecrets(access?: string, refresh?: string, nodeEnv = process.env.NODE_ENV) {
+  const JWT_SECRET = resolveJwtSecret(access, DEV_JWT_SECRET, 'JWT_SECRET', nodeEnv);
+  const JWT_REFRESH_SECRET = resolveJwtSecret(refresh, DEV_JWT_REFRESH_SECRET, 'JWT_REFRESH_SECRET', nodeEnv);
+  if (nodeEnv === 'production' && JWT_SECRET === JWT_REFRESH_SECRET) {
+    throw new Error('JWT_SECRET and JWT_REFRESH_SECRET must be different in production');
+  }
+  return { JWT_SECRET, JWT_REFRESH_SECRET };
+}
+
+const jwtSecrets = resolveJwtSecrets(process.env.JWT_SECRET, process.env.JWT_REFRESH_SECRET);
+
 export const env = {
   DATABASE_URL: resolveDatabaseUrl(),
-  JWT_SECRET: process.env.JWT_SECRET || 'dev-jwt-secret-change-me',
-  JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret-change-me',
+  ...jwtSecrets,
   RESEND_API_KEY: process.env.RESEND_API_KEY || '',
   API_PORT: parseInt(process.env.API_PORT || '3001'),
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',

@@ -495,8 +495,8 @@ jobs:
       - name: Start production-image test stack
         env:
           POSTGRES_PASSWORD: browser-smoke-postgres
-          JWT_SECRET: browser-smoke-jwt-secret
-          JWT_REFRESH_SECRET: browser-smoke-refresh-secret
+          JWT_SECRET: browser-smoke-access-signing-key-at-least-32
+          JWT_REFRESH_SECRET: browser-smoke-refresh-signing-key-at-least-32
           # Quote this value: otherwise YAML parses the digits as a number and
           # exports it in scientific notation, shortening it below 32 chars.
           ENCRYPTION_KEY: "ci-browser-smoke-encryption-key-32"
@@ -518,6 +518,8 @@ jobs:
           done
           docker run --rm --network deft-browser-smoke \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
+            -e JWT_SECRET="$JWT_SECRET" \
+            -e JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET" \
             -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
             --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed && pnpm --filter @deft/api exec tsx src/scripts/seed-test-fixtures.ts'
           # Fixed API fixtures supply the synthetic owner; add only browser prerequisites.
