@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
@@ -46,10 +46,35 @@ import {
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
 import { executeSendMessage, executeTaskUpdate } from '../lib/mcp-tools/writes.js';
+import { currentAgentChannelEventAuthoritySql } from '../lib/agent-channel-authority.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
 export const agentChannelRoutes = new Hono();
+
+const responseAuthority = new WeakMap<Context, { principal: AgentChannelPrincipal; eventIds: string[]; list?: boolean }>();
+// Replays and reconciliation can await several durable lookups after entry. Check
+// the pinned canonical IDs again before returning any cached private result.
+agentChannelRoutes.use('*', async (c, next) => {
+  await next();
+  const authority = responseAuthority.get(c);
+  if (!authority || c.res.status >= 400 || authority.eventIds.length === 0) return;
+  const rows = await db.select({ id: agentChannelEvents.id }).from(agentChannelEvents).where(and(
+    inArray(agentChannelEvents.id, authority.eventIds),
+    eq(agentChannelEvents.org_id, authority.principal.org_id),
+    eq(agentChannelEvents.agent_employee_id, authority.principal.employee_id),
+    currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
+  ));
+  const allowed = new Set(rows.map((row) => row.id));
+  if (authority.eventIds.every((id) => allowed.has(id))) return;
+  if (authority.list) {
+    const body = await c.res.json();
+    const events = body.events.filter((event: { id: string }) => allowed.has(event.id));
+    c.res = c.json({ ...body, events, cursor: events.at(-1)?.id ?? null });
+  } else {
+    c.res = errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
+  }
+});
 
 function channelContract() {
   return {
@@ -237,7 +262,7 @@ function isResponse<T>(value: T | Response): value is Response {
   return value instanceof Response;
 }
 
-async function getEventForPrincipal(eventId: string, principal: AgentChannelPrincipal) {
+async function getEventForPrincipal(eventId: string, principal: AgentChannelPrincipal, context?: Context) {
   const [event] = await db
     .select()
     .from(agentChannelEvents)
@@ -246,9 +271,11 @@ async function getEventForPrincipal(eventId: string, principal: AgentChannelPrin
         eq(agentChannelEvents.id, eventId),
         eq(agentChannelEvents.org_id, principal.org_id),
         eq(agentChannelEvents.agent_employee_id, principal.employee_id),
+        currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
       ),
     )
     .limit(1);
+  if (event && context) responseAuthority.set(context, { principal, eventIds: [event.id] });
   return event ?? null;
 }
 
@@ -355,6 +382,7 @@ async function settleRuntimeAttempt(params: {
       eq(agentChannelDeliveryAttempts.org_id, params.principal.org_id),
       eq(agentChannelDeliveryAttempts.agent_employee_id, params.principal.employee_id),
       eq(agentChannelDeliveryAttempts.event_id, params.event.id),
+      currentAgentChannelEventAuthoritySql(sql`${params.event.id}`),
       eq(agentChannelDeliveryAttempts.direction, 'outbound_runtime'),
       eq(agentChannelDeliveryAttempts.idempotency_key, params.runtimeRequestKey),
     ));
@@ -395,6 +423,7 @@ async function closeFallbackWorkForEvent(params: {
       eq(agentActions.org_id, params.principal.org_id),
       eq(agentActions.agent_employee_id, params.principal.employee_id),
       eq(agentActions.approval_status, 'pending'),
+      currentAgentChannelEventAuthoritySql(sql`${params.event.id}`),
     ));
 }
 
@@ -414,6 +443,7 @@ async function completeAutonomousReplyTransport(params: {
       .set({ ...lifecyclePatch, lease_expires_at: null })
       .where(and(
         eq(agentChannelEvents.id, params.event.id),
+        currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
         eq(agentChannelEvents.org_id, params.principal.org_id),
         eq(agentChannelEvents.agent_employee_id, params.principal.employee_id),
         sql`${agentChannelEvents.status} NOT IN ('completed', 'failed', 'cancelled')`,
@@ -503,6 +533,7 @@ agentChannelRoutes.get('/events', async (c) => {
     leaseMs: Number.isFinite(leaseMs) ? leaseMs : AGENT_CHANNEL_DEFAULT_LEASE_MS,
     adapterMode: compatibility.adapterMode,
   });
+  responseAuthority.set(c, { principal, eventIds: events.map((event) => event.id), list: true });
   const lastEventId = events.at(-1)?.id ?? null;
   const connection = await touchAgentChannelConnection(principal, { lastEventId });
   if (lastEventId) {
@@ -541,7 +572,7 @@ agentChannelRoutes.post('/accept', async (c) => {
     return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before accepting autonomous deliveries');
   }
 
-  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  const event = await getEventForPrincipal(parsed.data.event_id, principal, c);
   if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   if (event.status === 'acknowledged' && event.acked_at && !event.claim_token) {
     await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
@@ -574,6 +605,7 @@ agentChannelRoutes.post('/accept', async (c) => {
     })
     .where(and(
       eq(agentChannelEvents.id, event.id),
+      currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
       eq(agentChannelEvents.org_id, principal.org_id),
       eq(agentChannelEvents.agent_employee_id, principal.employee_id),
       eq(agentChannelEvents.claim_token, parsed.data.claim_token!),
@@ -608,7 +640,7 @@ agentChannelRoutes.post('/reconcile', async (c) => {
 
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
-  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  const event = await getEventForPrincipal(parsed.data.event_id, principal, c);
   if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
@@ -636,7 +668,7 @@ agentChannelRoutes.post('/ack', async (c) => {
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
 
-  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  const event = await getEventForPrincipal(parsed.data.event_id, principal, c);
   if (!event) {
     return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
@@ -713,6 +745,7 @@ agentChannelRoutes.post('/ack', async (c) => {
       .set({ ...patch, ...claimPatch })
       .where(and(
         eq(agentChannelEvents.id, event.id),
+        currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
         eq(agentChannelEvents.org_id, principal.org_id),
         eq(agentChannelEvents.agent_employee_id, principal.employee_id),
         eq(agentChannelEvents.claim_token, parsed.data.claim_token),
@@ -770,7 +803,7 @@ agentChannelRoutes.post('/reply', async (c) => {
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
 
-  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  const event = await getEventForPrincipal(parsed.data.event_id, principal, c);
   if (!event) {
     return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
@@ -901,6 +934,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         })
         .where(and(
           eq(agentChannelEvents.id, event.id),
+          currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
           eq(agentChannelEvents.org_id, principal.org_id),
           eq(agentChannelEvents.agent_employee_id, principal.employee_id),
           eq(agentChannelEvents.status, event.status),
@@ -973,6 +1007,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
         eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
         eq(agentChannelDeliveryAttempts.event_id, event.id),
+        currentAgentChannelEventAuthoritySql(sql`${event.id}`),
       ));
     const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
       ? attempt.request_json as Record<string, unknown>
@@ -1133,6 +1168,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
         eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
         eq(agentChannelDeliveryAttempts.event_id, event.id),
+        currentAgentChannelEventAuthoritySql(sql`${event.id}`),
         eq(agentChannelDeliveryAttempts.status, attempt.status),
         attemptGenerationMatches(attempt),
       ))
@@ -1176,6 +1212,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
         eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
         eq(agentChannelDeliveryAttempts.event_id, event.id),
+        currentAgentChannelEventAuthoritySql(sql`${event.id}`),
         reclaimableState,
         attemptGenerationMatches(attempt),
       ))
@@ -1521,7 +1558,9 @@ agentChannelRoutes.post('/reply', async (c) => {
     employee_id: principal.employee_id,
     employee_slug: principal.employee_slug,
     trust_level: principal.trust_level,
+    channel_event_id: event.id,
   };
+  if (!(await getEventForPrincipal(event.id, principal, c))) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   const result = autonomousNotificationReply
     ? {
         content: [{ type: 'text' as const, text: JSON.stringify({ acknowledged: true, event_id: event.id }) }],
@@ -1581,6 +1620,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
       eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
       eq(agentChannelDeliveryAttempts.event_id, event.id),
+      currentAgentChannelEventAuthoritySql(sql`${event.id}`),
       eq(agentChannelDeliveryAttempts.status, 'started'),
       attemptGenerationMatches(claim),
     ))
@@ -1650,6 +1690,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       })
       .where(and(
         eq(agentChannelEvents.id, event.id),
+        currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
         eq(agentChannelEvents.claim_token, parsed.data.claim_token!),
       ))
       .returning({ id: agentChannelEvents.id });
@@ -1720,7 +1761,8 @@ agentChannelRoutes.post('/status', async (c) => {
       : 'connected';
 
   if (parsed.data.event_id) {
-    const event = await getEventForPrincipal(parsed.data.event_id, principal);
+    const event = await getEventForPrincipal(parsed.data.event_id, principal, c);
+    if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Agent Channel event not found');
     const signal = parsed.data.state === 'approval_pending'
       ? 'approval_pending'
       : parsed.data.state === 'working' || parsed.data.state === 'typing'
@@ -1746,6 +1788,7 @@ agentChannelRoutes.post('/status', async (c) => {
           .set(lifecyclePatch)
           .where(and(
             eq(agentChannelEvents.id, event.id),
+            currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
             eq(agentChannelEvents.claim_token, parsed.data.claim_token),
           ));
       }

@@ -1225,13 +1225,19 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   }
 
   // 4. Tool dispatch — unknown tool => MCP-level error content (isError)
-  const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
-    resolved.org_id,
-    employee.employee_id,
-    canonicalToolName === 'record_progress' && typeof args.task_id === 'string'
-      ? args.task_id
-      : undefined,
-  );
+  let runtimeCorrelation: Awaited<ReturnType<typeof getActiveAgentChannelRuntimeCorrelation>>;
+  try {
+    runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
+      resolved.org_id,
+      employee.employee_id,
+      canonicalToolName === 'record_progress' && typeof args.task_id === 'string'
+        ? args.task_id
+        : undefined,
+    );
+  } catch (error) {
+    if (error instanceof McpAuthError) return errorResponse(c, error.status as 403, error.code, error.message);
+    throw error;
+  }
   const ctx: ToolContext = {
     org_id: resolved.org_id,
     employee_id: employee.employee_id,

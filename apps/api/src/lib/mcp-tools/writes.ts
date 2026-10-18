@@ -51,6 +51,8 @@ import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
+import { currentAgentChannelEventAuthoritySql, currentEmployeeSpaceAuthoritySql } from '../agent-channel-authority.js';
+import { DEFTY_SYSTEM_EMPLOYEE_SLUG } from '../ensure-defty-membership.js';
 import {
   employeeProjectAccessAllows,
   loadEmployeeProjectAccess,
@@ -426,6 +428,7 @@ export async function executeTaskCreate(
       startDate: args.start_date ?? null,
       estimation: args.estimation ?? args.size ?? null,
       sourceMessageId: args.source_message_id ?? null,
+      sourceChannelEventId: ctx.channel_event_id ?? null,
       actionId: opts?.actionId ?? null,
       actingAgentEmployeeId: ctx.employee_id,
       subtasks: Array.isArray(args.subtasks) ? args.subtasks : null,
@@ -708,7 +711,8 @@ export async function executeTaskUpdate(
       ? await db
         .update(tasks)
         .set(update)
-        .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
+        .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id),
+          ctx.channel_event_id ? currentAgentChannelEventAuthoritySql(sql`${ctx.channel_event_id}`) : sql`true`))
         .returning()
       : [existingTask];
 
@@ -716,16 +720,13 @@ export async function executeTaskUpdate(
 
     const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
     if (comment) {
-      const [commentRow] = await db
-        .insert(taskComments)
-        .values({
-          ...(opts?.commentId ? { id: opts.commentId } : {}),
-          org_id: ctx.org_id,
-          task_id: args.task_id,
-          user_id: shadowUserId,
-          content: comment,
-        })
-        .returning({ id: taskComments.id });
+      const commentId = opts?.commentId ?? crypto.randomUUID();
+      const inserted = await db.execute(sql`insert into task_comments (id, org_id, task_id, user_id, content)
+        select ${commentId}, ${ctx.org_id}, ${args.task_id}, ${shadowUserId}, ${comment}
+        where ${ctx.channel_event_id ? currentAgentChannelEventAuthoritySql(sql`${ctx.channel_event_id}`) : sql`true`}
+        returning id`);
+      const commentRow = (Array.isArray(inserted) ? inserted : (inserted as { rows?: Array<{id: string}> }).rows)?.[0];
+      if (!commentRow) return errorResult('task_update: source is no longer accessible');
       createdCommentId = commentRow?.id ?? null;
       activityEntries.push({
         action: 'commented',
@@ -1100,17 +1101,21 @@ export async function executeSendMessage(opts: {
       return errorResult(`send_message: no shadow user for employee ${ctx.employee_id}`);
     }
 
-    const [row] = await db
-      .insert(messages)
-      .values({
-        ...(opts.messageId ? { id: opts.messageId } : {}),
-        org_id: orgId,
-        space_id: spaceId,
-        user_id: shadowUserId,
-        content,
-        parent_id: parentId,
-      })
-      .returning();
+    const messageId = opts.messageId ?? crypto.randomUUID();
+    const inserted = await db.execute(sql`insert into messages (id, org_id, space_id, user_id, content, parent_id)
+      select ${messageId}, ${orgId}, ${spaceId}, ${shadowUserId}, ${content}, ${parentId}
+      where (${currentEmployeeSpaceAuthoritySql(sql`${orgId}`, sql`${ctx.employee_id}`, sql`${spaceId}`)}
+        or exists (select 1 from agent_employees internal_employee join spaces internal_space
+          on internal_space.id = ${spaceId} and internal_space.org_id = internal_employee.org_id
+          where internal_employee.id = ${ctx.employee_id} and internal_employee.org_id = ${orgId}
+            and internal_employee.is_active = true and internal_employee.runtime_kind = 'defty_system'
+            and internal_employee.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG} and internal_employee.is_byoa = false
+            and internal_space.type = 'public' and internal_space.is_archived = false))
+        and ${ctx.channel_event_id ? currentAgentChannelEventAuthoritySql(sql`${ctx.channel_event_id}`) : sql`true`}
+      returning id`);
+    const insertedRows = Array.isArray(inserted) ? inserted : (inserted as { rows?: unknown[] }).rows ?? [];
+    if (insertedRows.length === 0) return errorResult('send_message: source or destination is no longer accessible');
+    const [row] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
 
     const [author] = await db
       .select({ name: users.name, avatar_url: users.avatar_url })
