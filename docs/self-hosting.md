@@ -79,6 +79,8 @@ For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,
 and `NEXT_PUBLIC_WS_URL` to the browser-reachable URLs first. Keep their defaults
 for localhost ports 3000/3001. Leave provider keys empty for a basic evaluation.
 
+Host `v0.3.0-preview.120` pins the reviewed PostgreSQL 16.15 / pgvector 0.8.6 image in `docker-compose.yml`. Keep that immutable database image with this preview's deployment assets: fresh initialization and upgrade lineage checks include PostgreSQL and extension versions, so a floating `pg16` tag can produce an unrecognized catalog.
+
 Use the release overlay in every application/tool command:
 
 ```bash

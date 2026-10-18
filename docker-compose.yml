@@ -142,7 +142,7 @@ services:
     # extension pre-built. Deft's wiki + tasks embeddings columns are
     # declared as `vector(1536)` in the Drizzle schema, so `db:push`
     # fails against plain postgres:16-alpine on a fresh volume.
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}
