@@ -7,8 +7,9 @@ export const APP_RUN_TRANSACTION_LIMITS = Object.freeze({ budget_ms: 10_000,
   acquisition_ms: 250, lock_ms: 250, statement_ms: 2_000 });
 
 /** Dedicated bounded capacity; ordinary workers keep their pool. */
-export function createBoundedAppRunDatabase(connectionString: string, options: { max: number; application_name: string }) {
+export function createBoundedAppRunDatabase(connectionString: string, options: { max: number; application_name: string; min?: number }) {
   const pool = new pg.Pool({ connectionString, max: options.max,
+    min: options.min ?? 0,
     connectionTimeoutMillis: APP_RUN_TRANSACTION_LIMITS.acquisition_ms,
     statement_timeout: APP_RUN_TRANSACTION_LIMITS.statement_ms,
     query_timeout: APP_RUN_TRANSACTION_LIMITS.statement_ms,
