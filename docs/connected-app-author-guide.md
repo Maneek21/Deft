@@ -54,21 +54,36 @@ journey works:
 
 1. Read `GET /api/app-resource-observations/installations/{installation_id}/context`
    as the current owner. Derive the connection session, resource binding,
-   registration and scope from this response. Review finite observation through
+   registration and scope from this response. A finite observation is reviewed through
    `POST /api/app-resource-observations/consent/review` with
    `connection_session_id`, a fresh `request_id`, `interval_seconds` and an ISO
    `expires_at`; activate the returned `consent_id` and exact `review_digest`
    through `/consent/activate`. Use the
    [Kit observation contracts](../packages/app-kit/src/resource-observation.ts),
-   and keep expiry within the resource consent ceiling. Observation v1 admits
+   and keep expiry within the resource consent ceiling. If the context explicitly
+   offers `allow_until_revoked: true` and the current owner resource consent is
+   already `until_revoked`, the same review request may instead carry
+   `{"expires_at":null,"consent_lifetime":"until_revoked"}`. Activate the exact
+   returned review before `review_expires_at`; this review deadline does not end
+   an already active observation. A null expiry alone grants nothing. Initial
+   account enrollment remains finite. Observation v1 admits
    scalar metadata only (`attachment_mode: "unsupported"`); it grants neither
    attachment transfer, Knowledge capture, OAuth scopes nor provider actions.
 2. Once the operator's Runtime is ready, issue its v3 sync session through
    `POST /api/apps/blob/sync/bindings/{resource_binding_id}/sessions` with `{}`.
-   The current prototype grants at most **15 minutes**, clipped to resource
-   consent expiry. This session has no action-channel technical-renewal option;
-   do not treat action credentials or a long-lived resource consent as an
-   indefinitely running observer.
+   This finite, nonrenewing example grants at most **15 minutes**, clipped to
+   resource consent expiry. With explicit current `until_revoked` owner resource
+   consent, the named operator may opt in at this same authenticated issuance
+   endpoint using
+   `{"technical_renewal":{"renewal_lifetime":"until_revoked","requested_until":null}}`.
+   Preserve the Host-issued finite `expires_at`, `renewable_until: null` and
+   `renewal_lifetime: "until_revoked"`; do not substitute request field
+   `requested_until` for response field `renewable_until`. Each renewed lease
+   remains at most 15 minutes. Renewal rechecks the current named human/role,
+   App/grant and connection pins, and required consent; an expired or revoked
+   session cannot be revived. Technical renewal alone never grants or extends
+   the separate observation/publication consent, and action credentials cannot
+   substitute for sync credentials.
 3. Configure the external Email Runtime's `resource_sync_channel_files` with a
    private absolute filename. Its JSON contains `channel_url` pointing to
    `/api/app-resource-sync-channel/v3`, `observation_authority_url` pointing to
@@ -76,7 +91,10 @@ journey works:
    `credential:{session_id,session_token}`, and the exact current
    `registration:{org_id,runtime_registration_id,operator_user_id,runtime_epoch,
    profile_digest,target_key,resource_key}`. Both URLs use the same trusted Host
-   origin. Keep credentials/config outside the App package and public source.
+   origin. For an opted-in session, also preserve the exact issued
+   `technical_renewal:{expires_at,renewable_until,renewal_lifetime}` metadata in
+   its private channel file. Keep credentials/config outside the App package
+   and public source.
 4. The Host operator must enable the existing resource sync channel/scheduler,
    attachment broker and owner-connection gates. Let the scheduler admit the
    first **observed** Run; an ordinary `/sync` request with `{}` does not replace
@@ -89,12 +107,15 @@ journey works:
    bypass source checks.
 5. Review the exact published source and project audience in the reader, create
    one source-link Task, then verify its access-checked backlink resolves the
-   same Email source. Finish the finite prototype by settling observed Runs and
+   same Email source. Each Run retains finite input/result retention deadlines;
+   these do not set a fixed lifetime for the whole publication lane. Finish a
+   temporary finite rehearsal by settling observed Runs and
    revoking the separately issued observation consent/operator session through
    `/api/app-resource-observations/consent/revoke` and
    `/api/apps/blob/sync/sessions/{session_id}/revoke`; do not revoke the underlying
-   mailbox binding as cleanup. A sustained deployment needs an explicitly
-   supported operator lifecycle, not a promise inferred from this short lease.
+   mailbox binding as cleanup. Sustained publication needs its separately
+   reviewed finite or explicitly supported `until_revoked` consent and current
+   finite operator leases, not permission inferred from technical renewal.
 
 ## Historical Protocol 1/2 sandbox walkthrough
 
