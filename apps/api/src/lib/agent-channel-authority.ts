@@ -126,4 +126,3 @@ export function currentAgentActionSourceAuthoritySql(actionAlias = 'agent_action
         and ${currentAgentChannelEventAuthoritySql(sql`source_event.id`, readerUserId)}
     ))`;
 }
-
