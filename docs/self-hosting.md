@@ -43,7 +43,7 @@ For the independently sideloaded Email developer preview, use Host
 `v0.3.0-preview.121` and the **apps-developer-preview** browser profile listed
 in its `browser-feature-evidence.json`. Follow the independent
 [Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
-and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.14/compatibility.json)
+and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.15/compatibility.json)
 for the exact image digest, schema 120, sealed Kit downloads, HTTPS/OAuth and
 Runtime configuration. Host preview 121 fixes session refresh under database
 pool contention and retains schema 120; no new schema migration is required.
