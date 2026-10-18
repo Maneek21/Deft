@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { validEquipmentModule } from './fixtures/module-semantic-negative-corpus.js';
+import { seedPackedConsumerLock } from './fixtures/packed-consumer-lock.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -36,8 +37,10 @@ test('the actual packed Kit validates Modules in a clean external directory', as
       name: 'external-equipment-author',
       private: true,
       type: 'module',
+      devDependencies: { '@deft/app-kit': `file:${tarball.replaceAll('\\', '/')}` },
     }), 'utf8');
-    runPnpm(['add', '--offline', '--ignore-scripts', '--ignore-workspace', '--save-dev', tarball], consumerDir);
+    await seedPackedConsumerLock({ packageRoot, consumerDir, archive: tarball });
+    runPnpm(['install', '--offline', '--ignore-scripts', '--ignore-workspace', '--frozen-lockfile'], consumerDir);
 
     const invalid = structuredClone(validEquipmentModule) as Record<string, any>;
     invalid.collections[0].fields[4].target_collection = 'missing_sites';

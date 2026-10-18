@@ -1,3 +1,4 @@
+import {validAppRuntimeRenewal,type AppRuntimeRenewal} from './runtime-client.js';
 import { z } from 'zod';
 import {
   ResourceSyncClaimSchema, ResourceSyncClaimRequestSchema, ResourceSyncStartRequestSchema,
@@ -64,6 +65,12 @@ export function createDeftResourceSyncClientV3(options: ResourceSyncClientOption
   };
   const invalid = () => new ResourceSyncClientError(200, 'APP_RESOURCE_SYNC_INVALID_RESPONSE');
   return Object.freeze({
+    async renew(input:Readonly<{expected_expires_at:string}>,callOptions?:ResourceSyncCallOptions):Promise<AppRuntimeRenewal>{
+      if(!input||Object.keys(input).length!==1||!z.iso.datetime().safeParse(input.expected_expires_at).success)throw new TypeError('Invalid Runtime renewal');
+      const reply=await post('renew',{expected_expires_at:input.expected_expires_at},callOptions) as {renewed:unknown};
+      if(!reply||Object.keys(reply).length!==1||!validAppRuntimeRenewal(reply.renewed,input.expected_expires_at,credential.session_id))throw invalid();
+      return Object.freeze({...reply.renewed});
+    },
     async claim(callOptions?: ResourceSyncCallOptions): Promise<ResourceSyncClaimV3 | null> {
       const reply = ResourceSyncClaimReplyV3Schema.parse(await post('claim', { max_claims: 1 }, callOptions));
       if (reply.claim && reply.claim.session_id !== credential.session_id) throw invalid();

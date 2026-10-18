@@ -1,7 +1,7 @@
 import { ResourceSyncSessionCredentialSchema, ResourceSyncErrorSchema } from './resource-sync-transport-contract.js';
 import type { ResourceSyncClientOptions, ResourceSyncCallOptions } from './resource-sync-client.js';
 const MAX_TRANSPORT_BYTES = 1_100_000;
-export type ResourceSyncTransportOptions = ResourceSyncClientOptions & { channel_version: 'deft.app_runtime_channel.v2' | 'deft.app_runtime_channel.v3' };
+export type ResourceSyncTransportOptions = ResourceSyncClientOptions & { channel_version: 'deft.app_runtime_channel.v2' | 'deft.app_runtime_channel.v3' | 'deft.app_resource_observation_authority.v1' };
 export class ResourceSyncClientError extends Error {
   constructor(readonly status: number, readonly code: string) {
     super(`Resource sync channel request failed: ${code}`);
@@ -19,6 +19,7 @@ export function createResourceSyncTransport(options: ResourceSyncTransportOption
   const credential = ResourceSyncSessionCredentialSchema.parse(options.credential);
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeout = options.timeout_ms ?? 15_000;
+  const transportLimit=options.channel_version==='deft.app_resource_observation_authority.v1'?16384:MAX_TRANSPORT_BYTES;
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60_000) {
     throw new TypeError('Invalid resource sync request deadline');
   }
@@ -32,7 +33,7 @@ export function createResourceSyncTransport(options: ResourceSyncTransportOption
       schema_version: options.channel_version,
       audience: 'app_resource_sync',
       session_id: credential.session_id });
-    if ((typeof body === 'string' ? new TextEncoder().encode(body).byteLength : body.byteLength) > (binaryBody ? 2_097_152 + 8196 : MAX_TRANSPORT_BYTES)) {
+    if ((typeof body === 'string' ? new TextEncoder().encode(body).byteLength : body.byteLength) > (binaryBody ? 2_097_152 + 8196 : transportLimit)) {
       throw new ResourceSyncClientError(0, 'APP_RESOURCE_SYNC_TOO_LARGE');
     }
     const controller = new AbortController();
@@ -67,7 +68,7 @@ export function createResourceSyncTransport(options: ResourceSyncTransportOption
       }
       const declared = response.headers.get('content-length');
       if (declared !== null && (!/^\d+$/u.test(declared)
-        || Number(declared) > MAX_TRANSPORT_BYTES)) {
+        || Number(declared) > transportLimit)) {
         throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_RESPONSE_TOO_LARGE');
       }
       reader = response.body?.getReader();
@@ -78,7 +79,7 @@ export function createResourceSyncTransport(options: ResourceSyncTransportOption
         const next = await bounded(reader.read());
         if (next.done) break;
         size += next.value.byteLength;
-        if (size > MAX_TRANSPORT_BYTES) {
+        if (size > transportLimit) {
           throw new ResourceSyncClientError(response.status, 'APP_RESOURCE_SYNC_RESPONSE_TOO_LARGE');
         }
         chunks.push(next.value);

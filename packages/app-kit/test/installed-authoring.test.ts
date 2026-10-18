@@ -46,6 +46,20 @@ test('installed v4 combines exact Module, Experience and public mapping without 
   assert.throws(() => parseDeftAppManifest({ ...input.manifest, schema_version: '3', compatibility: { app_protocol: '3' } }));
 });
 
+test('public package build and verify retain the explicit v2 renderer capability pin', async () => {
+  const input = await fixture();
+  const manifest = { ...input.manifest, experiences: input.manifest.experiences.map(reference => ({ ...reference,
+    renderer_version: 'deft.trusted_renderer.v2' as const, capabilities: ['resource_document.v1'] as ['resource_document.v1'] })) };
+  const built = await buildDeftAppPackage({ ...input, manifest });
+  const verified = await verifyDeftAppPackageJson(built.json);
+  assert.deepEqual(verified, built);
+  assert.notEqual(built.digest, (await buildDeftAppPackage(input)).digest);
+  assert.deepEqual('experiences' in verified.package.manifest && verified.package.manifest.experiences[0]!.capabilities,
+    ['resource_document.v1']);
+  await assert.rejects(() => buildDeftAppPackage({ ...input, manifest: { ...manifest,
+    experiences: manifest.experiences.map(({ capabilities: _capabilities, ...reference }) => reference) } }));
+});
+
 test('installed v4 rejects orphan artifacts, undeclared actions and invalid canonical claim mappings', async () => {
   const input = await fixture();
   await assert.rejects(() => buildDeftAppPackage({ ...input, artifacts: input.artifacts.slice(0, 1) }), /exactly/);

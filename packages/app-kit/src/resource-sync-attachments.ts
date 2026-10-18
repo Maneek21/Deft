@@ -11,7 +11,7 @@ export const RESOURCE_ATTACHMENT_LIMITS = Object.freeze({
   stage_lifetime_ms: 60 * 60 * 1000,
 } as const);
 export const AttachmentMediaTypeSchema = z.enum([
-  'text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf',
 ]);
 export const AttachmentPolicySchema = z.strictObject({
   max_attachment_bytes: z.number().int().min(1).max(RESOURCE_ATTACHMENT_LIMITS.attachment_bytes),
@@ -19,7 +19,7 @@ export const AttachmentPolicySchema = z.strictObject({
   max_attachments_per_run: z.number().int().min(1).max(RESOURCE_ATTACHMENT_LIMITS.attachments_per_run),
   max_attachment_bytes_per_run: z.number().int().min(1).max(RESOURCE_ATTACHMENT_LIMITS.attachment_bytes_per_run),
   retention_days: z.number().int().min(1).max(RESOURCE_ATTACHMENT_LIMITS.retention_days),
-  allowed_media_types: z.array(AttachmentMediaTypeSchema).min(1).max(7)
+  allowed_media_types: z.array(AttachmentMediaTypeSchema).min(1).max(8)
     .refine(value => new Set(value).size === value.length, 'Media types must be unique'),
 });
 export type AttachmentPolicy = z.infer<typeof AttachmentPolicySchema>;

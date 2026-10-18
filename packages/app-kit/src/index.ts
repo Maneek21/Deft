@@ -1,3 +1,5 @@
+export * from './safe-compose-html.js';
+export * from './prepared-effect.js';
 import { z } from 'zod';
 import { RuntimeAuthoringShape, RuntimeAuthoringSchema, RuntimeRequestedAuthoritySchema } from './runtime-authoring.js';
 import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAuthoritySchema, PUBLIC_AVAILABILITY_SCALAR_TYPES } from './installed-authoring.js';
@@ -10,12 +12,24 @@ export * from './public-hmac.js';
 export * from './runtime-authoring.js';
 export * from './runtime-client.js';
 export * from './experience.js';
+export * from './experience-capabilities.js';
+export * from './experience-keyboard.js';
+export * from './record-mirror-controls.js';
+export * from './connection-session.js';
+export * from './connection-session-reattach.js';
+export * from './app-data.js';
+export * from './app-data-client.js';
 export * from './experience-sdk.js';
 export * from './resource-authoring.js';
 export * from './native-authoring.js';
 export * from './attachment-authoring.js';
+export * from './owner-connection-policy.js';
+export * from './resource-content-policy.js';
+export * from './mailbox-list.js';
+export * from './resource-record-list.js';
 export * from './resource-sync-attachments.js';
 export * from './resource-sync-client-v3.js';
+export * from './resource-observation.js';
 import { abortOnUnknownContractKeys } from './module-contract/zod-compat.js';
 import {
   classifyAppAutomationOccurrence,
@@ -66,7 +80,7 @@ export const DEFT_APP_PROTOCOL_VERSION_V7 = '7' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V7 = 'deft.app.package.v7' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
-export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.7' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.38' as const;
 export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
 export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
@@ -121,7 +135,7 @@ export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
   schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
   app_kit: Object.freeze({
     package: DEFT_APP_KIT_PACKAGE_NAME,
-    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.6', '0.1.0-alpha.5', '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1']),
+    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.37', '0.1.0-alpha.36', '0.1.0-alpha.35', '0.1.0-alpha.29', '0.1.0-alpha.28', '0.1.0-alpha.27', '0.1.0-alpha.26', '0.1.0-alpha.25', '0.1.0-alpha.22', '0.1.0-alpha.21', '0.1.0-alpha.20', '0.1.0-alpha.19', '0.1.0-alpha.18', '0.1.0-alpha.17', '0.1.0-alpha.16', '0.1.0-alpha.15', '0.1.0-alpha.14', '0.1.0-alpha.13', '0.1.0-alpha.12', '0.1.0-alpha.11', '0.1.0-alpha.10', '0.1.0-alpha.7', '0.1.0-alpha.6', '0.1.0-alpha.5', '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1']),
   }),
   protocol_flows: Object.freeze({
     '3': Object.freeze({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, install_mode: 'stage_only' as const }),
@@ -904,7 +918,7 @@ const V2_HANDLER_MATRIX = handlerMatrix({
 
 export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
   '7': Object.freeze({
-    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions', 'sync_descriptors', 'experiences', 'public_actions', 'private_state']),
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions', 'sync_descriptors', 'experiences', 'public_actions', 'private_state', 'owner_connections', 'resource_content', 'record_stores', 'integration_tools']),
     atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'native.calendar_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({ authoring: 'app-kit:v7', inspect: 'app-service:inspect-v7',
       stage: 'app-service:stage-v7', review: 'app-attachment-review:v7', activate: 'app-attachment-review:v7' })),
     private_interfaces: Object.freeze([]),
@@ -1385,6 +1399,9 @@ const DeftAppRequestedAuthorityAtomSchema = z.enum([
   'public_actions',
   'sync_descriptors',
   'private_state',
+  'owner_connections',
+  'resource_content',
+  'record_stores',
 ]);
 
 export const DeftAppRequestedAuthorityDiffSchema = z.strictObject({
@@ -1467,6 +1484,9 @@ export async function diffDeftAppRequestedAuthority(input: Readonly<{
     if (atom === 'public_actions') return 'public_actions' in value.requirements ? value.requirements.public_actions : [];
     if (atom === 'sync_descriptors') return 'sync_descriptors' in value.requirements ? value.requirements.sync_descriptors : [];
     if (atom === 'private_state') return 'private_state' in value.requirements ? value.requirements.private_state ?? [] : [];
+    if (atom === 'owner_connections') return 'owner_connections' in value.requirements ? value.requirements.owner_connections ?? [] : [];
+    if (atom === 'resource_content') return 'resource_content' in value.requirements ? value.requirements.resource_content ?? [] : [];
+    if (atom === 'record_stores') return 'record_stores' in value.requirements ? value.requirements.record_stores ?? [] : [];
     if ('runtime_actions' in value.requirements) return atom === 'capabilities'
       ? value.requirements.private_capabilities : atom === 'connectors'
         ? value.requirements.runtime_requirements : atom === 'actions' ? [...value.requirements.runtime_actions, ...('native_actions' in value.requirements ? value.requirements.native_actions : [])] : [];
@@ -2107,9 +2127,11 @@ async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
     for (const reference of experiences) {
       const bundle = await verifyDeftExperienceArtifact({ artifact_path: reference.artifact_path,
         artifact_digest: reference.artifact_digest, bridge_version: reference.bridge_version,
-        renderer_version: reference.renderer_version }, artifacts.get(reference.artifact_path));
-      if (bundle.schema_version === 'deft.experience_bundle.v3' && (installedManifest.schema_version !== '7'
-        || bundle.state_keys.some(key => !installedManifest.private_state?.some(state => state.key === key)))) {
+        renderer_version: reference.renderer_version,
+        ...(reference.capabilities === undefined ? {} : { capabilities: reference.capabilities }) }, artifacts.get(reference.artifact_path));
+      if ((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && (installedManifest.schema_version !== '7'
+        || bundle.state_keys.some(key => !installedManifest.private_state?.some(state => state.key === key))
+        || bundle.record_store_keys?.some(key => !installedManifest.record_stores?.some(store => store.key === key)))) {
         throw new Error('Experience must use only Protocol v7 declared private state keys');
       }
       if (bundle.action_keys.some((key) => !installedManifest.runtime_actions.some((action) => action.key === key)
@@ -2263,4 +2285,37 @@ export async function verifyDeftAppPackageJson(
   return { package: packageValue, json, digest: await digestText(json) };
 }
 
-export { PrivateStateDeclarationSchema, PrivateStateDeclarationsSchema, PRIVATE_STATE_LIMITS, type PrivateStateDeclaration } from './private-state.js';
+export { PrivateStateDeclarationSchema, PrivateStateDeclarationsSchema, PrivateStateFilesPolicySchema,
+  PrivateStateActionPayloadSchema, PRIVATE_STATE_LIMITS, PRIVATE_STATE_FILE_LIMITS,
+  type PrivateStateDeclaration, type PrivateStateFilesPolicy, type PrivateStateActionPayload } from './private-state.js';
+
+export * from './connection-session-v2.js';
+export * from './connection-session-upgrade.js';
+export * from './app-resource-action.js';
+export * from './connection-session-upgrade-context.js';
+
+export * from './record-change.js';
+export * from './prepared-copy-effect.js';
+export * from './connection-form.js';
+
+export * from './record-intake.js';
+
+export * from './local-job.js';
+
+export * from './local-job-controls.js';
+
+export * from './app-resource-action-batch.js';
+export * from './future-record-action.js';
+
+export * from './run-inspection.js';
+
+export * from './record-mirror.js';
+
+export * from './app-integration-tools.js';
+export * from './app-integration-source.js';
+export * from './app-integration-destination.js';
+
+export * from './connection-session-consent-continuation.js';
+export * from './connection-session-credential-repair.js';
+
+export * from './consent-lifetime.js';

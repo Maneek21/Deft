@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   DEFT_EXPERIENCE_BRIDGE_VERSION, DEFT_EXPERIENCE_RENDERER_VERSION,
+  DEFT_EXPERIENCE_RENDERER_V2_VERSION, DeftExperienceReferenceSchema,
   prepareDeftExperienceArtifact, verifyDeftExperienceArtifact,
 } from '../src/experience.js';
+import { InstalledExperienceSchema } from '../src/installed-authoring.js';
 
 const bundle = {
   schema_version: 'deft.experience_bundle.v1',
@@ -13,6 +15,36 @@ const bundle = {
   action_keys: ['create_label'],
 } as const;
 const path = 'experiences/workspace.json';
+
+test('signed renderer profiles require an explicit implemented capability at artifact and authoring boundaries', async () => {
+  const artifact = await prepareDeftExperienceArtifact(path, bundle);
+  const legacy = { artifact_path: path, artifact_digest: artifact.digest,
+    bridge_version: DEFT_EXPERIENCE_BRIDGE_VERSION, renderer_version: DEFT_EXPERIENCE_RENDERER_VERSION };
+  assert.equal(JSON.stringify(DeftExperienceReferenceSchema.parse(legacy)), JSON.stringify(legacy));
+  assert.equal(Object.hasOwn(DeftExperienceReferenceSchema.parse(legacy), 'capabilities'), false);
+  const v2 = { ...legacy, renderer_version: DEFT_EXPERIENCE_RENDERER_V2_VERSION, capabilities: ['resource_document.v1'] };
+  assert.deepEqual(await verifyDeftExperienceArtifact(v2, artifact), bundle);
+  assert.deepEqual(InstalledExperienceSchema.parse({ ...v2, key: 'workspace', label: 'Workspace' }), { ...v2, key: 'workspace', label: 'Workspace' });
+  for (const capabilities of [['richtext_field.v1'], ['file_field.v1'], ['resource_document.v1','richtext_field.v1','file_field.v1']]) {
+    const selected={...v2,capabilities};assert.deepEqual(await verifyDeftExperienceArtifact(selected,artifact),bundle);
+    assert.equal(InstalledExperienceSchema.safeParse({...selected,key:'workspace',label:'Workspace'}).success,true);
+  }
+  for (const profile of [
+    { renderer_version: DEFT_EXPERIENCE_RENDERER_VERSION, capabilities: ['resource_document.v1'] },
+    { renderer_version: DEFT_EXPERIENCE_RENDERER_V2_VERSION },
+    { renderer_version: DEFT_EXPERIENCE_RENDERER_V2_VERSION, capabilities: [] },
+    { renderer_version: DEFT_EXPERIENCE_RENDERER_V2_VERSION, capabilities: ['resource_document.v1', 'resource_document.v1'] },
+    { renderer_version: DEFT_EXPERIENCE_RENDERER_V2_VERSION, capabilities: ['resource_refresh.v1'] },
+    { renderer_version: 'deft.trusted_renderer.v99', capabilities: ['resource_document.v1'] },
+  ]) {
+    // Remove optional capabilities from the valid base to exercise missing declarations too.
+    const changed = { ...legacy, ...profile };
+    assert.equal(DeftExperienceReferenceSchema.safeParse(changed).success, false);
+    assert.equal(InstalledExperienceSchema.safeParse({ ...changed, key: 'workspace', label: 'Workspace' }).success, false);
+    await assert.rejects(() => verifyDeftExperienceArtifact(changed, artifact));
+  }
+  assert.equal(artifact.content, JSON.stringify(bundle));
+});
 
 test('search requires explicit closed bundle v2 pinned by canonical artifact bytes', async () => {
   const old = await prepareDeftExperienceArtifact(path, bundle);
@@ -57,7 +89,7 @@ test('Experience bundle rejects unknown fields, traversal, unsorted keys and ove
     ...bundle, action_keys: ['z_action', 'a_action'],
   }));
   await assert.rejects(() => prepareDeftExperienceArtifact(path, {
-    ...bundle, worker_source: 'x'.repeat(65 * 1024),
+    ...bundle, worker_source: 'x'.repeat(96 * 1024 + 1),
   }));
 });
 
