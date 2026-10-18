@@ -66,7 +66,7 @@ export const DEFT_APP_PROTOCOL_VERSION_V7 = '7' as const;
 export const DEFT_APP_PACKAGE_FORMAT_V7 = 'deft.app.package.v7' as const;
 export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
 export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
-export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.5' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.6' as const;
 export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
 export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
 export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
@@ -121,7 +121,7 @@ export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
   schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
   app_kit: Object.freeze({
     package: DEFT_APP_KIT_PACKAGE_NAME,
-    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1']),
+    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.5', '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1']),
   }),
   protocol_flows: Object.freeze({
     '3': Object.freeze({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, install_mode: 'stage_only' as const }),
