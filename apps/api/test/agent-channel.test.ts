@@ -58,7 +58,7 @@ import { memoryRecall, memoryWrite } from '../src/lib/mcp-tools/memory.js';
 import { recordProgress } from '../src/lib/mcp-tools/cooperative.js';
 import { handleAgentEmployeeMessage } from '../src/workers/handlers/agent-employee-message.js';
 import { handleAgentEmployeeTask } from '../src/workers/handlers/agent-employee-task.js';
-import { rejectAction } from '../src/lib/agent-approval-resolver.js';
+import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
 import {
   dispatchAgentEmployeeTask,
   publishTaskChannelEventForAssignee,
@@ -3119,5 +3119,42 @@ test('room authority: task creation rolls back its bundle when source is revoked
       assert.equal(projectAfter!.counter, projectBefore!.counter, 'number reservation rolls back');
       assert.equal((await db.select({ id: taskActivity.id }).from(taskActivity).where(eq(taskActivity.org_id, orgId))).length, activityBefore.length, 'activity rolls back');
     } finally { apiDb.transaction = transact as typeof apiDb.transaction; }
+  });
+});
+
+async function publishActualApprovedContinuationPair(sourceMessageId?: string) {
+  const firstId = crypto.randomUUID(), secondId = crypto.randomUUID();
+  const first = { id: firstId, org_id: orgId, user_id: humanUserId, agent_employee_id: employeeId,
+    action: 'task_create', params: {}, approval_tier: 'full' as const, approval_status: 'approved' as const,
+    ...(sourceMessageId ? { message_id: sourceMessageId } : {}) };
+  await db.insert(agentActions).values(first);
+  assert.equal((await approveAction(firstId, humanUserId)).status, 'approved');
+  const [firstEvent] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.idempotency_key, `approval.resolved:${firstId}:approved`));
+  assert.ok(firstEvent, 'actual approveAction publisher emitted the first resolution');
+  await db.insert(agentActions).values({ ...first, id: secondId, message_id: null, channel_event_id: firstEvent.id });
+  assert.equal((await approveAction(secondId, humanUserId)).status, 'approved');
+  const [secondEvent] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.idempotency_key, `approval.resolved:${secondId}:approved`));
+  assert.ok(secondEvent, 'actual approveAction publisher emitted the second resolution');
+  assert.equal(secondEvent.source_kind, 'approval');
+  assert.equal(secondEvent.source_id, firstId, 'publisher legitimately inherits the origin approval source ID');
+  return secondEvent;
+}
+
+test('approval continuation: actual targetless publisher preserves a second approved event', async () => {
+  const event = await publishActualApprovedContinuationPair();
+  assert.equal(await authorityAllowed(event.id), true);
+  await acceptAutonomousEvent(event.id);
+});
+
+test('approval continuation: actual private ancestry remains revocable after a second approval', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: humanUserId });
+    const event = await publishActualApprovedContinuationPair(messageId);
+    assert.equal(await authorityAllowed(event.id), true);
+    await acceptAutonomousEvent(event.id);
+    await revokeAuthorityRoom(roomId);
+    assert.equal(await authorityAllowed(event.id), false);
+    const replay = await authorityPost('accept', { event_id: event.id });
+    assert.equal(replay.status, 404, await replay.text());
   });
 });

@@ -99,7 +99,6 @@ export function currentAgentChannelEventAuthoritySql(eventId: SQLWrapper, reader
             where chain.idempotency_key = 'approval.resolved:' || action.id::text || ':' || action.approval_status
               and action.org_id = chain.org_id and action.agent_employee_id = chain.agent_employee_id
               and action.approval_status in ('approved', 'rejected')
-              and (chain.source_kind is distinct from 'approval' or chain.source_id = action.id)
               and (action.action <> 'chat_mention' or action.message_id is not null)
               and (action.action <> 'task_assigned' or action.channel_event_id is not null)
               and (action.message_id is null or ${currentEmployeeMessageAuthoritySql(sql`chain.org_id`, sql`chain.agent_employee_id`, sql`action.message_id`)})
