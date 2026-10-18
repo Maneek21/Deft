@@ -721,11 +721,11 @@ export async function executeTaskUpdate(
     const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
     if (comment) {
       const commentId = opts?.commentId ?? crypto.randomUUID();
-      const inserted = await db.execute(sql`insert into task_comments (id, org_id, task_id, user_id, content)
+      const inserted = await db.execute<{ id: string }>(sql`insert into task_comments (id, org_id, task_id, user_id, content)
         select ${commentId}, ${ctx.org_id}, ${args.task_id}, ${shadowUserId}, ${comment}
         where ${ctx.channel_event_id ? currentAgentChannelEventAuthoritySql(sql`${ctx.channel_event_id}`) : sql`true`}
         returning id`);
-      const commentRow = (Array.isArray(inserted) ? inserted : (inserted as { rows?: Array<{id: string}> }).rows)?.[0];
+      const commentRow = inserted.rows[0];
       if (!commentRow) return errorResult('task_update: source is no longer accessible');
       createdCommentId = commentRow?.id ?? null;
       activityEntries.push({
