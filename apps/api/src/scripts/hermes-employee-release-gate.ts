@@ -35,6 +35,7 @@ export const API_SUITES = [
   'test/hermes-native-onboarding.test.ts',
   'test/hermes-release.test.ts',
   'test/agent-approval-resolver.test.ts',
+  'test/agent-approval-source-context.test.ts',
   'test/agent-untrusted-context.test.ts',
   'test/attachment-agent-handoff.test.ts',
   'test/attachment-processor.test.ts',
