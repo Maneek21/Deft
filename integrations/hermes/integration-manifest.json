@@ -70,6 +70,9 @@
           "source": "integrations/hermes/deft-platform/README.md",
           "target": "README.md"
         }
+      ],
+      "optional_runtime_capabilities": [
+        "accepted_event_terminal_reconciliation_v1"
       ]
     },
     {
@@ -159,5 +162,8 @@
     "README.md",
     "config.example.yaml",
     "legacy/bridge/README.md"
+  ],
+  "optional_channel_capabilities": [
+    "accepted_event_terminal_reconciliation_v1"
   ]
 }

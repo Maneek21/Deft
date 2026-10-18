@@ -303,3 +303,50 @@ test('the actual source tree builds a bundle matching its package release', asyn
   assert.equal(bundleManifest.deft_release, actualPackage.version);
   assert.equal(bundleManifest.deft_release_compatibility, `=${actualPackage.version}`);
 });
+
+
+test('optional capability partitions reject missing unknown duplicate empty and overlapping declarations', async () => {
+  for (const location of ['channel', 'native']) {
+    for (const variant of ['missing', 'unknown', 'duplicate', 'empty', 'overlap', 'null']) {
+      const root = join(testRoot, `optional-${location}-${variant}`);
+      await createPinnedRepositoryFixture(root);
+      const path = join(root, 'integrations/hermes/integration-manifest.json');
+      const manifest = JSON.parse(await readFile(path, 'utf8'));
+      const owner = location === 'channel' ? manifest : manifest.adapters[0];
+      const key = location === 'channel' ? 'optional_channel_capabilities' : 'optional_runtime_capabilities';
+      const required = location === 'channel' ? manifest.required_channel_capabilities : owner.runtime_capabilities;
+      if (variant === 'missing') delete owner[key];
+      if (variant === 'unknown') owner[key] = ['unknown_optional_capability'];
+      if (variant === 'duplicate') owner[key] = [...owner[key], ...owner[key]];
+      if (variant === 'empty') owner[key] = [''];
+      if (variant === 'null') owner[key] = null;
+      if (variant === 'overlap') owner[key] = [...owner[key], required[0]];
+      await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      const result = spawnSync(process.execPath, [join(root, 'scripts/build-hermes-integration-bundle.mjs'), '--directory', join(root, 'dist', 'out')], { cwd: root, encoding: 'utf8' });
+      assert.notEqual(result.status, 0, `${location} ${variant} must fail`);
+      assert.match(`${result.stdout}${result.stderr}`, /capabilit/i);
+    }
+  }
+});
+
+test('older capability manifests remain valid without optional arrays', async () => {
+  const root = join(testRoot, 'older-without-optional-arrays');
+  await createPinnedRepositoryFixture(root);
+  const path = join(root, 'integrations/hermes/integration-manifest.json');
+  const manifest = JSON.parse(await readFile(path, 'utf8'));
+  delete manifest.optional_channel_capabilities;
+  delete manifest.adapters[0].optional_runtime_capabilities;
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  for (const [file, line] of [
+    ['apps/api/src/lib/agent-channel.ts', "  'accepted_event_terminal_reconciliation_v1',\n"],
+    ['integrations/hermes/deft-platform/adapter.py', '    "accepted_event_terminal_reconciliation_v1",\n'],
+    ['integrations/hermes/deft-platform/readiness.py', ',accepted_event_terminal_reconciliation_v1'],
+  ]) {
+    const target = join(root, file);
+    const source = await readFile(target, 'utf8');
+    assert.ok(source.includes(line));
+    await writeFile(target, source.replace(line, ''));
+  }
+  const result = spawnSync(process.execPath, [join(root, 'scripts/build-hermes-integration-bundle.mjs'), '--directory', join(root, 'dist', 'out')], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+});

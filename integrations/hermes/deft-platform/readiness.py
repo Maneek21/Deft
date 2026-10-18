@@ -15,7 +15,7 @@ import uuid
 
 PROTOCOL_VERSION = "deft.agent_channel.v2"
 ADAPTER_VERSION = "0.2.1"
-CAPABILITY = "autonomous_platform_adapter_v1,accepted_event_rehydration_v1"
+CAPABILITY = "autonomous_platform_adapter_v1,accepted_event_rehydration_v1,accepted_event_terminal_reconciliation_v1"
 REQUIRED_TOOLS = {
     "attachment_list",
     "attachment_read",
