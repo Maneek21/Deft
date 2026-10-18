@@ -36,7 +36,11 @@ page.on('console', message => {
 });
 page.on('response', async response => {
   if (response.status() >= 500) errors.push(response.status() + ' ' + response.url());
-  if (response.status() >= 400) console.log('HTTP', response.status(), response.url().split('?')[0], (await response.text()).slice(0, 220));
+  if (response.status() >= 400) {
+    // Navigation can discard a response body before this diagnostic reads it.
+    const body = await response.text().catch(() => '[response body unavailable]');
+    console.log('HTTP', response.status(), response.url().split('?')[0], body.slice(0, 220));
+  }
 });
 try {
   await page.goto(base + '/login', { waitUntil: 'domcontentloaded' });
