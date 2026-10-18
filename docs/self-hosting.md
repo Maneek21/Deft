@@ -39,6 +39,20 @@ Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 
 ### Recommended: prebuilt release
 
+For the independently sideloaded Email developer preview, use Host
+`v0.3.0-preview.120` and the **apps-developer-preview** browser profile listed
+in its `browser-feature-evidence.json`. Follow the independent
+[Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
+and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json)
+for the exact image digest, schema 120, sealed Kit downloads, HTTPS/OAuth and
+Runtime configuration. This path requires an operator; it is not the stable
+core quick start below. Feature flags beginning `NEXT_PUBLIC_` are compiled
+into the browser bundle. Setting them only when a container starts does not
+enable Apps, resource sync or attachments missing from that build. Server gates,
+purpose-separated keys, reviewed grants and the independent Runtime are also
+required. Keep only one active Host when operating the small demo database;
+overlapping Host processes consume separate connection pools.
+
 For a fresh evaluation, follow the [README quick start](../README.md#quick-start-with-docker),
 which pins `v0.3.0-preview.15` and its image digest. Use that release's own Compose
 files and environment template together; this source checkout can differ from

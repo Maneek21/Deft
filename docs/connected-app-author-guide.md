@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Review candidate:** this checkout contains Author Kit `0.1.0-alpha.33`. The matching Host changes remain a separate stacked PR and connected App gates remain disabled by default. Published preview.15 uses alpha.2; its guide and frozen artifacts remain unchanged.
+> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). Deft `0.3.0-preview.120` requires schema 120 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
@@ -9,19 +9,23 @@ and submit it for workspace review. Current connected applications use the
 programmatic Protocol 7 packaging APIs and public sideload review. The workspace
 operator reviews access, chooses provider bindings and activates the App.
 
-The current candidate authoring artifact is `@deft/app-kit@0.1.0-alpha.33`. Use a packed
+The current App authoring artifact is `@deft/app-kit@0.1.0-alpha.38`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
-The external [Email review](https://github.com/Maneek21/deft-email/pull/1) contains
-App `1.9.0-preview.5` and Runtime `0.4.0-preview.3`, both built against packed
-alpha.33. Its package scripts are the current author example; the [pinned source snapshot setup](https://github.com/Maneek21/deft-email/blob/5fc2bc50265cfadbc8ee2e61535fbdb258bf3883/docs/setup.md) preserves the pre-cleanup instructions. Consult the reviewed [Email PR](https://github.com/Maneek21/deft-email/pull/1) for documentation corrections until their exact revision is frozen. Schema 118 corrected the historical supplemental-effect database refusal and accepted the preceding preview.3 installation. The current reviewed source candidate still needs its exact build, complete functional/authority acceptance, fresh public installation and Email-only upgrade proof. Kit parsing alone cannot establish database compatibility.
+The independent [Email repository](https://github.com/Maneek21/deft-email) contains
+App `1.9.0-preview.13` built with Kit alpha.38 and Runtime `0.4.0-preview.15`
+built with Kit alpha.35. These deliberately different pins are compatible with
+the supported Host; preserve both sealed tarballs and locks. Follow its current
+[setup instructions](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
+and the release acceptance evidence. Kit parsing alone does not establish
+database compatibility or live provider acceptance.
 Run the App build outside Deft, supply the independently deployed Runtime and
 review the resulting package through Settings → Apps. No Deft checkout is a
 Runtime dependency. Previous preview.1/preview.2 and E5.9/E5.11 artifacts remain
 historical evidence; they do not certify this candidate.
 
-In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. Both locks resolve the included sealed alpha.33 tarball, not a workspace link. The generated `app/app.deft.json` is the public protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides a compatible published Host, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
+In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. The locks resolve the included sealed alpha.38 App and alpha.35 Runtime tarballs, not workspace links. The generated `app/app.deft.json` is the public Protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides the Apps-enabled Host image, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
 
 Email owns mailbox/provider behavior, content normalization, its data model and
 UI declarations. Kit supplies bounded public contracts. Deft supplies generic
