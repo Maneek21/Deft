@@ -13,6 +13,20 @@ const context=(target='mailbox',declaration:RecordStoreDeclaration=store)=>({sch
 const row=(status:'draft'|'submitted'|'archived'='draft')=>({schema_version:'deft.app_record.v1',store_key:'drafts',record_id:id,revision:7,content_revision:4,content_digest:hash,status,value:{to:'person@example.test',subject:'Native',body:'full body '.repeat(18000),body_html:'',attachments:[]},files:[],created_at:date,updated_at:date});
 const json=(value:unknown)=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
 async function result(request:AppDataRequest,record:unknown=row()){return {schema_version:'deft.app_data_result.v1',request_id:request.request_id,operation:request.operation,input_digest:await appDataInputDigest(request.operation,request.input),outcome:'completed',record,identities:[{address:'own@example.test',label:'Own Gmail'}]};}
+
+test('immediately reused target denies an account switch or stale target before dispatch and before disclosure',async()=>{
+ for(const mode of ['account_before','account_after','target','store'] as const){let expected=id,requests=0;
+  const client=createExperienceDataClient({installationId:installation,targetKey:'mailbox',accountRef:()=>expected,current:()=>true,fetch:async(path,options)=>{
+   if(path.endsWith('/resolve'))return json(context());requests++;if(mode==='account_after')expected=connection;return json(await result(JSON.parse(String(options.body))));
+  }});
+  const selected=await client.select('drafts',new AbortController().signal);
+  if(mode==='account_before')expected=connection;
+  if(mode==='target')selected.target_key='other';
+  if(mode==='store')selected.stores=[];
+  await assert.rejects(client.request('drafts','record_read',{store_key:'drafts',record_id:id},new AbortController().signal,undefined,undefined,false,selected),/scope|account|target|store/i);
+  assert.equal(requests,mode==='account_after'?1:0,mode);
+ }
+});
 test('large full record uses host port; unsupported quota and foreign selected target deny before record reads',async()=>{
  const calls:string[]=[];const client=createExperienceDataClient({installationId:installation,targetKey:'mailbox',current:()=>true,fetch:async(path,options)=>{calls.push(path);return (path.endsWith('/context')||path.endsWith('/resolve'))?json(context()):json(await result(JSON.parse(String(options.body))));}});
  const opened=await client.ports.load(node,new AbortController().signal);assert.equal(opened.record.value.body,row().value.body);assert.ok(String(opened.record.value.body).length>65536);
