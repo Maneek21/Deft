@@ -17,6 +17,7 @@ const ALLOWED_SCOPES = [
   'read:modules',
   'read:apps',
   'read:app-runs',
+  'read:app-private-resources',
   'write:tasks',
   'write:messages',
   'write:wiki',

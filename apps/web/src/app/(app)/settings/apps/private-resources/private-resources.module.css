@@ -1,0 +1,5 @@
+.workspace :global(.deft-pill) {
+  min-height: 44px;
+  white-space: normal;
+  text-align: center;
+}

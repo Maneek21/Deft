@@ -1,6 +1,43 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appNavigationHref, appNavigationLinkKey, getAppNavigationItems, getAppNavigationModuleOwner, getVisibleModuleNavigationItems, isAppNavigationGroupActive, isAppNavigationLinkActive } from './app-navigation';
+import type { AppInstallation } from './apps';
+
+const experienceApp = (overrides: Partial<AppInstallation> = {}) => ({
+  id: 'installed email', app_id: 'independent.app', name: 'Independent App', state: 'active',
+  version_id: 'current', active_version_id: 'current',
+  manifest: { experiences: [{ key: 'main inbox', label: 'Inbox and compose' }] },
+  ...overrides,
+}) as AppInstallation;
+
+test('a current active installed Experience without Modules gets an encoded active navigation route', () => {
+  const groups = getAppNavigationItems([], [experienceApp()]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]!.href, '/apps/installed%20email/main%20inbox');
+  assert.equal(groups[0]!.links[0]!.kind, 'experience');
+  assert.equal(appNavigationLinkKey(groups[0]!.links[0]!), 'experience:installed email:main inbox');
+  assert.equal(isAppNavigationGroupActive('/apps/installed%20email/main%20inbox', groups[0]!, groups), true);
+  assert.equal(isAppNavigationGroupActive('/apps/installed%20email/main%20inbox-other', groups[0]!, groups), false);
+});
+
+test('Experience navigation excludes staged disabled and noncurrent metadata', () => {
+  assert.deepEqual(getAppNavigationItems([], [experienceApp({ state: 'staged' }),
+    experienceApp({ state: 'disabled' }), experienceApp({ active_version_id: 'old' })]), []);
+});
+
+test('mixed Module and Experience navigation groups and deduplicates without changing module ownership', () => {
+  const moduleRow = { app_installation_id: 'installed email', app_id: 'independent.app', app_name: 'Independent App',
+    label: 'Contacts', module_slug: 'contacts', collection_key: 'people' };
+  const groups = getAppNavigationItems([moduleRow], [experienceApp(), experienceApp()]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]!.links.length, 2);
+  assert.equal(groups[0]!.links[0]!.href, '/modules/contacts/people');
+  assert.equal(getAppNavigationModuleOwner('contacts', groups)?.installationId, 'installed email');
+  assert.equal(getAppNavigationModuleOwner('undefined', groups), null);
+  const modules = [{ href: '/modules/contacts' }, { href: '/modules/other' }];
+  const rows = groups.flatMap(group => group.links);
+  assert.deepEqual(getVisibleModuleNavigationItems(modules, rows, true), [{ href: '/modules/other' }]);
+});
 
 test('active App navigation resolves only to host-rendered Module routes', () => {
   const item = { app_installation_id: 'install-1', app_id: 'app-1', app_name: 'Hello App', label: 'Greetings', module_slug: 'hello workspace', collection_key: 'greetings', view_key: 'all' };

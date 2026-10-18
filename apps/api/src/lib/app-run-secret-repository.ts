@@ -90,8 +90,8 @@ export class AppRunSecretRepository {
     });
   }
 
-  async readInput(orgId: string, runId: string): Promise<CapabilityJsonValue | null> {
-    const [row] = await db.select().from(appRunSecretPayloads).where(and(
+  async readInput(orgId: string, runId: string, tx: AppRunTransaction | typeof db = db): Promise<CapabilityJsonValue | null> {
+    const [row] = await tx.select().from(appRunSecretPayloads).where(and(
       eq(appRunSecretPayloads.org_id, orgId),
       eq(appRunSecretPayloads.run_id, runId),
       eq(appRunSecretPayloads.payload_kind, 'input'),
@@ -104,8 +104,8 @@ export class AppRunSecretRepository {
     });
   }
 
-  async readOutput(orgId: string, runId: string, attemptId: string): Promise<CapabilityJsonValue | null> {
-    const [row] = await db.select().from(appRunSecretPayloads).where(and(
+  async readOutput(orgId: string, runId: string, attemptId: string, tx: AppRunTransaction | typeof db = db): Promise<CapabilityJsonValue | null> {
+    const [row] = await tx.select().from(appRunSecretPayloads).where(and(
       eq(appRunSecretPayloads.org_id, orgId),
       eq(appRunSecretPayloads.run_id, runId),
       eq(appRunSecretPayloads.attempt_id, attemptId),
@@ -184,7 +184,13 @@ export class AppRunSecretRepository {
   }
 
   async #purgeRun(orgId: string, runId: string, now: Date): Promise<number> {
-    return db.transaction(async (tx) => {
+    return this.purgeExpiredRunForMaintenance(orgId, runId, now, work => db.transaction(work));
+  }
+
+  /** Host maintenance only; exact row scope and Run-first order are unchanged. */
+  async purgeExpiredRunForMaintenance(orgId: string, runId: string, now: Date,
+    transaction: <T>(work: (tx: AppRunTransaction) => Promise<T>) => Promise<T>): Promise<number> {
+    return transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM app_runs WHERE org_id = ${orgId} AND id = ${runId} FOR UPDATE`);
       const expired = await tx.select({
         id: appRunSecretPayloads.id,

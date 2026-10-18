@@ -357,6 +357,7 @@ function actorId(actor: AppRunActor): string {
     case 'agent_employee': return actor.agent_employee_id;
     case 'system': return actor.system_id;
     case 'automation': return actor.automation_id;
+    case 'app_public': throw new Error('Public ingress cannot prepare an App action');
   }
 }
 

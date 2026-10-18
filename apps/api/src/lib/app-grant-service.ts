@@ -59,7 +59,7 @@ export function buildRequestedAppGrantProjection(input: {
   const protocol = input.manifest.compatibility.app_protocol;
   const portable = projectDeftAppRequestedAuthority(input.manifest);
   const requirements = portable.requirements;
-  const resourceRights = portable.resource_rights;
+  const resourceRights = 'resource_rights' in portable ? portable.resource_rights : [];
   const classification = portable.classification;
   const canonicalSnapshot = canonicalizeAppGrantValue({
     snapshot_version: APP_GRANT_SNAPSHOT_VERSION,

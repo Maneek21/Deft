@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { open, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const SERVER_INFO = Object.freeze({
   name: 'deft-app-platform-sandbox-email-provider',
@@ -73,15 +74,26 @@ const SEND_EMAIL_TOOL = Object.freeze({
 
 const OUTBOX_RECORD_VERSION = 'deft.app_platform.sandbox_email.outbox.v1';
 
-function parseOutboxPath(argv) {
-  if (argv.length === 0) return null;
-  if (argv.length !== 2 || argv[0] !== '--outbox-file' || !argv[1]?.trim()) {
-    throw new Error('Usage: server.mjs [--outbox-file <path>]');
+function parseFixturePaths(argv) {
+  if (argv.length === 0) return { outbox: null, pauseAfterEffect: null };
+  if (argv.length !== 2 && argv.length !== 4) {
+    throw new Error('Usage: server.mjs [--outbox-file <path>] [--pause-after-effect-file <path>]');
   }
-  return argv[1];
+  const values = new Map();
+  for (let index = 0; index < argv.length; index += 2) {
+    if (!['--outbox-file', '--pause-after-effect-file'].includes(argv[index])
+      || !argv[index + 1]?.trim() || values.has(argv[index])) {
+      throw new Error('Invalid sandbox provider fixture arguments');
+    }
+    values.set(argv[index], argv[index + 1]);
+  }
+  if (!values.has('--outbox-file')) throw new Error('Sandbox outbox path is required');
+  return { outbox: values.get('--outbox-file'),
+    pauseAfterEffect: values.get('--pause-after-effect-file') ?? null };
 }
 
-const outboxPath = parseOutboxPath(process.argv.slice(2));
+const fixturePaths = parseFixturePaths(process.argv.slice(2));
+const outboxPath = fixturePaths.outbox;
 const effects = new Map();
 
 function isObject(value) {
@@ -188,6 +200,25 @@ async function persistOutbox(record) {
   }
 }
 
+async function pauseAfterDurableEffect(record) {
+  if (!fixturePaths.pauseAfterEffect) return;
+  const marker = await open(fixturePaths.pauseAfterEffect, 'w');
+  try {
+    await marker.write(JSON.stringify({ pid: process.pid,
+      idempotency_key: record.idempotency_key }));
+    await marker.sync();
+  } finally { await marker.close(); }
+  const releasePath = `${fixturePaths.pauseAfterEffect}.release`;
+  for (let elapsed = 0; elapsed < 20_000; elapsed += 25) {
+    try { await readFile(releasePath); return; }
+    catch (error) {
+      if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
+    }
+    await delay(25);
+  }
+  throw new Error('Sandbox provider effect checkpoint timed out');
+}
+
 async function sendEmail(input) {
   const validationError = validateInput(input);
   if (validationError) return toolError(`Invalid sandbox email input: ${validationError}`);
@@ -203,13 +234,15 @@ async function sendEmail(input) {
 
   const messageId = `sandbox_${digest.slice(0, 24)}`;
   const response = acceptedResponse(messageId);
-  await persistOutbox({
+  const record = {
     schema_version: OUTBOX_RECORD_VERSION,
     idempotency_key: input.idempotency_key,
     digest,
     message_id: messageId,
-  });
+  };
+  await persistOutbox(record);
   effects.set(input.idempotency_key, { digest, message_id: messageId, response });
+  await pauseAfterDurableEffect(record);
   return response;
 }
 

@@ -24,6 +24,7 @@ const OTHER_EMAIL = `drp-other-${stamp}@test.local`;
 const SECRET_TERM = `directrouteprivacy${stamp}z`;
 
 const ids: { table: string; id: string }[] = [];
+const fileAccessTokens = new Map<string, string>();
 
 let visibleSpaceId: string;
 let privateSpaceId: string;
@@ -311,6 +312,7 @@ after(async () => {
     for (const { table, id } of [...ids].reverse().filter(row => row.table === 'spaces' && spaceIds.has(row.id))) {
       await c.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
     }
+    await c.query(`DELETE FROM web_sessions WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await c.query(`DELETE FROM org_members WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
   });
@@ -321,10 +323,27 @@ after(async () => {
 
 async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowledge' | 'files' | 'tasks' | 'clips' | 'decisions' | 'daily-notes' | 'agent-plans' | 'recap' | 'reminders' | 'cross-references', path: string, userId = USER_ID, init?: RequestInit) {
   const app = new Hono();
-  app.use('*', async (c, next) => {
-    c.set('user', { id: userId, org_id: ORG_ID, email: USER_EMAIL, name: 'Direct Privacy User' });
-    await next();
-  });
+  if (routeName === 'files') {
+    // Downloads recheck the live bearer/session after storage reads. Use actual
+    // authentication so these assertions reach source visibility, not a 401.
+    const { authMiddleware } = await import('../src/middleware/auth.js');
+    app.use('*', authMiddleware);
+    let token = fileAccessTokens.get(userId);
+    if (!token) {
+      const { createWebSession } = await import('../src/lib/web-sessions.js');
+      token = (await createWebSession({ id: userId, org_id: ORG_ID,
+        email: userId === USER_ID ? USER_EMAIL : OTHER_EMAIL })).accessToken;
+      fileAccessTokens.set(userId, token);
+    }
+    const headers = new Headers(init?.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    init = { ...init, headers };
+  } else {
+    app.use('*', async (c, next) => {
+      c.set('user', { id: userId, org_id: ORG_ID, email: USER_EMAIL, name: 'Direct Privacy User' });
+      await next();
+    });
+  }
 
   if (routeName === 'messages') app.route('/api/messages', (await import('../src/routes/messages.js')).messageRoutes);
   if (routeName === 'spaces') app.route('/api/spaces', (await import('../src/routes/spaces.js')).spaceRoutes);
@@ -387,6 +406,10 @@ test('wiki and knowledge routes respect user and space scope', async () => {
 });
 
 test('file serving follows linked message visibility', async () => {
+  const unauthenticated = new Hono();
+  unauthenticated.use('*', (await import('../src/middleware/auth.js')).authMiddleware);
+  unauthenticated.route('/api/files', (await import('../src/routes/upload.js')).fileServingRoutes);
+  assert.equal((await unauthenticated.request(`/api/files/${privateFileId}`)).status, 401);
   assert.equal((await routeResponse('files', `/api/files/${privateFileId}`)).status, 404);
   const allowed = await routeResponse('files', `/api/files/${privateFileId}`, OTHER_USER_ID);
   assert.equal(allowed.status, 200);

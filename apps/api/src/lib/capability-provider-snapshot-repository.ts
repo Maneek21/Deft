@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { capabilityProviderSnapshots } from '@deft/db/schema';
 import type { CapabilityProviderDiscoverySnapshot } from '@deft/shared';
+import type { NativeProviderSnapshot } from './app-native-contract.js';
 import { db } from './db.js';
 
 type SnapshotExecutor = Pick<typeof db, 'insert' | 'select'>;
@@ -13,7 +14,7 @@ type SnapshotExecutor = Pick<typeof db, 'insert' | 'select'>;
  */
 export async function persistCapabilityProviderSnapshotWithExecutor(
   executor: SnapshotExecutor,
-  snapshot: Readonly<CapabilityProviderDiscoverySnapshot>,
+  snapshot: Readonly<CapabilityProviderDiscoverySnapshot | NativeProviderSnapshot>,
 ): Promise<string> {
   const id = randomUUID();
   await executor.insert(capabilityProviderSnapshots).values({

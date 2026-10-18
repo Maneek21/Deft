@@ -9,6 +9,14 @@ const SESSION_REFRESH_EXEMPT_PATHS = new Set([
 // Subsequent callers await the same in-flight promise and share the result.
 let _refreshPromise: Promise<string | null> | null = null;
 
+/** The server could not establish session status; this is not a logout. */
+export class SessionRefreshUnavailableError extends Error {
+  constructor() {
+    super('Connection interrupted. Your session will be checked again when Deft reconnects.');
+    this.name = 'SessionRefreshUnavailableError';
+  }
+}
+
 function webSessionIdentity(token: string | null): string | null {
   if (!token) return null;
   try {
@@ -41,8 +49,9 @@ function hasWebSessionChanged(
 /**
  * Silently refresh the access token using the stored refresh token.
  * Updates both the in-memory ApiClient singleton and localStorage.
- * Returns the new access token, or null if refresh failed (caller should
- * treat null as "session expired — redirect to /login").
+ * Returns the new access token, or null for missing/denied authority.
+ * Throws SessionRefreshUnavailableError for unavailable transport or an
+ * unconfirmed response. Callers must not turn that uncertainty into logout.
  *
  * Exported so socket.ts can import it directly without coupling to the class.
  */
@@ -63,12 +72,14 @@ export async function refreshAccessToken(): Promise<string | null> {
     try {
       const r = await fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
+        signal: AbortSignal.timeout(10_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken: refresh }),
       });
-      if (!r.ok) return null;
+      if (r.status === 401 || r.status === 403) return null;
+      if (!r.ok) throw new SessionRefreshUnavailableError();
       const j = await r.json();
-      if (typeof j.accessToken !== 'string' || typeof j.refreshToken !== 'string') return null;
+      if (typeof j.accessToken !== 'string' || typeof j.refreshToken !== 'string') throw new SessionRefreshUnavailableError();
       // Logout or a new login during the request must not resurrect this session.
       if (localStorage.getItem('deft-refresh-token') !== refresh) return null;
       // Mirror into the singleton instance and localStorage.
@@ -76,7 +87,7 @@ export async function refreshAccessToken(): Promise<string | null> {
       api.setTokens(j.accessToken, j.refreshToken);
       return j.accessToken as string;
     } catch {
-      return null;
+      throw new SessionRefreshUnavailableError();
     }
   };
   const locks = typeof window !== 'undefined' ? window.navigator?.locks : undefined;
@@ -168,7 +179,7 @@ class ApiClient {
 
     // Reactive 401 interceptor: access token was present but has since expired.
     // Attempt a silent refresh (concurrency-guarded) and retry the original
-    // request exactly once. If the refresh also fails, clear tokens and redirect.
+    // request exactly once. Only an explicitly denied refresh clears tokens.
     if (response.status === 401 && !SESSION_REFRESH_EXEMPT_PATHS.has(path)) {
       const currentAccessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : this.accessToken;
       if (currentAccessToken !== requestAccessToken && !isSameWebSession(requestAccessToken, currentAccessToken)) {

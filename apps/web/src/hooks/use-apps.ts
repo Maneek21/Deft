@@ -21,7 +21,7 @@ import {
   type AppGrantManagement,
 } from '@/lib/apps';
 import { APPS_ENABLED } from '@/lib/feature-flags';
-import type { AppNavigationResponseItem } from '@/lib/app-navigation';
+import { getInstalledExperienceNavigation, type AppNavigationResponseItem } from '@/lib/app-navigation';
 import { normalizeAppAutomationManagement } from '@/lib/app-automations';
 
 async function fetchJson(path: string): Promise<unknown> {
@@ -40,18 +40,27 @@ export function useApps(enabled = true) {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
-  const apps = useMemo(() => normalizeAppsResponse(swr.data ?? { apps: [] }), [swr.data]);
-  return { ...swr, apps };
+  const normalized = useMemo(() => {
+    try {
+      return { apps: normalizeAppsResponse(swr.data ?? { apps: [] }), error: null };
+    } catch (error) {
+      return { apps: [], error: error instanceof Error ? error : new Error('Invalid Apps response.') };
+    }
+  }, [swr.data]);
+  return { ...swr, apps: normalized.apps, error: swr.error ?? normalized.error };
 }
 
 export function useAppNavigation(enabled = true) {
   const { sessionCacheScope } = useAuth();
+  const installed = useApps(enabled);
   const swr = useSWR<unknown>(sessionSWRKey(sessionCacheScope, APPS_ENABLED && enabled ? '/api/apps/navigation' : null), fetchJson);
   const navigation = useMemo(() => {
     const value = swr.data as { navigation?: unknown } | undefined;
-    return Array.isArray(value?.navigation) ? value.navigation as AppNavigationResponseItem[] : [];
-  }, [swr.data]);
-  return { ...swr, navigation };
+    const modules = Array.isArray(value?.navigation) ? value.navigation as AppNavigationResponseItem[] : [];
+    return [...modules, ...getInstalledExperienceNavigation(installed.apps)];
+  }, [swr.data, installed.apps]);
+  return { ...swr, navigation, error: swr.error ?? installed.error,
+    isLoading: swr.isLoading || installed.isLoading };
 }
 
 export function useAppGrantManagement(installationId: string, enabled = true) {

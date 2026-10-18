@@ -7,8 +7,10 @@ import { loadRootEnv, maskDatabaseUrl, resolveDatabaseUrl } from './db-url.ts';
 import { upgradeManifest, type SchemaRequirement, type UpgradeMigration } from '../upgrades/manifest.ts';
 
 const { Client } = pg;
-const LOCK_ID = 7_314_029_421;
+export const LOCK_ID = 7_314_029_421;
 const LEDGER_TABLE = 'deft_schema_migrations';
+const UNTRACKED_ADVANCED_ERROR =
+  'This database has post-baseline schema but no migration history. Refusing to adopt the v0.2.0-preview.1 baseline or replay historical migrations. Restore a known release backup or use a reviewed, exact-release adoption procedure.';
 
 type AppliedMigration = {
   version: string;
@@ -94,6 +96,16 @@ async function ledgerExists(client: InstanceType<typeof Client>): Promise<boolea
   return result.rows[0]?.exists === true;
 }
 
+async function hasPostBaselineSchema(client: InstanceType<typeof Client>): Promise<boolean> {
+  // The first migration after v0.2.0-preview.1 creates this retained table.
+  // A ledgerless database with it is not the baseline, even if it satisfies
+  // every baseline-presence requirement. Never replay history over that state.
+  const result = await client.query<{ present: boolean }>(
+    "SELECT to_regclass('public.automation_runs') IS NOT NULL AS present",
+  );
+  return result.rows[0]?.present === true;
+}
+
 async function countPublicTables(client: InstanceType<typeof Client>): Promise<number> {
   const result = await client.query<{ count: string }>(
     `SELECT count(*)::text AS count
@@ -173,9 +185,18 @@ function loadMigrationChecksums(): Map<string, string> {
 async function readApplied(client: InstanceType<typeof Client>): Promise<AppliedMigration[]> {
   if (!(await ledgerExists(client))) return [];
   const result = await client.query<AppliedMigration>(
-    `SELECT version, checksum, kind FROM ${LEDGER_TABLE} ORDER BY applied_at, version`,
+    `SELECT version, checksum, kind FROM ${LEDGER_TABLE}`,
   );
-  return result.rows;
+  // A fresh initializer records the whole manifest in one transaction, so
+  // applied_at can tie. Display and validation must follow manifest order,
+  // not lexical preview version order (where .7 sorts after .37).
+  const rank = new Map([
+    upgradeManifest.baseline.version,
+    ...upgradeManifest.migrations.map((migration) => migration.version),
+  ].map((version, index) => [version, index]));
+  return result.rows.sort((a, b) =>
+    (rank.get(a.version) ?? Number.MAX_SAFE_INTEGER)
+    - (rank.get(b.version) ?? Number.MAX_SAFE_INTEGER));
 }
 
 async function ensureLedger(client: InstanceType<typeof Client>) {
@@ -227,16 +248,20 @@ async function applyMigration(
 async function printStatus(client: InstanceType<typeof Client>, applied: AppliedMigration[]) {
   const tableCount = await countPublicTables(client);
   const inspection = tableCount > 0 ? await inspectBaseline(client) : null;
+  const untrackedAdvanced = applied.length === 0 && tableCount > 0
+    && await hasPostBaselineSchema(client);
   const compatible = inspection
     ? inspection.missingSchema.length === 0 &&
       inspection.missingExtensions.length === 0 &&
-      inspection.missingIndexes.length === 0
+      inspection.missingIndexes.length === 0 && !untrackedAdvanced
     : false;
   console.log('Deft database upgrade status');
   console.log(`  public tables: ${tableCount}`);
   console.log(`  ledger: ${applied.length > 0 ? `${applied.length} applied version(s)` : 'not initialized'}`);
-  console.log(`  baseline: ${compatible ? `${upgradeManifest.baseline.releaseTag} compatible` : 'not compatible'}`);
-  console.log(`  pending: ${upgradeManifest.migrations.filter((item) => !applied.some((row) => row.version === item.version)).length}`);
+  console.log(`  baseline: ${untrackedAdvanced ? 'untracked post-baseline schema; reviewed adoption required'
+    : compatible ? `${upgradeManifest.baseline.releaseTag} compatible` : 'not compatible'}`);
+  console.log(`  pending: ${untrackedAdvanced ? 'unknown (ledger missing)'
+    : upgradeManifest.migrations.filter((item) => !applied.some((row) => row.version === item.version)).length}`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -263,6 +288,9 @@ export async function main(argv = process.argv.slice(2)) {
 
     const inspection = await inspectBaseline(client);
     assertCompatibleBaseline(inspection);
+    if (appliedBefore.length === 0 && await hasPostBaselineSchema(client)) {
+      throw new Error(UNTRACKED_ADVANCED_ERROR);
+    }
     const hasBaseline = appliedBefore.some((row) => row.version === upgradeManifest.baseline.version);
     const pending = upgradeManifest.migrations.filter(
       (migration) => !appliedBefore.some((row) => row.version === migration.version),
@@ -280,9 +308,12 @@ export async function main(argv = process.argv.slice(2)) {
 
     await client.query('SELECT pg_advisory_lock($1)', [LOCK_ID]);
     try {
-      await ensureLedger(client);
       const appliedLocked = await readApplied(client);
       validateAppliedMigrations(appliedLocked, upgradeManifest.migrations, migrationChecksums);
+      if (appliedLocked.length === 0 && await hasPostBaselineSchema(client)) {
+        throw new Error(UNTRACKED_ADVANCED_ERROR);
+      }
+      await ensureLedger(client);
       const hasLockedBaseline = appliedLocked.some((row) => row.version === upgradeManifest.baseline.version);
       const lockedPending = upgradeManifest.migrations.filter(
         (migration) => !appliedLocked.some((row) => row.version === migration.version),

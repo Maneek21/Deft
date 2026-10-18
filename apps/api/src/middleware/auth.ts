@@ -6,6 +6,7 @@ export type AuthUser = {
   id: string;
   email: string;
   org_id: string;
+  sid: string;
   role?: OrgRole;
 };
 

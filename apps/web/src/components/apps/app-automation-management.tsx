@@ -56,6 +56,8 @@ function AutomationRow({ definition, runnerEnabled, busy, onTransition, onInspec
     <dl className="mt-3 grid gap-2 sm:grid-cols-3">
       <Fact label="Eligibility" value={definition.eligibility.status.replaceAll('_', ' ')} />
       <Fact label="Next fire" value={!runnerEnabled ? 'Runner disabled' : definition.nextFireAtUtc ? formatDate(definition.nextFireAtUtc) : 'Not scheduled'} />
+      <Fact label="Valid from" value={formatDate(definition.validity.validFrom)} />
+      <Fact label="Valid until" value={formatDate(definition.validity.validUntil)} />
       <Fact label="Last fire / Run" value={definition.latestRun ? `${definition.latestRun.state.replaceAll('_', ' ')} · ${formatDate(definition.latestRun.updatedAt)}` : last ? `${last.state.replaceAll('_', ' ')} · ${last.logicalLocalDate}` : 'No fire yet'} />
       <Fact label="Budget" value={`${definition.budgets.maxOrgRunsPerUtcDay}/day · ${definition.budgets.maxPendingOrgFires} pending`} />
       <Fact label="Dead letters" value={String(definition.fireSummary.deadLetter)} />

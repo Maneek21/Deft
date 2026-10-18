@@ -7,6 +7,8 @@ import {
   appVersions,
   auditLog,
   moduleInstallations,
+  users,
+  appNativeBindings,
 } from '@deft/db/schema';
 import {
   isDeftAppProtocolOperationSupported,
@@ -32,6 +34,11 @@ import {
 import { AppError } from './app-errors.js';
 import { insertRequestedAppGrantSnapshotWithExecutor } from './app-grant-service.js';
 import { isConnectedAppProtocolVersion } from './app-connected-contract.js';
+import type { RuntimeAppReviewOptions } from './app-runtime-review.js';
+import { isAppNativeCalendarEnabled } from './env.js';
+import { assertAttachmentManifestAdmission, assertAttachmentCompositionActionsEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
+import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
+import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
 
 type AppExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type Installation = typeof appInstallations.$inferSelect;
@@ -209,9 +216,19 @@ export async function inspectAppPackageJson(value: string): Promise<InspectedApp
 export async function stageAppPackage(
   actor: ModuleActor,
   packageJson: string,
+  options: { guard?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>;
+    attachmentStage?: boolean; attachmentComposition?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
+  if (inspected.manifest.schema_version === '7') {
+    if (options.attachmentStage !== true) throw new AppError('Attachment staging requires its reviewed host entry point', 'APP_PROTOCOL_UNSUPPORTED', 409);
+    assertAttachmentManifestAdmission(inspected.manifest, options.attachmentComposition === true);
+    if (options.attachmentComposition) assertAttachmentCompositionActionsEnabled(inspected.manifest);
+  }
+  if (inspected.manifest.schema_version === '6' && !isAppNativeCalendarEnabled()) {
+    throw new AppError('Native Calendar unavailable', 'APP_FEATURE_DISABLED', 503);
+  }
   assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
   const identity = { type: actor.kind, id: actor.actor_id };
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
@@ -276,6 +293,20 @@ export async function stageAppPackage(
       package_digest: version.package_digest,
       permissions: [],
     });
+    if (inspected.manifest.schema_version === '7') {
+      await options.guard?.(tx);
+      const expiry = (options.guard as Partial<WebAuthorityGuard> | undefined)?.current_web_session_expires_at?.();
+      if (!await attachmentFinalAuthorityIsCurrent(tx, [actor.actor_id], { expires_at: expiry ? [expiry] : [] })) {
+        throw new AppError('Current attachment manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+      assertAttachmentManifestAdmission(inspected.manifest, options.attachmentComposition === true);
+      if (options.attachmentComposition) assertAttachmentCompositionActionsEnabled(inspected.manifest);
+    }
+    if (inspected.manifest.schema_version === '6') {
+      if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) {
+        throw new AppError('Current native manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+    }
     return { installation, version };
   });
   emitAppChange(actor.org_id, { change: 'staged', installation_id: created.installation.id });
@@ -287,11 +318,16 @@ export async function stageAppUpgrade(
   installationId: string,
   packageJson: string,
   expectedLifecycleEpoch: number,
+  options: RuntimeAppReviewOptions & { runtimeUpgrade?: boolean; nativeUpgrade?: boolean; attachmentCompositionUpgrade?: boolean } = {},
 ): Promise<AppInstallationView> {
   assertHumanManager(actor);
   const inspected = await inspectAppPackageJson(packageJson);
   assertAppProtocolOperationSupported(inspected.manifest.compatibility.app_protocol, 'stage');
-  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol)) {
+  const runtimeUpgrade = options.runtimeUpgrade === true
+    && ['3', '4', '5'].includes(inspected.manifest.compatibility.app_protocol);
+  const nativeUpgrade = options.nativeUpgrade === true && inspected.manifest.compatibility.app_protocol === '6';
+  const attachmentUpgrade = options.attachmentCompositionUpgrade === true && inspected.manifest.compatibility.app_protocol === '7';
+  if (!isConnectedAppProtocolVersion(inspected.manifest.compatibility.app_protocol) && !runtimeUpgrade && !nativeUpgrade && !attachmentUpgrade) {
     throw new AppError('Connected App upgrades require App Protocol v1 or v2', 'APP_PROTOCOL_UNSUPPORTED', 409);
   }
   const storedPackage = JSON.parse(inspected.canonical_package_json) as Record<string, unknown>;
@@ -321,6 +357,19 @@ export async function stageAppUpgrade(
       eq(appVersions.state, 'active'),
     )).limit(1).for('update');
     if (!activeVersion) throw new AppError('Active App version not found', 'APP_STATE_CONFLICT', 409);
+    if ((runtimeUpgrade || nativeUpgrade || attachmentUpgrade) && (installation.state !== 'active'
+      || activeVersion.protocol_version !== inspected.manifest.compatibility.app_protocol)) {
+      throw new AppError('Runtime upgrades require an active App using the same protocol', 'APP_PROTOCOL_UNSUPPORTED', 409);
+    }
+    if (runtimeUpgrade) options.assertAdmission?.(inspected.manifest as Parameters<NonNullable<RuntimeAppReviewOptions['assertAdmission']>>[0]);
+    if (attachmentUpgrade) {
+      const { loadReviewedAttachmentApp, assertAttachmentManifestAdmission, assertAttachmentCompositionActionsEnabled } = await import('./app-attachment-authority.js');
+      const { parseAttachmentAppManifest } = await import('@deft/app-kit');
+      const current = await loadReviewedAttachmentApp(tx, actor.org_id, installationId);
+      if (!current.composition || current.version.id !== activeVersion.id) throw new AppError('Reviewed composition upgrade required', 'APP_PROTOCOL_UNSUPPORTED', 409);
+      const manifest = parseAttachmentAppManifest(inspected.manifest);
+      assertAttachmentManifestAdmission(manifest, true); assertAttachmentCompositionActionsEnabled(manifest);
+    }
     if (compareAppSemver(activeVersion.version, inspected.manifest.version) >= 0) {
       throw new AppError('App upgrade must use a strictly newer semantic version', 'APP_INVALID_PACKAGE', 409);
     }
@@ -360,6 +409,23 @@ export async function stageAppUpgrade(
       version: version.version,
       package_digest: version.package_digest,
     });
+    if (attachmentUpgrade) {
+      const { attachmentFinalAuthorityIsCurrent } = await import('./app-attachment-authority.js');
+      const guard = options.guard as WebAuthorityGuard | undefined;
+      if (typeof guard?.current_web_session_expires_at !== 'function'
+        || !await attachmentFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard })) {
+        throw new AppError('Current composition manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+    } else if (nativeUpgrade) {
+      if (!await nativeFinalAuthorityIsCurrent(tx, [actor.actor_id], { guard: options.guard })) {
+        throw new AppError('Current native manager authority required', 'APP_ACCESS_DENIED', 403);
+      }
+    } else await options.guard?.(tx);
+    if (runtimeUpgrade) {
+      const [human] = await tx.select({ kind: users.kind }).from(users).where(eq(users.id, actor.actor_id)).limit(1);
+      if (human?.kind !== 'human') throw new AppError('Current human manager required', 'APP_ACCESS_DENIED', 403);
+      options.assertAdmission?.(inspected.manifest as Parameters<NonNullable<RuntimeAppReviewOptions['assertAdmission']>>[0]);
+    }
     return { installation, version };
   });
   emitAppChange(actor.org_id, {
@@ -486,10 +552,13 @@ export async function disableAppInstallation(
         eq(moduleInstallations.id, binding.module_installation_id),
       ));
     }
+    if (version.protocol_version === '6') await tx.update(appNativeBindings).set({ state: 'revoked' }).where(and(
+      eq(appNativeBindings.org_id, actor.org_id), eq(appNativeBindings.app_installation_id, installation.id),
+      inArray(appNativeBindings.state, ['staged', 'active'])));
     const [updated] = await tx.update(appInstallations).set({
       state: 'disabled',
       lifecycle_epoch: sql`${appInstallations.lifecycle_epoch} + 1`,
-      ...(isConnectedAppProtocolVersion(version.protocol_version) ? {
+      ...(version.protocol_version !== '0' ? {
         active_grant_snapshot_id: null,
         active_grant_snapshot_kind: null,
         grant_epoch: sql`${appInstallations.grant_epoch} + 1`,
@@ -503,7 +572,7 @@ export async function disableAppInstallation(
       state: 'disabled',
       lifecycle_epoch: updated.lifecycle_epoch,
       grant_epoch: updated.grant_epoch,
-      grant_revoked: isConnectedAppProtocolVersion(version.protocol_version),
+      grant_revoked: version.protocol_version !== '0',
       data_preserved: true,
     });
     return { installation: updated, version, bindings };
@@ -540,7 +609,7 @@ export async function enableAppInstallation(
       eq(appVersions.org_id, actor.org_id), eq(appVersions.id, installation.active_version_id),
     )).limit(1);
     if (!version) throw new Error('App enable active version returned no row');
-    if (isConnectedAppProtocolVersion(version.protocol_version)) {
+    if (version.protocol_version !== '0') {
       throw new AppError(
         'Connected Apps require a fresh review before re-enabling',
         'APP_REVIEW_REQUIRED',

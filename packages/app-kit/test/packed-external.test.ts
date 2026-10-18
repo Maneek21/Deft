@@ -57,7 +57,7 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
     const installedRoot = await realpath(resolve(consumer, 'node_modules', '@deft', 'app-kit'));
     assert.equal(installedRoot.startsWith(await realpath(consumer)), true);
     const installedPackage = JSON.parse(await readFile(resolve(installedRoot, 'package.json'), 'utf8')) as any;
-    assert.equal(installedPackage.version, '0.1.0-alpha.3');
+    assert.equal(installedPackage.version, '0.1.0-alpha.5');
     assert.equal(installedPackage.bin.deft, './dist/cli.js');
     const installedFiles = await readdir(installedRoot, { recursive: true });
     assert.equal(installedFiles.some((entry) => /^src(?:[\\/]|$)/.test(entry)), false);
@@ -70,6 +70,19 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
       }))).join('\n');
     assert.equal(installedText.includes(repositoryRoot), false);
     assert.doesNotMatch(installedText, /from\s+['"]@deft\/(?:db|shared|mcp|api|web)/);
+
+    // The Worker entry must resolve through the installed public export without
+    // importing the Node authoring/validation graph or a private dist path.
+    run(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { createDeftExperienceSdk } from '@deft/app-kit/experience';
+      const sent = [];
+      const sdk = createDeftExperienceSdk({ postMessage: value => sent.push(value), close() {}, onmessage: null }, 'packed-session');
+      sdk.render({ root: { kind: 'text', id: 'title', text: 'Portable Worker' } });
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].session_id, 'packed-session');
+      sdk.close();
+    `], consumer);
 
     const cli = resolve(installedRoot, 'dist', 'cli.js');
     const contacts = resolve(temporaryRoot, 'contacts');
