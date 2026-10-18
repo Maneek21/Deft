@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). Deft `0.3.0-preview.120` requires schema 120 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
+> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json). Deft `0.3.0-preview.122` requires schema 120 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
@@ -14,7 +14,7 @@ tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
 The independent [Email repository](https://github.com/Maneek21/deft-email) contains
-App `1.9.0-preview.13` built with Kit alpha.38 and Runtime `0.4.0-preview.15`
+App `1.9.0-preview.13` built with Kit alpha.38 and Runtime `0.4.0-preview.16`
 built with Kit alpha.35. These deliberately different pins are compatible with
 the supported Host; preserve both sealed tarballs and locks. Follow its current
 [setup instructions](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
