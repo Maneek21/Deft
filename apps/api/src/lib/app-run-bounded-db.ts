@@ -15,6 +15,11 @@ export function createBoundedAppRunDatabase(connectionString: string, options: {
     query_timeout: APP_RUN_TRANSACTION_LIMITS.statement_ms,
     lock_timeout: APP_RUN_TRANSACTION_LIMITS.lock_ms,
     application_name: options.application_name });
+  // pg removes an idle client before emitting this event. Handle it so a
+  // disconnected retained socket cannot terminate the Host; the next normal
+  // checkout still obeys the existing acquisition bound. Never log the pg
+  // error/client, which may contain connection credentials or query values.
+  pool.on('error', () => { console.warn('[app-runs] bounded database idle connection closed'); });
   return {
     close: () => pool.end(),
     async transaction<T>(work: (tx: AppRunTransaction) => Promise<T>, signal: AbortSignal, deadline: number): Promise<T> {
