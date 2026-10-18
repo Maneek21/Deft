@@ -70,7 +70,7 @@ const MODEL_ROUTES: Record<LLMProvider, Record<LLMTask, ModelRoute>> = {
   openai: {
     classify: { provider: 'openai', model: 'gpt-4o-mini' },
     summarize: { provider: 'openai', model: 'gpt-4o-mini' },
-    reason: { provider: 'openai', model: 'gpt-4o' },
+    reason: { provider: 'openai', model: 'gpt-5.6-sol' },
     extract: { provider: 'openai', model: 'gpt-4o-mini' },
   },
   openrouter: {
