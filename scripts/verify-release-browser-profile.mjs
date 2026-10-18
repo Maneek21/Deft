@@ -16,26 +16,45 @@ try {
   const page = await browser.newPage();
   const chunks = [];
   const pendingChunks = [];
-  page.on('response', (response) => {
-    if (!new URL(response.url()).pathname.startsWith('/_next/static/')
-      || !new URL(response.url()).pathname.endsWith('.js')) return;
-    pendingChunks.push((async () => {
+  const chunkFailures = [];
+  const collectChunk = (response) => {
+    const task = (async () => {
+      const path = new URL(response.url()).pathname;
+      if (!path.startsWith('/_next/static/') || !path.endsWith('.js')) return;
       assert.equal(response.status(), 200, `Browser chunk failed: ${response.url()}`);
       const body = await response.body();
       chunks.push({
-        path: new URL(response.url()).pathname,
+        path,
         sha256: createHash('sha256').update(body).digest('hex'),
         contains_diagnostic: body.includes(Buffer.from('data-deft-browser-features')),
       });
-    })());
-  });
-  const response = await page.goto(`${baseUrl}/login`, { waitUntil: 'domcontentloaded' });
-  assert.equal(response?.status(), 200, 'The exact image must serve the login page');
-  // A fresh context has no account, mailbox, injected flags, or saved session.
-  await page.waitForFunction(() => document.documentElement.hasAttribute('data-deft-browser-features'), undefined, { timeout: 30_000 });
-  const actual = JSON.parse(await page.locator('html').getAttribute('data-deft-browser-features'));
-  assert.deepEqual(actual, profile.features, 'Compiled browser flags differ from the release profile');
-  await Promise.all(pendingChunks);
+    })();
+    // Handle rejection immediately, even while navigation/hydration is pending.
+    pendingChunks.push(task.catch(error => { chunkFailures.push(error); }));
+  };
+  page.on('response', collectChunk);
+  let actual;
+  try {
+    const response = await page.goto(`${baseUrl}/login`, { waitUntil: 'domcontentloaded' });
+    assert.equal(response?.status(), 200, 'The exact image must serve the login page');
+    // A fresh context has no account, mailbox, injected flags, or saved session.
+    await page.waitForFunction(() => document.documentElement.hasAttribute('data-deft-browser-features'), undefined, { timeout: 30_000 });
+    actual = JSON.parse(await page.locator('html').getAttribute('data-deft-browser-features'));
+    assert.deepEqual(actual, profile.features, 'Compiled browser flags differ from the release profile');
+  } finally {
+    // Freeze collection before draining; late responses must not outlive the drain.
+    page.off('response', collectChunk);
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(pendingChunks),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Browser chunk collection timed out')), 30_000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (chunkFailures.length) throw chunkFailures[0];
+  }
   assert.ok(chunks.some((chunk) => chunk.contains_diagnostic), 'The diagnostic must originate from an actual served browser bundle');
   const evidence = {
     schema: 'deft.release.browser-feature-evidence.v1',

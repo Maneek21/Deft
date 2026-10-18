@@ -37,6 +37,11 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
+    # The exact disposition gate compares the complete repository finding set.
+    # PR diff filtering omits unchanged reviewed paths and creates stale reviews.
+    env:
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
+      CODEQL_OVERLAY_DATABASE_MODE: none
     permissions:
       security-events: write
       packages: read

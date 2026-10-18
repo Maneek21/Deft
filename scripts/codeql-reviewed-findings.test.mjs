@@ -1,4 +1,13 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createHash} from 'node:crypto';import {reviewSarif,findingFingerprint,main} from './codeql-reviewed-findings.mjs';
+test('exact repository-wide dispositions receive full CodeQL analysis on pull requests',()=>{
+ const workflow=readFileSync(new URL('../.github/workflows/security.yml',import.meta.url),'utf8');
+ const job=workflow.slice(workflow.indexOf('  codeql:'));
+ assert.match(job,/CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'/);
+ assert.match(job,/CODEQL_OVERLAY_DATABASE_MODE: none/);
+ assert.ok(job.indexOf('CODEQL_ACTION_DIFF_INFORMED_QUERIES')<job.indexOf('github/codeql-action/init@'));
+ assert.match(job,/node scripts\/codeql-reviewed-findings\.mjs \.ci-codeql-diagnostics/);
+ assert.match(job,/sarif_file: \.ci-codeql-diagnostics\/javascript\.sarif/);
+});
 function fixture(t){
  const root=mkdtempSync(join(tmpdir(),'codeql-exact-review-'));t.after(()=>rmSync(root,{recursive:true,force:true}));mkdirSync(join(root,'src'));writeFileSync(join(root,'src/identity.js'),'export const identity = 1;\n');
  const result={ruleId:'js/insufficient-password-hash',level:'warning',message:{text:'Synthetic idempotency digest'},locations:[{physicalLocation:{artifactLocation:{uri:'src/identity.js',index:0},region:{startLine:1,startColumn:1}}}],partialFingerprints:{primaryLocationLineHash:'fixture'},codeFlows:[]};
