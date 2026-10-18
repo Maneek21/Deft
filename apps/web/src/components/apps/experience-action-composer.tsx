@@ -3,11 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { AppDialog } from '@/components/overlay-primitives';
 import { api } from '@/lib/api';
-import { composerCompletion, composerFields, composerRecoveryMode, createComposerSaver, mergeComposerDraft, type ComposerField, type ComposerInput, type ExperienceComposeRequest } from '@/lib/app-experience-action-composer';
+import { composerCompletion, composerFields, composerValidationError, composerRecoveryMode, createComposerSaver, mergeComposerDraft, type ComposerField, type ComposerInput, type ExperienceComposeRequest } from '@/lib/app-experience-action-composer';
 import { createDraftRecoveryJournal, type DraftRecoveryScope } from '@/lib/app-experience-draft-recovery';
 
 type Context = { label: string; input_schema: unknown; contract_digest: string; runtime_binding_id: string; app_version_id: string; grant_snapshot_id: string; expires_at: string };
-type Run = { id: string; state: string };
+type Run = { id: string; state: string; submitted_input?: ComposerInput };
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 function scalars(value: unknown): ComposerInput {
   if (!object(value) || Object.keys(value).length > 32 || Object.values(value).some(item => item !== null && !['string', 'number', 'boolean'].includes(typeof item))) throw Error('Invalid saved data');
@@ -39,6 +39,7 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
   const recovery = useRef<Awaited<ReturnType<typeof createDraftRecoveryJournal>> | null>(null), recoveryTail = useRef(Promise.resolve()), latestDraft = useRef<ComposerInput>({});
   const active = useRef(false), pending = useRef(new Set<AbortController>()), draft = useRef<ComposerInput>({}), saver = useRef<ReturnType<typeof createComposerSaver> | null>(null);
   const generation = useRef(0);
+  const sending = useRef(false);
   const paused = useRef(suspended); paused.current = suspended;
   const reopen = useRef<(() => Promise<void>) | null>(null), wasSuspended = useRef(suspended);
   const authority = useRef(ensureAuthority);
@@ -106,7 +107,7 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
         });
         unsubscribe = saver.current.subscribe(update);
         if (recoveryMode === 'restore') saver.current.change(initialDraft);
-        setAdvancedKeys(loadedFields.filter(field => !field.required && value[field.key] === '').map(field => field.key));
+        setAdvancedKeys(loadedFields.filter(field => field.readOnly || (!field.required && value[field.key] === '')).map(field => field.key));
         setFields(loadedFields); setInput(value); setContext(contextValue as unknown as Context); if (!restored?.submission) setNotice('');
       } catch { failed = true; if (active.current && generation.current === capturedGeneration) setNotice('This action or saved draft is unavailable. Reopen it after checking your access.'); }
       finally { opening = false; const retry = retryOpening; retryOpening = false;
@@ -156,7 +157,9 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
     catch { setBlocked(true); setNotice('This draft exceeds its saved-data limit. Shorten it before sending.'); }
   }
   async function send() {
-    if (!context || paused.current || busy || uncertain || blocked || recovered || document.hidden) return;
+    if (!context || paused.current || busy || sending.current || uncertain || blocked || recovered || document.hidden) return;
+    const invalid=composerValidationError(fields,input); if(invalid){setNotice(invalid);return;}
+    sending.current=true;
     const current = composerCompletion(() => ({active:active.current,generation:generation.current}));
     setBusy(true); setNotice('');
     try {
@@ -183,9 +186,9 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
       // The durable pending marker already prevents resend; a local CAS failure cannot erase a definitive Run response.
       await recovery.current.put(saver.current?.revision || 0, latestDraft.current, { key: request.draft_id, state: 'known', runId: confirmed.run.id }).catch(() => undefined);
       if (!current()) return;
-      onResult({ id: confirmed.run.id, state: confirmed.run.state }); onClose();
+      onResult({ id: confirmed.run.id, state: confirmed.run.state, submitted_input: { ...input } }); onClose();
     } catch { if (current()) setNotice('Sending could not be confirmed. Check the action history before trying again. Your saved draft remains available.'); }
-    finally { if (current()) setBusy(false); }
+    finally { sending.current=false; if (current()) setBusy(false); }
   }
   async function copyRecovered() {
     if (!recovered || uncertain || busy) return;
@@ -219,12 +222,12 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
     });
   }
   if (hidden || suspended) return null;
-  const advancedHasValue = advancedKeys.some(key => input[key] !== '' && input[key] !== undefined);
+  const advancedHasValue = fields.some(field => advancedKeys.includes(field.key) && !field.readOnly && input[field.key] !== '' && input[field.key] !== undefined);
   const fieldControl = (field: ComposerField) => <label key={field.key} className="block text-sm">
     <span className="block mb-1.5 font-medium">{field.label}</span>
-    {field.type === 'boolean' ? <input type="checkbox" checked={input[field.key] === true} disabled={busy || blocked || uncertain || Boolean(recovered)} onChange={event => change(field.key, event.target.checked)} />
+    {field.readOnly ? <output className="block break-all text-[var(--on-surface-variant)]">{String(input[field.key] ?? '')}</output> : field.type === 'boolean' ? <input type="checkbox" checked={input[field.key] === true} disabled={busy || blocked || uncertain || Boolean(recovered)} onChange={event => change(field.key, event.target.checked)} />
       : field.type === 'string' && Number(field.maxLength) > 512 ? <textarea className="w-full min-h-48 sm:min-h-64 resize-y rounded-xl border border-[var(--outline-variant)] px-3 py-2.5 bg-[var(--surface)] leading-relaxed outline-none focus:border-[var(--primary)]" maxLength={field.maxLength} value={String(input[field.key] ?? '')} disabled={busy || blocked || uncertain || Boolean(recovered)} onChange={event => change(field.key, event.target.value)} />
-        : <input className="w-full min-h-11 rounded-xl border border-[var(--outline-variant)] px-3 py-2.5 bg-[var(--surface)] outline-none focus:border-[var(--primary)]" type={field.type === 'number' ? 'number' : 'text'} maxLength={field.maxLength} min={field.minimum} max={field.maximum} value={String(input[field.key] ?? '')} disabled={busy || blocked || uncertain || Boolean(recovered)} onChange={event => change(field.key, field.type === 'number' ? Number(event.target.value) : event.target.value)} />}
+        : <input className="w-full min-h-11 rounded-xl border border-[var(--outline-variant)] px-3 py-2.5 bg-[var(--surface)] outline-none focus:border-[var(--primary)]" type={field.type === 'number' ? 'number' : field.format === 'email' ? 'email' : 'text'} minLength={field.minLength} maxLength={field.maxLength} min={field.minimum} max={field.maximum} value={String(input[field.key] ?? '')} disabled={busy || blocked || uncertain || Boolean(recovered)} onChange={event => change(field.key, field.type === 'number' ? Number(event.target.value) : event.target.value)} />}
   </label>;
   return <AppDialog title={context?.label || 'Compose'} onClose={close} width={640} presentation="editor" footer={<div className="flex items-center justify-between gap-3">
     <p role="status" className="min-w-0 text-xs text-[var(--on-surface-variant)]">{notice || (!context ? 'Opening draft…' : blocked ? 'Draft needs attention' : saving || localSaving ? 'Saving…' : dirty ? 'Unsaved changes' : 'Saved')}</p>
@@ -241,7 +244,7 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
       </div>}
       {fields.filter(field => !advancedKeys.includes(field.key)).map(fieldControl)}
       {advancedKeys.length > 0 && <div className="space-y-4">
-        {!advancedHasValue && <button type="button" className="min-h-11 text-sm text-[var(--on-surface-variant)]" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen(value => !value)}>{advancedOpen ? 'Hide optional fields' : 'More options'}</button>}
+        {!advancedHasValue && <button type="button" className="min-h-11 text-sm text-[var(--on-surface-variant)]" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen(value => !value)}>{advancedOpen ? 'Hide details' : 'More details'}</button>}
         {(advancedOpen || advancedHasValue) && fields.filter(field => advancedKeys.includes(field.key)).map(fieldControl)}
       </div>}
       {blocked && <p className="text-sm text-[var(--on-surface-variant)]">The save could not be confirmed. Your edits are kept on this device; reopen the draft to check its saved version.</p>}

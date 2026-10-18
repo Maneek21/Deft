@@ -5,6 +5,16 @@ import { buildDeftAppPackage, parseDeftAppManifest, verifyDeftAppPackageJson,
 
 const object = { type: 'object' as const, properties: { shipment_id: { type: 'string' as const, maxLength: 120 } },
   required: ['shipment_id'], additionalProperties: false as const };
+
+test('declared email format rejects invalid recipients before action admission', () => {
+  const contract = { type:'object', properties:{ destination:{type:'string',maxLength:200,minLength:1,format:'email',title:'Recipient'},
+    reference:{type:'string',maxLength:200,readOnly:true,title:'Source reference'} }, required:['destination'],additionalProperties:false };
+  assert.deepEqual(parseRuntimeObjectInput(contract as never,{destination:'recipient@example.test'}),{destination:'recipient@example.test'});
+  for (const destination of ['not-an-email','','a@example.test,b@example.test','a@example.test\r\nBcc:other@example.test']) {
+    assert.throws(()=>parseRuntimeObjectInput(contract as never,{destination}));
+  }
+  assert.throws(()=>parseRuntimeObjectInput({...contract,properties:{destination:{type:'string',maxLength:200,format:'executable'}}} as never,{destination:'x'}));
+});
 const manifest = { schema_version: '3' as const, id: 'community.example.shipping', version: '1.0.0',
   name: 'Shipping', license: 'AGPL-3.0-only', compatibility: { app_protocol: '3' as const }, modules: [], navigation: [],
   runtime_requirements: [{ key: 'carrier', protocol_version: 'deft.app_runtime_channel.v1' as const }],

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { composerCompletion, composerFields, composerRecoveryMode, createComposerSaver, mergeComposerDraft } from './app-experience-action-composer.js';
+import { composerCompletion, composerFields, composerValidationError, composerRecoveryMode, createComposerSaver, mergeComposerDraft } from './app-experience-action-composer.js';
+
+test('trusted composer retains declared format and read-only source context', () => {
+  const fields=composerFields({type:'object',additionalProperties:false,required:['to','parent'],properties:{
+    to:{type:'string',maxLength:200,minLength:1,format:'email',title:'Recipient'},parent:{type:'string',maxLength:200,readOnly:true,title:'Source reference'}}});
+  assert.equal(fields[0].label,'Recipient');
+  assert.equal((fields[0] as unknown as {format:string}).format,'email');
+  assert.equal((fields[1] as unknown as {readOnly:boolean}).readOnly,true);
+});
 
 test('retired close and confirmed-send callbacks cannot complete a replacement composer', async () => {
   let identity = {active:true,generation:1}, closeCalls = 0, resultCalls = 0;
@@ -72,4 +80,11 @@ test('a recovered connection resumes CAS only after the current read agrees with
   assert.equal(saver.resumeAfterRead(3,false),true); await saver.flush();
   assert.equal(writes,2); assert.equal(saver.revision,4); assert.equal(saver.dirty,false);
   assert.equal(saver.resumeAfterRead(2,true),false);
+});
+
+
+test('trusted form validates declared recipient before submission', () => {
+  const fields=composerFields({type:'object',additionalProperties:false,required:['to'],properties:{to:{type:'string',maxLength:200,format:'email'}}});
+  for (const to of ['not-an-email','a@example.test,b@example.test','a@example.test\r\nBcc:b@example.test']) assert.ok(composerValidationError(fields,{to}));
+  assert.equal(composerValidationError(fields,{to:'recipient@example.test'}),null);
 });

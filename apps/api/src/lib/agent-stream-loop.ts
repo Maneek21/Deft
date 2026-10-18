@@ -13,7 +13,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
 import { agentActions, messages, spaces } from '@deft/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
 import { agentToolFailure } from './agent-tool-result.js';
 import {
@@ -420,13 +420,18 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
             ? `Queued the **${labels[0]}** action for your approval — confirm the card above to proceed.`
             : `Queued ${newPendings.length} actions for your approval (${labels.join(', ')}) — confirm the cards above to proceed.`;
 
-        await db
+        const [updated] = await db
           .update(messages)
           .set({ content: replacement })
-          .where(eq(messages.id, assistantRow!.id));
+          .where(and(eq(messages.id, assistantRow!.id), eq(messages.org_id, p.orgId),
+            sql`${messages.metadata}->>'approval_resolution_message_id' IS NULL`))
+          .returning({ content: messages.content });
+        const [resolvedMessage] = updated ? [] : await db.select({ content: messages.content })
+          .from(messages).where(and(eq(messages.id, assistantRow!.id), eq(messages.org_id, p.orgId))).limit(1);
+        const currentText = updated?.content ?? resolvedMessage?.content ?? replacement;
 
-        await p.write({ type: 'text_replace', text: replacement });
-        finalText = replacement;
+        await p.write({ type: 'text_replace', text: currentText });
+        finalText = currentText;
       } else {
         finalText = iterText;
       }
