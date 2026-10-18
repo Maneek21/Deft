@@ -30,6 +30,7 @@ type AIConfig = {
   ollama_url: string | null;
   env_fallback: Record<Provider, boolean>;
   has_provider: boolean;
+  reason_provider?: { ready: boolean; provider: Provider; model: string; reason?: string };
   embed: EmbedConfig;
   transcription: TranscriptionConfig;
 };
@@ -421,9 +422,10 @@ function ModelRouteCard({
   onSaved: () => Promise<void>;
 }) {
   const current = cfg.ai_models[task];
+  const effectiveReason = task === 'reason' ? cfg.reason_provider : undefined;
   const [editing, setEditing] = useState(false);
-  const [provider, setProvider] = useState<Provider>(current?.provider ?? 'anthropic');
-  const [model, setModel] = useState<string>(current?.model ?? '');
+  const [provider, setProvider] = useState<Provider>(current?.provider ?? effectiveReason?.provider ?? 'anthropic');
+  const [model, setModel] = useState<string>(current?.model ?? effectiveReason?.model ?? '');
   const [reasoningEffort, setReasoningEffort] = useState(current?.reasoning_effort ?? '');
   const [baseUrl, setBaseUrl] = useState(current?.baseUrl ?? '');
   const [saving, setSaving] = useState(false);
@@ -440,7 +442,7 @@ function ModelRouteCard({
       ...(reasoningEffort.trim() ? { reasoning_effort: reasoningEffort.trim() } : {}),
     });
     if (!route.success) {
-      setErr('Reasoning effort must be a short lowercase value, such as medium.');
+      setErr(route.error.issues[0]?.message ?? 'Invalid model route.');
       return;
     }
     setSaving(true);
@@ -495,13 +497,13 @@ function ModelRouteCard({
             {description}
           </p>
           <p className="text-[11px] mt-1 font-mono break-words" style={{ color: current ? 'var(--foreground-secondary)' : 'var(--muted)' }}>
-            {current ? `${current.provider} · ${current.model}${current.reasoning_effort ? ` · ${current.reasoning_effort} reasoning` : ''}` : 'Default — uses the first configured provider'}
+            {current ? `${current.provider} · ${current.model}${current.reasoning_effort ? ` · ${current.reasoning_effort} reasoning` : ''}` : task === 'reason' && cfg.reason_provider ? `Default · ${cfg.reason_provider.provider} · ${cfg.reason_provider.model}${cfg.reason_provider.ready ? '' : ' · unavailable'}` : 'Default — uses the first configured provider'}
           </p>
         </div>
         {!editing && (
           <div className="flex gap-2 flex-shrink-0">
             <button
-              onClick={() => { setEditing(true); setProvider(current?.provider ?? 'anthropic'); setModel(current?.model ?? ''); setReasoningEffort(current?.reasoning_effort ?? ''); setBaseUrl(current?.baseUrl ?? ''); setErr(''); }}
+              onClick={() => { setEditing(true); setProvider(current?.provider ?? effectiveReason?.provider ?? 'anthropic'); setModel(current?.model ?? effectiveReason?.model ?? ''); setReasoningEffort(current?.reasoning_effort ?? ''); setBaseUrl(current?.baseUrl ?? ''); setErr(''); }}
               className="text-sm font-medium px-3 py-1.5 rounded-md"
               style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
             >

@@ -29,7 +29,7 @@ import { db } from './db.js';
 import { orgs } from '@deft/db/schema';
 import { encrypt, decrypt } from './encryption.js';
 import { env } from './env.js';
-import type { ModelRoute } from '@deft/shared';
+import { DEFAULT_DEFTY_OPENAI_MODEL, type ModelRoute } from '@deft/shared';
 
 export type LLMProvider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
 export type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
@@ -137,7 +137,7 @@ const HARDCODED_DEFAULTS: Record<LLMTask, string> = {
 
 const FALLBACK_REASON_MODELS: Record<LLMProvider, string> = {
   anthropic: HARDCODED_DEFAULTS.reason,
-  openai: 'gpt-4o',
+  openai: DEFAULT_DEFTY_OPENAI_MODEL,
   openrouter: 'anthropic/claude-sonnet-4',
   ollama: 'llama3.1',
 };
@@ -161,7 +161,7 @@ export type ResolvedReasonProvider = {
   apiKey: string;
   /** Set for openai/openrouter/ollama; undefined for anthropic (SDK default host). */
   baseUrl?: string;
-  /** OpenAI reasoning models only: minimal | low | medium | high. */
+  /** Provider/model-specific reasoning effort; Sol supports low through max. */
   reasoningEffort?: string;
 };
 
@@ -212,7 +212,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
     };
   }
 
-  for (const provider of ['anthropic', 'openai', 'openrouter'] as const) {
+  for (const provider of ['openai', 'anthropic', 'openrouter'] as const) {
     if (orgApiKeys[provider]) {
       return {
         ready: true,
@@ -223,7 +223,7 @@ export function selectReasonProvider(input: ReasonProviderSelectionInput): Reaso
     }
   }
 
-  for (const provider of ['anthropic', 'openai', 'openrouter'] as const) {
+  for (const provider of ['openai', 'anthropic', 'openrouter'] as const) {
     if (envApiKeys[provider]) {
       return {
         ready: true,

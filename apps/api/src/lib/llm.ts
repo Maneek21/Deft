@@ -1,5 +1,7 @@
 // Unified multi-model LLM router — all LLM calls in the codebase go through this.
 import { env } from './env.js';
+import { DEFAULT_DEFTY_OPENAI_MODEL } from '@deft/shared';
+import { createAgentMessage, isOpenAIReasoningModel } from './agent-llm.js';
 
 export type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
 
@@ -9,6 +11,7 @@ export type LLMConfig = {
   provider: LLMProvider;
   model: string;
   apiKey?: string;
+  reasoning_effort?: string;
   baseUrl?: string; // for Ollama or custom endpoints
 };
 
@@ -25,7 +28,7 @@ const PROVIDER_DEFAULT_ROUTES: Record<LLMProvider, Record<LLMTask, LLMConfig>> =
   openai: {
     classify: { provider: 'openai', model: 'gpt-4o-mini' },
     summarize: { provider: 'openai', model: 'gpt-4o-mini' },
-    reason: { provider: 'openai', model: 'gpt-4o' },
+    reason: { provider: 'openai', model: DEFAULT_DEFTY_OPENAI_MODEL },
     extract: { provider: 'openai', model: 'gpt-4o-mini' },
   },
   openrouter: {
@@ -79,12 +82,13 @@ export function getModelConfig(task: LLMTask, orgConfig?: Record<string, any>): 
     }
     return route;
   }
-  for (const provider of PROVIDER_ORDER) {
+  const providerOrder = task === 'reason' ? ['openai', 'anthropic', 'openrouter', 'ollama'] as const : PROVIDER_ORDER;
+  for (const provider of providerOrder) {
     if (hasOrgProviderConfigured(provider, orgConfig)) {
       return routeWithProviderDefaults(provider, task, orgConfig);
     }
   }
-  for (const provider of PROVIDER_ORDER) {
+  for (const provider of providerOrder) {
     if (hasEnvProviderConfigured(provider)) {
       return routeWithProviderDefaults(provider, task, orgConfig);
     }
@@ -244,6 +248,19 @@ async function callOpenAI(
     tools?: any[];
   },
 ): Promise<{ text: string; toolCalls?: any[]; usage?: { input: number; output: number }; model: string }> {
+  if (config.provider === 'openai' && isOpenAIReasoningModel(config.model)) {
+    // Share Defty's Responses contract, including incomplete/malformed output rejection.
+    const result = await createAgentMessage({
+      resolved: { provider: 'openai', model: config.model, apiKey, baseUrl: config.baseUrl, reasoningEffort: config.reasoning_effort },
+      system: [params.system, ...params.messages.filter(m => m.role === 'system').map(m => m.content)].filter(Boolean).join('\n'),
+      messages: params.messages.filter(m => m.role !== 'system') as any,
+      tools: params.tools ?? [], maxTokens: params.maxTokens ?? 1024,
+    });
+    const toolCalls = result.content.filter(b => b.type === 'tool_use').map(b => ({ id: b.id, name: b.name, input: b.input }));
+    return { text: result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+      usage: { input: result.usage.input_tokens, output: result.usage.output_tokens }, model: config.model };
+  }
   const baseURL =
     config.provider === 'openrouter'
       ? 'https://openrouter.ai/api/v1'

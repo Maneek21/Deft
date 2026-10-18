@@ -45,3 +45,11 @@ test('deterministic task fallback builds a concise title from chat wording', () 
     'move crates from the north dock',
   );
 });
+
+test('reason defaults to Sol without changing extraction/classification or explicit routes', () => {
+  const cfg = { api_keys: { openai: 'key', anthropic: 'other' } };
+  assert.equal(getModelConfig('reason', cfg).model, 'gpt-5.6-sol');
+  assert.equal(getModelConfig('classify', cfg).provider, 'anthropic');
+  assert.equal(getModelConfig('extract', { api_keys: { openai: 'key' } }).model, 'gpt-4o-mini');
+  assert.equal(getModelConfig('reason', { ...cfg, ai_models: { reason: { provider: 'anthropic', model: 'pinned' } } }).model, 'pinned');
+});
