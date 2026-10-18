@@ -671,6 +671,7 @@ async function buildStreamContext(
 
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS, ...MANAGER_TOOLS];
+  if (!nativeMentionsEnabled()) tools = tools.filter(tool => tool.name !== 'native_mentions_search');
   const {installedToolSchemas}=await import('../lib/app-installed-tool-discovery.js');
   const installedSchemas=await installedToolSchemas({kind:'defty',org_id:user.org_id,user_id:user.id,conversation_id:convoId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
   tools=[...tools,...installedSchemas.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.inputSchema as Anthropic.Tool['input_schema']}))];

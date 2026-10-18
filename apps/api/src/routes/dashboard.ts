@@ -355,7 +355,8 @@ dashboardRoutes.get('/', async (c) => {
     } catch {}
 
     const pendingAgentActions = recentAgentActivity.filter((a) => a.approval_status === 'pending');
-    const failedAgentActions = recentAgentActivity.filter((a) => a.error);
+    // Rejection and expiry reasons share error; only executed approved actions can fail execution.
+    const failedAgentActions = recentAgentActivity.filter((a) => a.approval_status === 'approved' && a.executed_at !== null && a.error);
     const attention = [
       ...overdue.slice(0, 5).map((task) => ({
         kind: 'overdue_task',

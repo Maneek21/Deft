@@ -294,6 +294,7 @@ export async function runAgentQuery(params: {
 
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
+  if (!nativeMentionsEnabled()) tools = tools.filter(tool => tool.name !== 'native_mentions_search');
   const {installedToolSchemas}=await import('./app-installed-tool-discovery.js');
   const installedSchemas=await installedToolSchemas({kind:'defty',org_id:orgId,user_id:userId,conversation_id:params.conversationId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
   const installedWrites=new Set(installedSchemas.filter(tool=>!tool.annotations.readOnlyHint).map(tool=>tool.name));
