@@ -1,91 +1,45 @@
 # App release boundaries
 
-The `0.3.0-preview.16` Deft host and `0.1.0-alpha.7` Author Kit are candidates
-with publication pending. Email `1.5.5` is a WIP example. These identities do
-not claim a published image, npm package, external mail delivery, or production
-mailbox certification.
+The supported connected-App developer-preview set is Deft Host `0.3.0-preview.120` with schema 120, Email App `1.9.0-preview.13` using Author Kit `0.1.0-alpha.38`, and Email Runtime `0.4.0-preview.15` using Kit `0.1.0-alpha.35`. The different Kit versions are intentional. Obtain the exact commits, image digest, contracts, download URLs and checksums from the [published compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). A version label or this document alone is not evidence that an artifact has been published or accepted.
 
-## Source ownership
+## Source and deployment ownership
 
-| Artifact | Source | Role |
-|---|---|---|
-| Deft host | `apps/api`, `apps/web`, database/shared packages | Generic workspace, authorization, consent, Run lifecycle, receipts and App host behavior. |
-| Author Kit | `packages/app-kit` | Portable versioned contracts, package CLI and browser Experience SDK. Its host compatibility must match the candidate source. |
-| Email WIP | `examples/apps/email` | Independently buildable author and provider example using public Kit exports. Mail specific behavior belongs here. |
+| Component | Source | Owns |
+| --- | --- | --- |
+| Deft Host | [Maneek21/Deft](https://github.com/Maneek21/Deft): `apps/api`, `apps/web`, database/shared packages | Generic workspace identity, authorization, trusted rendering, reviewed actions, receipts, native Tasks/Knowledge and governed source navigation. |
+| Author Kit | [packages/app-kit](../packages/app-kit/README.md) in Deft | Public portable contracts, package verification/building, browser SDK and Runtime transports. Versioned tarballs are independently consumable; a separate Kit repository or npm publication is not required. |
+| Email App and Runtime | [Maneek21/deft-email](https://github.com/Maneek21/deft-email) | Email UI declarations and Worker, provider OAuth/custody, mailbox state, MIME, drafts, attachments, image preferences and provider effects. The Runtime is independently deployed with its own private persistent store. |
 
-All three source boundaries currently belong to the Deft repository. There is
-no separate Email or Author Kit repository established by this preparation.
-Existing independent Contacts module distribution remains separate.
+Email is the reference sideloaded connected App. It is not a built-in core mailbox product. An Email author can build and change it using the public Kit packages without a Deft source checkout, private Host imports in the build/runtime path, copied `node_modules`, Email-specific SQL or a native Email adapter. An operator still needs a compatible prebuilt Host, HTTPS, OAuth configuration, Runtime registration and current reviewed authority. Historical fixtures and source extraction provenance are not production dependencies or current install instructions.
 
-The Kit has its own version. Schema migrations have their existing versioned
-identities through `0.3.0-preview.56`; these are schema steps, not evidence that
-intermediate product releases were published. Existing deployments follow
-`pnpm db:upgrade`, while fresh disposable schemas use `pnpm db:push-full`.
+The concrete boundary contracts are described in [App boundaries](app-boundaries.md) and the [connected App author guide](connected-app-author-guide.md). Mailbox/provider logic remains in Email; Deft exposes reusable platform capabilities.
 
-## Portable candidate packaging
+## Reproducible public artifacts
 
-From the exact reviewed source checkout:
+The developer-preview publication consists of a signed/provenanced Host image and deployment assets, corresponding Host source, the independently built Email App package, Email/Runtime corresponding source archives, and immutable Kit35/Kit38 tarballs with corresponding source and SHA256 checksums. The detached `compatibility.json` release asset is the authoritative final compatibility record; it identifies immutable artifacts without requiring self-referential commit or archive hashes inside their own source.
 
-```sh
-pnpm --dir packages/app-kit pack --pack-destination /absolute/path/to/artifacts
-```
+Use the [Email README](https://github.com/Maneek21/deft-email/blob/main/README.md) for the locked public dependency install and App build, and [Email setup](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md) for operator installation. The source archive includes its lockfiles and sealed Kit packages. Never rebuild a tarball under an already published immutable identity just to update prose. Local build output and private demo evidence are not substitutes for downloaded public artifacts.
 
-The resulting candidate is `deft-app-kit-0.1.0-alpha.7.tgz`. Record its SHA256,
-retain that exact artifact, and install it in a clean author directory. Verify
-the public root and browser leaf exports and the `deft` CLI there. Do not use a
-workspace link, private host imports, or a changed artifact under the same
-published version. No npm publication is claimed or performed by packing.
+The Apps-enabled release profile must compile `NEXT_PUBLIC_FEATURE_APPS`, `NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC` and `NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER` into the browser bundle. Setting environment variables only when starting a prebuilt container cannot enable omitted browser features. The release workflow checks the actual compiled profile; unrelated stable-release defaults retain their existing behavior. See [release instructions](../RELEASING.md) and [self-hosting](self-hosting.md).
 
-The Email README provides its exact candidate consumer installation and build
-steps. Generated bundles, App packages, node_modules, local tarballs and test
-reports are build outputs. Preserve their provenance externally rather than
-mixing private execution evidence into the public example source.
+Schema version, Host product version, source commit, OCI image/index digest and portable Docker image configuration ID are distinct identities. Schema120 and the required generic contracts must match the compatibility record. Fresh databases use the supported isolated bootstrap; existing installations follow the supported versioned upgrade. Neither a demo database copy nor a product tag alone proves fresh installation compatibility.
 
-## Operator boundary and WIP limits
+## Installation and permission boundaries
 
-Building an Email App does not authorize installation, access to a mailbox,
-private disclosure, or sending. An operator supplies a separate mail account
-configuration, reviews installation and resource custody, issues purpose
-specific Runtime credentials, and grants the supported Experience consent and
-agent policy. Each external write still needs the exact host review required
-by the current binding. Author code does not receive an owner Web token.
+Protocol7 packages follow the public sideload stage, review and activation workflow. Stage is inspection, not execution or a permission grant. The operator separately registers the external Runtime and admits the intended connection profile. A member then connects their provider account and reviews the required resource/data/action access. Deft validates current identity, scope, lifecycle and reviewed bindings before granting access or executing an action.
 
-Terminal sync Runs do not automatically retry an observation. An authenticated
-current owner can request `resume-observation` for the exact terminal predecessor
-and current binding. It retains the checkpoint, cursor, projections and original
-unknown outcome; a new observation gets its own Run and receipts. Current
-consent, session and cadence checks still apply. Staged predecessor work is
-rejected for manual investigation. This route does not retry an Email send,
-replace an unknown effect with a known failure, or grant new custody.
+Provider credentials and Email encryption keys remain in the Runtime's private operator configuration and persistent custody. They do not belong in App manifests, Workers, public source archives or compatibility files. An App receives neither an owner Web token nor unrestricted workspace access.
 
-The local proof used synthetic contacts and owned loopback TLS IMAP/SMTP. It
-observed two distinct personalized messages, SMTP and Sent-copy acceptance,
-exact Run receipts, and no duplicate effects on replay. This validates the
-tested fixture path. It does not establish recipient delivery or fresh
-production setup against a real account. Email remains WIP until those product
-and operational requirements receive their own evidence.
+Human consent, trusted Experience disclosure and technical channel leases are separate. Explicit signed policies can support reviewed **Until revoked** account, draft-store and metadata grants. Initial enrollment and review/technical requests remain finite; null or omitted expiry alone is not consent. Technical renewal checks current membership, scope and custody, and does not approve a message. Sending requires the exact saved sender, recipients, content and files to be reviewed through the current action binding. Revocation ends subsequent access; uncertain outcomes are inspected rather than automatically replayed.
 
-This example supports one account and one recipient per invocation, plain text,
-and no outgoing attachments. Its private draft limit is 32 records, including
-submitted drafts, with 30 day retention. Archive uses the legacy human approval
-flow. Provider operation and recovery currently need the documented development
-supervisor and manual operational steps. Real provider setup and everyday mail
-client behavior remain unproven. Native tool executor and MCP campaign proofs
-do not establish a new full Defty model turn for the campaign.
+Email-to-Task and Email-to-Knowledge use generic governed source publication and destination review. Background metadata/capture authority is distinct from foreground mailbox reading. A functioning reader alone does not establish automatic Knowledge capture, Task publication or permission to disclose message contents to another audience.
 
-Core App Runtime, attachment/resource custody, private state, private Defty
-context, Experience disclosure, and related public capabilities retain their
-default off feature flags. Enable only the explicit supported subset with its
-reviewed operator setup; the WIP example does not change these defaults.
+## Acceptance and preview limits
 
-## Release preparation
+Release acceptance combines exact artifact/CI/provenance checks with a bounded consumer and live journey: an Apps-enabled Host, clean independent Email build, connected Gmail reading and HTML/images, saved/reopened attachment draft, one reviewed send with independent recipient verification, Task/source return, restart retention and an Email-only upgrade while the Host remains unchanged. Reuse earlier evidence only when its artifact identities and covered behavior still apply; label older receipts as historical.
 
-Feature and example PRs can be reviewed independently using their declared
-dependencies, but a public host release must contain matching Kit contracts
-and the supported schema upgrades. Keep candidate changelog notes under
-Unreleased and use the `core` release scope unless separately certified
-integration evidence exists. Follow [RELEASING.md](../RELEASING.md) for required
-checks. Merge, annotated tag, image publication, registry publication, and
-GitHub release publication are separate actions from this preparation.
+This preview demonstrates a functioning connected App and its platform integrations. It does not claim production-grade Gmail/Outlook parity, effortless onboarding, broad provider certification, production scale or a product-wide latency SLO. Refresh can remain slow; operator enrollment, partial-access messaging, narrow newsletter rendering and browser PDF-preview limitations are disclosed in the [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). Accepted defects never include unauthorized disclosure, duplicate-send risk, data loss or a broken documented installation path.
 
-Email 1.5.4 is a built fresh-install candidate; the existing preview remains on 1.5.3. Historical unknown sync outcomes can block upgrades, and a complete normal owner reconciliation flow for those outcomes is still missing. Do not remove or rewrite historical outcomes to permit an upgrade.
+Future Email scope is maintained in the separate [Email roadmap](https://github.com/Maneek21/deft-email/blob/main/ROADMAP.md). New mailbox providers or shared inbox workflows belong to that independent app, using reusable Deft capabilities.
+
+The [preview16 boundary note](history/app-release-boundaries-preview16.md) is preserved as historical evidence of the earlier monorepo WIP. Its versions, account/attachment limits, ownership and acceptance statements are not current guidance.
