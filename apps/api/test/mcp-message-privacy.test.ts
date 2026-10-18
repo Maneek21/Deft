@@ -182,8 +182,17 @@ test('messages_search hides private spaces the employee has not joined', async (
     { query: MARKER, space_name: 'privacy-hidden', limit: 10 },
     ctx,
   );
-  assert.equal(targeted.isError, false, targeted.content[0]?.text);
-  assert.deepEqual(JSON.parse(targeted.content[0]!.text), []);
+  assert.equal(targeted.isError, true);
+  assert.equal(targeted.content[0]?.text, 'Readable room not found.');
+  const nonexistent = await messagesSearch(
+    { query: MARKER, space_name: `nonexistent-${suffix}`, limit: 10 },
+    ctx,
+  );
+  assert.deepEqual(targeted, nonexistent, 'hidden and nonexistent rooms expose the same generic failure');
+  const deniedResponse = JSON.stringify(targeted);
+  for (const hidden of ['privacy-hidden', HIDDEN_PRIVATE_SPACE_ID, HIDDEN_PRIVATE_MESSAGE_ID, MARKER]) {
+    assert.ok(!deniedResponse.includes(hidden), 'denied search must not disclose hidden room identifiers or content');
+  }
 });
 
 test('platform_context accepts public and joined-private trigger context', async () => {

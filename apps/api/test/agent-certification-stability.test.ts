@@ -1,8 +1,9 @@
-import { after, before, test } from 'node:test';
+import { after, before, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { Hono } from 'hono';
 import bcrypt from 'bcryptjs';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
@@ -784,7 +785,7 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
       [startBody.challenge.id, AUTH_SHADOW_USER_ID],
     );
   });
-  const failedFirstReply = await app().request('/api/agent-channel/v1/reply', {
+  const firstReplyRequest = {
     method: 'POST',
     headers: { authorization: `Bearer ${AUTH_CHANNEL_BEARER}`, 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -794,11 +795,12 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
       adapter_mode: 'autonomous_platform',
       caller_employee_slug: AUTH_EMPLOYEE_SLUG,
     }),
-  });
-  const failedFirstReplyBody = await failedFirstReply.json() as any;
-  assert.equal(failedFirstReply.status, 500, JSON.stringify(failedFirstReplyBody));
-  assert.equal(failedFirstReplyBody.ok, false);
-  assert.equal(failedFirstReplyBody.idempotent, false);
+  };
+  const revokedReply = await app().request('/api/agent-channel/v1/reply', firstReplyRequest);
+  const revokedReplyBody = await revokedReply.json() as any;
+  assert.equal(revokedReply.status, 404, JSON.stringify(revokedReplyBody));
+  assert.deepEqual(revokedReplyBody, { error: 'Channel event not found', code: 'NOT_FOUND' });
+  assert.ok(!JSON.stringify(revokedReplyBody).includes(startBody.challenge.nonce));
   await withClient(async (client) => {
     const attempts = await client.query(
       `SELECT status FROM agent_channel_delivery_attempts
@@ -806,13 +808,52 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
          AND direction = 'inbound_reply'`,
       [ORG_ID, AUTH_EMPLOYEE_ID, firstClaim.id],
     );
-    assert.deepEqual(attempts.rows.map((row) => row.status), ['failed']);
+    assert.deepEqual(attempts.rows, [], 'revoked source is denied before creating a reply attempt');
+    const replies = await client.query('SELECT id FROM messages WHERE id = $1', [
+      `agent-channel-certification-reply:${firstClaim.id}`,
+    ]);
+    assert.deepEqual(replies.rows, [], 'revoked source cannot create a durable reply');
     await client.query(
       `INSERT INTO space_members (id, space_id, user_id)
        VALUES (gen_random_uuid()::text, $1, $2)`,
       [startBody.challenge.id, AUTH_SHADOW_USER_ID],
     );
   });
+
+  // An authorized writer failure must still persist a failed attempt and permit
+  // the retry below. Room revocation now fails earlier than this write boundary.
+  const { db: apiDb } = await import('../src/lib/db.js');
+  const execute = apiDb.execute.bind(apiDb);
+  let injectedFailures = 0;
+  const writeFailure = mock.method(apiDb, 'execute', <TRow extends Record<string, unknown>>(
+    query: Parameters<typeof apiDb.execute>[0],
+  ) => {
+    const statement = typeof query === 'string' ? query : new PgDialect().sqlToQuery(query.getSQL()).sql;
+    if (/^insert into messages/i.test(statement) && injectedFailures === 0) {
+      injectedFailures++;
+      throw new Error('certification test transient message write failure');
+    }
+    return execute<TRow>(query);
+  });
+  try {
+    const failedFirstReply = await app().request('/api/agent-channel/v1/reply', firstReplyRequest);
+    const failedFirstReplyBody = await failedFirstReply.json() as any;
+    assert.equal(injectedFailures, 1, 'authorized reply reaches the message write boundary');
+    assert.equal(failedFirstReply.status, 500, JSON.stringify(failedFirstReplyBody));
+    assert.equal(failedFirstReplyBody.ok, false);
+    assert.equal(failedFirstReplyBody.idempotent, false);
+    await withClient(async (client) => {
+      const attempts = await client.query(
+        `SELECT status FROM agent_channel_delivery_attempts
+         WHERE org_id = $1 AND agent_employee_id = $2 AND event_id = $3
+           AND direction = 'inbound_reply'`,
+        [ORG_ID, AUTH_EMPLOYEE_ID, firstClaim.id],
+      );
+      assert.deepEqual(attempts.rows.map((row) => row.status), ['failed']);
+    });
+  } finally {
+    writeFailure.mock.restore();
+  }
   const reconnectAfterFailedReply = await app().request(
     `/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('certification-worker-1')}`,
     { headers: { authorization: `Bearer ${AUTH_CHANNEL_BEARER}` } },
