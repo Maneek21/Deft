@@ -1,9 +1,16 @@
 import {z} from 'zod';
 import {AppIntegrationSourceMappingSchema,AppIntegrationSourceTargetSchema,AppIntegrationSourceIdentitySchema,type AppIntegrationSourceMapping,type AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
 import {appIntegrationSourceDigest,type AppIntegrationPublishedSource} from './app-integration-source.js';
+/** Current account and Runtime metadata must be checked before this lookup.
+ * Absence is recoverable publication lag; ambiguity remains an access denial. */
+export class AppIntegrationSourcePendingError extends Error {
+ readonly code='APP_INTEGRATION_SOURCE_PENDING';
+ constructor(){super('Source publication is pending');}
+}
 export function appIntegrationExactLocatorCandidate<T extends {resource_id_hmac_key_version:string;resource_id_hmac:string}>(rows:readonly T[],locators:readonly {key_version:string;fingerprint:string}[]):T{
  if(rows.length>32||locators.length>32)throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');
  const exact=rows.filter(row=>locators.some(locator=>locator.key_version===row.resource_id_hmac_key_version&&locator.fingerprint===row.resource_id_hmac));
+ if(!exact.length)throw new AppIntegrationSourcePendingError();
  if(exact.length!==1)throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');return exact[0]!;
 }
 
