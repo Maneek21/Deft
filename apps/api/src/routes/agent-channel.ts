@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
@@ -139,6 +139,7 @@ const acceptSchema = z.object({
   // Omission is recovery-only. An already accepted event can be rehydrated
   // after an adapter restart; a live delivery still requires its lease claim.
   claim_token: z.string().min(1).optional(),
+  recovery_capability: z.literal('accepted_event_terminal_reconciliation_v1').optional(),
   caller_employee_slug: z.string().optional(),
 }).strict();
 
@@ -279,7 +280,7 @@ async function getEventForPrincipal(eventId: string, principal: AgentChannelPrin
   return event ?? null;
 }
 
-async function hasAutonomousPlatformConnection(principal: AgentChannelPrincipal) {
+async function hasAutonomousPlatformConnection(principal: AgentChannelPrincipal, requiredCapability?: string) {
   const [connection] = await db
     .select({ status: agentChannelConnections.status, metadata: agentChannelConnections.metadata })
     .from(agentChannelConnections)
@@ -294,7 +295,8 @@ async function hasAutonomousPlatformConnection(principal: AgentChannelPrincipal)
     : [];
   return connection?.status === 'connected'
     && metadata.adapter_mode === 'autonomous_platform'
-    && capabilities.includes('autonomous_platform_adapter_v1');
+    && capabilities.includes('autonomous_platform_adapter_v1')
+    && (!requiredCapability || capabilities.includes(requiredCapability));
 }
 
 async function startRuntimeAttempt(params: {
@@ -570,6 +572,25 @@ agentChannelRoutes.post('/accept', async (c) => {
   if (isResponse(principal)) return principal;
   if (!(await hasAutonomousPlatformConnection(principal))) {
     return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before accepting autonomous deliveries');
+  }
+
+  // A recovery-only caller can retire its own previously accepted terminal
+  // journal entry without learning source content or the business result. The
+  // negotiated capability keeps this additive shape away from older adapters.
+  if (!parsed.data.claim_token
+    && parsed.data.recovery_capability === 'accepted_event_terminal_reconciliation_v1'
+    && await hasAutonomousPlatformConnection(
+    principal, 'accepted_event_terminal_reconciliation_v1',
+  )) {
+    const [terminal] = await db.select({ id: agentChannelEvents.id })
+      .from(agentChannelEvents).where(and(
+        eq(agentChannelEvents.id, parsed.data.event_id),
+        eq(agentChannelEvents.org_id, principal.org_id),
+        eq(agentChannelEvents.agent_employee_id, principal.employee_id),
+        isNotNull(agentChannelEvents.acked_at),
+        inArray(agentChannelEvents.status, ['completed', 'failed', 'cancelled']),
+      )).limit(1);
+    if (terminal) return c.json({ transport_state: 'terminal', event_id: terminal.id });
   }
 
   const event = await getEventForPrincipal(parsed.data.event_id, principal, c);

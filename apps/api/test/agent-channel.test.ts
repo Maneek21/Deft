@@ -1118,6 +1118,43 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.equal(body.adapter_modes.autonomous_platform.delivery_acknowledgement, 'transport_acceptance');
 });
 
+test('normal cancelled accepted journal returns negotiated terminal disposition', async () => {
+  const contract = await (await app.request('/api/agent-channel/v1/contract')).json() as any;
+  assert.ok(contract.capabilities.includes('accepted_event_terminal_reconciliation_v1'));
+  assert.ok(!contract.adapter_modes.autonomous_platform.required_runtime_capabilities.includes('accepted_event_terminal_reconciliation_v1'));
+  const event = await publishMessageEvent(`normal-terminal-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const cancel = await operatorApp.request(`/api/agent-employees/${employeeId}/channel-events/${event.id}/cancel`, { method: 'POST' });
+  assert.equal(cancel.status, 200, await cancel.text());
+  const recover = (optIn = false) => app.request('/api/agent-channel/v1/accept', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, ...(optIn ? { recovery_capability: 'accepted_event_terminal_reconciliation_v1' } : {}) }),
+  });
+  // Older adapters keep their existing stale-claim behavior and response shape.
+  const legacy = await recover();
+  assert.equal(legacy.status, 409);
+  assert.equal((await legacy.json() as any).code, 'STALE_CLAIM');
+  const query = new URLSearchParams(autonomousCompatibilityQuery('normal-terminal-worker'));
+  query.set('capabilities', `${query.get('capabilities')},accepted_event_terminal_reconciliation_v1`);
+  const connect = await app.request(`/api/agent-channel/v1/connect?${query}`, { headers: { authorization: `Bearer ${bearer}` } });
+  assert.equal(connect.status, 200, await connect.text());
+  const legacyAfterNewConnect = await recover();
+  assert.equal(legacyAfterNewConnect.status, 409);
+  const terminal = await recover(true);
+  assert.equal(terminal.status, 200);
+  assert.deepEqual(await terminal.json(), { transport_state: 'terminal', event_id: event.id });
+  // A cancelled delivery that was never accepted is not a terminal journal receipt.
+  const unaccepted = await publishMessageEvent(`normal-never-accepted-${crypto.randomUUID()}`);
+  const cancelUnaccepted = await operatorApp.request(`/api/agent-employees/${employeeId}/channel-events/${unaccepted.id}/cancel`, { method: 'POST' });
+  assert.equal(cancelUnaccepted.status, 200, await cancelUnaccepted.text());
+  const notJournaled = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: unaccepted.id, recovery_capability: 'accepted_event_terminal_reconciliation_v1' }),
+  });
+  assert.equal(notJournaled.status, 409);
+  assert.equal((await notJournaled.json() as any).code, 'STALE_CLAIM');
+});
+
 test('autonomous platform reply terminalizes transport without completing business work', async () => {
   const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
     headers: { authorization: `Bearer ${bearer}` },

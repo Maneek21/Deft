@@ -33,6 +33,7 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'runtime_attestation_v1',
   'autonomous_platform_adapter_v1',
   'accepted_event_rehydration_v1',
+  'accepted_event_terminal_reconciliation_v1',
 ] as const;
 export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'renewable_leases',
