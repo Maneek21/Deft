@@ -40,12 +40,14 @@ Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 ### Recommended: prebuilt release
 
 For the independently sideloaded Email developer preview, use Host
-`v0.3.0-preview.120` and the **apps-developer-preview** browser profile listed
+`v0.3.0-preview.121` and the **apps-developer-preview** browser profile listed
 in its `browser-feature-evidence.json`. Follow the independent
 [Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
-and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json)
+and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.14/compatibility.json)
 for the exact image digest, schema 120, sealed Kit downloads, HTTPS/OAuth and
-Runtime configuration. This path requires an operator; it is not the stable
+Runtime configuration. Host preview 121 fixes session refresh under database
+pool contention and retains schema 120; no new schema migration is required.
+This path requires an operator; it is not the stable
 core quick start below. Feature flags beginning `NEXT_PUBLIC_` are compiled
 into the browser bundle. Setting them only when a container starts does not
 enable Apps, resource sync or attachments missing from that build. Server gates,
@@ -79,7 +81,7 @@ For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,
 and `NEXT_PUBLIC_WS_URL` to the browser-reachable URLs first. Keep their defaults
 for localhost ports 3000/3001. Leave provider keys empty for a basic evaluation.
 
-Host `v0.3.0-preview.120` pins the reviewed PostgreSQL 16.15 / pgvector 0.8.6 image in `docker-compose.yml`. Keep that immutable database image with this preview's deployment assets: fresh initialization and upgrade lineage checks include PostgreSQL and extension versions, so a floating `pg16` tag can produce an unrecognized catalog.
+Host `v0.3.0-preview.121` pins the reviewed PostgreSQL 16.15 / pgvector 0.8.6 image in `docker-compose.yml`. Keep that immutable database image with this preview's deployment assets: fresh initialization and upgrade lineage checks include PostgreSQL and extension versions, so a floating `pg16` tag can produce an unrecognized catalog.
 
 Use the release overlay in every application/tool command:
 

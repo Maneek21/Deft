@@ -71,7 +71,10 @@ export async function rotateWebSession(token: string) {
       await tx.update(webSessions).set({ revoked_at: new Date() }).where(eq(webSessions.id, session.id));
       return null;
     }
-    await requireActiveOrgMembership(payload.org_id, payload.id);
+    // Keep this check on the connection holding the session lock: readers can
+    // occupy every other ordinary-pool slot while waiting for that same row.
+    const [membership] = await tx.select({ id: orgMembers.id }).from(orgMembers).where(and(eq(orgMembers.org_id, payload.org_id), eq(orgMembers.user_id, payload.id), eq(orgMembers.is_active, true))).limit(1);
+    if (!membership) throw new OrgMembershipError('User is not an active member of this organization');
     const pair = tokens({ id: payload.id, email: payload.email, org_id: payload.org_id }, session.id, session.expires_at);
     await tx.update(webSessions).set({ refresh_token_hash: hash(pair.refreshToken) }).where(eq(webSessions.id, session.id));
     return pair;
