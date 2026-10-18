@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { readReleaseBrowserProfile } from './resolve-release-browser-profile.mjs';
 
 const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
@@ -68,6 +69,70 @@ test('release publication signs and verifies the exact image digest before creat
   assert.ok(position('- name: Attest image provenance') < position('- name: Sign release image digest'));
   assert.ok(position('- name: Sign release image digest') < position('- name: Verify signature and provenance'));
   assert.ok(position('- name: Verify signature and provenance') < position('- name: Create GitHub release'));
+});
+
+test('browser profiles keep core flags off and require a prerelease for Apps', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'deft-browser-profile-'));
+  const profilePath = join(directory, 'browser-profile.json');
+  const packagePath = join(directory, 'package.json');
+  try {
+    writeFileSync(packagePath, JSON.stringify({ version: '1.2.3' }));
+    writeFileSync(profilePath, JSON.stringify({ schema: 'deft.release.browser-profile.v1', profile: 'core' }));
+    assert.deepEqual((await readReleaseBrowserProfile({ profilePath, packagePath })).features, {
+      apps: false, resource_sync: false, attachment_broker: false,
+    });
+    writeFileSync(profilePath, JSON.stringify({ schema: 'deft.release.browser-profile.v1', profile: 'apps-developer-preview' }));
+    await assert.rejects(readReleaseBrowserProfile({ profilePath, packagePath }), /requires a prerelease/);
+    writeFileSync(packagePath, JSON.stringify({ version: '1.2.3-preview.1' }));
+    assert.deepEqual((await readReleaseBrowserProfile({ profilePath, packagePath })).features, {
+      apps: true, resource_sync: true, attachment_broker: true,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('browser profile rejects missing, unknown and manually overridden decisions', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'deft-browser-profile-deny-'));
+  const profilePath = join(directory, 'browser-profile.json');
+  const packagePath = join(directory, 'package.json');
+  try {
+    writeFileSync(packagePath, JSON.stringify({ version: '1.2.3-preview.1' }));
+    await assert.rejects(readReleaseBrowserProfile({ profilePath, packagePath }));
+    for (const document of [
+      { schema: 'wrong', profile: 'core' },
+      { schema: 'deft.release.browser-profile.v1', profile: 'unknown' },
+      { schema: 'deft.release.browser-profile.v1', profile: 'core', apps: true },
+      [], null,
+    ]) {
+      writeFileSync(profilePath, JSON.stringify(document));
+      await assert.rejects(readReleaseBrowserProfile({ profilePath, packagePath }), /Invalid commit-pinned/);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('release uses the pinned browser profile and checks hydrated code from the immutable image', () => {
+  assert.match(workflow, /node scripts\/resolve-release-browser-profile\.mjs --github-output/);
+  assert.match(workflow, /NEXT_PUBLIC_FEATURE_APPS=\$\{\{ needs\.scope\.outputs\.apps \}\}/);
+  assert.match(workflow, /NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC=\$\{\{ needs\.scope\.outputs\.resource_sync \}\}/);
+  assert.match(workflow, /NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER=\$\{\{ needs\.scope\.outputs\.attachment_broker \}\}/);
+  assert.match(workflow, /RELEASE_IMAGE_REF:.*@\$\{\{ steps\.digest\.outputs\.digest \}\}/);
+  assert.match(workflow, /\[\[ "\$revision" == "\$RELEASE_COMMIT" \]\]/);
+  assert.match(workflow, /pnpm install --frozen-lockfile --ignore-scripts/);
+  assert.match(workflow, /node scripts\/verify-release-browser-profile\.mjs/);
+  assert.ok(position('- name: Verify signature and provenance') < position('- name: Verify compiled browser features in the exact image'));
+  assert.ok(position('- name: Verify compiled browser features in the exact image') < position('- name: Create GitHub release'));
+  const providers = readFileSync(new URL('../apps/web/src/app/providers.tsx', import.meta.url), 'utf8');
+  assert.match(providers, /useEffect\(\(\) => \{[\s\S]*?data-deft-browser-features/);
+  for (const flag of ['APPS_ENABLED', 'APP_RESOURCE_SYNC_ENABLED', 'APP_ATTACHMENT_BROKER_ENABLED']) {
+    assert.match(providers, new RegExp(`: ${flag}`));
+  }
+  const verifier = readFileSync(new URL('./verify-release-browser-profile.mjs', import.meta.url), 'utf8');
+  assert.match(verifier, /assert\.deepEqual\(actual, profile\.features/);
+  assert.match(verifier, /chunks\.some\(\(chunk\) => chunk\.contains_diagnostic\)/);
+  assert.match(verifier, /createHash\('sha256'\)\.update\(body\)/);
 });
 
 test('manual recovery reuses and verifies the original tag-signed digest', () => {
