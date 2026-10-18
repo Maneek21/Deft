@@ -51,6 +51,8 @@ type DeveloperPayload = {
     channel_capabilities: string[];
     integration_version: string | null;
     integration_bundle_url: string | null;
+    integration_bundle_status: 'release_certified' | 'operator_provided' | 'unavailable' | null;
+    integration_bundle_detail: string | null;
     mcp_endpoint_url: string;
     channel_endpoint_url: string;
     tool_name_style: 'bare' | 'server_prefixed';
@@ -678,8 +680,13 @@ export default function DeveloperPage() {
           </div>
           {data.runtime_setup.integration_version && (
             <div className="mt-1 text-[11px] text-muted-foreground">
-              Matched Hermes integration: {data.runtime_setup.integration_version}
+              Hermes integration version: {data.runtime_setup.integration_version}
             </div>
+          )}
+          {data.runtime_setup.integration_bundle_detail && (
+            <p role="status" className="mt-2 text-xs text-muted-foreground">
+              {data.runtime_setup.integration_bundle_detail}
+            </p>
           )}
           <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs">
             {data.runtime_setup.setup_steps.map((step) => (

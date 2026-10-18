@@ -32,6 +32,7 @@ export const API_SUITES = [
   'test/agent-runtime-recovery.test.ts',
   'test/hermes-employee-release-gate-contract.test.ts',
   'test/hermes-native-onboarding.test.ts',
+  'test/hermes-release.test.ts',
   'test/agent-approval-resolver.test.ts',
   'test/agent-untrusted-context.test.ts',
   'test/attachment-agent-handoff.test.ts',

@@ -289,3 +289,17 @@ test('bundle CLIs reject conflicting directories and unsupported options', () =>
   assert.match(runFailure(buildScript, ['--json']), /--json is only supported by the verifier/);
   assert.match(runFailure(verifyScript, ['--unknown']), /Unknown option/);
 });
+
+test('the actual source tree builds a bundle matching its package release', async () => {
+  const directory = join(testRoot, 'actual-source');
+  const actualBuilder = join(sourceRepoRoot, 'scripts', 'build-hermes-integration-bundle.mjs');
+  const result = spawnSync(process.execPath, [actualBuilder, '--directory', directory], {
+    cwd: sourceRepoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const actualPackage = JSON.parse(await readFile(join(sourceRepoRoot, 'package.json'), 'utf8'));
+  const bundleManifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'));
+  assert.equal(bundleManifest.deft_release, actualPackage.version);
+  assert.equal(bundleManifest.deft_release_compatibility, `=${actualPackage.version}`);
+});
