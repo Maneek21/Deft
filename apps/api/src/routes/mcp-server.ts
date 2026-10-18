@@ -8,6 +8,7 @@ import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
 import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
+import { visibleAgentActionSourceSql } from '../lib/module-action-visibility.js';
 
 export const mcpServerRoutes = new Hono();
 
@@ -333,6 +334,7 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
       actor.agentEmployeeId
         ? eq(agentActions.agent_employee_id, actor.agentEmployeeId)
         : eq(agentActions.user_id, actor.userId),
+      visibleAgentActionSourceSql({ userId: actor.userId, orgId: keyRecord.org_id }),
     ))
     .limit(1);
 

@@ -120,6 +120,8 @@ import {
 } from './module-service.js';
 import { resolveAttentionBySource } from './attention.js';
 import { publishAgentChannelEvent } from './agent-channel.js';
+import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
+import { canonicalDeftyActionSql } from './module-action-visibility.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
 export { sanitizeModuleActionParamsForReceipt };
 
@@ -579,6 +581,23 @@ export type ApprovalResolverResult =
   | ApprovalResolverSuccess
   | ApprovalResolverError;
 
+function actionSourceAuthoritySql(readerUserId?: string) {
+  // Internal Defty keeps its established human-source boundary. External
+  // employee proposals use only durable source columns, never model arguments.
+  return sql`(${agentActions.agent_employee_id} is null or ${canonicalDeftyActionSql()}
+    or (${currentAgentActionSourceAuthoritySql('agent_actions', readerUserId ? sql`${readerUserId}` : undefined)}))`;
+}
+
+async function actionSourceIsCurrent(actionId: string, readerUserId?: string) {
+  const [row] = await db.select({ id: agentActions.id }).from(agentActions)
+    .where(and(eq(agentActions.id, actionId), actionSourceAuthoritySql(readerUserId))).limit(1);
+  return Boolean(row);
+}
+
+const sourceUnavailable = (): ApprovalResolverError => ({
+  status: 'error', code: 'FORBIDDEN', message: 'The action source is no longer available',
+});
+
 function actionRequesterId(row: { user_id: string; params: unknown }): string {
   if (row.params && typeof row.params === 'object' && !Array.isArray(row.params)) {
     const params = row.params as Record<string, unknown>;
@@ -829,6 +848,7 @@ export async function approveAction(
   );
   if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
     await publishApprovalResolution(actionId, approverUserId);
+    if (!await actionSourceIsCurrent(actionId, options.internal ? undefined : approverUserId)) return sourceUnavailable();
   }
   return result;
 }
@@ -883,6 +903,9 @@ async function approveActionLocked(
       message: 'only the requester or an org owner/admin may approve this action',
     };
   }
+
+  const sourceReaderId = options.internal ? undefined : approverUserId;
+  if (!await actionSourceIsCurrent(actionId, sourceReaderId)) return sourceUnavailable();
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
     return (await appRunApprovalResolver()).approve(actionId, approverUserId, options.appRunFinalGuard);
@@ -1012,7 +1035,11 @@ async function approveActionLocked(
     };
   }
 
-  const ctx = emp ? buildCtxFromEmployee(emp) : null;
+  const ctx = emp ? {
+    ...buildCtxFromEmployee(emp),
+    ...(row.channel_event_id ? { channel_event_id: row.channel_event_id } : {}),
+    ...(row.runtime_request_key ? { runtime_request_key: row.runtime_request_key } : {}),
+  } : null;
   const employeeOperational = emp
     ? emp.is_active && (!emp.is_deleted || emp.runtime_kind === 'defty_system')
     : false;
@@ -1078,6 +1105,7 @@ async function approveActionLocked(
                  approved_at = NOW(),
                  approved_by_user_id = ${approverUserId}
            WHERE id = ${actionId} AND approval_status = 'pending'
+             AND ${actionSourceAuthoritySql(sourceReaderId)}
            RETURNING id`,
     );
     const claimedRows =
@@ -1086,7 +1114,7 @@ async function approveActionLocked(
       const [winner] = await db
         .select()
         .from(agentActions)
-        .where(eq(agentActions.id, actionId))
+        .where(and(eq(agentActions.id, actionId), actionSourceAuthoritySql(sourceReaderId)))
         .limit(1);
       if (winner?.approval_status === 'approved') {
         if (isModuleMutation && winner.executed_at === null) {
@@ -1135,7 +1163,9 @@ async function approveActionLocked(
             ? actionParams.origin_user_id
             : null
         : null;
-    if (
+    if (!await actionSourceIsCurrent(actionId, sourceReaderId)) {
+      toolResult = { content: [{ type: 'text', text: sourceUnavailable().message }], isError: true };
+    } else if (
       ACTION_TOOLS.has(row.action)
       && (!MCP_ACTION_KINDS.has(row.action) || (isModuleMutation && !ctx))
     ) {
@@ -1322,6 +1352,7 @@ export async function rejectAction(
   const result = await rejectActionOnce(actionId, rejecterUserId, reason);
   if (result.status === 'approved' || result.status === 'rejected') {
     await publishApprovalResolution(actionId, rejecterUserId);
+    if (!await actionSourceIsCurrent(actionId, rejecterUserId)) return sourceUnavailable();
   }
   return result;
 }
@@ -1363,6 +1394,8 @@ async function rejectActionOnce(
       message: 'only the requester or an org owner/admin may reject this action',
     };
   }
+
+  if (!await actionSourceIsCurrent(actionId, rejecterUserId)) return sourceUnavailable();
 
   if (row.action === APP_RUN_APPROVAL_ACTION) {
     return (await appRunApprovalResolver()).reject(actionId, rejecterUserId);
