@@ -1,6 +1,6 @@
 # Getting started
 
-Choose the journey that matches what you want to evaluate. The latest downloadable image is `v0.3.0-preview.15`.
+Choose the journey that matches what you want to evaluate. The general workspace/Module examples below preserve the `v0.3.0-preview.15` baseline. For the current connected-App developer preview, obtain the Apps-enabled Host `v0.3.0-preview.120`/schema120 and public Kit/Email artifacts from the [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json), then follow the [Email setup](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md) and [current author guide](connected-app-author-guide.md). Email builds independently; the historical alpha.2 CLI recipe below is not its Protocol7 installation path.
 
 ## Start a team workspace
 

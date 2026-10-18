@@ -376,7 +376,7 @@ For a full VPS, DNS, reverse proxy, and HTTPS runbook, see
 After the first account is created, direct signup is blocked. Add teammates from
 Settings -> Members. Deft generates one-time invite URLs; share them out of band.
 
-Self-hosted Deft does not send email. Password recovery is admin-generated:
+Core self-hosted account recovery does not send email. This is separate from the independently installed Email App. Password recovery is admin-generated:
 owners/admins create recovery URLs from Settings -> Members and share them
 manually.
 

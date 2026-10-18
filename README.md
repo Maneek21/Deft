@@ -114,7 +114,7 @@ Deft still works as a normal workspace without an AI provider key. Chat, tasks, 
 
 ### An extensible workspace through Modules and Apps
 
-Modules add domain records, relationships, and native views. Apps package Module resources and may request supported connected actions. They use different manifests and installation flows; start with [Modules and Apps](docs/modules-and-apps.md). Declarative internal Apps, connected Apps, and bounded scheduled actions are opt-in alpha capabilities and remain disabled by default. Arbitrary custom UI and public portals are planned rather than part of the current contract.
+Modules add domain records, relationships, and native views. Apps package Module resources and may request supported connected actions. They use different manifests and installation flows; start with [Modules and Apps](docs/modules-and-apps.md). Declarative internal Apps, connected Apps, and bounded scheduled actions are opt-in alpha capabilities. General release defaults remain off; the explicitly Apps-enabled developer-preview profile described below compiles the supported browser gates on. Arbitrary custom UI and public portals are planned rather than part of the current contract.
 
 The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
 

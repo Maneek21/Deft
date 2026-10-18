@@ -1,6 +1,6 @@
 # Current limitations
 
-The published-release baseline reviewed here is `v0.3.0-preview.15` (September 8, 2026), not the current connected-App review candidate. The candidate uses packed Kit alpha.33 and generic Protocol 7 trusted forms, external Runtime and source contracts; see the [author guide](connected-app-author-guide.md). Schema 118 corrected the historical supplemental-effect database refusal; the preceding preview.3 installation passed draft/file/restart/Send and image checks. Complete current candidate and fresh installation acceptance remain pending, including Task publication and finite-authority renewal. Historical release instructions or older delivery receipts do not prove these gates.
+The general workspace baseline below is historical `v0.3.0-preview.15` (September 8, 2026). The separate connected-App developer-preview set is Host `0.3.0-preview.120`/schema120, Email App `1.9.0-preview.13` on Kit38 and Runtime `0.4.0-preview.15` on Kit35. Use its [authoritative compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json), [current author guide](connected-app-author-guide.md) and [Email limitations](https://github.com/Maneek21/deft-email/blob/main/docs/limitations.md). The explicitly Apps-enabled image compiles the required browser gates; general release defaults remain off. Exact artifact acceptance is recorded with the release, and historical receipts do not establish a different build.
 
 Installation and agent boundary notes updated September 11, 2026.
 

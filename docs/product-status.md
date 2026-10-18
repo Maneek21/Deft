@@ -9,7 +9,7 @@ notes before upgrading, and keep a tested backup of your workspace.
 
 ## Choose a version
 
-The latest published preview is **v0.3.0-preview.15**, a **core** release.
+The general workspace baseline in the table below is **v0.3.0-preview.15**, a **core** release. The connected-App developer-preview set is **v0.3.0-preview.120**/schema120 with independent Email App13/Runtime15 and public Kit38/Kit35. Use the [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json) for exact public artifacts and [App release boundaries](app-release-boundaries.md) for current scope. Its explicitly Apps-enabled profile differs from the general default-off configuration.
 Development on `master` may include changes absent from the published image.
 
 | Capability | Availability | How to start |
@@ -21,7 +21,8 @@ Development on `master` may include changes absent from the published image.
 | Internal App packages | Experimental and disabled by default; package declarative resources with App Kit | [Build an internal App](getting-started.md#build-an-internal-app) |
 | Connected Apps and bounded scheduled actions | Included in the published preview; experimental and disabled by default | [Connected App author guide](connected-app-author-guide.md) |
 | Certified Hermes bundle | Release-specific historical support; excluded from preview.15 | Read the chosen release's compatibility and certification notes |
-| Arbitrary custom App UI, public portals, external runtimes and sync | Planned; not a general-purpose contract available today | [Roadmap](../ROADMAP.md) |
+| External Runtime, governed source sync and trusted App UI | Available in the scoped Apps developer preview; requires reviewed setup and compatible artifacts | [Connected App author guide](connected-app-author-guide.md) |
+| Arbitrary custom App UI and public portals | Planned; outside the trusted renderer contract | [Roadmap](../ROADMAP.md) |
 | Hosted Deft service | Not currently offered | Self-host using the supported Docker Compose path |
 
 Standalone Modules do not need the experimental Apps flags. See [Modules and Apps](modules-and-apps.md) for the two installation paths.
