@@ -1,0 +1,395 @@
+{
+  "schema_version": "deft.codeql_false_positives.v1",
+  "review_source_commit": "f3f897514a5ee6a25b956f0f953c894c8fd275c2",
+  "review_original_sarif_sha256": "74fca9d731caa803a9b62d44951053656b5eb7a9202823acbd908dea9a09f6ea",
+  "sources": {
+    "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
+    "apps/api/src/lib/agent-actions.ts": "6c8d739c34939f7c0ca38771a4dafa7328f7dfd3ac15f809c1d3c49bc20f136c",
+    "apps/api/src/lib/app-installed-tool-discovery.ts": "93b3d4f08c6cddab370110785f454090e46e4f88587da1c9e92db0220f8a8bb6",
+    "apps/api/src/lib/app-integration-tool-runtime.ts": "1b897ed319e33e4154592191affdc8bf97ef51e0fbaa3677e9fcce6529fa1d46",
+    "apps/api/src/lib/document-send.ts": "eed5824a4f4b82e08da04ef787e13454e462a6a00af02e0683a16798d8727668",
+    "apps/api/src/lib/oauth-mcp.ts": "79019274595ac322b86aa2d6492b1b42e0434d8c8a962cdd049d4ff7600baaed",
+    "apps/api/src/lib/receipts.ts": "3665073c46fb1fda85db9454b06b42d3145d94e6c61c62f0082ec0da6e99e85a",
+    "apps/api/src/lib/workspace-plan-import.ts": "17c724e72e03f5558929d71e613a3a764c59b2d6cf3729f01306b5dc13f48f6b",
+    "examples/apps/email/providers/native-connection-retained.mjs": "cf64c2a178f6589b9760f3055f14d0d51e9bbee6e81524a5971182e09b50773a",
+    "examples/apps/email/providers/oauth-contract.mjs": "c5b15eaf82a258f6ea13d78d03a0debb7bd21e66341bf3bd8e96db53b3e37192",
+    "examples/apps/email/providers/oauth-provider.mjs": "8144e4db2cf56f9ff2ffa41efcb2a811497778db8d30354ae9c148cc092e85b7",
+    "apps/web/src/components/apps/installed-app-experience.tsx": "2fd09bd25069d824acf7b9cb5b4f57bccc52632fb84d6e8174d491f375a97078",
+    "apps/web/src/lib/app-experience-bridge.ts": "9fcb307f4b3054e1a5ebba5ec05a02aefc28e020a4b1224c67a023c3838561ef",
+    "apps/web/src/lib/app-experience-lease.ts": "1fd793057125771dc4b5efc311e26287f38935e301af689a090bc922706ee7d0",
+    "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",
+    "apps/web/src/app/app-experience-bootstrap/route.ts": "dbc44b388b0078e9c312d5adc92f5861fac4e10b7ca381e5b5257b1bc4f23077",
+    "scripts/gate-g/experiences/rich-host.html": "fb6efd3f136a31a0690bed098f5454276bda38dfe39afae7c61eb997a609eadf",
+    "apps/api/test/email-graph-send-db.test.ts": "93674795094527f4d07f61a4a106023a2d5f22100aa6547498beca1d7508a082",
+    "examples/apps/email/providers/connection-http.test.mjs": "fcae5cafa21621b082b508e7249c34cdb384b408db6bdbf48653cd58f3944ae7",
+    "examples/apps/email/providers/incoming-source-files.test.mjs": "860c50fb2ae16642b4fdccbea33bbd60a097f6245ba4abea8ea0db6d474d8afa",
+    "examples/apps/email/providers/oauth-account.mjs": "8ed6862ce390d87145803fe7614b9f7d97907144d53d5b51675ca3f397577ae7",
+    "examples/apps/email/providers/native-mailbox.test.mjs": "c2421c21aac4deef750bac339ce4996ae4623c8e8b25e3709dcd097417d192b2",
+    "examples/apps/email/providers/oauth-account.test.mjs": "86144284254bcaa3cd29afe68fac215178f9aa5c9ad641213791340c31e00562",
+    "examples/apps/email/providers/triage-contract.mjs": "962318ba7eebcb6329a470a265e244077c41624f88d55920edac0296eb3b6afe",
+    "apps/web/src/lib/app-connection-reattachment.test.ts": "d0ff5f9be2182fe74fcc94225bdb1e1c387a7e00608b002756ea7a65ff1f92c1",
+    "apps/web/src/lib/app-connection-session-flow.ts": "b714b5c16c502fb1fa93f1bec7d60f22e6427f4e9807af63dbb973443191dad4",
+    "apps/web/src/lib/app-experience-startup.ts": "f9f552de56e1c2abed8005bffac7aba379220ae7b0efa41b5d5e18a1a92cf380",
+    "apps/web/src/lib/app-experience-bootstrap-script.ts": "52920b3ce29082f7d3d83fdeb8cd040a34f16a88743142f0a900c53ce6c49980",
+    "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts": "715f49184bf2468416e409256c7a9d525405f846ed96fcd04ee8ba791b4f7520",
+    "apps/web/src/app/app-experience-bootstrap.js/route.ts": "7a78c864a3566f2580a7fab697b1cd56df037376500dacb2d9dbe4f571608e9a",
+    "apps/web/next.config.ts": "5a4383a0b1a22ed19600df3bc34de5fecc690afb6dbf6e63388473ac6897b049"
+  },
+  "findings": [
+    {
+      "id": "FP-001",
+      "disposition": "false_positive",
+      "rule": "js/bad-tag-filter",
+      "path": "examples/apps/email/fixtures/launch-stage0/verify.test.mjs",
+      "line": 135,
+      "fingerprint": "a9fc009601c0f1514e8085e220128a242f27ff12e7e93d963df3fa2aaf029eb4",
+      "sources": [
+        "examples/apps/email/fixtures/launch-stage0/verify.test.mjs"
+      ],
+      "justification": "This regex is a test assertion over a fixed malicious MIME fixture, not an HTML sanitizer or security allowlist. It verifies that untrusted source remains available or that collected plain text lacks the known fixture tag; production rich-text sanitation is not implemented by this assertion."
+    },
+    {
+      "id": "FP-002",
+      "disposition": "false_positive",
+      "rule": "js/bad-tag-filter",
+      "path": "examples/apps/email/fixtures/launch-stage0/verify.test.mjs",
+      "line": 142,
+      "fingerprint": "673bfa3fb0828edce7a52a9f44d58cd63da776fb34792476d7499ec1c2585830",
+      "sources": [
+        "examples/apps/email/fixtures/launch-stage0/verify.test.mjs"
+      ],
+      "justification": "This regex is a test assertion over a fixed malicious MIME fixture, not an HTML sanitizer or security allowlist. It verifies that untrusted source remains available or that collected plain text lacks the known fixture tag; production rich-text sanitation is not implemented by this assertion."
+    },
+    {
+      "id": "FP-003",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/agent-actions.ts",
+      "line": 339,
+      "fingerprint": "e7f359112de46612484ded0327c8396f4dc38717073ad5b0cd903973fdd9b921",
+      "sources": [
+        "apps/api/src/lib/agent-actions.ts"
+      ],
+      "justification": "This SHA-256 is the retry-domain digest of org, actor/client identifiers and an idempotency key. Authenticator return-object taint is propagated into public identity fields; no password verifier is derived or stored. Existing persisted idempotency identities must remain unchanged."
+    },
+    {
+      "id": "FP-004",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
+      "line": 30,
+      "fingerprint": "bd3dbc722aacad6a85c32b5e2384e32d191a49989998180f67707e3d1e196203",
+      "sources": [
+        "apps/api/src/lib/app-installed-tool-discovery.ts",
+        "apps/api/src/lib/app-integration-tool-runtime.ts"
+      ],
+      "justification": "This SHA-256 creates a deterministic write request UUID from actor identity, declared tool key and canonical input, not a password verifier. Duplicate recovery separately checks org/user/principal, complete input/declaration digests and immutable target; reads use randomUUID. The full target fence is pinned below."
+    },
+    {
+      "id": "FP-005",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/document-send.ts",
+      "line": 74,
+      "fingerprint": "a05fa158ee632db5c830032cd110d5ebb17e065ed86609c6c9cc3a89168eacea",
+      "sources": [
+        "apps/api/src/lib/document-send.ts"
+      ],
+      "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage."
+    },
+    {
+      "id": "FP-006",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/document-send.ts",
+      "line": 308,
+      "fingerprint": "c0207de39297d25a4e80f02802e52d3055037f68f2b8e40d61aa92147226a0e9",
+      "sources": [
+        "apps/api/src/lib/document-send.ts"
+      ],
+      "justification": "This hash derives document-action identity/preview idempotency from actor identifiers and exact document preview data. It does not store or authenticate a user password; broad authenticator-object taint reaches actor IDs. Changing it would change persisted retry identities rather than improve password storage."
+    },
+    {
+      "id": "FP-007",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/oauth-mcp.ts",
+      "line": 95,
+      "fingerprint": "86b71b87270b411f8c05dde0f5f9b15c08c7593603864ca821d2a4da9e7249c4",
+      "sources": [
+        "apps/api/src/lib/oauth-mcp.ts"
+      ],
+      "justification": "These hashes index server-generated OAuth codes/access/refresh tokens created by randomToken using randomBytes(32), not low-entropy user passwords. Token lookup still checks authorization scope, expiry and revocation. SHA-256 for uniformly random 256-bit bearer tokens does not require a password KDF."
+    },
+    {
+      "id": "FP-008",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/receipts.ts",
+      "line": 165,
+      "fingerprint": "35dac1c43baa6d899308356d0f45d797eed331190165755332fca0c95debb601",
+      "sources": [
+        "apps/api/src/lib/receipts.ts"
+      ],
+      "justification": "This is HMAC-SHA256 with the receipt signing key over a canonical audit payload, not password storage. Actor metadata from authentication is receipt data. Slow/salted password hashing would destroy deterministic receipt verification; the signing domain and keyed construction remain unchanged."
+    },
+    {
+      "id": "FP-009",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "apps/api/src/lib/workspace-plan-import.ts",
+      "line": 149,
+      "fingerprint": "bf381b51b8082729234bd0403a395e7d29fa9de8f7a6959ec9f91ecfa2f48552",
+      "sources": [
+        "apps/api/src/lib/workspace-plan-import.ts"
+      ],
+      "justification": "This SHA-256 fingerprints canonical import/preview JSON, including actor identifiers, rather than deriving a password verifier. Authentication-return taint reaches identity fields, but the digest is used for exact review/idempotency matching and grants no authority."
+    },
+    {
+      "id": "FP-010",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "examples/apps/email/providers/native-connection-retained.mjs",
+      "line": 17,
+      "fingerprint": "8b897cf607ccca5d86c6ac21a820156fdc2c2728eb7d593fed89c55564d202d0",
+      "sources": [
+        "examples/apps/email/providers/native-connection-retained.mjs"
+      ],
+      "justification": "Only org ID, owner ID, provider and provider-subject identity are hashed into the retained principal digest. OAuth binding validation taints the whole record; actual access/refresh credentials are not hash inputs. The digest is an immutable account-identity fence, not password storage."
+    },
+    {
+      "id": "FP-011",
+      "disposition": "false_positive",
+      "rule": "js/insufficient-password-hash",
+      "path": "examples/apps/email/providers/oauth-contract.mjs",
+      "line": 12,
+      "fingerprint": "9f1c0f96e8fe66d2e5067a4a7aae7eaf5a1a6f16cf7f19ca7aa0798a1e873c4b",
+      "sources": [
+        "examples/apps/email/providers/oauth-contract.mjs",
+        "examples/apps/email/providers/oauth-provider.mjs"
+      ],
+      "justification": "oauthDigest derives scoped account/storage identity and client-policy fingerprints. validateOAuthBinding contains only public binding metadata; oauthClientFingerprint explicitly omits client_secret. This is not a password verifier and cannot be changed without breaking retained account keys; caller inputs are pinned below."
+    },
+    {
+      "id": "FP-012",
+      "disposition": "false_positive",
+      "rule": "js/cross-window-information-leak",
+      "path": "apps/web/src/components/apps/installed-app-experience.tsx",
+      "line": 1044,
+      "fingerprint": "f01f053f77f4662921778f1586d8f4bb19ae99c73ab64ccb181c3bbd42773cb6",
+      "sources": [
+        "apps/web/src/components/apps/installed-app-experience.tsx",
+        "apps/web/src/lib/app-experience-bridge.ts",
+        "apps/web/src/lib/app-experience-lease.ts",
+        "apps/web/src/lib/app-experience-connection.ts",
+        "apps/web/src/app/app-experience-bootstrap/route.ts",
+        "apps/web/src/lib/app-experience-bootstrap-script.ts",
+        "apps/web/src/lib/app-experience-startup.ts",
+        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
+        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
+        "apps/web/next.config.ts"
+      ],
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes."
+    },
+    {
+      "id": "FP-013",
+      "disposition": "false_positive",
+      "rule": "js/cross-window-information-leak",
+      "path": "apps/web/src/components/apps/installed-app-experience.tsx",
+      "line": 1059,
+      "fingerprint": "90216732d64fde831072f011e30e2b3d06656d4249edd4c790f699b4e4fa9ce1",
+      "sources": [
+        "apps/web/src/components/apps/installed-app-experience.tsx",
+        "apps/web/src/lib/app-experience-bridge.ts",
+        "apps/web/src/lib/app-experience-lease.ts",
+        "apps/web/src/lib/app-experience-connection.ts",
+        "apps/web/src/app/app-experience-bootstrap/route.ts",
+        "apps/web/src/lib/app-experience-bootstrap-script.ts",
+        "apps/web/src/lib/app-experience-startup.ts",
+        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
+        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
+        "apps/web/next.config.ts"
+      ],
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes."
+    },
+    {
+      "id": "FP-014",
+      "disposition": "false_positive",
+      "rule": "js/cross-window-information-leak",
+      "path": "apps/web/src/components/apps/installed-app-experience.tsx",
+      "line": 1139,
+      "fingerprint": "2ededdba4840e381790f69e474e67c61d71c09b2bf5c7075e4674f7561ef239f",
+      "sources": [
+        "apps/web/src/components/apps/installed-app-experience.tsx",
+        "apps/web/src/lib/app-experience-bridge.ts",
+        "apps/web/src/lib/app-experience-lease.ts",
+        "apps/web/src/lib/app-experience-connection.ts",
+        "apps/web/src/app/app-experience-bootstrap/route.ts",
+        "apps/web/src/lib/app-experience-bootstrap-script.ts",
+        "apps/web/src/lib/app-experience-startup.ts",
+        "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts",
+        "apps/web/src/app/app-experience-bootstrap.js/route.ts",
+        "apps/web/next.config.ts"
+      ],
+      "justification": "The target is the exact Host-created opaque srcdoc iframe (allow-scripts without allow-same-origin), fixed canonical trusted script and escaped Host-origin metadata. Exact contentWindow/null-origin readiness plus current identity/authority gate one scoped MessagePort; stop revokes/removes only that frame. Global parent worker-src self/blob is explicit for SPA inheritance; child hash-only script CSP and connect-none confine the inherited Blob Worker. Author bytes never execute in the parent or document. Wildcard targets the opaque frame, not an arbitrary window; all supporting source is pinned. Persistent consent parsing changes only explicitly reviewed grant deadlines: null requires the literal until_revoked mode. Frame identity, opaque origin, finite Experience lease, one-port transfer and revocation gates remain unchanged. The 2026-10-17 renewal adds only a schema-validated target key for the read-only resource_refresh operation and a typed visibility-ended error; it neither changes frame creation, readiness, source, origin, port transfer or revocation nor permits target nomination for record writes."
+    },
+    {
+      "id": "FP-015",
+      "disposition": "false_positive",
+      "rule": "js/cross-window-information-leak",
+      "path": "scripts/gate-g/experiences/rich-host.html",
+      "line": 62,
+      "fingerprint": "adbd20f4473221df718cfe28a8052f169d58426f070e7de6a3ae6f6d68fbc708",
+      "sources": [
+        "scripts/gate-g/experiences/rich-host.html"
+      ],
+      "justification": "This is an isolated loopback evidence fixture, sending public synthetic session/version metadata and a fixture MessagePort to its explicitly created sandbox frame. It does not transmit real mailbox data, tokens or application credentials and is not a deployed Host messaging policy."
+    },
+    {
+      "id": "FP-016",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "apps/api/test/email-graph-send-db.test.ts",
+      "line": 59,
+      "fingerprint": "c785a5263336427e4b4dd746f468d8ddc82fa819db41aadbf15adf67924528f5",
+      "sources": [
+        "apps/api/test/email-graph-send-db.test.ts"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-017",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/connection-http.test.mjs",
+      "line": 305,
+      "fingerprint": "49020d832afc0f2f6be5ae1524a3505837af5a96e3769d0c1860e2d4fc5f169b",
+      "sources": [
+        "examples/apps/email/providers/connection-http.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-018",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/connection-http.test.mjs",
+      "line": 307,
+      "fingerprint": "7205b867524522448e8baf5f1c8080415a0872649cf8741f17dadf9be0ffec72",
+      "sources": [
+        "examples/apps/email/providers/connection-http.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-019",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/incoming-source-files.test.mjs",
+      "line": 11,
+      "fingerprint": "fbce4dbb6cace1946200d6097beaea21cea0ad75d16300790bfdb0f7b1649756",
+      "sources": [
+        "examples/apps/email/providers/incoming-source-files.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-020",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/connection-http.test.mjs",
+      "line": 613,
+      "fingerprint": "32cbb4630a1708e20bd0644f6148e6c3606d2c6338af46ad60b127dac4f5089a",
+      "sources": [
+        "examples/apps/email/providers/connection-http.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-021",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/oauth-provider.mjs",
+      "line": 32,
+      "fingerprint": "d60e4d2bc50db6817fc35eed2a66e53c8fa48f89624a887c0ea6f8ecd13e6769",
+      "sources": [
+        "examples/apps/email/providers/oauth-provider.mjs",
+        "examples/apps/email/providers/oauth-account.mjs"
+      ],
+      "justification": "The flagged includes call compares complete elements of a normalized scope array, not substrings of a URL. Scope values are tokenized/allowlisted by normalizeOAuthScopes and persisted scope arrays are checked by oauth-account. A foreign URL containing the literal does not equal an array element."
+    },
+    {
+      "id": "FP-022",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/native-mailbox.test.mjs",
+      "line": 187,
+      "fingerprint": "01613450c0995b76f54bb422194813724bbd9ec487108c0194d64af0127193dd",
+      "sources": [
+        "examples/apps/email/providers/native-mailbox.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-023",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/oauth-account.test.mjs",
+      "line": 63,
+      "fingerprint": "f028e2af24686e5e1d6cb86b91ee24007f91afb90115389d18e5bdfca9c8ee95",
+      "sources": [
+        "examples/apps/email/providers/oauth-account.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-024",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/oauth-account.test.mjs",
+      "line": 65,
+      "fingerprint": "1d83e4440d830f7d318491ac48e64df5e09879e62a0d2118ee54ab649c41162b",
+      "sources": [
+        "examples/apps/email/providers/oauth-account.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-025",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/oauth-account.test.mjs",
+      "line": 76,
+      "fingerprint": "6bfccb4cc4991facc615a6a0fa7ee8255dbed81d9c31599fb6bcf67b377af1e6",
+      "sources": [
+        "examples/apps/email/providers/oauth-account.test.mjs"
+      ],
+      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
+    },
+    {
+      "id": "FP-026",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-url-substring-sanitization",
+      "path": "examples/apps/email/providers/triage-contract.mjs",
+      "line": 38,
+      "fingerprint": "bf395e118877f36ce7783a750ded59b7e280cb1ac2d4b15ee532e8f08b1e5de2",
+      "sources": [
+        "examples/apps/email/providers/triage-contract.mjs"
+      ],
+      "justification": "The flagged includes call compares exact scope-array elements. The preceding guard rejects non-arrays and invalid elements. It is not URL substring sanitization; prefixed/suffixed URLs do not authorize an operation. The existing reduced-scope contract remains enforced."
+    },
+    {
+      "id": "FP-027",
+      "disposition": "false_positive",
+      "rule": "js/incomplete-hostname-regexp",
+      "path": "apps/web/src/lib/app-connection-reattachment.test.ts",
+      "line": 95,
+      "fingerprint": "8201a70907661974699acd44b129c8999d53729fa6baaf736b1faeaa5ec02e6e",
+      "sources": [
+        "apps/web/src/lib/app-connection-reattachment.test.ts",
+        "apps/web/src/lib/app-connection-session-flow.ts"
+      ],
+      "justification": "This regex is an assertion over a fixed returned OAuth fixture URL, not the authorization-origin allowlist. Production connection begin parses URL and requires exact reviewed origin and callback state; the current production flow source is pinned below. Persistent durable scope parsing does not loosen OAuth navigation: Begin and callback deadlines remain finite, and exact parsed authorization origin plus a single exact callback-state parameter are still required."
+    }
+  ]
+}

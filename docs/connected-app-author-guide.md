@@ -1,6 +1,6 @@
 # Connected App author guide
 
-> **Review candidate:** this checkout contains Author Kit `0.1.0-alpha.33`. The matching Host changes remain a separate stacked PR and connected App gates remain disabled by default. Published preview.15 uses alpha.2; its guide and frozen artifacts remain unchanged.
+> **Apps developer preview:** use the supported Host/Email/Kit combination in the [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). Deft `0.3.0-preview.120` requires schema 120 and the Apps-enabled browser build profile. Historical preview.15 and its alpha.2 artifacts are unchanged.
 
 For a standalone tracker, use the [Module tutorial](tutorials/first-module.md). A `deft.module.json` installs through Settings â†’ Modules; this guide packages resources in a separate `deft.app.json` and uses Settings â†’ Apps. [Compare the two paths](modules-and-apps.md).
 
@@ -9,19 +9,23 @@ and submit it for workspace review. Current connected applications use the
 programmatic Protocol 7 packaging APIs and public sideload review. The workspace
 operator reviews access, chooses provider bindings and activates the App.
 
-The current candidate authoring artifact is `@deft/app-kit@0.1.0-alpha.33`. Use a packed
+The current App authoring artifact is `@deft/app-kit@0.1.0-alpha.38`. Use a packed
 tarball of that exact version; do not substitute a monorepo workspace link or
 import private Deft packages.
 
-The external [Email review](https://github.com/Maneek21/deft-email/pull/1) contains
-App `1.9.0-preview.5` and Runtime `0.4.0-preview.3`, both built against packed
-alpha.33. Its package scripts are the current author example; the [pinned source snapshot setup](https://github.com/Maneek21/deft-email/blob/5fc2bc50265cfadbc8ee2e61535fbdb258bf3883/docs/setup.md) preserves the pre-cleanup instructions. Consult the reviewed [Email PR](https://github.com/Maneek21/deft-email/pull/1) for documentation corrections until their exact revision is frozen. Schema 118 corrected the historical supplemental-effect database refusal and accepted the preceding preview.3 installation. The current reviewed source candidate still needs its exact build, complete functional/authority acceptance, fresh public installation and Email-only upgrade proof. Kit parsing alone cannot establish database compatibility.
+The independent [Email repository](https://github.com/Maneek21/deft-email) contains
+App `1.9.0-preview.13` built with Kit alpha.38 and Runtime `0.4.0-preview.15`
+built with Kit alpha.35. These deliberately different pins are compatible with
+the supported Host; preserve both sealed tarballs and locks. Follow its current
+[setup instructions](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
+and the release acceptance evidence. Kit parsing alone does not establish
+database compatibility or live provider acceptance.
 Run the App build outside Deft, supply the independently deployed Runtime and
 review the resulting package through Settings → Apps. No Deft checkout is a
 Runtime dependency. Previous preview.1/preview.2 and E5.9/E5.11 artifacts remain
 historical evidence; they do not certify this candidate.
 
-In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. Both locks resolve the included sealed alpha.33 tarball, not a workspace link. The generated `app/app.deft.json` is the public protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides a compatible published Host, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
+In the external Email checkout, run `npm --prefix app ci --no-audit --no-fund`, `pnpm --dir runtime install --frozen-lockfile --ignore-scripts`, `npm run verify:provenance` and `npm run build`. The locks resolve the included sealed alpha.38 App and alpha.35 Runtime tarballs, not workspace links. The generated `app/app.deft.json` is the public Protocol 7 upload; do not use the historical `deft app install-local` recipe below for it. The operator separately provides the Apps-enabled Host image, HTTPS routes, allowlisted OAuth client/callback and a single POSIX Runtime with private durable custody. No Host checkout is an Email build input.
 
 Email owns mailbox/provider behavior, content normalization, its data model and
 UI declarations. Kit supplies bounded public contracts. Deft supplies generic
@@ -50,21 +54,36 @@ journey works:
 
 1. Read `GET /api/app-resource-observations/installations/{installation_id}/context`
    as the current owner. Derive the connection session, resource binding,
-   registration and scope from this response. Review finite observation through
+   registration and scope from this response. A finite observation is reviewed through
    `POST /api/app-resource-observations/consent/review` with
    `connection_session_id`, a fresh `request_id`, `interval_seconds` and an ISO
    `expires_at`; activate the returned `consent_id` and exact `review_digest`
    through `/consent/activate`. Use the
    [Kit observation contracts](../packages/app-kit/src/resource-observation.ts),
-   and keep expiry within the resource consent ceiling. Observation v1 admits
+   and keep expiry within the resource consent ceiling. If the context explicitly
+   offers `allow_until_revoked: true` and the current owner resource consent is
+   already `until_revoked`, the same review request may instead carry
+   `{"expires_at":null,"consent_lifetime":"until_revoked"}`. Activate the exact
+   returned review before `review_expires_at`; this review deadline does not end
+   an already active observation. A null expiry alone grants nothing. Initial
+   account enrollment remains finite. Observation v1 admits
    scalar metadata only (`attachment_mode: "unsupported"`); it grants neither
    attachment transfer, Knowledge capture, OAuth scopes nor provider actions.
 2. Once the operator's Runtime is ready, issue its v3 sync session through
    `POST /api/apps/blob/sync/bindings/{resource_binding_id}/sessions` with `{}`.
-   The current prototype grants at most **15 minutes**, clipped to resource
-   consent expiry. This session has no action-channel technical-renewal option;
-   do not treat action credentials or a long-lived resource consent as an
-   indefinitely running observer.
+   This finite, nonrenewing example grants at most **15 minutes**, clipped to
+   resource consent expiry. With explicit current `until_revoked` owner resource
+   consent, the named operator may opt in at this same authenticated issuance
+   endpoint using
+   `{"technical_renewal":{"renewal_lifetime":"until_revoked","requested_until":null}}`.
+   Preserve the Host-issued finite `expires_at`, `renewable_until: null` and
+   `renewal_lifetime: "until_revoked"`; do not substitute request field
+   `requested_until` for response field `renewable_until`. Each renewed lease
+   remains at most 15 minutes. Renewal rechecks the current named human/role,
+   App/grant and connection pins, and required consent; an expired or revoked
+   session cannot be revived. Technical renewal alone never grants or extends
+   the separate observation/publication consent, and action credentials cannot
+   substitute for sync credentials.
 3. Configure the external Email Runtime's `resource_sync_channel_files` with a
    private absolute filename. Its JSON contains `channel_url` pointing to
    `/api/app-resource-sync-channel/v3`, `observation_authority_url` pointing to
@@ -72,7 +91,10 @@ journey works:
    `credential:{session_id,session_token}`, and the exact current
    `registration:{org_id,runtime_registration_id,operator_user_id,runtime_epoch,
    profile_digest,target_key,resource_key}`. Both URLs use the same trusted Host
-   origin. Keep credentials/config outside the App package and public source.
+   origin. For an opted-in session, also preserve the exact issued
+   `technical_renewal:{expires_at,renewable_until,renewal_lifetime}` metadata in
+   its private channel file. Keep credentials/config outside the App package
+   and public source.
 4. The Host operator must enable the existing resource sync channel/scheduler,
    attachment broker and owner-connection gates. Let the scheduler admit the
    first **observed** Run; an ordinary `/sync` request with `{}` does not replace
@@ -85,12 +107,15 @@ journey works:
    bypass source checks.
 5. Review the exact published source and project audience in the reader, create
    one source-link Task, then verify its access-checked backlink resolves the
-   same Email source. Finish the finite prototype by settling observed Runs and
+   same Email source. Each Run retains finite input/result retention deadlines;
+   these do not set a fixed lifetime for the whole publication lane. Finish a
+   temporary finite rehearsal by settling observed Runs and
    revoking the separately issued observation consent/operator session through
    `/api/app-resource-observations/consent/revoke` and
    `/api/apps/blob/sync/sessions/{session_id}/revoke`; do not revoke the underlying
-   mailbox binding as cleanup. A sustained deployment needs an explicitly
-   supported operator lifecycle, not a promise inferred from this short lease.
+   mailbox binding as cleanup. Sustained publication needs its separately
+   reviewed finite or explicitly supported `until_revoked` consent and current
+   finite operator leases, not permission inferred from technical renewal.
 
 ## Historical Protocol 1/2 sandbox walkthrough
 

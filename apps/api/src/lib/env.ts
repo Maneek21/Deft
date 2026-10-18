@@ -207,3 +207,8 @@ validateAppRunKeyringEnvironment(APP_RUNS_ENABLED, process.env.DEFT_APP_RUN_KEYR
 export function isAppPrivateStateEnabled(): boolean {
   return isAppExperienceResourceExposureEnabled() && process.env.DEFT_APP_PRIVATE_STATE_ENABLED === 'true';
 }
+
+// Reviewed owner connections are a separate default-off deployment boundary.
+export function isAppOwnerConnectionsEnabled(): boolean {
+  return isAppAttachmentBrokerEnabled() && process.env.DEFT_APP_OWNER_CONNECTIONS_ENABLED === 'true';
+}

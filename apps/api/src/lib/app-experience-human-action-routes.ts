@@ -60,6 +60,11 @@ export function createExperienceHumanActionRoutes(service: () => Promise<AppExpe
     try { return c.json(await (await service()).prepare(c.get('humanActionCaller' as never), uuid.parse(c.req.param('id')), actionKey.parse(c.req.param('key')), await body(c.req.raw.body, c.req.raw.signal), c.req.raw.signal)); }
     catch (error) { return failure(c, error); }
   });
+  routes.post('/sessions/:id/human-actions/:key/snapshot', async c => {
+    try { return c.json(await (await service()).snapshot(c.get('humanActionCaller'), uuid.parse(c.req.param('id')),
+      actionKey.parse(c.req.param('key')), await body(c.req.raw.body, c.req.raw.signal), c.req.raw.signal)); }
+    catch (error) { return failure(c, error); }
+  });
   routes.post('/sessions/:id/human-actions/confirm', async c => {
     try { return c.json(await (await service()).confirm(c.get('humanActionCaller' as never), uuid.parse(c.req.param('id')), await body(c.req.raw.body, c.req.raw.signal), c.req.raw.signal)); }
     catch (error) { return failure(c, error); }

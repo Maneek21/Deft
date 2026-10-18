@@ -1,3 +1,4 @@
+import {optionalFutureRecordAction} from './app-future-record-action-dispatch.js';
 import { QUEUE_NAMES, enqueue } from './queues.js';
 import type { AppRunSafeView, AppRunTransaction } from './app-run-repository.js';
 
@@ -37,11 +38,14 @@ export const postgresAppRunAttemptQueue: AppRunAttemptQueue = Object.freeze({
     runId: string,
     attemptId: string,
   ) {
+    const future=await optionalFutureRecordAction(tx,orgId,runId);
+    if(future&&(future.state!=='queued'||future.local_state!=='committed'))return;
     await enqueue(
       QUEUE_NAMES.AGENT_JOBS,
       APP_RUN_ATTEMPT_JOB,
       { orgId, runId, attemptId },
       {
+        delay:future?Math.max(0,future.not_before.getTime()-Date.now()):0,
         executor: tx,
         orgId,
         dedupeKey: `app-run-attempt:${attemptId}`,

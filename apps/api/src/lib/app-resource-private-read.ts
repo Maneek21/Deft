@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -28,7 +29,7 @@ const searchSchema = z.strictObject({ resource_binding_id: uuid, query: z.string
 export type PrivateSearchPage = Readonly<{ schema_version: 'deft.app_private_search_page.v1';
   items: readonly Readonly<{ ref: ResourceRefV2; label: string; snippet: string; field_key: string; href: string }>[];
   scan: Readonly<{ records_scanned: number; complete: boolean }>; next_cursor: string | null;
-  freshness: 'unknown'; consent_expires_at: string }>;
+  freshness: 'unknown'; consent_expires_at: string|null;consent_lifetime?:'until_revoked' }>;
 const sequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const cursorSchema = z.strictObject({ version: z.literal(1), key_version: z.string().min(1).max(128),
   org_id: uuid, resource_binding_id: uuid, checkpoint_id: uuid,
@@ -74,7 +75,7 @@ export class AppResourcePrivateReadService {
     return this.#read(subject.data, id.data, async (_tx, authority) => ({
       field_keys: Object.keys(authority.descriptor.record_schema.properties).sort(),
       label_field: authority.descriptor.label_field,
-      consent_expires_at: authority.binding.consent_expires_at!.toISOString(),
+      consent_expires_at: authority.binding.consent_expires_at?.toISOString()??null,...(authority.binding.consent_lifetime?{consent_lifetime:authority.binding.consent_lifetime}:{}),
     }));
   }
 
@@ -100,7 +101,7 @@ export class AppResourcePrivateReadService {
         grant_epoch: authority.installation.grant_epoch, descriptor: b.descriptor_digest,
         runtime_epoch: authority.registration.runtime_epoch, operator: authority.registration.operator_user_id,
         registration_contract: authority.registration.contract_version, grant_kind: b.grant_snapshot_kind,
-        consent: b.consent_expires_at!.toISOString() });
+        consent: (b.consent_expires_at?.toISOString()??null) });
       const checkpoint_scope = privateSearchDigest({ id: checkpoint.id, generation: checkpoint.generation,
         sequence: checkpoint.cursor_sequence });
       const query_fields_scope = privateSearchDigest({ query: input.data.query, fields });
@@ -110,7 +111,7 @@ export class AppResourcePrivateReadService {
       if (cursor && (cursor.identity_scope !== identity_scope || cursor.query_fields_scope !== query_fields_scope)) throw unavailable();
       if (cursor && cursor.checkpoint_scope !== checkpoint_scope) throw new AppResourcePrivateReadError('APP_RESOURCE_PRIVATE_CURSOR_STALE', 409);
       expires = cursor?.expires_at ?? Math.min(this.clock().getTime() + APP_RESOURCE_PRIVATE_SEARCH_LIMITS.cursor_ms,
-        b.consent_expires_at!.getTime());
+        appConsentDeadline(b.consent_expires_at,b.consent_lifetime??undefined));
       check();
       const { items, scanned, after, complete } = await scanPrivateResourceCheckpoint<PrivateSearchPage['items'][number]>(tx,
         { org_id: subject.data.org_id, binding_id: b.id, checkpoint_id: checkpoint.id, generation: checkpoint.generation },
@@ -134,7 +135,7 @@ export class AppResourcePrivateReadService {
       if (!complete && !next_cursor) throw unavailable();
       const page: PrivateSearchPage = { schema_version: 'deft.app_private_search_page.v1', items,
         scan: { records_scanned: scanned, complete }, next_cursor, freshness: 'unknown',
-        consent_expires_at: b.consent_expires_at!.toISOString() };
+        consent_expires_at: b.consent_expires_at?.toISOString()??null,...(b.consent_lifetime?{consent_lifetime:b.consent_lifetime}:{}) };
       if (Buffer.byteLength(JSON.stringify(page), 'utf8') > APP_RESOURCE_PRIVATE_SEARCH_LIMITS.response_bytes) throw unavailable();
       return page;
     });
@@ -211,7 +212,7 @@ export class AppResourcePrivateReadService {
    * human navigation only. This never authorizes Worker, agent or share access. */
   async getOwnerPrivateResourceByRef(rawSubject: AppResourcePrivateReadSubject,
     rawRef: unknown): Promise<Readonly<{ ref: ResourceRefV2; label: string;
-      data: PrivateResourceRecord['data']; freshness: 'unknown'; consent_expires_at: string; search_href: string }>> {
+      data: PrivateResourceRecord['data']; freshness: 'unknown'; consent_expires_at: string|null;consent_lifetime?:'until_revoked'; search_href: string }>> {
     const subject = subjectSchema.safeParse(rawSubject);
     const ref = AppRuntimeResourceRefV2Schema.safeParse(rawRef);
     if (!subject.success) throw invalid();
@@ -242,7 +243,7 @@ export class AppResourcePrivateReadService {
       const result = { ref: record.ref, label: record.label, data: record.data,
         freshness: 'unknown' as const,
         search_href: `/app-resources/search/${authority.binding.id}`,
-        consent_expires_at: authority.binding.consent_expires_at!.toISOString() };
+        consent_expires_at: authority.binding.consent_expires_at?.toISOString()??null,...(authority.binding.consent_lifetime?{consent_lifetime:authority.binding.consent_lifetime}:{}) };
       if (Buffer.byteLength(JSON.stringify(result), 'utf8') > APP_RESOURCE_PRIVATE_READ_LIMITS.response_bytes) {
         throw unavailable();
       }
@@ -270,7 +271,7 @@ export class AppResourcePrivateReadService {
       const assertConsent = () => {
         const now = this.clock();
         if (!(now instanceof Date) || !Number.isFinite(now.getTime())
-          || !authority.binding.consent_expires_at || authority.binding.consent_expires_at <= now) throw unavailable();
+          || appConsentDeadline(authority.binding.consent_expires_at,authority.binding.consent_lifetime??undefined)<=now.getTime()) throw unavailable();
       };
       assertConsent();
       const result = await read(tx, authority, checkpoint);

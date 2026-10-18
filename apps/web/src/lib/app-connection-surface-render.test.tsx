@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import React,{createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {LegacyConnectionSettingsGate} from '../components/apps/experience-connection-surface';
+import {RecordAccessStatusRow} from '../components/apps/record-access-status-row';
+const probe=(name:string,calls:string[])=>function ConnectionSurfaceProbe(){calls.push(name);return createElement('p',null,name);};
+test('app-owned records do not mount retained/owner controls or issue their mount work',()=>{const calls:string[]=[];const html=renderToStaticMarkup(createElement('div',null,createElement(probe('Current Runtime accounts',calls)),<LegacyConnectionSettingsGate appOwnedRecords>{createElement(probe('Retained native account',calls))}</LegacyConnectionSettingsGate>,<LegacyConnectionSettingsGate appOwnedRecords>{createElement(probe('Personal account setup',calls))}</LegacyConnectionSettingsGate>));assert.deepEqual(calls,['Current Runtime accounts']);assert.doesNotMatch(html,/Retained|Personal/u);});
+test('old/native Apps retain default owner and native surfaces',()=>{const calls:string[]=[];const html=renderToStaticMarkup(<LegacyConnectionSettingsGate>{createElement(probe('Retained native account',calls))}</LegacyConnectionSettingsGate>);assert.deepEqual(calls,['Retained native account']);assert.match(html,/Retained native account/u);});
+test('enabled access in Settings has account identity and no consent mutation controls',()=>{const html=renderToStaticMarkup(createElement(RecordAccessStatusRow,{label:'Synthetic account',storeKey:'drafts',active:true,busy:false,onReview:()=>assert.fail('No mutation')}));assert.match(html,/Synthetic account/u);assert.match(html,/drafts access enabled/u);assert.doesNotMatch(html,/Review private record access|button/u);});
+test('missing access keeps explicit review prompt visible and busy-disabled',()=>{const html=renderToStaticMarkup(createElement(RecordAccessStatusRow,{label:'Synthetic account',storeKey:'drafts',active:false,busy:true,onReview:()=>{}}));assert.match(html,/access needed to save/u);assert.match(html,/<button[^>]*disabled[^>]*>Review private record access/u);});

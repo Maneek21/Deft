@@ -50,6 +50,7 @@ import {
   BookOpen,
   Smile,
   Inbox,
+  Mail,
   ChevronDown,
   AppWindow,
   type LucideIcon,

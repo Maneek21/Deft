@@ -315,6 +315,7 @@ const notificationPreferencesSchema = z.object({
   }).optional(),
   push: z.object({
     enabled: z.boolean().optional(),
+    email: z.boolean().optional(),
     chat: z.boolean().optional(),
     tasks: z.boolean().optional(),
     approvals: z.boolean().optional(),

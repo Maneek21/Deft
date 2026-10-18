@@ -112,7 +112,7 @@ function Hero({
         display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
         gap: 24, flexWrap: 'wrap',
       }}>
-        <div style={{ maxWidth: 780 }}>
+        <div style={{ maxWidth: 780, minWidth: 0, width: '100%' }}>
           <div
             className="eyebrow"
             style={{

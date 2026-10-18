@@ -8,6 +8,9 @@ import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 import { TemplatePickerModal } from './template-picker-modal';
 import { PersonAvatar } from './person-avatar';
+import { taskDescriptionWithSource, type TaskSourceLink } from '@/lib/task-source-link';
+
+export type TaskQuickCreateDraft = {title:string;description?:string;status?:string;priority?:string;assignee_id?:string;due_date?:string};
 
 type Props = {
   projectId: string;
@@ -15,7 +18,12 @@ type Props = {
   initialTitle?: string;
   initialDescription?: string;
   defaultDueDate?: string;
+  defaultPriority?: string;
+  defaultAssigneeId?: string | null;
   sourceMessageId?: string;
+  sourceLink?: TaskSourceLink;
+  beforeCreate?: () => Promise<void>;
+  onReview?: (draft: TaskQuickCreateDraft) => void | Promise<void>;
   onClose: () => void;
   onCreated: () => void;
 };
@@ -34,11 +42,11 @@ const PRIORITY_OPTIONS = [
   { value: 'p3', label: 'P3', color: '#6B7280' },
 ];
 
-export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initialDescription, defaultDueDate, sourceMessageId, onClose, onCreated }: Props) {
+export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initialDescription, defaultDueDate, defaultPriority, defaultAssigneeId, sourceMessageId, sourceLink, beforeCreate, onReview, onClose, onCreated }: Props) {
   const [title, setTitle] = useState(initialTitle || '');
   const [status, setStatus] = useState(defaultStatus || 'backlog');
-  const [priority, setPriority] = useState('p2');
-  const [assigneeId, setAssigneeId] = useState<string | null>(null);
+  const [priority, setPriority] = useState(defaultPriority || 'p2');
+  const [assigneeId, setAssigneeId] = useState<string | null>(defaultAssigneeId ?? null);
   const [description, setDescription] = useState(initialDescription || '');
   const [dueDate, setDueDate] = useState(defaultDueDate || '');
   const [submitting, setSubmitting] = useState(false);
@@ -49,13 +57,13 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
   // Task 4.11 — resolved skill config drives custom fields + status vocab.
   const { config: resolvedConfig } = useProjectResolvedConfig(projectId);
   const [metadata, setMetadata] = useState<Record<string, any>>({});
-  const STATUS_OPTIONS = resolvedConfig?.statuses && resolvedConfig.statuses.length > 0
+  const STATUS_OPTIONS = !onReview && resolvedConfig?.statuses && resolvedConfig.statuses.length > 0
     ? [...resolvedConfig.statuses]
         .filter((s) => s.id !== 'done' && s.id !== 'cancelled' && s.id !== 'won' && s.id !== 'lost')
         .sort((a, b) => a.order - b.order)
         .map((s) => ({ value: s.id, label: s.label }))
     : DEFAULT_STATUS_OPTIONS;
-  const customFields = resolvedConfig?.custom_fields ?? [];
+  const customFields = onReview ? [] : resolvedConfig?.custom_fields ?? [];
 
   // If the user hasn't explicitly picked a status and the current value is
   // not in the resolved-config list (e.g. Sales skill has 'new' instead of
@@ -70,10 +78,13 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
 
   const titleRef = useRef<HTMLInputElement>(null);
   const createIntentRef = useRef(createNativeCreateIntent(`task:${projectId}:quick-create`));
+  const sourceCreateAttempted = useRef(false);
   const handleClose = useCallback(() => {
-    createIntentRef.current.cancel();
+    if (submitting) return;
+    // Keep the same Email transfer key when a create response was lost.
+    if (!onReview && (!sourceLink || !sourceCreateAttempted.current)) createIntentRef.current.cancel();
     onClose();
-  }, [onClose]);
+  }, [onClose, submitting, sourceLink, onReview]);
 
   useEffect(() => {
     titleRef.current?.focus();
@@ -105,6 +116,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
     try {
       const body: Record<string, any> = { title: title.trim() };
       if (description.trim()) body.description = description.trim();
+      if (sourceLink) body.description = taskDescriptionWithSource(description, sourceLink);
       if (status && status !== 'backlog') body.status = status;
       if (priority && priority !== 'p2') body.priority = priority;
       if (assigneeId) body.assignee_id = assigneeId;
@@ -122,7 +134,10 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
           delete body[key];
         }
       }
+      if (onReview) { await onReview(body as TaskQuickCreateDraft); setSubmitting(false); return; }
       const intentKey = await createIntentRef.current.keyFor(body);
+      await beforeCreate?.();
+      sourceCreateAttempted.current = Boolean(sourceLink);
       const res = await api.post(`/api/projects/${projectId}/tasks`, body, {
         headers: { 'Idempotency-Key': intentKey },
       });
@@ -187,6 +202,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
             <div className="px-5 pt-4 pb-3">
               <input
                 ref={titleRef}
+                  maxLength={onReview ? 512 : undefined}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Task title"
@@ -205,6 +221,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
+                maxLength={onReview ? 20000 : undefined}
                 placeholder="Add a description..."
                 rows={2}
                 className="w-full mt-2 text-[13px] bg-transparent outline-none resize-none"
@@ -213,6 +230,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                   fontFamily: 'var(--font-body)',
                 }}
               />
+              {sourceLink && <a href={sourceLink.href} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-xs underline" style={{color:'var(--primary)'}}>{sourceLink.label}</a>}
             </div>
 
             {/* Fields row */}
@@ -456,7 +474,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                 <span className="text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
                   Press Enter to create
                 </span>
-                <button
+                {!onReview && <button
                   type="button"
                   onClick={() => setTemplatePickerOpen(true)}
                   className="text-[11px] underline"
@@ -465,7 +483,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                   onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--muted)')}
                 >
                   + from template
-                </button>
+                </button>}
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -493,7 +511,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                     transition: 'opacity 150ms',
                   }}
                 >
-                  {submitting ? 'Creating...' : 'Create task'}
+                  {submitting ? (onReview ? 'Preparing review...' : 'Creating...') : (onReview ? 'Review audience' : 'Create task')}
                 </button>
               </div>
             </div>
@@ -501,7 +519,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
         </div>
       </div>
 
-      {templatePickerOpen && (
+      {!onReview && templatePickerOpen && (
         <TemplatePickerModal
           projectId={projectId}
           onClose={() => setTemplatePickerOpen(false)}

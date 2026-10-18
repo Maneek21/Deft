@@ -1,6 +1,8 @@
+import {AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalCapabilityJson } from '@deft/shared';
+import { PrivateStateDeclarationSchema, ResourceContentPolicySchema, RecordStoreDeclarationSchema, DeftExperienceRendererProfileSchema } from '@deft/app-kit';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 
 export const EXPOSURE_VERSION = 'deft.experience_resource_exposure.v1' as const;
@@ -31,7 +33,8 @@ export const ExposureResourceSchema = z.strictObject({ resource_key: key, bindin
     z.tuple([z.literal('list_summary'), z.literal('read_one'), z.literal('search')])]),
   allowed_fields: z.array(z.string().min(1).max(48)).min(1).max(32)
     .refine(v => new Set(v).size === v.length && v.every((s, i) => !i || v[i - 1]! < s)),
-  consent_expires_at: timestamp });
+  content_policy: ResourceContentPolicySchema.optional(),
+  consent_expires_at: AppConsentExpirySchema,consent_lifetime:AppConsentLifetimeSchema.optional() }).refine(v=>appConsentExpiryValid(v.consent_expires_at,v.consent_lifetime));
 export const ExposureSnapshotSchema = z.strictObject({ schema_version: z.enum([EXPOSURE_VERSION, SEARCH_EXPOSURE_VERSION, STATE_EXPOSURE_VERSION]),
   payload_policy_version: z.literal(PAYLOAD_VERSION), visibility: z.literal('user_private'),
   destination: z.literal('verified_installed_experience_worker'),
@@ -40,19 +43,26 @@ export const ExposureSnapshotSchema = z.strictObject({ schema_version: z.enum([E
   app_name: z.string().max(200), app_version: z.string().max(128),
   package_digest: digest, manifest_digest: digest, grant_snapshot_id: uuid, grant_snapshot_digest: digest,
   lifecycle_epoch: epoch, grant_epoch: epoch, experience_key: key, experience_label: z.string().max(200),
-  artifact_digest: digest, bridge_version: z.literal('deft.experience_bridge.v1'), renderer_version: z.literal('deft.trusted_renderer.v1'),
+  artifact_digest: digest, bridge_version: z.literal('deft.experience_bridge.v1'),
+  ...DeftExperienceRendererProfileSchema.shape,
   resources: z.array(ExposureResourceSchema).max(16)
     .refine(v => v.every((r, i) => !i || v[i - 1]!.resource_key < r.resource_key)),
   private_state: z.array(z.strictObject({ key, label: z.string().max(128), declaration_digest: digest,
     allowed_operations: z.tuple([z.literal('list'), z.literal('read'), z.literal('put'), z.literal('delete')]),
     max_record_bytes: z.number().int().min(1).max(16384), max_records: z.number().int().min(1).max(32),
-    max_total_bytes: z.number().int().min(1).max(131072), retention_days: z.number().int().min(1).max(30) })).min(1).max(16).optional(),
+    max_total_bytes: z.number().int().min(1).max(131072), retention_days: z.number().int().min(1).max(30),
+    files: PrivateStateDeclarationSchema.shape.files,
+    action_payloads: PrivateStateDeclarationSchema.shape.action_payloads })).min(1).max(16).optional(),
+  record_stores: z.array(RecordStoreDeclarationSchema.extend({ declaration_digest: digest })).min(1).max(16).optional(),
   limits: z.strictObject({ items: z.literal(10), fields: z.literal(32), string_chars: z.literal(4096), envelope_bytes: z.literal(61440) }),
   prepared_at: timestamp, review_expires_at: timestamp, web_access_expires_at: timestamp, expires_at: timestamp }).refine(value => value.schema_version === STATE_EXPOSURE_VERSION
-  ? !!value.private_state?.length
-  : value.private_state === undefined && value.resources.length > 0 && (value.schema_version === EXPOSURE_VERSION
+  ? !!value.private_state?.length || !!value.record_stores?.length
+  : value.private_state === undefined && value.record_stores === undefined && value.resources.length > 0 && (value.schema_version === EXPOSURE_VERSION
     ? value.resources.every(resource => resource.allowed_operations.length === 2)
-    : value.resources.some(resource => resource.allowed_operations.length === 3)), 'Exposure operation/version mismatch');
+    : value.resources.some(resource => resource.allowed_operations.length === 3)), 'Exposure operation/version mismatch')
+  .refine(value => DeftExperienceRendererProfileSchema.safeParse({ renderer_version: value.renderer_version,
+    ...(value.capabilities === undefined ? {} : { capabilities: value.capabilities }) }).success,
+  'Unsupported Experience renderer profile');
 export type ExposureSnapshot = z.infer<typeof ExposureSnapshotSchema>;
 export const ExposureAcceptSchema = z.strictObject({ review_token: z.string().min(1).max(EXPOSURE_LIMITS.token_chars),
   review_digest: digest, accept_exposure: z.literal(true) });

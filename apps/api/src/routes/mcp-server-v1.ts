@@ -46,6 +46,7 @@ import {
   type ToolHandler,
 } from '../lib/mcp-tools/index.js';
 import type { ToolContext, ToolResult } from '../lib/mcp-tools/types.js';
+import { discoverPersonalInstalledTools, executePersonalInstalledTool } from '../lib/mcp-tools/installed-apps.js';
 import {
   HUMAN_TOOLS,
   buildHumanToolSchemas,
@@ -678,12 +679,11 @@ async function dispatchTool(
   }
 }
 
-function humanCatalog(scopes: string[]) {
-  return buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
-    .filter((schema) => {
-      const name = String(schema.name ?? '');
-      return humanToolHasRequiredScope(scopes, name);
-    });
+async function humanCatalog(scopes: string[], principal?: {kind:string;org_id:string;user_id:string;token_id:string}) {
+  const native = buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
+    .filter(schema => humanToolHasRequiredScope(scopes, String(schema.name ?? '')));
+  const installed = principal ? await discoverPersonalInstalledTools({principal_kind:principal.kind,org_id:principal.org_id,user_id:principal.user_id,token_id:principal.token_id},[...Object.keys(HUMAN_TOOLS),...native.map(schema=>String(schema.name))]) : [];
+  return [...native,...installed];
 }
 
 async function dispatchHumanTool(
@@ -694,7 +694,7 @@ async function dispatchHumanTool(
   const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
   const handler = HUMAN_TOOLS[canonicalToolName];
   if (!handler) {
-    return { isError: true, content: [{ type: 'text', text: `Unknown or unavailable personal MCP tool: ${toolName}` }] };
+    return executePersonalInstalledTool(canonicalToolName, args, ctx);
   }
   if (!humanToolHasRequiredScope(ctx.scopes, canonicalToolName)) {
     return { isError: true, content: [{ type: 'text', text: humanToolScopeError(canonicalToolName) ?? 'Missing MCP scope' }] };
@@ -831,7 +831,7 @@ mcpServerV1Routes.post('/', async (c) => {
       const principal = await resolveMcpPrincipal(bearer);
       if (principal.kind === 'human' || principal.kind === 'oauth') {
         return {
-          tools: sortedCatalog([...humanCatalog(principal.scopes), ...privateMcpCatalog(principal)]),
+          tools: sortedCatalog([...await humanCatalog(principal.scopes,principal), ...privateMcpCatalog(principal)]),
           ...(requestMetadata.era === 'modern'
             ? { ttlMs: 0, cacheScope: 'private' as const }
             : {}),
@@ -1073,7 +1073,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   }
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {
-    return c.json({ tools: sortedCatalog([...humanCatalog(principal.scopes), ...privateMcpCatalog(principal)]) });
+    return c.json({ tools: sortedCatalog([...await humanCatalog(principal.scopes,principal), ...privateMcpCatalog(principal)]) });
   }
 
   const resolved = principal as ResolvedGateway;

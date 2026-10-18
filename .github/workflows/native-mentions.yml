@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 25
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -66,7 +66,7 @@ jobs:
           mkdir -p "$DEFT_MENTION_EVIDENCE_DIR"
           pnpm --filter @deft/api exec tsx src/server.ts > "$DEFT_MENTION_EVIDENCE_DIR/api.log" 2>&1 &
           api_pid=$!
-          pnpm --filter @deft/web exec next dev --port 4010 > "$DEFT_MENTION_EVIDENCE_DIR/web.log" 2>&1 &
+          pnpm --filter @deft/web exec next dev --webpack --port 4010 > "$DEFT_MENTION_EVIDENCE_DIR/web.log" 2>&1 &
           web_pid=$!
           trap 'kill "$api_pid" "$web_pid" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 90); do

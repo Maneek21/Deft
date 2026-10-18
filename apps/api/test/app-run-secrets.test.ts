@@ -45,6 +45,10 @@ const inputContext = {
   run_id: 'run-1',
   payload_kind: 'input' as const,
 };
+test('native action sources use a separate authenticated purpose and the input byte ceiling',()=>{
+ const provider=parseEnvironmentAppRunKeyrings(config()),service=new AppRunSecretService(provider),context={...inputContext,payload_kind:'action_resources' as const},value={private_locator:'synthetic-native-message'};
+ try{const sealed=service.sealJson(value,context);assert.deepEqual(service.openJson(sealed,context),value);for(const substituted of [inputContext,{...context,org_id:'other'},{...context,run_id:'other'},{...context,attempt_id:'attempt'}])assert.throws(()=>service.openJson(sealed,substituted));assert.throws(()=>service.sealJson({value:'x'.repeat(APP_RUN_LIMITS.input_bytes)},context));}finally{provider.destroy();}
+});
 
 describe('App Run keyring configuration', () => {
   test('is ignored while disabled and required while enabled', () => {

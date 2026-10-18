@@ -1,5 +1,6 @@
 'use client';
 
+import {appConsentDeadline,appConsentExpiryValid} from '../../../../../packages/app-kit/src/consent-lifetime';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { api, isSameWebSession } from '@/lib/api';
@@ -76,14 +77,14 @@ function McpReviewView(identity: Identity) {
         if (!response.ok) throw new Error('Owner private access unavailable.');
         const body = object(await response.json()), data = object(body.data), ref = object(body.ref), provider = object(ref.provider);
         if (provider.provider_instance_id !== identity.registrationId || ref.resource_type !== identity.resourceType || ref.resource_id !== identity.projectionId
-          || typeof body.consent_expires_at !== 'string' || !Number.isFinite(Date.parse(body.consent_expires_at))) throw new Error('Owner private access unavailable.');
+          || !appConsentExpiryValid(body.consent_expires_at as string|null,body.consent_lifetime)) throw new Error('Owner private access unavailable.');
         // A superseded load must not mutate the current authority deadline.
         if (disposed.current || request !== generation.current || signal.aborted || document.hidden || !isSameWebSession(session, api.getAccessToken())) return;
-        const deadline = Date.parse(body.consent_expires_at);
+        const deadline = appConsentDeadline(body.consent_expires_at as string|null,body.consent_lifetime);
         if (deadline <= Date.now()) throw new Error('Owner consent expired.');
         expiry.current = deadline;
         setFields(Object.keys(data).filter(k => /^[a-z][a-z0-9_]{0,47}$/u.test(k)).sort());
-        clearTimeout(timer); timer = setTimeout(() => { clear(); setError('Owner consent expired.'); }, Math.min(expiry.current - Date.now(), 2147483647));
+        clearTimeout(timer); if (Number.isFinite(deadline)) timer = setTimeout(() => { clear(); setError('Owner consent expired.'); }, Math.min(expiry.current - Date.now(), 2147483647));
       } catch (reason) { if (!disposed.current && request === generation.current) setError(reason instanceof Error ? reason.message : 'Private MCP access unavailable.'); }
       finally { if (!disposed.current && request === generation.current) setBusy(false); }
     };

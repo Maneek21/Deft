@@ -1,4 +1,6 @@
-import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit';
+import {futureRecordActionGate,optionalFutureRecordAction,settleFutureRecordAction} from './app-future-record-action-dispatch.js';
+import { appConsentDeadline, APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit';
+import {requireCurrentResourceObservationRun,observedResourceAuthorization,hasResourceObservationPin} from './app-resource-observation-authority.js';
 import { loadLiveAttachmentSyncAuthority, loadLiveAttachmentSyncBindingAuthority,
   type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
@@ -14,7 +16,16 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { appRunAttempts, appRuns, appRuntimeSessions, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
-import { parseRuntimeObjectInput } from '@deft/app-kit';
+import { parseRuntimeObjectInput, parseAttachmentAppManifest, parseResourceRecordList, type AppRuntimeActionResources } from '@deft/app-kit';
+import { appRunHumanAuthorizations, appVersions, appRuntimeBindings, appResourceBindings, appResourceProjections } from '@deft/db/schema';
+import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
+import { decodePrivateProjection } from './app-resource-private-projection.js';
+import type { AppPrivateFileCustody, RetainedActionPayload } from './app-private-file-custody.js';
+import { humanActionDigest } from './app-experience-human-action-contract.js';
+import { exposureDigest } from './app-experience-exposure-contract.js';
+import { samplePrivateAccessClock } from './app-private-access-clock.js';
+import { APP_ACTION_PAYLOAD_VERSION, runtimePayloadHandshakeAllowed, type AppRuntimeAttemptIdentity, type AppRuntimePayloadPart,
+  type AppRuntimePayloadRelease, type AppRuntimeAuthorityEnvelope } from './app-runtime-contract.js';
 import { parseSyncRequest } from '@deft/app-kit/experimental/resource-sync';
 import {
   APP_RUN_CONTRACT_VERSIONS,
@@ -51,6 +62,7 @@ import {
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import type { AppRunSecretService } from './app-run-secrets.js';
 import { loadLiveRuntimeAuthority, runtimeRunMatchesAuthority } from './app-runtime-authority.js';
+import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import {
   loadLiveResourceSyncAuthority, loadLiveResourceSyncBindingAuthority,
   type LiveResourceSyncAuthority, type LiveResourceSyncBindingAuthority,
@@ -116,22 +128,30 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     private readonly attemptQueue: AppRunAttemptQueue = noOpAppRunAttemptQueue,
     private readonly resourceSyncStore: AppResourceSyncStore | null = null,
     private readonly syncMode: 'resource_v2' | 'attachment_v3' = 'resource_v2',
+    private readonly payloadCustody: AppPrivateFileCustody | null = null,
+    private readonly actionResourceSecrets: AppResourceSyncSecretService | null = null,
   ) {}
 
   get #syncVersion() { return this.syncMode === 'attachment_v3' ? APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 : APP_RESOURCE_SYNC_CHANNEL_VERSION; }
   #syncEnabled() { return this.syncMode === 'attachment_v3' ? isAppAttachmentBrokerEnabled() : isAppResourceSyncChannelEnabled(); }
-  #loadSyncAuthority(tx: AppRunTransaction,input:Parameters<typeof loadLiveResourceSyncAuthority>[1]) {
-    return this.syncMode === 'attachment_v3' ? loadLiveAttachmentSyncAuthority(tx,input) : loadLiveResourceSyncAuthority(tx,input);
+  async #loadSyncAuthority(tx: AppRunTransaction,input:Parameters<typeof loadLiveResourceSyncAuthority>[1]) {
+    const value=await (this.syncMode === 'attachment_v3' ? loadLiveAttachmentSyncAuthority(tx,input) : loadLiveResourceSyncAuthority(tx,input));
+    return value&&this.syncMode==='attachment_v3'&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:input.org_id,resource_binding_id:value.binding.id})?null:value;
   }
-  #loadSyncBinding(tx: AppRunTransaction,input:Parameters<typeof loadLiveResourceSyncBindingAuthority>[1]) {
-    return this.syncMode === 'attachment_v3' ? loadLiveAttachmentSyncBindingAuthority(tx,input) : loadLiveResourceSyncBindingAuthority(tx,input);
+  async #loadSyncBinding(tx: AppRunTransaction,input:Parameters<typeof loadLiveResourceSyncBindingAuthority>[1]) {
+    const value=await (this.syncMode === 'attachment_v3' ? loadLiveAttachmentSyncBindingAuthority(tx,input) : loadLiveResourceSyncBindingAuthority(tx,input));
+    return value&&this.syncMode==='attachment_v3'&&!await appConnectionUpgradeSourceIsAvailable(tx,{org_id:input.org_id,resource_binding_id:value.binding.id})?null:value;
   }
   async #syncFinal(tx: AppRunTransaction,authority: Awaited<ReturnType<typeof loadLiveResourceSyncAuthority>> | Awaited<ReturnType<typeof loadLiveAttachmentSyncAuthority>> | LiveAttachmentSyncBindingAuthority | LiveResourceSyncBindingAuthority,
-    deadlines: readonly Date[]) {
+    runId:string,deadlines: readonly Date[]) {
     if (this.syncMode !== 'attachment_v3') return;
-    if (!authority || !authority.binding.consent_expires_at || !await attachmentFinalAuthorityIsCurrent(tx,
+    if(authority){const [run]=await tx.select({authorization:appRuns.authorization_snapshot}).from(appRuns).where(and(eq(appRuns.org_id,authority.binding.org_id),eq(appRuns.id,runId))).limit(1);
+      if(run&&hasResourceObservationPin(run.authorization,authority.binding.id)){
+        if(!await requireCurrentResourceObservationRun(tx,authority.binding.org_id,runId,authority as LiveAttachmentSyncBindingAuthority,this.now))throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
+      }}
+    if (!authority || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= this.now().getTime() || !await attachmentFinalAuthorityIsCurrent(tx,
       [authority.binding.owner_user_id,authority.registration.operator_user_id],{clock:this.now,
-        expires_at:[...('session' in authority ? [authority.session.expires_at] : []),authority.binding.consent_expires_at,...deadlines]})) throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
+        expires_at:[...('session' in authority ? [authority.session.expires_at] : []),...(authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : []),...deadlines]})) throw new Error('APP_ATTACHMENT_AUTHORITY_STALE');
   }
 
   /** A v2 Run is host-created for one reviewed private binding. The live
@@ -164,9 +184,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       || stored.review_scope !== 'reviewed_resource_sync'
       || stored.retry_class !== 'unsafe_or_unknown') return null;
     try {
+      const observation=this.syncMode==='attachment_v3'&&hasResourceObservationPin(stored.authorization_snapshot,binding.id)?await requireCurrentResourceObservationRun(tx,run.org_id,run.id,
+        authority as LiveAttachmentSyncBindingAuthority,this.now):null;
+      const base=this.syncMode==='attachment_v3'?buildAttachmentSyncAuthorizationSnapshot(authority as LiveAttachmentSyncBindingAuthority)
+        :buildResourceSyncAuthorizationSnapshot(authority);
       if (canonicalCapabilityJson(stored.authorization_snapshot)
-        !== canonicalCapabilityJson(this.syncMode === 'attachment_v3'
-          ? buildAttachmentSyncAuthorizationSnapshot(authority as LiveAttachmentSyncBindingAuthority) : buildResourceSyncAuthorizationSnapshot(authority))) return null;
+        !== canonicalCapabilityJson(observation?observedResourceAuthorization(base,observation.row):base)) return null;
     } catch { return null; }
     const [intent] = await tx.select().from(appSyncIntents).where(and(
       eq(appSyncIntents.org_id, run.org_id), eq(appSyncIntents.run_id, run.id),
@@ -335,15 +358,19 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     });
   }
 
-  async startRuntimeAttempt(input: Readonly<{
-    org_id: string; run_id: string; attempt_id: string; session_id: string;
-    token_hash: string; claim_token: string; sequence: number;
-  }>): Promise<AppRuntimeStartEnvelope | null> {
+  async startRuntimeAttempt(input: AppRuntimeAttemptIdentity & { action_payload_version?: typeof APP_ACTION_PAYLOAD_VERSION }): Promise<AppRuntimeStartEnvelope | null> {
     const claimed = await this.#loadRuntimeClaim(input);
     if (!claimed) return null;
+    const pointer = await this.repository.transaction(async tx => (await tx.select({ snapshot_id: appRunHumanAuthorizations.snapshot_id,
+      snapshot_digest: appRunHumanAuthorizations.snapshot_digest }).from(appRunHumanAuthorizations).where(and(
+      eq(appRunHumanAuthorizations.org_id, input.org_id), eq(appRunHumanAuthorizations.run_id, input.run_id))).limit(1))[0]);
+    if (!runtimePayloadHandshakeAllowed(pointer, input.action_payload_version)
+      || pointer?.snapshot_id && !this.payloadCustody) return null;
     const boundary = await this.#markProviderCallStarted(claimed,
       { session_id: input.session_id, token_hash: input.token_hash });
     if (!boundary) return null;
+    let ownerTargetConsentExpiresAt: Date | undefined;
+    let afterCommit = () => {};
     const exactInput = await this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.provider_kind !== 'app_runtime') return null;
@@ -351,8 +378,10 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         input.session_id, input.token_hash, this.now, input.run_id);
       if (!authority) return null;
       if (run.state !== 'running' || run.cancel_requested_at
-        || !run.execution_released_at || run.input_expires_at <= this.now()
-        || !await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority)) return null;
+        || !run.execution_released_at || run.input_expires_at <= this.now()) return null;
+      const reviewedAction = await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority);
+      if (!reviewedAction) return null;
+      ownerTargetConsentExpiresAt = reviewedAction.owner_target_consent_expires_at;
       await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
         AND id = ${input.attempt_id} FOR SHARE`);
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
@@ -366,6 +395,25 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !attempt.lease_expires_at || attempt.lease_expires_at <= this.now()) return null;
       // The authority rows remain locked until the secret read completes.
       const exact = await this.secretRepository.readInput(input.org_id, input.run_id, tx);
+      if(Object.hasOwn(reviewedAction.input_schema.properties,'resource_action_version')){
+        const {authorizeReleasedAppDataAction}=await import('./app-data-authority.js');
+        const pins=parseRuntimeObjectInput(reviewedAction.input_schema,exact);
+        if(!await authorizeReleasedAppDataAction({org_id:input.org_id,run_id:run.id,owner_id:run.initiating_actor_id,
+          installation_id:authority.pin.app_installation_id,app_version_id:authority.pin.app_version_id,
+          grant_snapshot_id:authority.grant_snapshot_id,runtime_registration_id:authority.pin.runtime_registration_id,
+          runtime_binding_id:authority.pin.runtime_binding_id,operation_name:reviewedAction.action_key,input:pins}))return null;
+      }
+      const clock = await samplePrivateAccessClock(tx, this.now);
+      let payload: RetainedActionPayload | null;
+      try { payload = await this.#retainedRuntimePayload(tx, input, reviewedAction, exact, clock.current()); }
+      catch { return null; }
+      const deadlines = [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at,
+        ...(authority.attachment_authority ? [authority.attachment_authority.session_expires_at] : []),
+        ...(reviewedAction.owner_target_consent_expires_at ? [reviewedAction.owner_target_consent_expires_at] : []),
+        ...(payload ? [payload.expires_at, ...payload.file_refs.map(file => new Date(file.expires_at))] : [])];
+      afterCommit = () => { if (deadlines.some(deadline => deadline.getTime() <= clock.current().getTime())
+        || !isAppRuntimeChannelEnabled()
+        || (['5','6','7'].includes(reviewedAction.protocol_version) && !isAppV5RuntimeActionsEnabled())) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE'); };
       if (authority.attachment_authority) {
         // Newly enabled7 input delivery uses current kinds/gates and actual
         // retained deadlines AFTER this last I/O. The earlier dispatch marker
@@ -375,17 +423,249 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
             attempt.lease_expires_at, run.input_expires_at, run.result_expires_at] })
           || !isAppRuntimeChannelEnabled() || !isAppV5RuntimeActionsEnabled()) return null;
       }
-      return exact;
+      // Locks preserve the captured target, but cannot hold its consent window
+      // open across secret I/O or the final participant check. No further
+      // authority or secret I/O follows inside this transaction callback.
+      if (reviewedAction.owner_target_consent_expires_at
+        && reviewedAction.owner_target_consent_expires_at.getTime() <= this.now().getTime()) return null;
+      afterCommit();
+      return { exact, ...(payload ? { snapshot_ref: payload.ref } : {}) };
     });
     if (exactInput === null) return null;
+    // COMMIT can wait after the callback's check. Fence the captured deadline
+    // again at delivery, after the transaction resolves and before plaintext.
+    if (ownerTargetConsentExpiresAt && ownerTargetConsentExpiresAt.getTime() <= this.now().getTime()) return null;
+    try { afterCommit(); } catch { return null; }
     return Object.freeze({
       schema_version: APP_RUNTIME_CHANNEL_VERSION,
       run_id: input.run_id, attempt_id: input.attempt_id,
       lease_expires_at: claimed.attempt.lease_expires_at!.toISOString(),
-      input: exactInput,
+      input: exactInput.exact,
+      ...(exactInput.snapshot_ref ? { snapshot_ref: exactInput.snapshot_ref } : {}),
       ...(claimed.run.retry_class === 'idempotent_with_key'
         ? { provider_idempotency_key: appRunProviderIdempotencyKey(input.run_id) } : {}),
     });
+  }
+
+  /** Recheck a started human attempt immediately before an independent runtime
+   * performs its effect. This is a read: it never renews the lease or creates
+   * another execution identity. All plaintext remains scoped to the input
+   * already released to this exact attempt. */
+  async authorizeRuntimeAttempt(input: AppRuntimeAttemptIdentity): Promise<AppRuntimeAuthorityEnvelope | null> {
+    if (!isAppRuntimeChannelEnabled()) return null;
+    let afterCommit = () => {};
+    try {
+      const result = await this.repository.transaction(async tx => {
+        const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
+        if (!run || run.provider_kind !== 'app_runtime' || run.state !== 'running'
+          || run.cancel_requested_at || !run.execution_released_at
+          || run.initiating_actor_type !== 'human' || run.execution_actor_type !== 'human'
+          || run.execution_actor_id !== run.initiating_actor_id) return null;
+        const authority = await loadLiveRuntimeAuthority(tx, input.org_id,
+          input.session_id, input.token_hash, this.now, input.run_id);
+        if (!authority) return null;
+        const action = await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority);
+        if (!action) return null;
+        const [attempt] = await tx.select().from(appRunAttempts).where(and(
+          eq(appRunAttempts.org_id, input.org_id), eq(appRunAttempts.id, input.attempt_id),
+          eq(appRunAttempts.run_id, input.run_id))).limit(1).for('share');
+        if (!attempt || attempt.state !== 'provider_call_started'
+          || attempt.claim_token !== input.claim_token || attempt.runtime_session_id !== input.session_id
+          || attempt.runtime_sequence !== input.sequence || !attempt.lease_expires_at) return null;
+        const exact = parseRuntimeObjectInput(action.input_schema,
+          await this.secretRepository.readInput(input.org_id, input.run_id, tx));
+        if (Object.hasOwn(action.input_schema.properties, 'record_action_version')||Object.hasOwn(action.input_schema.properties,'resource_action_version')) {
+          const { authorizeReleasedAppDataAction } = await import('./app-data-authority.js');
+          if (!await authorizeReleasedAppDataAction({ org_id: input.org_id, run_id:run.id,owner_id: run.initiating_actor_id,
+            installation_id: authority.pin.app_installation_id, app_version_id: authority.pin.app_version_id,
+            grant_snapshot_id: authority.grant_snapshot_id, runtime_registration_id: authority.pin.runtime_registration_id,
+            runtime_binding_id: authority.pin.runtime_binding_id, operation_name: action.action_key, input: exact })) return null;
+        }
+        const clock = await samplePrivateAccessClock(tx, this.now);
+        const deadlines = [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at,
+          ...(authority.attachment_authority ? [authority.attachment_authority.session_expires_at] : []),
+          ...(action.owner_target_consent_expires_at ? [action.owner_target_consent_expires_at] : [])];
+        afterCommit = () => { if (deadlines.some(deadline => deadline.getTime() <= clock.current().getTime())
+          || !isAppRuntimeChannelEnabled()
+          || (['5', '6', '7'].includes(action.protocol_version) && !isAppV5RuntimeActionsEnabled()))
+          throw new AppRunError('APP_RUN_AUTHORIZATION_STALE'); };
+        if (authority.attachment_authority && !await attachmentFinalAuthorityIsCurrent(tx,
+          authority.attachment_authority.participants, { clock: this.now, expires_at: deadlines })) return null;
+        afterCommit();
+        return Object.freeze({ schema_version: 'deft.app_runtime_authority.v1' as const,
+          ...authority.pin, run_id: input.run_id, attempt_id: input.attempt_id,
+          owner_id: run.initiating_actor_id, grant_snapshot_id: authority.grant_snapshot_id,
+          operation_name: authority.operation_name, input: exact, input_digest: humanActionDigest(exact),
+          lease_expires_at: new Date(Math.min(...deadlines.map(deadline => deadline.getTime()))).toISOString() });
+      });
+      afterCommit();
+      return result;
+    } catch { return null; }
+  }
+
+  async #retainedRuntimePayload(tx: AppRunTransaction, input: AppRuntimeAttemptIdentity,
+    action: NonNullable<Awaited<ReturnType<typeof runtimeRunMatchesAuthority>>>, exactInput: unknown, now: Date) {
+    const [run] = await tx.select().from(appRuns).where(and(eq(appRuns.org_id, input.org_id), eq(appRuns.id, input.run_id))).limit(1);
+    if (!run) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    const [link] = await tx.select().from(appRunHumanAuthorizations).where(and(
+      eq(appRunHumanAuthorizations.org_id, input.org_id), eq(appRunHumanAuthorizations.run_id, input.run_id))).limit(1).for('share');
+    const [version] = await tx.select().from(appVersions).where(and(eq(appVersions.org_id, input.org_id),
+      eq(appVersions.id, run.origin_app_version_id!))).limit(1);
+    const manifest = version?.protocol_version === '7' ? parseAttachmentAppManifest(version.manifest) : null;
+    const states = manifest?.private_state?.filter(state => state.action_payloads?.some(policy => policy.action_key === action.action_key)) ?? [];
+    if (!states.length && !link?.snapshot_id && !link?.snapshot_digest) return null;
+    const state = states[0], policy = state?.action_payloads?.find(item => item.action_key === action.action_key);
+    if (states.length !== 1 || !state || !policy || !link?.snapshot_id || !link.snapshot_digest || !this.payloadCustody
+      || link.owner_user_id !== run.initiating_actor_id || run.initiating_actor_type !== 'human'
+      || run.execution_actor_id !== link.owner_user_id) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    const ref = { snapshot_id: link.snapshot_id, digest: link.snapshot_digest };
+    const binding = await this.payloadCustody.locatePayloadBinding(tx, { org_id: input.org_id, owner_user_id: link.owner_user_id }, ref);
+    const [runtimeBinding] = await tx.select().from(appRuntimeBindings).where(and(eq(appRuntimeBindings.org_id, input.org_id),
+      eq(appRuntimeBindings.id, run.origin_runtime_binding_id!))).limit(1);
+    const [resource] = runtimeBinding?.owner_resource_binding_id ? await tx.select().from(appResourceBindings).where(and(
+      eq(appResourceBindings.org_id, input.org_id), eq(appResourceBindings.id, runtimeBinding.owner_resource_binding_id))).limit(1) : [];
+    if (binding.org_id !== input.org_id || binding.owner_user_id !== link.owner_user_id
+      || binding.installation_id !== run.origin_app_installation_id || binding.app_version_id !== run.origin_app_version_id
+      || binding.grant_snapshot_id !== run.origin_app_grant_snapshot_id || binding.runtime_binding_id !== run.origin_runtime_binding_id
+      || binding.action_key !== action.action_key || binding.action_contract_digest !== action.contract_digest
+      || binding.input_digest !== humanActionDigest(exactInput) || binding.state_key !== state.key
+      || binding.declaration_digest !== exposureDigest(state)
+      || !manifest?.experiences.some(experience => experience.artifact_digest === binding.artifact_digest)
+      || (runtimeBinding?.owner_resource_binding_id ? !resource || resource.owner_user_id !== link.owner_user_id
+        || resource.target_key !== binding.resource_target_key : binding.resource_target_key !== 'primary')) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    const retained = await this.payloadCustody.loadPayload(tx, binding, ref, now);
+    if (retained.byte_count > policy.max_payload_bytes) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+    return retained;
+  }
+
+  async readRuntimePayload(input: AppRuntimeAttemptIdentity & {
+    snapshot_ref: { snapshot_id: string; digest: string }; part: AppRuntimePayloadPart;
+  }, signal?: AbortSignal): Promise<AppRuntimePayloadRelease | null> {
+    if (!this.payloadCustody || !isAppRuntimeChannelEnabled() || !isAppV5RuntimeActionsEnabled()) return null;
+    let afterCommit = () => {};
+    let releasedBytes: Buffer | undefined;
+    try {
+      const result = await this.repository.transaction(async tx => {
+        signal?.throwIfAborted();
+        const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
+        if (!run || run.provider_kind !== 'app_runtime' || run.state !== 'running' || run.cancel_requested_at || !run.execution_released_at) return null;
+        const authority = await loadLiveRuntimeAuthority(tx, input.org_id, input.session_id, input.token_hash, this.now, input.run_id);
+        if (!authority) return null;
+        const action = await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority);
+        if (!action) return null;
+        const [attempt] = await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id, input.org_id),
+          eq(appRunAttempts.id, input.attempt_id), eq(appRunAttempts.run_id, input.run_id))).limit(1).for('share');
+        if (!attempt || attempt.state !== 'provider_call_started' || attempt.claim_token !== input.claim_token
+          || attempt.runtime_session_id !== input.session_id || attempt.runtime_sequence !== input.sequence || !attempt.lease_expires_at) return null;
+        const clock = await samplePrivateAccessClock(tx, this.now);
+        const exact = await this.secretRepository.readInput(input.org_id, input.run_id, tx);
+        const payload = await this.#retainedRuntimePayload(tx, input, action, exact, clock.current());
+        if (!payload || payload.ref.snapshot_id !== input.snapshot_ref.snapshot_id || payload.ref.digest !== input.snapshot_ref.digest) return null;
+        const deadlines = [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at, payload.expires_at,
+          ...payload.file_refs.map(file => new Date(file.expires_at)),
+          ...(authority.attachment_authority ? [authority.attachment_authority.session_expires_at] : []),
+          ...(action.owner_target_consent_expires_at ? [action.owner_target_consent_expires_at] : [])];
+        afterCommit = () => { signal?.throwIfAborted(); if (deadlines.some(deadline => deadline.getTime() <= clock.current().getTime())
+          || !isAppRuntimeChannelEnabled() || !isAppV5RuntimeActionsEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE'); };
+        const guard = async () => { afterCommit(); };
+        await guard();
+        if (input.part.kind !== 'metadata') releasedBytes = input.part.kind === 'bytes'
+          ? await this.payloadCustody!.readPayload(tx, payload.binding, payload.ref, { now: clock.current, guard, ...(signal ? { signal } : {}) })
+          : await this.payloadCustody!.readDraftFile(tx, payload.binding, payload.ref, input.part.file_id, { now: clock.current, guard, ...(signal ? { signal } : {}) });
+        if (authority.attachment_authority && !await attachmentFinalAuthorityIsCurrent(tx, authority.attachment_authority.participants,
+          { clock: this.now, expires_at: deadlines })) return null;
+        afterCommit();
+        const fileId = input.part.kind === 'file' ? input.part.file_id : undefined;
+        return input.part.kind === 'metadata' ? { kind: 'metadata' as const, payload }
+          : { kind: input.part.kind, snapshot_ref: payload.ref, bytes: releasedBytes!, byte_count: releasedBytes!.length,
+            digest: input.part.kind === 'bytes' ? payload.bytes_digest : payload.file_refs.find(file => file.file_id === fileId)!.digest };
+      });
+      afterCommit();
+      if (!result) releasedBytes?.fill(0);
+      return result;
+    } catch { releasedBytes?.fill(0); return null; }
+  }
+
+  /** Server-only exact source read for a reviewed, started human action. The
+   * caller nominates a declared input key; record IDs come from retained Run
+   * input and the resource binding comes from the current action owner anchor. */
+  async readRuntimeActionResources(input: AppRuntimeAttemptIdentity & { input_key: string }, signal?: AbortSignal): Promise<AppRuntimeActionResources | null> {
+    if (!this.actionResourceSecrets || !isAppRuntimeChannelEnabled() || !isAppV5RuntimeActionsEnabled()) return null;
+    let afterCommit = () => {};
+    try {
+      const result = await this.repository.transaction(async tx => {
+        signal?.throwIfAborted();
+        const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
+        if (!run || run.provider_kind !== 'app_runtime' || run.state !== 'running' || run.cancel_requested_at
+          || !run.execution_released_at || run.initiating_actor_type !== 'human' || run.execution_actor_type !== 'human'
+          || run.execution_actor_id !== run.initiating_actor_id) return null;
+        const authority = await loadLiveRuntimeAuthority(tx, input.org_id, input.session_id, input.token_hash, this.now, input.run_id);
+        if (!authority) return null;
+        const action = await runtimeRunMatchesAuthority(tx, input.org_id, input.run_id, authority);
+        if (!action || action.protocol_version !== '7') return null;
+        const definition = action.input_schema.properties[input.input_key];
+        if (definition?.type !== 'string' || definition.format !== 'resource_record_list') return null;
+        const exact = parseRuntimeObjectInput(action.input_schema, await this.secretRepository.readInput(input.org_id, input.run_id, tx));
+        const sourceInput = exact[input.input_key];
+        if (typeof sourceInput !== 'string') return null;
+        const ids = parseResourceRecordList(sourceInput, { maxItems: definition.maxItems, allowEmpty: (definition.minLength ?? 0) === 0 });
+        if (!ids.length) return null;
+        const [runtimeBinding] = await tx.select().from(appRuntimeBindings).where(and(eq(appRuntimeBindings.org_id, input.org_id),
+          eq(appRuntimeBindings.id, authority.pin.runtime_binding_id))).limit(1).for('share');
+        const bindingId = runtimeBinding?.owner_resource_binding_id;
+        if (!bindingId) return null;
+        const [locator] = await tx.select().from(appResourceBindings).where(and(eq(appResourceBindings.org_id, input.org_id),
+          eq(appResourceBindings.id, bindingId))).limit(1);
+        const resource = locator?.registration_contract_version === 'deft.app_runtime_channel.v3'
+          ? await loadLiveAttachmentSyncBindingAuthority(tx, { org_id: input.org_id, resource_binding_id: bindingId, clock: this.now })
+          : await loadLiveResourceSyncBindingAuthority(tx, { org_id: input.org_id, resource_binding_id: bindingId, clock: this.now });
+        if (!resource || resource.binding.owner_user_id !== run.initiating_actor_id || resource.binding.resource_key !== definition.resourceKey
+          || resource.binding.app_installation_id !== authority.pin.app_installation_id || resource.binding.app_version_id !== authority.pin.app_version_id
+          || resource.binding.grant_snapshot_id !== authority.grant_snapshot_id) return null;
+        const [attempt] = await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id, input.org_id),
+          eq(appRunAttempts.id, input.attempt_id), eq(appRunAttempts.run_id, input.run_id))).limit(1).for('share');
+        if (!attempt || attempt.state !== 'provider_call_started' || attempt.claim_token !== input.claim_token
+          || attempt.runtime_session_id !== input.session_id || attempt.runtime_sequence !== input.sequence || !attempt.lease_expires_at) return null;
+        const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(eq(appSyncCheckpoints.org_id, input.org_id),
+          eq(appSyncCheckpoints.resource_binding_id, bindingId), eq(appSyncCheckpoints.state, 'active'))).limit(1).for('share');
+        if (!checkpoint) return null;
+        const rows = await tx.select().from(appResourceProjections).where(and(eq(appResourceProjections.org_id, input.org_id),
+          eq(appResourceProjections.resource_binding_id, bindingId), eq(appResourceProjections.checkpoint_id, checkpoint.id),
+          eq(appResourceProjections.generation, checkpoint.generation), eq(appResourceProjections.state, 'live'), inArray(appResourceProjections.id, [...ids])))
+          .orderBy(asc(appResourceProjections.id)).for('share');
+        const retained=await this.secretRepository.readActionResources(input.org_id,input.run_id,tx,this.now());
+        if(retained&&(retained.org_id!==input.org_id||retained.owner_id!==run.initiating_actor_id||retained.installation_id!==authority.pin.app_installation_id||retained.app_version_id!==authority.pin.app_version_id||retained.grant_snapshot_id!==authority.grant_snapshot_id||retained.runtime_binding_id!==authority.pin.runtime_binding_id||retained.input_digest!==`sha256:${createHash('sha256').update(canonicalCapabilityJson(exact)).digest('hex')}`))return null;
+        const retainedRows=retained?.resources[input.input_key];
+        if(retained&&(retainedRows?.length!==ids.length||retainedRows.some(row=>!ids.includes(row.record_id)||row.resource_binding_id!==bindingId||row.resource_key!==definition.resourceKey)))return null;
+        if (rows.length !== ids.length&&!retainedRows) return null;
+        const clock = await samplePrivateAccessClock(tx, this.now);
+        const deadlines = [attempt.lease_expires_at, run.input_expires_at, run.result_expires_at,
+          ...(resource.binding.consent_expires_at ? [resource.binding.consent_expires_at] : []),
+          ...(authority.attachment_authority ? [authority.attachment_authority.session_expires_at] : []),
+          ...(action.owner_target_consent_expires_at ? [action.owner_target_consent_expires_at] : [])];
+        afterCommit = () => { signal?.throwIfAborted(); if (deadlines.some(deadline => deadline.getTime() <= clock.current().getTime())
+          || !isAppRuntimeChannelEnabled() || !isAppV5RuntimeActionsEnabled()) throw new AppRunError('APP_RUN_AUTHORIZATION_STALE'); };
+        const descriptor = resource.descriptor.schema_version === 'deft.app_sync_descriptor.v2'
+          ? (() => { const { attachments: _policy, ...scalar } = resource.descriptor; return { ...scalar, schema_version: 'deft.app_sync_descriptor.v1' as const }; })()
+          : resource.descriptor;
+        const records = ids.map(id => {
+          const row = rows.find(candidate => candidate.id === id);
+          const retainedRow=retainedRows?.find(candidate=>candidate.record_id===id);
+          if(!row){if(!retainedRow?.provider_source)throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');return {record_id:id,revision:retainedRow.revision,label:retainedRow.label,data:parseRuntimeObjectInput(descriptor.record_schema,retainedRow.data),provider_source:retainedRow.provider_source};}
+          const parsed = decodePrivateProjection(this.actionResourceSecrets!, row, descriptor);
+          if(retainedRow&&(retainedRow.revision!==parsed.revision||canonicalCapabilityJson(retainedRow.data)!==canonicalCapabilityJson(parsed.data)))throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
+          return { record_id: row.id, revision: parsed.revision, label: String(parsed.data[descriptor.label_field] ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, 200), data: parsed.data };
+        });
+        const output: AppRuntimeActionResources = { schema_version: 'deft.app_action_resources.v1', input_key: input.input_key,
+          scope: { org_id: input.org_id, owner_id: run.initiating_actor_id, installation_id: authority.pin.app_installation_id },
+          resource_binding_id: bindingId, resource_key: resource.binding.resource_key, records };
+        if (Buffer.byteLength(JSON.stringify(output), 'utf8') > 1_048_576) return null;
+        if (authority.attachment_authority && !await attachmentFinalAuthorityIsCurrent(tx, authority.attachment_authority.participants,
+          { clock: this.now, expires_at: deadlines })) return null;
+        afterCommit(); return output;
+      });
+      afterCommit(); return result;
+    } catch { return null; }
   }
 
   async heartbeatRuntimeAttempt(input: Readonly<{
@@ -440,7 +720,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !attempt.lease_expires_at || attempt.lease_expires_at <= now
         || run.cancel_requested_at || !run.execution_released_at
         || !['pending', 'running'].includes(run.state)
-        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
       const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs(this.leaseMs));
       const [renewed] = await tx.update(appRunAttempts).set({
@@ -449,7 +729,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         eq(appRunAttempts.id, attempt.id),
         eq(appRunAttempts.claim_token, input.claim_token))).returning({ id: appRunAttempts.id });
       if (!renewed) return null;
-      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
+      await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
       return Object.freeze({ run_id: input.run_id, attempt_id: input.attempt_id,
         sequence: input.sequence, lease_expires_at: leaseExpiresAt.toISOString() });
     });
@@ -486,6 +766,14 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       const reviewedAction = await runtimeRunMatchesAuthority(tx, input.org_id, result.run_id, authority);
       if (!reviewedAction) return false;
       if (attempt.runtime_result_hmac) return replayDigests.has(attempt.runtime_result_hmac);
+      if(Object.hasOwn(reviewedAction.input_schema.properties,'resource_action_version')){
+        const {authorizeReleasedAppDataAction}=await import('./app-data-authority.js');
+        const pins=parseRuntimeObjectInput(reviewedAction.input_schema,await this.secretRepository.readInput(input.org_id,result.run_id,tx));
+        if(!await authorizeReleasedAppDataAction({org_id:input.org_id,run_id:run.id,owner_id:run.initiating_actor_id,
+          installation_id:authority.pin.app_installation_id,app_version_id:authority.pin.app_version_id,
+          grant_snapshot_id:authority.grant_snapshot_id,runtime_registration_id:authority.pin.runtime_registration_id,
+          runtime_binding_id:authority.pin.runtime_binding_id,operation_name:reviewedAction.action_key,input:pins}))return false;
+      }
       if (attempt.state !== 'provider_call_started' || !attempt.lease_expires_at
         || attempt.lease_expires_at <= this.now()) return false;
       if (result.status === 'returned') {
@@ -570,6 +858,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       })
       || run.input_expires_at <= now
     ) return null;
+    if(!await futureRecordActionGate(tx,run,'prepare',now))return null;
     const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
       eq(appRunAttempts.org_id, run.org_id),
       eq(appRunAttempts.run_id, run.id),
@@ -597,7 +886,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       const run = await this.repository.lockRun(tx, input.org_id, result.run_id);
       if (!run || run.review_scope !== 'reviewed_resource_sync'
         || run.provider_kind !== 'app_runtime') return false;
-      const [runKey] = await tx.select({ key_version: appRuns.idempotency_key_version })
+      const [runKey] = await tx.select({ key_version: appRuns.idempotency_key_version, authorization_snapshot: appRuns.authorization_snapshot })
         .from(appRuns).where(and(eq(appRuns.org_id, input.org_id),
           eq(appRuns.id, result.run_id))).limit(1);
       const digest = fingerprintCandidates.find((candidate) =>
@@ -609,6 +898,9 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       if (!authority) return false;
       const intent = await this.#resourceSyncRunMatchesAuthority(tx, run, authority);
       if (!intent) return false;
+      if(this.syncMode==='attachment_v3'&&hasResourceObservationPin(runKey?.authorization_snapshot,authority.binding.id)
+        &&result.status==='returned'&&result.provider_succeeded&&'page' in result
+        &&(result.page as {upserts:readonly {attachments?:readonly unknown[]}[]}).upserts.some(item=>(item.attachments?.length??0)>0))return false;
       await tx.execute(sql`SELECT id FROM app_run_attempts WHERE org_id = ${input.org_id}
         AND id = ${result.attempt_id} FOR UPDATE`);
       const [attempt] = await tx.select().from(appRunAttempts).where(and(
@@ -624,21 +916,21 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       // A committed callback is accepted byte-for-byte without revisiting the
       // page store. Retained fingerprint keys permit a key rotation replay.
       if (attempt.runtime_result_hmac) {
-        await this.#syncFinal(tx,authority,[run.result_expires_at]);
+        await this.#syncFinal(tx,authority,run.id,[run.result_expires_at]);
         return replayDigests.has(attempt.runtime_result_hmac);
       }
       const now = this.now();
       if (attempt.state !== 'provider_call_started' || !attempt.lease_expires_at
         || attempt.lease_expires_at <= now || run.state !== 'running'
         || run.cancel_requested_at || run.input_expires_at <= now
-        || authority.binding.consent_expires_at! <= now
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return false;
       if (result.status === 'indeterminate' || result.status === 'not_attempted') {
         // The host crossed provider_call_started before releasing the input.
         // A provider assertion that it did not call the source cannot prove
         // that no external effect occurred.
         await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
-        await this.#syncFinal(tx,authority,[run.input_expires_at,attempt.lease_expires_at]);
+        await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,attempt.lease_expires_at]);
         return true;
       }
       let outcome: AppRunSafeOutcome;
@@ -657,12 +949,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
           // The provider may already have observed an external source effect.
           // An invalid page is never signed as success or automatically retried.
           await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
-          await this.#syncFinal(tx,authority,[run.input_expires_at,attempt.lease_expires_at]);
+          await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,attempt.lease_expires_at]);
           return true;
         }
         if (run.result_expires_at <= now) {
           await this.#recoverUnknownInTransaction(tx, run, attempt, now, digest);
-          await this.#syncFinal(tx,authority,[run.input_expires_at,attempt.lease_expires_at]);
+          await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,attempt.lease_expires_at]);
           return true;
         }
         const applied = await store.applyPageInTransaction(tx, {
@@ -671,7 +963,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         });
         const finalClock = this.now();
         if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
-          || authority.binding.consent_expires_at! <= finalClock
+          || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= finalClock.getTime()
           || run.input_expires_at <= finalClock || run.result_expires_at <= finalClock) {
           // A page has already been written in this transaction. Returning
           // false would commit it without output, terminal Run or receipt.
@@ -698,7 +990,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       }
       const finalClock = this.now();
       if (attempt.lease_expires_at <= finalClock || authority.session.expires_at <= finalClock
-        || authority.binding.consent_expires_at! <= finalClock
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= finalClock.getTime()
         || run.input_expires_at <= finalClock) {
         throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
       }
@@ -709,12 +1001,12 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         provider_call_finished_at: finalClock, safe_outcome: outcome }, finalClock, receiptFacts);
       const committedAt = this.now();
       if (attempt.lease_expires_at <= committedAt || authority.session.expires_at <= committedAt
-        || authority.binding.consent_expires_at! <= committedAt
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= committedAt.getTime()
         || run.input_expires_at <= committedAt || run.result_expires_at <= committedAt) {
         // Includes page, output and receipt writes: abort the whole transaction.
         throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
       }
-      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,attempt.lease_expires_at]);
+      await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at,attempt.lease_expires_at]);
       return true;
     });
     if (!accepted) return null;
@@ -765,7 +1057,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || !attempt.lease_expires_at || attempt.lease_expires_at <= now
         || !run.execution_released_at || run.cancel_requested_at
         || !['pending', 'running'].includes(run.state)
-        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
       const rawInput = await this.secretRepository.readInput(input.org_id, run.id, tx);
       let request: ReturnType<typeof parseSyncRequest> | ReturnType<typeof SyncRequestV2Schema.parse>;
@@ -787,11 +1079,11 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         payload: { attempt_id: attempt.id }, now });
       const checkedAt = this.now();
       if (attempt.lease_expires_at <= checkedAt || run.input_expires_at <= checkedAt
-        || authority.binding.consent_expires_at! <= checkedAt
+        || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= checkedAt.getTime()
         || authority.session.expires_at <= checkedAt) {
         throw new Error('APP_RESOURCE_SYNC_START_EXPIRED');
       }
-      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,attempt.lease_expires_at!]);
+      await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at,attempt.lease_expires_at!]);
       return Object.freeze({ schema_version: this.#syncVersion,
         audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
         resource_binding_id: authority.binding.id, run_id: run.id,
@@ -805,10 +1097,11 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
   async claimResourceSyncAttempt(input: Readonly<{
     org_id: string; run_id: string; attempt_id: string;
     session_id: string; token_hash: string;
-  }>) {
+  }>, options: AppRunRecoveryOptions = {}) {
     if (!this.#syncEnabled()) return null;
-    await this.recoverRun(input.org_id, input.run_id, input.attempt_id);
-    return this.repository.transaction(async (tx) => {
+    const transaction = options.transaction ?? this.repository.transaction.bind(this.repository);
+    await this.recoverRun(input.org_id, input.run_id, input.attempt_id, { transaction });
+    return transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, input.org_id, input.run_id);
       if (!run || run.review_scope !== 'reviewed_resource_sync'
         || run.provider_kind !== 'app_runtime') return null;
@@ -824,7 +1117,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       const now = this.now();
       if (!run.execution_released_at || run.cancel_requested_at
         || !['pending', 'running'].includes(run.state)
-        || run.input_expires_at <= now || authority.binding.consent_expires_at! <= now
+        || run.input_expires_at <= now || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= now.getTime()
         || authority.session.expires_at <= now) return null;
       if (!attempt || attempt.state !== 'pending') return null;
       const [session] = await tx.update(appRuntimeSessions).set({
@@ -849,7 +1142,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       await this.repository.appendEvent(tx, { id: crypto.randomUUID(), org_id: input.org_id,
         run_id: run.id, event_type: 'attempt_claimed',
         payload: { attempt_id: claimed.id }, now });
-      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
+      await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at,leaseExpiresAt]);
       return Object.freeze({ schema_version: this.#syncVersion,
         audience: APP_RESOURCE_SYNC_AUDIENCE, work_kind: 'sync_page' as const,
         org_id: input.org_id, app_installation_id: authority.installation.id,
@@ -887,18 +1180,18 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     });
     if (!authority || !await this.#resourceSyncRunMatchesAuthority(tx, run, authority)) return null;
     const checkedAt = this.now();
-    if (run.input_expires_at <= checkedAt || authority.binding.consent_expires_at! <= checkedAt) return null;
+    if (run.input_expires_at <= checkedAt || appConsentDeadline(authority.binding.consent_expires_at, authority.binding.consent_lifetime ?? undefined) <= checkedAt.getTime()) return null;
     const [existing] = await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
       eq(appRunAttempts.org_id, run.org_id), eq(appRunAttempts.run_id, run.id),
       inArray(appRunAttempts.state, ['pending', 'claimed', 'provider_call_started']),
     )).orderBy(asc(appRunAttempts.attempt_number)).limit(1);
     if (existing) {
       await this.attemptQueue.enqueue(tx, run.org_id, run.id, existing.id);
-      await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at]);
+      await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at]);
       return existing.id;
     }
     const created=await this.#createAttempt(tx,run,checkedAt);
-    await this.#syncFinal(tx,authority,[run.input_expires_at,run.result_expires_at]);
+    await this.#syncFinal(tx,authority,run.id,[run.input_expires_at,run.result_expires_at]);
     return created?.id ?? null;
   }
 
@@ -912,12 +1205,21 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     if (!identity) return false;
     return this.repository.transaction(async (tx) => {
       const run = await this.repository.lockRun(tx, orgId, identity.run_id);
-      if (!run || (runtime ? run.provider_kind !== 'app_runtime' : run.provider_kind !== 'mcp')) return false;
+      if (!run || (runtime ? run.provider_kind !== 'app_runtime' : run.provider_kind !== 'mcp'))return false;
+      if(runtime&&(run.cancel_requested_at||!run.execution_released_at||!['pending','pending_approval','running'].includes(run.state)||run.input_expires_at<=this.now()||run.result_expires_at<=this.now()))return false;
       const authority = runtime ? await loadLiveRuntimeAuthority(tx, orgId,
         runtime.session_id, runtime.token_hash, this.now, identity.run_id) : null;
       if (runtime && !authority) return false;
-      if (runtime && (!authority || runtime.run_id !== run.id
-        || !await runtimeRunMatchesAuthority(tx, orgId, run.id, authority))) return false;
+      const action=runtime&&authority?await runtimeRunMatchesAuthority(tx,orgId,run.id,authority):null;
+      if(runtime&&(!action||runtime.run_id!==run.id))return false;
+      if(runtime&&authority&&action&&(Object.hasOwn(action.input_schema.properties,'record_action_version')||Object.hasOwn(action.input_schema.properties,'resource_action_version'))){
+        const exact=parseRuntimeObjectInput(action.input_schema,await this.secretRepository.readInput(orgId,run.id,tx));
+        const {authorizeReleasedAppDataAction}=await import('./app-data-authority.js');
+        if(!await authorizeReleasedAppDataAction({org_id:orgId,run_id:run.id,owner_id:run.initiating_actor_id,installation_id:authority.pin.app_installation_id,app_version_id:authority.pin.app_version_id,grant_snapshot_id:authority.grant_snapshot_id,runtime_registration_id:authority.pin.runtime_registration_id,runtime_binding_id:authority.pin.runtime_binding_id,operation_name:action.action_key,input:exact}))return false;
+      }
+      const futureDeadline=runtime?(await optionalFutureRecordAction(tx,orgId,run.id))?.dispatch_lifetime_expires_at?.getTime():undefined;
+      const renewalDeadline=runtime?Math.min(this.now().getTime()+boundedLeaseMs(this.leaseMs),futureDeadline??Infinity,run.input_expires_at.getTime(),run.result_expires_at.getTime(),...(action?.owner_target_consent_expires_at?[action.owner_target_consent_expires_at.getTime()]:[]),...(authority?.attachment_authority?[authority.attachment_authority.session_expires_at.getTime()]:[])):now.getTime()+boundedLeaseMs(this.leaseMs);
+      if(renewalDeadline<=this.now().getTime())return false;
       await tx.execute(sql`SELECT id FROM app_run_attempts
         WHERE org_id = ${orgId} AND id = ${attemptId} FOR UPDATE`);
       const [current] = await tx.select().from(appRunAttempts).where(and(
@@ -936,7 +1238,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || (current.state !== 'claimed' && current.state !== 'provider_call_started')
       ) return false;
       const [renewed] = await tx.update(appRunAttempts).set({
-        lease_expires_at: new Date((runtime ? this.now() : now).getTime() + boundedLeaseMs(this.leaseMs)),
+        lease_expires_at: new Date(renewalDeadline),
         updated_at: now,
       }).where(and(
         eq(appRunAttempts.org_id, orgId),
@@ -1047,6 +1349,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
       let run = await this.repository.lockRun(tx, orgId, runId);
       if (!run || (runtime ? run.provider_kind !== 'app_runtime'
         : !['mcp', 'native'].includes(run.provider_kind))) return null;
+      if(runtime&&!await futureRecordActionGate(tx,run,'claim',now))return null;
       if (run.provider_kind === 'native') await tx.execute(sql`SELECT id FROM app_run_attempts
         WHERE org_id = ${orgId} AND run_id = ${runId} AND id = ${attemptId} FOR UPDATE`);
       const runtimeAuthority = runtime ? await loadLiveRuntimeAuthority(
@@ -1214,8 +1517,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         : run.provider_kind !== 'mcp')) return null;
       const authority = runtime ? await loadLiveRuntimeAuthority(tx, claimed.run.org_id,
         runtime.session_id, runtime.token_hash, this.now, claimed.run.id) : null;
-      if (runtime && (!authority
-        || !await runtimeRunMatchesAuthority(tx, run.org_id, run.id, authority))) return null;
+      const reviewedAction = authority ? await runtimeRunMatchesAuthority(tx, run!.org_id, run!.id, authority) : null;
+      if (runtime && (!authority || !reviewedAction)) return null;
       if (
         !run.execution_released_at
         || run.state === 'cancelled'
@@ -1248,6 +1551,26 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
         || current.lease_expires_at <= (runtime ? this.now() : now)
       ) return null;
       if (runtime && current.state === 'provider_call_started') return Object.freeze({});
+      if (runtime && reviewedAction) {
+        // Deny unavailable retained payloads while the run, authority and attempt
+        // locks are held, before declaring that a provider call has started.
+        // The post-marker delivery check remains necessary for expiry races.
+        try {
+          const clock = await samplePrivateAccessClock(tx, this.now);
+          const exact = await this.secretRepository.readInput(run.org_id, run.id, tx);
+          const payload = await this.#retainedRuntimePayload(tx, {
+            org_id: run.org_id, run_id: run.id, attempt_id: current.id,
+            session_id: runtime.session_id, token_hash: runtime.token_hash,
+            claim_token: current.claim_token!, sequence: current.runtime_sequence!,
+          }, reviewedAction, exact, clock.current());
+          const deadlines = [current.lease_expires_at!, run.input_expires_at, run.result_expires_at,
+            ...(reviewedAction.owner_target_consent_expires_at ? [reviewedAction.owner_target_consent_expires_at] : []),
+            ...(payload ? [payload.expires_at, ...payload.file_refs.map(file => new Date(file.expires_at))] : [])];
+          if (deadlines.some(deadline => deadline <= clock.current()) || !isAppRuntimeChannelEnabled()
+            || (['5', '6', '7'].includes(reviewedAction.protocol_version) && !isAppV5RuntimeActionsEnabled())) return null;
+        } catch { return null; }
+      }
+      if(runtime&&!await futureRecordActionGate(tx,run,'dispatch',this.now(),current.id))return null;
       const [attempt] = await tx.update(appRunAttempts).set({
         state: 'provider_call_started', provider_call_started_at: now, updated_at: now,
       }).where(and(
@@ -1560,6 +1883,7 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
     retryScheduled = false,
     extraFacts?: Readonly<Record<string, string | number | boolean>>,
   ): Promise<void> {
+    await settleFutureRecordAction(tx,run,attemptId,occurredAt);
     await this.receiptWriter.write(tx, {
       receipt_key: `attempt-terminal:${attemptId}`,
       receipt_kind: 'attempt_terminal',

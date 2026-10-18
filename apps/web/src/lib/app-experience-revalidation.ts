@@ -10,3 +10,10 @@ export async function readExperienceAuthority(current: () => boolean, read: () =
   }
   return current() ? response : null;
 }
+export async function readExperienceAuthorityPair(current: () => boolean, live: () => Promise<Response>, exposure?: () => Promise<Response>): Promise<[Response | null, Response | null]> {
+  const [response, status] = await Promise.all([
+    readExperienceAuthority(current, live),
+    exposure ? readExperienceAuthority(current, exposure) : Promise.resolve(null),
+  ]);
+  return current() ? [response, status] : [null, null];
+}

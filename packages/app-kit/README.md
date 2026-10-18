@@ -1,12 +1,12 @@
 # `@deft/app-kit`
 
-The alpha.35 candidate adds explicit persistent permission and retains alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the external Email Runtime. The historical App1.9.0-preview.5 / Runtime0.4.0-preview.3 proof uses alpha.33; current external Email review remains in [Email PR1](https://github.com/Maneek21/deft-email/pull/1). Existing sealed alpha.30/alpha.32 packages and their exact proofs remain historical inputs.
+The current authoring Kit is `0.1.0-alpha.38`, including targeted resource Refresh. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.15` on alpha.35, Host `0.3.0-preview.120` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
 
 Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
 
 A record store may declare `supplemental_effects` with a closed bounded `RuntimeObjectSchema`. `parseAppPreparedEffectDetails` checks declared detail fields; the Host also verifies the canonical plan digest, account, action binding, custody generation and exact prepared input. `deft.app_run_inspection_result.v2` carries generic primary/effect outcomes and immutable receipt pins, with automatic retry forbidden. Old sent-copy contracts remain for historical metadata, not the new execution path.
 
-Authors build against the packed package without a Deft checkout. Existing programmatic protocol 7 packaging APIs and public sideload review remain the install path; this change adds no CLI or implicit activation. The candidate requires a compatible Host implementation, including database grant validation, and fresh installation evidence before independence acceptance. Schema 118 corrected the historical `supplemental_effects` activation refusal and accepted the preceding App preview.3. Current exact-head Host/Email checks, complete live acceptance and fresh independent installation remain pending. Sealed Kit33 archives preserve their original README and producer identity; this repository guidance does not rewrite those bytes.
+Authors build against the packed package without a Deft checkout. Programmatic Protocol 7 packaging APIs and public sideload review are the connected App install path; the historical CLI walkthrough is not Protocol 7 onboarding. Use the supported Apps-enabled Host release and the [Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md). Release acceptance is recorded separately from pure Kit tests. Sealed Kit archives preserve their original README and producer identity; this repository guidance does not rewrite those bytes.
 
 Portable, deterministic authoring and packaging contracts for declarative Deft
 Apps. The package includes the `deft` CLI, strict App Protocol v0, v1, and v2
@@ -22,7 +22,7 @@ remain host responsibilities.
 
 Alpha.35 aligns the packed JavaScript with the reviewed source, including existing finite ISO-offset compatibility. The preserved alpha.34 candidate is historical; its packed helper had not incorporated that source correction.
 
-## Explicit persistent permission (alpha.35 candidate)
+## Explicit persistent permission (introduced in alpha.35)
 
 A signed owner policy may opt in with `allow_until_revoked: true`. An existing connected account can then receive a fresh consent-continuation review with `consent_lifetime: 'until_revoked'` and `consent_expires_at: null`. Initial account enrollment remains finite. Data and observation grants use the same explicit mode with `expires_at: null`; null without the mode, or the mode with a finite deadline, is invalid. Existing finite grants omit the mode and retain their original bytes and limits.
 
@@ -65,7 +65,7 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.35.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.38.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.

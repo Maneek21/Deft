@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DeftExperienceRendererProfileSchema } from '@deft/app-kit';
 import { ExposureSnapshotSchema, exposureDigest, type ExposureSnapshot } from './app-experience-exposure-contract.js';
 
 // Durable permission is independent of any tab, Web SID, access token or lease.
@@ -8,7 +9,9 @@ const { web_session_id: _sid, experience_session_id: _session, prepared_at: _pre
 export const ExperienceConsentScopeSchema = z.strictObject({
   ...scopeShape, schema_version: z.literal('deft.experience_consent.v1'),
   exposure_schema_version: ExposureSnapshotSchema.shape.schema_version,
-});
+}).refine(value => DeftExperienceRendererProfileSchema.safeParse({ renderer_version: value.renderer_version,
+  ...(value.capabilities === undefined ? {} : { capabilities: value.capabilities }) }).success,
+  'Unsupported Experience renderer profile');
 export type ExperienceConsentScope = z.infer<typeof ExperienceConsentScopeSchema>;
 export function experienceConsentScope(snapshot: ExposureSnapshot): ExperienceConsentScope {
   const { web_session_id: _sid, experience_session_id: _session, prepared_at: _prepared,

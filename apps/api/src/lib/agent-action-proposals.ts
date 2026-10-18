@@ -82,6 +82,7 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   if (action === DOCUMENT_SEND_ACTION) {
     return sanitizeDocumentSendParams(actionParams);
   }
+  if(action==='email_send')return {account_id:actionParams.account_id,draft_id:actionParams.draft_id,draft_revision:actionParams.draft_revision,content_digest:actionParams.content_digest,review_url:actionParams.review_url};
   return actionParams;
 }
 
@@ -110,6 +111,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
   const preparedPendingActions: ProposedAgentAction[] = [];
   const rejectedModuleActions: string[] = [];
   for (const proposal of params.pendingActions) {
+    if(proposal.source==='native_email'||proposal.action==='email_send')throw Error('RETIRED_NATIVE_ACTION');
     if (proposal.existing_action_id) {
       preparedPendingActions.push(proposal);
       continue;
@@ -712,8 +714,11 @@ function inferRequestedWikiWriteMode(promptContent: string): 'create' | 'update'
 export function validateRegisteredProposalAction(action: {
   action?: unknown;
   params?: unknown;
+  existing_action_id?:unknown;
+  source?:unknown;
 }): { ok: true } | { ok: false; message: string } {
   const name = typeof action.action === 'string' ? action.action : '';
+  if(name==='email_send')return {ok:false,message:'The built-in mailbox action is retired. Use the installed App review.'};
   if (name.startsWith('mcp__')) {
     return isRecord(action.params)
       ? { ok: true }

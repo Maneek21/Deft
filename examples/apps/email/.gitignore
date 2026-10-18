@@ -1,8 +1,12 @@
 node_modules/
 *.tgz
+!deft-app-kit-0.1.0-alpha.9.tgz
 app.deft.json
+app-indexed.deft.json
 artifact.json
 build-result.json
 worker.bundle.js
+metadata-worker.bundle.js
+metadata-artifact.json
 *-result.json
 private*

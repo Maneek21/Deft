@@ -1,6 +1,6 @@
 # Modules and Apps: choose a starting point
 
-For Deft v0.3.0-preview.15.
+The Module and legacy App examples below describe Deft `v0.3.0-preview.15`. For the current independently deployed connected-App path, use the Apps-enabled Host `v0.3.0-preview.120`/schema120 and the [Email reference implementation](https://github.com/Maneek21/deft-email), with exact versions/downloads in its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json). The [current author guide](connected-app-author-guide.md) describes Protocol7 sideload and reviewed external Runtime setup.
 
 A **Module** defines records, relationships, and native views. An **App** packages Module resources for installation and may request supported connected actions. They use different manifests and installation flows.
 
@@ -20,7 +20,7 @@ For an App package, follow [Build an internal App](getting-started.md#build-an-i
 
 Standalone Modules and the bundled Contacts Module are available in the preview. Apps are experimental and disabled by default. Enabling Apps does not grant a package authority to call a provider.
 
-The current connected scaffold demonstrates a sandbox-email capability. It is not a general connector marketplace or a promise of Gmail, Slack, or arbitrary API support. A connected package is staged first; an operator reviews it, binds an eligible provider, and activates it. Bounded schedules require further configuration and host approval.
+The historical preview.15 connected scaffold demonstrates a sandbox-email capability. It is not a general connector marketplace or a promise of Gmail, Slack, or arbitrary API support. A connected package is staged first; an operator reviews it, binds an eligible provider, and activates it. Bounded schedules require further configuration and host approval.
 
 Use the release-matched [App author guide](connected-app-author-guide.md) and [App Run operations guide](app-run-operations.md). Custom App interfaces, public portals, arbitrary hosted code, and general synchronization remain planned.
 

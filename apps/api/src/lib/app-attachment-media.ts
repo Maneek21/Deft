@@ -1,4 +1,4 @@
-import type { AttachmentPolicy } from '@deft/app-kit';
+import { RESOURCE_ATTACHMENT_LIMITS, type AttachmentPolicy } from '@deft/app-kit';
 
 /** Classification only, not malware certification. Nothing is rendered inline,
  * expanded, or fetched from a provider URL. Unknown/mismatched bytes are blocked. */
@@ -13,6 +13,14 @@ export function appAttachmentMediaAllowed(bytes: Uint8Array, declared: Attachmen
     && ['GIF87a', 'GIF89a'].includes(value.subarray(0, 6).toString('ascii')) && value[value.length - 1] === 59;
   if (declared === 'image/webp') return value.length >= 20 && value.subarray(0, 4).toString('ascii') === 'RIFF'
     && value.subarray(8, 12).toString('ascii') === 'WEBP' && value.readUInt32LE(4) === value.length - 8;
+  if (declared === 'application/pdf') {
+    if (value.length > RESOURCE_ATTACHMENT_LIMITS.attachment_bytes
+      || !/^%PDF-(?:1\.[0-7]|2\.0)(?:\r\n|\r|\n)/u.test(value.subarray(0, 10).toString('latin1'))) return false;
+    // Bounded signature/trailer classification for opaque downloads only. It
+    // does not parse objects, execute content, sanitize or certify a PDF.
+    const trailer = /(?:\r\n|\r|\n)startxref[\t \r\n]+([0-9]{1,10})[\t \r\n]+%%EOF[\t \r\n]*$/u.exec(value.subarray(-1024).toString('latin1'));
+    return trailer !== null && Number(trailer[1]) > 0 && Number(trailer[1]) < value.length;
+  }
   let text: string;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(value); } catch { return false; }
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text)

@@ -1,5 +1,6 @@
 'use client';
 
+import {appConsentDeadline,appConsentExpiryValid} from '../../../../../packages/app-kit/src/consent-lifetime';
 import { useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { ResourceRefV2 } from '@deft/shared/resources-v2';
@@ -81,13 +82,13 @@ function ShareReviewView(identity: Identity) {
         if(!people.ok)throw new Error('Human recipients unavailable.');
         const body=object(await source.json()),data=object(body.data),actual=object(body.ref),provider=object(actual.provider);
         if(provider.provider_instance_id!==identity.registrationId || actual.resource_id!==identity.projectionId || actual.resource_type!==identity.resourceType
-          || typeof body.consent_expires_at!=='string' || !Number.isFinite(Date.parse(body.consent_expires_at)))throw new Error('Private access unavailable.');
+          || !appConsentExpiryValid(body.consent_expires_at as string|null,body.consent_lifetime))throw new Error('Private access unavailable.');
         const list=await people.json();if(!Array.isArray(list)||list.length>10000)throw new Error('Human recipients unavailable.');
-        sourceExpiry.current=Date.parse(body.consent_expires_at);
+        sourceExpiry.current=appConsentDeadline(body.consent_expires_at as string|null,body.consent_lifetime);
         if(!current(request,session))return;
         setFields(Object.keys(data).filter(k=>k.length<=48).sort());
         setMembers(list.flatMap(v=>{const m=object(v);return m.kind==='human'&&typeof m.id==='string'&&uuid.test(m.id)&&typeof m.name==='string'&&m.role!=='guest'?[{id:m.id,name:m.name.slice(0,200)}]:[]}));
-        clearTimeout(timer);timer=setTimeout(()=>{clear();setError('Owner consent expired.');},Math.min(sourceExpiry.current-Date.now(),2147483647));
+        clearTimeout(timer);if(Number.isFinite(sourceExpiry.current))timer=setTimeout(()=>{clear();setError('Owner consent expired.');},Math.min(sourceExpiry.current-Date.now(),2147483647));
       }catch(e){if(!disposed.current&&request===generation.current)setError(e instanceof Error?e.message:'Private access unavailable.');}
       finally{if(!disposed.current&&request===generation.current)setBusy(false);}
     };

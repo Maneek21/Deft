@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { OverflowMenu } from '@/components/overflow-menu';
+import { AppIntegrationKnowledgeCitation } from '@/lib/app-experience-knowledge-citation';
 
 const TYPE_CONFIG: Record<string, { label: string; color: string; icon: React.ComponentType<any> }> = {
   concept: { label: 'Concepts', color: '#8B5CF6', icon: Brain },
@@ -113,6 +114,8 @@ function getMemoryRoute(page: MemoryRoutablePage): { label: string; color: strin
 
 function getCreatedViaLabel(createdVia: string | null | undefined): string | null {
   switch (createdVia) {
+    case 'email_knowledge_auto':
+      return 'Captured from email';
     case 'memory_extract':
       return 'Captured from chat';
     case 'wiki_create':
@@ -155,7 +158,7 @@ type WikiPageDetail = WikiPage & {
   content: string;
   linked_pages: { slug: string; title: string; type: string; summary: string | null; confidence?: number; context?: string }[];
   backlinks: { slug: string; title: string; type: string; summary?: string | null; context?: string }[];
-  citations: { id: string; source_type: string; source_id: string; excerpt: string | null; created_at: string; source_space_id?: string | null }[];
+  citations: { id: string; source_type: string; source_id: string; excerpt: string | null; created_at: string; source_space_id?: string | null; source_url?: string | null; source_label?: string }[];
 };
 
 type AskKnowledgeSource = {
@@ -978,7 +981,7 @@ export default function KnowledgePage() {
                   className="w-full text-[13px] leading-relaxed outline-none resize-y bg-transparent"
                   style={{ color: 'var(--text-primary)' }} />
               ) : (
-                <div className="text-[13px] leading-relaxed prose prose-sm max-w-none" style={{ color: 'var(--text-primary)' }}>
+                <div className="text-[13px] leading-relaxed max-w-none min-w-0 overflow-x-auto break-words [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:mb-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-6 [&_h2]:mb-3 [&_h3]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2 [&_p]:mb-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mb-4 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:mb-4 [&_li]:mb-1 [&_a]:text-[var(--primary)] [&_a]:underline [&_a]:underline-offset-2 [&_table]:w-full [&_table]:min-w-[680px] [&_table]:mb-4 [&_th]:text-left [&_th]:p-3 [&_td]:p-3 [&_td]:align-top [&_tr]:border-b [&_tr]:border-[var(--border-default)] [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:my-4 [&_pre]:overflow-x-auto [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-[var(--surface-container)]" style={{ color: 'var(--text-primary)' }}>
                   <NativeMentionMarkdown content={detail.content} />
                 </div>
               )}
@@ -1059,7 +1062,14 @@ export default function KnowledgePage() {
                   {detail.citations.map(cit => (
                     <div key={cit.id} className="p-2 rounded-lg text-[11px]"
                       style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                      {cit.source_type === 'message' && cit.source_space_id ? (
+                      {cit.source_type === 'app_integration' ? (
+                        <AppIntegrationKnowledgeCitation source_url={cit.source_url} source_label={cit.source_label} />
+                      ) : cit.source_type === 'email' && cit.source_url ? (
+                        <a href={cit.source_url} className="inline-flex items-center gap-1 font-medium hover:underline"
+                          style={{ color: 'var(--accent)' }} title="Opening the original email requires mailbox access">
+                          Source email <ArrowUpRight size={10} />
+                        </a>
+                      ) : cit.source_type === 'message' && cit.source_space_id ? (
                         <a href={`/chat?space=${cit.source_space_id}&message=${cit.source_id}`}
                           className="inline-flex items-center gap-1 font-medium hover:underline"
                           style={{ color: 'var(--accent)' }}>
@@ -1067,7 +1077,7 @@ export default function KnowledgePage() {
                         </a>
                       ) : (
                         <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>
-                          {cit.source_type === 'message' ? 'Chat message' : cit.source_type}
+                          {cit.source_type === 'message' ? 'Chat message' : cit.source_type === 'email' ? 'Email \u00b7 original requires mailbox access' : cit.source_type}
                         </span>
                       )}
                       {cit.excerpt && (

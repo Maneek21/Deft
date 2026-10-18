@@ -1,9 +1,14 @@
 import webpush from 'web-push';
+import {appIntegrationNotificationDeliveryCurrent} from './app-integration-notification-delivery.js';
+import type {JobData} from '../workers/types.js';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
   attentionDeliveries,
   attentionItems,
   DEFAULT_NOTIFICATION_PREFERENCES,
+  emailAccounts,
+  emailNotificationEvents,
+  orgMembers,
   users,
   webPushSubscriptions,
   type UserNotificationPreferences,
@@ -41,6 +46,7 @@ function normalizedPreferences(value: unknown): UserNotificationPreferences {
 }
 
 function pushCategory(item: AttentionItem): keyof Omit<UserNotificationPreferences['push'], 'enabled' | 'quiet_hours'> | null {
+  if (item.source_type === 'app_integration_source' || item.source_type === 'email' || item.kind === 'email_new_message') return 'email';
   if (item.kind === 'approval' || item.source_type === 'agent_action') return 'approvals';
   if (item.source_type === 'task' || item.kind.startsWith('task') || item.kind === 'blocked') return 'tasks';
   if (item.source_type === 'calendar' || item.kind === 'reminder') return 'calendar';
@@ -115,6 +121,55 @@ export const webPushPolicy = {
   failureStatus: (attempt: number) => attempt >= PUSH_MAX_ATTEMPTS ? 'failed' as const : 'queued' as const,
 };
 
+export function safeAttentionPushPayload(item: Pick<AttentionItem, 'title' | 'link' | 'lane' | 'id'>) {
+  return JSON.stringify({
+    title: item.title.slice(0, 120),
+    body: 'Open Deft to review.',
+    url: item.link ?? `/inbox?lane=${item.lane}`,
+    attention_id: item.id,
+    tag: `deft-attention-${item.id}`,
+  });
+}
+
+/** A queued email push is suppressed if its exact owner event or account
+ * authority revision was revoked, paused, or replaced after projection. */
+export async function emailNotificationPushStillCurrent(item: Pick<AttentionItem,
+  'org_id' | 'user_id' | 'source_type' | 'source_id' | 'metadata'>,
+  executor: Pick<typeof db, 'select'> = db,
+) {
+  if (item.source_type !== 'email' || !item.metadata || typeof item.metadata !== 'object' || Array.isArray(item.metadata)) return false;
+  const metadata = item.metadata as Record<string, unknown>;
+  const accountId = metadata.account_id, notificationId = metadata.notification_id;
+  const notificationRevision = metadata.notification_revision, authorityRevision = metadata.authority_revision;
+  if (typeof accountId !== 'string' || !accountId || typeof notificationId !== 'string'
+    || !Number.isSafeInteger(notificationRevision) || (notificationRevision as number) < 1
+    || !Number.isSafeInteger(authorityRevision) || (authorityRevision as number) < 1) return false;
+  const [current] = await executor.select({ notification_id: emailNotificationEvents.notification_id }).from(emailNotificationEvents)
+    .innerJoin(emailAccounts, and(
+      eq(emailAccounts.org_id, emailNotificationEvents.org_id),
+      eq(emailAccounts.owner_user_id, emailNotificationEvents.owner_user_id),
+      eq(emailAccounts.account_id, emailNotificationEvents.account_id),
+      eq(emailAccounts.state, 'active'),
+      eq(emailAccounts.authority_revision, emailNotificationEvents.authority_revision),
+    ))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.org_id, emailNotificationEvents.org_id),
+      eq(orgMembers.user_id, emailNotificationEvents.owner_user_id),
+      eq(orgMembers.is_active, true),
+    ))
+    .where(and(
+      eq(emailNotificationEvents.org_id, item.org_id),
+      eq(emailNotificationEvents.owner_user_id, item.user_id),
+      eq(emailNotificationEvents.account_id, accountId),
+      eq(emailNotificationEvents.notification_id, notificationId),
+      eq(emailNotificationEvents.logical_message_id, item.source_id),
+      eq(emailNotificationEvents.revision, notificationRevision as number),
+      eq(emailNotificationEvents.authority_revision, authorityRevision as number),
+      eq(emailNotificationEvents.state, 'projected'),
+    )).limit(1);
+  return Boolean(current);
+}
+
 export async function scheduleAttentionDelivery(item: AttentionItem) {
   if (!webPushConfigured() || item.state !== 'open_unseen' || item.priority === 'low') return null;
   const [user] = await db
@@ -163,7 +218,7 @@ export async function scheduleAttentionDelivery(item: AttentionItem) {
     QUEUE_NAMES.SCHEDULED_JOBS,
     'attention-delivery',
     { delivery_id: delivery.id },
-    { delay, maxAttempts: PUSH_MAX_ATTEMPTS },
+    { delay, maxAttempts: PUSH_MAX_ATTEMPTS, orgId: delivery.org_id },
   );
   return delivery;
 }
@@ -238,17 +293,7 @@ export async function scheduleAttentionDeliveries(items: AttentionItem[]) {
   return deliveries;
 }
 
-function safePayload(item: AttentionItem) {
-  return JSON.stringify({
-    title: item.title.slice(0, 120),
-    body: 'Open Deft to review.',
-    url: item.link ?? `/inbox?lane=${item.lane}`,
-    attention_id: item.id,
-    tag: `deft-attention-${item.id}`,
-  });
-}
-
-export async function sendAttentionDelivery(deliveryId: string, options: { attempt?: number } = {}) {
+export async function sendAttentionDelivery(deliveryId: string, options: { attempt?: number; job?: JobData } = {}) {
   if (!webPushConfigured()) throw new Error('Web Push is not configured');
   const [row] = await db
     .select({ delivery: attentionDeliveries, item: attentionItems, preferences: users.notification_preferences })
@@ -272,7 +317,15 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
     await db.update(attentionDeliveries).set({ status: 'suppressed', updated_at: new Date() }).where(eq(attentionDeliveries.id, deliveryId));
     return { skipped: true, reason: 'preference' };
   }
+  if (row.item.source_type === 'email' && !(await emailNotificationPushStillCurrent(row.item))) {
+    await db.update(attentionDeliveries).set({ status: 'suppressed', updated_at: new Date() }).where(eq(attentionDeliveries.id, deliveryId));
+    return { skipped: true, reason: 'email_authority_revoked' };
+  }
 
+  if (!(await appIntegrationNotificationDeliveryCurrent(row.item, options.job))) {
+    await db.update(attentionDeliveries).set({ status: 'suppressed', updated_at: new Date() }).where(eq(attentionDeliveries.id, deliveryId));
+    return { skipped: true, reason: 'app_authority_revoked' };
+  }
   const oneHourAgo = new Date(Date.now() - 60 * 60_000);
   const [sameItem] = await db
     .select({ id: attentionDeliveries.id })
@@ -314,11 +367,12 @@ export async function sendAttentionDelivery(deliveryId: string, options: { attem
   const failures: string[] = [];
   for (const subscription of subscriptions) {
     try {
+      if (!(await appIntegrationNotificationDeliveryCurrent(row.item, options.job))) return { skipped: true, reason: 'app_authority_revoked' };
       const revealed = revealPushSubscription(subscription);
       await webpush.sendNotification({
         endpoint: revealed.endpoint,
         keys: { p256dh: revealed.p256dh, auth: revealed.auth },
-      }, safePayload(row.item), { TTL: row.item.priority === 'critical' ? 300 : 3600 });
+      }, safeAttentionPushPayload(row.item), { TTL: row.item.priority === 'critical' ? 300 : 3600 });
       sent += 1;
       await db.update(webPushSubscriptions).set({ failure_count: 0, last_used_at: new Date(), updated_at: new Date() }).where(eq(webPushSubscriptions.id, subscription.id));
     } catch (error) {

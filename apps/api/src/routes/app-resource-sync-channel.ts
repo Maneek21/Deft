@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { appResourceSyncChannelEnabled } from '../lib/app-resource-sync-channel.js';
 import { getAppRunRuntime } from '../lib/app-run-runtime.js';
 import { APP_RESOURCE_SYNC_AUDIENCE, APP_RESOURCE_SYNC_CHANNEL_VERSION } from '../lib/app-resource-sync-contract.js';
+import { RESOURCE_SYNC_CLAIM_BUDGET_MS } from '../lib/app-resource-sync-claim-budget.js';
 
 const MAX_BODY_BYTES = 1_100_000;
 const READ_DEADLINE_MS = 15_000;
@@ -89,8 +90,9 @@ function failure(c: Context, error: unknown) {
 
 appResourceSyncChannelRoutes.post('/claim', async (c) => {
   try {
+    const deadline = performance.now() + RESOURCE_SYNC_CLAIM_BUDGET_MS;
     const payload = await request(c, 4096);
-    const claim = await (await getAppRunRuntime()).resourceSyncChannel.claim(payload);
+    const claim = await (await getAppRunRuntime()).resourceSyncChannel.claim(payload, { signal: c.req.raw.signal, deadline });
     return c.json({ ...identity, claim });
   } catch (error) { return failure(c, error); }
 });

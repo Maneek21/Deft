@@ -1,0 +1,13 @@
+MIME-Version: 1.0
+From: Synthetic Personal <personal@example.test>
+To: Synthetic Review Queue <review-queue@example.test>
+Cc: Synthetic Collaborator <collaborator@example.test>
+Bcc: Synthetic Blind Reviewer <blind-reviewer@example.test>
+Subject: Re: Synthetic launch review
+Date: Tue, 29 Sep 2026 09:15:00 +0000
+Message-ID: <stage0-review-002@example.test>
+In-Reply-To: <stage0-review-001@example.test>
+References: <stage0-review-001@example.test>
+Content-Type: text/plain; charset=utf-8
+
+I reviewed this synthetic brief. This Bcc appears only in the account-owner Sent copy.

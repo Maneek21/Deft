@@ -10,7 +10,6 @@ import {
   normalizeAgentToolHistory,
 } from '../lib/agent-tool-history.js';
 import { AppRunSafePreviewSchema } from '@deft/shared';
-import { SandboxEmailSendInputSchema } from '@deft/app-kit';
 import { getAppRunRuntime } from '../lib/app-run-runtime.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { getModuleInstallation, getModuleRecord, humanModuleActor, listModuleRecordReferences } from '../lib/module-service.js';
@@ -672,6 +671,9 @@ async function buildStreamContext(
 
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS, ...MANAGER_TOOLS];
+  const {installedToolSchemas}=await import('../lib/app-installed-tool-discovery.js');
+  const installedSchemas=await installedToolSchemas({kind:'defty',org_id:user.org_id,user_id:user.id,conversation_id:convoId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
+  tools=[...tools,...installedSchemas.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.inputSchema as Anthropic.Tool['input_schema']}))];
   const allActionTools = new Set([...ACTION_TOOLS]);
   const actionApprovalTiers = new Map<string, ApprovalTier>();
 
@@ -801,6 +803,8 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
       const wikiResults = await retrieveContext({
         query: searchQuery,
         org_id: user.org_id,
+        user_id: user.id,
+        conversation_id: convoId,
         agent_employee_id: agentEmployeeId,
         types: ['wiki'],
         limit: 5,
@@ -1658,56 +1662,6 @@ agentRoutes.get('/actions/recent', async (c) => {
   });
 });
 
-// Plaintext is materialized only for an eligible human reviewer, never stored
-// in the action's shared safe preview or returned by general history endpoints.
-agentRoutes.get('/actions/:id/message-review', async (c) => {
-  c.header('Cache-Control', 'no-store');
-  try {
-    const user = c.get('user');
-    const [membership] = await db.select({ role: orgMembers.role }).from(orgMembers).where(and(
-      eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id),
-      eq(orgMembers.is_active, true),
-    )).limit(1);
-    if (!membership) throw new AppRunError('APP_RUN_ACCESS_DENIED');
-    const [action] = await db.select().from(agentActions).where(and(
-      eq(agentActions.id, c.req.param('id')), eq(agentActions.org_id, user.org_id),
-      eq(agentActions.action, 'app_run_invoke'),
-      reviewableActionSql({ ...user, role: membership.role }),
-    )).limit(1);
-    if (!action?.app_run_id) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
-    if (action.approval_status !== 'pending') throw new AppRunError('APP_RUN_APPROVAL_EXPIRED');
-    const runtime = await getAppRunRuntime();
-    const run = await runtime.repository.inspect(user.org_id, action.app_run_id);
-    if (run && (run.origin_kind !== 'app' || run.operation_name !== 'send_email')) {
-      throw new AppRunError('APP_RUN_INPUT_INVALID');
-    }
-    if (!run || run.state !== 'pending_approval' || run.input_purged_at
-      || run.input_expires_at.getTime() <= Date.now()) {
-      throw new AppRunError('APP_RUN_APPROVAL_EXPIRED');
-    }
-    if (!await runtime.liveAuthorization.authorizeDelivery({ org_id: user.org_id, run })) {
-      throw new AppRunError('APP_RUN_AUTHORIZATION_STALE');
-    }
-    const preview = AppRunSafePreviewSchema.parse(run.safe_preview);
-    if (preview.resource_refs.length === 0) throw new AppRunError('APP_RUN_ACCESS_DENIED');
-    const actor = humanModuleActor({ orgId: user.org_id, userId: user.id, role: membership.role, source: 'ui' });
-    for (const ref of preview.resource_refs) {
-      const match = /^module:([^:]+):([^:]+)$/u.exec(ref.resource_kind);
-      if (!match) throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      const record = await getModuleRecord(actor, ref.resource_id).catch(() => {
-        throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      });
-      if (record.installation_id !== match[1] || record.collection_key !== match[2]) {
-        throw new AppRunError('APP_RUN_ACCESS_DENIED');
-      }
-    }
-    const message = SandboxEmailSendInputSchema.parse(await runtime.secretRepository.readInput(user.org_id, run.id));
-    return c.json({ message: { to: message.to, subject: message.subject, body_text: message.body_text } });
-  } catch (error) {
-    return appHttpFailure(c, error, 'App Run', 'app-runs');
-  }
-});
-
 // Resolve task-link targets only for the current human reviewer. Target labels
 // and URLs are intentionally absent from the shared action params/history.
 agentRoutes.get('/actions/:id/task-link-review', async (c) => {
@@ -1831,7 +1785,9 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       }
     }
     let result: Awaited<ReturnType<typeof resolveApproveAction>>;
-    try { result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard }); }
+    try {
+      result = await resolveApproveAction(actionId, user.id, { appRunFinalGuard: nativeGuard });
+    }
     catch (error) { return appHttpFailure(c, error, 'App Run', 'app-runs'); }
     if (result.status === 'error') {
       const statusCode =

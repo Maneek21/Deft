@@ -69,14 +69,20 @@ jobs:
           'src/app/(app)/notes/note-save-coordinator.test.ts'
           'src/app/(app)/notes/protected-note-image.test.ts'
           'src/app/(app)/notes/note-load-state.test.ts'
+      - name: Install locked browser for mounted App contracts
+        run: pnpm exec playwright install --with-deps chromium
       - name: Test installed app session and review contracts
         run: >-
           pnpm --filter @deft/web exec tsx --test
           src/lib/app-experience-*.test.ts
+          src/components/apps/integrations/source-nomination.test.ts
+          src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/app-runtime-setup.test.ts
           src/lib/private-state-adoption.test.ts
           src/lib/action-batch-review.test.ts
           src/lib/app-navigation.test.ts
+      - name: Test bounded resource observation claim deadlines
+        run: pnpm --filter @deft/api exec tsx --test src/lib/app-resource-sync-claim-budget.test.ts
       - name: Type check API
         run: pnpm --filter @deft/api typecheck
       - name: Type check Web
@@ -165,6 +171,8 @@ jobs:
             -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")" = '0'
       - name: Build App Kit before isolated imports
         run: pnpm --filter @deft/app-kit build
+      - name: Install locked active Email test dependencies
+        run: npm exec --yes --package=pnpm@10.33.1 -- pnpm --dir examples/apps/email install --ignore-workspace --frozen-lockfile
       - name: Verify database isolation guards
         run: node --test scripts/email-preview-test-databases.test.mjs
       - name: Run tests
@@ -196,7 +204,7 @@ jobs:
     if: needs.release-scope.outputs.release_scope == 'hermes-certified'
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -289,8 +297,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Build web
-        run: pnpm --filter @deft/web build
+      - name: Build App Kit
+        run: pnpm --filter @deft/app-kit build
+      - name: Build production Web
+        run: pnpm --filter @deft/web exec next build --webpack
 
   versioned-upgrade:
     name: Versioned Upgrade
@@ -298,7 +308,7 @@ jobs:
     needs: typecheck
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -426,15 +436,6 @@ jobs:
           diff --recursive --unified "$RUNNER_TEMP/upgrade-before" "$RUNNER_TEMP/upgrade-after"
       - name: Run upgrade unit tests
         run: pnpm test:upgrade
-      - name: Verify native mention behavior on the upgraded release schema
-        env:
-          DEFT_NATIVE_MENTION_CONCURRENCY_CERTIFY: 'true'
-        run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE deft_mentions_upgrade_test TEMPLATE deft_upgrade"
-          export DATABASE_URL=postgres://postgres:postgres@localhost:5432/deft_mentions_upgrade_test
-          export DEFT_TEST_DATABASE_URL="$DATABASE_URL"
-          pnpm --filter @deft/app-kit build
-          pnpm --filter @deft/api exec tsx --test test/native-mentions-db.test.ts test/native-mention-agents-db.test.ts test/native-mention-agent-catalog.test.ts
 
   docker-build:
     name: Production Image + Browser Smoke
@@ -509,7 +510,7 @@ jobs:
             -e POSTGRES_USER=postgres \
             -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
             -e POSTGRES_DB=deft \
-            pgvector/pgvector:pg16
+            pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
           for attempt in $(seq 1 30); do
             docker exec deft-browser-postgres pg_isready -U postgres >/dev/null 2>&1 && break
             if [ "$attempt" = 30 ]; then echo 'database did not become ready'; exit 1; fi
@@ -518,10 +519,28 @@ jobs:
           docker run --rm --network deft-browser-smoke \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
             -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
-            --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed:demo'
+            --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed && pnpm --filter @deft/api exec tsx src/scripts/seed-test-fixtures.ts'
+          # Fixed API fixtures supply the synthetic owner; add only browser prerequisites.
+          # Never run seed-demo here: schema118 retains a truncate-protected adoption marker.
+          docker exec -i deft-browser-postgres psql -U postgres -d deft -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          INSERT INTO spaces (id, org_id, name, type, is_default, created_by)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6001', '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6', 'general', 'public', true, 'd4f985f6-6c37-4102-a7e8-32e22cfbe962')
+          ON CONFLICT (id) DO NOTHING;
+          INSERT INTO space_members (id, space_id, user_id)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6002', '9e60a105-31aa-437b-82c2-1b1849cd6001', 'd4f985f6-6c37-4102-a7e8-32e22cfbe962')
+          ON CONFLICT (space_id, user_id) DO NOTHING;
+          INSERT INTO projects (id, org_id, name, prefix, lead_id)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6003', '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6', 'Browser smoke', 'SMOKE', 'd4f985f6-6c37-4102-a7e8-32e22cfbe962')
+          ON CONFLICT (id) DO NOTHING;
+          INSERT INTO onboarding_state (id, user_id, completed)
+          VALUES ('9e60a105-31aa-437b-82c2-1b1849cd6004', 'd4f985f6-6c37-4102-a7e8-32e22cfbe962', true)
+          ON CONFLICT (user_id) DO NOTHING;
+          COMMIT;
+          SQL
           docker run --rm --network deft-browser-smoke \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
-            -e DEFT_TEST_EMAIL=diego@testers-tomatoes.com \
+            -e DEFT_TEST_EMAIL=maneek@test.com \
             -e DEFT_APPROVAL_SMOKE_MARKER="CI approval smoke $GITHUB_RUN_ID" \
             --entrypoint sh deft:ci -c 'pnpm test:product-browser:seed'
           docker run -d --name deft-browser-app --network deft-browser-smoke \
@@ -552,8 +571,8 @@ jobs:
       - name: Run production browser smoke
         env:
           DEFT_WEB_URL: http://127.0.0.1:3000
-          DEFT_TEST_EMAIL: diego@testers-tomatoes.com
-          DEFT_TEST_PASSWORD: tomato123
+          DEFT_TEST_EMAIL: maneek@test.com
+          DEFT_TEST_PASSWORD: test1234
           DEFT_APPROVAL_SMOKE_MARKER: CI approval smoke ${{ github.run_id }}
         run: pnpm test:product-browser
       - name: Block critical production-image vulnerabilities

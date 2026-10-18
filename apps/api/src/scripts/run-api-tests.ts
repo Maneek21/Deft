@@ -48,6 +48,7 @@ const commands = [
   [
     'exec',
     'tsx',
+    '--experimental-test-module-mocks',
     '--test',
     '--test-concurrency=1',
     '--test-force-exit',

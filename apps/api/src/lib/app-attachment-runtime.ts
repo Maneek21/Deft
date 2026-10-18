@@ -20,6 +20,7 @@ import { env, isAppAttachmentBrokerEnabled } from './env.js';
 import { assertAppRunReferencedKeysAvailable, AppRunKeyVersionUnavailableError } from './app-run-keyrings.js';
 import { AppRunError } from './app-run-errors.js';
 import { listAppAttachmentKeyReferences } from './app-attachment-key-references.js';
+import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
 
 type Database = ReturnType<typeof createBoundedAppRunDatabase>;
 class AttachmentRunRepository extends PostgresAppRunRepository {
@@ -35,7 +36,7 @@ async function createAttachmentRuntime() {
   assertAttachmentBrokerEnabled();
   const { keys } = await (await import('./app-run-runtime.js')).getAppRunRuntime();
   assertAttachmentBrokerEnabled();
-  const database=createBoundedAppRunDatabase(env.DATABASE_URL,{max:2,application_name:'deft-app-attachments'});
+  const database=createBoundedAppRunDatabase(env.DATABASE_URL,{max:APP_DATABASE_POOL_BUDGET.attachment_runtime,application_name:'deft-app-attachments'});
   try {
     assertAppRunReferencedKeysAvailable(keys,await database.transaction(tx=>listAppAttachmentKeyReferences(tx),new AbortController().signal,performance.now()+10_000));
     assertAttachmentBrokerEnabled();
@@ -53,7 +54,7 @@ async function createAttachmentRuntime() {
     postgresAppRunAttemptQueue,store,'attachment_v3');
     const admission=new AppResourceSyncAdmissionService(repository,inputs,secrets,syncSecrets,runner,
       ()=>new Date(),isAppAttachmentBrokerEnabled,'attachment_v3');
-    // This single process-wide instance owns the max2 transfer limiter. Routes
+    // This single process-wide instance owns the bounded transfer limiter. Routes
     // obtain this runtime; they must never construct a custody service per call.
     const custody=new AppAttachmentCustodyService(database,keys,objects);
     return Object.freeze({database,repository,keys,objects,custody,runner,admission,

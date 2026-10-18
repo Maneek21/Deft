@@ -1,3 +1,4 @@
+import {appConsentDeadline} from '@deft/app-kit';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { agentEmployees, agentMcpCallAudit, oauthAuditEvents, auditLog, mcpTokens, orgMembers, users, appResourceProjections } from '@deft/db/schema';
@@ -175,7 +176,7 @@ export class AppPrivateMcpService {
       const fields = [...input.field_keys].sort();
       if (fields.some(field => !Object.hasOwn(parent.authority.descriptor.record_schema.properties, field) || !Object.hasOwn(parent.record!.data, field))) throw accessUnavailable();
       const now = this.issuance(tx);
-      const expires = new Date(Math.min(Date.parse(input.expires_at), now.getTime() + PRIVATE_MCP_GRANT_MS, parent.authority.binding.consent_expires_at!.getTime()));
+      const expires = new Date(Math.min(Date.parse(input.expires_at), now.getTime() + PRIVATE_MCP_GRANT_MS, appConsentDeadline(parent.authority.binding.consent_expires_at,parent.authority.binding.consent_lifetime??undefined)));
       const snapshot = PrivateMcpGrantSnapshot.parse({
         schema_version: 'deft.app_private_mcp_snapshot.v1', purpose: 'mcp_private_context', org_id: c.org_id, owner_user_id: c.user_id,
         destination: input.destination, ...this.pins(parent), ...await this.credentialPins(tx, c.org_id, input.destination), ref: input.ref,
@@ -219,7 +220,7 @@ export class AppPrivateMcpService {
       const parent = await this.parent(tx, c.org_id, snapshot.ref, target, snapshot.destination.kind, true, signal);
       const pins = { ...this.pins(parent), ...await this.credentialPins(tx, c.org_id, snapshot.destination) };
       if (digest(pins) !== digest(Object.fromEntries(Object.keys(pins).map(key => [key, snapshot[key as keyof PrivateMcpSnapshot]])))) throw new PrivateResourceAccessError('APP_RESOURCE_ACCESS_STALE', 409);
-      const expires = new Date(Math.min(Date.parse(snapshot.review_expires_at), Date.parse(snapshot.expires_at), parent.authority.binding.consent_expires_at!.getTime()));
+      const expires = new Date(Math.min(Date.parse(snapshot.review_expires_at), Date.parse(snapshot.expires_at), appConsentDeadline(parent.authority.binding.consent_expires_at,parent.authority.binding.consent_lifetime??undefined)));
       const prior = this.grantRow((await tx.execute(sql`SELECT * FROM app_private_mcp_grants WHERE org_id=${c.org_id} AND owner_user_id=${c.user_id} AND review_digest=${input.review_digest} LIMIT 1`)).rows[0]);
       if (prior) {
         if (prior.revoked_at) throw accessUnavailable();
@@ -258,7 +259,7 @@ export class AppPrivateMcpService {
       const current = this.grantRow((await tx.execute(sql`SELECT * FROM app_private_mcp_grants WHERE org_id=${stamp.org_id} AND id=${id}`)).rows[0]);
       if (!current || current.revoked_at || current.review_digest !== row.review_digest) throw accessUnavailable();
       this.stored(current);
-      const deadline = new Date(Math.min(current.expires_at.getTime(), parent.authority.binding.consent_expires_at!.getTime(), citation ? Date.parse(citation.expires_at) : Infinity));
+      const deadline = new Date(Math.min(current.expires_at.getTime(), appConsentDeadline(parent.authority.binding.consent_expires_at,parent.authority.binding.consent_lifetime??undefined), citation ? Date.parse(citation.expires_at) : Infinity));
       const tool = operation === 'read' ? 'app_private_resource_read' : 'app_private_resource_cite';
       await finalPrivateMcpCredential(tx, invocation, tool, deadline, this.deadline(tx, deadline));
       if (!privateAccessParentGateIsCurrent(parent)) throw accessUnavailable();
@@ -330,7 +331,7 @@ export class AppPrivateMcpService {
       const bytes = (await tx.execute(sql`SELECT coalesce(sum(octet_length(body_ciphertext_b64)),0)::text AS bytes FROM app_resource_projections WHERE org_id=${stamp.org_id} AND id IN (${sql.join(projections.map(id => sql`${id}`), sql`,`)})`)).rows[0]?.bytes;
       if (Number(bytes) > 1048576) throw new PrivateResourceAccessError('APP_RESOURCE_ACCESS_TOO_LARGE', 413);
       const projectionRows = await tx.select().from(appResourceProjections).where(and(eq(appResourceProjections.org_id, stamp.org_id), eq(appResourceProjections.resource_binding_id, scope.resource_binding_id), eq(appResourceProjections.checkpoint_id, parent.checkpoint.id), eq(appResourceProjections.generation, parent.checkpoint.generation), eq(appResourceProjections.state, 'live'), inArray(appResourceProjections.id, projections)));
-      let expiry = Math.min(currentAnchor.expires_at.getTime(), parent.authority.binding.consent_expires_at!.getTime(), cursor ? Date.parse(cursor.expires_at) : this.issuance(tx).getTime() + 300000);
+      let expiry = Math.min(currentAnchor.expires_at.getTime(), appConsentDeadline(parent.authority.binding.consent_expires_at,parent.authority.binding.consent_lifetime??undefined), cursor ? Date.parse(cursor.expires_at) : this.issuance(tx).getTime() + 300000);
       await finalPrivateMcpCredential(tx, invocation, 'app_private_resource_search', new Date(expiry), this.deadline(tx, new Date(expiry)));
       if (!privateAccessParentGateIsCurrent(parent)) throw accessUnavailable();
       const decoded = new Map<string, ReturnType<typeof decodePrivateProjection>>();

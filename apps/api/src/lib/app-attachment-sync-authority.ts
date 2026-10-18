@@ -1,3 +1,4 @@
+import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
@@ -6,11 +7,12 @@ import {
 import { SyncDescriptorV2Schema, digestResourceSyncDescriptorV2 } from '@deft/app-kit';
 import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
+import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
 import { CapabilityProviderDiscoverySnapshotSchema } from '@deft/shared';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { APP_RESOURCE_SYNC_HOST_POLICY } from './app-resource-sync-policy.js';
 import { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-reviewed.js';
-import { createAttachmentSyncDiscoverySnapshot } from './app-attachment-sync-discovery.js';
+import { createAttachmentSyncDiscoverySnapshot, createLegacyPrePdfAttachmentSyncDiscoverySnapshot } from './app-attachment-sync-discovery.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { attachmentSyncConsentReview } from './app-attachment-sync-consent.js';
 
@@ -21,6 +23,8 @@ type ProviderSnapshot = typeof capabilityProviderSnapshots.$inferSelect;
 type Reviewed = Awaited<ReturnType<typeof loadReviewedAttachmentSyncDescriptor>>;
 
 export type LiveAttachmentSyncBindingAuthority = Readonly<Reviewed & {
+  connection_profile_required: boolean;
+  owner_connection_admission?: Awaited<ReturnType<typeof assertOwnerConnectionRegistration>>;
   registration: Registration;
   binding: Binding;
   provider_snapshot: ProviderSnapshot;
@@ -29,6 +33,7 @@ export type LiveAttachmentSyncBindingAuthority = Readonly<Reviewed & {
 export type LiveAttachmentSyncAuthority = Readonly<LiveAttachmentSyncBindingAuthority & { session: Session }>;
 
 type BindingLocator = Readonly<{ org_id: string; resource_binding_id: string; clock: () => Date;
+  binding_lock?: 'update';
   prelocked_participant_ids?: readonly string[] }>;
 type SessionLocator = Readonly<{ org_id: string; session_id: string;
   token_hash: string; clock: () => Date }>;
@@ -48,7 +53,7 @@ function currentTime(clock: () => Date): Date | null {
 }
 
 async function validProviderSnapshot(row: ProviderSnapshot, registration: Registration,
-  binding: Binding, descriptor: Reviewed['descriptor']): Promise<boolean> {
+  binding: Binding, descriptor: Reviewed['descriptor'], closureLegacyPrePdf: boolean): Promise<boolean> {
   if (row.org_id !== binding.org_id || row.id !== binding.provider_snapshot_id
     || row.provider_kind !== 'app_runtime' || row.provider_instance_id !== registration.id
     || row.adapter_contract_version !== 'deft.app_runtime_channel.v3') return false;
@@ -61,14 +66,37 @@ async function validProviderSnapshot(row: ProviderSnapshot, registration: Regist
     || new Date(parsed.data.captured_at).getTime() !== row.captured_at.getTime()) return false;
   const expected = await createAttachmentSyncDiscoverySnapshot({ org_id: binding.org_id,
     registration_id: registration.id, descriptor, captured_at: row.captured_at });
-  return expected.snapshot_digest === row.snapshot_digest
-    && digestAppGrantValue(expected) === digestAppGrantValue(parsed.data);
+  if (expected.snapshot_digest === row.snapshot_digest
+    && digestAppGrantValue(expected) === digestAppGrantValue(parsed.data)) return true;
+  if (!closureLegacyPrePdf || registration.owner_connection_admission_id !== null) return false;
+  const legacy = await createLegacyPrePdfAttachmentSyncDiscoverySnapshot({ org_id: binding.org_id,
+    registration_id: registration.id, descriptor, captured_at: row.captured_at });
+  return legacy.snapshot_digest === row.snapshot_digest
+    && digestAppGrantValue(legacy) === digestAppGrantValue(parsed.data);
 }
 
 /** Caller owns any Run lock. All mutable human rows are locked before App,
  * then registration and binding; this reader does not create authority. */
 export async function loadLiveAttachmentSyncBindingAuthority(tx: AppRunTransaction,
   input: BindingLocator): Promise<LiveAttachmentSyncBindingAuthority | null> {
+  return loadAttachmentSyncBindingAuthority(tx, input, false);
+}
+
+/** Separate closure-only entrance for reviewed pre58 legacy registrations.
+ * Runtime delivery and attachment custody never use the historical schema. */
+export async function loadAttachmentSyncClosureBindingAuthority(tx: AppRunTransaction,
+  input: BindingLocator): Promise<LiveAttachmentSyncBindingAuthority | null> {
+  return loadAttachmentSyncBindingAuthority(tx, input, true);
+}
+
+/** Identity evidence for independent owner consent. Never an operational
+ * reader: callers must separately attest fresh SID, policy bounds and review. */
+export async function loadConsentContinuationBindingIdentity(tx: AppRunTransaction,input: BindingLocator){
+  return loadAttachmentSyncBindingAuthority(tx,input,false,true);
+}
+
+async function loadAttachmentSyncBindingAuthority(tx: AppRunTransaction,
+  input: BindingLocator, closureLegacyPrePdf: boolean, continuationIdentityOnly=false): Promise<LiveAttachmentSyncBindingAuthority | null> {
   const [locator] = await tx.select({
     owner_user_id: appResourceBindings.owner_user_id,
     registration_id: appResourceBindings.runtime_registration_id,
@@ -99,7 +127,7 @@ export async function loadLiveAttachmentSyncBindingAuthority(tx: AppRunTransacti
   const [operator] = await tx.select({ is_active: orgMembers.is_active, role: orgMembers.role, kind: users.kind, is_agent: users.is_agent })
     .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id)).where(and(eq(orgMembers.org_id, input.org_id),
       eq(orgMembers.user_id, registrationLocator.operator_user_id))).limit(1);
-  if (!owner?.is_active || (owner.kind !== 'human' || owner.is_agent !== false) || !['owner', 'admin'].includes(owner.role)
+  if (!owner?.is_active || (owner.kind !== 'human' || owner.is_agent !== false) || !['owner', 'admin', 'member'].includes(owner.role)
     || !operator?.is_active || (operator.kind !== 'human' || operator.is_agent !== false) || operator.role === 'guest') return null;
   let reviewed: Reviewed;
   try { reviewed = await loadReviewedAttachmentSyncDescriptor(tx, input.org_id,
@@ -107,7 +135,9 @@ export async function loadLiveAttachmentSyncBindingAuthority(tx: AppRunTransacti
   catch { return null; }
   await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id = ${input.org_id}
     AND id = ${locator.registration_id} FOR SHARE`);
-  await tx.execute(sql`SELECT id FROM app_resource_bindings WHERE org_id = ${input.org_id}
+  if (input.binding_lock === 'update') await tx.execute(sql`SELECT id FROM app_resource_bindings WHERE org_id = ${input.org_id}
+    AND id = ${input.resource_binding_id} FOR UPDATE`);
+  else await tx.execute(sql`SELECT id FROM app_resource_bindings WHERE org_id = ${input.org_id}
     AND id = ${input.resource_binding_id} FOR SHARE`);
   const [registration] = await tx.select().from(appRuntimeRegistrations).where(and(
     eq(appRuntimeRegistrations.org_id, input.org_id), eq(appRuntimeRegistrations.id, locator.registration_id)))
@@ -115,6 +145,13 @@ export async function loadLiveAttachmentSyncBindingAuthority(tx: AppRunTransacti
   const [binding] = await tx.select().from(appResourceBindings).where(and(
     eq(appResourceBindings.org_id, input.org_id), eq(appResourceBindings.id, input.resource_binding_id)))
     .limit(1);
+  if(!continuationIdentityOnly){const pending=await tx.execute(sql`SELECT session_id FROM app_connection_consent_continuations WHERE org_id=${input.org_id} AND resource_binding_id=${input.resource_binding_id} AND record->'activation_started'='true'::jsonb AND record->>'state'<>'connected' LIMIT 1`);if(pending.rows.length)return null;}
+  let ownerAdmission;
+  if (registration?.owner_connection_admission_id) {
+    try { ownerAdmission = await assertOwnerConnectionRegistration(tx, registration, { owner_user_id: locator.owner_user_id,
+      resource_key: locator.resource_key, lockedReviewed: reviewed }); }
+    catch { return null; }
+  } else if (owner.role === 'member') return null;
   if (!registration || !binding || registration.state !== 'active' || registration.runtime_epoch < 1
     || registration.contract_version !== 'deft.app_runtime_channel.v3'
     || registration.operator_user_id !== registrationLocator.operator_user_id
@@ -142,28 +179,33 @@ export async function loadLiveAttachmentSyncBindingAuthority(tx: AppRunTransacti
     || binding.review_scope !== APP_RESOURCE_SYNC_HOST_POLICY.review_scope
     || binding.retry_class !== APP_RESOURCE_SYNC_HOST_POLICY.retry_class
     || binding.retention_class !== APP_RESOURCE_SYNC_HOST_POLICY.retention_class
-    || !binding.consent_expires_at || !binding.reviewed_at
-    || binding.consent_expires_at <= binding.reviewed_at) return null;
+    || !binding.reviewed_at||!appConsentExpiryValid(binding.consent_expires_at,binding.consent_lifetime??undefined)
+    || appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=binding.reviewed_at.getTime()
+    || binding.consent_lifetime==='until_revoked'&&ownerAdmission?.policy.allow_until_revoked!==true) return null;
   try {
     const parsed = SyncDescriptorV2Schema.parse(binding.reviewed_descriptor);
     if (await digestResourceSyncDescriptorV2(parsed) !== reviewed.descriptor_digest) return null;
   } catch { return null; }
   try { parseAttachmentConsentPolicy(reviewed.descriptor.attachments, binding.attachment_policy); } catch { return null; }
-  if (binding.attachment_consent_digest !== digestAppGrantValue(attachmentSyncConsentReview({
+  if (binding.attachment_consent_digest !== digestAppGrantValue({ ...attachmentSyncConsentReview({
     org_id: input.org_id, owner_user_id: binding.owner_user_id, operator_user_id: registration.operator_user_id,
-    reviewed, consent_expires_at: binding.consent_expires_at, limits: binding, attachment_policy: binding.attachment_policy }))) return null;
+    reviewed, consent_expires_at: binding.consent_expires_at, ...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{}), limits: binding, attachment_policy: binding.attachment_policy,
+    ...(ownerAdmission ? { owner_connection_admission: ownerAdmission.reference } : {}) }),
+    ...(binding.target_key === 'primary' ? {} : { target_key: binding.target_key }) })) return null;
   const [providerSnapshot] = await tx.select().from(capabilityProviderSnapshots).where(and(
     eq(capabilityProviderSnapshots.org_id, input.org_id),
     eq(capabilityProviderSnapshots.id, binding.provider_snapshot_id))).limit(1);
   if (!providerSnapshot) return null;
   try { if (!await validProviderSnapshot(providerSnapshot, registration, binding,
-    reviewed.descriptor)) return null; }
+    reviewed.descriptor, closureLegacyPrePdf)) return null; }
   catch { return null; }
   if (!await attachmentSyncParticipantsAreHuman(tx, binding.owner_user_id, registration.operator_user_id)) return null;
   const checkedAt = currentTime(input.clock);
-  if (!checkedAt || binding.consent_expires_at <= checkedAt
-    || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: [binding.consent_expires_at] })) return null;
+  if (!checkedAt || !continuationIdentityOnly && appConsentDeadline(binding.consent_expires_at,binding.consent_lifetime??undefined)<=checkedAt.getTime()
+    || !await attachmentFinalAuthorityIsCurrent(tx, [binding.owner_user_id, registration.operator_user_id], { clock: input.clock, expires_at: continuationIdentityOnly||binding.consent_lifetime==='until_revoked' ? [] : [binding.consent_expires_at!] })) return null;
   return Object.freeze({ ...reviewed, registration, binding, provider_snapshot: providerSnapshot,
+    owner_connection_admission: ownerAdmission,
+    connection_profile_required: ownerAdmission?.snapshot.connection_profile !== undefined,
     checked_at: checkedAt });
 }
 
@@ -201,9 +243,13 @@ export async function loadLiveAttachmentSyncAuthority(tx: AppRunTransaction,
     || session.lifecycle_epoch !== bindingAuthority.installation.lifecycle_epoch
     || session.grant_epoch !== bindingAuthority.installation.grant_epoch
     || session.revoked_at || session.expires_at <= checkedAt
-    || bindingAuthority.binding.consent_expires_at === null
-    || bindingAuthority.binding.consent_expires_at <= checkedAt) return null;
+    || appConsentDeadline(bindingAuthority.binding.consent_expires_at,bindingAuthority.binding.consent_lifetime??undefined)<=checkedAt.getTime()) return null;
+  if(session.renewal_lifetime==='until_revoked'){
+    if(session.renewable_until!==null||!session.renewal_web_session_id||!session.renewal_operator_role||bindingAuthority.binding.consent_lifetime!=='until_revoked')return null;
+    const {runtimeRenewalPersistentPrincipal}=await import('./app-runtime-renewal.js');
+    if(!await runtimeRenewalPersistentPrincipal(tx,{org_id:input.org_id,operator_user_id:session.operator_user_id,role:session.renewal_operator_role}))return null;
+  }
   if (!await attachmentFinalAuthorityIsCurrent(tx, [bindingAuthority.binding.owner_user_id, bindingAuthority.registration.operator_user_id],
-    { clock: input.clock, expires_at: [session.expires_at, bindingAuthority.binding.consent_expires_at] })) return null;
+    { clock: input.clock, expires_at: [session.expires_at, ...(bindingAuthority.binding.consent_expires_at?[bindingAuthority.binding.consent_expires_at]:[])] })) return null;
   return Object.freeze({ ...bindingAuthority, session, checked_at: checkedAt });
 }

@@ -1,14 +1,15 @@
 'use client';
+import {appConsentDeadline,appConsentExpiryValid} from '../../../../../packages/app-kit/src/consent-lifetime';
 import { useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { api, isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
 import { PageHeader } from '@/components/page-header';
-type Scope = { field_keys: string[]; label_field: string; consent_expires_at: string };
+type Scope = { field_keys: string[]; label_field: string; consent_expires_at: string | null; consent_lifetime?: 'until_revoked' };
 type Hit = { label: string; snippet: string; field_key: string; href: string; ref: unknown };
 type Page = { schema_version: string; items: Hit[]; next_cursor: string | null;
-  scan: { records_scanned: number; complete: boolean }; freshness: string; consent_expires_at: string };
+  scan: { records_scanned: number; complete: boolean }; freshness: string; consent_expires_at: string | null; consent_lifetime?: 'until_revoked' };
 const invalid = () => new Error('Private search is unavailable.');
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
@@ -17,13 +18,13 @@ function object(value: unknown): Record<string, unknown> {
 function scopeValue(value: unknown): Scope {
   const v = object(value);
   if (!Array.isArray(v.field_keys) || v.field_keys.length > 32 || !v.field_keys.every(k => typeof k === 'string' && /^[a-z][a-z0-9_]{0,47}$/u.test(k))
-    || typeof v.label_field !== 'string' || typeof v.consent_expires_at !== 'string' || !Number.isFinite(Date.parse(v.consent_expires_at))) throw invalid();
-  return { field_keys: v.field_keys, label_field: v.label_field, consent_expires_at: v.consent_expires_at };
+    || typeof v.label_field !== 'string' || !appConsentExpiryValid(v.consent_expires_at as string | null,v.consent_lifetime)) throw invalid();
+  return { field_keys: v.field_keys, label_field: v.label_field, consent_expires_at: v.consent_expires_at as string | null,...(v.consent_lifetime==='until_revoked'?{consent_lifetime:'until_revoked' as const}:{}) };
 }
 function pageValue(value: unknown, fields: string[]): Page {
   const v = object(value), scan = object(v.scan);
   if (v.schema_version !== 'deft.app_private_search_page.v1' || v.freshness !== 'unknown'
-    || typeof v.consent_expires_at !== 'string' || !Number.isFinite(Date.parse(v.consent_expires_at))
+    || !appConsentExpiryValid(v.consent_expires_at as string | null,v.consent_lifetime)
     || typeof scan.records_scanned !== 'number' || !Number.isInteger(scan.records_scanned) || scan.records_scanned < 0 || scan.records_scanned > 100
     || typeof scan.complete !== 'boolean' || !(v.next_cursor === null || typeof v.next_cursor === 'string' && v.next_cursor.length <= 2048)
     || scan.complete !== (v.next_cursor === null) || !Array.isArray(v.items) || v.items.length > 25
@@ -34,7 +35,7 @@ function pageValue(value: unknown, fields: string[]): Page {
       || !/^\/app-resources\/[a-f0-9-]{36}\/[a-z][a-z0-9_]{0,63}\/[a-f0-9-]{36}$/u.test(h.href)) throw invalid();
     return { label: h.label, snippet: h.snippet, field_key: h.field_key, href: h.href, ref: h.ref }; });
   return { schema_version: v.schema_version, items, scan: { records_scanned: scan.records_scanned, complete: scan.complete },
-    next_cursor: v.next_cursor, freshness: v.freshness, consent_expires_at: v.consent_expires_at };
+    next_cursor: v.next_cursor, freshness: v.freshness, consent_expires_at: v.consent_expires_at as string | null,...(v.consent_lifetime==='until_revoked'?{consent_lifetime:'until_revoked' as const}:{}) };
 }
 export function PrivateResourceSearch({ bindingId }: { bindingId: string }) {
   const { user, sessionCacheScope } = useAuth();
@@ -58,10 +59,10 @@ function SearchView({ bindingId }: { bindingId: string }) {
     try {
       const response = await api.fetch(`/api/app-resource-private/bindings/${encodeURIComponent(bindingId)}/search-scope`, { signal: controller.signal });
       if (!response.ok) throw new Error(await appApiError(response, 'Private search is unavailable.'));
-      const value = scopeValue(await response.json()), deadline = Date.parse(value.consent_expires_at);
+      const value = scopeValue(await response.json()), deadline = appConsentDeadline(value.consent_expires_at,value.consent_lifetime);
       if (!alive.current || request !== generation.current || document.hidden || !isSameWebSession(token, localStorage.getItem('deft-access-token')) || deadline <= Date.now()) return;
       setScope(value); setFields([value.label_field]);
-      timer = setTimeout(() => { clearPrivate(); setError('Private resource consent expired.'); }, Math.min(deadline - Date.now(), 2147483647));
+      if (Number.isFinite(deadline)) timer = setTimeout(() => { clearPrivate(); setError('Private resource consent expired.'); }, Math.min(deadline - Date.now(), 2147483647));
     } catch (e) { if (alive.current && request === generation.current && !controller.signal.aborted) setError(e instanceof Error ? e.message : 'Private search is unavailable.'); }
     finally { if (alive.current && request === generation.current) setBusy(false); }
     };
@@ -82,7 +83,7 @@ function SearchView({ bindingId }: { bindingId: string }) {
       if (!response.ok) { if (response.status === 409 && alive.current && request === generation.current) { setHits([]); setPage(null); setScanned(0); } throw new Error(await appApiError(response, 'Private search is unavailable.')); }
       const value = pageValue(await response.json(), fields);
       if (!alive.current || request !== generation.current || controller.signal.aborted || document.hidden
-        || !isSameWebSession(token, localStorage.getItem('deft-access-token')) || Date.parse(value.consent_expires_at) <= Date.now()) return;
+        || !isSameWebSession(token, localStorage.getItem('deft-access-token')) || appConsentDeadline(value.consent_expires_at,value.consent_lifetime) <= Date.now()) return;
       setHits(value.items); setPage(value);
       setScanned(previous => continuation ? previous + value.scan.records_scanned : value.scan.records_scanned);
     } catch (e) { if (alive.current && request === generation.current && !controller.signal.aborted) { setHits([]); setPage(null); setError(e instanceof Error ? e.message : 'Private search is unavailable.'); } }

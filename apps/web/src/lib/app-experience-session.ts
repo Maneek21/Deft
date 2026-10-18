@@ -1,4 +1,9 @@
+import {DeftExperienceBundleSchema} from '../../../../packages/app-kit/src/experience';
+import {normalizeAppResourceContent,type AppResourceContentPolicy} from './apps';
 import type { ExperiencePin } from './app-experience-bridge';
+import { parseComposerDraftPolicy, type ComposerFilesPolicy } from './app-experience-compose-files';
+import { DeftExperienceRendererProfileSchema, type DeftExperienceRendererProfile } from '../../../../packages/app-kit/src/experience';
+import {RecordStoreDeclarationSchema,type RecordStoreDeclaration} from '../../../../packages/app-kit/src/app-data';
 
 export function experienceLifetimeIsCurrent(sessionExpiry: string, exposureExpiry?: string, now = Date.now()): boolean {
   const session = Date.parse(sessionExpiry);
@@ -10,9 +15,11 @@ export function experienceLifetimeIsCurrent(sessionExpiry: string, exposureExpir
 export type InstalledExperienceSession = Readonly<{
   pin: ExperiencePin;
   protocol_version?: '7';
+  resource_target_key?: string;
+  app_name?: string;
   experience: Readonly<{ key: string; label: string; artifact_digest: string;
-    bridge_version: 'deft.experience_bridge.v1'; renderer_version: 'deft.trusted_renderer.v1' }>;
-  bundle: Readonly<{ schema_version: 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3'; state_keys?: readonly string[]; search_resource_keys?: readonly string[]; worker_source: string;
+    bridge_version: 'deft.experience_bridge.v1' }> & DeftExperienceRendererProfile;
+  bundle: Readonly<{ schema_version: 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3' | 'deft.experience_bundle.v4'; record_intakes?: readonly import('../../../../packages/app-kit/src/record-intake').DeftExperienceRecordIntake[];state_keys?: readonly string[];record_store_keys?:readonly string[]; search_resource_keys?: readonly string[]; worker_source: string;
     entry_view: string; resource_keys: readonly string[]; action_keys: readonly string[] }>;
   expires_at: string;
 }>;
@@ -20,12 +27,35 @@ export type InstalledExperienceSession = Readonly<{
 export type ExperienceExposureStatus = Readonly<{ exposure_id: string; exposure_epoch: number;
   review_digest: string; expires_at: string; active: true }>;
 export type ExperiencePrivateStateReview = Readonly<{ key: string; label: string; declaration_digest: string; allowed_operations: readonly string[];
-  max_record_bytes: number; max_records: number; max_total_bytes: number; retention_days: number }>;
+  max_record_bytes: number; max_records: number; max_total_bytes: number; retention_days: number }> & ExperiencePrivateCustodyReview;
+export type ExperiencePrivateCustodyReview = Readonly<{ files?: ComposerFilesPolicy;
+  action_payloads?: readonly Readonly<{ action_key: string; max_payload_bytes: number }>[] }>;
+/** Exact optional display policy; absent declarations never become defaults. */
+export function normalizeExperiencePrivateCustody(state: Record<string, unknown>): ExperiencePrivateCustodyReview {
+  const files = Object.hasOwn(state, 'files') ? parseComposerDraftPolicy({ draft_state_key: state.key, files: state.files }, String(state.key))?.files : undefined;
+  let payloads: Array<{ action_key: string; max_payload_bytes: number }> | undefined;
+  if (Object.hasOwn(state, 'action_payloads')) {
+    if (!Array.isArray(state.action_payloads) || !state.action_payloads.length || state.action_payloads.length > 16) throw Error('Invalid action payload review.');
+    payloads = state.action_payloads.map((value, index) => {
+      const row = object(value), previous = state.action_payloads as unknown[];
+      if (Object.keys(row).sort().join(',') !== 'action_key,max_payload_bytes' || typeof row.action_key !== 'string'
+        || !/^[a-z][a-z0-9_]{0,47}$/u.test(row.action_key) || /^(deft|core|system)(_|$)/u.test(row.action_key)
+        || ['constructor', 'prototype', '__proto__'].includes(row.action_key)
+        || index > 0 && String(object(previous[index - 1]).action_key) >= row.action_key
+        || !Number.isSafeInteger(row.max_payload_bytes) || Number(row.max_payload_bytes) < 1 || Number(row.max_payload_bytes) > 8_388_608) throw Error('Invalid action payload review.');
+      return { action_key: row.action_key, max_payload_bytes: Number(row.max_payload_bytes) };
+    });
+  }
+  return { ...(files ? { files } : {}), ...(payloads ? { action_payloads: payloads } : {}) };
+}
 export type ExperienceExposureReview = Readonly<{ review_token: string; review_digest: string; snapshot: {
   schema_version: 'deft.experience_resource_exposure.v1' | 'deft.experience_resource_exposure.v2' | 'deft.experience_resource_exposure.v3'; destination: 'verified_installed_experience_worker';
   app_name: string; app_version: string; owner_label: string; experience_label: string; artifact_digest: string;
+  bridge_version?: 'deft.experience_bridge.v1'; renderer_version?: DeftExperienceRendererProfile['renderer_version'];
+  capabilities?: DeftExperienceRendererProfile['capabilities'];
   expires_at: string; review_expires_at: string; resources: Array<{ resource_key: string; label: string; resource_type: string;
-    allowed_operations: string[]; allowed_fields: string[] }>; private_state?: readonly ExperiencePrivateStateReview[];
+    allowed_operations: string[]; allowed_fields: string[]; content_policy?:AppResourceContentPolicy }>; private_state?: readonly ExperiencePrivateStateReview[];
+    record_stores?:readonly (RecordStoreDeclaration&{declaration_digest:string})[];
 } }>;
 export function normalizeExperienceExposureStatus(value: unknown): ExperienceExposureStatus {
   const row = object(value);
@@ -48,15 +78,27 @@ export function normalizeExperienceAccess(value: unknown) {
 }
 export function normalizeExperienceExposureReview(value: unknown): ExperienceExposureReview {
   const row = object(value); const snapshot = object(row.snapshot);
+  let rendererProfile: DeftExperienceRendererProfile | undefined;
+  if (snapshot.renderer_version !== undefined || snapshot.capabilities !== undefined || snapshot.bridge_version !== undefined) {
+    if (snapshot.bridge_version !== 'deft.experience_bridge.v1') throw new Error('Unsupported Experience renderer profile.');
+    rendererProfile = normalizeExperienceRendererProfile(snapshot);
+  }
   if (!['deft.experience_resource_exposure.v1', 'deft.experience_resource_exposure.v2', 'deft.experience_resource_exposure.v3'].includes(String(snapshot.schema_version)) || snapshot.destination !== 'verified_installed_experience_worker'
     || typeof row.review_token !== 'string' || row.review_token.length > 24576 || !/^sha256:[a-f0-9]{64}$/.test(String(row.review_digest))
     || !Array.isArray(snapshot.resources) || (snapshot.schema_version !== 'deft.experience_resource_exposure.v3' && snapshot.resources.length < 1) || snapshot.resources.length > 16
     || !Number.isFinite(new Date(String(snapshot.expires_at)).getTime())
     || !Number.isFinite(new Date(String(snapshot.review_expires_at)).getTime())) throw new Error('Private access review is unavailable.');
   let privateState: ExperiencePrivateStateReview[] | undefined;
+  let recordStores:Array<RecordStoreDeclaration&{declaration_digest:string}>|undefined;
   if (snapshot.schema_version === 'deft.experience_resource_exposure.v3') {
-    if (!Array.isArray(snapshot.private_state) || !snapshot.private_state.length || snapshot.private_state.length > 16) throw new Error('Private state review is unavailable.');
-    privateState = snapshot.private_state.map(value => {
+    if(snapshot.record_stores!==undefined){if(!Array.isArray(snapshot.record_stores)||!snapshot.record_stores.length||snapshot.record_stores.length>16)throw Error('Record store review unavailable');
+      recordStores=snapshot.record_stores.map(value=>{const row=object(value),{declaration_digest,...declaration}=row;
+        if(typeof declaration_digest!=='string'||!/^sha256:[a-f0-9]{64}$/u.test(declaration_digest))throw Error('Record store review unavailable');
+        return {...RecordStoreDeclarationSchema.parse(declaration),declaration_digest};});
+      if(recordStores.some((item,index)=>index>0&&recordStores![index-1]!.key>=item.key))throw Error('Record store review unavailable');}
+    if(snapshot.private_state!==undefined&&(!Array.isArray(snapshot.private_state)||!snapshot.private_state.length||snapshot.private_state.length>16)
+      ||snapshot.private_state===undefined&&!recordStores?.length)throw Error('Private state review is unavailable.');
+    privateState = snapshot.private_state===undefined?undefined:(snapshot.private_state as unknown[]).map(value => {
       const state = object(value);
       if (typeof state.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(state.key)
         || typeof state.label !== 'string' || state.label.length > 128
@@ -66,21 +108,25 @@ export function normalizeExperienceExposureReview(value: unknown): ExperienceExp
         if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) throw new Error('Private state quota is unavailable.'); return value; };
       return { key: state.key, label: state.label, declaration_digest: state.declaration_digest, allowed_operations: ['list', 'read', 'put', 'delete'],
         max_record_bytes: ceiling('max_record_bytes', 16384), max_records: ceiling('max_records', 32),
-        max_total_bytes: ceiling('max_total_bytes', 131072), retention_days: ceiling('retention_days', 30) };
+        max_total_bytes: ceiling('max_total_bytes', 131072), retention_days: ceiling('retention_days', 30), ...normalizeExperiencePrivateCustody(state) };
     });
-  } else if (snapshot.private_state !== undefined) throw new Error('Unsupported private state review.');
+    const payloadActions = privateState?.flatMap(state => state.action_payloads?.map(item => item.action_key) ?? [])??[];
+    if (new Set(payloadActions).size !== payloadActions.length) throw Error('Ambiguous action payload review.');
+  } else if (snapshot.private_state !== undefined||snapshot.record_stores!==undefined) throw new Error('Unsupported private state review.');
   return { review_token: row.review_token, review_digest: str(row.review_digest), snapshot: {
     schema_version: snapshot.schema_version as 'deft.experience_resource_exposure.v1' | 'deft.experience_resource_exposure.v2' | 'deft.experience_resource_exposure.v3', destination: 'verified_installed_experience_worker',
     app_name: str(snapshot.app_name), app_version: str(snapshot.app_version), owner_label: str(snapshot.owner_label),
     experience_label: str(snapshot.experience_label), artifact_digest: str(snapshot.artifact_digest), expires_at: str(snapshot.expires_at),
-    review_expires_at: str(snapshot.review_expires_at), ...(privateState ? { private_state: privateState } : {}), resources: snapshot.resources.map(value => {
+    ...(rendererProfile ? { bridge_version: 'deft.experience_bridge.v1' as const, ...rendererProfile } : {}),
+    review_expires_at: str(snapshot.review_expires_at), ...(privateState ? { private_state: privateState } : {}),...(recordStores?{record_stores:recordStores}:{}), resources: snapshot.resources.map(value => {
       const resource = object(value);
+      if (resource.content_policy !== undefined && Object.keys(object(resource.content_policy)).some(key=>!['document','source','triage_options','search_filters'].includes(key))) throw new Error('Invalid document content review.');
       if (!Array.isArray(resource.allowed_fields) || resource.allowed_fields.length > 32
         || !resource.allowed_fields.every(field => typeof field === 'string' && field.length <= 48)
         || !(JSON.stringify(resource.allowed_operations) === '["list_summary","read_one"]'
           || (snapshot.schema_version === 'deft.experience_resource_exposure.v2' || snapshot.schema_version === 'deft.experience_resource_exposure.v3') && JSON.stringify(resource.allowed_operations) === '["list_summary","read_one","search"]')) throw new Error('Private access review is unavailable.');
       return { resource_key: str(resource.resource_key), label: str(resource.label), resource_type: str(resource.resource_type),
-        allowed_operations: resource.allowed_operations as string[], allowed_fields: resource.allowed_fields as string[] };
+        allowed_operations: resource.allowed_operations as string[], allowed_fields: resource.allowed_fields as string[], ...(resource.content_policy !== undefined ? {content_policy:(({resource_key:_key,...policy})=>policy)(normalizeAppResourceContent([{resource_key:resource.resource_key,...object(resource.content_policy)}],[{key:String(resource.resource_key)}])[0]!)} : {}) };
     }),
   } };
 }
@@ -105,26 +151,43 @@ const keys = (value: unknown): string[] => {
   return value;
 };
 
+/** A signed declaration selects implemented host features; unsupported profiles fail closed. */
+export function normalizeExperienceRendererProfile(value: unknown): DeftExperienceRendererProfile {
+  const row = object(value);
+  const result = DeftExperienceRendererProfileSchema.safeParse({ renderer_version: row.renderer_version,
+    ...(row.capabilities === undefined ? {} : { capabilities: row.capabilities }) });
+  if (!result.success) throw Error('Unsupported Experience renderer profile.');
+  return { renderer_version: result.data.renderer_version,
+    ...(result.data.capabilities === undefined ? {} : { capabilities: result.data.capabilities }) };
+}
+
 export function normalizeInstalledExperienceSession(value: unknown): InstalledExperienceSession {
   const result = object(value);
   const pin = object(result.pin);
   const experience = object(result.experience);
+  const rendererProfile = normalizeExperienceRendererProfile(experience);
   const bundle = object(result.bundle);
+  if (result.resource_target_key !== undefined && (typeof result.resource_target_key !== 'string'
+    || !/^[a-z][a-z0-9_]{0,47}$/.test(result.resource_target_key))) throw new Error('Invalid Experience target.');
   if (experience.bridge_version !== 'deft.experience_bridge.v1'
-    || experience.renderer_version !== 'deft.trusted_renderer.v1'
-    || !['deft.experience_bundle.v1', 'deft.experience_bundle.v2', 'deft.experience_bundle.v3'].includes(String(bundle.schema_version))
+    || !['deft.experience_bundle.v1', 'deft.experience_bundle.v2', 'deft.experience_bundle.v3','deft.experience_bundle.v4'].includes(String(bundle.schema_version))
     || typeof bundle.worker_source !== 'string'
     || new TextEncoder().encode(bundle.worker_source).byteLength < 1
-    || new TextEncoder().encode(bundle.worker_source).byteLength > 64 * 1024) {
+    || new TextEncoder().encode(bundle.worker_source).byteLength > 96 * 1024) {
     throw new Error('Unsupported Experience bundle.');
   }
   const resourceKeys = keys(bundle.resource_keys);
-  const searchKeys = bundle.schema_version === 'deft.experience_bundle.v2' || bundle.schema_version === 'deft.experience_bundle.v3' && bundle.search_resource_keys !== undefined ? keys(bundle.search_resource_keys) : undefined;
-  const stateKeys = bundle.schema_version === 'deft.experience_bundle.v3' ? keys(bundle.state_keys) : undefined;
-  if (stateKeys && (!stateKeys.length || new Set(stateKeys).size !== stateKeys.length
+  const searchKeys = bundle.schema_version === 'deft.experience_bundle.v2' || (bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && bundle.search_resource_keys !== undefined ? keys(bundle.search_resource_keys) : undefined;
+  const stateKeys = (bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') ? keys(bundle.state_keys) : undefined;
+  const storeKeys=(bundle.schema_version==='deft.experience_bundle.v3'||bundle.schema_version==='deft.experience_bundle.v4')&&bundle.record_store_keys!==undefined?keys(bundle.record_store_keys):undefined;
+  if(storeKeys&&(!storeKeys.length||new Set(storeKeys).size!==storeKeys.length||storeKeys.some((key,index)=>index>0&&storeKeys[index-1]!>=key)))throw Error('Unsupported record store bundle');
+  if (stateKeys && ((!stateKeys.length&&!storeKeys?.length) || new Set(stateKeys).size !== stateKeys.length
     || stateKeys.some((key, index) => index > 0 && stateKeys[index - 1]! >= key))) throw new Error('Unsupported private state bundle.');
+  const intakeBundle=bundle.schema_version==='deft.experience_bundle.v4'?DeftExperienceBundleSchema.parse(bundle):undefined;
+  const intakes=intakeBundle?.schema_version==='deft.experience_bundle.v4'?intakeBundle.record_intakes:undefined;
+  if(intakes&&!rendererProfile.capabilities?.includes('record_intake.mailto.v1'))throw Error('Unsupported intake capability');
   const allowed = ['schema_version', 'worker_source', 'entry_view', 'resource_keys', 'action_keys',
-    ...(searchKeys ? ['search_resource_keys'] : []), ...(stateKeys ? ['state_keys'] : [])];
+    ...(searchKeys ? ['search_resource_keys'] : []), ...(stateKeys ? ['state_keys'] : []),...(storeKeys?['record_store_keys']:[]),...(intakes?['record_intakes']:[])];
   if (Object.keys(bundle).some(key => !allowed.includes(key)) || searchKeys && (!searchKeys.length
     || new Set(searchKeys).size !== searchKeys.length || searchKeys.some((key, index) => !resourceKeys.includes(key)
       || index > 0 && searchKeys[index - 1]! >= key))) throw new Error('Unsupported Experience bundle.');
@@ -138,12 +201,14 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
   if (!/^[0-9a-f-]{36}$/i.test(normalizedPin.session_id)) throw new Error('Invalid Experience session.');
   return {
     pin: normalizedPin,
+    ...(result.app_name === undefined ? {} : { app_name: str(result.app_name) }),
+    ...(result.resource_target_key === undefined ? {} : { resource_target_key: result.resource_target_key as string }),
     ...(result.protocol_version === '7' ? { protocol_version: '7' as const } : {}),
     experience: { key: str(experience.key), label: str(experience.label),
       artifact_digest: str(experience.artifact_digest),
-      bridge_version: 'deft.experience_bridge.v1', renderer_version: 'deft.trusted_renderer.v1' },
-    bundle: { schema_version: bundle.schema_version as 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3',
-      ...(searchKeys ? { search_resource_keys: searchKeys } : {}), ...(stateKeys ? { state_keys: stateKeys } : {}),
+      bridge_version: 'deft.experience_bridge.v1', ...rendererProfile },
+    bundle: { schema_version: bundle.schema_version as 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3' | 'deft.experience_bundle.v4',
+      ...(searchKeys ? { search_resource_keys: searchKeys } : {}), ...(stateKeys ? { state_keys: stateKeys } : {}),...(storeKeys?{record_store_keys:storeKeys}:{}),...(intakes?{record_intakes:intakes}:{}),
       worker_source: bundle.worker_source, entry_view: str(bundle.entry_view),
       resource_keys: keys(bundle.resource_keys), action_keys: keys(bundle.action_keys) },
     expires_at: str(result.expires_at),

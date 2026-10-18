@@ -1,5 +1,6 @@
 'use client';
 
+import {appConsentDeadline,appConsentExpiryValid} from '../../../../../packages/app-kit/src/consent-lifetime';
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ResourceRefV2 } from '@deft/shared/resources-v2';
 import { api, isSameWebSession } from '@/lib/api';
@@ -11,7 +12,7 @@ import { APP_PRIVATE_SHARING_ENABLED, APP_PRIVATE_MCP_ENABLED } from '@/lib/feat
 
 type Identity = { registrationId: string; resourceType: string; projectionId: string };
 type Result = { ref: ResourceRefV2; label: string;
-  data: Record<string, string | number | boolean>; freshness: 'unknown'; consent_expires_at: string; search_href: string };
+  data: Record<string, string | number | boolean>; freshness: 'unknown'; consent_expires_at: string | null; consent_lifetime?: 'until_revoked'; search_href: string };
 const unavailable = () => new Error('This private resource is unavailable.');
 function object(value: unknown, keys?: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw unavailable();
@@ -20,23 +21,23 @@ function object(value: unknown, keys?: readonly string[]): Record<string, unknow
   return row;
 }
 function normalizeResult(value: unknown): Result {
-  const row = object(value, ['ref', 'label', 'data', 'freshness', 'consent_expires_at', 'search_href']);
+  const row = object(value, ['ref', 'label', 'data', 'freshness', 'consent_expires_at', 'consent_lifetime', 'search_href']);
   const ref = object(row.ref, ['schema_version', 'provider', 'resource_type', 'resource_id']);
   const provider = object(ref.provider, ['kind', 'provider_instance_id']);
   const data = object(row.data);
   if (ref.schema_version !== 'deft.resource_ref.v2' || provider.kind !== 'app_runtime'
     || typeof provider.provider_instance_id !== 'string' || typeof ref.resource_type !== 'string'
     || typeof ref.resource_id !== 'string' || typeof row.label !== 'string' || row.label.length > 200
-    || row.freshness !== 'unknown' || typeof row.consent_expires_at !== 'string'
+    || row.freshness !== 'unknown'
     || typeof row.search_href !== 'string' || !/^\/app-resources\/search\/[a-f0-9-]{36}$/u.test(row.search_href)
-    || !Number.isFinite(Date.parse(row.consent_expires_at))
+    || !appConsentExpiryValid(row.consent_expires_at as string | null,row.consent_lifetime)
     || !Object.values(data).every(value => typeof value === 'string' || typeof value === 'boolean'
       || (typeof value === 'number' && Number.isFinite(value)))
     || new TextEncoder().encode(JSON.stringify(row)).byteLength > 1_048_576) throw unavailable();
   return { ref: { schema_version: 'deft.resource_ref.v2', provider: { kind: 'app_runtime',
     provider_instance_id: provider.provider_instance_id }, resource_type: ref.resource_type,
     resource_id: ref.resource_id }, label: row.label,
-    data: data as Result['data'], freshness: 'unknown', consent_expires_at: row.consent_expires_at, search_href: row.search_href };
+    data: data as Result['data'], freshness: 'unknown', consent_expires_at: row.consent_expires_at as string | null,...(row.consent_lifetime==='until_revoked'?{consent_lifetime:'until_revoked' as const}:{}), search_href: row.search_href };
 }
 
 /** Decrypted content remains local to this authenticated human page. */
@@ -63,7 +64,7 @@ function PrivateResourceReferenceView({ registrationId, resourceType, projection
         const response = await api.get(`/api/app-resource-private/references/${encodeURIComponent(registrationId)}/${encodeURIComponent(resourceType)}/${encodeURIComponent(projectionId)}`);
         if (!response.ok) throw new Error(await appApiError(response, 'This private resource is unavailable.'));
         const current = normalizeResult(await response.json());
-        const deadline = Date.parse(current.consent_expires_at);
+        const deadline = appConsentDeadline(current.consent_expires_at,current.consent_lifetime);
         if (current.ref.provider.provider_instance_id !== registrationId.toLowerCase()
           || current.ref.resource_type !== resourceType || current.ref.resource_id !== projectionId.toLowerCase()) {
           throw new Error('This private resource is unavailable.');
@@ -72,7 +73,7 @@ function PrivateResourceReferenceView({ registrationId, resourceType, projection
         if (deadline <= Date.now()) throw new Error('Private resource consent expired.');
         setResult(current);
         clearTimeout(expiry);
-        expiry = setTimeout(() => { clear(); setError('Private resource consent expired.'); }, Math.min(deadline - Date.now(), 2_147_483_647));
+        if (Number.isFinite(deadline)) expiry = setTimeout(() => { clear(); setError('Private resource consent expired.'); }, Math.min(deadline - Date.now(), 2_147_483_647));
       } catch (reason) {
         if (!disposed && request === generation.current) setError(reason instanceof Error ? reason.message : 'This private resource is unavailable.');
       } finally { if (!disposed && request === generation.current) setBusy(false); }

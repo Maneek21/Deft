@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { AppDialog } from '@/components/overlay-primitives';
 import { RuntimeAppInputReview, type RuntimeReviewIdentity } from '@/components/runtime-app-input-review';
 import { AppRunInspector } from './app-run-inspector';
@@ -9,7 +9,30 @@ import type { ExperienceRunReviewTarget } from '@/lib/app-experience-run-review'
 import { readExperienceRunResult, type ExperienceRunResult } from '@/lib/app-experience-run-result';
 import { runtimeSetupWebDeadline } from '@/lib/app-runtime-setup';
 
-export function ExperienceRunReview({ initial, refresh, onClose }: {
+const requestStates: Record<string, { label: string; detail: string; attention?: boolean }> = {
+  pending_approval: { label: 'Awaiting your approval', detail: 'Review the exact request below before allowing it to proceed.' },
+  pending: { label: 'Request queued', detail: 'The request is waiting to run.' },
+  running: { label: 'Request running', detail: 'Execution is in progress. Check status for the latest outcome.' },
+  waiting_external: { label: 'Waiting for provider', detail: 'The provider outcome has not been confirmed yet.' },
+  succeeded: { label: 'Execution succeeded', detail: 'Review the provider result for what happened. This status does not confirm message delivery.' },
+  failed: { label: 'Request failed', detail: 'Review the result or receipts before making another request.', attention: true },
+  unknown_outcome: { label: 'Outcome unknown', detail: 'Check status and review receipts before trying again. Repeating the request could duplicate an action.', attention: true },
+  cancelled: { label: 'Request cancelled', detail: 'This request is no longer active.' },
+  expired: { label: 'Request expired', detail: 'This request expired before completion.' },
+};
+
+/** Display only confirmed host state; a lost decision response overrides stale state. */
+export function ExperienceRequestStatus({ state, uncertain = false }: { state: string; uncertain?: boolean }) {
+  const status = uncertain ? { label: 'Decision not confirmed', detail: 'Check status before continuing. The decision will not be retried automatically.', attention: true }
+    : requestStates[state] ?? { label: 'Status unavailable', detail: 'Check status to see the current request outcome.' };
+  return <section aria-label="Request outcome" className="mb-4 rounded-xl px-4 py-3" style={{ background: 'var(--surface-container-low)' }}>
+    <h3 className="text-sm font-medium" style={{ color: status.attention ? state === 'failed' && !uncertain ? 'var(--error)' : 'var(--warning)' : 'var(--foreground)' }}>{status.label}</h3>
+    <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>{status.detail}</p>
+  </section>;
+}
+
+export function ExperienceRunReview({ initial, refresh, onClose, returnFocusRef }: {
+  returnFocusRef?: RefObject<HTMLElement | null>;
   initial: ExperienceRunReviewTarget; refresh: () => Promise<ExperienceRunReviewTarget>; onClose: () => void;
 }) {
   const [target, setTarget] = useState(initial), [reviewed, setReviewed] = useState<RuntimeReviewIdentity | null>(null);
@@ -84,26 +107,30 @@ export function ExperienceRunReview({ initial, refresh, onClose }: {
     } finally { if (active.current) setBusy(false); }
   }
   if (receipts) return <AppRunInspector runId={target.runId} onClose={() => setReceipts(false)} />;
-  return <AppDialog open onClose={onClose} title={target.approvalId ? 'Review request' : 'Request status'}
+  return <AppDialog open onClose={onClose} returnFocusRef={returnFocusRef} title={target.approvalId ? 'Review request' : 'Request status'}
     description={target.approvalId ? 'Check the request details before approving. Approval allows the provider to carry out this request.'
-      : 'Check the outcome, view the provider’s result, or inspect the receipts.'} width={620}
+      : 'Review the latest outcome and recovery details.'} width={620}
     footer={<div className="flex flex-wrap justify-end gap-2"><button className="deft-pill min-h-11" onClick={onClose}>Close</button>
       {target.approvalId && <><button className="deft-pill min-h-11" disabled={busy || uncertain} onClick={() => void decide('reject')}>Reject request</button>
         <button className="deft-pill min-h-11 disabled:opacity-50" style={{ background: 'var(--primary-container)', color: 'var(--on-primary-container)' }} disabled={busy || uncertain || reviewed?.runId !== target.runId || reviewed.bindingId !== target.bindingId} onClick={() => void decide('approve')}>Approve request</button></>}
     </div>}>
-    <p className="text-xs capitalize" style={{ color: 'var(--on-surface-variant)' }}>Status: {target.state.replaceAll('_', ' ')}</p>
+    <ExperienceRequestStatus state={target.state} uncertain={uncertain} />
     {target.approvalId && !uncertain && <RuntimeAppInputReview compact key={reviewEpoch} runId={target.runId} bindingId={target.bindingId} busy={busy} onReviewed={onReviewed} />}
-    {notice && <p role="status" className="mt-3 text-sm">{notice}</p>}
-    {result && <section className="mt-4 border-t pt-4" aria-label="Retained provider result">
+    {notice && <p role="status" className="mt-3 rounded-xl bg-[var(--surface-container-low)] px-3 py-3 text-sm leading-6" style={{ borderColor: 'var(--border-default)', color: 'var(--text-secondary)' }}>{notice}</p>}
+    {result && <section className="mt-6 pt-1" aria-label="Retained provider result">
       <h3 className="text-sm font-medium">Provider result</h3>
-      <p className="mt-1 text-xs text-muted-foreground">The provider reported {result.providerSucceeded ? 'success' : 'failure'}. Review the outcome details below.</p>
-      <dl className="mt-3 divide-y text-sm">{result.fields.map(field => <div key={field.key} className="grid gap-1 py-3 sm:grid-cols-[130px_minmax(0,1fr)] sm:gap-4" style={{ borderColor: 'var(--outline-variant)' }}>
+      <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>The provider reported {result.providerSucceeded ? 'success' : 'failure'}. Review the outcome details below.</p>
+      <dl className="mt-4 space-y-4 text-sm">{result.fields.map(field => <div key={field.key} className="grid gap-1 sm:grid-cols-[130px_minmax(0,1fr)] sm:gap-4" style={{ borderColor: 'var(--outline-variant)' }}>
         <dt className="text-xs capitalize text-muted-foreground">{field.label}</dt>
         <dd className="whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">{field.value === null ? '—' : String(field.value)}</dd>
       </div>)}</dl>
     </section>}
-    <div className="mt-4 flex flex-wrap gap-3"><button className="deft-pill min-h-11" disabled={busy} onClick={() => void check()}>Check status</button>
-      <button className="deft-pill min-h-11" disabled={busy} onClick={() => void viewResult()}>View result</button>
-      <button className="deft-pill min-h-11" disabled={busy} onClick={() => { setResult(null); setReceipts(true); }}>View receipts</button></div>
+    <div className="mt-4 flex flex-wrap gap-2"><button className="deft-pill min-h-11" disabled={busy} onClick={() => void check()}>Check status</button>
+      <button className="deft-pill min-h-11" disabled={busy} onClick={() => void viewResult()}>View provider result</button></div>
+    <details className="mt-6" style={{ borderColor: 'var(--border-default)' }}>
+      <summary className="flex min-h-11 cursor-pointer items-center text-xs" style={{ color: 'var(--text-secondary)' }}>Request history and recovery</summary>
+      <p className="mb-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>Receipts show what Deft recorded for this request. Use them to investigate a failed or uncertain outcome.</p>
+      <button className="deft-pill min-h-11" disabled={busy} onClick={() => { setResult(null); setReceipts(true); }}>View receipts</button>
+    </details>
   </AppDialog>;
 }

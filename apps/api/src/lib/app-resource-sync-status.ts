@@ -20,7 +20,9 @@ const bindingFields = { binding_id: appResourceBindings.id,
   app_version_id: appResourceBindings.app_version_id,
   resource_key: appResourceBindings.resource_key, state: appResourceBindings.state,
   consent_expires_at: appResourceBindings.consent_expires_at,
+  consent_lifetime: appResourceBindings.consent_lifetime,
   reviewed_at: appResourceBindings.reviewed_at, updated_at: appResourceBindings.updated_at };
+function statusBinding<T extends{consent_lifetime:'until_revoked'|null}>(row:T){const{consent_lifetime,...value}=row;return {...value,...(consent_lifetime===null?{}:{consent_lifetime})};}
 async function manager(tx: Tx, actor: ModuleActor) {
   assertResourceSyncManager(actor);
   await tx.execute(sql`SELECT id FROM org_members WHERE org_id = ${actor.org_id}
@@ -43,7 +45,7 @@ export async function listResourceSyncBindings(actor: ModuleActor, value: unknow
       eq(appResourceBindings.registration_contract_version, mode ? 'deft.app_runtime_channel.v3' : 'deft.app_runtime_channel.v2'),
       query.after ? gt(appResourceBindings.id, query.after) : undefined))
       .orderBy(asc(appResourceBindings.id)).limit(query.limit + 1);
-    const bindings = rows.slice(0, query.limit);
+    const bindings = rows.slice(0, query.limit).map(statusBinding);
     if (!mode) await guard?.(tx);
     await finishAttachmentSyncMetadata(tx, [actor.actor_id], mode);
     return { bindings, next_after: rows.length > query.limit ? bindings.at(-1)!.binding_id : null };
@@ -76,7 +78,7 @@ export async function inspectResourceSyncBinding(actor: ModuleActor, bindingId: 
       .orderBy(desc(appRunReceipts.created_at), desc(appRunReceipts.id)).limit(1) : [];
     if (!mode) await guard?.(tx);
     await finishAttachmentSyncMetadata(tx, [actor.actor_id], mode);
-    return { binding, checkpoint: checkpoint ?? null,
+    return { binding:statusBinding(binding), checkpoint: checkpoint ?? null,
       latest_run: run ? { ...run, receipt_id: receipt?.receipt_id ?? null } : null };
   });
 }

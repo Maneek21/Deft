@@ -17,13 +17,14 @@ export function createExperienceConnection(input: {
   read: () => Promise<ExperienceAuthorityState>; change: (state: ExperienceAuthorityState) => void;
 }) {
   let state: ExperienceAuthorityState = 'unavailable', pending: Promise<ExperienceAuthorityState> | null = null;
-  let recovery: Promise<boolean> | null = null, release: ((valid: boolean) => void) | null = null, disposed = false;
+  const waiters = new Set<(valid: boolean) => void>();let disposed = false;
+  const release = (valid:boolean) => { for(const finish of [...waiters]) finish(valid); };
   const current = () => !disposed && input.current();
   const settle = (next: ExperienceAuthorityState) => {
     if (!current()) next = 'denied';
     if (state === 'denied') return state;
     state = next; input.change(next);
-    if (next !== 'unavailable') { release?.(next === 'available'); recovery = null; release = null; }
+    if (next !== 'unavailable') { release(next === 'available'); }
     return next;
   };
   const check = async (): Promise<ExperienceAuthorityState> => {
@@ -39,14 +40,20 @@ export function createExperienceConnection(input: {
   };
   return {
     get state() { return state; }, check,
-    async ensure(): Promise<boolean> {
+    async ensure(signal?:AbortSignal): Promise<boolean> {
+      signal?.throwIfAborted();
       await check();
+      signal?.throwIfAborted();
       if (!current() || state === 'denied') return false;
       if (state === 'available') return input.valid();
-      if (!recovery) recovery = new Promise(resolve => { release = resolve; });
-      const resumed = await recovery;
+      const resumed = await new Promise<boolean>(resolve=>{
+        const finish=(valid:boolean)=>{waiters.delete(finish);signal?.removeEventListener('abort',aborted);resolve(valid);};
+        const aborted=()=>finish(false);waiters.add(finish);signal?.addEventListener('abort',aborted,{once:true});
+        if(signal?.aborted)aborted();
+      });
+      signal?.throwIfAborted();
       return resumed && current() && input.valid() && (state as ExperienceAuthorityState) === 'available';
     },
-    dispose() { disposed = true; state = 'denied'; release?.(false); recovery = null; release = null; },
+    dispose() { disposed = true; state = 'denied'; release(false); },
   };
 }

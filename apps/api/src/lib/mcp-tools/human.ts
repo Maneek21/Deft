@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { discoverPersonalInstalledTools } from './installed-apps.js';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import { z } from 'zod';
@@ -3170,6 +3171,7 @@ function operationalBoundary() {
 export async function humanWorkspaceCapabilities(_args: Record<string, never>, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
+  const installed = await discoverPersonalInstalledTools(ctx, Object.keys(HUMAN_TOOLS));
   const available = [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS].filter((name) => {
     if (!humanToolHasRequiredScope(ctx.scopes, name)) return false;
     if (name === 'agent_employee_update_state' && !canManageWorkspace(ctx)) return false;
@@ -3179,7 +3181,7 @@ export async function humanWorkspaceCapabilities(_args: Record<string, never>, c
     ...operationalBoundary(),
     role: ctx.role,
     granted_scopes: ctx.scopes,
-    available_tools: available.sort(),
+    available_tools: [...available, ...installed.map(tool => tool.name)].sort(),
     guidance: 'Use attention_digest for triage, resolve_targets before fuzzy writes, and reuse idempotency_key when retrying the same write.',
   });
 }
@@ -4177,7 +4179,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
   ];
-  const existing = agentSchemas
+  const existing = [...agentSchemas]
     .filter((schema) => {
       const name = String(schema.name ?? '');
       return HUMAN_READ_TOOLS.has(name) || HUMAN_WRITE_TOOLS.has(name);

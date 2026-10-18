@@ -3,6 +3,7 @@ import { appAttachmentStages,appSyncCheckpoints } from '@deft/db/schema';
 import { createBoundedAppRunDatabase } from './app-run-bounded-db.js';
 import { LocalAppAttachmentObjectStore,type AppAttachmentObjectStore } from './app-attachment-object-store.js';
 import { env,isAppAttachmentBrokerEnabled } from './env.js';
+import { APP_DATABASE_POOL_BUDGET } from './app-database-pool-budget.js';
 type Candidate={id:string;org_id:string;resource_binding_id:string;checkpoint_id:string;state:string;stage_expires_at:Date};
 const states=['uploading','ready','blocked','linked','linked_blocked','retired'] as const;
 
@@ -25,7 +26,7 @@ export class AppAttachmentCleanup {
   }
   async #pass(signal:AbortSignal){
     const deadline=performance.now()+10_000;
-    const database=this.#database??=createBoundedAppRunDatabase(this.connectionString,{max:2,application_name:'deft-attachment-retention'});
+    const database=this.#database??=createBoundedAppRunDatabase(this.connectionString,{max:APP_DATABASE_POOL_BUDGET.attachment_cleanup,application_name:'deft-attachment-retention'});
     const after=this.#cursor;
     const candidates=await database.transaction(tx=>tx.select({id:appAttachmentStages.id,org_id:appAttachmentStages.org_id,
       resource_binding_id:appAttachmentStages.resource_binding_id,checkpoint_id:appAttachmentStages.checkpoint_id,

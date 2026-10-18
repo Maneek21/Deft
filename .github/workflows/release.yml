@@ -38,6 +38,10 @@ jobs:
       contents: read
     outputs:
       release_scope: ${{ steps.scope.outputs.scope }}
+      browser_profile: ${{ steps.browser.outputs.profile }}
+      apps: ${{ steps.browser.outputs.apps }}
+      resource_sync: ${{ steps.browser.outputs.resource_sync }}
+      attachment_broker: ${{ steps.browser.outputs.attachment_broker }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +52,9 @@ jobs:
       - name: Validate commit-pinned release scope
         id: scope
         run: node scripts/resolve-release-scope.mjs --github-output
+      - name: Validate commit-pinned browser profile
+        id: browser
+        run: node scripts/resolve-release-browser-profile.mjs --github-output
 
   certify:
     name: Certify Hermes employee release
@@ -257,6 +264,9 @@ jobs:
           # setting this only on the running container is too late.
           build-args: |
             NEXT_PUBLIC_FEATURE_HUDDLES=true
+            NEXT_PUBLIC_FEATURE_APPS=${{ needs.scope.outputs.apps }}
+            NEXT_PUBLIC_FEATURE_APP_RESOURCE_SYNC=${{ needs.scope.outputs.resource_sync }}
+            NEXT_PUBLIC_FEATURE_APP_ATTACHMENT_BROKER=${{ needs.scope.outputs.attachment_broker }}
             DEFT_RELEASE_VERSION=${{ steps.release.outputs.version }}
             VCS_REF=${{ steps.release.outputs.sha }}
             SOURCE_URL=https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}
@@ -331,12 +341,45 @@ jobs:
           gh attestation verify "oci://$IMAGE_REF" --repo "$GITHUB_REPOSITORY"
           echo "signature_identity=$identity" >> "$GITHUB_OUTPUT"
 
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 11.10.0
+
+      - name: Install the locked browser verifier
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Verify compiled browser features in the exact image
+        env:
+          RELEASE_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.sha }}
+          RELEASE_BROWSER_URL: http://127.0.0.1:3100
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$RELEASE_IMAGE_REF"
+          revision="$(docker image inspect "$RELEASE_IMAGE_REF" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          [[ "$revision" == "$RELEASE_COMMIT" ]] || { echo 'Image source revision differs from release tag' >&2; exit 1; }
+          container="$(docker run --detach --publish 127.0.0.1:3100:3000 --entrypoint sh \
+            "$RELEASE_IMAGE_REF" -c 'cd /app/apps/web && pnpm exec next start --hostname 0.0.0.0 --port 3000')"
+          trap 'docker rm --force "$container" >/dev/null' EXIT
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:3100/login; then ready=true; break; fi
+            sleep 2
+          done
+          [[ "$ready" == true ]] || { docker logs "$container"; exit 1; }
+          # No API, database, credentials or runtime feature overrides are supplied.
+          node scripts/verify-release-browser-profile.mjs
+
       - name: Collect portable release assets
         shell: bash
         run: |
           mkdir -p dist
           cp docker-compose.yml compose.prod.yml compose.release.yml LICENSE NOTICE THIRD-PARTY-LICENSES.md dist/
           cp docs/self-hosting.md dist/self-hosting.md
+          cp release/browser-profile.json dist/browser-profile.json
           # GitHub release assets cannot retain a leading dot reliably. Publish
           # the template under a stable explicit name so downloaded checksums
           # match the asset name on every client.

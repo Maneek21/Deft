@@ -5,11 +5,11 @@ import { PrivateStateAdoptionContext, reviewOutput, parseAdoptionActivation, typ
 export { PrivateStateAdoptionContext };
 
 /** Explicit human host control; no draft bodies or adoption authority enter the worker. */
-export function PrivateStateAdoption({ label, groups, request, onAdopted }: { label: string; groups: GroupValue[];
+export function PrivateStateAdoption({ label, groups, currentTarget, request, onAdopted }: { label: string; groups: GroupValue[]; currentTarget: string;
   request: (operation: 'review' | 'activate', body: unknown) => Promise<unknown>; onAdopted: () => void }) {
-  return <AdoptionControl key={JSON.stringify(groups)} {...{ label, groups, request, onAdopted }} />;
+  return <AdoptionControl key={`${currentTarget}/${JSON.stringify(groups)}`} {...{ label, groups, currentTarget, request, onAdopted }} />;
 }
-function AdoptionControl({ label, groups, request, onAdopted }: { label: string; groups: GroupValue[];
+function AdoptionControl({ label, groups, currentTarget, request, onAdopted }: { label: string; groups: GroupValue[]; currentTarget: string;
   request: (operation: 'review' | 'activate', body: unknown) => Promise<unknown>; onAdopted: () => void }) {
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -19,7 +19,7 @@ function AdoptionControl({ label, groups, request, onAdopted }: { label: string;
   async function prepare(group: GroupValue) {
     setBusy(true); setError('');
     try {
-      const result = reviewOutput(await request('review', { source_artifact_digest: group.source_artifact_digest }));
+      const result = reviewOutput(await request('review', { source_artifact_digest: group.source_artifact_digest }), currentTarget);
       if (!mounted.current || result.source_artifact_digest !== group.source_artifact_digest) return;
       setReview({ source: result.source_artifact_digest, token: result.review_token, count: result.count });
     } catch { if (mounted.current) setError('Recovery review is unavailable. Refresh the App and try again.'); }

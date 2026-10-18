@@ -1,0 +1,893 @@
+{
+  "schema_version": "deft.email_launch_stage1_ledger.v1",
+  "date": "2026-09-30",
+  "status": "in_progress",
+  "status_reason": "Local member/setup/Send seams pass; host03 full restore exposed incorrect schema identity and historical unknown sync blocks reviewed Email upgrade. Host04, live connection/Send and full X06 remain.",
+  "source": {
+    "worktree": "C:\\tmp\\deft-gate-g-integration-20260924",
+    "branch": "codex/email-wip-example",
+    "base_head": "0c611bb4b1a000e8b4a066f71974137e5c0f31cd",
+    "uncommitted": true,
+    "source_manifest": "source-manifest.json",
+    "preserved_preexisting_change": "apps/web/next-env.d.ts",
+    "source_manifest_sha256": "08b783de9d4f2408ed39e0ec70bee550c1a3c3ca7a230ba5b12a55368cef49a3"
+  },
+  "batches": [
+    {
+      "id": "X00",
+      "status": "done"
+    },
+    {
+      "id": "X01",
+      "status": "in_progress",
+      "remaining": "Private per-target provider registry/deployment; expired-consent teardown; supervised refresh and live multi-account proof"
+    },
+    {
+      "id": "X02",
+      "status": "in_progress",
+      "remaining": "Live complete conversation/scan/deletion reconciliation and main reader integration"
+    },
+    {
+      "id": "X03",
+      "status": "in_progress",
+      "remaining": "Controlled deployed Send/receipt; reply/trusted parent, full recipients/rich composer and main lazy reader"
+    },
+    {
+      "id": "X04",
+      "status": "in_progress",
+      "remaining": "Full reader/recipient controls, browser/file-picker/live-device coverage"
+    },
+    {
+      "id": "X05",
+      "status": "done",
+      "evidence": "Reproduced focused failures then fixed autosave/reopen, durable submitted draft marker, failed-message isolation and bounded subject validation"
+    },
+    {
+      "id": "X06",
+      "status": "blocked",
+      "blocker_kinds": [
+        "unfinished_internal_implementation",
+        "external_provider_configuration"
+      ],
+      "live_provider_proof": false,
+      "remaining": "Live controlled Gmail connection/Send, exact receipt/Sent, second account and recovery/revocation journey"
+    }
+  ],
+  "consumer": {
+    "path": "C:\\tmp\\deft-email-launch-stage0-consumer-20260930",
+    "node": "24.14.0",
+    "pnpm": "10.33.1",
+    "email_version": "1.5.9",
+    "kit_version": "0.1.0-alpha.9",
+    "kit_tarball_sha256": "1016b89e14d5386de8e0663446e42c011b18bf32130e089cd01aebe97d28ce0a",
+    "frozen_install_exit_code": 0,
+    "build": {
+      "packageDigest": "sha256:7a43017d2c2ad41e8028a90ee0e2c43d910f80520c35aabb51ffa49afc070b03",
+      "artifactDigest": "sha256:dd23d0242f6f2948d329c66eab5078c40504a8d2170ab673a7f1478449fe90ef",
+      "sourceInputs": [
+        "node_modules/.pnpm/@deft+app-kit@file+deft-app-kit-0.1.0-alpha.9.tgz/node_modules/@deft/app-kit/dist/experience-sdk.js",
+        "draft-controller.mjs",
+        "request-journal.mjs",
+        "worker.mjs"
+      ],
+      "normalBundler": true,
+      "workerSha256": "c6486759ae05daa5a2907f805790979e60d43f63dbccd81655a158cc6b3977d9",
+      "indexedPackageDigest": "sha256:334106d7bdad1b1c0a3ccd24c52dc9afdbecbc60d46a29c96012b0b45228675b",
+      "indexedVersion": "1.5.7-indexed.1",
+      "indexedArtifactDigest": "sha256:dcb35fa622b4079de1347418bc9bd400991712111995635528d1129f5a2a7f41",
+      "indexedSourceInputs": [
+        "node_modules/.pnpm/@deft+app-kit@file+deft-app-kit-0.1.0-alpha.9.tgz/node_modules/@deft/app-kit/dist/experience-sdk.js",
+        "metadata-ui.mjs",
+        "metadata-worker.mjs"
+      ],
+      "indexedWorkerSha256": "933028e94237b0f2944954556e6bed7b334ccd8073cb1484a9d2d1dc18f4f245"
+    },
+    "indexed_variant": "Same App identity1.5.7-indexed.1; one v2 read-only experience with no actions/private state; exact new review required; not merged into main journey"
+  },
+  "checks": [
+    {
+      "id": "V01",
+      "cwd": "consumer",
+      "command": "pnpm test",
+      "exit_code": 0,
+      "passed": 190,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "fixture/mock provider; actual SDK protocols; no live mail",
+      "elapsed_seconds": 37.19,
+      "prior_first_wave_passed": 146,
+      "initial_expanded_run": {
+        "tests": 189,
+        "passed": 188,
+        "failed": 1,
+        "reason": "IMAP deadline cleanup race; deterministic regression repaired"
+      },
+      "test_file_concurrency": 4,
+      "before_final_purpose_slice": true,
+      "affected_checks_rerun_afterwards": [
+        "V13",
+        "V15",
+        "V16",
+        "V18"
+      ]
+    },
+    {
+      "id": "V02",
+      "cwd": "consumer",
+      "command": "node --test fixtures/launch-stage0/verify.test.mjs",
+      "exit_code": 0,
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V03",
+      "cwd": "consumer",
+      "command": "pnpm run build; pnpm install --frozen-lockfile (separate commands)",
+      "exit_code": 0,
+      "normal_bundle_input_counts": [
+        4,
+        3
+      ],
+      "fresh_build_exit_code": 0
+    },
+    {
+      "id": "V04",
+      "cwd": "consumer",
+      "command": "pnpm run smoke:mailbox / pnpm run smoke:activity (separate commands)",
+      "exit_code": 0,
+      "views": [
+        5,
+        6
+      ],
+      "effects": 0,
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V05",
+      "cwd": "source",
+      "command": "pnpm --filter @deft/api exec tsx --test --test-concurrency=1 test/app-experience-targets-http-db.test.ts test/app-experience-human-action-http-db.test.ts test/app-attachment-pdf-http-db.test.ts test/app-private-state-http-db.test.ts test/app-private-state-adoption-http-db.test.ts",
+      "exit_code": 0,
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0,
+      "database": "guarded v30 loopback55435; DATABASE_URL exactly DEFT_TEST_DATABASE_URL",
+      "provider_started_on_denial": 0,
+      "provider_started_on_denial_scope": "No provider input/effect delivered; pre-existing durable start marker is retained after a post-I/O denial.",
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V06",
+      "cwd": "source",
+      "command": "pnpm exec tsx --test apps/api/test/app-experience-human-action-contract.test.ts packages/app-kit/test/runtime-authoring.test.ts packages/app-kit/test/attachment-contracts.test.ts apps/web/src/lib/app-experience-action-composer.test.ts apps/web/src/lib/app-experience-compose-controls.test.ts apps/web/src/lib/app-experience-session.test.ts apps/web/src/lib/app-experience-renewal.test.ts apps/web/src/lib/app-experience-bridge.test.ts apps/web/src/lib/app-experience-renderer.test.ts",
+      "exit_code": 0,
+      "passed": 60,
+      "failed": 0,
+      "skipped": 0,
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V07",
+      "cwd": "source",
+      "command": "pnpm --filter @deft/api exec tsc --noEmit / pnpm --filter @deft/web exec tsc --noEmit (separate commands)",
+      "exit_code": 0,
+      "fresh_current_api_and_web": true,
+      "api_after_final_purpose_slice": true
+    },
+    {
+      "id": "V08",
+      "cwd": "source",
+      "command": "New connection web files scoped ESLint",
+      "exit_code": 0,
+      "errors": 0,
+      "expanded_host_warnings": 6
+    },
+    {
+      "id": "V09",
+      "cwd": "source",
+      "command": "Fresh assert/push-full and supported db:upgrade; readback",
+      "exit_code": 0,
+      "readback_fresh": {
+        "vector": "0.6.0",
+        "ledger_versions": 56,
+        "preview57": 1,
+        "preview58": 1,
+        "target_columns": 4,
+        "target_triggers": 4,
+        "pdf_binding_guard": true,
+        "pdf_grant_guard": true
+      },
+      "readback_upgrade": {
+        "vector": "0.6.0",
+        "ledger_versions": 56,
+        "preview57": 1,
+        "preview58": 1,
+        "target_columns": 4,
+        "target_triggers": 4,
+        "pdf_binding_guard": true,
+        "pdf_grant_guard": true
+      },
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V10",
+      "cwd": "source",
+      "command": "pnpm exec tsx C:/tmp/deft-indexed-normalizer-proof-20260930.ts",
+      "exit_code": 0,
+      "actual_built_artifacts_accepted": 2,
+      "full_live_host_mount": false,
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V11",
+      "cwd": "source",
+      "command": "Earlier six-file existing DB regression pass",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 4,
+      "skip_reason": "resource-sync-setup requires a different exact DB name; skipped tests are not passing proof",
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V12",
+      "cwd": "source Email under WSL Deft-CRM-Test",
+      "command": "wsl.exe -d Deft-CRM-Test --cd /mnt/c/tmp/deft-gate-g-integration-20260924/examples/apps/email -- /tmp/deft-email-oauth-test-node-v24.14.0/node-v24.14.0-linux-x64/bin/node providers/test-custody-posix.mjs",
+      "exit_code": 0,
+      "passed": 39,
+      "failed": 0,
+      "skipped": 0,
+      "oauth_tests_also_in_V01": 30,
+      "real_posix_store_process_tests": 9,
+      "scope": "Actual local POSIX persistence/process/crash, mocked provider; no live provider",
+      "historical_first_wave_not_rerun": true
+    },
+    {
+      "id": "V13",
+      "command": "tsx --test apps/api/test/app-connection-service.test.ts",
+      "exit_code": 0,
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Generic current-authority, expiry and stalled adapter/reader",
+      "fresh_after_purpose_slice": true
+    },
+    {
+      "id": "V14",
+      "command": "tsx --test apps/web/src/lib/app-connection-flow.test.ts",
+      "exit_code": 0,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "V15",
+      "command": "Actual app-experience-targets-http-db full affected file",
+      "exit_code": 0,
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "elapsed_seconds": 107.6,
+      "before_final_stalled_io_fix": true,
+      "initial_run": {
+        "passed": 10,
+        "failed": 5
+      },
+      "intermittent_latency_unresolved": true
+    },
+    {
+      "id": "V16",
+      "command": "node --test gmail-delivery-milestone.test.mjs",
+      "exit_code": 0,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "overlap_V01": true,
+      "scope": "Joined actual components; mocked host/provider",
+      "fresh_after_purpose_slice": true
+    },
+    {
+      "id": "V17",
+      "command": "node --test providers/recipient-verification.test.mjs",
+      "exit_code": 0,
+      "passed": 18,
+      "failed": 0,
+      "skipped": 0,
+      "overlap_V01": true,
+      "live_provider": false
+    },
+    {
+      "id": "V18",
+      "command": "node --test providers/connection-http.test.mjs",
+      "exit_code": 0,
+      "passed": 23,
+      "failed": 0,
+      "skipped": 0,
+      "overlap_V01": true,
+      "fresh_after_purpose_slice": true
+    },
+    {
+      "id": "V19",
+      "command": "Configured connection HTTP child,13 unrelated cases intentionally excluded",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "cancelled": 1,
+      "skipped": 0,
+      "elapsed_seconds": 123.6,
+      "reason": "Historical parent120s timeout closed pool during second begin; unrelated setup now deferred. Exact original latency not conclusively diagnosed.",
+      "historical_failed_attempt": true,
+      "replaced_by": "V22"
+    },
+    {
+      "id": "V20",
+      "command": "Consumer pnpm run build",
+      "exit_code": 0,
+      "unchanged_package_digests": true
+    },
+    {
+      "id": "V21",
+      "command": "node --test outgoing-send-runtime.test.mjs",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "overlap_V01": true,
+      "production_ports_wired": false
+    },
+    {
+      "id": "V22",
+      "command": "DEFT_TEST_FOCUS_CONNECTION=true pnpm exec tsx --test apps/api/test/app-experience-targets-http-db.test.ts",
+      "exit_code": 0,
+      "passed": 2,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "elapsed_seconds": 42.496,
+      "scope": "Actual authenticated current-purpose connection child and real PostgreSQL;13 unrelated cases not registered/run",
+      "timeout_relaxed": false,
+      "live_provider": false
+    },
+    {
+      "id": "V23",
+      "command": "Affected independent consumer Send/connection/recipient eight-file bundle",
+      "passed": 70,
+      "failed": 0,
+      "skipped": 1,
+      "exit_code": 0,
+      "skip_reason": "POSIX-only journal test skipped on Windows; passed separately on Linux",
+      "elapsed_seconds": 1.66,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V24",
+      "command": "Linux outgoing-operation-store + custody-file-store",
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 4.62,
+      "overlap_V23": 2
+    },
+    {
+      "id": "V25",
+      "command": "Private-file custody unit/DB +65-edit retention regression+actual HTTP/PostgreSQL/SDK",
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "provider": "Synthetic trusted builder; no provider network",
+      "superseded_unconfirmed_preview_bodies_retired": true,
+      "confirmed_old_mime_and_pdf_preserved": true
+    },
+    {
+      "id": "V26",
+      "command": "Private raw upload parser/bounded transfer",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "id": "V27",
+      "command": "Human-action and payload contract",
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "legacy_attached_file_scalar_send_denied": true
+    },
+    {
+      "id": "V28",
+      "command": "Kit Runtime SDK client",
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "id": "V29",
+      "command": "Final API tsc --noEmit",
+      "exit_code": 0,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V30",
+      "command": "Supported preview59 upgrade + fresh push-full + schema parity",
+      "exit_code": 0,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V31",
+      "command": "Kit pack, consumer frozen install/build and outgoing CLI import",
+      "exit_code": 0,
+      "deployed_cli_end_to_end": false,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V32",
+      "command": "Current web policy/composer/parser focused tests",
+      "passed": 45,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V33",
+      "command": "Eight current web sources scoped ESLint",
+      "exit_code": 0,
+      "errors": 0,
+      "warnings": 11,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V34",
+      "command": "Final web tsc --noEmit",
+      "exit_code": 0,
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V35",
+      "command": "Actual composer rendered desktop/mobile with mocked API; one Send click exact saved revision and snapshot",
+      "passed": true,
+      "provider_network": false,
+      "manifest": "production-send-ui-evidence.json",
+      "historical_before_member_slice": true
+    },
+    {
+      "id": "V36",
+      "command": "Kit owner policy focused contracts + tsc/pack",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "id": "V37",
+      "command": "apps/web apps normalizer focused parser",
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "id": "V38",
+      "command": "Native POSIX actual-SDK CLI child/config/restart journey",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "evidence": "native-cli-process.log",
+      "live_provider": false
+    },
+    {
+      "id": "V39",
+      "command": "node --test providers/recipient-verification.test.mjs",
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "live_receipt": false
+    },
+    {
+      "id": "V40",
+      "command": "Provider builder and joined Gmail milestone focused files",
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "overlap_counts_not_additive": true
+    },
+    {
+      "id": "V41",
+      "command": "pnpm --filter @deft/api exec tsx --test test/app-owner-connection-contract.test.ts test/app-owner-connections-http-db.test.ts",
+      "passed": 12,
+      "contract_tests": 5,
+      "http_parent_and_nested_tests": 7,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "database": "gate_g_20260928_experience_consent_test_v34"
+    },
+    {
+      "id": "V42",
+      "command": "pnpm --filter @deft/api exec tsc --noEmit",
+      "exit_code": 0
+    },
+    {
+      "id": "V43",
+      "command": "Scalar Runtime DB and legacy resource Sync consent compatibility (separate guarded DBs)",
+      "passed": 4,
+      "scalar_runtime": 1,
+      "legacy_sync": 3,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "id": "V44",
+      "command": "Supported60 dry-run/upgrade + fresh push-full + admission schema parity",
+      "exit_code": 0,
+      "parity": {
+        "columns": 17,
+        "constraints": 11,
+        "indexes": 3,
+        "guard_functions": 7,
+        "triggers": 2,
+        "ledger": "0.3.0-preview.60",
+        "passed": true
+      }
+    },
+    {
+      "id": "V45",
+      "command": "pnpm exec tsx --test apps/web/src/lib/app-owner-connection.test.ts apps/web/src/lib/app-connection-flow.test.ts",
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    {
+      "id": "V46",
+      "command": "Final web tsc --noEmit + scoped member UI lint",
+      "exit_code": 0,
+      "new_four_files_lint_errors": 0,
+      "new_four_files_lint_warnings": 0,
+      "installed_component_errors": 0,
+      "installed_component_existing_warnings": 6
+    },
+    {
+      "id": "V47",
+      "command": "Actual member setup desktop/mobile fresh reload and three mocked request proofs",
+      "passed": true,
+      "evidence": "member-setup-ui-evidence.json",
+      "live_provider": false
+    },
+    {
+      "id": "V48",
+      "command": "Frozen Kit pack/consumer offline install/Email1.5.9 build",
+      "exit_code": 0
+    },
+    {
+      "id": "V49",
+      "command": "Read-only live56 backup restore into local disposable DB + exact deployed-byte supported56-to60 dry-run/apply/rerun",
+      "exit_code": 0,
+      "evidence": "demo-database-rehearsal.json",
+      "live_database_mutated": false,
+      "stopped_recovery_point": false
+    },
+    {
+      "id": "V50",
+      "command": "Local provisional59 Docker build/offline metadata + corrected runtime03 imports +53/33 baseline freeze and4negative cases",
+      "exit_code": 0,
+      "matching_final_image": false,
+      "historical_image_api_tsc": "default-heap OOM; no rerun",
+      "database_writes": false
+    },
+    {
+      "id": "V51",
+      "command": "Actual host03 populated DB/37uploads restore + actual entrypoint + health/ready + doctor",
+      "upgrade_exit_code": 0,
+      "doctor_exit_code": 0,
+      "doctor_checks_passed": 8,
+      "health_http_status": 200,
+      "ready_http_status": 200,
+      "schema_identity_passed": false,
+      "deployable": false,
+      "evidence": "demo-full-restore-rehearsal.json",
+      "provider_calls": 0
+    },
+    {
+      "id": "V52",
+      "command": "Exact six archive protected copy/hash verification then guarded relocation",
+      "passed": true,
+      "retained_bytes": 1485162767,
+      "prune_performed": false,
+      "image_or_volume_removal": false,
+      "evidence": "demo-archive-copy-proof.json"
+    },
+    {
+      "id": "V53",
+      "command": "pnpm --filter @deft/api exec tsx --test test/release-source-identity.test.ts",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "scope": "Source schema constant fix; actual host04 health not yet checked"
+    },
+    {
+      "id": "V54",
+      "command": "Network-none packaged schema guard negative fixture against host03",
+      "exit_code": 0,
+      "expected_rejected_image_exit_code": 1,
+      "database_actions": [],
+      "evidence": "deployment-preparation/host03-health-guard-reproduction.json"
+    },
+    {
+      "id": "V55",
+      "command": "Private operator wrapper native CLI fixture and actualruntime03 offline imports/SDK construction",
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "provider_calls": 0,
+      "live_send_count": 0,
+      "evidence": "operator-capture-preparation.json"
+    }
+  ],
+  "database": {
+    "isolated_cluster": "WSL Deft-CRM-Test:/var/tmp/deft-email-launch-stage1-20260930-r2",
+    "loopback_port": 55435,
+    "test_database": "gate_g_20260928_experience_consent_test_v34",
+    "fresh_database": "gate_g_20260928_experience_consent_test_v35",
+    "required_schema": [
+      "0.3.0-preview.57",
+      "0.3.0-preview.58",
+      "0.3.0-preview.59",
+      "0.3.0-preview.60"
+    ],
+    "populated_pre57_adoption_certified": false,
+    "production_restore_certified": false,
+    "destructive_downgrade_certified": false,
+    "safe_rollback": "Forward-only ledger; full deployment rollback restores stopped56 DB/uploads/state/keyrings/config with exact prior image in a clean isolated project. Disable new admission alone is only a restricted roll-forward posture.",
+    "current_fresh_push_full_exit_code": 0,
+    "previous_cluster": "Historical /tmp cluster; lost on environment restart",
+    "current_upgrade_rerun": true,
+    "upgrade_dry_run_exit_code": 0,
+    "upgrade_exit_code": 0,
+    "parity": {
+      "tables": 4,
+      "columns": 66,
+      "constraints": 29,
+      "indexes": 14,
+      "strict_policy_guard_exact": true,
+      "column_ordinal_ignored": true,
+      "passed": true,
+      "historical_pre60_custody_parity": true
+    },
+    "pre_upgrade_backup": "/var/tmp/deft-email-launch-stage1-20260930-r2/owner-connections-v34-before60.dump",
+    "owner_admission_parity": {
+      "columns": 17,
+      "constraints": 11,
+      "indexes": 3,
+      "guard_functions": 7,
+      "triggers": 2,
+      "ledger": "0.3.0-preview.60",
+      "passed": true
+    },
+    "populated_pre57_database_upgrade_rehearsal": true,
+    "stopped_recovery_point": false,
+    "demo_rehearsal": "demo-database-rehearsal.json",
+    "full_runtime_uploads_restore_rehearsal": "demo-full-restore-rehearsal.json",
+    "host03_identity_passed": false
+  },
+  "real_provider": {
+    "sender": "maneek.hyprcstm@gmail.com",
+    "sender_deft_connection_established": false,
+    "controlled_recipient": "maneek.mohan21@gmail.com",
+    "recipient_gmail_connector_profile_verified": true,
+    "connector_is_deft_connection": false,
+    "live_mail_sent": 0,
+    "missing": "Matching60 host/Email deployment, exact private provider registry and controlled executor; Deft mailbox grant/connection and live exact receipt/Sent; second account/fullX06",
+    "instance": "https://demo.deft.ing",
+    "deft_login_verified": true
+  },
+  "decisions": [
+    "2026-09-30-email-stage1-target-routing.md",
+    "2026-09-30-email-stage1-interaction-seams.md",
+    "2026-09-30-email-stage1-owner-connection.md"
+  ],
+  "ui": {
+    "evidence": "ui-evidence.json",
+    "indexed_evidence": "ui-evidence.json#metadata_worker",
+    "screenshot_count": 68,
+    "full_live_provider_host_proof": false,
+    "browser_wide_200_percent_certified": false,
+    "dedicated_ui_design_skill": "unavailable; explicitly unmet",
+    "next_docs_version": "16.3.5",
+    "deft_references": [
+      "Tasks",
+      "Chat"
+    ],
+    "screenshot_index": "screenshots.md",
+    "evidence_sha256": "85fa851e35371d5aec63b5574d20dd4ce062b3468f39d203822bd5d385cebf82",
+    "lead_inspected_final_samples": [
+      "metadata-desktop-dark-1440x632.jpg",
+      "metadata-mobile-light-conversation-390x843.jpg",
+      "settings-host-final-desktop-dark.jpg",
+      "settings-host-final-access-links-mobile-light.jpg",
+      "composer-host-mobile-light.jpg",
+      "controls-desktop-light-summary.jpg",
+      "controls-mobile-dark-character-limit.jpg",
+      "production-send-ui-desktop-ready.jpg",
+      "production-send-ui-mobile-ready.jpg",
+      "demo-current-email.jpg"
+    ],
+    "settings_evidence": "settings-ui-evidence.json",
+    "controls_evidence": "compose-controls-ui-evidence.json",
+    "composer_draft_ref_proof": "composer-draft-ref-proof.json",
+    "settings_evidence_sha256": "6148aa74e15af1a1024a88fe23d43e4631f53d4057e03508a2e7d1b88b1e34b5",
+    "compose_controls_evidence_sha256": "83451f0fedcca3a876b5808858c876eeccb089e1ecd9daf339b5f6269cbe211a",
+    "connection_evidence": "connection-ui-evidence.json",
+    "connection_evidence_sha256": "fcb541b8255a538f587d71b9c3bf65ae5b7a7dc4e1653000dfa1b1e287caa75b",
+    "production_send_evidence": "production-send-ui-evidence.json",
+    "production_send_evidence_sha256": "6f30680d7904bbb7cb22013b61708bb2a585e6405da90207384161c60db993b7",
+    "production_send_identity": "historical; original source hashes retained",
+    "member_setup_evidence": "member-setup-ui-evidence.json",
+    "member_setup_evidence_sha256": "7d9b980bd5d41ec7c12133aaef2d1a9c0af47a2efc1128b69212aae5ce19375c",
+    "google_evidence": "google-evidence.json"
+  },
+  "reviews": {
+    "effective_owner_target_uniqueness": "Independent review found2P2s; red201 reproduced, fixed409; aggregate quota HTTP verified",
+    "pdf_migration": "Independent exact function/constraint comparisons found only intended8-type/PDF expansion; retained policies/old SQL unchanged",
+    "final_diff": {
+      "tracked_whitespace_exit_code": 0,
+      "untracked_source_whitespace_files": 76,
+      "generated_or_secret_untracked_files": 0,
+      "base_head_unchanged": true,
+      "preexisting_next_env_preserved": true,
+      "main_checkout_unrelated_changes_preserved": true
+    },
+    "provider_and_packaging": "Independent OAuth/custody review fixed stale setup callback after disconnect and Microsoft tenant portals. Nullable credential generations authenticated. Portable30 and actual POSIX39 executed without skips; exact public Email source/consumer parity and builds verified.",
+    "target_consent_deadlines": {
+      "held_secret_read_red": "HTTP200 after expiry; 10pass2fail0skip",
+      "held_committed_return_red": "HTTP200 after expiry; 11pass2fail0skip",
+      "focused_final": "13pass0fail0skip",
+      "consolidated_http": "20pass0fail0skip",
+      "fix": "Trusted captured owner target consent deadline checked after secret/final authority I/O and again after transaction commit immediately before Start envelope; no caller inputs or new lookup."
+    },
+    "submitted_draft_quota": {
+      "red": "Send33 fails against active draft quota32 despite terminal Activity eviction; separate shared-reference test reproduced pending draft deletion",
+      "fix": "Verified terminal Run proof, draft submitted CAS marker, exact revision tombstone only without another retained in-memory reference, before Activity deletion",
+      "focused_final": "29pass0fail0skip",
+      "remaining": "Orphaned submitted rows with no Run evidence are not automatically deleted; retained pending/unknown references remain pinned. Cross-tab draft/Run association remains non-atomic and needs X03 host integration."
+    },
+    "saved_draft_confirmation": {
+      "actual_http": "stale, changed, foreign owner/target, unreviewed state, mismatched input/key and deleted draft deny; repeat-confirm/lookup same immutable Run",
+      "lock_order": "existing owner/state advisory lock before phased authority, same as writer/adoption",
+      "scope": "Existing scalar Run input only; full file/MIME snapshot remains unimplemented"
+    },
+    "human_ticket_clock": {
+      "red": "2 actual-service delayed SQL-sample regressions failed; expired prepare ticket returned and confirm guard crossed",
+      "fix": "Existing samplePrivateAccessClock counts SQL dispatch/response and retained final I/O despite app/database skew",
+      "focused_final": "2pass0fail0skip",
+      "contract_file_final": "10pass0fail0skip",
+      "unit_consolidated": "60pass0fail0skip"
+    },
+    "connection_milestone": {
+      "current_projection": "Exact private configured owner/install/target/action, current ops/epochs and original conservative deadline; no browser pin nomination",
+      "stalled_io": "16 focused tests pass; final actual connection/cleanup HTTP2pass after fixture separation",
+      "recipient": "Duplicate Subject regression repaired;18 tests pass; no live search/read/send",
+      "imap_cleanup": "Deterministic clock reproduces closes0 after deadline; expiry cleanup now idempotent from timer/check; final190 Email tests pass",
+      "permissions": "Host-fenced status/local disconnect independent of Send; current owner/resource/expiry and immutable custody identities retained. Ordinary-member opt-in/full teardown after resource expiry remain.",
+      "historical_http_latency": "Original transient latency not conclusively attributed; no blocked/idle DB transaction observed; latest focused setup avoids unrelated fixtures and passes without relaxed limits"
+    },
+    "purpose_slice": {
+      "service_passed": 16,
+      "module_passed": 23,
+      "joined_passed": 2,
+      "http_seconds": 42.496,
+      "http_passed": 2,
+      "http_failed": 0,
+      "http_skipped": 0,
+      "api_tsc_exit_code": 0,
+      "historical_new_test_expectation_failures": "Three focused attempts omitted expected HTTP404 from denied-result assertions. Shared structured closed-result assertion corrected; no production repair or timeout widening.",
+      "remaining": "Ordinary-member opt-in; cleanup after source/Experience consent ends; production draft/file payload dispatch; live configured Gmail."
+    }
+  },
+  "boundaries": {
+    "live_mail_sent": 0,
+    "live_permissions_changed": false,
+    "environment_files_changed": false,
+    "published": false,
+    "deployed": false,
+    "committed": false,
+    "pushed": false,
+    "stage1_complete": false,
+    "scope_note": "Existing environment/live-permission flags refer to the running Deft deployment; private new-candidate configs and Google preparation are recorded separately."
+  },
+  "next": [
+    "Reviewed unknown-sync closure plus frozen host04; actual schema60 health/ready, image load budget and stopped recovery point",
+    "Exact private per-owner provider registry and controlled current SDK one-shot executor",
+    "Connect authorized sender in Deft; one exact controlled draft/PDF Send and read-only recipient verification",
+    "Second account/fullX06, expiry teardown/supervised refresh and remaining replacement batches"
+  ],
+  "continued_stage1": {
+    "oauth_custody_doc": "oauth-custody.md",
+    "owner_connection_decision": "owner-connection.md",
+    "new_ui_captures": 20,
+    "one_mocked_composer_send": true,
+    "no_live_effects": true
+  },
+  "recalibration": {
+    "priority": "Gmail connection → trusted draft/PDF Send → recipient verification",
+    "full_replacement_scope_retained": true,
+    "separate_lanes": [
+      "connection",
+      "send",
+      "recipient_permissions",
+      "lead_shared_integration"
+    ],
+    "docs_and_screenshots": "batched at milestones",
+    "development_checks": "affected only",
+    "email_test_concurrency": 4,
+    "milestone_docs_screenshots_batched": true
+  },
+  "demo": {
+    "read_only_observation": false,
+    "commit": "0c611bb4b1a000e8b4a066f71974137e5c0f31cd",
+    "release": "0.3.0-preview.16",
+    "schema_head": "0.3.0-preview.56",
+    "google_oauth_configured": false,
+    "disk_free_gb_observed": 3.88,
+    "sign_in": "Recovered prior working login; authenticated successfully; credentials excluded",
+    "google_client_privately_prepared": true,
+    "google_client_replacement_completed": true,
+    "google_secret_in_artifacts": false,
+    "mailbox_connected": false,
+    "host_cutover": false,
+    "disk_free_bytes_observed": 4169437184,
+    "stopped_recovery_point": false,
+    "live_host_unchanged": true,
+    "private_configuration_staged": true,
+    "private_registry_empty": true,
+    "live_registry_loaded": false,
+    "archive_relocation": "demo-archive-relocation.json"
+  },
+  "production_send": {
+    "implemented": true,
+    "schema_head": "0.3.0-preview.60",
+    "email_version": "1.5.9",
+    "files": "one PDF up to2MiB",
+    "payload_limit_bytes": 4194304,
+    "new_message_only": true,
+    "human_confirmation": "Exact saved revision+immutable snapshot paired digest",
+    "runtime": "Explicit Start handshake; current exact attempt/authority before and after secret I/O and COMMIT",
+    "executor": "Actual SDK and OAuth ports; separate encrypted durable POSIX operation journal; no automatic resend",
+    "live_provider_proved": false,
+    "cli_process_config_journey_proved": true,
+    "cli_deployed_host_journey_proved": false
+  },
+  "deployment_preparation": {
+    "evidence_directory": "deployment-preparation",
+    "candidate_doc": "demo-candidate.md",
+    "provisional59_history_compatible": false,
+    "corrected60_source_only": false,
+    "final_matching_image_manifest": null,
+    "runtime_bundle03_verified": true,
+    "historical_sql_baseline_files": 53,
+    "explicit_overrides": 33,
+    "conservative_load_budget_bytes": 4138341398,
+    "remote_load": false,
+    "cutover": false,
+    "host03_built": true,
+    "host03_deployable": false,
+    "host03_full_restore_rehearsal": "demo-full-restore-rehearsal.json",
+    "next_candidate": "host04 pending source freeze",
+    "packaged_schema_guard": "deployment-preparation/host03-health-guard-reproduction.json",
+    "remote_runtime_staged": true,
+    "staging_status": "demo-staging-status.json",
+    "archive_relocation": "demo-archive-relocation.json"
+  }
+}

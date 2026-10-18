@@ -1,3 +1,10 @@
+import { ResourceContentDeclarationsSchema, type ResourceContentPolicy } from '../../../../packages/app-kit/src/resource-content-policy';
+import { DeftExperienceRendererProfileSchema, type DeftExperienceRendererProfile } from '../../../../packages/app-kit/src/experience';
+import { RecordStoreDeclarationsSchema, type RecordStoreDeclaration } from '../../../../packages/app-kit/src/app-data';
+import { OwnerConnectionPolicyDeclarationsSchema, type OwnerConnectionPolicyDeclaration } from '../../../../packages/app-kit/src/owner-connection-policy';
+import { canonicalCapabilityJson } from '@deft/shared';
+import { normalizeExperiencePrivateCustody, type ExperiencePrivateCustodyReview } from './app-experience-session';
+
 export const APP_PACKAGE_MAX_BYTES = 1024 * 1024;
 
 export type AppModuleReference = {
@@ -80,10 +87,9 @@ export type AppRuntimeManifestV3 = AppManifestBase & {
   runtime_requirements: unknown[]; private_capabilities: unknown[]; runtime_actions: unknown[];
 };
 
-export type AppExperienceReference = {
+export type AppExperienceReference = DeftExperienceRendererProfile & {
   key: string; label: string; artifact_path: string; artifact_digest: string;
   bridge_version: 'deft.experience_bridge.v1';
-  renderer_version: 'deft.trusted_renderer.v1';
 };
 
 export type AppInstalledManifestV4 = Omit<AppRuntimeManifestV3, 'schema_version' | 'compatibility'> & {
@@ -102,9 +108,15 @@ export type AppNativeManifestV6 = Omit<AppResourceManifestV5, 'schema_version' |
 export type AppAttachmentManifestV7 = Omit<AppNativeManifestV6, 'schema_version' | 'compatibility'> & {
   schema_version: '7'; compatibility: { app_protocol: '7' };
   private_state?: AppPrivateStateDeclaration[];
+  owner_connections?: AppOwnerConnectionPolicy[];
+  resource_content?: AppResourceContentDeclaration[];
+  record_stores?: RecordStoreDeclaration[];
 };
+export type AppResourceContentPolicy = Omit<ResourceContentPolicy,'document'> & {document:{max_characters:number;formats?:ResourceContentPolicy['document']['formats'];metadata_schema?:Record<string,unknown>}};
+export type AppResourceContentDeclaration = AppResourceContentPolicy & {resource_key:string};
+export type AppOwnerConnectionPolicy = OwnerConnectionPolicyDeclaration;
 export type AppPrivateStateDeclaration = { key: string; label: string; schema: Record<string, unknown>;
-  max_record_bytes: number; max_records: number; max_total_bytes: number; retention_days: number };
+  max_record_bytes: number; max_records: number; max_total_bytes: number; retention_days: number } & ExperiencePrivateCustodyReview;
 export type AppManifest = AppManifestV0 | AppManifestV1 | AppManifestV2
   | AppRuntimeManifestV3 | AppInstalledManifestV4 | AppResourceManifestV5 | AppNativeManifestV6 | AppAttachmentManifestV7;
 export type ConnectedAppManifest = AppManifestV1 | AppManifestV2;
@@ -530,7 +542,7 @@ function normalizeActionInputSource(value: unknown): AppActionInputSource {
 }
 
 /** Bounded display projection; the host Kit parser and review decide authority. */
-function normalizePrivateState(value: unknown): AppPrivateStateDeclaration[] {
+export function normalizeAppPrivateState(value: unknown, actions: readonly { key: string }[]): AppPrivateStateDeclaration[] {
   const rows = recordArray(value, 'private state');
   const fail = (): never => { throw new Error('Invalid private state display declaration.'); };
   const exact = (row: Record<string, unknown>, fields: string[]) => {
@@ -539,8 +551,10 @@ function normalizePrivateState(value: unknown): AppPrivateStateDeclaration[] {
   const fieldKey = (key: unknown): key is string => typeof key === 'string' && /^[a-z][a-z0-9_]{0,47}$/.test(key)
     && !['constructor', 'prototype', '__proto__'].includes(key);
   if (!rows.length || rows.length > 16) fail();
+  const payloadActions = new Set<string>();
   return rows.map((row, index) => {
-    exact(row, ['key', 'label', 'schema', 'max_record_bytes', 'max_records', 'max_total_bytes', 'retention_days']);
+    exact(row, ['key', 'label', 'schema', 'max_record_bytes', 'max_records', 'max_total_bytes', 'retention_days',
+      ...(Object.hasOwn(row, 'files') ? ['files'] : []), ...(Object.hasOwn(row, 'action_payloads') ? ['action_payloads'] : [])]);
     if (typeof row.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(row.key)
       || index > 0 && String(rows[index - 1]!.key) >= row.key
       || typeof row.label !== 'string' || !row.label.length || row.label.length > 128) fail();
@@ -568,10 +582,35 @@ function normalizePrivateState(value: unknown): AppPrivateStateDeclaration[] {
       } else if (field.type === 'boolean') exact(field, ['type']);
       else fail();
     }
+    const custody = normalizeExperiencePrivateCustody(row);
+    for (const payload of custody.action_payloads ?? []) {
+      if (payloadActions.has(payload.action_key) || !actions.some(action => action.key === payload.action_key)) fail();
+      payloadActions.add(payload.action_key);
+    }
     return { key: row.key as string, label: row.label as string, schema,
       max_record_bytes: row.max_record_bytes as number, max_records: row.max_records as number,
-      max_total_bytes: row.max_total_bytes as number, retention_days: row.retention_days as number };
+      max_total_bytes: row.max_total_bytes as number, retention_days: row.retention_days as number, ...custody };
   });
+}
+
+/** Display-only projection; host review and current owner consent confer authority. */
+export function normalizeAppResourceContent(value: unknown, resources: readonly {key:string}[]): AppResourceContentDeclaration[] {
+  const parsed = ResourceContentDeclarationsSchema.safeParse(value);
+  if (!parsed.success || parsed.data.some(row=>!resources.some(resource=>resource.key===row.resource_key))) throw new Error('Invalid document content review.');
+  return parsed.data;
+}
+export function normalizeAppResourceContentReview(value: unknown, declared: readonly AppResourceContentDeclaration[] | undefined,
+  resources: readonly {key:string}[]): AppResourceContentDeclaration[] | undefined {
+  const content = value === undefined ? undefined : normalizeAppResourceContent(value, resources);
+  if (canonicalCapabilityJson(content ?? []) !== canonicalCapabilityJson(declared ?? [])) throw new Error('The document access review changed. Refresh before activating.');
+  return content;
+}
+export function normalizeAppOwnerConnections(value: unknown, resources: readonly { key: string }[],
+  actions: readonly { key: string }[]): AppOwnerConnectionPolicy[] {
+  const parsed = OwnerConnectionPolicyDeclarationsSchema.safeParse(value);
+  if (!parsed.success || parsed.data.some(row => !resources.some(resource => resource.key === row.resource_key)
+    || row.action_keys.some(key => !actions.some(action => action.key === key)))) throw new Error('Invalid personal account setup review.');
+  return parsed.data;
 }
 
 function normalizeManifest(value: unknown): AppManifest {
@@ -616,15 +655,16 @@ function normalizeManifest(value: unknown): AppManifest {
     if (protocol === '3') return { ...runtime, schema_version: '3', compatibility: { app_protocol: '3' } };
     const installed = { ...runtime,
       experiences: recordArray(row.experiences, 'App Experiences').map((item) => {
-        if (item.bridge_version !== 'deft.experience_bridge.v1'
-          || item.renderer_version !== 'deft.trusted_renderer.v1') {
+        const profile = DeftExperienceRendererProfileSchema.safeParse({renderer_version:item.renderer_version,
+          ...(item.capabilities === undefined ? {} : {capabilities:item.capabilities})});
+        if (item.bridge_version !== 'deft.experience_bridge.v1' || !profile.success) {
           throw new Error('Unsupported App Experience bridge or renderer.');
         }
         return { key: stringValue(item.key, 'Experience key'),
           label: stringValue(item.label, 'Experience label'),
           artifact_path: stringValue(item.artifact_path, 'Experience path'),
           artifact_digest: stringValue(item.artifact_digest, 'Experience digest'),
-          bridge_version: item.bridge_version as 'deft.experience_bridge.v1', renderer_version: item.renderer_version as 'deft.trusted_renderer.v1' };
+          bridge_version: item.bridge_version as 'deft.experience_bridge.v1', ...profile.data };
       }),
       public_actions: recordArray(row.public_actions, 'public actions'),
     };
@@ -634,7 +674,7 @@ function normalizeManifest(value: unknown): AppManifest {
       // decide authority; importing the packaging entry point would load Node code.
       const fields = ['schema_version', 'compatibility', 'id', 'version', 'name', 'description', 'license', 'provenance',
         'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions',
-        'sync_descriptors', 'experiences', 'public_actions', 'private_state'];
+        'sync_descriptors', 'experiences', 'public_actions', 'private_state', 'owner_connections', 'resource_content', 'record_stores', 'integration_tools'];
       const sync = recordArray(row.sync_descriptors, 'App attachment sync descriptors');
       const native = recordArray(row.native_actions, 'native actions');
       if (Object.keys(row).some(field => !fields.includes(field)) || Object.keys(compatibility).length !== 1
@@ -655,15 +695,28 @@ function normalizeManifest(value: unknown): AppManifest {
         for (const [key, max] of Object.entries(bounds))
           if (typeof policy[key] !== 'number' || !Number.isSafeInteger(policy[key]) || policy[key] < 1 || policy[key] > max) throw new Error('Invalid attachment policy bound.');
         const media = policy.allowed_media_types;
-        if (!Array.isArray(media) || !media.length || media.length > 7 || new Set(media).size !== media.length
-          || media.some(type => !['text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(type))) throw new Error('Invalid attachment media display.');
+        if (!Array.isArray(media) || !media.length || media.length > 8 || new Set(media).size !== media.length
+          || media.some(type => !['text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'].includes(type))) throw new Error('Invalid attachment media display.');
         if (!runtime.runtime_requirements.some(value => {
           const requirement = object(value, 'Runtime requirement');
           return requirement.key === descriptor.runtime_requirement_key && requirement.protocol_version === 'deft.app_runtime_channel.v3';
         })) throw new Error('Attachment descriptor requires channel 3.');
       }
+      const ownerConnections = Object.hasOwn(row, 'owner_connections') ? normalizeAppOwnerConnections(row.owner_connections,
+        sync.map(resource => ({key:String(resource.key)})), installed.runtime_actions.map(action => ({key:typeof action.key === 'string' ? action.key : ''}))) : undefined;
+      if (ownerConnections?.some(policy => policy.runtime_requirement_key !== undefined && (!runtime.runtime_requirements.some(value => {
+        const requirement = object(value, 'Runtime requirement'); return requirement.key === policy.runtime_requirement_key && requirement.protocol_version === 'deft.app_runtime_channel.v3';
+      }) || !sync.some(resource => resource.key === policy.resource_key && resource.runtime_requirement_key === policy.runtime_requirement_key)))) throw new Error('Invalid external account display binding.');
+      const stores = Object.hasOwn(row, 'record_stores') ? RecordStoreDeclarationsSchema.parse(row.record_stores) : undefined;
+      if (stores?.some(store => !sync.some(resource => resource.key === store.resource_key && resource.requested_visibility === 'user_private'
+        && resource.runtime_requirement_key === store.runtime_requirement_key) || !ownerConnections?.some(policy => policy.resource_key === store.resource_key
+          && policy.provider_profile_key && policy.runtime_requirement_key === store.runtime_requirement_key))) throw new Error('Invalid record store display binding.');
       return { ...installed, schema_version: '7', compatibility: { app_protocol: '7' }, sync_descriptors: sync, native_actions: native,
-        ...(Object.hasOwn(row, 'private_state') ? { private_state: normalizePrivateState(row.private_state) } : {}) };
+        ...(stores === undefined ? {} : {record_stores:stores}),
+        ...(Object.hasOwn(row,'resource_content') ? {resource_content:normalizeAppResourceContent(row.resource_content,sync.map(resource=>({key:String(resource.key)})))} : {}),
+        ...(ownerConnections === undefined ? {} : {owner_connections:ownerConnections}),
+        ...(Object.hasOwn(row, 'private_state') ? { private_state: normalizeAppPrivateState(row.private_state,
+          installed.runtime_actions.map(action => ({ key: typeof action.key === 'string' ? action.key : '' }))) } : {}) };
     }
     if (protocol === '6') {
       // Display projection only; the host validates the exact Kit contract.

@@ -2,6 +2,9 @@ import type { Context } from 'hono';
 import { z } from 'zod';
 import { isAppError } from '../lib/app-errors.js';
 import { AppRunError } from '../lib/app-run-errors.js';
+import { ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
+import { ExperienceExposureError } from '../lib/app-experience-exposure-contract.js';
+import { ExperienceExposureBusyError } from '../lib/app-experience-exposure-db-error.js';
 
 function runErrorStatus(error: AppRunError): 400 | 403 | 409 | 410 | 503 {
   switch (error.code) {
@@ -29,6 +32,16 @@ export function appHttpFailure(
   requestLabel: 'App action' | 'App Run',
   logLabel: 'app-actions' | 'app-runs',
 ) {
+  if (error instanceof ExperienceExposureBusyError) {
+    c.header('Retry-After', '1');
+    return c.json({ error: error.message, code: error.code, retryable: error.retryable }, 503);
+  }
+  if (error instanceof ExperienceExposureError) {
+    return c.json({ error: error.message, code: error.code }, error.status);
+  }
+  if (error instanceof ResourceSyncWebAuthenticationError) {
+    return c.json({ error: error.message, code: error.code }, error.status);
+  }
   if (isAppError(error)) {
     return c.json({
       error: error.message,

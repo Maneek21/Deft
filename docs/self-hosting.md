@@ -39,6 +39,20 @@ Commands below use Bash; Windows users can use Git Bash with Docker Desktop.
 
 ### Recommended: prebuilt release
 
+For the independently sideloaded Email developer preview, use Host
+`v0.3.0-preview.120` and the **apps-developer-preview** browser profile listed
+in its `browser-feature-evidence.json`. Follow the independent
+[Email setup guide](https://github.com/Maneek21/deft-email/blob/main/docs/setup.md)
+and its [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json)
+for the exact image digest, schema 120, sealed Kit downloads, HTTPS/OAuth and
+Runtime configuration. This path requires an operator; it is not the stable
+core quick start below. Feature flags beginning `NEXT_PUBLIC_` are compiled
+into the browser bundle. Setting them only when a container starts does not
+enable Apps, resource sync or attachments missing from that build. Server gates,
+purpose-separated keys, reviewed grants and the independent Runtime are also
+required. Keep only one active Host when operating the small demo database;
+overlapping Host processes consume separate connection pools.
+
 For a fresh evaluation, follow the [README quick start](../README.md#quick-start-with-docker),
 which pins `v0.3.0-preview.15` and its image digest. Use that release's own Compose
 files and environment template together; this source checkout can differ from
@@ -64,6 +78,8 @@ DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.15
 For another host or port, set `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_API_URL`,
 and `NEXT_PUBLIC_WS_URL` to the browser-reachable URLs first. Keep their defaults
 for localhost ports 3000/3001. Leave provider keys empty for a basic evaluation.
+
+Host `v0.3.0-preview.120` pins the reviewed PostgreSQL 16.15 / pgvector 0.8.6 image in `docker-compose.yml`. Keep that immutable database image with this preview's deployment assets: fresh initialization and upgrade lineage checks include PostgreSQL and extension versions, so a floating `pg16` tag can produce an unrecognized catalog.
 
 Use the release overlay in every application/tool command:
 
@@ -362,7 +378,7 @@ For a full VPS, DNS, reverse proxy, and HTTPS runbook, see
 After the first account is created, direct signup is blocked. Add teammates from
 Settings -> Members. Deft generates one-time invite URLs; share them out of band.
 
-Self-hosted Deft does not send email. Password recovery is admin-generated:
+Core self-hosted account recovery does not send email. This is separate from the independently installed Email App. Password recovery is admin-generated:
 owners/admins create recovery URLs from Settings -> Members and share them
 manually.
 
@@ -521,14 +537,8 @@ can supply its own AI independently of Deft's provider configuration.
 | `OPENAI_API_KEY` | No | Optional AI provider/embedding/transcription fallback | none |
 | `OPENROUTER_API_KEY` | No | Optional AI provider fallback | none |
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
-| `TRANSCRIPTION_PROVIDER` | No | Voice-clip transcription: `local`, `openai`, or `deepgram`; an org-level choice in Settings → AI wins | `local` |
-| `WHISPER_URL` | No | Whisper service for the `local` provider | `http://localhost:9000` |
-| `TRANSCRIPTION_OPENAI_BASE_URL` | No | OpenAI-compatible base URL (including `/v1`) for the `openai` provider, such as LiteLLM, Groq, or a self-hosted gateway | `https://api.openai.com/v1` |
-| `TRANSCRIPTION_OPENAI_MODEL` | No | Transcription model sent to that endpoint | `whisper-1` |
-| `TRANSCRIPTION_OPENAI_API_KEY` | No | Key for that endpoint; empty falls back to `OPENAI_API_KEY`, and a keyless custom endpoint is called without one | `OPENAI_API_KEY` |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
 | `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | No | Browser push notifications; set all three together, subject starting with `mailto:` or `https://`. Generate the keypair once (see `.env.example` section 7); rotating it invalidates existing browser subscriptions. Unset keeps the Inbox but disables Web Push | none |
 
 ### Opt-in Governed App Run keyrings
 

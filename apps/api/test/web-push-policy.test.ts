@@ -4,7 +4,7 @@ import {
   attentionItems,
   DEFAULT_NOTIFICATION_PREFERENCES,
 } from '@deft/db/schema';
-import { webPushPolicy } from '../src/lib/web-push.js';
+import { emailNotificationPushStillCurrent, safeAttentionPushPayload, webPushPolicy } from '../src/lib/web-push.js';
 
 type AttentionItem = typeof attentionItems.$inferSelect;
 
@@ -16,18 +16,36 @@ function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
     source_type: 'message', source_id: 'message-test', source_event_id: 'event-test',
     title: 'Review requested', body: null, link: '/inbox', metadata: {}, due_at: null,
     urgent_at: null, snoozed_until: null, seen_at: null, acknowledged_at: null,
-    resolved_at: null, resolution: null, first_event_at: now, last_event_at: now,
+    resolved_at: null, resolution: null, last_event_at: now,
     event_count: 1, version: 1, created_at: now, updated_at: now,
     ...overrides,
   };
 }
 
-test('push categories and preference toggles are deterministic', () => {
+test('push categories and preference toggles are deterministic', async () => {
   assert.equal(webPushPolicy.pushCategory(item()), 'chat');
   assert.equal(webPushPolicy.pushCategory(item({ kind: 'approval', source_type: 'agent_action' })), 'approvals');
   assert.equal(webPushPolicy.pushCategory(item({ kind: 'task_assigned', source_type: 'task' })), 'tasks');
   assert.equal(webPushPolicy.pushCategory(item({ kind: 'reminder', source_type: 'calendar' })), 'calendar');
   assert.equal(webPushPolicy.pushCategory(item({ kind: 'agent_failure', source_type: 'agent' })), 'agents');
+  const email = item({ kind: 'email_new_message', source_type: 'email', title: 'New email', body: null,
+    link: '/email?account=mailbox&message=mail-id', metadata: { account_id: 'mailbox', subject: 'private subject', from: 'private@example.test' } });
+  assert.equal(DEFAULT_NOTIFICATION_PREFERENCES.push.email, false);
+  assert.equal(webPushPolicy.pushCategory(email), 'email');
+  const legacyPreferences = structuredClone(DEFAULT_NOTIFICATION_PREFERENCES);
+  legacyPreferences.push.enabled = true;
+  delete (legacyPreferences.push as { email?: boolean }).email;
+  assert.equal(webPushPolicy.preferenceAllows(email, legacyPreferences), false,
+    'a legacy preference object without the new category must not opt in');
+  const emailEnabled = structuredClone(DEFAULT_NOTIFICATION_PREFERENCES); emailEnabled.push.enabled = true; emailEnabled.push.email = true;
+  assert.equal(webPushPolicy.preferenceAllows(email, emailEnabled), true);
+  const payload = JSON.parse(safeAttentionPushPayload(email));
+  assert.deepEqual(payload, { title: 'New email', body: 'Open Deft to review.', url: '/email?account=mailbox&message=mail-id',
+    attention_id: 'attention-test', tag: 'deft-attention-attention-test' });
+  assert.equal(JSON.stringify(payload).includes('private subject'), false);
+  assert.equal(JSON.stringify(payload).includes('private@example.test'), false);
+  assert.equal(await emailNotificationPushStillCurrent({ ...email, metadata: {} }), false,
+    'an email push without exact event metadata cannot pass the delivery fence');
 
   const enabled = structuredClone(DEFAULT_NOTIFICATION_PREFERENCES);
   enabled.push.enabled = true;

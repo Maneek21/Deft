@@ -1,3 +1,6 @@
+import {sql} from 'drizzle-orm';
+import {getAppRunRuntime} from '../lib/app-run-runtime.js';
+import {preparedResourceBatchService} from '../lib/app-data-resource-batch-service.js';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { verifyWebAccess } from '../lib/web-sessions.js';
@@ -11,7 +14,7 @@ export function createAppActionBatchRoutes() {
   if(!user)return c.json({error:'Human Web session required',code:'UNAUTHORIZED'},401);
   c.set('caller',{org_id:user.org_id,user_id:user.id,sid:user.sid,access_expires_at:user.exp*1000});await next();});
  const id=(value:string)=>z.string().uuid().parse(value);
- routes.get('/:id',async c=>{try{const caller=c.get('caller');return c.json(await (await getAppActionBatchService()).get({...caller,source:'defty'},id(c.req.param('id'))));}catch(e){return appHttpFailure(c,e,'App action','app-actions');}});
+ routes.get('/:id',async c=>{try{const caller=c.get('caller'),batchId=id(c.req.param('id')),runtime=await getAppRunRuntime();const prepared=await runtime.repository.transaction(async tx=>(await tx.execute(sql<{mode:string}>`SELECT COALESCE(to_jsonb(b)->>'release_mode','parallel_approval') AS mode FROM app_action_batches b WHERE org_id=${caller.org_id} AND id=${batchId} AND owner_user_id=${caller.user_id}`)).rows[0]?.mode==='prepared_resource_sequential');return c.json(prepared?await(await preparedResourceBatchService(caller)).statusOwnedBatch(batchId,c.req.raw.signal):await (await getAppActionBatchService()).get({...caller,source:'defty'},batchId));}catch(e){return appHttpFailure(c,e,'App action','app-actions');}});
  routes.post('/:id/review',async c=>{try{return c.json(await (await getAppActionBatchService()).review(c.get('caller'),id(c.req.param('id'))));}catch(e){return appHttpFailure(c,e,'App action','app-actions');}});
  routes.post('/:id/approve',async c=>{try{if(!/^application\/json(?:\s*;|$)/i.test(c.req.header('content-type')??''))return c.json({error:'Invalid request',code:'VALIDATION_ERROR'},400);return c.json(await (await getAppActionBatchService()).approve(c.get('caller'),id(c.req.param('id')),await readMcpRequestJson(c.req.raw,131_072)));}catch(e){if(e instanceof McpRequestBodyError)return c.json({error:'Invalid batch approval request',code:'VALIDATION_ERROR'},e.status);return appHttpFailure(c,e,'App action','app-actions');}});
  routes.post('/:id/cancel',async c=>{try{const caller=c.get('caller');return c.json(await (await getAppActionBatchService()).cancel({...caller,source:'defty'},id(c.req.param('id'))));}catch(e){return appHttpFailure(c,e,'App action','app-actions');}});

@@ -1179,3 +1179,51 @@ test('preview53-56 private state, consent and batches share fresh and upgrade pa
   assert.match(sql[3]!,/policy_revision integer NOT NULL DEFAULT -1/);
   assert.equal(getTableConfig(schema.appActionBatches).columns.find(c=>c.name==='policy_revision')?.default,-1);
 });
+
+test('native rules83-84 exports, upgrades, extras, and schema head share the supported path',async()=>{
+ const schema=await import('../src/schema.ts'),directory=dirname(fileURLToPath(import.meta.url));
+ const extras=readFileSync(resolve(directory,'apply-extras.ts'),'utf8'),channel=readFileSync(resolve(directory,'..','..','..','apps','api','src','lib','agent-channel.ts'),'utf8');
+ assert.deepEqual([schema.emailRules,schema.emailRuleReceipts].map(table=>getTableConfig(table).name),['email_rules','email_rule_receipts']);
+ const migrations=upgradeManifest.migrations.filter(m=>/^0\.3\.0-preview\.(83|84)$/.test(m.version));assert.equal(migrations.length,2);
+ const sql=migrations.map(m=>{assert.ok(extras.includes(m.file));return readFileSync(resolve(directory,'..','upgrades',m.file),'utf8');});
+ assert.match(sql[0]!,/email_rules_account_fk[\s\S]*REFERENCES email_accounts/);assert.match(sql[0]!,/content_envelope jsonb NOT NULL/);
+ assert.match(sql[1]!,/email_rule_receipts_rule_fk[\s\S]*REFERENCES email_rules/);assert.match(sql[1]!,/action_index BETWEEN 0 AND 5/);
+ assert.ok(channel.includes(`DEFT_SCHEMA_HEAD = '${upgradeManifest.migrations.at(-1)!.version}'`));
+});
+
+test('native email notifications87 are exported, included in fresh extras and the upgrade ledger',async()=>{
+ const schema=await import('../src/schema.ts'),directory=dirname(fileURLToPath(import.meta.url));
+ const extras=readFileSync(resolve(directory,'apply-extras.ts'),'utf8');
+ assert.deepEqual([schema.emailNotificationStates,schema.emailNotificationEvents].map(table=>getTableConfig(table).name),['email_notification_states','email_notification_events']);
+ const migration=upgradeManifest.migrations.find(item=>item.version==='0.3.0-preview.87');assert.ok(migration);
+ assert.ok(extras.includes(migration.file));
+ const sql=readFileSync(resolve(directory,'..','upgrades',migration.file),'utf8');
+ assert.match(sql,/email_notification_states_account_fk[\s\S]*REFERENCES email_accounts/);
+ assert.match(sql,/email_notification_events_message_unique/);
+ assert.match(sql,/logical_message_id ~ '\^mail_\[a-f0-9\]\{64\}\$'/);
+});
+
+test('native Email bridges88-89 retain sequential fresh and upgrade registration', async () => {
+  const schema = await import('../src/schema.ts'), directory = dirname(fileURLToPath(import.meta.url));
+  const extras = readFileSync(resolve(directory, 'apply-extras.ts'), 'utf8');
+  const migrations = upgradeManifest.migrations.filter(item => /^0\.3\.0-preview\.(88|89)$/.test(item.version));
+  assert.deepEqual(migrations.map(item => item.version), ['0.3.0-preview.88', '0.3.0-preview.89']);
+  assert.deepEqual([schema.emailCalendarInvitations, schema.emailCalendarInvitationActions, schema.emailContextTransfers]
+    .map(table => getTableConfig(table).name), ['email_calendar_invitations', 'email_calendar_invitation_actions', 'email_context_transfers']);
+  for (const migration of migrations) assert.ok(extras.includes(migration.file));
+  const transfer = getTableConfig(schema.emailContextTransfers);
+  assert.ok(transfer.foreignKeys.some(fk => fk.getName() === 'email_context_transfer_account_fk'));
+  assert.ok(transfer.indexes.some(index => index.config.name === 'email_context_transfer_source_idx'));
+});
+
+
+test('Chat transfer90 preserves prior receipts while extending fresh and upgrade kind constraints', () => {
+  const directory = dirname(fileURLToPath(import.meta.url));
+  const migration = upgradeManifest.migrations.find(item => item.version === '0.3.0-preview.90');
+  assert.ok(migration);
+  const extras = readFileSync(resolve(directory, 'apply-extras.ts'), 'utf8');
+  assert.ok(extras.includes(migration.file));
+  const sql = readFileSync(resolve(directory, '..', 'upgrades', migration.file), 'utf8');
+  assert.match(sql, /CHECK \(destination_kind IN \('note','knowledge','chat'\)\)/);
+  assert.doesNotMatch(sql, /DROP TABLE|DELETE FROM|TRUNCATE/i);
+});

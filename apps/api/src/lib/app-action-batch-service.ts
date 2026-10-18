@@ -11,7 +11,7 @@ import { humanActionDigest, sealHumanActionTicket, openHumanActionTicket } from 
 import { ActionBatchProposalSchema, ActionBatchApproveSchema, type ActionBatchCaller } from './app-action-batch-contract.js';
 
 type Batch = { id:string;org_id:string;owner_user_id:string;runtime_binding_id:string;source:ActionBatchCaller['source'];employee_id:string|null;
- token_id:string|null;token_kind:'mcp'|'oauth'|null;token_version:number|null;content_digest:string;title:string;consent_grant_id:string;consent_epoch:number;policy_revision:number;state:string };
+ token_id:string|null;token_kind:'mcp'|'oauth'|null;token_version:number|null;content_digest:string;title:string;consent_grant_id:string;consent_epoch:number;policy_revision:number;state:string;release_mode?:string };
 type Item = {item_key:string;label:string;run_id:string;input_digest:string;state:string};
 const stale = () => new AppRunError('APP_RUN_AUTHORIZATION_STALE');
 const deny = () => new AppRunError('APP_RUN_ACCESS_DENIED');
@@ -96,9 +96,9 @@ export class AppActionBatchService {
    const batch=await this.load(tx,caller.org_id,id);await this.current(tx,batch);return this.view(batch,await this.items(tx,batch));
   });
  }
- async get(caller:ActionBatchCaller,id:string) {return this.runtime.repository.transaction(async tx=>{const trusted=await this.caller(tx,caller,['read:app-runs']),b=await this.load(tx,caller.org_id,id);if(b.owner_user_id!==trusted.user_id)throw deny();return this.view(b,await this.items(tx,b));});}
+ async get(caller:ActionBatchCaller,id:string) {return this.runtime.repository.transaction(async tx=>{const trusted=await this.caller(tx,caller,['read:app-runs']),b=await this.load(tx,caller.org_id,id);if(b.owner_user_id!==trusted.user_id||b.release_mode==='prepared_resource_sequential')throw deny();return this.view(b,await this.items(tx,b));});}
  async review(caller:ExperienceCaller,id:string) {return this.runtime.repository.transaction(async tx=>{
-  await this.web(tx,caller);const b=await this.load(tx,caller.org_id,id);if(b.owner_user_id!==caller.user_id)throw deny();if(b.state!=='pending_approval')throw stale();
+  await this.web(tx,caller);const b=await this.load(tx,caller.org_id,id);if(b.owner_user_id!==caller.user_id)throw deny();if(b.release_mode==='prepared_resource_sequential'||b.state!=='pending_approval')throw stale();
   const authority=await this.current(tx,b),items=await this.items(tx,b);this.assertMembership(b,items);const inputs=[];
   for(const item of items) {const run=await this.runtime.repository.lockRun(tx,b.org_id,item.run_id);if(!run || run.state!=='pending_approval')throw stale();
    const input=parseRuntimeObjectInput(RuntimeObjectSchema.parse(authority.capture.action.input_schema),await this.runtime.secretRepository.readInput(b.org_id,item.run_id,tx));if(humanActionDigest(input)!==item.input_digest)throw stale();inputs.push({...item,input});}
@@ -109,7 +109,7 @@ export class AppActionBatchService {
  async approve(caller:ExperienceCaller,id:string,raw:unknown) {const request=ActionBatchApproveSchema.parse(raw),ticket=openHumanActionTicket(this.runtime.keys,request.ticket);
   if(ticket.org_id!==caller.org_id || ticket.user_id!==caller.user_id || ticket.sid!==caller.sid || ticket.session_id!==id || ticket.action_key!=='batch' || ticket.input_digest!==request.expected_digest || Date.parse(ticket.expires_at)<=Date.now())throw stale();
   return this.runtime.repository.transaction(async tx=>{await this.web(tx,caller,ticket.expires_at);const b=await this.load(tx,caller.org_id,id);if(b.owner_user_id!==caller.user_id || b.content_digest!==ticket.input_digest || ticket.runtime_binding_id!==b.runtime_binding_id)throw stale();
-   if(b.state==='approved')return this.view(b,await this.items(tx,b));if(b.state!=='pending_approval')throw stale();
+   if(b.release_mode==='prepared_resource_sequential')throw deny();if(b.state==='approved')return this.view(b,await this.items(tx,b));if(b.release_mode==='prepared_resource_sequential'||b.state!=='pending_approval')throw stale();
    const guard=async(executor:AppRunTransaction)=>{const current=await this.current(executor,b);if(ticket.authority_digest!==humanActionDigest(current.capture.authorization_snapshot))throw stale();await this.web(executor,caller,ticket.expires_at);};
    const items=await this.items(tx,b);this.assertMembership(b,items);
    // The release fence observes this only inside this transaction until every

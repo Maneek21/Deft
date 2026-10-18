@@ -1,0 +1,21 @@
+import {AppConnectionFormContextSchema,AppConnectionFormResponseSchema,type AppConnectionFormContext} from '../../../../packages/app-kit/src/connection-form';
+
+type Target=AppConnectionFormContext['targets'][number];
+const responseSchema=AppConnectionFormResponseSchema;
+/** The host handles metadata only. Credentials are entered on the reviewed
+ * operator origin; the one-use fragment is never persisted or given to Worker. */
+export function checkedFormSetupUrl(raw:unknown,target:Target,sessionId:string,now=Date.now()){
+ const result=responseSchema.parse(raw);
+ if(result.session.session_id!==sessionId||JSON.stringify(result.session.scope)!==JSON.stringify(target.scope))throw Error('Account setup changed. Check its status.');
+ if(!result.setup_url)return {session:result.session};
+ const url=new URL(result.setup_url);
+ if(result.session.state!=='awaiting_input'||result.session.input_consumed||Date.parse(result.session.input_expires_at)<=now||url.protocol!=='https:'||url.origin!==target.profile.authorization_origin||url.username||url.password||url.port||url.pathname!=='/setup'||url.search||!/^#[A-Za-z0-9_-]{43}$/u.test(url.hash))throw Error('Account setup changed. Check its status.');
+ return {session:result.session,url:url.href};
+}
+export function createConnectionFormFlow(options:{installationId:string;ownerId:string;orgId:string;current:()=>boolean;fetch:(path:string,init?:RequestInit)=>Promise<Response>}){
+ const current=()=>{if(!options.current())throw Error('Account setup is no longer active.');};
+ async function request(path:string,input?:unknown){current();const response=await options.fetch(path,{method:input?'POST':'GET',cache:'no-store',signal:AbortSignal.timeout(30_000),...(input?{headers:{'content-type':'application/json'},body:JSON.stringify(input)}:{})});current();if(!response.ok)throw Error('Account setup could not be confirmed. Check connection status.');const limit=input?65_536:262_144,reader=response.body?.getReader();if(!reader)throw Error('Account setup is unavailable.');const chunks:Uint8Array[]=[];let size=0;try{for(;;){const part=await reader.read();current();if(part.done)break;size+=part.value.byteLength;if(size>limit)throw Error('Account setup is unavailable.');chunks.push(part.value);}}finally{await reader.cancel().catch(()=>undefined);}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}const value:unknown=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));current();return value;}
+ async function load(){const value=AppConnectionFormContextSchema.parse(await request(`/api/app-connection-forms/installations/${encodeURIComponent(options.installationId)}/context`));if(value.installation_id!==options.installationId||value.org_id!==options.orgId||value.owner_user_id!==options.ownerId||new Set(value.targets.map(row=>row.target_key)).size!==value.targets.length||value.targets.some(row=>row.scope.org_id!==options.orgId||row.scope.owner_user_id!==options.ownerId||row.scope.installation_id!==options.installationId||row.scope.target_key!==row.target_key||row.session&&JSON.stringify(row.session.scope)!==JSON.stringify(row.scope)))throw Error('Account setup changed.');return value;}
+ return {load,async begin(target:Target,requestId:string){const fresh=(await load()).targets.find(value=>value.target_key===target.target_key);if(!fresh||!fresh.runtime_ready||JSON.stringify(fresh.scope)!==JSON.stringify(target.scope)||JSON.stringify(fresh.candidate)!==JSON.stringify(target.candidate))throw Error('Account setup changed. Reload connections.');return checkedFormSetupUrl(await request('/api/app-connection-forms/begin',{schema_version:'deft.app_connection_form_begin.v1',installation_id:options.installationId,target_key:target.target_key,request_id:requestId,source_session_id:target.candidate?.source_session_id??null}),target,requestId);},
+  async manage(target:Target,kind:'status'|'disconnect',sessionId:string){const value=responseSchema.parse(await request('/api/app-connection-forms/'+kind,{session_id:sessionId}));if(value.setup_url||value.session.session_id!==sessionId||JSON.stringify(value.session.scope)!==JSON.stringify(target.scope))throw Error('Account setup changed.');return value.session;}};
+}

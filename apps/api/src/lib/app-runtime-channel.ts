@@ -3,10 +3,10 @@ import { appRunAttempts, appRuns, appRuntimeSessions } from '@deft/db/schema';
 import { db } from './db.js';
 import { isAppRuntimeChannelEnabled } from './env.js';
 import type { AppRunAttemptRunner } from './app-run-attempt-runner.js';
-import { hashAppRuntimeToken, issueAppRuntimeSession } from './app-runtime-authority.js';
+import { hashAppRuntimeToken, issueAppRuntimeSession,renewAppRuntimeSession } from './app-runtime-authority.js';
 import {
-  AppRuntimeClaimRequestSchema, AppRuntimeHeartbeatRequestSchema,
-  AppRuntimeStartRequestSchema, parseAppRuntimeResult,
+  AppRuntimeClaimRequestSchema, AppRuntimeHeartbeatRequestSchema, AppRuntimeAuthorizeRequestSchema,
+  AppRuntimeStartRequestSchema, AppRuntimePayloadReadRequestSchema, AppRuntimeActionResourcesRequestSchema, AppRuntimeRenewRequestSchema,parseAppRuntimeResult,
 } from './app-runtime-contract.js';
 
 /** Deliberately separate from employee/public App audiences. No route or App
@@ -17,6 +17,7 @@ export function appRuntimeChannelEnabled(): boolean {
 
 export class AppRuntimeChannel {
   constructor(private readonly runner: AppRunAttemptRunner) {}
+  async renew(value:unknown){if(!appRuntimeChannelEnabled())return null;return renewAppRuntimeSession(AppRuntimeRenewRequestSchema.parse(value));}
 
   /** Host-only issuance after the caller authenticates an operator user.
    * Registration/binding review remains a separate privileged workflow. */
@@ -61,7 +62,18 @@ export class AppRuntimeChannel {
       org_id: identity.org_id, run_id: request.run_id, attempt_id: request.attempt_id,
       session_id: request.session_id, token_hash: identity.token_hash,
       claim_token: request.claim_token, sequence: request.sequence,
+      ...(request.action_payload_version ? { action_payload_version: request.action_payload_version } : {}),
     });
+  }
+
+  async payload(value: unknown, signal?: AbortSignal) {
+    if (!appRuntimeChannelEnabled()) return null;
+    const request = AppRuntimePayloadReadRequestSchema.parse(value);
+    const identity = await this.#session(request.session_id, request.session_token);
+    if (!identity) return null;
+    return this.runner.readRuntimePayload({ org_id: identity.org_id, run_id: request.run_id, attempt_id: request.attempt_id,
+      session_id: request.session_id, token_hash: identity.token_hash, claim_token: request.claim_token,
+      sequence: request.sequence, snapshot_ref: request.snapshot_ref, part: request.part }, signal);
   }
 
   async heartbeat(value: unknown): Promise<boolean> {
@@ -74,6 +86,28 @@ export class AppRuntimeChannel {
       session_id: request.session_id, token_hash: identity.token_hash,
       claim_token: request.claim_token, sequence: request.sequence,
     });
+  }
+
+  /** Current authority for this exact started attempt, without extending its lease. */
+  async authorize(value: unknown) {
+    if (!appRuntimeChannelEnabled()) return null;
+    const request = AppRuntimeAuthorizeRequestSchema.parse(value);
+    const identity = await this.#session(request.session_id, request.session_token);
+    if (!identity) return null;
+    return this.runner.authorizeRuntimeAttempt({ org_id: identity.org_id,
+      run_id: request.run_id, attempt_id: request.attempt_id,
+      session_id: request.session_id, token_hash: identity.token_hash,
+      claim_token: request.claim_token, sequence: request.sequence });
+  }
+
+  async resources(value: unknown, signal?: AbortSignal) {
+    if (!appRuntimeChannelEnabled()) return null;
+    const request = AppRuntimeActionResourcesRequestSchema.parse(value);
+    const identity = await this.#session(request.session_id, request.session_token);
+    if (!identity) return null;
+    return this.runner.readRuntimeActionResources({ org_id: identity.org_id, run_id: request.run_id,
+      attempt_id: request.attempt_id, session_id: request.session_id, token_hash: identity.token_hash,
+      claim_token: request.claim_token, sequence: request.sequence, input_key: request.input_key }, signal);
   }
 
   async complete(value: unknown) {

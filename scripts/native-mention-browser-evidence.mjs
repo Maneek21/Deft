@@ -23,6 +23,20 @@ page.on('websocket', socket => {
   });
 });
 const shot = async name => { await page.screenshot({ path: path.join(output, name + '.png'), fullPage: true }); results.push(name); };
+const signIn = async (targetPage, email) => {
+  await targetPage.goto(base + '/login', { waitUntil: 'domcontentloaded' });
+  // The SSR form is visible before React attaches its submit handler.
+  await targetPage.waitForFunction(() => document.documentElement.hasAttribute('data-deft-browser-features'));
+  await targetPage.locator('#login-email').fill(email);
+  await targetPage.locator('#login-password').fill(fixture.password);
+  const [response] = await Promise.all([
+    targetPage.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/auth/login'),
+    targetPage.getByRole('button', { name: /Sign [Ii]n/ }).click(),
+  ]);
+  assert(response.ok(), 'The browser signs in through the authenticated API');
+  await targetPage.waitForURL(url => !url.pathname.includes('login'));
+};
 const choose = async (editor, query, label) => {
   await editor.pressSequentially('@' + query, { delay: 90 });
   const menu = page.getByRole('listbox', { name: 'Mention people, agents, tasks or wikis' });
@@ -36,14 +50,14 @@ page.on('console', message => {
 });
 page.on('response', async response => {
   if (response.status() >= 500) errors.push(response.status() + ' ' + response.url());
-  if (response.status() >= 400) console.log('HTTP', response.status(), response.url().split('?')[0], (await response.text()).slice(0, 220));
+  if (response.status() >= 400) {
+    // Navigation can discard a response body before this diagnostic reads it.
+    const body = await response.text().catch(() => '[response body unavailable]');
+    console.log('HTTP', response.status(), response.url().split('?')[0], body.slice(0, 220));
+  }
 });
 try {
-  await page.goto(base + '/login', { waitUntil: 'domcontentloaded' });
-  await page.locator('#login-email').fill(fixture.ownerEmail);
-  await page.locator('#login-password').fill(fixture.password);
-  await page.getByRole('button', { name: /Sign [Ii]n/ }).click();
-  await page.waitForURL(url => !url.pathname.includes('login'));
+  await signIn(page, fixture.ownerEmail);
   await page.goto(base + '/chat?space=' + fixture.publicSpaceId, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
   assert(socketConnected, 'The browser establishes the live workspace socket connection');
@@ -172,11 +186,7 @@ try {
     recordVideo: { dir: path.join(output, 'videos'), size: { width: 1440, height: 960 } } });
   extraContexts.push(recipient);
   const recipientPage = await recipient.newPage();
-  await recipientPage.goto(base + '/login');
-  await recipientPage.locator('#login-email').fill(fixture.samEmail);
-  await recipientPage.locator('#login-password').fill(fixture.password);
-  await recipientPage.getByRole('button', { name: /Sign [Ii]n/ }).click();
-  await recipientPage.waitForURL(url => !url.pathname.includes('login'));
+  await signIn(recipientPage, fixture.samEmail);
   await recipientPage.goto(base + '/inbox');
   await recipientPage.getByText('Jordan mentioned you in task', { exact: true }).first().waitFor();
   await recipientPage.screenshot({ path: path.join(output, '12-recipient-inbox.png'), fullPage: true });

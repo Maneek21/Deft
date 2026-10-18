@@ -30,10 +30,21 @@ GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.6
 
 The host and `packages/app-kit` are independently versioned artifacts in this
 repository. Prepare their matching candidate versions and compatibility metadata
-together. The current candidates are host `0.3.0-preview.16` and Kit
-`0.1.0-alpha.6`; publication is pending. The Email source under
-`examples/apps/email` is a WIP reference example, not a separately certified
-product release. See [App release boundaries](docs/app-release-boundaries.md).
+together. The Apps developer-preview target is Host `0.3.0-preview.120` with
+schema 120 and Kit `0.1.0-alpha.38`. Email lives in its independent
+[repository](https://github.com/Maneek21/deft-email), with App `1.9.0-preview.13`
+on Kit alpha.38 and Runtime `0.4.0-preview.15` on Kit alpha.35. Preserve the
+sealed artifacts; no npm publication is required. The authoritative Email
+release compatibility manifest binds the final Host digest, source commits,
+App/Runtime/Kit downloads and checksums. See [App release boundaries](docs/app-release-boundaries.md).
+
+`release/browser-profile.json` is separate from the core/Hermes release scope.
+The `apps-developer-preview` profile is allowed only for prerelease versions;
+it compiles Apps, resource sync and attachment-broker browser flags into the
+image. The release workflow checks the actual digest's client bundle before
+publication and includes `browser-feature-evidence.json`. A runtime environment
+change cannot enable a feature excluded from that bundle. The `core` browser
+profile preserves the ordinary defaults; neither profile grants server access.
 
 Pack the Kit from the exact reviewed candidate source with
 `pnpm --dir packages/app-kit pack --pack-destination /absolute/path/to/artifacts`.

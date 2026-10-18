@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {TEST_POSTGRES_IMAGE,testDatabaseIsolation} from './email-preview-test-databases.mjs';
+import {TEST_POSTGRES_IMAGE,testDatabaseIsolation,waitForNoDatabaseClients} from './email-preview-test-databases.mjs';
 
 const id='a'.repeat(64),runId='1234',attempt='2';
 function fixture(overrides={}){
@@ -25,7 +25,7 @@ function fixture(overrides={}){
   if(sql.startsWith('SELECT current_database'))return overrides.identity??`${database}|${isMain?'postgres':'gate_g_test'}|${isMain?'5432':'55435'}|127.0.0.1`;
   if(sql.includes('pg_stat_activity'))return String(typeof overrides.clients==='function'?overrides.clients():overrides.clients??0);
   if(sql.includes('pg_database WHERE'))return sql.includes('automation_renewal')?String(overrides.automationExisting??Number(automation)):String(overrides.templateExisting??Number(template));
-  if(sql==='SELECT count(*) FROM deft_schema_migrations')return String(overrides.ledgerRows??55);
+  if(sql==='SELECT count(*) FROM deft_schema_migrations')return overrides.ledgerCount??'116';
   if(sql.includes('app_run_secret_payloads'))return String(overrides.retained??0);
   if(sql.includes('SELECT version,checksum,kind'))return overrides.corruptTemplate&&database.startsWith('deft_preview_template_')?'wrong ledger':'001|abcd|baseline\n117|def|migration';
   if(sql.startsWith('SELECT pg_database_size'))return'1024';
@@ -35,7 +35,7 @@ function fixture(overrides={}){
   return'';
  };
  return {commands,pauses,instance:testDatabaseIsolation({docker,mainContainer:id,
-  expectedLedgerRows:55,predecessorContainer:`email-mailbox-predecessor-${runId}-${attempt}`,runId,attempt,
+  predecessorContainer:`email-mailbox-predecessor-${runId}-${attempt}`,runId,attempt,
   now:()=>time,pause:ms=>{pauses.push(ms);time+=ms;overrides.onPause?.(main);}})};
 }
 const destructive=commands=>commands.filter(({args})=>/^(?:DROP|CREATE) DATABASE/.test(args.at(-1)));
@@ -50,7 +50,6 @@ test('exact disposable fixture clones preserve the seeded ledger and automation 
 });
 
 for(const [name,overrides] of [
- ['wrong ledger count',{ledgerRows:54}],
  ['wrong image',{edit(main){main.Config.Image='other:latest';}}],
  ['wrong run',{edit(main){main.Config.Labels['deft.test_run']='999';}}],
  ['wrong attempt',{edit(main){main.Config.Labels['deft.test_attempt']='3';}}],
@@ -60,6 +59,8 @@ for(const [name,overrides] of [
  ['wrong initialization password',{edit(main){main.Config.Env=['POSTGRES_USER=postgres','POSTGRES_PASSWORD=wrong','POSTGRES_DB=deft_test'];}}],
  ['active clients',{clients:1}],['wrong DB identity',{identity:'production|postgres|5432|127.0.0.1'}],
  ['existing template',{templateExisting:1}],['retained Run keys',{retained:1}],
+ ['schema118 ledger',{ledgerCount:'114'}],
+ ['schema119 ledger',{ledgerCount:'115'}],
 ])test(`refuses ${name} before any destructive command`,()=>{
  const {instance,commands}=fixture(overrides);assert.throws(()=>instance.createTemplate());assert.equal(destructive(commands).length,0);
 });
@@ -76,7 +77,7 @@ test('existing automation target is not overwritten',()=>{
  assert.equal(commands.filter(({args})=>args.includes('pg_dump')).length,0);
 });
 
-test('a transient client exits before the guarded database reset',()=>{
+test('a transient PostgreSQL backend close lag clears before the guarded database reset',()=>{
  const overrides={},state=fixture(overrides);state.instance.createTemplate();
  let observations=0;overrides.clients=()=>++observations===1?1:0;
  const start=state.commands.length;
@@ -121,4 +122,12 @@ test('an invalid active-client response fails closed before reset',()=>{
  const start=state.commands.length;
  assert.throws(()=>state.instance.restoreMain('next.test.ts','before'),/invalid active-client count/);
  assert.equal(destructive(state.commands.slice(start)).length,0);
+});
+
+test('a persistent backend is diagnosed once after the bounded idle wait',()=>{
+ let time=0,identities=0,diagnostics=0;
+ assert.throws(()=>waitForNoDatabaseClients({assertIdentity:()=>{identities++;},count:()=> '1',timeoutMs:100,
+  now:()=>time,pause:ms=>{time+=ms;},diagnose:()=>{diagnostics++;return 'pid=fixture,state=idle';},
+  error:'guarded fixture stayed busy'}),/guarded fixture stayed busy: pid=fixture,state=idle/);
+ assert.equal(time,100);assert.equal(identities,2);assert.equal(diagnostics,1);
 });

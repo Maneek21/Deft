@@ -5,6 +5,7 @@ import { appActionService } from '../lib/app-action-service.js';
 import { humanModuleActor } from '../lib/module-service.js';
 import { listModuleAppRunHistory, listModuleAppRunOutcomes } from '../lib/module-app-run-history.js';
 import { appHttpFailure } from './app-http-errors.js';
+import { appRunStatusReadFailure } from './app-run-status-errors.js';
 import { sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { AppRunError } from '../lib/app-run-errors.js';
@@ -81,7 +82,7 @@ appRunRoutes.get('/:runId/result', async (c) => {
     return c.json(await appActionService.result(callerFromContext(c), runId));
   } catch (error) {
     if (error instanceof ResourceSyncWebAuthenticationError) return c.json({ error: error.message, code: error.code }, error.status);
-    return appHttpFailure(c, error, 'App Run', 'app-runs');
+    return appRunStatusReadFailure(c, error);
   }
 });
 

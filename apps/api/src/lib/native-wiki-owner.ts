@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   agentEmployees, messages, orgMembers, spaceMembers, spaces, tasks, users,
   wikiCitations, wikiLinks, wikiPages,
@@ -9,24 +9,28 @@ import { visibleTaskCondition } from './task-visibility.js';
 import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
 import { employeeProjectAccessAllows, loadEmployeeProjectAccess } from './mcp-tools/employee-project-access.js';
 import { retrieveContext } from './retrieve-context.js';
+import { emailKnowledgeAudienceCondition } from './email-knowledge-visibility.js';
+import { decorateEmailKnowledgeCitations } from './email-knowledge-citations.js';
 
 /** Native agent identity is supplied by the host runner, never tool input. */
 export type NativeWikiCaller = Readonly<{
   orgId: string;
   userId: string;
   agentEmployeeId?: string;
+  conversationId?: string;
 }>;
 
 export type NativeWikiReader = Readonly<{
   orgId: string;
   subjectUserId: string;
   agentEmployeeId?: string;
+  conversationId?: string;
 }>;
 
 export async function resolveNativeWikiReader(caller: NativeWikiCaller): Promise<NativeWikiReader | null> {
   if (!caller.orgId || (!caller.userId && !caller.agentEmployeeId)) return null;
   if (caller.agentEmployeeId) {
-    const [employee] = await db.select({ user_id: agentEmployees.user_id })
+    const [employee] = await db.select({ user_id: agentEmployees.user_id, canonical: sql<boolean>`${canonicalDeftyEmployeeCondition()}` })
       .from(agentEmployees)
       .innerJoin(orgMembers, and(eq(orgMembers.org_id, agentEmployees.org_id),
         eq(orgMembers.user_id, agentEmployees.user_id)))
@@ -35,8 +39,17 @@ export async function resolveNativeWikiReader(caller: NativeWikiCaller): Promise
         eq(orgMembers.is_active, true),
         or(eq(agentEmployees.is_deleted, false), canonicalDeftyEmployeeCondition())))
       .limit(1);
-    return employee?.user_id ? { orgId: caller.orgId, subjectUserId: employee.user_id,
-      agentEmployeeId: caller.agentEmployeeId } : null;
+    if (!employee?.user_id) return null;
+    if (employee.canonical) {
+      const [human] = await db.select({ id: users.id }).from(users)
+        .innerJoin(orgMembers, and(eq(orgMembers.user_id, users.id), eq(orgMembers.org_id, caller.orgId)))
+        .where(and(eq(users.id, caller.userId), eq(users.is_agent, false), eq(orgMembers.is_active, true))).limit(1);
+      if (!human) return null;
+      return { orgId: caller.orgId, subjectUserId: human.id, agentEmployeeId: caller.agentEmployeeId,
+        conversationId: caller.conversationId };
+    }
+    return { orgId: caller.orgId, subjectUserId: employee.user_id,
+      agentEmployeeId: caller.agentEmployeeId, conversationId: caller.conversationId };
   }
   const [member] = await db.select({ id: orgMembers.id })
     .from(orgMembers)
@@ -44,15 +57,15 @@ export async function resolveNativeWikiReader(caller: NativeWikiCaller): Promise
     .where(and(eq(orgMembers.org_id, caller.orgId), eq(orgMembers.user_id, caller.userId),
       eq(orgMembers.is_active, true), eq(users.is_agent, false)))
     .limit(1);
-  return member ? { orgId: caller.orgId, subjectUserId: caller.userId } : null;
+  return member ? { orgId: caller.orgId, subjectUserId: caller.userId, conversationId: caller.conversationId } : null;
 }
 
 function visiblePage(reader: NativeWikiReader): SQL | undefined {
   const humanVisibility = visibleWikiPageCondition(reader.subjectUserId, reader.orgId);
-  return reader.agentEmployeeId
+  return and(emailKnowledgeAudienceCondition(reader.orgId, reader.subjectUserId, reader.conversationId, reader.agentEmployeeId), reader.agentEmployeeId
     ? or(humanVisibility, and(eq(wikiPages.agent_employee_id, reader.agentEmployeeId),
         ne(wikiPages.scope, 'org')))
-    : humanVisibility;
+    : humanVisibility);
 }
 
 async function linkedPages(reader: NativeWikiReader, pageId: string,
@@ -93,6 +106,9 @@ async function citationVisible(reader: NativeWikiReader, citation: typeof wikiCi
       org_id: reader.orgId, employee_id: reader.agentEmployeeId,
     }), row.project_id);
   }
+  // Email excerpts were explicitly routed to this already-authorized page.
+  // Decoration only exposes an original-mail link to its mailbox owner.
+  if (citation.source_type === 'email') return citation.org_id === reader.orgId;
   // Unknown source types have no reviewed owner authorization path.
   return false;
 }
@@ -118,22 +134,23 @@ export async function readNativeWiki(reader: NativeWikiReader, slug: string) {
       eq(wikiPages.is_deleted, false), visiblePage(reader))).limit(1);
   if (!stillVisible) return null;
   if (!await resolveNativeWikiReader({ orgId: reader.orgId,
-    userId: reader.subjectUserId, agentEmployeeId: reader.agentEmployeeId })) return null;
+    userId: reader.subjectUserId, agentEmployeeId: reader.agentEmployeeId, conversationId: reader.conversationId })) return null;
   return { page: stillVisible,
     linked_pages: currentLinks.map(({ context: _context, ...link }) => link),
     backlinks: currentBacklinks.map(({ summary: _summary, context: _context, ...link }) => link),
-    citations: candidates.filter((_, index) => checks[index]) };
+    citations: await decorateEmailKnowledgeCitations(reader.orgId, reader.subjectUserId,
+      candidates.filter((_, index) => checks[index])) };
 }
 
 export async function searchNativeWiki(reader: NativeWikiReader, input: {
   query?: unknown; type?: unknown; scope?: unknown; limit?: unknown;
-}, timing?: { afterCandidates?: () => Promise<void> }) {
+}, timing?: { afterCandidates?: () => Promise<void>; afterEnrichment?: () => Promise<void> }) {
   if (typeof input.query !== 'string' || input.query.trim().length < 2) return [];
   const limit = typeof input.limit === 'number' && Number.isInteger(input.limit)
     ? Math.max(1, Math.min(input.limit, 10)) : 5;
   const hits = await retrieveContext({ query: input.query, org_id: reader.orgId,
-    ...(reader.agentEmployeeId ? { agent_employee_id: reader.agentEmployeeId }
-      : { user_id: reader.subjectUserId }), types: ['wiki'], limit });
+    user_id: reader.subjectUserId, conversation_id: reader.conversationId,
+    ...(reader.agentEmployeeId ? { agent_employee_id: reader.agentEmployeeId } : {}), types: ['wiki'], limit });
   const ids = hits.map((hit) => hit.source_id);
   if (ids.length === 0) return [];
   // Search index results are candidate IDs only. The test seam pauses between
@@ -154,6 +171,13 @@ export async function searchNativeWiki(reader: NativeWikiReader, input: {
       .map(({ slug, title }) => ({ slug, title })),
   })));
   if (!await resolveNativeWikiReader({ orgId: reader.orgId, userId: reader.subjectUserId,
-    agentEmployeeId: reader.agentEmployeeId })) return [];
-  return enriched;
+    agentEmployeeId: reader.agentEmployeeId, conversationId: reader.conversationId })) return [];
+  await timing?.afterEnrichment?.();
+  const linkedSlugs = enriched.flatMap(page => page.linked_pages.map(link => link.slug));
+  const finalPages = await db.select({ id: wikiPages.id, slug: wikiPages.slug }).from(wikiPages)
+    .where(and(eq(wikiPages.org_id, reader.orgId), eq(wikiPages.is_deleted, false), visiblePage(reader),
+      or(inArray(wikiPages.id, ids), linkedSlugs.length ? inArray(wikiPages.slug, linkedSlugs) : undefined)));
+  const finalIds = new Set(finalPages.map(page => page.id)), finalSlugs = new Set(finalPages.map(page => page.slug));
+  return enriched.filter(page => finalIds.has(page.id)).map(page => ({ ...page,
+    linked_pages: page.linked_pages.filter(link => finalSlugs.has(link.slug)) }));
 }

@@ -183,7 +183,7 @@ Fresh installs use `init` (`pnpm db:push-full` plus platform seed). Supported ve
 - Modules define domain records, relationships, and Deft-rendered native views. Standalone manifests install through Settings → Modules without the Apps feature flags.
 - Module v1 data is shared with owners, admins, and members; it has no private rows or fields. [Choose between a Module and an App](docs/modules-and-apps.md).
 - Declarative internal Apps package Modules for review and installation and are an opt-in alpha capability.
-- Connected Apps and bounded daily actions are included in preview.15. They are experimental, disabled by default, and require the flags and review flow in the [operator guide](docs/app-run-operations.md).
+- Connected Apps and bounded daily actions are experimental. Historical preview.15 ships them disabled by default. The Apps-enabled Host preview.120/schema120 profile supports the independent [Email reference app](https://github.com/Maneek21/deft-email), using the exact [compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.13/compatibility.json) and [current author guide](docs/connected-app-author-guide.md). Compiled feature availability does not replace reviewed operator or member permission.
 - The current App protocols do not provide arbitrary custom UI, public portals, general external runtimes, or synchronization.
 
 ## Security posture

@@ -1,0 +1,24 @@
+import {assertPreparedRecordCleanupSource} from './app-prepared-record-action-receipt.js';
+import {randomUUID} from 'node:crypto';
+import {sql} from 'drizzle-orm';
+import {AppPreparedMirrorInputSchema} from '@deft/app-kit';
+import type {AppRunSafeView,AppRunTransaction} from './app-run-repository.js';
+import {appDataDigest,appDataDenied} from './app-data-authority.js';
+import {PostgresRecordMirrorStore} from './app-record-mirror-store.js';
+import {currentRecordMirrorAuthority} from './app-record-mirror-authority.js';
+export async function recordMirrorRunIsCurrent(tx:AppRunTransaction,run:AppRunSafeView,input?:Record<string,string|number|boolean>){
+ if(run.execution_release_kind!=='record_mirror'||run.provider_kind!=='app_runtime'||run.initiating_actor_type!=='human'||run.cancel_requested_at||run.input_expires_at<=new Date())return false;
+ const result=await tx.execute(sql`SELECT m.*,r.origin_app_installation_id,r.origin_app_version_id,r.origin_app_grant_snapshot_id,r.origin_runtime_binding_id,r.input_fingerprint FROM app_record_mirror_runs m JOIN app_runs r ON r.org_id=m.org_id AND r.id=m.run_id WHERE m.org_id=${run.org_id} AND m.run_id=${run.id} FOR SHARE OF m`),link=result.rows[0];if(!link||typeof link.receipt_id!=='string')return false;
+ const store=new PostgresRecordMirrorStore(),row=await store.read(tx,run.org_id,run.initiating_actor_id,link.receipt_id,true);if(!row||row.state!=='enabled'||row.expires_at<=new Date()||row.authority_digest!==appDataDigest(row.reviewed_authority)||link.input_fingerprint!==link.run_input_fingerprint)return false;
+ try{const pins=await currentRecordMirrorAuthority(tx,row.reviewed_authority),exact=AppPreparedMirrorInputSchema.parse(link.input);if(pins.policy.action_key!==run.operation_name||pins.policy_digest!==row.policy_digest||pins.scope.installation_id!==link.origin_app_installation_id||pins.scope.app_version_id!==link.origin_app_version_id||pins.scope.grant_snapshot_id!==link.origin_app_grant_snapshot_id||pins.action_consents[0]!.action_binding_id!==link.origin_runtime_binding_id||exact.mirror_receipt_id!==row.receipt_id||exact.mirror_receipt_revision!==row.revision||exact.mirror_policy_digest!==row.policy_digest||exact.record_store_key!==row.store_key||exact.record_id!==link.record_id||exact.record_revision!==link.record_revision||exact.snapshot_digest!==link.snapshot_digest||exact.mirror_operation!==link.operation||appDataDigest(exact)!==link.input_digest||input&&appDataDigest(input)!==link.input_digest)return false;if(exact.mirror_operation==='delete')await assertPreparedRecordCleanupSource(tx,pins,exact);return true;}catch{return false;}
+}
+/** Host-only release under a prior reviewed recurring receipt. This never
+ * represents a new human click and cannot release another operation kind. */
+export async function releaseRecordMirrorRun(tx:AppRunTransaction,run:AppRunSafeView,receipt:string){
+ const runtime=await (await import('./app-run-runtime.js')).getAppRunRuntime(),store=new PostgresRecordMirrorStore(),row=await store.read(tx,run.org_id,run.initiating_actor_id,receipt,true);if(!row||run.operation_name!==(row.reviewed_authority as any).policy?.action_key||run.state!=='pending_approval'||run.execution_release_kind||run.review_requirement!=='always'||run.review_scope!=='per_invocation')throw appDataDenied();await currentRecordMirrorAuthority(tx,row.reviewed_authority);
+ const now=new Date();await tx.execute(sql`UPDATE app_runs SET execution_release_kind='record_mirror',execution_released_at=${now},updated_at=${now} WHERE org_id=${run.org_id} AND id=${run.id} AND state='pending_approval' AND execution_release_kind IS NULL`);
+ let released=(await runtime.repository.lockRun(tx,run.org_id,run.id))!;if(!await recordMirrorRunIsCurrent(tx,released)||!await runtime.liveAuthorization.authorizeApprovalInTransaction(tx,released,now))throw appDataDenied();
+ await runtime.repository.appendEvent(tx,{id:randomUUID(),org_id:run.org_id,run_id:run.id,event_type:'approval_resolved',actor:{actor_type:'system',system_id:'record_mirror'},payload:{resolution:'prior_reviewed_receipt',execution_release_kind:'record_mirror',receipt_id:row.receipt_id,policy_digest:row.policy_digest,reviewed_at:row.created_at.toISOString(),reviewer_user_id:row.owner_user_id,new_human_click:false},now});
+ await tx.execute(sql`UPDATE agent_actions SET approval_status='approved',approved_at=${row.created_at},approved_by_user_id=${row.owner_user_id},result=${JSON.stringify({run_id:run.id,state:'pending',execution_release_kind:'record_mirror',receipt_id:row.receipt_id,policy_digest:row.policy_digest,reviewed_at:row.created_at.toISOString(),new_human_click:false})}::jsonb,updated_at=${now} WHERE org_id=${run.org_id} AND app_run_id=${run.id} AND approval_status='pending'`);
+ if(!await recordMirrorRunIsCurrent(tx,released))throw appDataDenied();await runtime.attemptRunner.scheduleInTransaction(tx,released,now);return released;
+}

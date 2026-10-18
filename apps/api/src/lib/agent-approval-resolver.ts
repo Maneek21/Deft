@@ -127,7 +127,7 @@ export { sanitizeModuleActionParamsForReceipt };
  * record through this resolver. App Runs remain outside MCP action catalogs
  * and budgets; this predicate only owns the human approval handoff. */
 export function isApprovalResolverAction(action: string): boolean {
-  return action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
+  return action === 'email_send' || action === APP_RUN_APPROVAL_ACTION || MCP_ACTION_KINDS.has(action);
 }
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
@@ -926,6 +926,8 @@ async function approveActionLocked(
     };
   }
 
+  // Retained native proposals remain audit records, never replacement sends.
+  if(row.source==='native_email'||row.action==='email_send')return {status:'error',code:'UNSUPPORTED_ACTION',message:'The built-in mailbox action is retired'};
   if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
     return {
       status: 'error',

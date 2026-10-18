@@ -1,5 +1,5 @@
 import { SyncDescriptorV2Schema, SyncRequestV2Schema, parseSyncPageV2, digestResourceSyncDescriptorV2,
-  canonicalAttachmentJson, type SyncPageV2 } from '@deft/app-kit';
+  canonicalAttachmentJson, appConsentDeadline, appConsentExpiryValid, type SyncPageV2 } from '@deft/app-kit';
 import { retainedAttachmentMetadataCapacity } from './app-attachment-capacity.js';
 import type { AppAttachmentPageLinker, AttachmentAppliedParent } from './app-attachment-page-linker.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -77,7 +77,9 @@ export class AppResourceSyncStore {
     const [binding] = await tx.select().from(appResourceBindings).where(and(
       eq(appResourceBindings.org_id, input.org_id), eq(appResourceBindings.id, intent.resource_binding_id),
     )).limit(1);
-    if (!binding || binding.state !== 'active' || !binding.consent_expires_at
+    if (!binding || binding.state !== 'active'
+      || (!this.attachmentMode && binding.consent_lifetime != null)
+      || !appConsentExpiryValid(binding.consent_expires_at, binding.consent_lifetime ?? undefined)
       || binding.owner_user_id !== intent.owner_user_id
       || binding.app_installation_id !== intent.app_installation_id
       || binding.app_version_id !== intent.app_version_id
@@ -121,7 +123,7 @@ export class AppResourceSyncStore {
     const checkedAt = input.clock();
     if (!Number.isFinite(checkedAt.getTime())) throw new TypeError('Invalid settlement time');
     if (run.input_expires_at <= checkedAt || attempt.lease_expires_at <= checkedAt
-      || binding.consent_expires_at <= checkedAt) {
+      || appConsentDeadline(binding.consent_expires_at, binding.consent_lifetime ?? undefined) <= checkedAt.getTime()) {
       throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
     }
     const currentCursorContext = { org_id: input.org_id,
@@ -307,13 +309,19 @@ export class AppResourceSyncStore {
       eq(appSyncCheckpoints.cursor_sequence, intent.expected_cursor_sequence),
     )).returning({ id: appSyncCheckpoints.id });
     if (!applied) throw new Error('APP_RESOURCE_SYNC_CURSOR_CAS_FAILED');
+    // Independent notification opt-in queues only signed UUID/digest metadata
+    // within the same publication transaction; final expiry rolls both back.
+    if(this.attachmentMode){
+      const {enqueueAppIntegrationPublishedNotifications}=await import('./app-integration-notification-publication.js');
+      await enqueueAppIntegrationPublishedNotifications(tx,{org_id:input.org_id,resource_binding_id:binding.id,upserts:page.upserts,clock:input.clock});
+    }
     // A bounded page can still outlive its lease while writing many rows.
     // The caller performs its own final settlement check after this helper;
     // this last local check rolls back the entire page if time ran out here.
     const completedAt = input.clock();
     if (!Number.isFinite(completedAt.getTime())) throw new TypeError('Invalid settlement time');
     if (run.input_expires_at <= completedAt || attempt.lease_expires_at <= completedAt
-      || binding.consent_expires_at <= completedAt) {
+      || appConsentDeadline(binding.consent_expires_at, binding.consent_lifetime ?? undefined) <= completedAt.getTime()) {
       throw new Error('APP_RESOURCE_SYNC_SETTLEMENT_EXPIRED');
     }
     return Object.freeze({ page_digest: pageDigest, applied_sequence: nextSequence,
