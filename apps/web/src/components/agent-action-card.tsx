@@ -32,11 +32,11 @@ import { RuntimeAppInputReview, type RuntimeReviewIdentity } from './runtime-app
 import { NativeAppInputReview, type NativeReviewIdentity } from './native-app-input-review';
 import { getActiveSessionCacheScope } from '@/lib/session-cache';
 import { useAuth } from '@/lib/auth-context';
+import { loadTaskReviewLabels, taskReviewAssignmentLines, taskReviewDisplayParams, taskReviewTargetLabel, taskReviewTargets, type TaskReviewLabels } from '@/lib/agent-task-review-labels';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
   getAgentActionPresentation,
-  getTaskReviewAssignment,
   getAppRunApprovalCompletionLabel,
   getAppRunInspectorLabel,
   getAppRunReference,
@@ -422,7 +422,7 @@ function getDisplaySourceQuote(params: Record<string, any>) {
   return quote;
 }
 
-function getSubtaskDraftText(params: Record<string, any>) {
+function getSubtaskDraftText(params: Record<string, any>, labels?: TaskReviewLabels | null) {
   const subtasks = params.subtasks;
   if (!Array.isArray(subtasks)) return '';
   const lines = subtasks
@@ -431,7 +431,8 @@ function getSubtaskDraftText(params: Record<string, any>) {
       const record = subtask as Record<string, any>;
       const title = getStringParam(record, ['title']);
       if (!title) return '';
-      const assignee = getStringParam(record, ['assignee_name', 'assignee']);
+      const assigneeId = getStringParam(record, ['assignee_id']);
+      const assignee = assigneeId ? taskReviewTargetLabel('members', assigneeId, labels) : '';
       const due = getStringParam(record, ['due_date', 'dueDate']);
       const priority = getStringParam(record, ['priority']);
       const meta = [assignee ? `assignee: ${assignee}` : '', due ? `due: ${due}` : '', priority ? priority.toUpperCase() : '']
@@ -444,7 +445,7 @@ function getSubtaskDraftText(params: Record<string, any>) {
   return `Subtasks:\n${lines.join('\n')}`;
 }
 
-function getDraftDetailText(actionName: string, params: Record<string, any>) {
+function getDraftDetailText(actionName: string, params: Record<string, any>, labels?: TaskReviewLabels | null) {
   if (actionName === 'wiki_update' && params.patch && typeof params.patch === 'object'
     && typeof params.patch.content === 'string') {
     const page = getStringParam(params, ['page_id']);
@@ -475,8 +476,8 @@ function getDraftDetailText(actionName: string, params: Record<string, any>) {
   }
   if (actionName === 'create_task' || actionName === 'task_create' || actionName === 'task_update') {
     const description = getStringParam(params, ['description', 'content', 'summary', 'comment']);
-    const subtasks = getSubtaskDraftText(params);
-    const assignment = getTaskReviewAssignment(params).map(field => `${field.label}: ${field.value}`).join('\n');
+    const subtasks = getSubtaskDraftText(params, labels);
+    const assignment = taskReviewAssignmentLines(params, labels);
     return [assignment, description, subtasks].filter(Boolean).join('\n\n');
   }
   const taskMutationActions = new Set([
@@ -567,9 +568,28 @@ export function AgentActionCard({
   const [showReceipt, setShowReceipt] = useState(false);
   const [showAppRunInspector, setShowAppRunInspector] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [taskReviewLabels, setTaskReviewLabels] = useState<TaskReviewLabels | null>(null);
+  const isTaskReview = ['create_task', 'task_create', 'task_update'].includes(action.action);
+  const taskTargetsJson = JSON.stringify(isTaskReview ? taskReviewTargets(action.params) : []);
+  const taskLabelKey = user && org && sessionCacheScope && isTaskReview
+    ? JSON.stringify([user.id, org.id, sessionCacheScope, action.id, action.action, taskTargetsJson]) : null;
+  const currentTaskLabels = taskReviewLabels?.key === taskLabelKey
+    && getActiveSessionCacheScope() === sessionCacheScope ? taskReviewLabels : null;
+  useEffect(() => {
+    if (!taskLabelKey || !sessionCacheScope) return;
+    const lookup = loadTaskReviewLabels({
+      key: taskLabelKey,
+      targets: JSON.parse(taskTargetsJson),
+      current: () => getActiveSessionCacheScope() === sessionCacheScope,
+      request: (path, options) => api.fetch(path, options),
+      publish: setTaskReviewLabels,
+    });
+    return lookup.dispose;
+  }, [taskLabelKey, taskTargetsJson, sessionCacheScope]);
 
   const humanized = humanizeToolName(action.action);
-  const presentation = getAgentActionPresentation(action);
+  const displayParams = isTaskReview ? taskReviewDisplayParams(action.params, currentTaskLabels) : action.params;
+  const presentation = getAgentActionPresentation({ ...action, params: displayParams });
   const displayLabel = ACTION_LABELS[action.action] ?? humanized.full;
   const captureLabel = typeof action.params.capture_kind === 'string'
     ? CAPTURE_LABELS[action.params.capture_kind] ?? null
@@ -615,8 +635,8 @@ export function AgentActionCard({
   ].includes(appRunReference?.runState ?? '');
   const appRunOutcomeUnavailable = isAppRunAction && appRunReference?.runState == null;
   const sourceQuote = getDisplaySourceQuote(action.params);
-  const draftDetailText = getDraftDetailText(action.action, action.params);
-  const outcome = getProposedOutcome(action.action, action.params, displayLabel);
+  const draftDetailText = getDraftDetailText(action.action, action.params, currentTaskLabels);
+  const outcome = getProposedOutcome(action.action, displayParams, displayLabel);
   const confidence = formatConfidence(getNumberParam(action.params, ['confidence', 'capture_confidence', 'classification_confidence']));
   const age = formatAge(action.created_at);
   const extraction = getExtractionLabel(action.params);
@@ -890,7 +910,7 @@ export function AgentActionCard({
     const compactTitle = presentation.title || getCompactTitle(action.action, action.params, displayLabel);
     const compactSummary = presentation.summary || getCompactSummary(action.action, action.params);
     const compactEyebrow = presentation.eyebrow || getCompactEyebrow(action.action, action.params.capture_kind);
-    const compactChips = presentation.chips.length > 0 ? presentation.chips : getCompactChips(action.action, action.params);
+    const compactChips = presentation.chips.length > 0 ? presentation.chips : getCompactChips(action.action, displayParams);
     const compactBadge = presentation.badge ?? getStringParam(action.params, ['priority']);
     const compactApproveLabel = presentation.approveLabel || approveLabel;
     const compactBadgeStyle = presentation.badgeTone === 'danger'
@@ -1102,7 +1122,7 @@ export function AgentActionCard({
   const reviewEyebrow = presentation.eyebrow || proposerLabel;
   const reviewChips = presentation.chips.length > 0
     ? presentation.chips
-    : getCompactChips(action.action, action.params);
+    : getCompactChips(action.action, displayParams);
   const reviewBadge = presentation.badge ?? null;
 
   return (
