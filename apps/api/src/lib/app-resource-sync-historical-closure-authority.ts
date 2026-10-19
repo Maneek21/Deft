@@ -17,7 +17,7 @@ import { createAttachmentSyncDiscoverySnapshot } from './app-attachment-sync-dis
 import { AppConnectionSessionRecordSchema } from './app-connection-session-service.js';
 import { connectionProfileDigest, getAppConnectionSessionRegistry } from './app-connection-session-registry.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
-import { observedResourceAuthorization } from './app-resource-observation-authority.js';
+import { observedResourceAuthorization, resolveObservationConnectionReceipt } from './app-resource-observation-authority.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';
 
 /** Only this module can construct the branded result. It carries no Runtime
@@ -152,7 +152,6 @@ export async function loadHistoricalSyncClosureAuthority(tx: AppRunTransaction, 
     eq(appConnectionSessions.owner_user_id, binding.owner_user_id), eq(appConnectionSessions.session_id, snapshot.connection.session_id))).limit(1).for('share');
   if (!session) throw fail();
   const record = AppConnectionSessionRecordSchema.parse(session.record), scope = record.scope;
-  const receipt = record.credential_repair?.receipt ?? record.upgrade?.receipt ?? record.reattachment?.receipt;
   if (!isDeepStrictEqual(scope, snapshot.scope) || record.state !== 'connected' || !record.account
     || scope.installation_id !== installation.id || scope.app_version_id !== version.id || scope.grant_snapshot_id !== grant.id
     || scope.lifecycle_epoch !== installation.lifecycle_epoch || scope.grant_epoch !== installation.grant_epoch
@@ -162,11 +161,12 @@ export async function loadHistoricalSyncClosureAuthority(tx: AppRunTransaction, 
     || scope.resource_key !== binding.resource_key || scope.consent_expires_at !== (binding.consent_expires_at?.toISOString() ?? null)
     || scope.consent_lifetime !== (binding.consent_lifetime ?? undefined)
     || scope.profile_digest !== admission.connection_profile_digest || !isDeepStrictEqual(record.profile, admission.connection_profile)
-    || record.runtime_session_ref !== snapshot.connection.runtime_session_ref || record.account.account_ref !== snapshot.connection.account_ref
-    || snapshot.connection.expected_custody_generation !== (receipt?.custody_generation ?? null)
-    || snapshot.connection.receipt_digest !== (receipt?.receipt_digest ?? null)) throw fail();
+    || record.runtime_session_ref !== snapshot.connection.runtime_session_ref || record.account.account_ref !== snapshot.connection.account_ref) throw fail();
   const registry = await getAppConnectionSessionRegistry();
   registry.assertReady(scope, record.profile); // Metadata only; no Runtime handle or request is returned.
+  const receipt = await resolveObservationConnectionReceipt(tx, record, registry);
+  if (snapshot.connection.expected_custody_generation !== (receipt?.custody_generation ?? null)
+    || snapshot.connection.receipt_digest !== (receipt?.receipt_digest ?? null)) throw fail();
   if (registry.transportDigest(run.org_id, installation.id, record.profile) !== admission.connection_transport_digest) throw fail();
   authorization = observedResourceAuthorization(authorization, observation);
   if (canonicalCapabilityJson(authorization) !== canonicalCapabilityJson(run.authorization_snapshot)) throw fail();

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { buildDeftAppPackage } from '@deft/app-kit';
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
 
-test('ordinary historical sync closure after a reviewed version upgrade retains unknown evidence and a verified receipt', { timeout: 180_000 }, async t => {
+for (const continuationBacked of [false, true]) test((continuationBacked ? 'ordinary continuation-backed ' : 'ordinary ') + 'historical sync closure after a reviewed version upgrade retains unknown evidence and a verified receipt', { timeout: 180_000 }, async t => {
   const target = new URL(process.env.DEFT_TEST_DATABASE_URL!);
   assert.equal(process.env.DATABASE_URL, process.env.DEFT_TEST_DATABASE_URL);
   assert.equal(target.hostname, '127.0.0.1'); assert.ok(['55437', '55438'].includes(target.port));
@@ -31,7 +31,7 @@ test('ordinary historical sync closure after a reviewed version upgrade retains 
     import('../src/lib/app-run-runtime.js'), import('../src/lib/app-attachment-runtime.js'), import('../src/routes/app-attachments.js'),
     import('../src/routes/app-owner-connections.js'), import('../src/lib/app-resource-sync-web-authority.js'),
   ]);
-  t.after(async () => { await attachmentRuntime.shutdownAppAttachmentRuntime(); await runRuntime.shutdownAppRunRuntime(); await closeDb(); });
+  t.after(async () => { await attachmentRuntime.shutdownAppAttachmentRuntime(); await runRuntime.shutdownAppRunRuntime(); if (continuationBacked) await closeDb(); });
   const org = randomUUID(), owner = randomUUID(), suffix = randomUUID();
   await db.insert(s.orgs).values({ id: org, name: 'Ordinary historical closure', slug: `historical-closure-${suffix}` });
   await db.insert(s.users).values({ id: owner, email: `${suffix}@example.test`, name: 'Synthetic owner', kind: 'human', is_agent: false });
@@ -75,7 +75,7 @@ test('ordinary historical sync closure after a reviewed version upgrade retains 
   const entries: unknown[] = [];
   const enroll = async (registrationId: string) => { entries.push({ org_id: org, installation_id: installed.id,
     runtime_registration_id: registrationId, runtime_epoch: 1, profile, endpoint: 'https://runtime.example.test/v1/connections',
-    runtime_auth_token: 'r'.repeat(43), authority_token_sha256: 'sha256:' + 'a'.repeat(64) });
+    ...(continuationBacked ? { connection_protocol: 'v2' } : {}), runtime_auth_token: 'r'.repeat(43), authority_token_sha256: 'sha256:' + 'a'.repeat(64) });
     await writeFile(config, JSON.stringify({ schema_version: 'deft.app_connection_http_registrations.v1', entries }), { mode: 0o600 }); };
   await enroll(randomUUID()); // Profile-only enrollment before the normal administrative review.
   const pin = async () => {
@@ -93,14 +93,14 @@ test('ordinary historical sync closure after a reviewed version upgrade retains 
     const { review } = await call('/api/app-owner-connections/admissions/review', 'POST', input);
     await call('/api/app-owner-connections/admissions/activate', 'POST', { ...input, expected_review_digest: review.review_digest, accept_host_policy: true });
     const context = await call(`/api/app-owner-connections/${installed.id}/context`), request = {
-      ...context.policies[0].admission.resource_request, target_key: 'fresh_mailbox' };
+      ...context.policies[0].admission.resource_request, target_key: 'fresh_mailbox', ...(continuationBacked ? { consent_expires_at: new Date(Date.now() + 3600_000).toISOString() } : {}) };
     const { review: resourceReview } = await call('/api/app-owner-connections/resources/review', 'POST', request);
     const result = await call('/api/app-owner-connections/resources/activate', 'POST', { ...request,
       expected_review_digest: resourceReview.review_digest, accept_host_policy: true });
     await enroll(result.binding.registration_id); return result.binding;
   };
   const old = await resource();
-  const [{ AppConnectionSessionService }, { PostgresAppConnectionSessionStore }, { currentAppConnectionSessionAuthority },
+  const [{ AppConnectionSessionService }, { PostgresAppConnectionSessionStore }, { currentAppConnectionSessionAuthority, currentAppConnectionSessionV2Authority },
     { AppResourceObservationService }, { loadLiveAttachmentSyncBindingAuthority }, { buildAttachmentSyncAuthorizationSnapshot },
     { buildResourceSyncAuthorizationSnapshot }] = await Promise.all([
     import('../src/lib/app-connection-session-service.js'), import('../src/lib/app-connection-session-store.js'),
@@ -108,21 +108,58 @@ test('ordinary historical sync closure after a reviewed version upgrade retains 
     import('../src/lib/app-attachment-sync-authority.js'), import('../src/lib/app-attachment-sync-run.js'), import('../src/lib/app-resource-sync-authorization.js'),
   ]);
   let syntheticConnectionCalls = 0;
-  const connection = new AppConnectionSessionService({ store: new PostgresAppConnectionSessionStore(db, caller),
-    currentAuthority: (active, nomination) => currentAppConnectionSessionAuthority(active, nomination, guard),
-    registeredRuntime: async scope => ({ identity: { runtime_registration_id: scope.runtime_registration_id,
-      operator_user_id: scope.operator_user_id, runtime_epoch: scope.runtime_epoch }, request: async input => {
+  const registeredRuntime = async (scope: { runtime_registration_id: string; operator_user_id: string; runtime_epoch: number }) => ({
+    identity: { runtime_registration_id: scope.runtime_registration_id, operator_user_id: scope.operator_user_id, runtime_epoch: scope.runtime_epoch },
+    request: async (input: { operation: string }) => {
       syntheticConnectionCalls++;
-      return input.operation === 'begin' ? { state: 'awaiting_callback', runtime_session_ref: 'synthetic_runtime_ref',
-        authorization_url: 'https://provider.example.test/authorize' } : { state: 'connected', account: { account_ref: 'synthetic_account', label: 'Synthetic mailbox' } };
-    } }) });
+      return input.operation === 'begin' ? { state: 'awaiting_callback' as const, runtime_session_ref: 'synthetic_runtime_ref',
+        authorization_url: 'https://provider.example.test/authorize' } : { state: 'connected' as const, account: { account_ref: 'synthetic_account', label: 'Synthetic mailbox' } };
+    },
+  });
+  const connection = new AppConnectionSessionService({ store: new PostgresAppConnectionSessionStore(db, caller),
+    currentAuthority: (active, nomination) => (continuationBacked ? currentAppConnectionSessionV2Authority : currentAppConnectionSessionAuthority)(active, nomination, guard),
+    registeredRuntime, registeredRuntimeV2: registeredRuntime });
   const begun = await connection.begin(caller, { installation_id: installed.id, target_key: 'fresh_mailbox' });
   assert.equal(begun.state, 'awaiting_callback');
   const connected = await connection.callback(caller, { session_id: begun.session_id,
     state: (begun as { callback_state: string }).callback_state, outcome: 'authorized', code: 'synthetic_code' });
   assert.equal(connected.state, 'connected');
+  let observedSession = connected, syntheticContinuationCalls = 0;
+  if (continuationBacked) {
+    const [{ AppConnectionConsentContinuationService, continuationDigest }, { appConnectionConsentContinuationReceiptValue },
+      { validateContinuationCarrier }] = await Promise.all([
+      import('../src/lib/app-connection-consent-continuation-service.js'), import('@deft/app-kit'),
+      import('../src/lib/app-connection-consent-continuation-fence.js'),
+    ]);
+    const originalFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+    globalThis.fetch = async (input, init) => {
+      assert.equal(String(input), 'https://runtime.example.test/v1/connections');
+      syntheticContinuationCalls++;
+      const request = JSON.parse(String(init?.body));
+      const base = { schema_version: 'deft.app_connection_consent_continuation_runtime.v1', session_id: request.session_id,
+        account: { account_ref: 'synthetic_account', label: 'Synthetic mailbox' }, custody_generation: 1 };
+      const result = request.operation === 'prepare'
+        ? { ...base, state: 'eligible', custody_digest: 'sha256:' + 'c'.repeat(64) }
+        : { ...base, state: 'connected', runtime_session_ref: 'synthetic_continued_ref',
+          receipt_digest: continuationDigest(appConnectionConsentContinuationReceiptValue(request, request.review, 'synthetic_continued_ref')) };
+      return Response.json(result);
+    };
+    const continuation = new AppConnectionConsentContinuationService(caller, guard);
+    const review = await continuation.review({ request_id: randomUUID(), source_session_id: connected.session_id,
+      installation_id: installed.id, target_key: 'fresh_mailbox', consent_expires_at: new Date(Date.now() + 7200_000).toISOString() });
+    observedSession = await continuation.activate({ session_id: review.session_id, review_digest: review.review_digest });
+    assert.equal(observedSession.state, 'connected'); assert.notEqual(observedSession.session_id, connected.session_id);
+    assert.equal(observedSession.scope.resource_binding_id, old.binding_id, 'Normal continuation retains exact binding identity');
+    assert.equal(observedSession.scope.consent_expires_at, review.scope.consent_expires_at, 'Observation uses the actual continued consent scope');
+    const [carrier] = await db.select().from(s.appConnectionSessions).where(eq(s.appConnectionSessions.session_id, observedSession.session_id));
+    const receipt = await db.transaction(tx => validateContinuationCarrier(tx, carrier!.record as any));
+    assert.ok(receipt); assert.equal(receipt.custody_generation, 1);
+    assert.equal((carrier!.record as any).upgrade, undefined, 'Receipt is retained in the continuation journal, not a guessed direct carrier field');
+    globalThis.fetch = originalFetch;
+  }
   const observation = new AppResourceObservationService();
-  const observationReview = await observation.review(actor, { request_id: randomUUID(), connection_session_id: connected.session_id,
+  const observationReview = await observation.review(actor, { request_id: randomUUID(), connection_session_id: observedSession.session_id,
     interval_seconds: 300, expires_at: new Date(Date.now() + 3600_000).toISOString() }, guard);
   await observation.activate(actor, { consent_id: observationReview.consent_id, review_digest: observationReview.review_digest }, guard);
   await db.transaction(async tx => { const live = await loadLiveAttachmentSyncBindingAuthority(tx, { org_id: org, resource_binding_id: old.binding_id, clock: () => new Date() });
@@ -192,6 +229,7 @@ test('ordinary historical sync closure after a reviewed version upgrade retains 
   const [afterCheckpoint] = await db.select().from(s.appSyncCheckpoints).where(eq(s.appSyncCheckpoints.id, old.checkpoint_id));
   assert.deepEqual(afterCheckpoint, beforeCheckpoint, 'closure cannot advance or alter the original cursor');
   assert.equal(syntheticConnectionCalls, 2, 'closure does not call even the synthetic connection Runtime');
+  assert.equal(syntheticContinuationCalls, continuationBacked ? 2 : 0, 'Only the ordinary setup review/activate contacts the synthetic continuation transport');
   const receipts = await db.select().from(s.appRunReceipts).where(and(eq(s.appRunReceipts.org_id, org), eq(s.appRunReceipts.run_id, admitted.run_id)));
   assert.equal(receipts.filter(row => row.receipt_kind === 'reconciliation').length, 1);
 });
