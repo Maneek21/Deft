@@ -5,7 +5,7 @@ import { AnchoredOverlay } from '@/components/overlay-primitives';
 
 import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
@@ -13,6 +13,7 @@ import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { ChatMessageEventScope, createChatMessageNewHandler } from '@/lib/chat-message-event-scope';
 import { subscribeToSpace } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -106,6 +107,7 @@ async function apiErrorMessage(res: Response, fallback: string) {
 }
 
 type Message = {
+  space_id?: string;
   id: string;
   content: string;
   user_id: string;
@@ -625,10 +627,12 @@ export function SpaceChat({
   spaceDescription?: string | null;
   highlightMessageId?: string;
 }) {
-  const { user } = useAuth();
+  const { user, sessionCacheScope } = useAuth();
   const router = useRouter();
   const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, huddleBusy, activeHuddles, openDmWith } = useChatContext();
   const [messages, setMessages] = useState<Message[]>([]);
+  const messageEventScopeRef = useRef(new ChatMessageEventScope());
+  useLayoutEffect(() => messageEventScopeRef.current.commit(spaceId, sessionCacheScope), [spaceId, sessionCacheScope]);
   const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
   // presence is provided by ChatContext — no local state needed
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -971,89 +975,70 @@ export function SpaceChat({
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   useEffect(() => {
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     setMessages([]);
+    if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
     async function load() {
       const res = await api.get(`/api/messages/${spaceId}`);
-      if (res.ok && !cancelled && activeSpaceIdRef.current === spaceId) {
+      if (res.ok && !cancelled && visit.isCurrent()) {
         const data = await res.json();
-        if (cancelled || activeSpaceIdRef.current !== spaceId) return;
-        setMessages(data.messages || data || []);
+        if (cancelled || !visit.isCurrent()) return;
+        setMessages(previous => visit.isCurrent() ? (data.messages || data || []) : previous);
         if (highlightMessageId) {
           // Scroll to the highlighted message after render
           setTimeout(() => {
-            if (cancelled || activeSpaceIdRef.current !== spaceId) return;
+            if (cancelled || !visit.isCurrent()) return;
             const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
             if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' });
               setHighlightedId(highlightMessageId);
               // Clear highlight after animation
               setTimeout(() => {
-                if (!cancelled && activeSpaceIdRef.current === spaceId) setHighlightedId(null);
+                if (!cancelled && visit.isCurrent()) setHighlightedId(null);
               }, 3000);
             }
           }, 200);
         } else {
           setTimeout(() => {
-            if (!cancelled && activeSpaceIdRef.current === spaceId) scrollToBottom();
+            if (!cancelled && visit.isCurrent()) scrollToBottom();
           }, 100);
         }
       }
     }
     void load().catch(() => {});
-    return () => { cancelled = true; };
-  }, [spaceId, scrollToBottom, highlightMessageId]);
+    return () => { cancelled = true; visit.dispose(); };
+  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
 
   useEffect(() => {
+    if (!sessionCacheScope) return;
     const token = localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
     const unsubscribeFromSpace = subscribeToSpace(socket, spaceId);
 
-    const onNew = (msg: Message & { parent_id?: string | null; metadata?: { is_agent_reply?: boolean } }) => {
-      // Thread replies should NOT appear in the main message list
-      if (msg.parent_id) {
-        // If it's an agent reply, auto-open the thread so the user sees it
-        if (msg.metadata?.is_agent_reply) {
-          // Use setMessages to access current state (avoid stale closure)
-          setMessages((prev) => {
-            const parentMsg = prev.find(m => m.id === msg.parent_id);
-            if (parentMsg) {
-              // Schedule thread open outside of setState
-              setTimeout(() => {
-                setThreadMessage({
-                  id: parentMsg.id,
-                  content: parentMsg.content,
-                  user_id: parentMsg.user_id,
-                  user_name: parentMsg.user_name,
-                  user_avatar: parentMsg.user_avatar,
-                  is_deleted: parentMsg.is_deleted,
-                  edited_at: parentMsg.edited_at,
-                  created_at: parentMsg.created_at,
-                  reactions: parentMsg.reactions,
-                  file_ids: parentMsg.file_ids,
-                });
-              }, 0);
-            }
-            return prev; // don't modify messages
-          });
-        }
-        return;
-      }
-      const normalizedMessage: Message = {
-        ...msg,
-        reactions: msg.reactions ?? [],
-        reply_count: msg.reply_count ?? 0,
-        latest_reply_at: msg.latest_reply_at ?? null,
-        file_ids: msg.file_ids ?? [],
-      };
-      setMessages((prev) => (
-        prev.some((message) => message.id === normalizedMessage.id)
-          ? prev
-          : [...prev, normalizedMessage]
-      ));
-      setTimeout(scrollToBottom, 50);
-    };
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const onNew = createChatMessageNewHandler<Message>({
+      visit,
+      update: setMessages,
+      normalize: (msg) => ({ ...msg, reactions: msg.reactions ?? [], reply_count: msg.reply_count ?? 0, latest_reply_at: msg.latest_reply_at ?? null, file_ids: msg.file_ids ?? [] }),
+      openThread: (parent) => {
+        setThreadMessage({
+          id: parent.id,
+          content: parent.content,
+          user_id: parent.user_id,
+          user_name: parent.user_name,
+          user_avatar: parent.user_avatar,
+          is_deleted: parent.is_deleted,
+          edited_at: parent.edited_at,
+          created_at: parent.created_at,
+          reactions: parent.reactions,
+          file_ids: parent.file_ids,
+        });
+      },
+      scroll: scrollToBottom,
+      schedule: (callback, delay) => setTimeout(callback, delay),
+    });
     const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
       setMessages((prev) =>
         prev.map((m) =>
@@ -1143,6 +1128,7 @@ export function SpaceChat({
     socket.on('message:unpinned', onMessageUnpinned);
 
     return () => {
+      visit.dispose();
       unsubscribeFromSpace();
       socket.off('message:new', onNew);
       socket.off('message:edited', onEdited);
@@ -1157,7 +1143,7 @@ export function SpaceChat({
       socket.off('message:pinned', onMessagePinned);
       socket.off('message:unpinned', onMessageUnpinned);
     };
-  }, [spaceId, user?.id, scrollToBottom]);
+  }, [spaceId, sessionCacheScope, user?.id, scrollToBottom]);
 
   const serializeMentions = (html: string) => html.replace(
     /<span[^>]*data-mention-uuid="([^"]+)"[^>]*data-mention-name="([^"]+)"[^>]*>[^<]*<\/span>/g,
