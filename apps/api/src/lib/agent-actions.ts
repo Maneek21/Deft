@@ -14,6 +14,7 @@ import {
   taskRelationships,
   users,
   wikiPages,
+  wikiPageVersions,
   wikiLinks,
   wikiOpsLog,
   reminders,
@@ -2372,7 +2373,21 @@ export async function executeAction(
           }
 
           if (Object.keys(updates).length > 0) {
-            await db.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
+            await db.transaction(async (tx) => {
+              if (updates.version !== undefined) {
+                await tx.insert(wikiPageVersions).values({
+                  page_id: existing.id,
+                  version: existing.version,
+                  title: existing.title,
+                  content: existing.content,
+                  summary: existing.summary,
+                  edited_by: userId,
+                }).onConflictDoNothing({
+                  target: [wikiPageVersions.page_id, wikiPageVersions.version],
+                });
+              }
+              await tx.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
+            });
           }
 
           if (related_slugs && related_slugs.length > 0) {
