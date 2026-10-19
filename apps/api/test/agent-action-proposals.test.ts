@@ -10,6 +10,7 @@ import {
   getActionCompilerTools,
   normalizeCompiledToolCalls,
   validateCompiledIntentAlignment,
+  resolveCompiledIntentOutcome,
   validateRegisteredProposalAction,
 } from '../src/lib/agent-action-proposals.js';
 
@@ -380,4 +381,29 @@ test('invalid dependency compiler calls retain explicit omitted intent without r
   assert.match(result.warnings?.join(' ') ?? '', /dependency proposal was not prepared/);
   assert.match(result.warnings?.join(' ') ?? '', /Look up both existing tasks/);
   assert.doesNotMatch(JSON.stringify(result.warnings), /Title one|Title two/);
+});
+
+
+test('ordinary CRM wiki clarification rejects task substitution without weakening intent guards', () => {
+  const original = 'Please prepare two separate changes for my review: update the CRM contact LIVE261019-E1 Owen Patel at LIVE261019-E1 Northstar Labs so his role is Technical review owner, retaining his company, email, owner and all other fields; and append this sentence to the wiki page LIVE261019 Reviewed publication note: "Noah Chen owns technical-readiness review; Owen Patel is the customer technical-review owner." Keep the wiki’s exact current body, participant count, dates, unresolved start and source reference. Read the current records first, show the full proposed changes, and wait for my approval before saving either.';
+  const task = normalizeCompiledToolCalls([{ name: 'create_task', input: { title: 'Invented task', project_name: 'Pilot Marketing Launch' } }], compileContext).actions[0]!;
+  const question = 'Which exact wiki page should I update?';
+  const outcome = resolveCompiledIntentOutcome(original, [task], compileContext, question);
+  assert.deepEqual(outcome.actions, []);
+  assert.equal(outcome.clarification, question);
+  assert.equal(outcome.substitutionRejected, true);
+  for (const incidental of [' Keep the existing task unchanged.', ' Append "create a task" as quoted source text.']) {
+    assert.equal(resolveCompiledIntentOutcome(original + incidental, [task], compileContext, question).clarification, question);
+  }
+  const moduleAction = { ...task, action: 'module_record_update', params: { record_id: 'verified-record', patch: { role: 'Reviewed' } } } as typeof task;
+  const mixed = resolveCompiledIntentOutcome(original, [task, moduleAction], compileContext, question);
+  assert.deepEqual(mixed.actions, [moduleAction]);
+  assert.equal(mixed.clarification, undefined);
+  assert.equal(mixed.substitutionRejected, true);
+  assert.match(resolveCompiledIntentOutcome('Create a task in Pilot Marketing Launch.', [task], compileContext, question).clarification ?? '', /accomplish/i);
+  assert.match(resolveCompiledIntentOutcome('Create a task titled Review launch.', [task], { projectNameHint: null }, question).clarification ?? '', /which project/i);
+  assert.match(resolveCompiledIntentOutcome('Remind me tomorrow to call Lina.', [task], compileContext, question).clarification ?? '', /reminder/i);
+  assert.match(resolveCompiledIntentOutcome('Update the CRM contact but do not create any tasks.', [task], compileContext, question).clarification ?? '', /will not queue/i);
+  assert.equal(resolveCompiledIntentOutcome('Update the CRM contact and create a task titled Review launch in project Pilot Marketing Launch.', [task], compileContext, question).substitutionRejected, false);
+  assert.equal(resolveCompiledIntentOutcome('Update the CRM contact and also create an urgent follow-up task titled Review launch in project Pilot Marketing Launch.', [task], compileContext, question).substitutionRejected, false);
 });

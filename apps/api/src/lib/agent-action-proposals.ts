@@ -581,6 +581,29 @@ export function validateCompiledIntentAlignment(
   return { blocked: false };
 }
 
+export function resolveCompiledIntentOutcome(
+  prompt: string,
+  actions: ProposedAgentAction[],
+  params: Pick<CompileDeftyActionDraftParams, 'projectNameHint'>,
+  targetedQuestion?: string,
+): { actions: ProposedAgentAction[]; clarification?: string; substitutionRejected: boolean; blocked: boolean } {
+  // Quoted source content and references to existing tasks are not task requests.
+  const request = prompt.replace(/"[^"\n]*"|“[^”\n]*”/g, ' ');
+  const nonTaskMutation = /\b(?:update|edit|change|set|append)\b/i.test(request)
+    && /\b(?:CRM\s+contact|module\s+record|wiki(?:\s+page)?)\b/i.test(request);
+  const requestedTask = /\b(?:create|add|queue|draft|prepare|make)\s+(?:(?:a|an|the|new|another|one|two|three|project|urgent|follow-up|high-priority|low-priority|small|separate)\s+){0,6}(?:tasks?|todos?|tickets?)\b/i.test(request)
+    || /\b(?:need|want|request)\s+(?:a\s+)?(?:tasks?|todos?|tickets?)\s+(?:to|for|about|titled|called|named)\b/i.test(request);
+  const filtered = nonTaskMutation && !requestedTask ? actions.filter((action) => action.action !== 'create_task') : actions;
+  const alignment = validateCompiledIntentAlignment(prompt, filtered, params);
+  const accepted = alignment.blocked ? [] : filtered;
+  return {
+    actions: accepted,
+    clarification: alignment.clarification ?? (accepted.length === 0 ? targetedQuestion : undefined),
+    substitutionRejected: filtered.length !== actions.length,
+    blocked: alignment.blocked,
+  };
+}
+
 export async function compileDeftyActionDraft(params: CompileDeftyActionDraftParams): Promise<CompiledActionDraft> {
   const startedAt = Date.now();
   const orgConfig = await getOrgAIConfig(params.orgId).catch(() => undefined);
@@ -653,16 +676,21 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
   const rawNormalized = normalizeCompiledToolCalls(result.toolCalls ?? [], params);
   const grounded=validateCompilerGrounding(rawNormalized.actions,groundedReadFacts,params.promptContent);
   const initiallyNormalized={...rawNormalized,actions:grounded.actions,warnings:[...(rawNormalized.warnings??[]),...groundedReadFacts.limitations,...grounded.warnings]};
-  const alignment = validateCompiledIntentAlignment(params.promptContent, initiallyNormalized.actions, params);
-  const normalized = alignment.blocked
-    ? { actions: [] as ProposedAgentAction[], summary: undefined, warnings: initiallyNormalized.warnings }
-    : initiallyNormalized;
   const parsedText = parseFirstJsonObject(result.text);
   const clarificationCall = result.toolCalls?.find((call) => call.name === CLARIFICATION_TOOL.name)?.input;
   const clarificationInput = isRecord(clarificationCall) ? clarificationCall : isRecord(parsedText) ? parsedText : null;
-  const clarification = alignment.clarification ?? (clarificationInput && typeof clarificationInput.question === 'string'
-    ? truncatePlainText(clarificationInput.question.trim(), 400)
-    : undefined);
+  const targetedQuestion = clarificationInput && typeof clarificationInput.question === 'string'
+    ? truncatePlainText(clarificationInput.question.trim(), 400) : undefined;
+  const intentOutcome = resolveCompiledIntentOutcome(params.promptContent, initiallyNormalized.actions, params, targetedQuestion);
+  const normalized = { ...initiallyNormalized, actions: intentOutcome.actions, summary: intentOutcome.blocked || (intentOutcome.substitutionRejected && intentOutcome.actions.length === 0) ? undefined : initiallyNormalized.summary };
+  if (intentOutcome.substitutionRejected) normalized.warnings = [...normalized.warnings, 'Task substitution was not prepared: this request targets a CRM record or wiki page, not a new task.'];
+  const clarification = intentOutcome.clarification;
+  console.info('[agent-action-compiler] outcome', {
+    reason: intentOutcome.substitutionRejected ? 'unrequested_task_substitution' : clarification ? 'clarification' : 'actions',
+    raw_action_count: rawNormalized.actions.length, accepted_action_count: normalized.actions.length,
+    tool_names: [...new Set((result.toolCalls ?? []).map((call) => call.name).filter((name) => typeof name === 'string' && (ACTION_TOOLS.has(name) || name === CLARIFICATION_TOOL.name)))].slice(0, 12),
+    grounded_read_counts: { module_record_get: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_get').length, wiki_read: groundedReadFacts.facts.filter((fact) => fact.tool === 'wiki_read').length },
+  });
   const summary = clarificationInput && typeof clarificationInput.summary === 'string'
     ? truncatePlainText(clarificationInput.summary.trim(), 300)
     : normalized.summary;
