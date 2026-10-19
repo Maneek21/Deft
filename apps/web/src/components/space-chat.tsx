@@ -1,6 +1,7 @@
 'use client';
 import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
+import { AnchoredOverlay } from '@/components/overlay-primitives';
 
 import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
 
@@ -634,7 +635,6 @@ export function SpaceChat({
   const [editContent, setEditContent] = useState('');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
-  const [menuDirection, setMenuDirection] = useState<'down' | 'up'>('down');
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -1634,7 +1634,7 @@ export function SpaceChat({
                     if (hoveredId !== msg.id) setHoveredId(msg.id);
                   }}
                   onFocusCapture={() => setHoveredId(msg.id)}
-                  onMouseLeave={() => { setHoveredId(null); setMoreMenuId(null); }}
+                  onMouseLeave={() => { if (moreMenuId !== msg.id) setHoveredId(null); }}
                 >
                   {/* Mobile action button — always visible on touch */}
                   {!msg.is_deleted && editingId !== msg.id && (
@@ -1746,18 +1746,15 @@ export function SpaceChat({
 
                       <div className="relative">
                         <button
-                          ref={moreButtonRef}
                           className="p-1.5 rounded-full"
                           style={{ color: 'var(--muted)' }}
                           title="More"
                           aria-label="More message actions"
-                          onClick={() => {
+                          onClick={(event) => {
                             if (moreMenuId === msg.id) {
                               setMoreMenuId(null);
                             } else {
-                              const rect = moreButtonRef.current?.getBoundingClientRect();
-                              const spaceBelow = window.innerHeight - (rect?.bottom || 0);
-                              setMenuDirection(spaceBelow < 200 ? 'up' : 'down');
+                              moreButtonRef.current = event.currentTarget;
                               setMoreMenuId(msg.id);
                             }
                           }}
@@ -1765,10 +1762,7 @@ export function SpaceChat({
                           <MoreHorizontal size={16} strokeWidth={1.5} />
                         </button>
                         {moreMenuId === msg.id && (
-                          <div
-                            className={`absolute right-0 ${menuDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} w-44 rounded-xl py-1.5 z-20`}
-                            style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)' }}
-                          >
+                          <AnchoredOverlay open onClose={() => { setMoreMenuId(null); setHoveredId(null); }} anchorRef={moreButtonRef} viewportRef={scrollContainerRef} width={176} role="menu" ariaLabel="More message actions">
                             {msg.user_id === user?.id && (
                               <button
                                 className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
@@ -1872,7 +1866,7 @@ export function SpaceChat({
                                 <Trash2 size={13} strokeWidth={1.5} /> Delete
                               </button>
                             )}
-                          </div>
+                          </AnchoredOverlay>
                         )}
                       </div>
                     </div>
@@ -1880,14 +1874,7 @@ export function SpaceChat({
 
                   {/* Mobile more-menu (rendered at message level, outside hover toolbar) */}
                   {moreMenuId === msg.id && !isHovered && !msg.is_deleted && (
-                    <div
-                      className="md:hidden absolute right-1 z-20 w-44 rounded-xl py-1.5"
-                      style={{
-                        background: 'var(--surface-container-highest)',
-                        boxShadow: 'var(--glass-shadow)',
-                        ...(menuDirection === 'up' ? { bottom: '100%', marginBottom: '4px' } : { top: '2rem', marginTop: '4px' }),
-                      }}
-                    >
+                    <AnchoredOverlay open onClose={() => setMoreMenuId(null)} anchorRef={moreButtonRef} viewportRef={scrollContainerRef} width={176} role="menu" ariaLabel="More message actions">
                       {msg.user_id === user?.id && (
                         <button
                           className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
@@ -1946,7 +1933,7 @@ export function SpaceChat({
                           <Trash2 size={13} strokeWidth={1.5} /> Delete
                         </button>
                       )}
-                    </div>
+                    </AnchoredOverlay>
                   )}
 
                   {grouped ? (
