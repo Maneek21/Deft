@@ -59,7 +59,7 @@ import {
   useModuleSavedViews,
 } from '@/hooks/use-modules';
 import { useAppNavigation } from '@/hooks/use-apps';
-import { moduleSearchHref, moduleSearchValue, reconcileModuleSearch, type ModuleSearchBuffer } from '@/lib/module-search-buffer';
+import { moduleListControlsHref, moduleSearchHref, moduleSearchValue, reconcileModuleSearch, type ModuleSearchBuffer } from '@/lib/module-search-buffer';
 
 export function ModuleWorkspace() {
   const params = useParams<{ slug: string; collectionKey?: string }>();
@@ -225,9 +225,8 @@ export function ModuleWorkspace() {
   const replaceListContext = (next: Partial<Pick<ModuleListContext, 'search' | 'filters' | 'sort'>>) => {
     if (!installedModule || !collection) return;
     if (next.search !== undefined) setSearchBuffer({ identity: searchIdentity, value: next.search });
-    const context = { ...listContext, ...next };
-    context.filtersExplicit = Boolean(context.savedViewId) || context.filters.length > 0;
-    router.replace(moduleCollectionListHref(installedModule.slug, collection.key, context), { scroll: false });
+    // Merge each event against the current URL, not an earlier React render.
+    window.history.replaceState(null, '', moduleListControlsHref(window.location.href, next));
   };
 
   const chooseCollection = (collectionKey: string) => {

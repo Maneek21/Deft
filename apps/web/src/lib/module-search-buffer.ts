@@ -1,3 +1,5 @@
+import { moduleListParams, parseModuleListContext, type ModuleListContext } from './module-list-context';
+
 export type ModuleSearchBuffer = { identity: string; value: string };
 
 export function moduleSearchValue(buffer: ModuleSearchBuffer, identity: string, urlSearch: string): string {
@@ -18,9 +20,26 @@ export function reconcileModuleSearch(
   return { identity, value: urlSearch };
 }
 
-export function moduleSearchHref(currentHref: string, value: string): string {
+export type ModuleListControlUpdate = Partial<Pick<ModuleListContext, 'search' | 'filters' | 'sort'>>;
+
+export function moduleListControlsHref(currentHref: string, changes: ModuleListControlUpdate): string {
   const url = new URL(currentHref);
-  if (value) url.searchParams.set('q', value.slice(0, 500));
-  else url.searchParams.delete('q');
+  const context = { ...parseModuleListContext(url.searchParams), ...changes };
+  context.filtersExplicit = Boolean(context.savedViewId) || context.filters.length > 0;
+  const canonical = moduleListParams(context);
+  const keys = [
+    ...('search' in changes ? ['q'] : []),
+    ...('filters' in changes ? ['filters'] : []),
+    ...('sort' in changes ? ['sort', 'direction'] : []),
+  ];
+  for (const key of keys) {
+    const value = canonical.get(key);
+    if (value === null) url.searchParams.delete(key);
+    else url.searchParams.set(key, value);
+  }
   return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function moduleSearchHref(currentHref: string, value: string): string {
+  return moduleListControlsHref(currentHref, { search: value });
 }

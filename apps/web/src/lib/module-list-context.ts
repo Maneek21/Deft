@@ -94,7 +94,7 @@ export function parseModuleListContext(params: SearchParamsReader): ModuleListCo
   return { viewKey, savedViewId, search, filters, sort, filtersExplicit };
 }
 
-function moduleListParams(context: ModuleListContext): URLSearchParams {
+export function moduleListParams(context: ModuleListContext): URLSearchParams {
   const params = new URLSearchParams();
   if (context.savedViewId) params.set('saved', context.savedViewId);
   else if (context.viewKey) params.set('view', context.viewKey);
