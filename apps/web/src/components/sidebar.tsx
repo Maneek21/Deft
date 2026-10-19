@@ -21,6 +21,7 @@ import { Logo } from './brand/logo';
 import { ModuleIcon } from './modules/module-primitives';
 import { useExperienceNavigation } from './apps/experience-navigation-context';
 import { api } from '@/lib/api';
+import { taskProjectHref } from '@/lib/task-surface-url';
 import { formatRelative } from '@/lib/time';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -592,7 +593,7 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
           return (
             <button
               key={project.id}
-              onClick={() => { router.push(`/tasks?project=${project.id}`); onNav?.(); }}
+              onClick={() => { router.push(taskProjectHref(searchParams, project.id)); onNav?.(); }}
               className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
               style={{
                 background: active ? 'var(--bg-active)' : 'transparent',
@@ -623,7 +624,7 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
           onCreated={(p) => {
             setProjects((prev) => [...prev, p]);
             setCreateProjectOpen(false);
-            router.push(`/tasks?project=${p.id}`);
+            router.push(taskProjectHref(searchParams, p.id));
           }}
         />,
         document.body

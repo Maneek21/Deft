@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { api } from '@/lib/api';
+import { api, isSameWebSession } from '@/lib/api';
+import { isCurrentTaskRoute, taskFiltersFromSearch, taskProjectHref, taskSurfaceHref } from '@/lib/task-surface-url';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { moduleRecordReturnHrefFromTask } from '@/lib/module-list-context';
 import { getSocket } from '@/lib/socket';
@@ -117,6 +118,9 @@ export default function TasksPage() {
   const { user } = useAuth();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const routeIdentity = searchParams.toString();
+  const routeRef = useRef(routeIdentity);
+  routeRef.current = routeIdentity;
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -133,14 +137,8 @@ export default function TasksPage() {
 
   // Fix 1: helper to patch URL query params
   const setQuery = useCallback((patch: Record<string, string | null>) => {
-    const qs = new URLSearchParams(searchParams.toString());
-    for (const [k, v] of Object.entries(patch)) {
-      if (v == null) qs.delete(k);
-      else qs.set(k, v);
-    }
-    const str = qs.toString();
-    router.replace(`/tasks${str ? '?' + str : ''}`);
-  }, [searchParams, router]);
+    router.replace(taskSurfaceHref(searchParams, patch, selectedProject?.id));
+  }, [searchParams, router, selectedProject?.id]);
 
   const closeTaskDetail = useCallback(() => {
     const moduleReturnHref = moduleRecordReturnHrefFromTask(searchParams);
@@ -149,31 +147,16 @@ export default function TasksPage() {
       return;
     }
     setSelectedTask(null);
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete('task');
-    params.delete('module_return');
-    const query = params.toString();
-    router.push(query ? `/tasks?${query}` : '/tasks', { scroll: false });
-  }, [router, searchParams]);
+    router.push(taskSurfaceHref(searchParams, { task: null, module_return: null }, selectedProject?.id), { scroll: false });
+  }, [router, searchParams, selectedProject?.id]);
 
   useEffect(() => {
     if (requestedView === 'list') setQuery({ view: 'table' });
     if (requestedView === 'pipeline') setQuery({ view: 'board' });
   }, [requestedView, setQuery]);
 
-  // Fix 1: initialize filters from URL params on mount
-  const [filters, setFilters] = useState<Filters>(() => {
-    return {
-      assigneeIds: searchParams.get('assignee') ? searchParams.get('assignee')!.split(',') : [],
-      priorities: searchParams.get('priority') ? searchParams.get('priority')!.split(',') : [],
-      status: searchParams.get('status') ? searchParams.get('status')!.split(',') : [],
-      labels: searchParams.get('labels') ? searchParams.get('labels')!.split(',') : [],
-      dueDate: (searchParams.get('dueDate') as Filters['dueDate']) || null,
-      dateFrom: searchParams.get('dateFrom') || null,
-      dateTo: searchParams.get('dateTo') || null,
-      projectId: searchParams.get('filterProject') || null,
-    };
-  });
+  // Reload and browser history reconstruct the same filters shown in the URL.
+  const filters = useMemo(() => taskFiltersFromSearch(searchParams), [searchParams]);
   const [layoutConfig, setLayoutConfig] = useState<TaskViewConfigV1>(() => ({
     ...DEFAULT_TASK_VIEW_CONFIG,
     view: 'table',
@@ -256,42 +239,48 @@ export default function TasksPage() {
   // Load projects
   useEffect(() => {
     if (!user) return;
+    let active = true;
+    const session = api.getAccessToken();
     async function loadProjects() {
       const res = await api.get('/api/projects');
       if (res.ok) {
         const data = await res.json();
+        if (!active || !isSameWebSession(session, api.getAccessToken())) return;
         setProjects(data);
-        // If a project ID is in the URL, select it
-        if (currentProjectId) {
-          const urlProject = data.find((p: Project) => p.id === currentProjectId);
-          if (urlProject) {
-            setSelectedProject(urlProject);
-          } else if (data.length > 0) {
-            setSelectedProject(data[0]);
-          }
-        } else if (!isMyTasksView && data.length > 0 && !selectedProject) {
-          // Default: select first project if no view param
-          setSelectedProject(data[0]);
-        }
       }
-      setLoading(false);
+      if (active && isSameWebSession(session, api.getAccessToken())) setLoading(false);
     }
-    loadProjects();
+    void loadProjects();
+    return () => { active = false; };
   }, [user]);
 
   // Sync selectedProject when URL changes
   useEffect(() => {
-    if (currentProjectId && projects.length > 0) {
-      const urlProject = projects.find((p) => p.id === currentProjectId);
-      if (urlProject && urlProject.id !== selectedProject?.id) {
-        setSelectedProject(urlProject);
-        setSelectedTask(null);
-      }
+    if (isMyTasksView) { setSelectedProject(null); return; }
+    if (projects.length === 0) return;
+    const taskParam = searchParams.get('task');
+    const taskPrefix = taskParam?.match(/^(.+)-\d+$/)?.[1];
+    const urlProject = currentProjectId
+      ? projects.find((p) => p.id === currentProjectId)
+      : taskParam ? projects.find((p) => p.prefix === taskPrefix) : projects[0];
+    // An unresolved/unavailable task or explicit project must never select an
+    // unrelated first project. UUID task links resolve through their own read.
+    if (!urlProject) { setSelectedProject(null); setSelectedTask(null); setTasks([]); return; }
+    if (urlProject.id !== selectedProject?.id) {
+      setSelectedProject(urlProject);
+      setSelectedTask(null);
+      setTasks([]);
     }
-  }, [currentProjectId, projects]);
+    if (!currentProjectId) setQuery({ project: urlProject.id });
+  }, [currentProjectId, projects, searchParams, isMyTasksView, selectedProject?.id, setQuery]);
 
   // Load tasks when project changes (or for My Tasks view)
   const loadTasks = useCallback(async (cursor: string | null = null) => {
+    const requestedRoute = routeRef.current;
+    const session = api.getAccessToken();
+    const current = () => isCurrentTaskRoute(requestedRoute, routeRef.current)
+      && isSameWebSession(session, api.getAccessToken());
+    if (!isMyTasksView && currentProjectId !== selectedProject?.id) return;
     if (view === 'table') {
       const params = new URLSearchParams();
       if (isMyTasksView) params.set('mine', 'true');
@@ -316,8 +305,10 @@ export default function TasksPage() {
 
       setTablePage((current) => ({ ...current, loading: true }));
       const tableResponse = await api.get(`/api/tasks/table?${params}`);
+      if (!current()) return;
       if (tableResponse.ok) {
         const page = await tableResponse.json();
+        if (!current()) return;
         setTasks(page.data);
         setTablePage((current) => ({
           ...current,
@@ -338,6 +329,7 @@ export default function TasksPage() {
       const res = await api.get('/api/tasks/my');
       if (res.ok) {
         const data = await res.json();
+        if (!current()) return;
         setTasks(data);
       }
       return;
@@ -346,9 +338,10 @@ export default function TasksPage() {
     const res = await api.get(`/api/projects/${selectedProject.id}/tasks`);
     if (res.ok) {
       const data = await res.json();
+      if (!current()) return;
       setTasks(data);
     }
-  }, [selectedProject, isMyTasksView, view, filters, layoutConfig.sort, layoutConfig.groupBy, isMobile]);
+  }, [selectedProject, currentProjectId, routeIdentity, isMyTasksView, view, filters, layoutConfig.sort, layoutConfig.groupBy, isMobile]);
 
   useEffect(() => {
     loadTasks();
@@ -664,89 +657,68 @@ export default function TasksPage() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [closeTaskDetail, selectedTask, selectionMode, selectedTaskIds]);
 
-  // On mount: if URL has ?task=DEFT-5 or ?task=<task-id>, find and open that task.
-  // If the task belongs to a different project, switch to that project first.
+  // Resolve the selected task under the current URL/session only. A resolved
+  // project becomes explicit so close/view/reload retain the same task scope.
   useEffect(() => {
     const taskParam = searchParams.get('task');
-    if (taskParam && projects.length > 0) {
-      const rawTaskId = taskParam.startsWith('task:') ? taskParam.slice('task:'.length) : taskParam;
-      const looksLikeId = /^[0-9a-fA-F-]{20,}$/.test(rawTaskId) && !rawTaskId.includes('--');
-      if (looksLikeId) {
-        const existing = tasks.find(t => t.id === rawTaskId);
-        if (existing) {
-          if (existing.project_id !== selectedProject?.id) {
-            const targetProject = projects.find(p => p.id === existing.project_id);
-            if (targetProject) setSelectedProject(targetProject);
-          }
-          setSelectedTask(existing);
-          return;
-        }
-        api.get(`/api/tasks/${rawTaskId}`).then(async (res) => {
-          if (!res.ok) return;
+    if (!taskParam) { setSelectedTask(null); return; }
+    if (projects.length === 0) return;
+    let active = true;
+    const requestedRoute = searchParams.toString();
+    const session = api.getAccessToken();
+    const current = () => active && isCurrentTaskRoute(requestedRoute, routeRef.current)
+      && isSameWebSession(session, api.getAccessToken());
+    const selectTask = (task: Task) => {
+      if (!current()) return;
+      const project = projects.find((p) => p.id === task.project_id);
+      if (project && !isMyTasksView) setSelectedProject(project);
+      setSelectedTask(task);
+      if (project && !isMyTasksView && currentProjectId !== project.id) setQuery({ project: project.id });
+    };
+    const rawTaskId = taskParam.startsWith('task:') ? taskParam.slice('task:'.length) : taskParam;
+    const looksLikeId = /^[0-9a-fA-F-]{20,}$/.test(rawTaskId) && !rawTaskId.includes('--');
+    const existing = tasks.find((task) => looksLikeId ? task.id === rawTaskId
+      : `${task.project_prefix}-${task.number}` === taskParam);
+    if (existing) selectTask(existing);
+    else {
+      setSelectedTask(null);
+      const resolve = async () => {
+        if (looksLikeId) {
+          const res = await api.get(`/api/tasks/${rawTaskId}`);
+          if (!res.ok || !current()) return;
           const detail = await res.json();
-          const targetProject = projects.find(p => p.id === detail.project_id);
-          if (targetProject && targetProject.id !== selectedProject?.id) {
-            setSelectedProject(targetProject);
-          }
-          setSelectedTask({
-            id: detail.id,
-            number: detail.number,
-            title: detail.title,
-            description: detail.description,
-            status: detail.status,
-            priority: detail.priority,
-            assignee_id: detail.assignee_id,
-            assignee_name: detail.assignee?.name ?? null,
-            assignee_avatar: detail.assignee?.avatar_url ?? null,
-            created_by: detail.created_by,
-            creator_name: detail.creator?.name ?? null,
-            due_date: detail.due_date,
-            start_date: detail.start_date,
-            sort_order: detail.sort_order ?? 0,
-            source_message_id: detail.source_message_id ?? null,
-            is_deleted: detail.is_deleted ?? false,
-            project_id: detail.project_id,
-            project_prefix: detail.project_prefix,
-            project_name: detail.project_name,
-            project_color: targetProject?.color ?? null,
+          if (!current()) return;
+          const project = projects.find((p) => p.id === detail.project_id);
+          selectTask({
+            ...detail,
+            assignee_name: detail.assignee?.name ?? detail.assignee_name ?? null,
+            assignee_avatar: detail.assignee?.avatar_url ?? detail.assignee_avatar ?? null,
+            creator_name: detail.creator?.name ?? detail.creator_name ?? null,
+            project_color: project?.color ?? null,
             labels: detail.labels ?? [],
-            parent_task_id: detail.parent_task_id ?? null,
             subtask_count: Array.isArray(detail.subtasks) ? detail.subtasks.length : 0,
             subtask_done_count: Array.isArray(detail.subtasks) ? detail.subtasks.filter((task: Task) => task.status === 'done').length : 0,
-            estimation: detail.estimation ?? null,
-            created_at: detail.created_at,
-            updated_at: detail.updated_at,
           });
-        });
-        return;
-      }
-      const [prefix, numStr] = taskParam.split('-');
-      const num = parseInt(numStr);
-      if (prefix && !isNaN(num)) {
-        // Check if we need to switch projects
-        const targetProject = projects.find(p => p.prefix === prefix);
-        if (targetProject && targetProject.id !== selectedProject?.id) {
-          setSelectedProject(targetProject);
-          // Tasks will reload via the loadTasks effect after project switch
-          // Fetch the specific task directly so we can open it before the full list loads
-          api.get(`/api/projects/${targetProject.id}/tasks`).then(async (res) => {
-            if (res.ok) {
-              const allTasks: Task[] = await res.json();
-              setTasks(allTasks);
-              const task = allTasks.find(t => t.project_prefix === prefix && t.number === num);
-              if (task) setSelectedTask(task);
-            }
-          });
-          return; // Don't try to find in stale tasks list
+          return;
         }
-        // Try to find and open the task in current tasks list
-        if (tasks.length > 0) {
-          const task = tasks.find(t => t.project_prefix === prefix && t.number === num);
-          if (task) setSelectedTask(task);
+        const identifier = taskParam.match(/^(.+)-(\d+)$/);
+        const project = identifier && projects.find((p) => p.prefix === identifier[1]);
+        if (!project || !identifier) return;
+        if (!isMyTasksView && currentProjectId !== project.id) {
+          if (current()) setQuery({ project: project.id });
+          return;
         }
-      }
+        const res = await api.get(`/api/projects/${project.id}/tasks`);
+        if (!res.ok || !current()) return;
+        const allTasks: Task[] = await res.json();
+        if (!current()) return;
+        const task = allTasks.find((candidate) => candidate.project_id === project.id && candidate.number === Number(identifier[2]));
+        if (task) selectTask(task);
+      };
+      void resolve();
     }
-  }, [tasks, searchParams, projects, selectedProject?.id]);
+    return () => { active = false; };
+  }, [tasks, searchParams, projects, currentProjectId, isMyTasksView, setQuery]);
 
   // Filter tasks
   const filteredTasks = useMemo(() => {
@@ -875,7 +847,6 @@ export default function TasksPage() {
 
   // Fix 1: sync filter changes to URL
   const handleFiltersChange = useCallback((next: Filters) => {
-    setFilters(next);
     setQuery({
       assignee: next.assigneeIds.length > 0 ? next.assigneeIds.join(',') : null,
       priority: next.priorities.length > 0 ? next.priorities.join(',') : null,
@@ -918,7 +889,6 @@ export default function TasksPage() {
   const handleApplyViewConfig = useCallback((input: TaskViewConfigV1) => {
     const config = normalizeTaskViewConfig(input);
     setLayoutConfig(config);
-    setFilters(config.filters as Filters);
     setUserSelectedView(true);
     setQuery({
       view: config.view,
@@ -982,7 +952,7 @@ export default function TasksPage() {
     setSelectedTask(null);
     // Let the newly selected project apply its default view once.
     setUserSelectedView(false);
-    router.push(`/tasks?project=${project.id}`);
+    router.push(taskProjectHref(searchParams, project.id));
   };
 
   if (loading) {
