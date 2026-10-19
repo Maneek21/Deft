@@ -3,12 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { buildDeftAppPackage } from '@deft/app-kit';
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
+import { processTestDatabaseUrl } from './fixtures/safe-test-database-target.js';
 
 
 test('ordinary reviewed version upgrade retains compatible owner account identifiers for fresh consent', { timeout: 180000 }, async t => {
-  assert.equal(process.env.DATABASE_URL, process.env.DEFT_TEST_DATABASE_URL);
-  const target = new URL(process.env.DATABASE_URL!);
-  assert.equal(target.hostname, '127.0.0.1'); assert.match(target.pathname, /_test$/);
+  assert.ok(processTestDatabaseUrl(), 'Requires a disposable test database shared by the test and runtime clients');
   Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_PRIVATE_STATE_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true',
     DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true', DEFT_APP_ATTACHMENT_BROKER_ENABLED: 'true', DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'true',
     DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED: 'true', DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: 'true',

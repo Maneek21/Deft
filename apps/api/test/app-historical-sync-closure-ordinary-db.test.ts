@@ -6,12 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDeftAppPackage } from '@deft/app-kit';
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
+import { processTestDatabaseUrl } from './fixtures/safe-test-database-target.js';
 
 for (const continuationBacked of [false, true]) test((continuationBacked ? 'ordinary continuation-backed ' : 'ordinary ') + 'historical sync closure after a reviewed version upgrade retains unknown evidence and a verified receipt', { timeout: 180_000 }, async t => {
-  const target = new URL(process.env.DEFT_TEST_DATABASE_URL!);
-  assert.equal(process.env.DATABASE_URL, process.env.DEFT_TEST_DATABASE_URL);
-  assert.equal(target.hostname, '127.0.0.1'); assert.ok(['55437', '55438'].includes(target.port));
-  assert.equal(target.pathname, '/deft_live_wiki_concurrency_test');
+  assert.ok(processTestDatabaseUrl(), 'Requires a disposable test database shared by the test and runtime clients');
   Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true', DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true',
     DEFT_APP_PRIVATE_STATE_ENABLED: 'true', DEFT_APP_ATTACHMENT_BROKER_ENABLED: 'true', DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'true',
     DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED: 'true', DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: 'true',

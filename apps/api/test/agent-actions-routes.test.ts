@@ -1,5 +1,5 @@
 /**
- * Phase 6.5 â€” HTTP route tests for approve / reject / pending endpoints.
+ * Phase 6.5 — HTTP route tests for approve / reject / pending endpoints.
  *
  * Run: pnpm --filter @deft/api test -- agent-actions-routes
  *
@@ -123,7 +123,7 @@ async function seedFixtures() {
 
 async function teardownFixtures() {
   await withClient(async (c) => {
-    // Phase 7 â€” receipts FK to agent_actions + agent_employees, so delete
+    // Phase 7 — receipts FK to agent_actions + agent_employees, so delete
     // them first so the subsequent cascade doesn't bounce off the FK.
     await c.query(
       `DELETE FROM action_receipts
@@ -404,6 +404,14 @@ async function insertDeftyCaptureActionWithSource(params: {
        VALUES ($1, $2, $3, $4, $5)`,
       [messageId, ORG_ID, params.spaceId, APPROVER_USER_ID, params.messageContent],
     );
+    // A non-system proposer must be able to read its own source message; the
+    // reader's space membership alone then decides visibility.
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES (gen_random_uuid()::text, $1, $2)
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [params.spaceId, SHADOW_USER_ID],
+    );
 
     const action = await c.query(
       `INSERT INTO agent_actions
@@ -577,7 +585,7 @@ function app(): Hono {
   return testApp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 test('GET /api/agent/actions/pending returns MCP-queued actions', async () => {
   const title = `routes-pending-${Date.now()}`;

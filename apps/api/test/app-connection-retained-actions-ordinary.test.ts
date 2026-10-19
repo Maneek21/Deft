@@ -21,7 +21,7 @@ test('ordinary retained account is offered only after its same three action purp
  await assert.rejects(closing.review(caller,{installation_id:id,target_key:'fresh_mailbox',source_session_id:source.session_id,request_id:request}),(error:any)=>error.code==='APP_STATE_CONFLICT');
  await assert.rejects(closing.closeUnstartedReview(caller,{installation_id:id,target_key:'fresh_mailbox',request_id:source.session_id}),(error:any)=>error.code==='APP_STATE_CONFLICT');assert.equal(records.get(source.session_id),source);assert.equal(dispatches,0);
  // Ordinary real-store proof only; authority fixture is explicit, no provider transport.
- const target=new URL(process.env.DEFT_TEST_DATABASE_URL??'postgres://invalid/invalid');assert.ok(process.env.DATABASE_URL===process.env.DEFT_TEST_DATABASE_URL&&target.hostname==='127.0.0.1'&&['55437','55438'].includes(target.port)&&target.pathname==='/deft_live_wiki_concurrency_test');
+ const {processTestDatabaseUrl}=await import('./fixtures/safe-test-database-target.js');assert.ok(processTestDatabaseUrl(),'Requires a disposable test database shared by the test and runtime clients');
  const [{db,closeDb},tables,{eq,and},{PostgresAppConnectionSessionStore}]=await Promise.all([import('../src/lib/db.js'),import('@deft/db/schema'),import('drizzle-orm'),import('../src/lib/app-connection-session-store.js')]);
  try{
   await db.insert(tables.orgs).values({id,name:'Ordinary closure fixture',slug:'closure-'+id});

@@ -1,8 +1,8 @@
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
 import test from 'node:test';import assert from 'node:assert/strict';import{randomUUID,createHash}from'node:crypto';
-const targetUrl=new URL(process.env.DEFT_TEST_DATABASE_URL??'postgres://invalid/invalid');
-const safe=process.env.DATABASE_URL===process.env.DEFT_TEST_DATABASE_URL&&targetUrl.hostname==='127.0.0.1'&&['55437','55438'].includes(targetUrl.port)&&targetUrl.pathname==='/deft_live_wiki_concurrency_test';
-assert.ok(safe,'Requires exact authorized reused isolated ordinary test DB tunnel');
+import { processTestDatabaseUrl } from './fixtures/safe-test-database-target.js';
+const safe=Boolean(processTestDatabaseUrl());
+assert.ok(safe,'Requires a disposable test database shared by the test and runtime clients');
 
 test('ordinary named Runtime setup pins the selected owner target without issuing credentials',{skip:!safe,timeout:60_000},async t=>{
  Object.assign(process.env,{DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED:'true',DEFT_APP_PRIVATE_SHARING_ENABLED:'true',DEFT_APP_PRIVATE_MCP_ENABLED:'true',DEFT_APPS_ENABLED:'true',DEFT_APP_RUNS_ENABLED:'true',DEFT_APP_RUN_APP_ORIGIN_ENABLED:'true',DEFT_APP_ATTACHMENT_BROKER_ENABLED:'true',DEFT_APP_RUNTIME_CHANNEL_ENABLED:'true',DEFT_APP_V5_RUNTIME_ACTIONS_ENABLED:'true',DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED:'true'});
