@@ -4,6 +4,7 @@ import { api, isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError, type AppInstallation } from '@/lib/apps';
 import { parseRuntimeSetupContext, parseRuntimeSetupTargets, type RuntimeSetupTarget, runtimeSetupWebDeadline, type RuntimeSetupContext, type RuntimeSetupRequest } from '@/lib/app-runtime-setup';
+import { PrivateSyncClosure } from './private-sync-closure';
 type Review = { owner_resource_binding_id?:string; schema_version:'deft.app_runtime_management_review.v1';org_id:string;installation_id:string;app_version_id:string;
   grant_snapshot_id:string;grant_snapshot_digest:string;package_digest:string;lifecycle_epoch:number;grant_epoch:number;
   operator_user_id:string;action_key:string;operation_name:string;contract_digest:string;review_digest:string;
@@ -92,5 +93,6 @@ function Workspace({app,operatorId,target}:{app:AppInstallation;operatorId:strin
     {showCredential&&<div className="space-y-2"><p className="font-semibold">One-time operator credential</p><p>Expires {new Date(credential.expires_at).toLocaleString()}. Hiding this display does not revoke the credential.</p>
       <textarea aria-label="Operator provider credential" readOnly className="w-full min-w-0 break-all rounded border p-2 font-mono text-xs" rows={5} value={JSON.stringify(credential,null,2)}/>
       <button className="deft-pill" style={tap} onClick={()=>{setCredential(null);credentialDeadline.current=0;setNotice('Credential display cleared. Its existing expiry still applies.');}}>Hide credential</button></div>}
+    {context&&target&&<PrivateSyncClosure key={`${operatorId}/${context.installation_id}/${context.app_version_id}/${context.grant_snapshot_id}/${context.lifecycle_epoch}/${context.grant_epoch}/${target.resource_binding_id}/${JSON.stringify(context.actions.map(row=>[row.binding?.registration_id,row.binding?.registration_state]))}`} context={context} target={target} actorId={operatorId}/>}
   </section>;
 }

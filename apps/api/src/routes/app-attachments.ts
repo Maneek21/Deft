@@ -144,10 +144,23 @@ appAttachmentRoutes.post('/sync/bindings/:bindingId/revoke',async c=>{
     return c.json(await (await getAppAttachmentRuntime()).management.revokeConsent(actor,id.parse(c.req.param('bindingId')),guard));
   }catch(error){return failure(c,error);}
 });
+appAttachmentRoutes.get('/sync/unknown-runs/candidates',async c=>{
+  try{const query=z.strictObject({current_resource_binding_id:id}).parse(c.req.query());
+    const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const runtime=await getAppAttachmentRuntime();
+    return c.json(await new AppResourceSyncClosureService(runtime.keys,runtime.repository).historicalCandidates(actor,query.current_resource_binding_id,guard));
+  }catch(error){return failure(c,error);}
+});
 appAttachmentRoutes.post('/sync/unknown-runs/review',async c=>{
   try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     const runtime=await getAppAttachmentRuntime();
     return c.json({review:await new AppResourceSyncClosureService(runtime.keys,runtime.repository).review(actor,input,guard)});
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/sync/unknown-runs/receipt',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const runtime=await getAppAttachmentRuntime();
+    return c.json(await new AppResourceSyncClosureService(runtime.keys,runtime.repository).historicalReceipt(actor,input,guard));
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/sync/unknown-runs/activate',async c=>{

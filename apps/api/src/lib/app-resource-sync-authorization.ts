@@ -4,8 +4,12 @@ import type { LiveResourceSyncBindingAuthority } from './app-resource-sync-autho
 
 /** One host projection shared by admission and every v2 execution boundary.
  * checked_at is deliberately excluded: it is a deadline check, not authority. */
-export function buildResourceSyncAuthorizationSnapshot(authority: Pick<LiveResourceSyncBindingAuthority, 'binding' | 'installation' | 'version' | 'grant'
-  | 'registration' | 'descriptor_digest' | 'provider_snapshot'>) {
+export type ResourceSyncAuthorizationFacts = Pick<LiveResourceSyncBindingAuthority, 'binding' | 'version' | 'grant'
+  | 'registration' | 'descriptor_digest' | 'provider_snapshot'> & {
+  installation: Pick<LiveResourceSyncBindingAuthority['installation'], 'id' | 'lifecycle_epoch' | 'grant_epoch'>;
+};
+/** Serialization only: these facts do not establish live execution authority. */
+export function buildResourceSyncAuthorizationSnapshot(authority: ResourceSyncAuthorizationFacts) {
   const { binding, installation, version, grant, registration } = authority;
   const consentDigest = digestAppGrantValue({
     schema_version: 'deft.app_resource_sync.consent_pin.v1',
