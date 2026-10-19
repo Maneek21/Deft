@@ -73,7 +73,8 @@ export function NativeMentionMarkdown({ content, chat = false, linkifyTasks = fa
       const match = href?.match(/^\/deft-reference\/(person|task|wiki_page)\/([^/]+)$/);
       const kind = NativeMentionKindSchema.safeParse(match?.[1]);
       const id = ResourceOpaqueIdSchema.safeParse(match?.[2]);
-      if (kind.success && id.success) return <NativeReferenceChip kind={kind.data} id={id.data} />;
+      if (kind.success && id.success) return <span data-deft-ref-kind={kind.data} data-deft-ref-id={id.data}>
+        <NativeReferenceChip kind={kind.data} id={id.data} /></span>;
       const target = href && (resolveHref ? resolveHref(href) : href);
       const safe = target && (isSafeChatHref(target) || (!chat && !resolveHref && /^#[^\\\u0000-\u0020]*$/.test(target)));
       return safe ? <a href={target} target={chat && !target.startsWith('/') ? '_blank' : undefined}

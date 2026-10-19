@@ -28,6 +28,12 @@ test('legacy chat mentions, task links and broadcasts stay readable while code s
   assert.match(html, /<code>CRM-8 @all &lt;br&gt;<\/code>/);
 });
 
+test('native reference tokens keep the same atom wrapper as the HTML renderer', () => {
+  const id = '3c508e88-4431-4b7c-8e41-22ab1f702275';
+  const html = renderToStaticMarkup(<NativeMentionMarkdown chat content={'Ask @[[deft:person:' + id + ']] to review'} />);
+  assert.match(html, new RegExp('<span data-deft-ref-kind="person" data-deft-ref-id="' + id + '">'));
+});
+
 test('ordinary chat soft newlines remain visible without altering code', () => {
   const html = renderToStaticMarkup(<NativeMentionMarkdown chat content={'First line\nSecond line\n\n```text\nFirst\nSecond\n```'} />);
   assert.match(html, /First line<br\/?>\s*Second line/);
