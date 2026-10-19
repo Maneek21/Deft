@@ -81,6 +81,7 @@ import {
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
+import { mentionQueryAtCursor, mentionSelectionContent, type MentionSelection } from '@/lib/mention-suggestions';
 import { nativeMentionsAvailable } from '@/lib/native-mentions';
 import { MobileActionSheet } from './mobile-action-sheet';
 
@@ -291,12 +292,12 @@ export function RichComposer({
       // of text that should be replaced when a suggestion is accepted,
       // so handleMentionSelect works even after the editor loses focus
       // on click.
-      const atMatch = nativeMentionsAvailable() ? null : textBefore.match(/@+(\w*)$/);
+      const atMatch = nativeMentionsAvailable() ? null : mentionQueryAtCursor(editor.state.doc.textBetween(0, from, '\n'));
       if (atMatch) {
         setShowMentions(true);
-        setMentionQuery(atMatch[1]);
+        setMentionQuery(atMatch.query);
         mentionRangeRef.current = {
-          from: from - atMatch[0].length,
+          from: from - atMatch.length,
           to: from,
         };
       } else {
@@ -426,7 +427,7 @@ export function RichComposer({
     editor?.chain().focus().insertContent(emoji).run();
   };
 
-  const handleMentionSelect = (selected: { id: string; name: string }) => {
+  const handleMentionSelect = (selected: MentionSelection) => {
     if (!editor) return;
     // Use the range we captured in onUpdate — don't re-read selection
     // here because clicking the dropdown blurs the editor, which resets
@@ -437,10 +438,7 @@ export function RichComposer({
         .chain()
         .focus()
         .deleteRange(range)
-        .insertContent([
-          { type: 'mention', attrs: { uuid: selected.id, name: selected.name } },
-          { type: 'text', text: ' ' },
-        ])
+        .insertContent(mentionSelectionContent(selected))
         .run();
     }
     mentionRangeRef.current = null;
