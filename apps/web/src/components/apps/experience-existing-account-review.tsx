@@ -1,13 +1,15 @@
 import type { ExistingAccountReview } from '../../lib/app-connection-reattachment';
 
 /** Display only a host-validated current review; custody transition stays in the flow. */
-export function ExperienceExistingAccountReview({ review, uncertain, now, disabled, onAllow, onCheck, onClose }: {
+export function ExperienceExistingAccountReview({ review, uncertain, now, disabled, onAllow, onCheck, onClose, canCloseUnstarted, onCloseUnstarted }: {
   review: ExistingAccountReview | null; uncertain: boolean; now: number; disabled: boolean;
+  canCloseUnstarted?:boolean;onCloseUnstarted?:()=>void;
   onAllow: () => void; onCheck: () => void; onClose: () => void;
 }) {
   if (uncertain) return <section aria-label="Account reuse status" className="space-y-3 text-sm">
-    <p>Account reuse has an uncertain outcome. Check its status before continuing.</p>
+    <p>Account reuse status is unconfirmed. Check its status before continuing. No new setup will start automatically.</p>
     <button type="button" className="deft-pill min-h-11" disabled={disabled} onClick={onCheck}>Check status</button>
+    {canCloseUnstarted&&onCloseUnstarted&&<><p>Close this review only if account setup has not started. An existing account request will be left unchanged.</p><button type="button" className="deft-pill min-h-11" disabled={disabled} onClick={onCloseUnstarted}>Close unstarted review</button></>}
   </section>;
   if (!review) return null;
   const expired = Date.parse(review.expires_at) <= now;

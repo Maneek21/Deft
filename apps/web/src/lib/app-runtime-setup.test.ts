@@ -1,8 +1,15 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import { parseRuntimeSetupContext } from './app-runtime-setup';
+import { parseRuntimeSetupContext,parseRuntimeSetupTargets } from './app-runtime-setup';
 const id='00000000-0000-4000-8000-000000000001',digest='sha256:'+ 'a'.repeat(64);
 function value(){return {schema_version:'deft.app_runtime_setup_context.v1',installation_id:id,app_version_id:id,grant_snapshot_id:id,package_digest:digest,grant_snapshot_digest:digest,lifecycle_epoch:1,grant_epoch:2,operator_user_id:id,
  policy:{review_requirement:'always',review_scope:'per_invocation',retry_class:'unsafe_or_unknown'},actions:[{key:'send',label:'Send',review_request:{installation_id:id,action_key:'send',operator_user_id:id,expected_app_version_id:id,expected_package_digest:digest,expected_grant_snapshot_digest:digest,expected_lifecycle_epoch:1,expected_grant_epoch:2},binding:null}]};}
 test('Runtime setup accepts only exact current self-operator pins and fixed per-invocation policy',()=>{assert(parseRuntimeSetupContext(value()));const row=value();row.actions[0].review_request.expected_grant_epoch=3;assert.equal(parseRuntimeSetupContext(row),null);});
 test('Runtime setup rejects secret fields, extra authority and excessive action inventory',()=>{assert.equal(parseRuntimeSetupContext({...value(),session_token:'secret'}),null);const row=value();row.actions=Array.from({length:17},()=>row.actions[0]);assert.equal(parseRuntimeSetupContext(row),null);assert.equal(parseRuntimeSetupContext({...value(),policy:{...value().policy,review_requirement:'never'}}),null);});
 test('Runtime setup rejects duplicate actions and fabricated credential readiness',()=>{const row=value();row.actions.push(row.actions[0]);assert.equal(parseRuntimeSetupContext(row),null);const binding={id,registration_id:id,operator_user_id:'00000000-0000-4000-8000-000000000002',state:'active',registration_state:'active',can_issue_session:true};assert.equal(parseRuntimeSetupContext({...value(),actions:[{...value().actions[0],binding}]}),null);});
+
+test('named Runtime context pins every review to the selected exact owner target',()=>{
+ const target={resource_binding_id:id,target_key:'fresh_mailbox',resource_key:'inbox'};
+ const row={...value(),target};Object.assign(row.actions[0].review_request,{owner_resource_binding_id:id});assert(parseRuntimeSetupContext(row));
+ const changed=structuredClone(row);Object.assign(changed.actions[0].review_request,{owner_resource_binding_id:'00000000-0000-4000-8000-000000000002'});assert.equal(parseRuntimeSetupContext(changed),null);
+ const catalog={schema_version:'deft.app_runtime_setup_targets.v1',installation_id:id,app_version_id:id,targets:[target]};assert(parseRuntimeSetupTargets(catalog));assert.equal(parseRuntimeSetupTargets({...catalog,targets:[target,target]}),null);
+});

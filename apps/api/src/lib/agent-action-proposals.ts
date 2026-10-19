@@ -1,3 +1,4 @@
+import {collectCompilerReadFacts,validateCompilerGrounding} from './agent-compiler-read-facts.js';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { agentActions, messages, orgs, projects } from '@deft/db/schema';
 import { getApprovalTier } from './agent-approval.js';
@@ -465,6 +466,7 @@ export type CompiledActionDraft = {
 };
 
 type CompileDeftyActionDraftParams = {
+  successfulReadActions?: Parameters<typeof collectCompilerReadFacts>[0];
   orgId: string;
   promptContent: string;
   agentReplyText?: string;
@@ -597,6 +599,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
     .where(eq(orgs.id, params.orgId))
     .limit(1)
     .catch(() => []);
+  const groundedReadFacts=collectCompilerReadFacts(params.successfulReadActions??[]);
   const result = await llm({
     task: 'extract',
     maxTokens: 1200,
@@ -611,6 +614,8 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       'If the user explicitly says not to create, queue, post, or change something, return no write tool calls.',
       'Read-only requests such as read, show, list, search, or explain must return no write tool calls.',
       'Do not execute anything. These actions will become approval cards.',
+      'grounded_read_facts contains successful same-turn authorized reads. For module updates use its exact record ID, revision, manifest digest and explicit requested patch; never invent these fields.',
+      'For an existing wiki use the exact read slug and current full body. An append must include the real current body followed by the requested literal addition, never preservation instructions or placeholders. If facts are unavailable ask for a grounded lookup instead of inventing a target.',
       'Use request_action_clarification only when a required target cannot be inferred safely.',
       'Required for create_task: title and project_name. Use an exact project name from known_projects whenever possible.',
       'The task title or concrete outcome must come from the user request. Never invent the work itself.',
@@ -630,6 +635,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
     messages: [{
       role: 'user',
       content: JSON.stringify({
+        grounded_read_facts: groundedReadFacts,
         user_request: params.promptContent,
         prior_defty_reply: params.agentReplyText ?? '',
         project_name_hint: params.projectNameHint ?? null,
@@ -644,7 +650,9 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
     }],
   });
 
-  const initiallyNormalized = normalizeCompiledToolCalls(result.toolCalls ?? [], params);
+  const rawNormalized = normalizeCompiledToolCalls(result.toolCalls ?? [], params);
+  const grounded=validateCompilerGrounding(rawNormalized.actions,groundedReadFacts,params.promptContent);
+  const initiallyNormalized={...rawNormalized,actions:grounded.actions,warnings:[...(rawNormalized.warnings??[]),...groundedReadFacts.limitations,...grounded.warnings]};
   const alignment = validateCompiledIntentAlignment(params.promptContent, initiallyNormalized.actions, params);
   const normalized = alignment.blocked
     ? { actions: [] as ProposedAgentAction[], summary: undefined, warnings: initiallyNormalized.warnings }

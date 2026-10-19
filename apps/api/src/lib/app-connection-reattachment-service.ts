@@ -10,7 +10,8 @@ import {
 } from '@deft/app-kit';
 import { AppError } from './app-errors.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord,
-  type AppConnectionSessionAuthority, type AppConnectionSessionPorts, type AppConnectionSessionPurpose } from './app-connection-session-service.js';
+  type AppConnectionSessionLocator, type AppConnectionSessionAuthority, type AppConnectionSessionPorts, type AppConnectionSessionPurpose } from './app-connection-session-service.js';
+import type {UnstartedReviewClosure} from './app-connection-review-closure.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 
 const denied = () => new AppError('Account reattachment access ended', 'APP_ACCESS_DENIED', 403);
@@ -18,7 +19,8 @@ const conflict = () => new AppError('Account reattachment changed', 'APP_STATE_C
 const sha = (value: unknown) => `sha256:${createHash('sha256').update(canonicalConnectionReattachmentJson(value)).digest('hex')}`;
 const locator = (record: AppConnectionSessionRecord) => ({ org_id: record.scope.org_id,
   owner_user_id: record.scope.owner_user_id, session_id: record.session_id });
-export type AppConnectionReattachmentPorts = Readonly<Pick<AppConnectionSessionPorts, 'store' | 'currentAuthority'> & {
+export type AppConnectionReattachmentPorts = Readonly<Pick<AppConnectionSessionPorts, 'currentAuthority'> & {
+  store: AppConnectionSessionPorts['store'] & {createUnstartedReviewClosure?(record:AppConnectionSessionRecord):Promise<boolean>;readUnstartedReviewClosure?(session:AppConnectionSessionLocator):Promise<UnstartedReviewClosure|null>};
   transportDigest(record: AppConnectionSessionRecord): Promise<string>;
   requestRuntime(record: AppConnectionSessionRecord, input: AppConnectionReattachAnyRuntimeRequest, signal: AbortSignal): Promise<unknown>;
   /** Checks current host activity under the existing authority lock order.
@@ -185,8 +187,10 @@ export class AppConnectionReattachmentService {
         .some(key => old[key as keyof typeof old] !== target[key as keyof typeof target])
       || old.app_version_id === target.app_version_id || old.grant_snapshot_id === target.grant_snapshot_id
       || target.lifecycle_epoch <= old.lifecycle_epoch || target.grant_epoch <= old.grant_epoch
-      || !isDeepStrictEqual(source.profile, authority.profile)
-      || !isDeepStrictEqual(source.action_consents?.map(consent=>consent.action_key),authority.action_consents?.map(consent=>consent.action_key))) throw denied();
+      || !isDeepStrictEqual(source.profile, authority.profile)) throw denied();
+    if (!isDeepStrictEqual(source.action_consents?.map(consent=>consent.action_key),authority.action_consents?.map(consent=>consent.action_key)))
+      throw new AppError('Review the current action operator setup before reusing this account.', 'APP_REVIEW_REQUIRED', 409,
+        {reason:'runtime_action_review_mismatch',phase:'before_dispatch'});
     await this.ports.assertNoActiveEffects(source, authority);
     const now = this.clock(), reviewExpiry = Math.min(now + 300_000, authority.expires_at, appConsentDeadline(target.consent_expires_at, target.consent_lifetime));
     const record = AppConnectionSessionRecordSchema.parse({ session_id: input.request_id, revision: 0, scope: target,
@@ -202,6 +206,29 @@ export class AppConnectionReattachmentService {
     if (!await this.ports.store.create(record)) throw conflict();
     return this.invoke(caller, record, 'prepare');
   }
+  /** Explicit owner closure reserves an absent request before any provider I/O.
+   * Existing records in every state are retained and must use normal status. */
+  private closedReviewView(record:AppConnectionSessionRecord){
+    return {schema_version:'deft.app_connection_unstarted_review_closed.v1' as const,session_id:record.session_id,scope:record.scope,state:'not_started' as const,provider_dispatched:false as const};
+  }
+  async closeUnstartedReview(caller: ExperienceCaller, raw: unknown) {
+    const input=AppConnectionReattachReviewRequestSchema.omit({source_session_id:true}).parse(raw);
+    if(!this.ports.store.createUnstartedReviewClosure||!this.ports.store.readUnstartedReviewClosure)throw conflict();
+    const existing=await this.ports.store.read({org_id:caller.org_id,owner_user_id:caller.user_id,session_id:input.request_id});
+    if(existing){const closed=AppConnectionSessionRecordSchema.parse(existing);if(closed.scope.installation_id!==input.installation_id||closed.scope.target_key!==input.target_key||!await this.ports.store.readUnstartedReviewClosure(locator(closed)))throw conflict();
+      await this.authority(caller,this.nomination(closed),'reattach_status',closed);return this.closedReviewView(closed);}
+    const authority=await this.authority(caller,input,'reattach_review');
+    const now=new Date(this.clock()).toISOString();
+    const record=AppConnectionSessionRecordSchema.parse({session_id:input.request_id,revision:1,scope:authority.scope,profile:authority.profile,
+      state:'not_connected',callback_state_hash:createHash('sha256').update(randomBytes(32)).digest('hex'),callback_consumed:false,
+      callback_expires_at:now,runtime_session_ref:null,account:null,created_at:now,updated_at:now,
+      ...(authority.action_consents!==undefined?{action_consents:authority.action_consents}:authority.action_consent?{action_consent:authority.action_consent}:{})});
+    if(!await this.ports.store.createUnstartedReviewClosure(record)){
+      const winner=await this.read(caller,input.request_id);if(!await this.ports.store.readUnstartedReviewClosure(locator(winner))||!isDeepStrictEqual(winner.scope,authority.scope))throw conflict();
+      await this.authority(caller,this.nomination(winner),'reattach_status',winner);return this.closedReviewView(winner);
+    }
+    return this.closedReviewView(record);
+  }
   async activate(caller: ExperienceCaller, raw: unknown) {
     const input = AppConnectionReattachActivateRequestSchema.parse(raw), record = await this.read(caller, input.session_id);
     if (!record.reattachment?.review || record.state !== 'reattach_reviewed'
@@ -211,6 +238,7 @@ export class AppConnectionReattachmentService {
   }
   async status(caller: ExperienceCaller, raw: unknown) {
     const input = AppConnectionReattachStatusRequestSchema.parse(raw), record = await this.read(caller, input.session_id);
+    if(await this.ports.store.readUnstartedReviewClosure?.(locator(record))){await this.authority(caller,this.nomination(record),'reattach_status',record);return this.closedReviewView(record);}
     if (!record.reattachment) throw conflict();
     await this.authority(caller, this.nomination(record), 'reattach_status', record);
     if (record.state === 'connected' || record.state === 'not_connected') return this.view(record);

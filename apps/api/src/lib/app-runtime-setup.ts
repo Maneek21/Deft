@@ -11,6 +11,8 @@ import { isAppV5RuntimeActionsEnabled } from './env.js';
 import { appRuntimeChannelEnabled } from './app-runtime-channel.js';
 import { experienceExposureDatabase } from './app-experience-exposure-db.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
+import { loadRuntimeOwnerTarget } from './app-runtime-owner-target.js';
+import { currentConnectionBindingLocators } from './app-connection-current-locators.js';
 import { RuntimeSetupContextSchema } from './app-runtime-setup-contract.js';
 const Id = z.string().uuid();
 const stale = () => new AppError('Runtime setup changed. Refresh before reviewing.', 'APP_STALE', 409);
@@ -20,7 +22,7 @@ function enabled() { if (!appRuntimeChannelEnabled() || !isAppV5RuntimeActionsEn
  * review, activation and explicit credential issuance paths. Bounded DB factory
  * retains checked-out slots until cancellation/rollback has settled. */
 export async function getRuntimeSetupContext(actor: ModuleActor, installationId: string, versionId: string,
-  options: { guard: WebAuthorityGuard; signal?: AbortSignal }) {
+  options: { guard: WebAuthorityGuard; signal?: AbortSignal; owner_resource_binding_id?: string }) {
   if (actor.kind !== 'human' || !['owner','admin'].includes(actor.role) || !['ui','rest'].includes(actor.source)) throw denied();
   Id.parse(installationId); Id.parse(versionId); enabled();
   return experienceExposureDatabase().transaction(async tx => {
@@ -32,7 +34,7 @@ export async function getRuntimeSetupContext(actor: ModuleActor, installationId:
     if (!locator || locator.version !== versionId || !locator.grant) throw stale();
     // Legacy setup presents the primary source only; named targets use exact
     // reviewed owner_resource_binding_id in the activation request.
-    const primaryTarget = or(isNull(appRuntimeBindings.owner_resource_binding_id), sql`EXISTS (
+    const primaryTarget = options.owner_resource_binding_id ? eq(appRuntimeBindings.owner_resource_binding_id, Id.parse(options.owner_resource_binding_id)) : or(isNull(appRuntimeBindings.owner_resource_binding_id), sql`EXISTS (
       SELECT 1 FROM app_resource_bindings target WHERE target.org_id=${actor.org_id}
       AND target.id=${appRuntimeBindings.owner_resource_binding_id} AND target.owner_user_id=${actor.actor_id}
       AND target.target_key='primary')`);
@@ -55,6 +57,11 @@ export async function getRuntimeSetupContext(actor: ModuleActor, installationId:
       primaryTarget,
       inArray(appRuntimeBindings.state, ['active','disabled']))).limit(17);
     if (currentSet.length !== locators.length || currentSet.some(row => !locators.some(old => old.id === row.id))) throw stale();
+    const target = options.owner_resource_binding_id ? await loadRuntimeOwnerTarget(tx, {
+      org_id: actor.org_id, owner_user_id: actor.actor_id, resource_binding_id: options.owner_resource_binding_id,
+      installation_id: installationId, app_version_id: versionId, grant_snapshot_id: parent.grant.id,
+      operator_user_id: actor.actor_id, prelocked_participant_ids: participants,
+    }) : null;
     const descriptors = runtimeActionDescriptors(parent.manifest);
     if (descriptors.length > 16) throw stale();
     for (const registration of [...new Set(locators.map(row => row.registration))].sort()) await tx.execute(sql`SELECT id FROM app_runtime_registrations WHERE org_id=${actor.org_id} AND id=${registration} FOR SHARE`);
@@ -76,21 +83,42 @@ export async function getRuntimeSetupContext(actor: ModuleActor, installationId:
       app_version_id: versionId, grant_snapshot_id: parent.grant.id, package_digest: parent.version.package_digest,
       grant_snapshot_digest: parent.grant.snapshot_digest, lifecycle_epoch: parent.installation.lifecycle_epoch,
       grant_epoch: parent.installation.grant_epoch, operator_user_id: actor.actor_id,
+      ...(target ? {target:{resource_binding_id:target.binding.id,target_key:target.binding.target_key,resource_key:target.binding.resource_key}} : {}),
       policy: { review_requirement: 'always', review_scope: 'per_invocation', retry_class: 'unsafe_or_unknown' },
       actions: descriptors.map(action => {
         const current = bindings.filter(row => row.action_key === action.action_key); if (current.length > 1) throw stale();
         const binding = current[0];
         return { key: action.action_key, label: parent.manifest.runtime_actions.find(row => row.key === action.action_key)?.label ?? action.action_key,
-          review_request: { installation_id: installationId, action_key: action.action_key, operator_user_id: actor.actor_id,
+          review_request: { ...(target ? {owner_resource_binding_id:target.binding.id} : {}), installation_id: installationId, action_key: action.action_key, operator_user_id: actor.actor_id,
             expected_app_version_id: versionId, expected_package_digest: parent.version.package_digest,
             expected_grant_snapshot_digest: parent.grant.snapshot_digest, expected_lifecycle_epoch: parent.installation.lifecycle_epoch,
             expected_grant_epoch: parent.installation.grant_epoch },
           binding: binding ? { id: binding.id, registration_id: binding.registration_id, operator_user_id: binding.operator_user_id,
             state: binding.state, registration_state: binding.registration_state,
-            can_issue_session: binding.state === 'active' && binding.registration_state === 'active' && binding.operator_user_id === actor.actor_id } : null };
+            can_issue_session: binding.state === 'active' && binding.registration_state === 'active' && binding.operator_user_id === actor.actor_id && !target } : null };
       }) });
     if (JSON.stringify(result).length > 64 * 1024) throw stale();
     if (!await attachmentFinalAuthorityIsCurrent(tx, participants, { guard: options.guard, signal: options.signal })) throw stale();
     enabled(); return result;
   }, options.signal);
+}
+
+/** Current caller-owned targets only; metadata never invokes a provider. */
+export async function getRuntimeSetupTargets(actor: ModuleActor, installationId: string, versionId: string,
+  options: {guard:WebAuthorityGuard;signal?:AbortSignal}) {
+  if(actor.kind!=='human'||!['owner','admin'].includes(actor.role)||!['ui','rest'].includes(actor.source))throw denied();
+  Id.parse(installationId);Id.parse(versionId);enabled();
+  options={...options,signal:AbortSignal.any([...(options.signal?[options.signal]:[]),AbortSignal.timeout(15_000)])};
+  const initial=await getRuntimeSetupContext(actor,installationId,versionId,options);
+  const rows=await experienceExposureDatabase().transaction(tx=>currentConnectionBindingLocators(tx,{org_id:actor.org_id,user_id:actor.actor_id},{installation_id:installationId}).limit(33),options.signal);
+  if(rows.length>32)throw stale();
+  const targets=[];
+  for(const row of rows){
+    try{const context=await getRuntimeSetupContext(actor,installationId,versionId,{...options,owner_resource_binding_id:row.id});
+      if(context.target)targets.push(context.target);
+    }catch(error){if(error instanceof AppError&&['APP_ACCESS_DENIED','APP_STALE'].includes(error.code))continue;throw error;}
+  }
+  const final=await getRuntimeSetupContext(actor,installationId,versionId,options);
+  if(initial.app_version_id!==final.app_version_id||initial.package_digest!==final.package_digest||initial.grant_snapshot_id!==final.grant_snapshot_id||initial.grant_snapshot_digest!==final.grant_snapshot_digest||initial.lifecycle_epoch!==final.lifecycle_epoch||initial.grant_epoch!==final.grant_epoch)throw stale();
+  return {schema_version:'deft.app_runtime_setup_targets.v1' as const,installation_id:installationId,app_version_id:versionId,targets};
 }

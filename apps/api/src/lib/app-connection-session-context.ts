@@ -36,7 +36,8 @@ export function currentConnectionReattachmentContext(record:AppConnectionSession
  const candidate=!blocked&&previous?.state==='connected'&&previous.account&&previous.runtime_session_ref&&old
   &&['org_id','owner_user_id','installation_id','target_key','resource_key','operator_user_id','profile_digest'].every(key=>old[key as keyof typeof old]===scope[key as keyof typeof scope])
   &&old.app_version_id!==scope.app_version_id&&old.grant_snapshot_id!==scope.grant_snapshot_id
-  &&old.lifecycle_epoch<scope.lifecycle_epoch&&old.grant_epoch<scope.grant_epoch&&isDeepStrictEqual(previous.profile,current.profile)?
+  &&old.lifecycle_epoch<scope.lifecycle_epoch&&old.grant_epoch<scope.grant_epoch&&isDeepStrictEqual(previous.profile,current.profile)
+  &&isDeepStrictEqual(previous.action_consents?.map(consent=>consent.action_key),current.action_consents?.map(consent=>consent.action_key))?
    {source_session_id:previous.session_id,source_revision:previous.revision,account:previous.account}:null;
  return {candidate,pending};
 }

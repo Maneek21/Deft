@@ -1,7 +1,7 @@
 import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import {parseConnectionUpgradeContext,createConnectionUpgradeFlow,type ConnectionUpgradeMetadata} from './app-connection-upgrade';
 import {createConnectionRepairFlow,type ConnectionRepairMetadata} from './app-connection-repair';
-import { appConnectionReattachmentMetadata, createAppConnectionReattachmentFlow, type AppConnectionReattachmentMetadata } from './app-connection-reattachment';
+import { AccountActionReviewRequiredError, appConnectionReattachmentMetadata, createAppConnectionReattachmentFlow, type AppConnectionReattachmentMetadata } from './app-connection-reattachment';
 import { AppConnectionSessionViewSchema, AppConnectionSessionScopeSchema, AppConnectionSessionBegunSchema, AppConnectionSessionCallbackSchema,
  type AppConnectionSessionView } from '../../../../packages/app-kit/src/connection-session';
 
@@ -71,9 +71,12 @@ function readPending(ports:Ports):Pending|null{
 const check=(ports:Ports)=>{validIdentity(ports.identity);if(!ports.current())throw Error('Account setup access ended.');};
 async function json(ports:Ports,path:string,init:RequestInit,maxBytes=65536){
  check(ports);const response=await ports.fetch(path,{...init,cache:'no-store',signal:AbortSignal.timeout(35_000)});check(ports);
- if(!response.ok||!response.body)fail();const reader=response.body.getReader();let size=0;const chunks:Uint8Array[]=[];
+ if(!response.body)fail();const reader=response.body.getReader();let size=0;const chunks:Uint8Array[]=[];
  try{for(;;){const next=await reader.read();check(ports);if(next.done)break;size+=next.value.length;if(size>maxBytes)fail();chunks.push(next.value);}
-  const bytes=new Uint8Array(size);let n=0;for(const chunk of chunks){bytes.set(chunk,n);n+=chunk.length;}return JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes)) as unknown;
+  const bytes=new Uint8Array(size);let n=0;for(const chunk of chunks){bytes.set(chunk,n);n+=chunk.length;}const value=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes)) as unknown;
+  if(!response.ok){const error=value&&typeof value==='object'?value as Record<string,unknown>:null;
+   if(response.status===409&&path==='/api/app-connection-sessions/reattach/review'&&error?.code==='APP_REVIEW_REQUIRED'&&error.reason==='runtime_action_review_mismatch'&&error.phase==='before_dispatch')throw new AccountActionReviewRequiredError();fail();}
+  return value;
  }finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 const post=(ports:Ports,operation:string,body:unknown)=>json(ports,`/api/app-connection-sessions/${operation}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -126,7 +129,7 @@ export function createAppConnectionSessionFlow(ports:Ports){
       ||pending.expiresAt!==chosen.session.expires_at||Date.parse(pending.expiresAt)>(ports.now?.()??Date.now()))fail();
     ports.storage.removeItem(APP_CONNECTION_SESSION_PENDING_KEY);
    }
-   return reuse.review(key);},activateExisting:(key:string)=>reuse.activate(key),checkExisting:(key:string)=>reuse.check(key),existingReview:(key:string)=>reuse.reviewView(key),existingPending:(key:string)=>reuse.unresolved(key),
+   return reuse.review(key);},activateExisting:(key:string)=>reuse.activate(key),checkExisting:(key:string)=>reuse.check(key),existingReview:(key:string)=>reuse.reviewView(key),existingPending:(key:string)=>reuse.unresolved(key),canCloseUnstartedExistingReview:(key:string)=>reuse.canCloseUnstarted(key),closeUnstartedExistingReview:(key:string)=>reuse.closeUnstarted(key),
   dispose(){disposed=true;},
   async load(){current();const value=await context({...ports,current:()=>!disposed&&ports.current()});current();ctx=value;return value;},
   async begin(targetKey:string){current();if(busy)fail();const chosen=target(targetKey),pending=readPending(ports);

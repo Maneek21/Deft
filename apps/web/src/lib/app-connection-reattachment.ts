@@ -3,8 +3,10 @@ import { AppConnectionSessionViewSchema, type AppConnectionSessionView } from '.
 import { AppConnectionReattachAnyReviewViewSchema } from '../../../../packages/app-kit/src/connection-session-reattach';
 import type { AppConnectionIdentity, AppConnectionTarget } from './app-connection-session-flow';
 
+export class AccountActionReviewRequiredError extends Error { constructor(){super('Review the current action operator setup before reusing this account. No account activation was requested.');this.name='AccountActionReviewRequiredError';} }
 export type ExistingAccountReview = ReturnType<typeof AppConnectionReattachAnyReviewViewSchema.parse>;
-export type ExistingAccountResult = ExistingAccountReview | AppConnectionSessionView;
+export type ClosedUnstartedReview={schema_version:'deft.app_connection_unstarted_review_closed.v1';session_id:string;scope:AppConnectionSessionView['scope'];state:'not_started';provider_dispatched:false};
+export type ExistingAccountResult = ExistingAccountReview | AppConnectionSessionView | ClosedUnstartedReview;
 type Account = NonNullable<AppConnectionSessionView['account']>;
 export type AppConnectionReattachmentMetadata = {
   candidate: null | { source_session_id: string; source_revision: number; account: Account };
@@ -49,7 +51,7 @@ export function appConnectionReattachmentMetadata(raw: unknown, target: AppConne
 type Intent = { schema_version: 'deft.app_connection_reuse_pending.v1'; identity: AppConnectionIdentity; target_key: string;
   session_id: string; scope: AppConnectionSessionView['scope']; source_session_id: string | null; source_revision: number | null;
   account: Account | null; phase: 'reviewing' | 'reviewed' | 'activating' | 'resolved' };
-type Ports = { identity: AppConnectionIdentity; storage: Pick<Storage, 'getItem' | 'setItem'>; current: () => void;
+type Ports = { identity: AppConnectionIdentity; storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>; current: () => void;
   target: (key: string) => AppConnectionTarget; post: (operation: string, input: unknown) => Promise<unknown>; now?: () => number };
 
 /** One reviewed custody transition. Browser metadata fences acknowledgement loss;
@@ -75,7 +77,15 @@ export function createAppConnectionReattachmentFlow(ports: Ports) {
   }
   const store = (value: Intent) => ports.storage.setItem(key(value.target_key), JSON.stringify(value));
   const ready = (target: AppConnectionTarget) => { ports.current(); if (!target.runtime_ready || appConsentDeadline(target.scope.consent_expires_at,target.scope.consent_lifetime) <= now()) fail(); };
+  function closedResult(raw:unknown,target:AppConnectionTarget,expected:Intent):ClosedUnstartedReview{
+    const value=object(raw);exact(value,'schema_version,session_id,scope,state,provider_dispatched');
+    if(expected.phase!=='reviewing'||target.reattachment?.pending?.activation_started||value.schema_version!=='deft.app_connection_unstarted_review_closed.v1'||value.session_id!==expected.session_id||value.state!=='not_started'||value.provider_dispatched!==false||!same(value.scope,expected.scope)||!same(value.scope,target.scope))fail();
+    const saved=intent(target);if(!saved||saved.session_id!==expected.session_id||saved.phase!=='reviewing')fail();ports.storage.removeItem(key(expected.target_key));
+    target.reattachment={candidate:null,pending:null};target.session={schema_version:'deft.app_connection_session.v1',session_id:expected.session_id,state:'not_connected',scope:target.scope,account:null,expires_at:target.scope.consent_expires_at};
+    return value as ClosedUnstartedReview;
+  }
   function result(raw: unknown, target: AppConnectionTarget, expected: Intent, allowReview: boolean): ExistingAccountResult {
+    if(object(raw).schema_version==='deft.app_connection_unstarted_review_closed.v1'){if(!allowReview)fail();return closedResult(raw,target,expected);}
     if (['deft.app_connection_reattach_review.v1','deft.app_connection_reattach_review.v2'].includes(String(object(raw).schema_version))) {
       const value = reviewed(raw, target);
       if (!allowReview || expected.phase === 'activating' || target.reattachment?.pending?.activation_started || value.session_id !== expected.session_id
@@ -128,7 +138,17 @@ export function createAppConnectionReattachmentFlow(ports: Ports) {
         const raw = await ports.post('reattach/review', { installation_id: ports.identity.installationId, target_key: targetKey,
           source_session_id: candidate.source_session_id, request_id: expected.session_id });
         ports.current(); if (ports.target(targetKey) !== target) fail(); ready(target); return result(raw, target, expected, true);
+      } catch(error) {
+        if(error instanceof AccountActionReviewRequiredError){const saved=intent(target);if(saved?.session_id===expected.session_id&&saved.phase==='reviewing')ports.storage.removeItem(key(targetKey));}
+        throw error;
       } finally { busy = false; }
+    },
+    canCloseUnstarted(targetKey:string){ports.current();const target=ports.target(targetKey),pending=pendingIntent(target);return pending?.phase==='reviewing'&&target.session?.session_id!==pending.session_id&&target.reattachment?.pending?.session_id!==pending.session_id;},
+    async closeUnstarted(targetKey:string){
+      ports.current();if(busy)fail();const target=ports.target(targetKey),pending=pendingIntent(target);if(!pending||!this.canCloseUnstarted(targetKey))fail();ready(target);busy=true;
+      try{const raw=object(await ports.post('reattach/close-unstarted',{installation_id:ports.identity.installationId,target_key:targetKey,request_id:pending.session_id}));
+        ports.current();closedResult(raw,ports.target(targetKey),pending);
+      }finally{busy=false;}
     },
     async activate(targetKey: string): Promise<ExistingAccountResult> {
       ports.current(); if (busy) fail(); const target = ports.target(targetKey); ready(target);

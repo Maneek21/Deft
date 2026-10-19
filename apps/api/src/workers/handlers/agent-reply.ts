@@ -158,6 +158,7 @@ export function mergeWikiUpdateContent(
   const existing = existingContent.trim();
   const requested = requestedContent.trim();
   if (operation !== 'append' || !existing || !requested) return requested || existing;
+  if (requested.startsWith(existing)) return requested;
   if (existing.toLowerCase().includes(requested.toLowerCase())) return existing;
   return `${existing}\n\n${requested}`;
 }
@@ -1702,6 +1703,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
                 orgId,
                 promptContent,
                 agentReplyText: queryResult.text,
+                successfulReadActions: queryResult.executedActions,
                 sourceMessageId: messageId,
                 projectNameHint: fallbackProjectName,
                 priorTaskReferences: recoveryPriorTaskReferences ?? [],
@@ -1822,6 +1824,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           orgId,
           promptContent,
           agentReplyText: result.text,
+          successfulReadActions: result.executedActions,
           sourceMessageId: messageId,
           projectNameHint: fallbackProjectName,
           priorTaskReferences,

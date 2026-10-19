@@ -445,6 +445,30 @@ function getSubtaskDraftText(params: Record<string, any>) {
 }
 
 function getDraftDetailText(actionName: string, params: Record<string, any>) {
+  if (actionName === 'wiki_update' && params.patch && typeof params.patch === 'object'
+    && typeof params.patch.content === 'string') {
+    const page = getStringParam(params, ['page_id']);
+    const version = Number.isSafeInteger(params.expected_version) ? `Expected version: ${params.expected_version}` : 'Expected version: not included in proposal';
+    return [page ? `Page: ${page}` : '', version, params.patch.content].filter(Boolean).join('\n\n');
+  }
+  if (actionName === 'wiki_write' && typeof params.content === 'string') {
+    const slug = getStringParam(params, ['slug']);
+    return [slug ? `Page: ${slug}` : '', params.content].filter(Boolean).join('\n\n');
+  }
+  if (actionName === 'module_record_update') {
+    const record = getStringParam(params, ['record_id']);
+    const lines = [record ? `Record: ${record}` : '', Number.isSafeInteger(params.expected_revision) ? `Expected revision: ${params.expected_revision}` : ''];
+    for (const [key, label] of [['patch', 'Proposed fields'], ['relations', 'Relations'], ['unset_fields', 'Unset fields']] as const) {
+      const value = params[key];
+      if (value && typeof value === 'object' && Object.keys(value).length > 0) lines.push(`${label}:\n${JSON.stringify(value, null, 2)}`);
+    }
+    return lines.filter(Boolean).join('\n\n');
+  }
+  if (actionName === 'task_update' && params.patch && typeof params.patch === 'object'
+    && typeof params.patch.comment === 'string') {
+    const task = getStringParam(params, ['task_identifier', 'task_id']);
+    return [task ? `Task: ${task}` : '', params.patch.comment].filter(Boolean).join('\n\n');
+  }
   const messageActions = new Set(['post_message', 'message_post', 'send_message', 'post_thread_reply']);
   if (messageActions.has(actionName)) {
     return getStringParam(params, ['content', 'message', 'body', 'text']);
@@ -569,7 +593,7 @@ export function AgentActionCard({
   const serverStatus = action.status ?? action.approval_status ?? 'pending';
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
-  const hasReceipt = Boolean(action.has_receipt || resolvedStatus === 'approved' || resolvedStatus === 'rejected');
+  const hasReceipt = action.has_receipt === true;
   const isAppRunAction = action.action === 'app_run_invoke' || action.source === 'app_run';
   const appRunReference = isAppRunAction
     ? getAppRunReference(action.params, localResult ?? action.result)

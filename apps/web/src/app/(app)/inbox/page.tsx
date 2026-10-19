@@ -169,7 +169,10 @@ export default function InboxPage() {
               if (item.kind === 'approval' && item.approval) {
                 const action: AgentAction = {
                   id: item.approval.id,
+                  has_receipt: item.approval.has_receipt,
                   action: item.approval.action,
+                  proposer: item.approval.proposer,
+                  source: item.approval.source,
                   params: item.approval.params,
                   result: item.approval.result,
                   error: item.approval.error,

@@ -34,8 +34,8 @@ export function ExperienceConnectionSettings(props: SettingsProps) {
 
 function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:string;sessionScope:string}){
   const [context,setContext]=useState<AppConnectionContext|null>(null),[selected,setSelected]=useState(props.targetKey??''),[notice,setNotice]=useState('Checking account connections…');
-  const [working,setWorking]=useState(false),[reload,setReload]=useState(0),[reuseWorking,setReuseWorking]=useState<'review'|'activate'|'status'|null>(null);
-  const [reuseReview,setReuseReview]=useState<ExistingAccountReview|null>(null),[reusePending,setReusePending]=useState(false),[reviewAvailable,setReviewAvailable]=useState(false),[clock,setClock]=useState(Date.now());
+  const [working,setWorking]=useState(false),[reload,setReload]=useState(0),[reuseWorking,setReuseWorking]=useState<'review'|'activate'|'status'|'close'|null>(null);
+  const [reuseReview,setReuseReview]=useState<ExistingAccountReview|null>(null),[reusePending,setReusePending]=useState(false),[canCloseUnstarted,setCanCloseUnstarted]=useState(false),[reviewAvailable,setReviewAvailable]=useState(false),[clock,setClock]=useState(Date.now());
   const flow=useRef<ReturnType<typeof createAppConnectionSessionFlow>|null>(null),alive=useRef(false),operation=useRef(false),generation=useRef(0);
   useEffect(()=>{
     alive.current=true;const ticket=++generation.current,anchor=api.getAccessToken();let active=true;
@@ -56,26 +56,30 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
   const visibleReview=reuseReview&&target&&JSON.stringify(reuseReview.scope)===JSON.stringify(target.scope)?reuseReview:null;
   useEffect(()=>{
     if(!context||!selected||!flow.current)return;
-    try{const reviewed=flow.current.existingReview(selected);setReusePending(flow.current.existingPending(selected));setReuseReview(reviewed);setReviewAvailable(!!reviewed);setClock(Date.now());}
-    catch{setReuseReview(null);setReviewAvailable(false);setReusePending(true);setNotice('Account reuse changed. Reload its status before continuing.');}
+    try{const reviewed=flow.current.existingReview(selected);setReusePending(flow.current.existingPending(selected));setCanCloseUnstarted(flow.current.canCloseUnstartedExistingReview(selected));setReuseReview(reviewed);setReviewAvailable(!!reviewed);setClock(Date.now());}
+    catch{setCanCloseUnstarted(false);setReuseReview(null);setReviewAvailable(false);setReusePending(true);setNotice('Account reuse changed. Reload its status before continuing.');}
   },[context,selected]);
   useEffect(()=>{
     if(!reuseReview)return;const deadline=Date.parse(reuseReview.expires_at),timer=setTimeout(()=>setClock(Date.now()),Math.max(1,deadline-Date.now()+1));
     return()=>clearTimeout(timer);
   },[reuseReview]);
-  async function reuse(kind:'review'|'activate'|'status'){
+  async function reuse(kind:'review'|'activate'|'status'|'close'){
     if(operation.current||props.disabled||document.hidden||!flow.current||!target)return;
     const client=flow.current,ticket=generation.current,key=selected;operation.current=true;setWorking(true);setReuseWorking(kind);props.onBusy(true);setNotice('');
     const current=()=>alive.current&&ticket===generation.current&&!document.hidden&&flow.current===client;
     setReuseReview(null);setReviewAvailable(false);
     try{
+      if(kind==='close'){
+        await client.closeUnstartedExistingReview(key);if(!current())return;
+        const value=await client.load();if(!current())return;setContext(value);setReusePending(false);setCanCloseUnstarted(false);setNotice('Unstarted review closed. No account connection was attempted.');return;
+      }
       const result=kind==='review'?await client.reviewExisting(key):kind==='activate'?await client.activateExisting(key):await client.checkExisting(key);
       if(!current())return;
       const value=await client.load();if(!current())return;setContext(value);
-      setNotice((result.schema_version==='deft.app_connection_reattach_review.v1'||result.schema_version==='deft.app_connection_reattach_review.v2')?'Review this account before continuing.':result.state==='connected'?'Account connected.':result.state==='not_connected'?'The expired review is closed. You can review this account again.':'Account reuse has an uncertain outcome. Check status; this attempt will not be repeated.');
+      setNotice(result.schema_version==='deft.app_connection_unstarted_review_closed.v1'?'Unstarted review closed. No account connection was attempted.':(result.schema_version==='deft.app_connection_reattach_review.v1'||result.schema_version==='deft.app_connection_reattach_review.v2')?'Review this account before continuing.':result.state==='connected'?'Account connected.':result.state==='not_connected'?'The expired review is closed. You can review this account again.':'Account reuse has an uncertain outcome. Check status; this attempt will not be repeated.');
     }catch(error){if(current()){
       await client.load().then(value=>{if(current())setContext(value);}).catch(()=>undefined);
-      if(current()){setReusePending(true);setNotice(error instanceof Error?error.message:'Account reuse was not confirmed. Check status before continuing.');}
+      if(current()){setReusePending(client.existingPending(key));setNotice(error instanceof Error?error.message:'Account reuse was not confirmed. Check status before continuing.');}
     }}finally{if(current()){operation.current=false;setWorking(false);setReuseWorking(null);props.onBusy(false);}}
   }
   async function act(kind:'begin'|'status'|'disconnect'){
@@ -110,6 +114,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       {target?.upgrade&&!target.reattachment?.candidate&&!target.reattachment?.pending&&!reusePending&&flow.current?<ExperienceCapabilityUpgradeSettings key={JSON.stringify([selected,target.scope])} target={target} client={flow.current} disabled={working||props.disabled} ownerId={props.ownerId} orgId={props.orgId} appOwnedRecords={props.appOwnedRecords}
         onBusy={busy=>{operation.current=busy;setWorking(busy);props.onBusy(busy);}} onContext={setContext} onNavigate={url=>{props.onConnectionNavigation(null);window.location.assign(url);}}
         onUse={props.onSetupComplete?()=>props.onSetupComplete?.(selected):undefined} onConnect={()=>void act('begin')} onStatus={()=>void act('status')} onDisconnect={()=>void act('disconnect')}/>:target&&<><ExperienceConnectionStatus label={target.session?.account?.label??target.reattachment?.candidate?.account.label??visibleReview?.account.label??target.profile.label} state={state} reviewAvailable={reviewAvailable} reusePending={reusePending} working={reuseWorking}/>
+        {notice==='Review the current action operator setup before reusing this account. No account activation was requested.'&&<a className="deft-pill min-h-11" href="/settings/apps">Review action operator setup</a>}
         {!target.runtime_ready&&<p className="text-sm">Your workspace needs to finish configuring the approved account operator before connecting.</p>}
 
         <div className="flex flex-wrap gap-2">
@@ -121,7 +126,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
           <p className="break-words">Existing account: {target.reattachment.candidate.account.label}</p>
           <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void reuse('review')}>Use existing account</button>
         </div>}
-        <ExperienceExistingAccountReview review={visibleReview} uncertain={reusePending&&!reviewAvailable&&!reuseWorking}
+        <ExperienceExistingAccountReview canCloseUnstarted={canCloseUnstarted} onCloseUnstarted={()=>void reuse('close')} review={visibleReview} uncertain={reusePending&&!reviewAvailable&&!reuseWorking}
           now={clock} disabled={working||props.disabled||!target.runtime_ready} onAllow={()=>void reuse('activate')} onCheck={()=>void reuse('status')}
           onClose={()=>{setReuseReview(null);setNotice('Review remains pending. Resume it or check status before continuing.');}}/>
         {reusePending&&!reuseReview&&reviewAvailable&&<div className="flex flex-wrap gap-2">

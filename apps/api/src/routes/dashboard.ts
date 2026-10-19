@@ -1,3 +1,4 @@
+import {visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -275,6 +276,8 @@ dashboardRoutes.get('/', async (c) => {
       created_at: agentActions.created_at,
       executed_at: agentActions.executed_at,
       error: agentActions.error,
+      source_space_id: sql<string | null>`COALESCE(${agentActions.params}->>'source_space_id',${agentActions.params}->>'origin_space_id',${agentActions.params}->>'space_id')`,
+      source_message_id: sql<string | null>`${agentActions.params}->>'source_message_id'`,
       employee_name: agentEmployees.name,
       employee_slug: agentEmployees.slug,
     })
@@ -282,6 +285,7 @@ dashboardRoutes.get('/', async (c) => {
       .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
       .where(and(
         eq(agentActions.org_id, user.org_id),
+        visibleCaptureActionSql(user),
         visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
       ))
       .orderBy(desc(agentActions.created_at))
@@ -382,7 +386,7 @@ dashboardRoutes.get('/', async (c) => {
         kind: 'agent_error',
         severity: 'critical',
         title: `${action.employee_name || 'Agent'} action failed: ${action.action}`,
-        href: '/inbox?tab=agent',
+        ...(action.source === 'defty_capture' && action.source_space_id ? {href:`/chat?space=${encodeURIComponent(action.source_space_id)}${action.source_message_id?`&message=${encodeURIComponent(action.source_message_id)}`:''}`} : {}),
         action_id: action.id,
         employee_slug: action.employee_slug,
         error: action.error,

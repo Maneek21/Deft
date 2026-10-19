@@ -236,10 +236,16 @@ appAttachmentRoutes.post('/composition/:installationId/activate',async c=>{
     return c.json({app:await activateAttachmentApp(actor,id.parse(c.req.param('installationId')),input,{guard,composition:true})});
   }catch(error){return failure(c,error);}
 });
-appAttachmentRoutes.get('/composition/:installationId/runtime/context',async c=>{
+appAttachmentRoutes.get('/composition/:installationId/runtime/targets',async c=>{
   try{const q=z.strictObject({app_version_id:id}).parse(query(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {getRuntimeSetupTargets}=await import('../lib/app-runtime-setup.js');
+    return c.json(await getRuntimeSetupTargets(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/composition/:installationId/runtime/context',async c=>{
+  try{const q=z.strictObject({app_version_id:id,owner_resource_binding_id:id.optional()}).parse(query(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     const {getRuntimeSetupContext}=await import('../lib/app-runtime-setup.js');
-    return c.json(await getRuntimeSetupContext(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal}));
+    return c.json(await getRuntimeSetupContext(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal,...(q.owner_resource_binding_id?{owner_resource_binding_id:q.owner_resource_binding_id}:{})}));
   }catch(error){return failure(c,error);}
 });
 
