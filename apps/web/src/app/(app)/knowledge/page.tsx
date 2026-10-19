@@ -4,10 +4,11 @@ import { NativeMentionMarkdown } from '@/components/native-mention-markdown';
 import { NativeMentionPublish } from '@/components/native-mention-publish';
 import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { createWikiExportDownload } from '@/lib/wiki-export-download';
 import { loadWikiHistory, type WikiHistorySnapshot } from '@/lib/wiki-history-loader';
 import { formatRelative } from '@/lib/time';
 import ReactMarkdown from 'react-markdown';
@@ -360,6 +361,19 @@ export default function KnowledgePage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const { sessionCacheScope } = useAuth();
+  const exportSessionRef = useRef(sessionCacheScope);
+  useLayoutEffect(() => {
+    exportSessionRef.current = sessionCacheScope;
+    return () => { exportSessionRef.current = null; };
+  }, [sessionCacheScope]);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportDownloadRef = useRef<ReturnType<typeof createWikiExportDownload> | null>(null);
+  if (!exportDownloadRef.current) exportDownloadRef.current = createWikiExportDownload({
+    get: path => api.get(path),
+    currentSession: () => exportSessionRef.current,
+    state: (busy, error) => { setExporting(busy); setExportError(error); },
+  });
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const activeSlug = useRef(selectedSlug);
   useEffect(() => { activeSlug.current = selectedSlug; }, [selectedSlug]);
@@ -1240,13 +1254,9 @@ export default function KnowledgePage() {
                   onClick: () => { setShowGraph(true); setViewMode('pages'); },
                 },
                 {
-                  label: 'Export',
-                  onClick: () => {
-                    window.open(
-                      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/wiki/export?format=md`,
-                      '_blank',
-                    );
-                  },
+                  label: exporting ? 'Exporting…' : 'Export',
+                  disabled: exporting,
+                  onClick: async () => { await exportDownloadRef.current?.(); },
                 },
               ]}
             />
@@ -1254,6 +1264,7 @@ export default function KnowledgePage() {
         }
         secondary={
           <div className="flex flex-col gap-1.5 px-1">
+            {exportError && <p role="alert" className="text-[12px]" style={{ color: 'var(--error)' }}>{exportError}</p>}
             <input
               value={searchQuery}
               onChange={e => {
