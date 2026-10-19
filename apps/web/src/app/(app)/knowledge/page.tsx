@@ -7,6 +7,8 @@ import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { loadWikiHistory, type WikiHistorySnapshot } from '@/lib/wiki-history-loader';
 import { formatRelative } from '@/lib/time';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -357,6 +359,7 @@ export default function KnowledgePage() {
   const [scopeFilter, setScopeFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const { sessionCacheScope } = useAuth();
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const activeSlug = useRef(selectedSlug);
   useEffect(() => { activeSlug.current = selectedSlug; }, [selectedSlug]);
@@ -375,8 +378,13 @@ export default function KnowledgePage() {
   const [deleting, setDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [historyVersions, setHistoryVersions] = useState<any[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySnapshot, setHistorySnapshot] = useState<WikiHistorySnapshot<any> | null>(null);
+  const historyKey = sessionCacheScope && detail?.slug === selectedSlug
+    ? JSON.stringify([sessionCacheScope, selectedSlug, detail.version]) : null;
+  const historyCurrent = historyKey !== null && historySnapshot?.key === historyKey;
+  const historyVersions = historyCurrent ? historySnapshot.versions : [];
+  const historyLoading = !historyCurrent || historySnapshot.status === 'loading';
+  const historyError = historyCurrent && historySnapshot.status === 'error';
   const [selectedVersion, setSelectedVersion] = useState<any>(null);
   const [showGraph, setShowGraph] = useState(false);
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[]; mode?: string; scope_label?: string; space_id?: string | null } | null>(null);
@@ -597,19 +605,21 @@ export default function KnowledgePage() {
     }
   };
 
-  const fetchHistory = async (slug: string) => {
-    setHistoryLoading(true);
-    try {
-      const res = await api.get(`/api/wiki/${slug}/history`);
-      if (res.ok) {
-        const data = await res.json();
-        setHistoryVersions(data.versions || []);
-      }
-    } catch {
-    } finally {
-      setHistoryLoading(false);
+  useEffect(() => {
+    // A saved content version invalidates the open list and selected old body.
+    setSelectedVersion(null);
+    if (!showHistory || !historyKey || !selectedSlug) {
+      setHistorySnapshot(null);
+      return;
     }
-  };
+    const request = loadWikiHistory<any>({
+      key: historyKey,
+      slug: selectedSlug,
+      request: (slug, signal) => api.fetch(`/api/wiki/${slug}/history`, { method: 'GET', signal }),
+      publish: setHistorySnapshot,
+    });
+    return request.dispose;
+  }, [selectedSlug, detail?.version, showHistory, sessionCacheScope, historyKey]);
 
   const fetchActivity = async () => {
     setActivityLoading(true);
@@ -1096,7 +1106,7 @@ export default function KnowledgePage() {
             {!editing && detail.version > 1 && (
               <div>
                 <button
-                  onClick={() => { if (!showHistory) fetchHistory(detail.slug); setShowHistory(!showHistory); }}
+                  onClick={() => setShowHistory(!showHistory)}
                   className="text-[12px] font-semibold flex items-center gap-1.5 mb-2"
                   style={{ color: 'var(--text-secondary)' }}>
                   <History size={13} />
@@ -1106,6 +1116,8 @@ export default function KnowledgePage() {
                   <div className="space-y-1">
                     {historyLoading ? (
                       <Loader2 size={14} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
+                    ) : historyError ? (
+                      <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>Version history could not be loaded. Close and reopen to retry.</p>
                     ) : historyVersions.length === 0 ? (
                       <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>No previous versions</p>
                     ) : (
@@ -1122,7 +1134,7 @@ export default function KnowledgePage() {
                         </button>
                       ))
                     )}
-                    {selectedVersion && (
+                    {historyCurrent && !historyLoading && !historyError && selectedVersion && (
                       <div className="mt-2 p-3 rounded-lg" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                         <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-tertiary)' }}>
                           v{selectedVersion.version} content:
