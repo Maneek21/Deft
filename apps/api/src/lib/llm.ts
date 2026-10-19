@@ -26,10 +26,10 @@ const PROVIDER_DEFAULT_ROUTES: Record<LLMProvider, Record<LLMTask, LLMConfig>> =
     extract: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
   },
   openai: {
-    classify: { provider: 'openai', model: 'gpt-4o-mini' },
-    summarize: { provider: 'openai', model: 'gpt-4o-mini' },
+    classify: { provider: 'openai', model: DEFAULT_DEFTY_OPENAI_MODEL },
+    summarize: { provider: 'openai', model: DEFAULT_DEFTY_OPENAI_MODEL },
     reason: { provider: 'openai', model: DEFAULT_DEFTY_OPENAI_MODEL },
-    extract: { provider: 'openai', model: 'gpt-4o-mini' },
+    extract: { provider: 'openai', model: DEFAULT_DEFTY_OPENAI_MODEL },
   },
   openrouter: {
     classify: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },

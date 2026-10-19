@@ -9,7 +9,7 @@ test('llm defaults extract to OpenAI when only an org OpenAI key is configured',
   });
 
   assert.equal(config.provider, 'openai');
-  assert.equal(config.model, 'gpt-4o-mini');
+  assert.equal(config.model, 'gpt-5.6-sol');
 });
 
 test('llm defaults extract to Ollama when only an org Ollama URL is configured', () => {
@@ -46,10 +46,16 @@ test('deterministic task fallback builds a concise title from chat wording', () 
   );
 });
 
-test('reason defaults to Sol without changing extraction/classification or explicit routes', () => {
+test('all OpenAI stage defaults use Sol while provider precedence and explicit routes remain authoritative', () => {
+  for (const task of ['classify', 'summarize', 'reason', 'extract'] as const) {
+    const route = getModelConfig(task, { api_keys: { openai: 'key' } });
+    assert.equal(route.provider, 'openai'); assert.equal(route.model, 'gpt-5.6-sol');
+  }
+  const explicitExtract = { provider: 'openai' as const, model: 'gpt-4.1-mini', reasoning_effort: 'low', baseUrl: 'https://api.openai.com/v1' };
+  assert.strictEqual(getModelConfig('extract', { api_keys: { openai: 'key' }, ai_models: { extract: explicitExtract } }), explicitExtract, 'Explicit org Extract model, effort and endpoint remain unchanged');
   const cfg = { api_keys: { openai: 'key', anthropic: 'other' } };
   assert.equal(getModelConfig('reason', cfg).model, 'gpt-5.6-sol');
   assert.equal(getModelConfig('classify', cfg).provider, 'anthropic');
-  assert.equal(getModelConfig('extract', { api_keys: { openai: 'key' } }).model, 'gpt-4o-mini');
+  assert.equal(getModelConfig('extract', { api_keys: { openai: 'key' } }).model, 'gpt-5.6-sol');
   assert.equal(getModelConfig('reason', { ...cfg, ai_models: { reason: { provider: 'anthropic', model: 'pinned' } } }).model, 'pinned');
 });
