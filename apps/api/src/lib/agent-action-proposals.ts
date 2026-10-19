@@ -689,7 +689,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
     reason: intentOutcome.substitutionRejected ? 'unrequested_task_substitution' : clarification ? 'clarification' : 'actions',
     raw_action_count: rawNormalized.actions.length, accepted_action_count: normalized.actions.length,
     tool_names: [...new Set((result.toolCalls ?? []).map((call) => call.name).filter((name) => typeof name === 'string' && (ACTION_TOOLS.has(name) || name === CLARIFICATION_TOOL.name)))].slice(0, 12),
-    grounded_read_counts: { module_record_get: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_get').length, wiki_read: groundedReadFacts.facts.filter((fact) => fact.tool === 'wiki_read').length },
+    grounded_read_counts: { module_record_query: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_query').length, module_record_get: groundedReadFacts.facts.filter((fact) => fact.tool === 'module_record_get').length, wiki_read: groundedReadFacts.facts.filter((fact) => fact.tool === 'wiki_read').length },
   });
   const summary = clarificationInput && typeof clarificationInput.summary === 'string'
     ? truncatePlainText(clarificationInput.summary.trim(), 300)
