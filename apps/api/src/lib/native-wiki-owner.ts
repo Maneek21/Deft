@@ -150,7 +150,7 @@ export async function searchNativeWiki(reader: NativeWikiReader, input: {
     ? Math.max(1, Math.min(input.limit, 10)) : 5;
   const hits = await retrieveContext({ query: input.query, org_id: reader.orgId,
     user_id: reader.subjectUserId, conversation_id: reader.conversationId,
-    ...(reader.agentEmployeeId ? { agent_employee_id: reader.agentEmployeeId } : {}), types: ['wiki'], limit });
+    ...(reader.agentEmployeeId ? { agent_employee_id: reader.agentEmployeeId } : {}), types: ['wiki', 'decisions'], limit });
   const ids = hits.map((hit) => hit.source_id);
   if (ids.length === 0) return [];
   // Search index results are candidate IDs only. The test seam pauses between
