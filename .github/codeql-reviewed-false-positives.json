@@ -4,7 +4,7 @@
   "review_original_sarif_sha256": "74fca9d731caa803a9b62d44951053656b5eb7a9202823acbd908dea9a09f6ea",
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
-    "apps/api/src/lib/agent-actions.ts": "6c8d739c34939f7c0ca38771a4dafa7328f7dfd3ac15f809c1d3c49bc20f136c",
+    "apps/api/src/lib/agent-actions.ts": "4a7f5aa4d57ce4914d7791f5e770c32bd2d8d804833f99c34b44b3059b7f5354",
     "apps/api/src/lib/app-installed-tool-discovery.ts": "93b3d4f08c6cddab370110785f454090e46e4f88587da1c9e92db0220f8a8bb6",
     "apps/api/src/lib/app-integration-tool-runtime.ts": "1b897ed319e33e4154592191affdc8bf97ef51e0fbaa3677e9fcce6529fa1d46",
     "apps/api/src/lib/document-send.ts": "eed5824a4f4b82e08da04ef787e13454e462a6a00af02e0683a16798d8727668",
@@ -27,8 +27,8 @@
     "examples/apps/email/providers/native-mailbox.test.mjs": "c2421c21aac4deef750bac339ce4996ae4623c8e8b25e3709dcd097417d192b2",
     "examples/apps/email/providers/oauth-account.test.mjs": "86144284254bcaa3cd29afe68fac215178f9aa5c9ad641213791340c31e00562",
     "examples/apps/email/providers/triage-contract.mjs": "962318ba7eebcb6329a470a265e244077c41624f88d55920edac0296eb3b6afe",
-    "apps/web/src/lib/app-connection-reattachment.test.ts": "d0ff5f9be2182fe74fcc94225bdb1e1c387a7e00608b002756ea7a65ff1f92c1",
-    "apps/web/src/lib/app-connection-session-flow.ts": "b714b5c16c502fb1fa93f1bec7d60f22e6427f4e9807af63dbb973443191dad4",
+    "apps/web/src/lib/app-connection-reattachment.test.ts": "e90cbe52633070f8a9c5767cfd99e0a5f193e496ec87ef847b08e86474724c7c",
+    "apps/web/src/lib/app-connection-session-flow.ts": "5833f84da5a161fec1d3fa2e9c33b398014e917e11d100c7032cca87337185b7",
     "apps/web/src/lib/app-experience-startup.ts": "f9f552de56e1c2abed8005bffac7aba379220ae7b0efa41b5d5e18a1a92cf380",
     "apps/web/src/lib/app-experience-bootstrap-script.ts": "52920b3ce29082f7d3d83fdeb8cd040a34f16a88743142f0a900c53ce6c49980",
     "apps/web/src/lib/app-experience-bootstrap-srcdoc.ts": "715f49184bf2468416e409256c7a9d525405f846ed96fcd04ee8ba791b4f7520",
@@ -65,8 +65,8 @@
       "disposition": "false_positive",
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/agent-actions.ts",
-      "line": 339,
-      "fingerprint": "e7f359112de46612484ded0327c8396f4dc38717073ad5b0cd903973fdd9b921",
+      "line": 340,
+      "fingerprint": "c5be54375030068877dff722b1999b92334d3fbabcb1e45b7ea40d95ab713538",
       "sources": [
         "apps/api/src/lib/agent-actions.ts"
       ],
@@ -78,7 +78,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
       "line": 30,
-      "fingerprint": "bd3dbc722aacad6a85c32b5e2384e32d191a49989998180f67707e3d1e196203",
+      "fingerprint": "4bdd316ebe881081b34f9ecb73e28cb5b3d5b778767911381615dc5ea45cbe88",
       "sources": [
         "apps/api/src/lib/app-installed-tool-discovery.ts",
         "apps/api/src/lib/app-integration-tool-runtime.ts"
@@ -91,7 +91,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/document-send.ts",
       "line": 74,
-      "fingerprint": "a05fa158ee632db5c830032cd110d5ebb17e065ed86609c6c9cc3a89168eacea",
+      "fingerprint": "7c80157d148e2520c5d0d77e4632421e0375ef524035401c35e8e8d3b76ba126",
       "sources": [
         "apps/api/src/lib/document-send.ts"
       ],
@@ -103,7 +103,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/document-send.ts",
       "line": 308,
-      "fingerprint": "c0207de39297d25a4e80f02802e52d3055037f68f2b8e40d61aa92147226a0e9",
+      "fingerprint": "26af4905968dc5f69034fb7132bd6a0afc7a5051645da4e7df846af030bb88ca",
       "sources": [
         "apps/api/src/lib/document-send.ts"
       ],
@@ -127,7 +127,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/receipts.ts",
       "line": 165,
-      "fingerprint": "35dac1c43baa6d899308356d0f45d797eed331190165755332fca0c95debb601",
+      "fingerprint": "b9457483ec128cfc9eaef6ad208aa45ba7d55a668f101e5e9813e11eec05bc48",
       "sources": [
         "apps/api/src/lib/receipts.ts"
       ],
@@ -139,7 +139,7 @@
       "rule": "js/insufficient-password-hash",
       "path": "apps/api/src/lib/workspace-plan-import.ts",
       "line": 149,
-      "fingerprint": "bf381b51b8082729234bd0403a395e7d29fa9de8f7a6959ec9f91ecfa2f48552",
+      "fingerprint": "bd8e3d713fc9680b346c5e103bba3244caf0f0d88162ce877f3ffc994f8e2102",
       "sources": [
         "apps/api/src/lib/workspace-plan-import.ts"
       ],
