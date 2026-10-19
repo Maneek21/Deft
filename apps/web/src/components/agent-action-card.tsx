@@ -36,6 +36,7 @@ import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
   getAgentActionPresentation,
+  getTaskReviewAssignment,
   getAppRunApprovalCompletionLabel,
   getAppRunInspectorLabel,
   getAppRunReference,
@@ -451,7 +452,8 @@ function getDraftDetailText(actionName: string, params: Record<string, any>) {
   if (actionName === 'create_task' || actionName === 'task_create' || actionName === 'task_update') {
     const description = getStringParam(params, ['description', 'content', 'summary', 'comment']);
     const subtasks = getSubtaskDraftText(params);
-    return [description, subtasks].filter(Boolean).join('\n\n');
+    const assignment = getTaskReviewAssignment(params).map(field => `${field.label}: ${field.value}`).join('\n');
+    return [assignment, description, subtasks].filter(Boolean).join('\n\n');
   }
   const taskMutationActions = new Set([
     'update_task', 'update_task_status', 'assign_task', 'comment_on_task', 'set_due_date',
@@ -459,6 +461,12 @@ function getDraftDetailText(actionName: string, params: Record<string, any>) {
     'remove_dependency', 'task_transition',
   ]);
   if (taskMutationActions.has(actionName)) {
+    if (actionName === 'add_dependency' || actionName === 'remove_dependency') {
+      const source = getStringParam(params, ['source_task_identifier', 'source_task_id']);
+      const target = getStringParam(params, ['target_task_identifier', 'target_task_id']);
+      const type = getStringParam(params, ['type']);
+      return [source ? `Source task: ${source}` : '', target ? `Target task: ${target}` : '', type ? `Relationship: ${type}` : ''].filter(Boolean).join('\n');
+    }
     const task = getStringParam(params, ['task_identifier', 'task_id', 'id']);
     const status = getStringParam(params, ['new_status', 'status']) ||
       (actionName === 'close_task' ? 'done' : actionName === 'reopen_task' ? 'reopened' : '');

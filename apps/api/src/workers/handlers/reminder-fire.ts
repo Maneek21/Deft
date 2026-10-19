@@ -63,7 +63,7 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
     // Notifications outlive source-space membership. Keep the durable
     // notification generic and let the destination route enforce access.
     title = 'Message reminder';
-    link = `/chat?message=${source.messageId}`;
+    link = `/chat?space=${encodeURIComponent(source.spaceId)}&message=${encodeURIComponent(source.messageId)}`;
   }
 
   // Insert the notification.

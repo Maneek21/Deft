@@ -2,12 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getAgentActionPresentation,
+  getAgentActionProposerName,
+  getTaskReviewAssignment,
   getAppRunApprovalCompletionLabel,
   getAppRunInspectorLabel,
   getAppRunReference,
   getSafeGenericParams,
   normalizeTaskLinkReview,
 } from './agent-action-presentation';
+
+test('native employee task proposals keep their canonical proposer attribution', () => {
+  const presentation = getAgentActionPresentation({ action: 'task_create', params: { title: 'Readiness review' },
+    proposer: 'employee', source: 'mcp', employee_name: 'Hermes REL261018' });
+  assert.equal(presentation.sourceLabel, 'Source: Hermes REL261018');
+  assert.equal(presentation.headline, 'Hermes REL261018 drafted a task');
+  assert.equal(getAgentActionProposerName({ action: 'task_create', params: { employee_name: 'payload name' }, source: 'mcp' }), 'Connected agent');
+  assert.deepEqual(getTaskReviewAssignment({ assignee_id: 'noah-id', project_id: 'northstar-id' }), [
+    { label: 'Assignee', value: 'ID: noah-id' }, { label: 'Project', value: 'ID: northstar-id' },
+  ]);
+});
 
 test('generic approval details hide orchestration internals', () => {
   const entries = getSafeGenericParams({
@@ -213,4 +226,9 @@ test('App Run cards use the approval response run reference and retain its safe 
   assert.equal(getAppRunInspectorLabel('rejected', null), 'Inspect rejected App Run');
   assert.equal(getAppRunInspectorLabel('approved', 'succeeded'), 'Inspect outcome and receipts');
   assert.equal(getAppRunInspectorLabel('failed', 'failed'), 'Inspect outcome and receipts');
+});
+
+test('canonical proposer takes precedence over MCP transport', () => {
+  assert.equal(getAgentActionProposerName({ action: 'task_create', params: {}, source: 'mcp', proposer: 'user' }), 'Workspace user');
+  assert.equal(getAgentActionProposerName({ action: 'task_create', params: {}, source: 'mcp', proposer: 'defty' }), 'Defty');
 });

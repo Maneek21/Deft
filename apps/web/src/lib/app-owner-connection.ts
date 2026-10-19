@@ -9,7 +9,7 @@ export type OwnerBinding = { binding_id: string; target_key: string; state: 'act
   actions: { action_key: string; binding_id: string; state: 'active' | 'disabled' }[] };
 export type OwnerPolicy = { policy: { key: string; resource_key: string; action_keys: string[]; max_consent_seconds: number;allow_until_revoked?:true };
   status: 'admitted' | 'deployment_review_required'; admission: null | (AdmissionRef & { operator_user_id: string; operator_label: string;
-    resource_request: OwnerResourceRequest }); bindings: OwnerBinding[] };
+    resource_request: OwnerResourceRequest }); recovery_targets: { key: string }[]; bindings: OwnerBinding[] };
 const fail = (): never => { throw Error('Personal account setup changed. Reload before continuing.'); };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : fail();
 const keys = (row: Record<string, unknown>, fields: string,optional='') => { if(fields.split(',').some(key=>!Object.hasOwn(row,key))||Object.keys(row).some(key=>![...fields.split(','),...optional.split(',')].includes(key)))fail(); };
@@ -49,7 +49,7 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
   const row = object(value); keys(row, 'schema_version,installation_id,policies');
   if (row.schema_version !== 'deft.owner_connection_context.v1' || row.installation_id !== installationId) fail();
   const policies = array(row.policies, 16).map(value => {
-    const entry = object(value); keys(entry, 'policy,status,admission,bindings'); const policy = object(entry.policy);
+    const entry = object(value); keys(entry, 'policy,status,admission,bindings', 'recovery_targets'); const policy = object(entry.policy);
     keys(policy, 'key,resource_key,action_keys,max_consent_seconds','allow_until_revoked,provider_profile_key,runtime_requirement_key');
     if(policy.allow_until_revoked!==undefined&&policy.allow_until_revoked!==true)fail();
     const profileKey=policy.provider_profile_key,runtimeRequirementKey=policy.runtime_requirement_key;
@@ -83,7 +83,12 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
         ...consent(binding,true), actions };
     });
     if (new Set(bindings.map(binding => binding.binding_id)).size !== bindings.length) fail();
-    return { policy: selected, status: entry.status, admission, bindings } as OwnerPolicy;
+    const recovery_targets = entry.recovery_targets === undefined ? [] : array(entry.recovery_targets, 16).map(value => {
+      const target = object(value); keys(target, 'key'); return { key: key(target.key) };
+    });
+    if (recovery_targets.some((target, i) => i > 0 && target.key <= recovery_targets[i - 1]!.key)
+      || !admission && recovery_targets.length) fail();
+    return { policy: selected, status: entry.status, admission, recovery_targets, bindings } as OwnerPolicy;
   });
   if (policies.some((policy, i) => i > 0 && policy.policy.key <= policies[i - 1]!.policy.key)) fail();
   return policies;

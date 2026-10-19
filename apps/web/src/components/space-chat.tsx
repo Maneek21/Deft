@@ -1,4 +1,5 @@
 'use client';
+import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
 
 import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
@@ -141,27 +142,14 @@ type WorkIntentReceipt = {
 function renderSimpleMarkdown(text: string): string {
   if (!text) return '';
 
-  // Extract code blocks to protect them
-  const codeBlocks: string[] = [];
-  let processed = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
-    codeBlocks.push(`<pre style="background:var(--surface-container-low);border-radius:6px;padding:12px 16px;font-family:var(--font-mono);font-size:0.75rem;line-height:1.5;margin:8px 0;overflow-x:auto"><code>${code.trim()}</code></pre>`);
-    return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
-  });
-
-  // Split into paragraphs by double newline
-  const paragraphs = processed.split(/\n\n+/);
   const htmlParts: string[] = [];
-
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (!trimmed) continue;
-
-    // Check for code block placeholder
-    const cbMatch = trimmed.match(/^%%CODEBLOCK_(\d+)%%$/);
-    if (cbMatch) {
-      htmlParts.push(codeBlocks[parseInt(cbMatch[1]!)]!);
+  for (const block of splitChatMarkdownBlocks(text)) {
+    if (block.kind === 'code') {
+      htmlParts.push(`<pre style="background:var(--surface-container-low);border-radius:6px;padding:12px 16px;font-family:var(--font-mono);font-size:0.75rem;line-height:1.5;margin:8px 0;overflow-x:auto"><code>${escapeChatCode(block.text)}</code></pre>`);
       continue;
     }
+    const trimmed = block.text.trim();
+    if (!trimmed) continue;
 
     // Check if entire paragraph is a list
     const lines = trimmed.split('\n');

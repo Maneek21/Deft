@@ -43,6 +43,7 @@ import {
   spaceMembers,
 } from '@deft/db/schema';
 import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+import { DEFTY_EMAIL } from '../lib/defty-identity.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
 import { resolveReasonProvider, type ResolvedReasonProvider } from '../lib/org-ai-config.js';
@@ -244,6 +245,17 @@ async function maybePostApprovalConfirmation(params: {
       })
       .returning();
     const originalMetadata = (approvalMessage.metadata ?? {}) as Record<string, unknown>;
+    const [canonicalDeftyAuthor] = !proposingEmployeeId
+      ? await tx.select({ id: users.id }).from(users).where(and(
+          eq(users.id, approvalMessage.user_id), eq(users.email, DEFTY_EMAIL),
+          eq(users.kind, 'agent'), eq(users.is_agent, true),
+        )).limit(1)
+      : [];
+    // Only reconcile an agent's own proposal. A human request can also be the
+    // action source; its body and metadata belong to that human unchanged.
+    const canReconcileSource = proposingEmployee?.user_id === approvalMessage.user_id
+      || Boolean(canonicalDeftyAuthor);
+    if (!canReconcileSource) return { confirmation, approvalMessage, actor, reconciledMessage: undefined };
     const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, content);
     const oldBlocks = Array.isArray(originalMetadata.agent_blocks) ? originalMetadata.agent_blocks : [];
     const [reconciledMessage] = await tx.update(messages).set({

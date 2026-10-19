@@ -16,7 +16,7 @@ import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
 import { appConnectionSessionTag, createAppConnectionSessionFlow, type AppConnectionContext } from '@/lib/app-connection-session-flow';
 import { appApiError } from '@/lib/apps';
-import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview, ownerRetainedTargets,
+import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview,
   type OwnerPolicy, type OwnerResourceRequest } from '@/lib/app-owner-connection';
 
 type SettingsProps = { onAccountLabels?:(labels:{key:string;label:string}[])=>void; appOwnedRecords?: boolean; sessionId?: string; targetKey?: string; installationId: string; experienceKey: string; ensureAuthority: () => Promise<boolean>;
@@ -250,7 +250,6 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
   const { installationId, disabled, onBusy } = props;
   const [policies, setPolicies] = useState<OwnerPolicy[] | null>(null), [selected, setSelected] = useState('');
   const [accountIdentifier, setAccountIdentifier] = useState('');
-  const [retainedTargets, setRetainedTargets] = useState<string[]>([]);
   const targetKey = props.targetKey ?? accountIdentifier;
   const [review, setReview] = useState<OwnerReview | null>(null), [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState(0);
@@ -277,17 +276,18 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
       const response = await api.fetch(contextPath, { signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw Error(await appApiError(response, 'Personal account setup is unavailable.'));
       const value = ownerConnectionContext(await response.json(), installationId);
-      const retained = await api.fetch(`/api/app-owner-connections/${encodeURIComponent(installationId)}/connections`, { signal: controller.signal, cache: 'no-store' });
-      if (!retained.ok) throw Error(await appApiError(retained, 'Existing account identifiers are unavailable.'));
-      const targets = ownerRetainedTargets(await retained.json());
-      if (current()) { setRetainedTargets(targets); setPolicies(value); setCheckedAt(Date.now()); setSelected(previous => value.some(item => item.policy.key === previous) ? previous : value[0]?.policy.key ?? '');
-        const choices = [...targets, ...value.flatMap(item => item.bindings.map(binding => binding.target_key)), ...value.flatMap(item => item.admission ? [item.admission.resource_request.target_key] : [])];
-        setAccountIdentifier(previous => choices.includes(previous) ? previous : choices[0] ?? ''); setNotice(''); }
+      if (current()) { setPolicies(value); setCheckedAt(Date.now()); setSelected(previous => value.some(item => item.policy.key === previous) ? previous : value[0]?.policy.key ?? ''); setNotice(''); }
     }).catch(error => { if (current()) { setPolicies(null); setNotice(error instanceof Error ? error.message : 'Personal account setup is unavailable.'); } });
     return () => controller.abort();
   }, [contextPath, installationId, disabled, reload]);
   const policy = policies?.find(item => item.policy.key === selected);
+  const retainedTargets = policy?.recovery_targets.map(target => target.key) ?? [];
   const accountChoices = [...new Set([...retainedTargets, ...(policy?.bindings.map(item => item.target_key) ?? []), ...(policy?.admission ? [policy.admission.resource_request.target_key] : [])])];
+  const accountChoicesTag = JSON.stringify(accountChoices);
+  useEffect(() => {
+    const choices = JSON.parse(accountChoicesTag) as string[];
+    setAccountIdentifier(previous => choices.includes(previous) ? previous : choices[0] ?? ''); setReview(null);
+  }, [selected, accountChoicesTag]);
   const binding = policy?.bindings.find(item => item.target_key === targetKey
     && item.state === 'active' && appConsentExpiryValid(item.consent_expires_at,item.consent_lifetime) && appConsentDeadline(item.consent_expires_at,item.consent_lifetime) > checkedAt);
   const missingActions = policy?.policy.action_keys.filter(key => !binding?.actions.some(action => action.action_key === key && action.state === 'active')) ?? [];

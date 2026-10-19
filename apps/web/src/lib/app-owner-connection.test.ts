@@ -28,6 +28,16 @@ test('owner setup context is bounded and refuses owner/operator nomination or am
       attachment_policy: { ...attachment_policy, allowed_media_types: ['text/html'] } } } }] } ]) assert.throws(() => ownerConnectionContext(changed, installationId));
 });
 
+test('saved-account choices come only from bounded sorted current-policy metadata', () => {
+  const withTargets = { ...context, policies: [{ ...context.policies[0]!, recovery_targets: [{ key: 'fresh_mailbox' }, { key: 'fresh_recipient' }] }] };
+  assert.deepEqual(ownerConnectionContext(withTargets, installationId)[0]!.recovery_targets, withTargets.policies[0]!.recovery_targets);
+  for (const targets of [[{ key: 'fresh_mailbox' }, { key: 'fresh_mailbox' }], [{ key: 'z' }, { key: 'a' }],
+    [{ key: 'fresh_mailbox', owner_user_id: ownerId }], [{ key: '__proto__' }]])
+    assert.throws(() => ownerConnectionContext({ ...context, policies: [{ ...context.policies[0]!, recovery_targets: targets }] }, installationId));
+  assert.throws(() => ownerConnectionContext({ ...context, policies: [{ ...context.policies[0]!, status: 'deployment_review_required', admission: null,
+    recovery_targets: [{ key: 'fresh_mailbox' }] }] }, installationId));
+});
+
 test('owner setup context accepts legacy and profile-backed policies but rejects incomplete or malformed profile bindings', () => {
   const parsePolicy = (candidate: Record<string, unknown>) => ownerConnectionContext({ ...context,
     policies: [{ ...context.policies[0], policy: candidate }] }, installationId)[0]!.policy;
