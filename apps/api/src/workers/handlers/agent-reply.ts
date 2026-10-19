@@ -1,3 +1,4 @@
+import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js';
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -1982,6 +1983,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       action_graph: compiledActionDraft?.graph,
       proposal_preparation_warnings: pendingActionTargetWarnings.length ? pendingActionTargetWarnings : undefined,
       agent_run_metrics: result.metrics,
+      read_diagnostics: projectAgentReadDiagnostics(result.executedActions),
     };
 
     let agentMessage: typeof messages.$inferSelect;
