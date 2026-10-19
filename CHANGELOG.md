@@ -10,6 +10,22 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.123 candidate — publication pending
+
+Fixes from the 18 October live release rehearsal on Host preview.122. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.17 (App 1.9.0-preview.14, Runtime 0.4.0-preview.17).
+
+#### Fixed
+
+- Email → Task: Task review now recovers while the source message is still being published, instead of failing with HTTP 403.
+- Reliability: exposure-status reads no longer contend with checkpoint publication (the source of rehearsal HTTP 503s); the maintenance pool keeps its connection and survives idle connection failures.
+- Defty: scoped member and space discovery, task search by project and description, and assignment by name. The standard OpenAI reasoning model is GPT-5.6 Sol via Responses.
+- Dashboard: a rejected agent proposal is shown as a human decision, not a critical failure.
+- Hermes: setup reports bundle availability from the release scope instead of linking a missing archive.
+- Email draft opening reuses account resolution, and draft loading is bounded.
+- Agents and approvals re-check canonical sources before approval and disclosure; proposals are grounded and outcomes reconciled.
+- Knowledge and wiki: decision recall and discovery, full source context, preserved wiki versions, authenticated exports and sanitized Markdown answers.
+- CRM search typing and filter/sort, chat event fencing, task comment state, mention groups, account recovery and job-startup readiness.
+
 ### Release candidate — publication pending
 
 The `0.3.0-preview.16` host and `@deft/app-kit` `0.1.0-alpha.6`

@@ -10,9 +10,9 @@ requested actions. It uses the same host interfaces as another sideloaded App.
 ## Author and host contract
 
 - Use the exact packed Kit artifact supported by the destination host. The
-  developer preview pairs Host `0.3.0-preview.122` / schema 120 with Email App
-  `1.9.0-preview.13` on Kit `0.1.0-alpha.38` and Email Runtime
-  `0.4.0-preview.16` on Kit `0.1.0-alpha.35`. The [release compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json)
+  developer preview pairs Host `0.3.0-preview.123` / schema 120 with Email App
+  `1.9.0-preview.14` on Kit `0.1.0-alpha.38` and Email Runtime
+  `0.4.0-preview.17` on Kit `0.1.0-alpha.35`. The [release compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/compatibility.json)
   pins the actual commits, downloads and checksums. Historical preview.15 uses alpha.2.
   Preserve the artifact and generated consumer lockfile. Changed contracts must
   receive a new Kit version before distribution.
