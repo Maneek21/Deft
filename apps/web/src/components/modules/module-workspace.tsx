@@ -59,13 +59,14 @@ import {
   useModuleSavedViews,
 } from '@/hooks/use-modules';
 import { useAppNavigation } from '@/hooks/use-apps';
+import { moduleSearchHref, moduleSearchValue, reconcileModuleSearch, type ModuleSearchBuffer } from '@/lib/module-search-buffer';
 
 export function ModuleWorkspace() {
   const params = useParams<{ slug: string; collectionKey?: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
   const showFollowUps = searchParams.get('workspace') === 'follow-ups';
-  const { user } = useAuth();
+  const { user, sessionCacheScope } = useAuth();
   const slug = params?.slug ?? '';
   const appNavigationState = useAppNavigation(Boolean(user && user.role !== 'guest'));
   const appNavigationGroups = APPS_ENABLED ? getAppNavigationItems(appNavigationState.navigation) : [];
@@ -99,7 +100,23 @@ export function ModuleWorkspace() {
   const view = activeSavedView ? moduleSavedViewToView(activeSavedView) : manifestView;
   const parsedListContext = parseModuleListContext(searchParams);
   const useSavedViewDefaults = Boolean(activeSavedView && !parsedListContext.filtersExplicit);
-  const search = parsedListContext.search;
+  const searchIdentity = `${sessionCacheScope ?? ''}:${slug}:${collection?.key ?? ''}`;
+  const urlSearch = parsedListContext.search;
+  const renderedQuery = searchParams.toString();
+  const [searchBuffer, setSearchBuffer] = useState<ModuleSearchBuffer>(() => ({ identity: searchIdentity, value: urlSearch }));
+  const search = moduleSearchValue(searchBuffer, searchIdentity, urlSearch);
+  useEffect(() => {
+    setSearchBuffer((buffer) => reconcileModuleSearch(
+      buffer, searchIdentity, urlSearch, renderedQuery, new URLSearchParams(window.location.search).toString(),
+    ));
+  }, [searchIdentity, urlSearch, renderedQuery]);
+  const changeSearch = (value: string) => {
+    const bounded = value.slice(0, 500);
+    setSearchBuffer({ identity: searchIdentity, value: bounded });
+    // Next integrates native same-page history updates with useSearchParams.
+    // Typing must not wait for an asynchronous router transition to echo q.
+    window.history.replaceState(null, '', moduleSearchHref(window.location.href, bounded));
+  };
   const filters = useSavedViewDefaults ? activeSavedView!.config.filters : parsedListContext.filters;
   const sort = useSavedViewDefaults ? activeSavedView!.config.sort : parsedListContext.sort;
   const [today, setToday] = useState(moduleTaskCalendarDay);
@@ -207,6 +224,7 @@ export function ModuleWorkspace() {
 
   const replaceListContext = (next: Partial<Pick<ModuleListContext, 'search' | 'filters' | 'sort'>>) => {
     if (!installedModule || !collection) return;
+    if (next.search !== undefined) setSearchBuffer({ identity: searchIdentity, value: next.search });
     const context = { ...listContext, ...next };
     context.filtersExplicit = Boolean(context.savedViewId) || context.filters.length > 0;
     router.replace(moduleCollectionListHref(installedModule.slug, collection.key, context), { scroll: false });
@@ -427,7 +445,7 @@ export function ModuleWorkspace() {
                     isQuerying={recordsState.isValidating || search !== deferredSearch}
                     recordHref={(recordId) => moduleRecordHrefWithListContext(installedModule.slug, collection.key, recordId, listContext)}
                     onViewChange={chooseView}
-                    onSearchChange={(nextSearch) => replaceListContext({ search: nextSearch })}
+                    onSearchChange={changeSearch}
                     onSortChange={(nextSort) => replaceListContext({ sort: nextSort
                       ? { field: nextSort.fieldKey, direction: nextSort.direction }
                       : undefined })}
