@@ -1448,9 +1448,9 @@ export default function KnowledgePage() {
                   <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{askResult.model}</span>
                 )}
               </div>
-              <p className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)' }}>
-                {askResult.answer}
-              </p>
+              <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                <NativeMentionMarkdown content={askResult.answer} />
+              </div>
               {askResult.sources.length > 0 && (
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   {askResult.sources.map(source => (

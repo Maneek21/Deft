@@ -1,8 +1,9 @@
 'use client';
+import { NativeMentionMarkdown } from './native-mention-markdown';
 import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
 
-import { formatChatInline, linkifyChatTaskReferences } from '@/lib/chat-links';
+import { formatChatInline } from '@/lib/chat-links';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
@@ -188,7 +189,7 @@ function renderContent(content: string, metadata?: Message['metadata']) {
 
   // Detect HTML content (from TipTap)
   const isHtml = content.startsWith('<') && /<\/?[a-z][\s>]/i.test(content);
-  if (content.includes('data-deft-ref-kind') || content.includes('[[deft:')) {
+  if (isHtml && (content.includes('data-deft-ref-kind') || content.includes('[[deft:'))) {
     return <span className="message-content"><NativeMentionContent html={isHtml ? content : renderSimpleMarkdown(content)} /></span>;
   }
 
@@ -202,19 +203,10 @@ function renderContent(content: string, metadata?: Message['metadata']) {
     return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
-  // Plain text / markdown (agent replies, seed data)
-  let html = renderSimpleMarkdown(content, metadata?.is_agent_reply
-    ? href => resolveAgentCitationLink(href, metadata.citations)
-    : undefined);
-  html = html
-    .replace(/<@([^|]+)\|([^>]+)>/g,
-      '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>')
-;
-  // Agent task references stay plain unless the model supplied an exact
-  // citation-backed Markdown link. Canonical task links remain available in
-  // the Sources block rendered below the message.
-  if (shouldLinkifyTaskReferences(metadata)) html = linkifyChatTaskReferences(html);
-  return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
+  return <div className="message-content"><NativeMentionMarkdown content={content} chat
+    linkifyTasks={shouldLinkifyTaskReferences(metadata)}
+    resolveHref={metadata?.is_agent_reply ? href => resolveAgentCitationLink(href, metadata.citations) : undefined} />
+  </div>;
 }
 
 export function shouldLinkifyTaskReferences(metadata?: Message['metadata']): boolean {

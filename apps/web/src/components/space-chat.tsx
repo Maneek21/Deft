@@ -1,9 +1,10 @@
 'use client';
+import { NativeMentionMarkdown } from './native-mention-markdown';
 import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
 import { AnchoredOverlay } from '@/components/overlay-primitives';
 
-import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
+import { formatChatInline, isSafeChatHref } from '@/lib/chat-links';
 
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -477,7 +478,7 @@ function renderContent(content: string) {
 
   // Detect if content is HTML (from TipTap editor)
   const isHtml = text.startsWith('<') && /<\/?[a-z][\s>]/i.test(text);
-  if (text.includes('data-deft-ref-kind') || text.includes('[[deft:')) {
+  if (isHtml && (text.includes('data-deft-ref-kind') || text.includes('[[deft:'))) {
     return <span className="message-content"><NativeMentionContent html={isHtml ? text : renderSimpleMarkdown(text)} /></span>;
   }
 
@@ -503,77 +504,7 @@ function renderContent(content: string) {
     return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
-  // Plain text with markdown (agent replies, seed data, non-TipTap messages)
-  // Use the full markdown renderer for any text that has markdown patterns
-  const hasMarkdown = /\*\*|__|~~|`|^#{1,3} |^- |^\d+\. |^> /m.test(text);
-  if (hasMarkdown || text.includes('\n') || /\[[^\]]+\]\([^)]+\)/.test(text)) {
-    let html = renderSimpleMarkdown(text);
-    // Process mentions
-    html = html.replace(
-      /&lt;@([^|]+)\|([^&]+)&gt;/g,
-      '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>'
-    ).replace(
-      /<@([^|]+)\|([^>]+)>/g,
-      '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>'
-    );
-    // Process task references (DEFT-7 etc.)
-    html = linkifyChatTaskReferences(html);
-    // Highlight @here/@all/@channel broadcast mentions
-    html = html.replace(
-      /@(here|all|channel)\b/g,
-      '<span style="background:rgba(234,179,8,0.2);color:var(--accent);font-weight:600;padding:1px 4px;border-radius:3px">@$1</span>'
-    );
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
-  }
-
-  const parts = text.split(/(<@[^>]+>|#?[A-Z]{2,6}-\d+|@(?:here|all|channel)\b)/g);
-  const result: React.ReactNode[] = [];
-
-  parts.forEach((part, i) => {
-    const mentionMatch = part.match(/^<@([^|]+)\|([^>]+)>$/);
-    const taskRefMatch = part.match(/^#?([A-Z]{2,6})-(\d+)$/);
-    const broadcastMatch = part.match(/^@(here|all|channel)$/);
-    if (broadcastMatch) {
-      result.push(
-        <span key={`b-${i}`} className="px-1 py-0.5 rounded text-[13px] font-semibold"
-          style={{ background: 'rgba(234,179,8,0.2)', color: 'var(--accent)' }}>
-          @{broadcastMatch[1]}
-        </span>
-      );
-    } else if (mentionMatch) {
-      result.push(
-        <span
-          key={`m-${i}`}
-          className="px-1 py-0.5 rounded text-[13px] font-medium cursor-pointer"
-          style={{
-            background: 'var(--accent-light, rgba(124,107,79,0.15))',
-            color: 'var(--accent)',
-          }}
-        >
-          @{mentionMatch[2]}
-        </span>
-      );
-    } else if (taskRefMatch) {
-      result.push(
-        <a
-          key={`tr-${i}`}
-          href={`/tasks?task=${taskRefMatch[1]}-${taskRefMatch[2]}`}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium cursor-pointer hover:opacity-80"
-          style={{
-            background: 'var(--accent-subtle)',
-            color: 'var(--accent)',
-            textDecoration: 'none',
-          }}
-        >
-          {taskRefMatch[1]}-{taskRefMatch[2]}
-        </a>
-      );
-    } else if (part) {
-      result.push(<span key={`t-${i}`}>{part}</span>);
-    }
-  });
-
-  return result;
+  return <div className="message-content"><NativeMentionMarkdown content={text} chat linkifyTasks /></div>;
 }
 
 /** Extract embedded files from message content markers */
