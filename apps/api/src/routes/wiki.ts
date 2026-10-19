@@ -10,6 +10,7 @@ import { retrieveContext } from '../lib/retrieve-context.js';
 import { llm } from '../lib/llm.js';
 import { getOrgAIConfig, hasUsableReasonProvider } from '../lib/org-ai-config.js';
 import { toPlainText } from '../lib/plain-text.js';
+import { buildKnowledgeAnswerContext } from '../lib/knowledge-answer-context.js';
 import { decorateEmailKnowledgeCitations } from '../lib/email-knowledge-citations.js';
 import {getAppIntegrationCaptureRuntime} from '../lib/app-integration-capture-service.js';
 import {resourceSyncWebAuthority} from '../lib/app-resource-sync-web-authority.js';
@@ -704,12 +705,8 @@ wikiRoutes.post('/ask', async (c) => {
       });
     }
 
-    const contextBlock = sources.map((source) => [
-      `[${source.index}] ${source.title}`,
-      `Type: ${source.type}; Scope: ${source.scope ?? 'unknown'}; Confidence: ${source.confidence ?? 'unknown'}; Score: ${source.score.toFixed(3)}`,
-      source.summary ? `Summary: ${source.summary}` : null,
-      `Excerpt: ${source.excerpt}`,
-    ].filter(Boolean).join('\n')).join('\n\n');
+    const answerContext = buildKnowledgeAnswerContext(sources.map((source, index) => ({ ...source, content: hits[index]!.content })));
+    const contextBlock = answerContext.text;
 
     try {
       const orgConfig = await getOrgAIConfig(user.org_id);
@@ -721,6 +718,7 @@ wikiRoutes.post('/ask', async (c) => {
           'You answer questions about a workspace knowledge base.',
           'Use only the supplied sources.',
           'If the sources do not answer the question, say what is missing.',
+          'A truncated source contains only part of its content. Do not infer that a fact is absent from the full source; disclose when the supplied context is insufficient.',
           'Cite sources inline using [1], [2], etc. Keep the answer concise.',
         ].join(' '),
         messages: [{
@@ -735,6 +733,7 @@ wikiRoutes.post('/ask', async (c) => {
         mode: 'answered',
         model: result.model,
         sources,
+        answer_context_coverage: answerContext.coverage,
       });
     } catch (err) {
       console.warn('[wiki/ask] reasoning call failed:', err);
@@ -743,6 +742,7 @@ wikiRoutes.post('/ask', async (c) => {
         mode: 'retrieval_only',
         model: null,
         sources,
+        answer_context_coverage: answerContext.coverage,
       });
     }
   } catch (err) {
