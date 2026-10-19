@@ -41,11 +41,11 @@ test('all own aliases are excluded across To and Cc and Reply falls back to From
 });
 
 test('own Sent Reply all uses original To and keeps other Cc with the same trusted UUID',()=>{
- const sent={...parent,from:'maneek.mohan21@gmail.com',reply_to:'',to:'maneek.hyprcstm@gmail.com',cc:''};
- const result=createEmailComposeIntent({mode:'reply_all',parent:sent,verifiedOwnAliases:['maneek.mohan21@gmail.com']});
- assert.equal(result.to,'maneek.hyprcstm@gmail.com');assert.equal(result.cc,'');assert.equal(result.reply_record_id,parent.record_id);
- const cc=createEmailComposeIntent({mode:'reply_all',parent:{...sent,to:'maneek.hyprcstm@gmail.com, alias@example.test, maneek.hyprcstm@gmail.com',cc:'cc@example.test, maneek.hyprcstm@gmail.com, MANEEK.MOHAN21@gmail.com'},verifiedOwnAliases:['maneek.mohan21@gmail.com','alias@example.test']});
- assert.equal(cc.to,'maneek.hyprcstm@gmail.com');assert.equal(cc.cc,'cc@example.test');
+ const sent={...parent,from:'source.sender@invalid.example',reply_to:'',to:'controlled.recipient@invalid.example',cc:''};
+ const result=createEmailComposeIntent({mode:'reply_all',parent:sent,verifiedOwnAliases:['source.sender@invalid.example']});
+ assert.equal(result.to,'controlled.recipient@invalid.example');assert.equal(result.cc,'');assert.equal(result.reply_record_id,parent.record_id);
+ const cc=createEmailComposeIntent({mode:'reply_all',parent:{...sent,to:'controlled.recipient@invalid.example, alias@example.test, controlled.recipient@invalid.example',cc:'cc@example.test, controlled.recipient@invalid.example, source.sender@invalid.example'},verifiedOwnAliases:['source.sender@invalid.example','alias@example.test']});
+ assert.equal(cc.to,'controlled.recipient@invalid.example');assert.equal(cc.cc,'cc@example.test');
 });
 test('own Sent Reply keeps original To and omits Cc; empty outside recipients fail closed',()=>{
  const sent={...parent,from:'OWNER@example.test',reply_to:'',to:'other@example.test',cc:'cc@example.test'};

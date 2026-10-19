@@ -1,3 +1,5 @@
+> Privacy redaction: controlled provider addresses below are reserved synthetic replacements, not original observed provider values. Original source/evidence is preserved privately. Original SHA256: `f09941e5f7f9324b97c071ca46190e671af5ef3fb8dfaf20dd95d0c87763de25`.
+
 # Trusted outgoing Send
 
 Email 1.5.9 uses the matching unpublished host and schema preview.60 for a saved
@@ -91,8 +93,8 @@ request settings-write or permanent-delete authority. Google requires an exact
 redirect match; consult its [web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server)
 and [Gmail scope reference](https://developers.google.com/workspace/gmail/api/auth/scopes).
 
-Connect `maneek.hyprcstm@gmail.com` in Deft, confirm one unique draft/PDF addressed
-only to `maneek.mohan21@gmail.com`, execute that exact Run, then use the recipient
+Connect `controlled.recipient@invalid.example` in Deft, confirm one unique draft/PDF addressed
+only to `source.sender@invalid.example`, execute that exact Run, then use the recipient
 connector read-only to verify Message-ID, body and attachment digest. Record
 provider acceptance and recipient evidence separately. No live Send is certified
 by the current fixture results.

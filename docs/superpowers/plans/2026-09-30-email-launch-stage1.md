@@ -1,3 +1,5 @@
+> Privacy redaction: controlled provider addresses below are reserved synthetic replacements, not original observed provider values. Original source/evidence is preserved privately. Original SHA256: `0934c27d0f9a2be2ec219fbd1ef1be1a1f386bcab7f1211be32ff59bb0d18b63`.
+
 # Email launch Stage 1 checkpoint
 
 Stage 1 remains **in progress**. Email 1.5.9 now has locally verified member-owned
@@ -8,8 +10,8 @@ been sent.** Matching demo rollout and the controlled provider journey remain.
 
 The full Gmail/Outlook replacement and all 90 requirements remain on the
 [execution plan](C:/Users/Osheen Pradhan/Documents/Deft Main Repo/docs/superpowers/plans/2026-09-30-email-launch-execution-plan.md).
-The authorized sender is `maneek.hyprcstm@gmail.com`; the controlled recipient is
-`maneek.mohan21@gmail.com`. Its separate Gmail connector profile was verified
+The authorized sender is `controlled.recipient@invalid.example`; the controlled recipient is
+`source.sender@invalid.example`. Its separate Gmail connector profile was verified
 read-only; it will verify only the exact probe after a real Deft Send.
 
 ## Implemented and remaining
