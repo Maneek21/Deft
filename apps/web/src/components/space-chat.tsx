@@ -790,6 +790,8 @@ export function SpaceChat({
     }
   };
 
+  const messageHasAttachments = (msg: Message) => Boolean(msg.file_ids?.length || msg.files?.length || getEmbeddedFiles(msg.content).length);
+
   const saveMessageToKnowledge = async (msg: Message) => {
     const title = plainMessageText(msg.content).split(/[.!?\n]/)[0]?.trim().slice(0, 100) || 'Decision';
     const res = await api.post(`/api/spaces/${spaceId}/knowledge`, {
@@ -798,7 +800,9 @@ export function SpaceChat({
       content: plainMessageText(msg.content),
       source_message_id: msg.id,
     });
-    setCmdToast(res.ok ? 'Saved to knowledge' : 'Failed to save knowledge');
+    setCmdToast(res.ok
+      ? messageHasAttachments(msg) ? 'Saved message text; attachments were not included' : 'Saved to knowledge'
+      : 'Failed to save knowledge');
   };
 
   const captureRecentDiscussion = async () => {
@@ -1809,7 +1813,7 @@ export function SpaceChat({
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
-                              <BookOpen size={13} strokeWidth={1.5} /> Save to Knowledge
+                              <BookOpen size={13} strokeWidth={1.5} /> {messageHasAttachments(msg) ? 'Save message text to Knowledge' : 'Save to Knowledge'}
                             </button>
                             <button
                               onClick={() => {
@@ -2450,7 +2454,7 @@ export function SpaceChat({
             />
             <MobileMessageAction
               icon={<BookOpen size={18} strokeWidth={1.7} />}
-              label="Save to Knowledge"
+              label={messageHasAttachments(mobileActionMsg) ? 'Save message text to Knowledge' : 'Save to Knowledge'}
               onClick={() => {
                 void saveMessageToKnowledge(mobileActionMsg);
                 setMobileActionMsg(null);
