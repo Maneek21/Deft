@@ -10,7 +10,7 @@ import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { htmlToText, stripHtml } from '@/lib/strip-html';
 import { api } from '@/lib/api';
-import { hasUnsavedDescription, saveSubtaskStatus, taskActivitySummary } from '@/lib/task-detail-updates';
+import { hasUnsavedDescription, saveSubtaskStatus, taskActivitySummary, taskCommentIdentity, loadScopedTaskComments, taskCommentsNeedRefresh, type TaskCommentIdentity } from '@/lib/task-detail-updates';
 import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -621,7 +621,7 @@ function DescriptionEditor({ value, onChange, onBlur }: { value: string; onChang
 }
 
 export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplicate, onDelete, onTaskNavigate }: Props) {
-  const { user } = useAuth();
+  const { user, sessionCacheScope } = useAuth();
   const router = useRouter();
   const [task, setTask] = useState<Task | null>(null);
   const { config: resolvedConfig } = useProjectResolvedConfig(task?.project_id ?? null);
@@ -677,7 +677,12 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     // VALID_TABS is module-constant; intentionally omitted from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [comments, setComments] = useState<Comment[]>([]);
+  const commentIdentityRef = useRef<TaskCommentIdentity | null>(null);
+  const commentIdentity = taskCommentIdentity(commentIdentityRef.current, taskId, sessionCacheScope);
+  commentIdentityRef.current = commentIdentity;
+  const [commentState, setCommentState] = useState<{ identity: TaskCommentIdentity | null; rows: Comment[]; status: 'loading' | 'loaded' | 'error' }>({ identity: null, rows: [], status: 'loading' });
+  const comments = commentState.identity === commentIdentity ? commentState.rows : [];
+  const commentStatus = commentState.identity === commentIdentity ? commentState.status : 'loading';
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
@@ -989,9 +994,31 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
   // Load comments
   const loadComments = useCallback(async () => {
-    const res = await api.get(`/api/tasks/${taskId}/comments`);
-    if (res.ok) setComments(await res.json());
-  }, [taskId]);
+    if (!commentIdentity.sessionScope || commentIdentityRef.current !== commentIdentity) return;
+    setCommentState(previous => ({ identity: commentIdentity, rows: previous.identity === commentIdentity ? previous.rows : [], status: 'loading' }));
+    const outcome = await loadScopedTaskComments<Comment>(commentIdentity, () => commentIdentityRef.current,
+      () => api.get(`/api/tasks/${commentIdentity.taskId}/comments`),
+      rows => setCommentState({ identity: commentIdentity, rows, status: 'loaded' }));
+    if (outcome === 'error' && commentIdentityRef.current === commentIdentity) {
+      setCommentState(previous => ({ identity: commentIdentity, rows: previous.identity === commentIdentity ? previous.rows : [], status: 'error' }));
+    }
+  }, [commentIdentity]);
+
+  const commentEntryRef = useRef<{ identity: TaskCommentIdentity; tab: TabKey } | null>(null);
+  useEffect(() => {
+    const previous = commentEntryRef.current;
+    commentEntryRef.current = { identity: commentIdentity, tab: activeTab };
+    if (taskCommentsNeedRefresh(previous?.identity ?? null, previous?.tab ?? null, commentIdentity, activeTab)) loadComments();
+  }, [activeTab, commentIdentity, loadComments]);
+
+  const commentDraftIdentityRef = useRef<TaskCommentIdentity | null>(null);
+  useEffect(() => {
+    if (commentDraftIdentityRef.current === commentIdentity) return;
+    commentDraftIdentityRef.current = commentIdentity;
+    setNewComment('');
+    setSubmittingComment(false);
+    commentEditor?.commands.clearContent();
+  }, [commentIdentity, commentEditor]);
 
   // Load activity
   useEffect(() => {
@@ -1116,9 +1143,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'comments') loadComments();
     if (activeTab === 'activity') loadActivity();
-  }, [activeTab, loadComments, loadActivity]);
+  }, [activeTab, loadActivity]);
 
   // Title edit with debounce
   const handleTitleChange = (value: string) => {
@@ -1193,8 +1219,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const html = commentEditor?.getHTML() ?? '';
     const text = commentEditor?.getText() ?? '';
     if (!text.trim() || submittingComment) return;
+    const submittedIdentity = commentIdentity;
     setSubmittingComment(true);
     const res = await api.post(`/api/tasks/${taskId}/comments`, { content: html });
+    if (commentIdentityRef.current !== submittedIdentity) return;
     if (res.ok) {
       commentEditor?.commands.clearContent();
       setNewComment('');
@@ -2858,9 +2886,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           {activeTab === 'comments' && (
             <div className="px-5 py-3">
                 <div className="flex flex-col gap-3">
-                  {comments.length === 0 && (
+                  {(commentStatus !== 'loaded' || comments.length === 0) && (
                     <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                      No comments yet
+                      {commentStatus === 'loading' ? 'Loading comments...' : commentStatus === 'error' ? 'Comments could not be loaded.' : 'No comments yet'}
                     </p>
                   )}
                   {comments.map((c) => (
