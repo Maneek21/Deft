@@ -645,6 +645,8 @@ async function fetchDecisions(
   org_id: string,
   user_id: string | undefined,
   forFTS: string,
+  space_id: string | undefined,
+  include_org: boolean,
   limit: number,
   queryEmbedding: number[] | null,
   hybrid: boolean,
@@ -652,7 +654,9 @@ async function fetchDecisions(
   const useHybrid = hybrid && queryEmbedding !== null;
   const vectorLiteral = useHybrid ? `[${queryEmbedding!.join(',')}]` : '';
 
-  const buildQuery = (scoreExpr: ReturnType<typeof hybridScoreExpr> | ReturnType<typeof ftsScoreExpr>) =>
+  const scopeCondition = wikiRetrievalScopeCondition(org_id, space_id, include_org);
+  const fullMatch = sql`search_vector @@ plainto_tsquery('english', ${forFTS})`;
+  const buildQuery = (scoreExpr: ReturnType<typeof ftsScoreExpr>, matchCondition = fullMatch, resultLimit = limit) =>
     db
       .select({
         id: wikiPages.id,
@@ -671,11 +675,12 @@ async function fetchDecisions(
           eq(wikiPages.is_deleted, false),
           eq(wikiPages.type, 'decision'),
           ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
-          sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
+          scopeCondition,
+          matchCondition,
         ),
       )
       .orderBy(sql`${scoreExpr} DESC`)
-      .limit(limit);
+      .limit(resultLimit);
 
   const mapRows = (rows: Array<{ id: string; title: string; slug: string; summary: string | null; content: string; scope: string | null; confidence: number; rawScore: number }>) =>
     rows.map((row) => ({
@@ -693,10 +698,33 @@ async function fetchDecisions(
       },
     }));
 
+  // Keep normal FTS eligibility/ranking first. Natural questions can contain
+  // instruction words absent from the document; only empty results use recall.
+  const recallEmpty = async (rows: Parameters<typeof mapRows>[0]) => {
+    if (rows.length > 0) return mapRows(rows);
+    const instructionWords = new Set(['responsible', 'current', 'company', 'cite', 'source', 'sources', 'use']);
+    const tokens = Array.from(new Set(forFTS.toLowerCase().match(/[a-z0-9]+/g) ?? []));
+    const anchor = tokens.find(term => /^(?=[a-z0-9]*[a-z])(?=[a-z0-9]*[0-9])[a-z0-9]{4,40}$/.test(term));
+    const terms = tokens.filter(term => term !== anchor && term.length >= 4
+      && !WIKI_FALLBACK_STOPWORDS.has(term) && !instructionWords.has(term)).slice(0, 8);
+    if (terms.length < 2) return [];
+    const matches = terms.map(term => sql`search_vector @@ plainto_tsquery('english', ${term})`);
+    const coverage = sql<number>`(${sql.join(matches.map(match => sql`CASE WHEN ${match} THEN 1 ELSE 0 END`), sql` + `)})`;
+    const minimum = anchor ? 2 : Math.max(2, Math.ceil(terms.length / 2));
+    const candidateMatch = and(
+      or(...matches),
+      anchor ? sql`search_vector @@ plainto_tsquery('english', ${anchor})` : undefined,
+      sql`${coverage} >= ${minimum}`,
+    );
+    const score = sql<number>`(0.5 + 0.5 * ${coverage}::float / ${terms.length})`;
+    const recalled = await buildQuery(score, sql`${candidateMatch}`, Math.min(limit, 20));
+    return mapRows(recalled).map(row => ({ ...row, metadata: { ...row.metadata, retrieval: 'text_fallback' } }));
+  };
+
   try {
     const scoreExpr = useHybrid ? hybridScoreExpr(forFTS, vectorLiteral) : ftsScoreExpr(forFTS);
     const rows = await buildQuery(scoreExpr);
-    return mapRows(rows);
+    return await recallEmpty(rows);
   } catch (err) {
     if (useHybrid && isVectorOperatorError(err)) {
       // BYTEA fallback: retry with FTS only.
@@ -706,7 +734,7 @@ async function fetchDecisions(
       }
       try {
         const rows = await buildQuery(ftsScoreExpr(forFTS));
-        return mapRows(rows);
+        return await recallEmpty(rows);
       } catch (ftsErr) {
         console.warn('[retrieveContext] decisions branch failed (FTS fallback):', (ftsErr as Error).message);
         return [];
@@ -1091,7 +1119,7 @@ export async function retrieveContextWithDiagnostics(
     // 5. Decisions branch: queries wikiPages WHERE type='decision'. Forward-
     //    compatible path — Task 2.3 migrates the legacy decisions table here.
     types.includes('decisions')
-      ? fetchDecisions(org_id, user_id, forFTS, limit, queryEmbedding, hybrid)
+      ? fetchDecisions(org_id, user_id, forFTS, space_id, include_org, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
 
     types.includes('memory')
