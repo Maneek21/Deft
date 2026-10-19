@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 
 import { ACTION_TOOLS } from '../src/lib/agent-tools.js';
 import {
+  hasUnrequestedWikiPlaceholder,
+  reconcilePersistedProposalContent,
+  reconcileProposalTextBlocks,
   getActionCompilerToolsForPrompt,
   getActionCompilerTools,
   normalizeCompiledToolCalls,
@@ -334,4 +337,47 @@ test('semantic alignment does not treat incomplete or unrelated task-title text 
     ).clarification ?? '',
     /accomplish/i,
   );
+});
+
+test('generated wiki sentinels are rejected while explicitly requested literal text is retained', () => {
+  const content = '[existing content retained]\n\nReviewed ownership sentence.';
+  assert.equal(hasUnrequestedWikiPlaceholder(content, 'Append the reviewed ownership sentence.'), true);
+  assert.equal(hasUnrequestedWikiPlaceholder(content, 'Append the literal text [existing content retained] and the reviewed sentence.'), false);
+  assert.equal(hasUnrequestedWikiPlaceholder('A complete replacement with real facts.', 'Replace the page.'), false);
+});
+test('task dependency proposals require grounded identifiers and never infer task titles', () => {
+  const draft = (source: string, target: string) => ({ action: 'add_dependency', params: { source_task_identifier: source, target_task_identifier: target, type: 'blocks' } });
+  const invalid = validateRegisteredProposalAction(draft('Confirm launch start conflict', 'Defty review evidence'));
+  assert.equal(invalid.ok, false); if (!invalid.ok) assert.match(invalid.message, /Look up both existing tasks/);
+  assert.equal(validateRegisteredProposalAction(draft('LN2619-9', 'd9cc2e14-4ca8-4cb8-a7b2-4942e7c43936')).ok, true);
+});
+test('planned graph summaries follow selected actions and distinguish existing requests', () => {
+  const metadata = { action_graph: { actions: [{ tool: 'module_record_update' }, { tool: 'wiki_write' }] } };
+  const content = reconcilePersistedProposalContent('I drafted 2 changes.', ['wiki_write'], [], metadata, ['module_record_update']);
+  assert.match(content, /1 proposal for review/); assert.match(content, /existing request already represents: module record update/);
+  assert.doesNotMatch(content, /Not prepared/);
+});
+
+test('matching proposals preserve grounded explanations and changed outcomes keep text blocks coherent', () => {
+  const content = 'I drafted the reviewed change using [the source](/tasks?task=grounded).';
+  const metadata = { action_graph: { actions: [{ tool: 'wiki_write' }] }, agent_blocks: [
+    { type: 'text', text: content, citations: [{ title: 'Grounded source' }] },
+    { type: 'tool_use', id: 'read-1', name: 'wiki_read', input: {} },
+    { type: 'text', text: 'Another original paragraph.', citations: [] },
+  ] };
+  assert.equal(reconcilePersistedProposalContent(content, ['wiki_write'], [], metadata), content);
+  assert.equal(reconcileProposalTextBlocks(metadata, content, content), metadata);
+  const revised = reconcileProposalTextBlocks(metadata, 'I prepared 1 proposal for review.', content);
+  assert.equal(revised.agent_blocks.filter((block: any) => block.type === 'text').map((block: any) => block.text).join(''), 'I prepared 1 proposal for review.');
+  assert.deepEqual(revised.agent_blocks[0].citations, metadata.agent_blocks[0]!.citations);
+  assert.deepEqual(revised.agent_blocks[1], metadata.agent_blocks[1]);
+  assert.match(reconcilePersistedProposalContent('Unverified draft.', [], [], { proposal_preparation_warnings: ['Ground the target first.'] }), /Ground the target first/);
+});
+
+test('invalid dependency compiler calls retain explicit omitted intent without raw arguments', () => {
+  const result = normalizeCompiledToolCalls([{ name: 'add_dependency', input: { source_task_identifier: 'Title one', target_task_identifier: 'Title two', type: 'blocks' } }], compileContext);
+  assert.deepEqual(result.actions, []);
+  assert.match(result.warnings?.join(' ') ?? '', /dependency proposal was not prepared/);
+  assert.match(result.warnings?.join(' ') ?? '', /Look up both existing tasks/);
+  assert.doesNotMatch(JSON.stringify(result.warnings), /Title one|Title two/);
 });

@@ -1162,23 +1162,35 @@ async function persistModuleMutationAction(
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
  * the internal task uuid for the given org. Returns null if not found.
  */
+/** Public project prefixes are uppercased 2–6 character strings; older
+ * letter-only prefixes remain readable. Resolve exact prefixes, never titles. */
+export function parseProjectTaskIdentifier(identifier: string): { prefix: string; number: number } | null {
+  const separator = identifier.lastIndexOf('-');
+  if (separator < 1) return null;
+  const prefix = identifier.slice(0, separator), suffix = identifier.slice(separator + 1);
+  if (!/^\d+$/.test(suffix) || prefix !== prefix.toUpperCase()
+    || (!(prefix.length >= 2 && prefix.length <= 6) && !/^[A-Z]+$/.test(prefix))) return null;
+  const number = Number(suffix);
+  return Number.isSafeInteger(number) && number <= 2147483647 ? { prefix, number } : null;
+}
+
 export async function resolveTaskIdentifier(
   identifier: string,
   orgId: string,
   executor: Pick<typeof db, 'select'> = db,
 ): Promise<string | null> {
-  const m = identifier.match(/^([A-Z]+)-(\d+)$/);
-  if (m) {
+  const parsed = parseProjectTaskIdentifier(identifier);
+  if (parsed) {
     const [proj] = await executor
       .select({ id: projects.id })
       .from(projects)
-      .where(and(eq(projects.org_id, orgId), eq(projects.prefix, m[1]!)))
+      .where(and(eq(projects.org_id, orgId), eq(projects.prefix, parsed.prefix)))
       .limit(1);
     if (!proj) return null;
     const [t] = await executor
       .select({ id: tasks.id })
       .from(tasks)
-      .where(and(eq(tasks.project_id, proj.id), eq(tasks.number, parseInt(m[2]!))))
+      .where(and(eq(tasks.project_id, proj.id), eq(tasks.number, parsed.number)))
       .limit(1);
     return t?.id ?? null;
   }

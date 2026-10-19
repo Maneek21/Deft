@@ -9,6 +9,7 @@ import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
 import { buildActionGraph, type ActionGraph } from './agent-action-graph.js';
 import { syncApprovalToAttention } from './attention.js';
 import {
+  parseProjectTaskIdentifier,
   agentModuleActionClaimKey,
   agentModuleActionIdempotencyDigest,
   isModuleTaskLinkWriteAction,
@@ -107,11 +108,55 @@ export function sanitizeAgentReplyActionMetadata(metadata: Record<string, any>):
   };
 }
 
+/** Generated draft artifacts are not a substitute for the user's requested text. */
+export function hasUnrequestedWikiPlaceholder(content: unknown, userRequest: string): boolean {
+  const sentinel = '[existing content retained]';
+  return typeof content === 'string' && content.toLowerCase().includes(sentinel)
+    && !userRequest.toLowerCase().includes(sentinel);
+}
+
+/** The planned graph is evidence of intent; only actual rows describe proposals. */
+export function reconcilePersistedProposalContent(content: string, actionNames: string[], rejected: string[], metadata: Record<string, any>, existingActionNames: string[] = []): string {
+  const graph = isRecord(metadata.action_graph) && Array.isArray(metadata.action_graph.actions) ? metadata.action_graph.actions : null;
+  const remaining = [...actionNames, ...existingActionNames];
+  const omitted: string[] = [...rejected];
+  for (const node of graph ?? []) {
+    if (!isRecord(node) || typeof node.tool !== 'string') continue;
+    const index = remaining.indexOf(node.tool);
+    if (index >= 0) remaining.splice(index, 1);
+    else if (!omitted.includes(node.tool)) omitted.push(node.tool);
+  }
+  const warnings = Array.isArray(metadata.proposal_preparation_warnings)
+    ? metadata.proposal_preparation_warnings.filter((value: unknown): value is string => typeof value === 'string') : [];
+  if (omitted.length === 0 && warnings.length === 0 && existingActionNames.length === 0 && (!graph || (remaining.length === 0 && graph.length === actionNames.length && graph.every((node: unknown) => isRecord(node) && typeof node.tool === 'string')))) return content;
+  return [
+    actionNames.length ? `I prepared ${actionNames.length} proposal${actionNames.length === 1 ? '' : 's'} for review.` : 'I could not prepare any approval proposals.',
+    omitted.length ? `Not prepared: ${omitted.map(humanizeAction).join(', ')}. Verify the exact targets, current record revision, manifest digest, field changes and access before preparing these changes.` : '',
+    existingActionNames.length ? `An existing request already represents: ${existingActionNames.map(humanizeAction).join(', ')}.` : '',
+    ...warnings,
+  ].filter(Boolean).join('\n\n');
+}
+
+/** Keep the generated message's rendered text surfaces in agreement. */
+export function reconcileProposalTextBlocks(metadata: Record<string, any>, content: string, previousContent: string): Record<string, any> {
+  if (content === previousContent || !Array.isArray(metadata.agent_blocks)) return metadata;
+  let replaced = false;
+  return { ...metadata, agent_blocks: metadata.agent_blocks.map((block: unknown) => {
+    if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') return block;
+    const text = replaced ? '' : content; replaced = true;
+    return { ...block, text };
+  }) };
+}
+
 export async function persistAgentReplyWithActions(params: PersistReplyWithActionsParams) {
   const preparedPendingActions: ProposedAgentAction[] = [];
   const rejectedModuleActions: string[] = [];
+  const rejectedOtherActions: string[] = [];
   for (const proposal of params.pendingActions) {
     if(proposal.source==='native_email'||proposal.action==='email_send')throw Error('RETIRED_NATIVE_ACTION');
+    if ((proposal.action === 'add_dependency' || proposal.action === 'remove_dependency') && !validateRegisteredProposalAction(proposal).ok) {
+      rejectedOtherActions.push(proposal.action); continue;
+    }
     if (proposal.existing_action_id) {
       preparedPendingActions.push(proposal);
       continue;
@@ -289,6 +334,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       ...sanitizeAgentReplyActionMetadata(params.metadata),
       duplicate_action_ids: duplicateActions.length > 0 ? duplicateActions.map((action) => action.id) : undefined,
       rejected_module_actions: rejectedModuleActions.length > 0 ? rejectedModuleActions : undefined,
+      rejected_action_proposals: rejectedOtherActions.length > 0 ? rejectedOtherActions : undefined,
     };
     const [agentMessage] = await tx
       .insert(messages)
@@ -336,11 +382,11 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         ...messageMetadata,
         pending_actions: inlineActions.length > 0 ? inlineActions : undefined,
       };
-      if (inlineActions.length > 0) {
-        await tx.update(messages).set({ metadata: finalMetadata as never }).where(eq(messages.id, agentMessage.id));
-      }
+      const finalContent = duplicateOnly ? messageContent : reconcilePersistedProposalContent(messageContent, linkedActions.map(action => action.action), [...rejectedModuleActions, ...rejectedOtherActions], messageMetadata, duplicateActions.map(action => action.action));
+      const coherentMetadata = reconcileProposalTextBlocks(finalMetadata, finalContent, params.content);
+      await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
       return {
-        message: { ...agentMessage, metadata: finalMetadata as never },
+        message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
         actions: linkedActions,
         duplicates: duplicateActions,
       };
@@ -378,10 +424,12 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       ...messageMetadata,
       pending_actions: inlineActions,
     };
-    await tx.update(messages).set({ metadata: finalMetadata as never }).where(eq(messages.id, agentMessage.id));
+    const finalContent = reconcilePersistedProposalContent(messageContent, persistedActions.map(action => action.action), [...rejectedModuleActions, ...rejectedOtherActions], messageMetadata, duplicateActions.map(action => action.action));
+    const coherentMetadata = reconcileProposalTextBlocks(finalMetadata, finalContent, params.content);
+    await tx.update(messages).set({ content: finalContent, metadata: coherentMetadata as never }).where(eq(messages.id, agentMessage.id));
 
     return {
-      message: { ...agentMessage, metadata: finalMetadata as never },
+      message: { ...agentMessage, content: finalContent, metadata: coherentMetadata as never },
       actions: persistedActions,
       duplicates: duplicateActions,
     };
@@ -405,6 +453,7 @@ function normalizeApprovalTier(action: ProposedAgentAction): ApprovalTier {
 export type CompiledActionDraft = {
   actions: ProposedAgentAction[];
   graph: ActionGraph;
+  warnings?: string[];
   clarification?: string;
   summary?: string;
   metrics: {
@@ -598,7 +647,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
   const initiallyNormalized = normalizeCompiledToolCalls(result.toolCalls ?? [], params);
   const alignment = validateCompiledIntentAlignment(params.promptContent, initiallyNormalized.actions, params);
   const normalized = alignment.blocked
-    ? { actions: [] as ProposedAgentAction[], summary: undefined }
+    ? { actions: [] as ProposedAgentAction[], summary: undefined, warnings: initiallyNormalized.warnings }
     : initiallyNormalized;
   const parsedText = parseFirstJsonObject(result.text);
   const clarificationCall = result.toolCalls?.find((call) => call.name === CLARIFICATION_TOOL.name)?.input;
@@ -636,6 +685,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       model: result.model,
     },
   };
+  if (normalized.warnings?.length) draft.warnings = normalized.warnings;
   if (clarification) draft.clarification = clarification;
   if (summary) draft.summary = summary;
   return draft;
@@ -644,11 +694,17 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
 export function normalizeCompiledToolCalls(
   calls: Array<{ name?: string; input?: unknown }>,
   params: CompileDeftyActionDraftParams,
-): { actions: ProposedAgentAction[]; summary?: string } {
+): { actions: ProposedAgentAction[]; summary?: string; warnings?: string[] } {
+  const warnings = calls.flatMap(call => {
+    if (call.name !== 'add_dependency' && call.name !== 'remove_dependency') return [];
+    const result = validateRegisteredProposalAction({ action: call.name, params: call.input });
+    return result.ok ? [] : [`The task dependency proposal was not prepared. ${result.message}`];
+  });
   const actions = calls.flatMap((call) => normalizeRegisteredToolCall(call, params));
-  if (actions.length === 0) return { actions };
+  if (actions.length === 0) return { actions, ...(warnings.length ? { warnings } : {}) };
   return {
     actions,
+    ...(warnings.length ? { warnings } : {}),
     summary: actions.length === 1
       ? `I drafted a ${humanizeAction(actions[0]!.action)} for approval.`
       : `I drafted ${actions.length} related changes for approval.`,
@@ -783,6 +839,15 @@ export function validateRegisteredProposalAction(action: {
     }
     if (definition.type === 'array' && typeof definition.minItems === 'number' && value.length < definition.minItems) {
       return { ok: false, message: `The ${humanizeAction(name)} draft needs at least ${definition.minItems} ${humanizeAction(key)} item.` };
+    }
+  }
+
+  if (name === 'add_dependency' || name === 'remove_dependency') {
+    const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    for (const field of ['source_task_identifier', 'target_task_identifier']) {
+      const value = action.params[field];
+      if (typeof value !== 'string' || (!uuid.test(value) && !parseProjectTaskIdentifier(value))) return { ok: false,
+        message: 'A task dependency needs exact task UUIDs or project task identifiers such as DEFT-5. Look up both existing tasks first; a task title is not an identifier.' };
     }
   }
 
