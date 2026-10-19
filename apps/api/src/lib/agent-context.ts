@@ -39,7 +39,7 @@ import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
-import { resolveAssignee } from './resolve-assignee.js';
+import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { visibleTaskCondition } from './task-visibility.js';
 import { allowedNextStatuses } from './task-status-machine.js';
 import { getProjectResolvedConfig } from './project-resolved-config.js';
@@ -280,41 +280,65 @@ export async function executeToolCall(
   }
 
   switch (toolName) {
+    case 'search_members': {
+      await requireActiveOrgMembership(orgId, _userId);
+      if (typeof params.query !== 'string' || !params.query.trim() || params.query.length > 120) {
+        return { result: { error: 'Provide one bounded member name or ID.', code: 'INVALID_MEMBER_QUERY' }, citations: [] };
+      }
+      const resolved = await resolveAssigneeWithMatches(params.query, orgId);
+      return { result: resolved.ok ? { member: resolved.value } : {
+        error: resolved.ambiguous ? 'Member name is ambiguous; ask which person.' : 'No active assignable member matched; ask for another name.',
+        code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: resolved.matches.slice(0, 20),
+      }, citations: [] };
+    }
+    case 'list_spaces': {
+      await requireActiveOrgMembership(orgId, _userId);
+      const limit = Number.isInteger(params.limit) ? Math.max(1, Math.min(50, params.limit)) : 20;
+      const offset = Number.isInteger(params.offset) ? Math.max(0, Math.min(10000, params.offset)) : 0;
+      const rows = await db.select({ id: spaces.id, name: spaces.name, type: spaces.type })
+        .from(spaces).leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
+        .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false),
+          or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
+          typeof params.query === 'string' && params.query.trim() ? ilike(spaces.name, `%${escapeSearchLike(params.query.trim().slice(0, 120))}%`) : undefined))
+        .orderBy(spaces.name, spaces.id).limit(limit).offset(offset);
+      return { result: rows, citations: [] };
+    }
     case 'search_messages': {
-      const limit = params.limit || 10;
+      await requireActiveOrgMembership(orgId, _userId);
+      const query = typeof params.query === 'string' ? params.query.trim() : '';
+      const limit = Number.isInteger(params.limit) ? Math.max(1, Math.min(50, params.limit)) : 10;
+      if (!query && !params.space_id && !params.space_name) {
+        return { result: { error: 'Provide keywords or a room from list_spaces.', code: 'QUERY_OR_SPACE_REQUIRED' }, citations: [] };
+      }
       const conditions: any[] = [
         eq(messages.org_id, orgId),
         eq(messages.is_deleted, false),
-        ilike(messages.content, `%${params.query}%`),
+        query ? ilike(messages.content, `%${escapeSearchLike(query)}%`) : undefined,
+        eq(spaces.is_archived, false),
         or(
           eq(spaces.type, 'public'),
           sql`${spaceMembers.id} IS NOT NULL`,
         ),
       ];
 
-      // Filter by space name
-      if (params.space_name) {
-        const [space] = await db
-          .select({ id: spaces.id })
-          .from(spaces)
-          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
-          .limit(1);
-        if (!space) return { result: [], citations: [] };
-        conditions.push(eq(messages.space_id, space.id));
+      // Resolve only readable rooms, preferring exact names; never select an arbitrary partial match.
+      if (params.space_id || params.space_name) {
+        const rows = await db.select({ id: spaces.id, name: spaces.name }).from(spaces)
+          .leftJoin(spaceMembers, and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, _userId)))
+          .where(and(eq(spaces.org_id, orgId), eq(spaces.is_archived, false),
+            or(eq(spaces.type, 'public'), sql`${spaceMembers.id} IS NOT NULL`),
+            params.space_id ? eq(spaces.id, String(params.space_id)) : ilike(spaces.name, `%${escapeSearchLike(String(params.space_name))}%`)))
+          .orderBy(desc(sql`lower(${spaces.name}) = ${String(params.space_name).toLowerCase()}`), spaces.name, spaces.id).limit(51);
+        const exact = rows.filter(r => r.name.toLowerCase() === String(params.space_name).toLowerCase());
+        const matches = exact.length ? exact : rows;
+        if (matches.length !== 1) return { result: { error: matches.length ? 'Room name is ambiguous; choose a room from list_spaces.' : 'Readable room not found.',
+          code: matches.length ? 'SPACE_AMBIGUOUS' : 'SPACE_NOT_FOUND', matches: matches.slice(0, 20) }, citations: [] };
+        conditions.push(eq(messages.space_id, matches[0]!.id));
       }
-
-      // Filter by author name
       if (params.author_name) {
-        const [author] = await db
-          .select({ id: users.id })
-          .from(users)
-          .innerJoin(orgMembers, eq(users.id, orgMembers.user_id))
-          .where(
-            and(eq(orgMembers.org_id, orgId), ilike(users.name, `%${params.author_name}%`)),
-          )
-          .limit(1);
-        if (!author) return { result: [], citations: [] };
-        conditions.push(eq(messages.user_id, author.id));
+        const author = await resolveAssigneeWithMatches(String(params.author_name), orgId);
+        if (!author.ok) return { result: { error: 'Message author is missing or ambiguous.', code: author.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: author.matches.slice(0, 20) }, citations: [] };
+        conditions.push(eq(messages.user_id, author.value.id));
       }
 
       const results = await db
@@ -402,17 +426,17 @@ export async function executeToolCall(
       ];
 
       if (params.query) {
-        // Union: literal-title ILIKE OR semantic id match. When semantic had no
-        // hits this collapses to the old behaviour (title ILIKE only).
+        // Search the advertised title/description sources and project name,
+        // with optional semantic hits. Visibility still constrains the union.
         if (semanticIds.length) {
           conditions.push(
             or(
-              ilike(tasks.title, `%${params.query}%`),
+              or(ilike(tasks.title, `%${escapeSearchLike(String(params.query))}%`), ilike(tasks.description, `%${escapeSearchLike(String(params.query))}%`), ilike(projects.name, `%${escapeSearchLike(String(params.query))}%`)),
               inArray(tasks.id, semanticIds),
             ),
           );
         } else {
-          conditions.push(ilike(tasks.title, `%${params.query}%`));
+          conditions.push(or(ilike(tasks.title, `%${escapeSearchLike(String(params.query))}%`), ilike(tasks.description, `%${escapeSearchLike(String(params.query))}%`), ilike(projects.name, `%${escapeSearchLike(String(params.query))}%`)));
         }
       }
       if (params.status) {
@@ -426,18 +450,19 @@ export async function executeToolCall(
         conditions.push(sql`${tasks.status} NOT IN ('done', 'cancelled')`);
       }
       if (params.assignee_name) {
-        const resolved = await resolveAssignee(params.assignee_name, orgId);
-        if (resolved) conditions.push(eq(tasks.assignee_id, resolved.id));
+        const resolved = await resolveAssigneeWithMatches(String(params.assignee_name), orgId);
+        if (!resolved.ok) return { result: { error: 'Assignee is missing or ambiguous.', code: resolved.ambiguous ? 'MEMBER_AMBIGUOUS' : 'MEMBER_NOT_FOUND', matches: resolved.matches.slice(0, 20) }, citations: [] };
+        conditions.push(eq(tasks.assignee_id, resolved.value.id));
       }
       if (params.project_name) {
-        const [proj] = await db
-          .select({ id: projects.id })
-          .from(projects)
-          .where(
-            and(eq(projects.org_id, orgId), ilike(projects.name, `%${params.project_name}%`)),
-          )
-          .limit(1);
-        if (proj) conditions.push(eq(tasks.project_id, proj.id));
+        const rows = await db.select({ id: projects.id, name: projects.name }).from(projects)
+          .where(and(eq(projects.org_id, orgId), eq(projects.is_deleted, false), ...(await projectReadConditions()),
+            ilike(projects.name, `%${escapeSearchLike(String(params.project_name))}%`))).orderBy(desc(sql`lower(${projects.name}) = ${String(params.project_name).toLowerCase()}`), projects.name, projects.id).limit(51);
+        const exact = rows.filter(r => r.name.toLowerCase() === String(params.project_name).toLowerCase());
+        const matches = exact.length ? exact : rows;
+        if (matches.length !== 1) return { result: { error: matches.length ? 'Project name is ambiguous; use list_projects.' : 'Readable project not found.',
+          code: matches.length ? 'PROJECT_AMBIGUOUS' : 'PROJECT_NOT_FOUND', matches: matches.slice(0, 20) }, citations: [] };
+        conditions.push(eq(tasks.project_id, matches[0]!.id));
       }
 
       const results = await db
@@ -2466,4 +2491,8 @@ export async function executeToolCall(
     default:
       return { result: { error: `Unknown tool: ${toolName}` }, citations: [] };
   }
+}
+
+function escapeSearchLike(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
 }

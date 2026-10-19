@@ -4,9 +4,12 @@ import { NativeMentionMarkdown } from '@/components/native-mention-markdown';
 import { NativeMentionPublish } from '@/components/native-mention-publish';
 import { NativeMentionBacklinks } from '@/components/native-mention-backlinks';
 
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { createWikiExportDownload } from '@/lib/wiki-export-download';
+import { loadWikiHistory, type WikiHistorySnapshot } from '@/lib/wiki-history-loader';
 import { formatRelative } from '@/lib/time';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -357,6 +360,20 @@ export default function KnowledgePage() {
   const [scopeFilter, setScopeFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const { sessionCacheScope } = useAuth();
+  const exportSessionRef = useRef(sessionCacheScope);
+  useLayoutEffect(() => {
+    exportSessionRef.current = sessionCacheScope;
+    return () => { exportSessionRef.current = null; };
+  }, [sessionCacheScope]);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportDownloadRef = useRef<ReturnType<typeof createWikiExportDownload> | null>(null);
+  if (!exportDownloadRef.current) exportDownloadRef.current = createWikiExportDownload({
+    get: path => api.get(path),
+    currentSession: () => exportSessionRef.current,
+    state: (busy, error) => { setExporting(busy); setExportError(error); },
+  });
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const activeSlug = useRef(selectedSlug);
   useEffect(() => { activeSlug.current = selectedSlug; }, [selectedSlug]);
@@ -375,8 +392,13 @@ export default function KnowledgePage() {
   const [deleting, setDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [historyVersions, setHistoryVersions] = useState<any[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySnapshot, setHistorySnapshot] = useState<WikiHistorySnapshot<any> | null>(null);
+  const historyKey = sessionCacheScope && detail?.slug === selectedSlug
+    ? JSON.stringify([sessionCacheScope, selectedSlug, detail.version]) : null;
+  const historyCurrent = historyKey !== null && historySnapshot?.key === historyKey;
+  const historyVersions = historyCurrent ? historySnapshot.versions : [];
+  const historyLoading = !historyCurrent || historySnapshot.status === 'loading';
+  const historyError = historyCurrent && historySnapshot.status === 'error';
   const [selectedVersion, setSelectedVersion] = useState<any>(null);
   const [showGraph, setShowGraph] = useState(false);
   const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[]; mode?: string; scope_label?: string; space_id?: string | null } | null>(null);
@@ -597,19 +619,21 @@ export default function KnowledgePage() {
     }
   };
 
-  const fetchHistory = async (slug: string) => {
-    setHistoryLoading(true);
-    try {
-      const res = await api.get(`/api/wiki/${slug}/history`);
-      if (res.ok) {
-        const data = await res.json();
-        setHistoryVersions(data.versions || []);
-      }
-    } catch {
-    } finally {
-      setHistoryLoading(false);
+  useEffect(() => {
+    // A saved content version invalidates the open list and selected old body.
+    setSelectedVersion(null);
+    if (!showHistory || !historyKey || !selectedSlug) {
+      setHistorySnapshot(null);
+      return;
     }
-  };
+    const request = loadWikiHistory<any>({
+      key: historyKey,
+      slug: selectedSlug,
+      request: (slug, signal) => api.fetch(`/api/wiki/${slug}/history`, { method: 'GET', signal }),
+      publish: setHistorySnapshot,
+    });
+    return request.dispose;
+  }, [selectedSlug, detail?.version, showHistory, sessionCacheScope, historyKey]);
 
   const fetchActivity = async () => {
     setActivityLoading(true);
@@ -1096,7 +1120,7 @@ export default function KnowledgePage() {
             {!editing && detail.version > 1 && (
               <div>
                 <button
-                  onClick={() => { if (!showHistory) fetchHistory(detail.slug); setShowHistory(!showHistory); }}
+                  onClick={() => setShowHistory(!showHistory)}
                   className="text-[12px] font-semibold flex items-center gap-1.5 mb-2"
                   style={{ color: 'var(--text-secondary)' }}>
                   <History size={13} />
@@ -1106,6 +1130,8 @@ export default function KnowledgePage() {
                   <div className="space-y-1">
                     {historyLoading ? (
                       <Loader2 size={14} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
+                    ) : historyError ? (
+                      <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>Version history could not be loaded. Close and reopen to retry.</p>
                     ) : historyVersions.length === 0 ? (
                       <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>No previous versions</p>
                     ) : (
@@ -1122,7 +1148,7 @@ export default function KnowledgePage() {
                         </button>
                       ))
                     )}
-                    {selectedVersion && (
+                    {historyCurrent && !historyLoading && !historyError && selectedVersion && (
                       <div className="mt-2 p-3 rounded-lg" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                         <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-tertiary)' }}>
                           v{selectedVersion.version} content:
@@ -1228,13 +1254,9 @@ export default function KnowledgePage() {
                   onClick: () => { setShowGraph(true); setViewMode('pages'); },
                 },
                 {
-                  label: 'Export',
-                  onClick: () => {
-                    window.open(
-                      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/wiki/export?format=md`,
-                      '_blank',
-                    );
-                  },
+                  label: exporting ? 'Exporting…' : 'Export',
+                  disabled: exporting,
+                  onClick: async () => { await exportDownloadRef.current?.(); },
                 },
               ]}
             />
@@ -1242,6 +1264,7 @@ export default function KnowledgePage() {
         }
         secondary={
           <div className="flex flex-col gap-1.5 px-1">
+            {exportError && <p role="alert" className="text-[12px]" style={{ color: 'var(--error)' }}>{exportError}</p>}
             <input
               value={searchQuery}
               onChange={e => {
@@ -1425,9 +1448,9 @@ export default function KnowledgePage() {
                   <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{askResult.model}</span>
                 )}
               </div>
-              <p className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)' }}>
-                {askResult.answer}
-              </p>
+              <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                <NativeMentionMarkdown content={askResult.answer} />
+              </div>
               {askResult.sources.length > 0 && (
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   {askResult.sources.map(source => (

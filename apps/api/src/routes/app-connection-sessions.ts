@@ -28,7 +28,9 @@ async function body(c: Context) {
   finally { clearTimeout(timer); c.req.raw.signal.removeEventListener('abort', abort); }
 }
 function failure(c: Context, error: unknown) {
-  if (error instanceof AppError) return c.json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof AppError) return c.json({ error: error.message, code: error.code,
+    ...(error.code==='APP_REVIEW_REQUIRED'&&error.details?.reason==='runtime_action_review_mismatch'&&error.details?.phase==='before_dispatch'
+      ?{reason:'runtime_action_review_mismatch',phase:'before_dispatch'}:{}) }, error.status);
   if (error instanceof ResourceSyncWebAuthenticationError) return c.json({ error: 'Connection authentication required', code: 'APP_ACCESS_DENIED' }, 401);
   if (error instanceof z.ZodError) return c.json({ error: 'Invalid connection request', code: 'VALIDATION_ERROR' }, 400);
   // Callback codes and credentials must never enter error logs/responses.
@@ -60,7 +62,7 @@ export function createAppConnectionSessionRoutes() {
   for(const operation of ['review','activate','status'])routes.use(`/consent-continuation/${operation}`,ownerLimits);
   routes.use('/installations/:installationId/upgrade-context',ownerLimits);
   for (const operation of ['begin', 'callback', 'status', 'disconnect']) routes.use(`/${operation}`, ownerLimits);
-  for (const operation of ['review', 'activate', 'status']) routes.use(`/reattach/${operation}`, ownerLimits);
+  for (const operation of ['review', 'activate', 'status', 'close-unstarted']) routes.use(`/reattach/${operation}`, ownerLimits);
   for(const operation of ['review','begin','callback','status'])routes.use(`/upgrade/${operation}`,ownerLimits);
   routes.post('/runtime/consent-continuation-authority',async c=>{
     try{const {appConnectionConsentContinuationRuntimeAuthority}=await import('../lib/app-connection-consent-continuation-authority.js');
@@ -134,7 +136,7 @@ export function createAppConnectionSessionRoutes() {
       return c.json(await appConnectionReattachmentRuntimeAuthority(await body(c), c.req.header('authorization')));
     } catch (error) { return failure(c, error); }
   });
-  for (const operation of ['review', 'activate', 'status'] as const) {
+  for (const operation of ['review', 'activate', 'status', 'close-unstarted'] as const) {
     routes.post(`/reattach/${operation}`, async c => {
       try {
         const injected = c.get('user');
@@ -144,8 +146,9 @@ export function createAppConnectionSessionRoutes() {
           access_expires_at: auth.web_session.expires_at };
         const { AppConnectionReattachmentService } = await import('../lib/app-connection-reattachment-service.js');
         const { productionAppConnectionReattachmentPorts } = await import('../lib/app-connection-reattachment-authority.js');
-        return c.json(await new AppConnectionReattachmentService(productionAppConnectionReattachmentPorts(caller, auth.guard))
-          [operation](caller, await body(c)));
+        const service=new AppConnectionReattachmentService(productionAppConnectionReattachmentPorts(caller,auth.guard));
+        const input=await body(c);
+        return c.json(await (operation==='close-unstarted'?service.closeUnstartedReview(caller,input):service[operation](caller,input)));
       } catch (error) { return failure(c, error); }
     });
   }

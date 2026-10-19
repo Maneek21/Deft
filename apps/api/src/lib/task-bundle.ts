@@ -1,8 +1,9 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import { tasks, taskActivity, projects, taskRelationships } from '@deft/db/schema';
 import { reserveTaskNumberRange } from './task-numbering.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
+import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
 
 const VALID_PRIORITY = new Set(['p0', 'p1', 'p2', 'p3']);
 const MAX_SUBTASKS_PER_DRAFT = 20;
@@ -53,6 +54,7 @@ export type TaskBundleCreateParams = {
   startDate?: Date | string | null;
   estimation?: string | null;
   sourceMessageId?: string | null;
+  sourceChannelEventId?: string | null;
   actionId?: string | null;
   actingAgentEmployeeId?: string | null;
   subtasks?: TaskBundleSubtaskInput[] | null;
@@ -253,6 +255,19 @@ export async function createTaskBundle(params: TaskBundleCreateParams): Promise<
       acting_agent_employee_id: params.actingAgentEmployeeId ?? null,
     }));
     await tx.insert(taskActivity).values(activityRows);
+
+    // This final write observes current authority after all awaited preflight and
+    // bundle work. Denial rolls back the whole bundle and its number reservation.
+    if (params.sourceChannelEventId) {
+      const [authorized] = await tx.update(tasks).set({ updated_at: sql`${tasks.updated_at}` }).where(and(
+        eq(tasks.id, parent.id), eq(tasks.org_id, params.orgId),
+        sql`exists (select 1 from agent_channel_events source_event
+          where source_event.id = ${params.sourceChannelEventId} and source_event.org_id = ${params.orgId}
+            and source_event.agent_employee_id = ${params.actingAgentEmployeeId ?? null}
+            and ${currentAgentChannelEventAuthoritySql(sql`source_event.id`)})`,
+      )).returning({ id: tasks.id });
+      if (!authorized) throw new Error('task_create: source is no longer accessible');
+    }
 
     return { parent, children: childRows };
   });

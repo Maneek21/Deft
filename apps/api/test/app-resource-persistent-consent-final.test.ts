@@ -24,7 +24,7 @@ test('validated persistent resource consent survives final guards without extend
     const attempt = { lease_expires_at: future() };
     const context = { authority, run, attempt } as any;
     const guard = Object.assign(async () => {}, { current_web_session_expires_at: future });
-    const closureContext = { authority, participants: ['owner'] };
+    const closureContext = { authority, currentAuthority: authority, participants: ['owner'] };
     const closureFinal = () => (AppResourceSyncClosureService.prototype as any).final.call({ now: clock }, tx, closureContext, guard);
     await assertAttachmentStageFinalAuthority(tx, context, clock);
     (await closureFinal())();

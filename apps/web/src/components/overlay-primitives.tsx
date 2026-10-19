@@ -13,6 +13,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { placeChatMenu } from '@/lib/chat-menu-placement';
 
 function useMounted() {
   const [mounted, setMounted] = useState(false);
@@ -337,6 +338,7 @@ export function AnchoredOverlay({
   align = 'end',
   role = 'dialog',
   ariaLabel,
+  viewportRef,
 }: {
   open: boolean;
   onClose: () => void;
@@ -347,6 +349,7 @@ export function AnchoredOverlay({
   align?: 'start' | 'end';
   role?: string;
   ariaLabel?: string;
+  viewportRef?: RefObject<HTMLElement | null>;
 }) {
   const mounted = useMounted();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -354,6 +357,15 @@ export function AnchoredOverlay({
 
   const updatePosition = useCallback(() => {
     if (!anchorRef.current) return;
+    if (viewportRef?.current) {
+      const visual = window.visualViewport;
+      const viewport = { top: visual?.offsetTop ?? 0, left: visual?.offsetLeft ?? 0,
+        bottom: (visual?.offsetTop ?? 0) + (visual?.height ?? window.innerHeight),
+        right: (visual?.offsetLeft ?? 0) + (visual?.width ?? window.innerWidth) };
+      const measured = placeChatMenu(anchorRef.current.getBoundingClientRect(), viewportRef.current.getBoundingClientRect(), viewport, width, panelRef.current?.scrollHeight ?? 0);
+      setStyle({ position: 'fixed', ...measured, overscrollBehavior: 'contain' });
+      return;
+    }
     const next = getAnchoredPosition(anchorRef.current, width, side, align);
     setStyle({
       position: 'fixed',
@@ -363,7 +375,7 @@ export function AnchoredOverlay({
       transform: next.transform,
       maxHeight: next.maxHeight,
     });
-  }, [align, anchorRef, side, width]);
+  }, [align, anchorRef, side, width, viewportRef]);
 
   useReturnFocus(open, anchorRef);
   useOverlayDismiss({ open, onClose, refs: [panelRef, anchorRef], closeOnOutside: true });
@@ -371,13 +383,23 @@ export function AnchoredOverlay({
   useEffect(() => {
     if (!open) return;
     updatePosition();
+    const frame = viewportRef ? window.requestAnimationFrame(updatePosition) : null;
+    if (viewportRef) {
+      window.visualViewport?.addEventListener('resize', updatePosition);
+      window.visualViewport?.addEventListener('scroll', updatePosition);
+    }
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
     return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      if (viewportRef) {
+        window.visualViewport?.removeEventListener('resize', updatePosition);
+        window.visualViewport?.removeEventListener('scroll', updatePosition);
+      }
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open, updatePosition]);
+  }, [open, updatePosition, viewportRef, mounted]);
 
   if (!mounted || !open || !style) return null;
 

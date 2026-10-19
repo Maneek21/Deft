@@ -7,9 +7,9 @@ import {effectiveObservationRepair} from './app-resource-observation-repair.js';
 import {appConnectionSessions,appAttachmentStages} from '@deft/db/schema';
 import {appResourceObservationConsents,appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
 import {ResourceObservationSnapshotSchema,type ResourceObservationSnapshot} from '../../../../packages/app-kit/src/resource-observation.js';
-import {AppConnectionSessionRecordSchema} from './app-connection-session-service.js';
+import {AppConnectionSessionRecordSchema,type AppConnectionSessionRecord} from './app-connection-session-service.js';
 import {loadLiveAttachmentSyncBindingAuthority,type LiveAttachmentSyncBindingAuthority} from './app-attachment-sync-authority.js';
-import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
+import {getAppConnectionSessionRegistry,type AppConnectionSessionRegistry} from './app-connection-session-registry.js';
 import {digestAppGrantValue} from './app-grant-service.js';
 import {AppError} from './app-errors.js';
 import {isAppOwnerConnectionsEnabled} from './env.js';
@@ -47,11 +47,17 @@ export async function loadObservationConnection(tx:AppRunTransaction,authority:L
   ||scope.operator_user_id!==registration.operator_user_id||scope.target_key!==binding.target_key||scope.resource_key!==binding.resource_key
   ||scope.consent_expires_at!==(binding.consent_expires_at?.toISOString()??null)||scope.consent_lifetime!==(binding.consent_lifetime??undefined))throw observationDenied();
  const registry=await getAppConnectionSessionRegistry();registry.assertReady(scope,record.profile);
+ const connection_receipt=await resolveObservationConnectionReceipt(tx,record,registry);
+ return {...record,connection_receipt};
+}
+/** Resolve retained custody proof without granting execution or reading payloads.
+ * Current observation and historical closure share the same strict protocols. */
+export async function resolveObservationConnectionReceipt(tx:AppRunTransaction,record:AppConnectionSessionRecord,registry:AppConnectionSessionRegistry){
+ const {scope}=record;
  const form=await validateStoredFormConnection(tx,{org_id:scope.org_id,owner_user_id:scope.owner_user_id,session_id:record.session_id},record);
  const continuation=!form?await validateContinuationCarrier(tx,record,registry.protocol(scope,record.profile)==='credential_form.v1'):null;
  if(form&&registry.protocol(scope,record.profile)!=='credential_form.v1')throw observationDenied();
- const connection_receipt=continuation??(form?.receipt?{custody_generation:form.receipt.custody_generation,receipt_digest:form.receipt.digest}:record.credential_repair?.receipt??record.upgrade?.receipt??record.reattachment?.receipt);
- return {...record,connection_receipt};
+ return continuation??(form?.receipt?{custody_generation:form.receipt.custody_generation,receipt_digest:form.receipt.digest}:record.credential_repair?.receipt??record.upgrade?.receipt??record.reattachment?.receipt);
 }
 export async function observationSnapshotIsCurrent(tx:AppRunTransaction,snapshot:ResourceObservationSnapshot,
  authority:LiveAttachmentSyncBindingAuthority,clock:()=>Date){

@@ -144,10 +144,23 @@ appAttachmentRoutes.post('/sync/bindings/:bindingId/revoke',async c=>{
     return c.json(await (await getAppAttachmentRuntime()).management.revokeConsent(actor,id.parse(c.req.param('bindingId')),guard));
   }catch(error){return failure(c,error);}
 });
+appAttachmentRoutes.get('/sync/unknown-runs/candidates',async c=>{
+  try{const query=z.strictObject({current_resource_binding_id:id}).parse(c.req.query());
+    const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const runtime=await getAppAttachmentRuntime();
+    return c.json(await new AppResourceSyncClosureService(runtime.keys,runtime.repository).historicalCandidates(actor,query.current_resource_binding_id,guard));
+  }catch(error){return failure(c,error);}
+});
 appAttachmentRoutes.post('/sync/unknown-runs/review',async c=>{
   try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     const runtime=await getAppAttachmentRuntime();
     return c.json({review:await new AppResourceSyncClosureService(runtime.keys,runtime.repository).review(actor,input,guard)});
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.post('/sync/unknown-runs/receipt',async c=>{
+  try{noQuery(c);const input=await body(c);const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const runtime=await getAppAttachmentRuntime();
+    return c.json(await new AppResourceSyncClosureService(runtime.keys,runtime.repository).historicalReceipt(actor,input,guard));
   }catch(error){return failure(c,error);}
 });
 appAttachmentRoutes.post('/sync/unknown-runs/activate',async c=>{
@@ -236,10 +249,16 @@ appAttachmentRoutes.post('/composition/:installationId/activate',async c=>{
     return c.json({app:await activateAttachmentApp(actor,id.parse(c.req.param('installationId')),input,{guard,composition:true})});
   }catch(error){return failure(c,error);}
 });
-appAttachmentRoutes.get('/composition/:installationId/runtime/context',async c=>{
+appAttachmentRoutes.get('/composition/:installationId/runtime/targets',async c=>{
   try{const q=z.strictObject({app_version_id:id}).parse(query(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
+    const {getRuntimeSetupTargets}=await import('../lib/app-runtime-setup.js');
+    return c.json(await getRuntimeSetupTargets(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal}));
+  }catch(error){return failure(c,error);}
+});
+appAttachmentRoutes.get('/composition/:installationId/runtime/context',async c=>{
+  try{const q=z.strictObject({app_version_id:id,owner_resource_binding_id:id.optional()}).parse(query(c));const {actor,guard}=await resourceSyncWebAuthority(c.req.header('authorization'));
     const {getRuntimeSetupContext}=await import('../lib/app-runtime-setup.js');
-    return c.json(await getRuntimeSetupContext(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal}));
+    return c.json(await getRuntimeSetupContext(actor,id.parse(c.req.param('installationId')),q.app_version_id,{guard,signal:c.req.raw.signal,...(q.owner_resource_binding_id?{owner_resource_binding_id:q.owner_resource_binding_id}:{})}));
   }catch(error){return failure(c,error);}
 });
 

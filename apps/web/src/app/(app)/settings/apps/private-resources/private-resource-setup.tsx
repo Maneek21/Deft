@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
+import { readPrivateResourceManagement } from '@/lib/private-resource-management-client';
 import { appApiError, type AppInstallation } from '@/lib/apps';
 import { useAuth } from '@/lib/auth-context';
 import { APP_ATTACHMENT_BROKER_ENABLED } from '@/lib/feature-flags';
@@ -72,7 +73,7 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
     const request = ++operatorGeneration.current;
     setOperatorsBusy(true);
     try {
-      const body = await response<{ operators: Operator[]; next_after: string | null }>(await api.get(`${management}/operators?limit=20${after ? `&after=${encodeURIComponent(after)}` : ''}`));
+      const body = await response<{ operators: Operator[]; next_after: string | null }>(await readPrivateResourceManagement(`${management}/operators?limit=20${after ? `&after=${encodeURIComponent(after)}` : ''}`));
       if (request !== operatorGeneration.current || document.hidden) return;
       setOperators(previous => after ? [...previous, ...body.operators.filter(item => !previous.some(old => old.user_id === item.user_id))] : body.operators);
       setOperatorAfter(body.next_after);
@@ -111,7 +112,7 @@ export function PrivateResourceSetup({ apps, onChanged }: { apps: AppInstallatio
     setBusy(true);
     try {
       const selectedBase=eligible.find(app=>app.id===id)?.manifest.schema_version==='7'?'/api/apps/blob/sync':legacyManagement;
-      const body = await response<{ setup: Setup }>(await api.get(`${selectedBase}/setup?installation_id=${encodeURIComponent(id)}&operator_user_id=${encodeURIComponent(nominated)}`));
+      const body = await response<{ setup: Setup }>(await readPrivateResourceManagement(`${selectedBase}/setup?installation_id=${encodeURIComponent(id)}&operator_user_id=${encodeURIComponent(nominated)}`));
       if(selectedBase==='/api/apps/blob/sync'&&(body.setup.schema_version!=='deft.app_attachment_setup.v1'
         ||body.setup.installation_id!==id||!Array.isArray(body.setup.descriptors)||body.setup.descriptors.length>8
         ||body.setup.descriptors.some(d=>!d.attachment_policy||d.visibility!=='user_private'

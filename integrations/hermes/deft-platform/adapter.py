@@ -11,6 +11,7 @@ import os
 import asyncio
 import hashlib
 import json
+import logging
 import pathlib
 import socket
 import sys
@@ -37,6 +38,7 @@ EMPLOYEE_SKILL = "deft-employee:runtime"
 CAPABILITIES = (
     "autonomous_platform_adapter_v1",
     "accepted_event_rehydration_v1",
+    "accepted_event_terminal_reconciliation_v1",
 )
 CAPABILITY = ",".join(CAPABILITIES)
 PROTOCOL_VERSION = "deft.agent_channel.v2"
@@ -166,6 +168,7 @@ class DeftAdapter(BasePlatformAdapter):
         self._pending_events: Dict[str, dict] = {}
         # Full source events are process-local only. The restart journal stores
         # transport metadata and rehydrates accepted events from Deft.
+        self._terminal_reconciliation_supported = False
         self._event_cache: Dict[str, dict] = {}
         self._inflight_event_ids: set[str] = set()
         self._routes_by_message: Dict[str, dict] = {}
@@ -204,6 +207,9 @@ class DeftAdapter(BasePlatformAdapter):
                 retryable=False,
             )
             return False
+        self._terminal_reconciliation_supported = (
+            "accepted_event_terminal_reconciliation_v1" in response.get("capabilities", [])
+        )
         self._mark_connected()
         if self._start_listener:
             self._poll_task = asyncio.create_task(self._poll_loop())
@@ -420,6 +426,8 @@ class DeftAdapter(BasePlatformAdapter):
                     {
                         "event_id": event_id,
                         "caller_employee_slug": self.employee_slug,
+                        **({"recovery_capability": "accepted_event_terminal_reconciliation_v1"}
+                           if self._terminal_reconciliation_supported else {}),
                     },
                 )
             except DeftChannelRequestError as exc:
@@ -427,6 +435,21 @@ class DeftAdapter(BasePlatformAdapter):
                     self._complete_pending(event_id)
                     return False
                 raise
+            if recovered.get("transport_state") == "terminal":
+                # This typed disposition only retires a locally accepted journal
+                # entry. It says nothing about business success or source content.
+                if (
+                    not self._terminal_reconciliation_supported
+                    or set(recovered) != {"transport_state", "event_id"}
+                    or recovered.get("event_id") != event_id
+                    or pending.get("transport_accepted") is not True
+                ):
+                    raise RuntimeError("Invalid terminal journal reconciliation")
+                self._complete_pending(event_id)
+                logging.getLogger(__name__).info(
+                    "Retired terminal Deft journal entry %s; business outcome unknown", event_id,
+                )
+                return False
             event = recovered.get("event")
             if (
                 recovered.get("transport_state") != "accepted"

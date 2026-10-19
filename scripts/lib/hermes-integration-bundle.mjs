@@ -37,6 +37,23 @@ function assertEqual(actual, expected, label) {
   }
 }
 
+function assertCapabilityPartition(required, optional, advertised, label) {
+  const validate = (values, field) => {
+    if (!Array.isArray(values) || values.some((value) => typeof value !== 'string' || !value.trim())) {
+      throw new Error(`${field} must contain nonempty capability strings`);
+    }
+    if (new Set(values).size !== values.length) throw new Error(`${field} contains duplicate capabilities`);
+    return values;
+  };
+  const requiredValues = validate(required, `${label} required`);
+  const optionalValues = validate(optional === undefined ? [] : optional, `${label} optional`);
+  validate(advertised, `${label} advertised`);
+  if (optionalValues.some((value) => requiredValues.includes(value))) {
+    throw new Error(`${label} required and optional capabilities overlap`);
+  }
+  assertEqual(sorted([...requiredValues, ...optionalValues]), sorted(advertised), label);
+}
+
 function safeBundlePath(value, label) {
   if (typeof value !== 'string' || !value || value.includes('\\') || value.includes('\0')) {
     throw new Error(`${label} must be a non-empty, forward-slash relative path`);
@@ -369,14 +386,14 @@ async function validateManifest(repoRoot, manifest, packageJson) {
     'API Agent Channel',
   );
   assertEqual(manifest.agent_channel_protocols, [apiProtocol], 'Agent Channel protocols');
-  assertEqual(manifest.required_channel_capabilities, apiCapabilities, 'Agent Channel capabilities');
+  assertCapabilityPartition(manifest.required_channel_capabilities, manifest.optional_channel_capabilities, apiCapabilities, 'Agent Channel capabilities');
 
   const nativeVersion = extractQuotedConstant(nativeAdapter, 'ADAPTER_VERSION', 'native adapter');
   const nativeProtocol = extractQuotedConstant(nativeAdapter, 'PROTOCOL_VERSION', 'native adapter');
   const nativeCapabilities = extractPythonTuple(nativeAdapter, 'CAPABILITIES', 'native adapter');
   assertEqual(native.version, nativeVersion, 'Native adapter version');
   assertEqual(native.protocol, nativeProtocol, 'Native adapter protocol');
-  assertEqual(native.runtime_capabilities, nativeCapabilities, 'Native adapter capabilities');
+  assertCapabilityPartition(native.runtime_capabilities, native.optional_runtime_capabilities, nativeCapabilities, 'Native adapter capabilities');
   assertEqual(native.runtime_capabilities, apiNativeCapabilities, 'Native/API capabilities');
   assertEqual(
     extractQuotedConstant(nativeReadiness, 'ADAPTER_VERSION', 'native readiness'),

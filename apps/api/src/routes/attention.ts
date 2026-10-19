@@ -1,3 +1,4 @@
+import {hasHumanMcpBulkProvenance} from '../lib/agent-approval-resolver.js';
 import { Hono } from 'hono';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -18,6 +19,9 @@ import {
 } from '../lib/attention.js';
 
 export const attentionRoutes = new Hono();
+export function attentionActionProposer(row:Parameters<typeof hasHumanMcpBulkProvenance>[0]) {
+  return hasHumanMcpBulkProvenance(row)?'user':row.source==='defty_capture'||!row.agent_employee_id?'defty':'employee';
+}
 
 const OPEN_STATES: AttentionState[] = ['open_unseen', 'open_seen', 'acknowledged'];
 const ALL_STATES: AttentionState[] = [
@@ -81,6 +85,8 @@ async function hydrateApprovals(rows: Array<typeof attentionItems.$inferSelect>)
     .select({
       id: agentActions.id,
       action: agentActions.action,
+      source: agentActions.source,
+      has_receipt: sql<boolean>`EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = ${agentActions.id})`,
       params: agentActions.params,
       approval_tier: agentActions.approval_tier,
       approval_status: agentActions.approval_status,
@@ -94,7 +100,7 @@ async function hydrateApprovals(rows: Array<typeof attentionItems.$inferSelect>)
     .from(agentActions)
     .leftJoin(agentEmployees, eq(agentEmployees.id, agentActions.agent_employee_id))
     .where(inArray(agentActions.id, actionIds));
-  const byId = new Map(actions.map((action) => [action.id, action]));
+  const byId = new Map(actions.map((action) => [action.id, {...action,proposer:attentionActionProposer(action)}]));
   return rows.map((item) => ({
     ...item,
     approval: item.source_type === 'agent_action' ? byId.get(item.source_id) ?? null : null,

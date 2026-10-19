@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect,useRef } from 'react';
+import { useEffect,useRef,useState } from 'react';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { SpaceChat } from '@/components/space-chat';
 import { ThreadPanel } from '@/components/thread-panel';
-import { api } from '@/lib/api';
+import { api, isSameWebSession } from '@/lib/api';
+import { messageDeepLinkDestination } from '@/lib/message-deep-link';
 import { useChatContext } from '@/lib/chat-context';
 
 export default function ChatPage() {
@@ -16,6 +17,31 @@ export default function ChatPage() {
   const urlSpaceId = searchParams.get('space');
   const urlMessageId = searchParams.get('message');
   const urlThreadId = searchParams.get('thread');
+  const [messageLinkUnavailable, setMessageLinkUnavailable] = useState(false);
+
+  // Bound both unavailable space discovery and a stalled message lookup.
+  useEffect(() => {
+    if (!urlMessageId || urlSpaceId) return;
+    setMessageLinkUnavailable(false);
+    const timeout = setTimeout(() => setMessageLinkUnavailable(true), 15000);
+    return () => clearTimeout(timeout);
+  }, [urlMessageId, urlSpaceId]);
+
+  useEffect(() => {
+    if (!urlMessageId || urlSpaceId || !spaces.length) return;
+    const controller = new AbortController(), token = api.getAccessToken(), search = currentSearch.current;
+    const current = () => !controller.signal.aborted && currentSearch.current === search && isSameWebSession(token, api.getAccessToken());
+    setMessageLinkUnavailable(false);
+    void api.fetch(`/api/messages/${encodeURIComponent(urlMessageId)}/thread`, { signal: controller.signal, cache: 'no-store' }).then(async response => {
+      if (!response.ok) throw Error('Message unavailable');
+      const destination = messageDeepLinkDestination(await response.json(), urlMessageId, spaces.map(space => space.id), search);
+      if (!current()) return;
+      if (!destination) throw Error('Message unavailable');
+      if (!urlThreadId) setThreadMessage(null);
+      router.replace(destination);
+    }).catch(() => { if (current()) setMessageLinkUnavailable(true); });
+    return () => controller.abort();
+  }, [urlMessageId, urlSpaceId, urlThreadId, spaces, router, setThreadMessage]);
 
   // Sync layout's activeSpaceId state from the URL (back/forward, deep links).
   // MUST use the state-only setter — calling the navigating setActiveSpaceId
@@ -51,6 +77,10 @@ export default function ChatPage() {
 
   const effectiveSpaceId = urlSpaceId || threadMessage?.space_id || activeSpaceId;
   const activeSpace = spaces.find((s) => s.id === effectiveSpaceId);
+
+  if (urlMessageId && !urlSpaceId) return <div className="flex h-full items-center justify-center" role="status" style={{ color: 'var(--muted)' }}>
+    {messageLinkUnavailable ? 'This message is unavailable.' : 'Opening message…'}
+  </div>;
 
   return (
     <div className="flex h-full">

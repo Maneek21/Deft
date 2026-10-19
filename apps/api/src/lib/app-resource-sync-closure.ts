@@ -11,6 +11,8 @@ import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { PostgresAppRunReceiptWriter, PostgresAppRunReceiptReader } from './app-run-receipts.js';
 import { PostgresAppRunAttentionProjector } from './app-run-attention.js';
 import { loadAttachmentSyncClosureBindingAuthority } from './app-attachment-sync-authority.js';
+import { loadHistoricalSyncClosureAuthority } from './app-resource-sync-historical-closure-authority.js';
+import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
 import {appResourceObservationConsents,appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
 import {appConsentDeadline,ResourceObservationSnapshotSchema} from '@deft/app-kit';
@@ -22,7 +24,7 @@ import { digestAppGrantValue } from './app-grant-service.js';
 import { samplePrivateAccessClock } from './app-private-access-clock.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { AppResourceSyncClosureRequestSchema, AppResourceSyncClosureActivationSchema,
-  AppResourceSyncClosureReviewSchema, type AppResourceSyncClosureResult } from './app-resource-sync-closure-contract.js';
+  AppResourceSyncClosureReceiptRequestSchema, AppResourceSyncClosureReviewSchema, type AppResourceSyncClosureResult } from './app-resource-sync-closure-contract.js';
 
 type Human = Extract<ModuleActor, { kind: 'human' }>;
 const denied = () => new AppError('Private sync closure access denied', 'APP_ACCESS_DENIED', 403);
@@ -73,7 +75,43 @@ export class AppResourceSyncClosureService {
     this.receipts = new PostgresAppRunReceiptWriter(this.secrets, new AppRunSecretRepository(this.secrets));
   }
 
-  private async current(tx: AppRunTransaction, actor: Human, runId: string, allowReplay: boolean) {
+  async historicalCandidates(actor: ModuleActor, currentBindingId: string, guard: WebAuthorityGuard) {
+    interactive(actor);
+    let afterCommit = () => {};
+    const result = await this.repository.transaction(async tx => {
+      const authority = await loadLiveAttachmentSyncBindingAuthority(tx, { org_id: actor.org_id,
+        resource_binding_id: currentBindingId, clock: this.now });
+      if (!authority || ![authority.binding.owner_user_id, authority.registration.operator_user_id].includes(actor.actor_id)) throw denied();
+      if (!await attachmentFinalAuthorityIsCurrent(tx, [authority.binding.owner_user_id, authority.registration.operator_user_id],
+        { guard, clock: this.now, expires_at: authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : [] })) throw stale();
+      // Metadata only, limited to the caller's exact selected target. Review
+      // still independently reconstructs every original/current authority pin.
+      const rows = await tx.select({ run_id: appRuns.id, operation_name: appRuns.operation_name,
+        created_at: appRuns.created_at, unknown_outcome_at: appRuns.unknown_outcome_at })
+        .from(appRuns).innerJoin(appResourceBindings, and(eq(appResourceBindings.org_id, appRuns.org_id),
+          eq(appResourceBindings.id, appRuns.origin_resource_binding_id)))
+        .where(and(eq(appRuns.org_id, actor.org_id), eq(appRuns.state, 'unknown_outcome'),
+          eq(appRuns.review_scope, 'reviewed_resource_sync'), eq(appRuns.risk_class, 'internal_write'),
+          eq(appRuns.provider_kind, 'app_runtime'), eq(appRuns.origin_app_installation_id, authority.installation.id),
+          eq(appResourceBindings.owner_user_id, authority.binding.owner_user_id),
+          eq(appResourceBindings.target_key, authority.binding.target_key), eq(appResourceBindings.resource_key, authority.binding.resource_key)))
+        .orderBy(desc(appRuns.created_at)).limit(8);
+      const clock = await samplePrivateAccessClock(tx, this.now);
+      const deadlines = [...(authority.binding.consent_expires_at ? [authority.binding.consent_expires_at] : []),
+        guard.current_web_session_expires_at()];
+      if (!await attachmentFinalAuthorityIsCurrent(tx, [authority.binding.owner_user_id, authority.registration.operator_user_id],
+        { guard, clock: this.now, expires_at: deadlines })) throw stale();
+      afterCommit = () => { if (!isAppAttachmentBrokerEnabled() || !isAppOwnerConnectionsEnabled()
+        || deadlines.some(deadline => deadline <= clock.current())) throw stale(); };
+      afterCommit();
+      return { current_resource_binding_id: currentBindingId, target_key: authority.binding.target_key,
+        resource_key: authority.binding.resource_key, runs: rows.map(row => ({ ...row,
+          created_at: row.created_at.toISOString(), unknown_outcome_at: row.unknown_outcome_at?.toISOString() ?? null })) };
+    });
+    afterCommit(); return result;
+  }
+
+  private async current(tx: AppRunTransaction, actor: Human, runId: string, allowReplay: boolean, currentBindingId?: string) {
     // Run precedes member/App/registration/binding/attempt/checkpoint, matching
     // completion and the existing attachment authority lock order.
     const run = await this.repository.lockRun(tx, actor.org_id, runId);
@@ -97,11 +135,15 @@ export class AppResourceSyncClosureService {
       .from(orgMembers).innerJoin(users, eq(users.id, orgMembers.user_id))
       .where(and(eq(orgMembers.org_id, actor.org_id), eq(orgMembers.user_id, actor.actor_id))).limit(1);
     if (!caller?.active || caller.kind !== 'human' || caller.is_agent !== false || !['owner', 'admin', 'member'].includes(caller.role)) throw denied();
-    const authority = await loadAttachmentSyncClosureBindingAuthority(tx, { org_id: actor.org_id,
+    const historical = currentBindingId ? await loadHistoricalSyncClosureAuthority(tx, { run: stored,
+      current_resource_binding_id: currentBindingId, participant_ids: participants, clock: this.now }) : null;
+    const live = historical ? null : await loadAttachmentSyncClosureBindingAuthority(tx, { org_id: actor.org_id,
       resource_binding_id: stored.origin_resource_binding_id, clock: this.now, prelocked_participant_ids: participants });
+    const authority = historical?.historical ?? live;
     if (!authority) throw stale();
     const { binding, registration, installation, version, grant, provider_snapshot } = authority;
-    const closure=await closureAuthorization(tx,stored,authority);
+    const closure = historical ? { authorization: historical.authorization, observation: historical.observation }
+      : await closureAuthorization(tx, stored, live!);
     if (binding.owner_user_id !== locator.owner || registration.operator_user_id !== locator.operator
       || !registration.owner_connection_admission_id && !['owner', 'admin'].includes(caller.role)) throw denied();
     if (stored.origin_app_installation_id !== installation.id || stored.origin_app_version_id !== version.id
@@ -125,6 +167,11 @@ export class AppResourceSyncClosureService {
       || attempt.resource_binding_id !== binding.id || attempt.runtime_binding_id !== null
       || attempt.runtime_epoch !== registration.runtime_epoch || !attempt.provider_call_started_at
       || !attempt.lease_expires_at || attempt.lease_expires_at > this.now()) throw conflict();
+    if (historical && (historical.original_consent_deadline <= attempt.provider_call_started_at.getTime()
+      || historical.original_reviewed_at > attempt.provider_call_started_at
+      || historical.observation_created_at > attempt.provider_call_started_at
+      || historical.admission_created_at > attempt.provider_call_started_at
+      || historical.connection_created_at > attempt.provider_call_started_at)) throw stale();
     const [checkpoint] = await tx.select().from(appSyncCheckpoints).where(and(eq(appSyncCheckpoints.org_id, actor.org_id),
       eq(appSyncCheckpoints.id, intent.checkpoint_id), eq(appSyncCheckpoints.resource_binding_id, binding.id))).limit(1).for('share');
     if (!checkpoint || checkpoint.state !== 'active') throw stale();
@@ -150,14 +197,26 @@ export class AppResourceSyncClosureService {
         updated_at: checkpoint.updated_at.toISOString() }),
       basis, provider_outcome: 'unknown' as const, no_retry: true as const,
       ...(closure.observation?{observation:closure.observation}:{}),
+      ...(historical ? { historical_closure: {
+        operation_name: stored.operation_name, run_created_at: stored.created_at.toISOString(),
+        current_resource_binding_id: historical.current.binding.id, current_runtime_registration_id: historical.current.registration.id,
+        current_app_version_id: historical.current.version.id, current_grant_snapshot_id: historical.current.grant.id,
+        current_package_digest: historical.current.version.package_digest, current_grant_snapshot_digest: historical.current.grant.snapshot_digest,
+        current_lifecycle_epoch: historical.current.installation.lifecycle_epoch, current_grant_epoch: historical.current.installation.grant_epoch,
+        current_runtime_epoch: historical.current.registration.runtime_epoch,
+        current_consent_expires_at: historical.current.binding.consent_expires_at?.toISOString() ?? null,
+        ...(historical.current.binding.consent_lifetime ? { current_consent_lifetime: historical.current.binding.consent_lifetime } : {}),
+        profile_digest: historical.current.owner_connection_admission!.snapshot.connection_profile_digest!,
+        transport_digest: historical.current.owner_connection_admission!.snapshot.connection_transport_digest!,
+      } } : {}),
     };
-    return { run, attempt, authority, participants,
+    return { run, attempt, authority, currentAuthority: historical?.current ?? live!, participants,
       review: AppResourceSyncClosureReviewSchema.parse({ ...base, review_digest: digestAppGrantValue(base) }) };
   }
 
   private async final(tx: AppRunTransaction, context: Awaited<ReturnType<AppResourceSyncClosureService['current']>>, guard: WebAuthorityGuard) {
     const clock = await samplePrivateAccessClock(tx, this.now);
-    const binding = context.authority.binding;
+    const binding = context.currentAuthority.binding;
     if (appConsentDeadline(binding.consent_expires_at, binding.consent_lifetime ?? undefined) <= clock.current().getTime()) throw stale();
     const consentDeadlines = binding.consent_expires_at ? [binding.consent_expires_at] : [];
     if (!await attachmentFinalAuthorityIsCurrent(tx, context.participants, { guard, clock: this.now,
@@ -171,17 +230,41 @@ export class AppResourceSyncClosureService {
   async review(actor: ModuleActor, raw: unknown, guard: WebAuthorityGuard) {
     interactive(actor); const input = AppResourceSyncClosureRequestSchema.parse(raw); let afterCommit = () => {};
     const review = await this.repository.transaction(async tx => {
-      const context = await this.current(tx, actor, input.run_id, false);
+      const context = await this.current(tx, actor, input.run_id, false, input.current_resource_binding_id);
       afterCommit = await this.final(tx, context, guard); afterCommit(); return context.review;
     });
     afterCommit(); return review;
+  }
+
+  /** Lookup only. Absence never activates, transitions, retries, or dispatches. */
+  async historicalReceipt(actor: ModuleActor, raw: unknown, guard: WebAuthorityGuard) {
+    interactive(actor); const input = AppResourceSyncClosureReceiptRequestSchema.parse(raw); let afterCommit = () => {};
+    const result = await this.repository.transaction(async tx => {
+      const context = await this.current(tx, actor, input.run_id, true, input.current_resource_binding_id);
+      let result: { status: 'unconfirmed' } | { status: 'closed'; closure: AppResourceSyncClosureResult } = { status: 'unconfirmed' };
+      if (context.run.state === 'failed') {
+        const [row] = await tx.select().from(appRunReceipts).where(and(eq(appRunReceipts.org_id, actor.org_id),
+          eq(appRunReceipts.run_id, context.run.id), eq(appRunReceipts.receipt_key, `private-sync-closure:${context.run.id}`))).limit(1);
+        if (!row || row.receipt_kind !== 'reconciliation' || !context.run.reconciled_at) throw conflict();
+        const [receipt] = await new PostgresAppRunReceiptReader(this.secrets, { list: async () => [row] }).readVerified(actor.org_id, context.run.id);
+        const envelope = parseAppRunReceiptEnvelope(row.envelope);
+        if (envelope.facts.review_digest !== input.expected_review_digest || envelope.facts.basis !== basis
+          || envelope.facts.provider_outcome !== 'unknown' || envelope.facts.no_retry !== true
+          || envelope.actor?.actor_type !== 'human' || envelope.actor.user_id !== actor.actor_id) throw conflict();
+        if (!isDeepStrictEqual(envelope.facts.historical_closure, context.review.historical_closure)) throw stale();
+        result = { status: 'closed', closure: { run_id: context.run.id, state: 'failed', basis, provider_outcome: 'unknown',
+          no_retry: true, review_digest: input.expected_review_digest, receipt } };
+      }
+      afterCommit = await this.final(tx, context, guard); afterCommit(); return result;
+    });
+    afterCommit(); return result;
   }
 
   async activate(actor: ModuleActor, raw: unknown, guard: WebAuthorityGuard): Promise<AppResourceSyncClosureResult> {
     interactive(actor); const input = AppResourceSyncClosureActivationSchema.parse(raw); let afterCommit = () => {};
     let resolved: Awaited<ReturnType<PostgresAppRunRepository['inspect']>> = null;
     const closure = await this.repository.transaction(async tx => {
-      const context = await this.current(tx, actor, input.run_id, true);
+      const context = await this.current(tx, actor, input.run_id, true, input.current_resource_binding_id);
       const receiptKey = `private-sync-closure:${context.run.id}`;
       if (context.run.state === 'failed') {
         const [row] = await tx.select().from(appRunReceipts).where(and(eq(appRunReceipts.org_id, actor.org_id),
@@ -192,6 +275,8 @@ export class AppResourceSyncClosureService {
         if (envelope.facts.review_digest !== input.expected_review_digest || envelope.facts.basis !== basis
           || envelope.facts.provider_outcome !== 'unknown' || envelope.facts.no_retry !== true
           || envelope.actor?.actor_type !== 'human' || envelope.actor.user_id !== actor.actor_id) throw conflict();
+        if (context.review.historical_closure
+          && !isDeepStrictEqual(envelope.facts.historical_closure, context.review.historical_closure)) throw stale();
         // Recover a committed acknowledgement using the signed original review;
         // later checkpoint observations cannot rewrite or invalidate its facts.
       } else {
@@ -207,11 +292,20 @@ export class AppResourceSyncClosureService {
             review_digest: input.expected_review_digest, original_unknown_outcome_at: context.review.unknown_outcome_at,
             resource_binding_id: context.review.resource_binding_id, checkpoint_id: context.review.checkpoint_id,
             intent_digest: context.review.intent_digest, checkpoint_digest: context.review.checkpoint_digest,
-            ...(context.review.observation?{observation:context.review.observation}:{}) } });
+            ...(context.review.observation?{observation:context.review.observation}:{}),
+            ...(context.review.historical_closure ? { historical_closure: context.review.historical_closure } : {}) } });
+      }
+      let verifiedReceipt;
+      if (context.review.historical_closure) {
+        const [row] = await tx.select().from(appRunReceipts).where(and(eq(appRunReceipts.org_id, actor.org_id),
+          eq(appRunReceipts.run_id, context.run.id), eq(appRunReceipts.receipt_key, receiptKey))).limit(1);
+        if (!row) throw conflict();
+        [verifiedReceipt] = await new PostgresAppRunReceiptReader(this.secrets, { list: async () => [row] }).readVerified(actor.org_id, context.run.id);
       }
       afterCommit = await this.final(tx, context, guard); afterCommit();
       return { run_id: context.run.id, state: 'failed' as const, basis,
-        provider_outcome: 'unknown' as const, no_retry: true as const, review_digest: input.expected_review_digest };
+        provider_outcome: 'unknown' as const, no_retry: true as const, review_digest: input.expected_review_digest,
+        ...(verifiedReceipt ? { receipt: verifiedReceipt } : {}) };
     });
     afterCommit();
     if (resolved) try { await new PostgresAppRunAttentionProjector().projectRunState(resolved, 'reconciled'); } catch {

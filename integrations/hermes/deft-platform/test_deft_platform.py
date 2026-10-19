@@ -1509,6 +1509,57 @@ print(module.PROCESS_BOOT_ID)
         self.assertEqual(state["last_accepted_event_id"], "restart-event-1")
         self.assertEqual(state["pending_events"], [])
 
+    def test_terminal_accepted_journal_recovery_retires_only_typed_matching_entry(self):
+        async def scenario(disposition, accepted=True):
+            from gateway.platform_registry import PlatformEntry, platform_registry
+            platform_registry.register(PlatformEntry(name="deft", label="Deft", adapter_factory=lambda cfg: None, check_fn=lambda: True))
+            calls = []
+            async def request(method, path, query, body):
+                calls.append(path)
+                if path == "/connect":
+                    return {"ok": True, "adapter_mode": "autonomous_platform", "capabilities": ["accepted_event_terminal_reconciliation_v1"]}
+                if path == "/accept":
+                    self.assertEqual(body.get("recovery_capability"), "accepted_event_terminal_reconciliation_v1")
+                    if isinstance(disposition, Exception):
+                        raise disposition
+                    return disposition
+                if path == "/events":
+                    return {"events": []}
+                raise AssertionError(path)
+            try:
+                with tempfile.TemporaryDirectory() as directory:
+                    state = pathlib.Path(directory) / "state.json"
+                    state.write_text(json.dumps({"version": 3, "binding_sha256": MOD._journal_binding("https://deft.example/api/agent-channel/v1", "normal-worker", "default"), "last_accepted_event_id": "cancelled-accepted", "pending_events": [{"event_id": "cancelled-accepted", "transport_accepted": accepted}]}), encoding="utf-8")
+                    adapter = MOD.DeftAdapter(FakeConfig({"channel_url": "https://deft.example/api/agent-channel/v1", "token": "test-token", "employee_slug": "normal-worker", "state_path": str(state)}), request_fn=request, start_listener=False)
+                    async def handler(event):
+                        raise AssertionError("Terminal recovery must not invoke a model handler")
+                    adapter.set_message_handler(handler)
+                    self.assertTrue(await adapter.connect())
+                    try:
+                        await adapter._poll_once()
+                        error = None
+                    except Exception as exc:
+                        error = exc
+                    return error, json.loads(state.read_text(encoding="utf-8")), calls
+            finally:
+                platform_registry.unregister("deft")
+        error, state, calls = asyncio.run(scenario({"transport_state": "terminal", "event_id": "cancelled-accepted"}))
+        self.assertIsNone(error)
+        self.assertEqual(state["pending_events"], [])
+        self.assertIn("/events", calls)
+        for disposition, accepted in [
+            ({"transport_state": "terminal", "event_id": "another-event"}, True),
+            ({"transport_state": "terminal", "event_id": "cancelled-accepted", "business_outcome": "completed"}, True),
+            ({"transport_state": "terminal", "event_id": "cancelled-accepted"}, False),
+            (MOD.DeftChannelRequestError("not found", status=404, code="NOT_FOUND", retryable=False), True),
+            (MOD.DeftChannelRequestError("denied", status=403, code="FORBIDDEN", retryable=False), True),
+        ]:
+            with self.subTest(disposition=disposition, accepted=accepted):
+                error, state, calls = asyncio.run(scenario(disposition, accepted))
+                self.assertIsNotNone(error)
+                self.assertEqual(len(state["pending_events"]), 1)
+                self.assertNotIn("/events", calls)
+
     def test_stale_preaccept_journal_is_reacquired_without_claim_or_payload_persistence(self):
         calls = []
         received = []

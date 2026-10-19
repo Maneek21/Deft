@@ -21,7 +21,7 @@ function fixture(v2=false){
  const fetch=async(path:string,init:RequestInit)=>{
   if(path.endsWith('/upgrade-context'))return Response.json({...context(currentTarget),schema_version:'deft.app_connection_upgrade_context.v1'});
   if(path.endsWith('/context'))return Response.json(v2?{...context(),targets:[]}:context(currentTarget));
-  const body=JSON.parse(init.body as string);calls.push({path,body});const changed=answer(path,body);if(changed!==undefined)return Response.json(changed);
+  const body=JSON.parse(init.body as string);calls.push({path,body});const changed=answer(path,body);if(changed instanceof Response)return changed;if(changed!==undefined)return Response.json(changed);
   if(path.endsWith('/reattach/review')){review={schema_version:v2?'deft.app_connection_reattach_review.v2':'deft.app_connection_reattach_review.v1',...(v2?{action_consents:[]}: {}),session_id:body.request_id,source_session_id:source,source_revision:4,scope,account,custody_generation:1,review_digest:digest,expires_at:new Date(now+300000).toISOString()};currentTarget={...currentTarget,session:{schema_version:'deft.app_connection_session.v1',session_id:review.session_id,state:'indeterminate',scope,account:null,expires_at:expiry},reattachment:{candidate:null,pending:{session_id:review.session_id,state:'reattach_reviewed',activation_started:false,review}}};return Response.json(review);}
   if(path.endsWith('/reattach/activate')){return Response.json({schema_version:'deft.app_connection_session.v1',session_id:review.session_id,state:'connected',scope,account,expires_at:expiry});}
   if(path.endsWith('/reattach/status'))return Response.json(review);
@@ -86,7 +86,7 @@ test('same owner independent targets cannot inherit source account or reuse sess
  const f=fixture();await f.flow.load();const value=await f.flow.reviewExisting('sender');
  const recipient={...target,target_key:'recipient',scope:{...scope,target_key:'recipient'},reattachment:{candidate:{...candidate,source_session_id:randomUUID(),account:{account_ref:'recipient_account',label:'Synthetic recipient'}},pending:null}};
  f.setTarget(recipient);await f.flow.load();await assert.rejects(f.flow.activateExisting('sender'));await assert.rejects(f.flow.checkExisting('recipient'));assert.equal(f.calls.length,1);
- assert.equal(value.account?.account_ref,'owned_account');
+ assert.ok('account' in value);assert.equal(value.account?.account_ref,'owned_account');
 });
 
 test('fresh no-candidate context still permits ordinary OAuth independently of reuse',async()=>{
@@ -136,4 +136,28 @@ test('v2 target rejects a v1 review relabel and ordinary v1 target rejects v2 pu
  for(const v2 of [false,true]){const f=fixture(v2);await f.flow.load();f.setAnswer((path,body)=>path.endsWith('/review')?{
   schema_version:v2?'deft.app_connection_reattach_review.v1':'deft.app_connection_reattach_review.v2',...(!v2?{action_consents:[]}:{}),session_id:body.request_id,source_session_id:source,source_revision:4,scope,account,custody_generation:1,review_digest:digest,expires_at:new Date(now+300000).toISOString()}:undefined);
  await assert.rejects(f.flow.reviewExisting('sender'));assert.equal(f.calls.length,1);}
+});
+
+test('ordinary typed action review mismatch closes only its newly undispatched review intent',async()=>{
+ const f=fixture();await f.flow.load();f.setAnswer(()=>Response.json({code:'APP_REVIEW_REQUIRED',reason:'runtime_action_review_mismatch',phase:'before_dispatch'},{status:409}));
+ await assert.rejects(f.flow.reviewExisting('sender'),/current action operator setup/);assert.equal(f.flow.existingPending('sender'),false);assert.equal(f.calls.length,1);assert.equal(f.calls[0].path.endsWith('/reattach/review'),true);
+});
+test('ordinary generic review conflict remains unresolved without typed pre-dispatch evidence',async()=>{
+ const f=fixture();await f.flow.load();f.setAnswer(()=>Response.json({code:'APP_REVIEW_REQUIRED'},{status:409}));
+ await assert.rejects(f.flow.reviewExisting('sender'));assert.equal(f.flow.existingPending('sender'),true);assert.equal(f.calls.length,1);
+});
+
+test('ordinary explicit close validates the same unstarted review receipt without replaying setup',async()=>{
+ const f=fixture();await f.flow.load();f.setAnswer(()=>Response.json({code:'APP_ACCESS_DENIED'},{status:403}));await assert.rejects(f.flow.reviewExisting('sender'));assert.equal(f.flow.canCloseUnstartedExistingReview('sender'),true);
+ f.setAnswer((path,body)=>{assert.ok(path.endsWith('/reattach/close-unstarted'));return Response.json({schema_version:'deft.app_connection_unstarted_review_closed.v1',session_id:body.request_id,scope,state:'not_started',provider_dispatched:false});});
+ await f.flow.closeUnstartedExistingReview('sender');assert.equal(f.flow.existingPending('sender'),false);assert.equal(f.calls.length,2);assert.equal(f.calls.some(call=>call.path.endsWith('/activate')),false);
+});
+test('ordinary reviewed durable request cannot use unstarted closure',async()=>{
+ const f=fixture();await f.flow.load();await f.flow.reviewExisting('sender');assert.equal(f.flow.canCloseUnstartedExistingReview('sender'),false);await assert.rejects(f.flow.closeUnstartedExistingReview('sender'));assert.equal(f.calls.length,1);assert.equal(f.flow.existingPending('sender'),true);
+});
+
+test('ordinary status readback of exact closure receipt resolves an unstarted local review',async()=>{
+ const f=fixture();await f.flow.load();f.setAnswer(()=>Response.json({code:'APP_ACCESS_DENIED'},{status:403}));await assert.rejects(f.flow.reviewExisting('sender'));
+ const requestId=f.calls[0].body.request_id;f.setAnswer(path=>{assert.ok(path.endsWith('/reattach/status'));return {schema_version:'deft.app_connection_unstarted_review_closed.v1',session_id:requestId,scope,state:'not_started',provider_dispatched:false};});
+ const receipt=await f.flow.checkExisting('sender');assert.equal(receipt.schema_version,'deft.app_connection_unstarted_review_closed.v1');assert.equal(f.flow.existingPending('sender'),false);assert.equal(f.calls.length,2);
 });

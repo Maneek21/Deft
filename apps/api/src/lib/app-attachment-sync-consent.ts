@@ -9,7 +9,9 @@ type Limits = { max_records_per_page: number; max_page_bytes: number; max_retain
 /** Reconstructed from exact retained binding rights, never provider input. */
 export function attachmentSyncConsentReview(input: {
   org_id: string; owner_user_id: string; operator_user_id: string;
-  reviewed: Awaited<ReturnType<typeof loadReviewedAttachmentSyncDescriptor>>;
+  reviewed: Pick<Awaited<ReturnType<typeof loadReviewedAttachmentSyncDescriptor>>, 'version' | 'grant' | 'descriptor' | 'descriptor_digest'> & {
+    installation: Pick<Awaited<ReturnType<typeof loadReviewedAttachmentSyncDescriptor>>['installation'], 'id' | 'lifecycle_epoch' | 'grant_epoch'>;
+  };
   consent_expires_at: Date|null; consent_lifetime?:AppConsentLifetime; limits: Limits; attachment_policy: unknown;
   owner_connection_admission?: OwnerConnectionAdmissionReference;
 }) {

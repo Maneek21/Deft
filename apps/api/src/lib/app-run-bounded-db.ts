@@ -7,13 +7,19 @@ export const APP_RUN_TRANSACTION_LIMITS = Object.freeze({ budget_ms: 10_000,
   acquisition_ms: 250, lock_ms: 250, statement_ms: 2_000 });
 
 /** Dedicated bounded capacity; ordinary workers keep their pool. */
-export function createBoundedAppRunDatabase(connectionString: string, options: { max: number; application_name: string }) {
+export function createBoundedAppRunDatabase(connectionString: string, options: { max: number; application_name: string; min?: number }) {
   const pool = new pg.Pool({ connectionString, max: options.max,
+    min: options.min ?? 0,
     connectionTimeoutMillis: APP_RUN_TRANSACTION_LIMITS.acquisition_ms,
     statement_timeout: APP_RUN_TRANSACTION_LIMITS.statement_ms,
     query_timeout: APP_RUN_TRANSACTION_LIMITS.statement_ms,
     lock_timeout: APP_RUN_TRANSACTION_LIMITS.lock_ms,
     application_name: options.application_name });
+  // pg removes an idle client before emitting this event. Handle it so a
+  // disconnected retained socket cannot terminate the Host; the next normal
+  // checkout still obeys the existing acquisition bound. Never log the pg
+  // error/client, which may contain connection credentials or query values.
+  pool.on('error', () => { console.warn('[app-runs] bounded database idle connection closed'); });
   return {
     close: () => pool.end(),
     async transaction<T>(work: (tx: AppRunTransaction) => Promise<T>, signal: AbortSignal, deadline: number): Promise<T> {

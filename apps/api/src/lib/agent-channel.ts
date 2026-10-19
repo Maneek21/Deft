@@ -13,6 +13,7 @@ import {
   tasks,
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
+import { currentAgentChannelEventAuthoritySql } from './agent-channel-authority.js';
 import { getIO } from '../socket.js';
 import {
   employeeCanAccessProject,
@@ -32,6 +33,7 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'runtime_attestation_v1',
   'autonomous_platform_adapter_v1',
   'accepted_event_rehydration_v1',
+  'accepted_event_terminal_reconciliation_v1',
 ] as const;
 export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'renewable_leases',
@@ -79,13 +81,14 @@ export async function getActiveAgentChannelRuntimeCorrelation(
     org_id: orgId,
     employee_id: employeeId,
   });
-  if (!projectAccess.resolved) return null;
+  if (!projectAccess.resolved) throw new McpAuthError(403, 'forbidden', 'The Agent Channel employee is no longer active');
 
   const rows = await db.select({
     channel_event_id: agentChannelEvents.id,
     runtime_request_key: agentChannelDeliveryAttempts.idempotency_key,
     source_kind: agentChannelEvents.source_kind,
     source_id: agentChannelEvents.source_id,
+    source_authorized: currentAgentChannelEventAuthoritySql(agentChannelEvents.id),
   })
     .from(agentChannelDeliveryAttempts)
     .innerJoin(agentChannelEvents, and(
@@ -102,12 +105,18 @@ export async function getActiveAgentChannelRuntimeCorrelation(
     ))
     .orderBy(desc(agentChannelDeliveryAttempts.created_at))
     .limit(2);
+  // A revoked active context must not fall back to a legacy unbound MCP call.
+  if (rows.some((row) => !row.source_authorized)) {
+    throw new McpAuthError(403, 'forbidden', 'The active Agent Channel source is no longer accessible');
+  }
   if (rows.length === 1 && rows[0]?.runtime_request_key) {
     if (rows[0].source_kind === 'task') {
       const task = rows[0].source_id
         ? await loadActiveAgentChannelTask(orgId, rows[0].source_id)
         : null;
-      if (!task || !employeeProjectAccessAllows(projectAccess, task.project_id)) return null;
+      if (!task || !employeeProjectAccessAllows(projectAccess, task.project_id)) {
+        throw new McpAuthError(403, 'forbidden', 'The active Agent Channel task is no longer accessible');
+      }
     }
     return {
       channel_event_id: rows[0].channel_event_id,
@@ -115,6 +124,17 @@ export async function getActiveAgentChannelRuntimeCorrelation(
     };
   }
   if (rows.length > 1 || !autonomousTaskId) return null;
+
+  const boundTasks = await db.select({ authorized: currentAgentChannelEventAuthoritySql(agentChannelEvents.id) })
+    .from(agentChannelEvents).where(and(
+      eq(agentChannelEvents.org_id, orgId), eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.kind, 'task.assigned'), eq(agentChannelEvents.source_id, autonomousTaskId),
+      eq(agentChannelEvents.status, 'acknowledged'), isNull(agentChannelEvents.completed_at),
+      isNull(agentChannelEvents.work_outcome),
+    )).limit(2);
+  if (boundTasks.some((row) => !row.authorized)) {
+    throw new McpAuthError(403, 'forbidden', 'The accepted Agent Channel source is no longer accessible');
+  }
 
   const accepted = await db.select({ id: agentChannelEvents.id })
     .from(agentChannelEvents)
@@ -505,6 +525,7 @@ export async function listPendingChannelEvents(params: {
       FROM agent_channel_events
       WHERE org_id = ${params.principal.org_id}
         AND agent_employee_id = ${params.principal.employee_id}
+        AND ${currentAgentChannelEventAuthoritySql(sql`agent_channel_events.id`)}
         AND EXISTS (
           SELECT 1
           FROM agent_employees AS scoped_employee
@@ -592,6 +613,7 @@ export async function renewAgentChannelEventLease(params: {
       AND status IN ('delivered', 'acknowledged', 'running', 'approval_pending')
       AND claim_token = ${params.claimToken}
       AND lease_expires_at > now()
+      AND ${currentAgentChannelEventAuthoritySql(sql`agent_channel_events.id`)}
     RETURNING *
   `);
   return (resultRows(result)[0] ?? null) as typeof agentChannelEvents.$inferSelect | null;

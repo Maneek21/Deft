@@ -96,6 +96,7 @@ COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/release ./release
 COPY --from=builder /app/modules ./modules
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./

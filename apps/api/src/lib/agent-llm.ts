@@ -76,7 +76,7 @@ export async function createAgentMessage(p: CreateAgentMessageParams): Promise<A
     case 'anthropic':
       return callAnthropicAgent(p);
     case 'openai':
-      // GPT-5 family + o-series are reasoning models. With function tools +
+      // GPT-5/6 families + o-series are reasoning models. With function tools +
       // reasoning_effort they're only supported on the Responses API
       // (/v1/responses), not Chat Completions. Route them there.
       return isOpenAIReasoningModel(p.resolved.model)
@@ -91,8 +91,8 @@ export async function createAgentMessage(p: CreateAgentMessageParams): Promise<A
   }
 }
 
-function isOpenAIReasoningModel(model: string): boolean {
-  return /^(gpt-5|o1|o3|o4)/i.test(model);
+export function isOpenAIReasoningModel(model: string): boolean {
+  return /^(gpt-[56](?:[.-]|$)|o1|o3|o4)/i.test(model);
 }
 
 // ─── Anthropic (native passthrough + prompt caching) ───
@@ -151,10 +151,10 @@ async function callOpenAIAgent(p: CreateAgentMessageParams): Promise<AgentMessag
   }
   const baseURL = (p.resolved.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
 
-  // GPT-5 family + o-series are reasoning models: they reject `max_tokens`
+  // GPT-5/6 families + o-series are reasoning models: they reject `max_tokens`
   // (require `max_completion_tokens`), accept `reasoning_effort`, and need a
   // larger budget since hidden reasoning tokens count against the limit.
-  const isReasoning = /^(gpt-5|o1|o3|o4)/i.test(p.resolved.model);
+  const isReasoning = isOpenAIReasoningModel(p.resolved.model.replace(/^openai\//, ''));
 
   const body: any = {
     model: p.resolved.model,
@@ -476,11 +476,13 @@ function fromResponsesOutput(data: any): Anthropic.ContentBlock[] {
         .join('');
       if (text) blocks.push({ type: 'text', text });
     } else if (item.type === 'function_call') {
-      let input: any = {};
-      try {
-        input = JSON.parse(item.arguments || '{}');
-      } catch {
-        input = {};
+      let input: unknown;
+      try { input = JSON.parse(item.arguments); }
+      catch { throw new Error('AI provider returned an invalid tool call; retry the request.'); }
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || typeof item.call_id !== 'string' || !item.call_id
+        || typeof item.name !== 'string' || !item.name) {
+        throw new Error('AI provider returned an invalid tool call; retry the request.');
       }
       blocks.push({ type: 'tool_use', id: item.call_id, name: item.name, input });
     }

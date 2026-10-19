@@ -149,6 +149,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       org_id: orgId,
       user_id: author!.id,
       agent_employee_id: employeeId,
+      message_id: messageId,
       source: 'mention',
       action: 'chat_mention',
       params: {

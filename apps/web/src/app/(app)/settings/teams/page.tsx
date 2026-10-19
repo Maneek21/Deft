@@ -850,7 +850,7 @@ export default function TeamsSettingsPage() {
                           </Pill>
                         </div>
                         <p className="mt-1 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
-                          These numbers are computed from linked team resources right now. Historical trends are shown only after snapshot data exists.
+                          Task and context counts are computed from linked team resources. Pending approvals are counted for team members across the workspace. Historical trends are shown only after snapshot data exists.
                         </p>
                       </div>
                     </div>

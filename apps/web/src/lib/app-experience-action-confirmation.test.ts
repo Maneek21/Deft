@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';import test from 'node:test';import {webcrypto} from 'node:crypto';
-import {parseExperienceConfirmationRequest,createExperienceActionConfirmation,experienceActionDialogKeys} from './app-experience-action-confirmation';
+import {parseExperienceConfirmationRequest,createExperienceActionConfirmation,experienceActionDialogKeys,boundedConfirmationErrorCode,boundedConfirmationJson} from './app-experience-action-confirmation';
 import {composerInputDigest} from './app-experience-compose-files';import {createExperienceBridge,type ExperiencePin,type ExperiencePort}from './app-experience-bridge';import {createDeftExperienceSdk}from '../../../../packages/app-kit/src/experience-sdk';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto,configurable:true});
+test('recoverable error parsing accepts only bounded machine codes and ordinary confirmation still rejects errors',async()=>{
+ assert.equal(await boundedConfirmationErrorCode(Response.json({code:'APP_INTEGRATION_SOURCE_PENDING'},{status:409})),'APP_INTEGRATION_SOURCE_PENDING');
+ assert.equal(await boundedConfirmationErrorCode(Response.json({code:'<script>unsafe</script>'},{status:409})),undefined);
+ await assert.rejects(boundedConfirmationErrorCode(Response.json({code:'APP_INTEGRATION_SOURCE_PENDING',padding:'x'.repeat(131073)},{status:409})),/limit/);
+ await assert.rejects(boundedConfirmationJson(Response.json({code:'APP_INTEGRATION_SOURCE_PENDING'},{status:409})),/unavailable/);
+});
 const id='00000000-0000-4000-8000-000000000001',run='00000000-0000-4000-8000-000000000002';
 const input={record_ids:id,operation:'move',destination:'opaque-label',add_labels:'',remove_labels:''};
 const schema={type:'object',properties:{record_ids:{type:'string',maxLength:925,minLength:36,format:'resource_record_list',maxItems:25,resourceKey:'inbox',readOnly:true},operation:{type:'string',maxLength:32},destination:{type:'string',maxLength:256},add_labels:{type:'string',maxLength:4096},remove_labels:{type:'string',maxLength:4096}},required:Object.keys(input),additionalProperties:false};

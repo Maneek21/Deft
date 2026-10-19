@@ -1,3 +1,4 @@
+import { workerStartup } from './lib/worker-startup.js';
 import {createNativeAdoptionSourceRoutes} from './routes/email-native-adoption-source.js';
 import {appIntegrationToolRoutes} from './routes/app-integration-tools.js';
 import {appLocalJobRoutes} from './routes/app-local-jobs.js';
@@ -376,7 +377,7 @@ app.get('/health/ready', async (c) => {
     `);
     const rows = Array.isArray(result) ? result : ('rows' in result ? result.rows : []);
     const row = rows[0] as { channel_column_count?: number; has_memory_sync?: boolean } | undefined;
-    const ready = Number(row?.channel_column_count ?? 0) === 3 && row?.has_memory_sync === true;
+    const ready = Number(row?.channel_column_count ?? 0) === 3 && row?.has_memory_sync === true && workerStartup.isReady();
     return c.json({
       status: ready ? 'ready' : 'not_ready',
       release: DEFT_RELEASE_VERSION,
@@ -386,6 +387,7 @@ app.get('/health/ready', async (c) => {
       checks: {
         agent_channel_v2_schema: Number(row?.channel_column_count ?? 0) === 3,
         wiki_memory_sync: row?.has_memory_sync === true,
+        job_workers: workerStartup.isReady(),
       },
     }, ready ? 200 : 503);
   } catch (err) {

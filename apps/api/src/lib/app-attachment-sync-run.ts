@@ -12,7 +12,7 @@ import { appAttachmentClaimMatches } from './app-attachment-policy.js';
 
 /** Existing Run authorization carrier; channel3 separately binds owner-selected
  * attachment policy without reinterpreting a channel2 consent hash. */
-export function buildAttachmentSyncAuthorizationSnapshot(authority: LiveAttachmentSyncBindingAuthority) {
+export function buildAttachmentSyncAuthorizationSnapshot(authority: Parameters<typeof buildResourceSyncAuthorizationSnapshot>[0]) {
   const base = buildResourceSyncAuthorizationSnapshot(authority);
   return AppRunAuthorizationSnapshotSchema.parse({ ...base, authority_refs: base.authority_refs.map(ref =>
     ref.authority_kind === 'policy' ? { ...ref, version: digestAppGrantValue({

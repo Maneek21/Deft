@@ -34,8 +34,8 @@ export function ExperienceConnectionSettings(props: SettingsProps) {
 
 function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:string;sessionScope:string}){
   const [context,setContext]=useState<AppConnectionContext|null>(null),[selected,setSelected]=useState(props.targetKey??''),[notice,setNotice]=useState('Checking account connections…');
-  const [working,setWorking]=useState(false),[reload,setReload]=useState(0),[reuseWorking,setReuseWorking]=useState<'review'|'activate'|'status'|null>(null);
-  const [reuseReview,setReuseReview]=useState<ExistingAccountReview|null>(null),[reusePending,setReusePending]=useState(false),[reviewAvailable,setReviewAvailable]=useState(false),[clock,setClock]=useState(Date.now());
+  const [working,setWorking]=useState(false),[reload,setReload]=useState(0),[reuseWorking,setReuseWorking]=useState<'review'|'activate'|'status'|'close'|null>(null);
+  const [reuseReview,setReuseReview]=useState<ExistingAccountReview|null>(null),[reusePending,setReusePending]=useState(false),[canCloseUnstarted,setCanCloseUnstarted]=useState(false),[reviewAvailable,setReviewAvailable]=useState(false),[clock,setClock]=useState(Date.now());
   const flow=useRef<ReturnType<typeof createAppConnectionSessionFlow>|null>(null),alive=useRef(false),operation=useRef(false),generation=useRef(0);
   useEffect(()=>{
     alive.current=true;const ticket=++generation.current,anchor=api.getAccessToken();let active=true;
@@ -56,26 +56,30 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
   const visibleReview=reuseReview&&target&&JSON.stringify(reuseReview.scope)===JSON.stringify(target.scope)?reuseReview:null;
   useEffect(()=>{
     if(!context||!selected||!flow.current)return;
-    try{const reviewed=flow.current.existingReview(selected);setReusePending(flow.current.existingPending(selected));setReuseReview(reviewed);setReviewAvailable(!!reviewed);setClock(Date.now());}
-    catch{setReuseReview(null);setReviewAvailable(false);setReusePending(true);setNotice('Account reuse changed. Reload its status before continuing.');}
+    try{const reviewed=flow.current.existingReview(selected);setReusePending(flow.current.existingPending(selected));setCanCloseUnstarted(flow.current.canCloseUnstartedExistingReview(selected));setReuseReview(reviewed);setReviewAvailable(!!reviewed);setClock(Date.now());}
+    catch{setCanCloseUnstarted(false);setReuseReview(null);setReviewAvailable(false);setReusePending(true);setNotice('Account reuse changed. Reload its status before continuing.');}
   },[context,selected]);
   useEffect(()=>{
     if(!reuseReview)return;const deadline=Date.parse(reuseReview.expires_at),timer=setTimeout(()=>setClock(Date.now()),Math.max(1,deadline-Date.now()+1));
     return()=>clearTimeout(timer);
   },[reuseReview]);
-  async function reuse(kind:'review'|'activate'|'status'){
+  async function reuse(kind:'review'|'activate'|'status'|'close'){
     if(operation.current||props.disabled||document.hidden||!flow.current||!target)return;
     const client=flow.current,ticket=generation.current,key=selected;operation.current=true;setWorking(true);setReuseWorking(kind);props.onBusy(true);setNotice('');
     const current=()=>alive.current&&ticket===generation.current&&!document.hidden&&flow.current===client;
     setReuseReview(null);setReviewAvailable(false);
     try{
+      if(kind==='close'){
+        await client.closeUnstartedExistingReview(key);if(!current())return;
+        const value=await client.load();if(!current())return;setContext(value);setReusePending(false);setCanCloseUnstarted(false);setNotice('Unstarted review closed. No account connection was attempted.');return;
+      }
       const result=kind==='review'?await client.reviewExisting(key):kind==='activate'?await client.activateExisting(key):await client.checkExisting(key);
       if(!current())return;
       const value=await client.load();if(!current())return;setContext(value);
-      setNotice((result.schema_version==='deft.app_connection_reattach_review.v1'||result.schema_version==='deft.app_connection_reattach_review.v2')?'Review this account before continuing.':result.state==='connected'?'Account connected.':result.state==='not_connected'?'The expired review is closed. You can review this account again.':'Account reuse has an uncertain outcome. Check status; this attempt will not be repeated.');
+      setNotice(result.schema_version==='deft.app_connection_unstarted_review_closed.v1'?'Unstarted review closed. No account connection was attempted.':(result.schema_version==='deft.app_connection_reattach_review.v1'||result.schema_version==='deft.app_connection_reattach_review.v2')?'Review this account before continuing.':result.state==='connected'?'Account connected.':result.state==='not_connected'?'The expired review is closed. You can review this account again.':'Account reuse has an uncertain outcome. Check status; this attempt will not be repeated.');
     }catch(error){if(current()){
       await client.load().then(value=>{if(current())setContext(value);}).catch(()=>undefined);
-      if(current()){setReusePending(true);setNotice(error instanceof Error?error.message:'Account reuse was not confirmed. Check status before continuing.');}
+      if(current()){setReusePending(client.existingPending(key));setNotice(error instanceof Error?error.message:'Account reuse was not confirmed. Check status before continuing.');}
     }}finally{if(current()){operation.current=false;setWorking(false);setReuseWorking(null);props.onBusy(false);}}
   }
   async function act(kind:'begin'|'status'|'disconnect'){
@@ -110,6 +114,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       {target?.upgrade&&!target.reattachment?.candidate&&!target.reattachment?.pending&&!reusePending&&flow.current?<ExperienceCapabilityUpgradeSettings key={JSON.stringify([selected,target.scope])} target={target} client={flow.current} disabled={working||props.disabled} ownerId={props.ownerId} orgId={props.orgId} appOwnedRecords={props.appOwnedRecords}
         onBusy={busy=>{operation.current=busy;setWorking(busy);props.onBusy(busy);}} onContext={setContext} onNavigate={url=>{props.onConnectionNavigation(null);window.location.assign(url);}}
         onUse={props.onSetupComplete?()=>props.onSetupComplete?.(selected):undefined} onConnect={()=>void act('begin')} onStatus={()=>void act('status')} onDisconnect={()=>void act('disconnect')}/>:target&&<><ExperienceConnectionStatus label={target.session?.account?.label??target.reattachment?.candidate?.account.label??visibleReview?.account.label??target.profile.label} state={state} reviewAvailable={reviewAvailable} reusePending={reusePending} working={reuseWorking}/>
+        {notice==='Review the current action operator setup before reusing this account. No account activation was requested.'&&<a className="deft-pill min-h-11" href="/settings/apps">Review action operator setup</a>}
         {!target.runtime_ready&&<p className="text-sm">Your workspace needs to finish configuring the approved account operator before connecting.</p>}
 
         <div className="flex flex-wrap gap-2">
@@ -121,7 +126,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
           <p className="break-words">Existing account: {target.reattachment.candidate.account.label}</p>
           <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void reuse('review')}>Use existing account</button>
         </div>}
-        <ExperienceExistingAccountReview review={visibleReview} uncertain={reusePending&&!reviewAvailable&&!reuseWorking}
+        <ExperienceExistingAccountReview canCloseUnstarted={canCloseUnstarted} onCloseUnstarted={()=>void reuse('close')} review={visibleReview} uncertain={reusePending&&!reviewAvailable&&!reuseWorking}
           now={clock} disabled={working||props.disabled||!target.runtime_ready} onAllow={()=>void reuse('activate')} onCheck={()=>void reuse('status')}
           onClose={()=>{setReuseReview(null);setNotice('Review remains pending. Resume it or check status before continuing.');}}/>
         {reusePending&&!reuseReview&&reviewAvailable&&<div className="flex flex-wrap gap-2">
@@ -249,6 +254,8 @@ const mediaLabels: Record<string, string> = { 'application/pdf': 'PDF', 'image/p
 function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: SettingsProps & { ownerId: string; orgId: string }) {
   const { installationId, disabled, onBusy } = props;
   const [policies, setPolicies] = useState<OwnerPolicy[] | null>(null), [selected, setSelected] = useState('');
+  const [accountIdentifier, setAccountIdentifier] = useState('');
+  const targetKey = props.targetKey ?? accountIdentifier;
   const [review, setReview] = useState<OwnerReview | null>(null), [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState(0);
   const [notice, setNotice] = useState('Checking account setup…'), [reload, setReload] = useState(0);
@@ -279,13 +286,22 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
     return () => controller.abort();
   }, [contextPath, installationId, disabled, reload]);
   const policy = policies?.find(item => item.policy.key === selected);
-  const binding = policy?.bindings.find(item => (!props.targetKey || item.target_key === props.targetKey)
+  const retainedTargets = policy?.recovery_targets.map(target => target.key) ?? [];
+  const accountChoices = [...new Set([...retainedTargets, ...(policy?.bindings.map(item => item.target_key) ?? []), ...(policy?.admission ? [policy.admission.resource_request.target_key] : [])])];
+  const accountChoicesTag = JSON.stringify(accountChoices);
+  useEffect(() => {
+    const choices = JSON.parse(accountChoicesTag) as string[];
+    setAccountIdentifier(previous => choices.includes(previous) ? previous : choices[0] ?? ''); setReview(null);
+  }, [selected, accountChoicesTag]);
+  const binding = policy?.bindings.find(item => item.target_key === targetKey
     && item.state === 'active' && appConsentExpiryValid(item.consent_expires_at,item.consent_lifetime) && appConsentDeadline(item.consent_expires_at,item.consent_lifetime) > checkedAt);
   const missingActions = policy?.policy.action_keys.filter(key => !binding?.actions.some(action => action.action_key === key && action.state === 'active')) ?? [];
   async function requestReview(kind: OwnerReview['kind'], actionKey?: string) {
     if (!policy || busyRef.current || disabled || document.hidden) return;
     await operate(async (signal, current) => {
-      const request = kind === 'resources' ? ownerResourceRequest(policy) : binding && actionKey ? ownerActionRequest(policy, binding, actionKey) : null;
+      if (!/^[a-z][a-z0-9_]{0,47}$/.test(targetKey)) throw Error('Choose a valid account identifier before review.');
+      if (!props.targetKey && !accountChoices.includes(targetKey)) throw Error('Reload account setup before reviewing this account.');
+      const request = kind === 'resources' ? ownerResourceRequest(policy, Date.now(), targetKey) : binding && actionKey ? ownerActionRequest(policy, binding, actionKey) : null;
       if (!request) throw Error('Review account access before enabling an action.');
       const response = await api.fetch(`/api/app-owner-connections/${kind}/review`, { method: 'POST', body: JSON.stringify(request), signal });
       if (!response.ok) throw Error(await appApiError(response, 'Account access could not be reviewed.'));
@@ -316,6 +332,14 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
   }
   return <div className="min-w-0 space-y-3" aria-label="Set up your account">
     <h3 className="text-sm font-medium">Account access</h3>
+    {!props.targetKey && <label className="block space-y-1 text-sm">Account identifier
+      <select aria-label="Account identifier" className="w-full rounded border px-3 py-2" value={accountIdentifier}
+        disabled={busy || disabled} onChange={event => { setAccountIdentifier(event.target.value); setReview(null); }}>
+        {!accountChoices.length && <option value="">No account identifiers available</option>}
+        {accountChoices.map(target => <option key={target} value={target}>{target.replaceAll('_', ' ')}{retainedTargets.includes(target) ? ' (existing account)' : ''}</option>)}
+      </select>
+      <span className="block text-xs text-[var(--on-surface-variant)]">Choose an existing account to reconnect its saved records.</span>
+    </label>}
     {notice && <p role="status" className="break-words text-sm text-[var(--on-surface-variant)]">{notice}</p>}
     {!policies && <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={busy || disabled} onClick={() => setReload(value => value + 1)}>Reload account setup</button>}
     {policies?.length === 0 && <p className="text-sm">This app needs an administrator to enable personal account setup.</p>}
@@ -329,6 +353,7 @@ function OwnerConnectionSettings({ ownerId, orgId, onSetupComplete, ...props }: 
         <h4 className="text-base font-semibold">{review.kind === 'resources' ? 'Review account access' : `Review ${'action_key' in review.request ? review.request.action_key.replaceAll('_', ' ') : 'this action'}`}</h4>
         <p className="break-words">Account operator: <span className="font-medium">{policy.admission.operator_label}</span>, approved by your workspace.</p>
         {review.kind === 'resources' && 'target_key' in review.request ? <>
+          <p>Account identifier: <span className="font-medium">{review.request.target_key}</span></p>
           <p>The approved operator can save your account records {review.request.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(review.request.consent_expires_at!).toLocaleString()}`}. These records and attachments are private to you.</p>
           <p>Up to {review.request.limits.max_retained_records.toLocaleString()} saved records and {sizeLabel(review.request.limits.max_retained_bytes)} total;
             updates at most every {(review.request.limits.min_interval_seconds / 60).toLocaleString(undefined, { maximumFractionDigits: 1 })} minutes.</p>

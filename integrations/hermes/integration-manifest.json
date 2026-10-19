@@ -1,8 +1,8 @@
 {
   "schema": "deft.hermes.integration.v2",
   "integration_version": "0.5.1",
-  "deft_release": "0.3.0-preview.14",
-  "deft_release_compatibility": "=0.3.0-preview.14",
+  "deft_release": "0.3.0-preview.122",
+  "deft_release_compatibility": "=0.3.0-preview.122",
   "agent_channel_protocols": [
     "deft.agent_channel.v2"
   ],
@@ -70,6 +70,9 @@
           "source": "integrations/hermes/deft-platform/README.md",
           "target": "README.md"
         }
+      ],
+      "optional_runtime_capabilities": [
+        "accepted_event_terminal_reconciliation_v1"
       ]
     },
     {
@@ -159,5 +162,8 @@
     "README.md",
     "config.example.yaml",
     "legacy/bridge/README.md"
+  ],
+  "optional_channel_capabilities": [
+    "accepted_event_terminal_reconciliation_v1"
   ]
 }

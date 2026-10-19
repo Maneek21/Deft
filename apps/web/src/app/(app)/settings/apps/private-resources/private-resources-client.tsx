@@ -7,6 +7,7 @@ import { Loader2, LockKeyhole, RefreshCw } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { useSetPageContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
+import { readPrivateResourceManagement } from '@/lib/private-resource-management-client';
 import { appApiError } from '@/lib/apps';
 import { useAuth } from '@/lib/auth-context';
 import { useApps } from '@/hooks/use-apps';
@@ -55,8 +56,8 @@ function PrivateResourceWorkspace() {
     setBusy(true); setError(null); setPage(null); setSelected(null); setRevokeReview(false);
     try {
       const selectedBase=channel==='attachment'?'/api/apps/blob/sync':management;
-      const body = await result<{ bindings: Binding[]; next_after: string | null }>(await api.get(`${selectedBase}/bindings?limit=25${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`));
-      const attachmentPage=APP_ATTACHMENT_BROKER_ENABLED&&!cursor&&!channel?await result<{bindings:Binding[];next_after:string|null}>(await api.get('/api/apps/blob/sync/bindings?limit=25')):null;
+      const body = await result<{ bindings: Binding[]; next_after: string | null }>(await readPrivateResourceManagement(`${selectedBase}/bindings?limit=25${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`));
+      const attachmentPage=APP_ATTACHMENT_BROKER_ENABLED&&!cursor&&!channel?await result<{bindings:Binding[];next_after:string|null}>(await readPrivateResourceManagement('/api/apps/blob/sync/bindings?limit=25')):null;
       if (request !== generation.current) return;
       setBindings(channel==='attachment'?body.bindings.map(b=>({...b,channel:'attachment' as const})):attachmentPage?[...body.bindings,...attachmentPage.bindings.map(b=>({...b,channel:'attachment' as const}))]:body.bindings);
       if(channel==='attachment')setAttachmentAfter(body.next_after);else setAfter(body.next_after);
@@ -93,7 +94,7 @@ function PrivateResourceWorkspace() {
     setBusy(true); setError(null); setPage(null); setSelected(null); setRevokeReview(false);
     try {
       const selectedBase=binding.channel==='attachment'?'/api/apps/blob/sync':management;
-      const status = await result<Status>(await api.get(`${selectedBase}/bindings/${encodeURIComponent(binding.binding_id)}`));
+      const status = await result<Status>(await readPrivateResourceManagement(`${selectedBase}/bindings/${encodeURIComponent(binding.binding_id)}`));
       if (request === generation.current) setSelected({...status,binding:{...status.binding,channel:binding.channel}});
     } catch (reason) { if (request === generation.current) setError(reason instanceof Error ? reason.message : 'Unable to load status.'); }
     finally { if (request === generation.current) setBusy(false); }
@@ -108,7 +109,7 @@ function PrivateResourceWorkspace() {
     const request = ++generation.current;
     setBusy(true); setError(null); setPage(null);
     try {
-      const body = await result<RecordPage>(await api.get(`/api/app-resource-private/bindings/${encodeURIComponent(selected.binding.binding_id)}/records?limit=10${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`));
+      const body = await result<RecordPage>(await readPrivateResourceManagement(`/api/app-resource-private/bindings/${encodeURIComponent(selected.binding.binding_id)}/records?limit=10${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`));
       if (request === generation.current) {
         if (expiresAt <= Date.now()) { clearContent(); setConsentExpired(true); }
         else setPage(body);

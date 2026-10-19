@@ -111,7 +111,7 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
       acting_agent_employee_id: employeeId,
     });
 
-    await publishAgentChannelEvent({
+    const published = await publishAgentChannelEvent({
       orgId,
       employeeId,
       kind: 'task.assigned',
@@ -130,6 +130,22 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
         pending_action_id: actionRow?.id ?? null,
       },
     });
+    // Pull clients must resolve task authority through a canonical event,
+    // including an idempotent publication replay. An unbound intermediate or
+    // legacy task_assigned row stays hidden; params are never authorization.
+    if (actionRow?.id && published.event?.id
+      && published.event.org_id === orgId
+      && published.event.agent_employee_id === employeeId
+      && published.event.source_kind === 'task'
+      && published.event.source_id === task.id
+      && published.event.kind === 'task.assigned') {
+      await db.update(agentActions).set({ channel_event_id: published.event.id }).where(and(
+        eq(agentActions.id, actionRow.id),
+        eq(agentActions.org_id, orgId),
+        eq(agentActions.agent_employee_id, employeeId),
+        eq(agentActions.action, 'task_assigned'),
+      ));
+    }
   } catch (err) {
     console.error(
       `[agent-employee-task] failed to queue task ${taskId} for ${employeeId}:`,

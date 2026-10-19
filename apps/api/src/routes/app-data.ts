@@ -1,4 +1,5 @@
 import {Hono,type Context} from 'hono';
+import type {UnofficialStatusCode} from 'hono/utils/http-status';
 import {z} from 'zod';
 import {APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataResolveInputSchema,parseAppDataFrame,frameAppData} from '@deft/app-kit';
 import {AppDataService} from '../lib/app-data-service.js';
@@ -34,6 +35,11 @@ function failure(c:Context,error:unknown){
  if(error instanceof AppError)return c.json({error:error.message,code:error.code},error.status);
  if(error instanceof ResourceSyncWebAuthenticationError)return c.json({error:'App data authentication required',code:'APP_ACCESS_DENIED'},401);
  if(error instanceof z.ZodError||error instanceof SyntaxError||error instanceof TypeError)return c.json({error:'Invalid App data request',code:'VALIDATION_ERROR'},400);
+ // A closed incoming request is not evidence of backend unavailability. Keep
+ // authority/validation errors above and unrelated backend failures below;
+ // an internal operation timeout alone must never acquire this classification.
+ // The service retains its indeterminate journal after any possible dispatch.
+ if(c.req.raw.signal.aborted&&error instanceof Error&&error.name==='AbortError')return c.json({error:'App data request cancelled',code:'APP_REQUEST_ABORTED'},499 as UnofficialStatusCode);
  return c.json({error:'App data request unavailable',code:'APP_PROVIDER_UNAVAILABLE'},503);
 }
 export function createAppDataRoutes(){const routes=new Hono();

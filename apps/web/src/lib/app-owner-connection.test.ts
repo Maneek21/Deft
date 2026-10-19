@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview } from './app-owner-connection.js';
+import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview, ownerRetainedTargets } from './app-owner-connection.js';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const installationId = id(1), ownerId = id(2), orgId = id(3), now = Date.now();
 const ref = { admission_id: id(4), admission_digest: 'sha256:' + 'a'.repeat(64) };
@@ -28,6 +28,16 @@ test('owner setup context is bounded and refuses owner/operator nomination or am
       attachment_policy: { ...attachment_policy, allowed_media_types: ['text/html'] } } } }] } ]) assert.throws(() => ownerConnectionContext(changed, installationId));
 });
 
+test('saved-account choices come only from bounded sorted current-policy metadata', () => {
+  const withTargets = { ...context, policies: [{ ...context.policies[0]!, recovery_targets: [{ key: 'fresh_mailbox' }, { key: 'fresh_recipient' }] }] };
+  assert.deepEqual(ownerConnectionContext(withTargets, installationId)[0]!.recovery_targets, withTargets.policies[0]!.recovery_targets);
+  for (const targets of [[{ key: 'fresh_mailbox' }, { key: 'fresh_mailbox' }], [{ key: 'z' }, { key: 'a' }],
+    [{ key: 'fresh_mailbox', owner_user_id: ownerId }], [{ key: '__proto__' }]])
+    assert.throws(() => ownerConnectionContext({ ...context, policies: [{ ...context.policies[0]!, recovery_targets: targets }] }, installationId));
+  assert.throws(() => ownerConnectionContext({ ...context, policies: [{ ...context.policies[0]!, status: 'deployment_review_required', admission: null,
+    recovery_targets: [{ key: 'fresh_mailbox' }] }] }, installationId));
+});
+
 test('owner setup context accepts legacy and profile-backed policies but rejects incomplete or malformed profile bindings', () => {
   const parsePolicy = (candidate: Record<string, unknown>) => ownerConnectionContext({ ...context,
     policies: [{ ...context.policies[0], policy: candidate }] }, installationId)[0]!.policy;
@@ -53,6 +63,21 @@ test('member requests use only admitted resource/action references and refuse ex
   assert.throws(() => ownerActionRequest(selected, { ...selected.bindings[0]!, binding_id: id(99) }, 'send_message', now));
   assert.throws(() => ownerActionRequest(selected, selected.bindings[0]!, 'undeclared_action', now));
   assert.throws(() => ownerActionRequest(selected, selected.bindings[0]!, 'send_message', now + 3600001));
+});
+
+test('existing account identifier changes only the explicitly reviewed owner target', () => {
+  const selected = ownerConnectionContext(context, installationId)[0]!;
+  const request = ownerResourceRequest(selected, now, 'fresh_mailbox');
+  assert.deepEqual(request, { ...resource_request, target_key: 'fresh_mailbox' });
+  assert.equal(selected.admission!.resource_request.target_key, 'personal');
+  for (const invalid of ['', 'Fresh mailbox', '__proto__', 'x'.repeat(49)]) {
+    assert.throws(() => ownerResourceRequest(selected, now, invalid));
+  }
+});
+test('retained account choices accept only the bounded owner server inventory', () => {
+  assert.deepEqual(ownerRetainedTargets({ targets: [{ key: 'fresh_mailbox' }, { key: 'fresh_recipient' }] }), ['fresh_mailbox', 'fresh_recipient']);
+  for (const value of [{ targets: [{ key: 'constructor' }] }, { targets: [{ key: 'fresh_mailbox', owner_user_id: ownerId }] },
+    { targets: [{ key: 'fresh_mailbox' }, { key: 'fresh_mailbox' }] }, { targets: [], owner_user_id: ownerId }]) assert.throws(() => ownerRetainedTargets(value));
 });
 
 test('resource review must match exact member, admitted request and host private custody policy', () => {

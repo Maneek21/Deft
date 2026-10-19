@@ -8,7 +8,7 @@ import {loadLiveAttachmentSyncBindingAuthority,attachmentSyncParticipantsAreHuma
 import {decodePrivateProjection} from './app-resource-private-projection.js';
 import {AppIntegrationSourceMappingSchema,AppIntegrationSourceIdentitySchema,type AppIntegrationSourceIdentity,type AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
 import {AppDataResourceMetaSchema} from '../../../../packages/app-kit/src/app-data.js';
-import {appIntegrationPublishedProjection,appIntegrationExactLocatorCandidate,appIntegrationProjectedIdentity} from './app-integration-source-projection.js';
+import {appIntegrationPublishedProjection,appIntegrationExactLocatorCandidate,appIntegrationProjectedIdentity,AppIntegrationSourcePendingError} from './app-integration-source-projection.js';
 import type {AppIntegrationSourceCaller} from './app-integration-source.js';
 
 /** Exact projection only. Uses established live signed-binding checks, secret
@@ -49,6 +49,7 @@ export function createAppIntegrationPublicationReader(input:{keys:AppRunKeyProvi
    if(!checkpoint)throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');
    const versions=await tx.selectDistinct({version:appResourceProjections.resource_id_hmac_key_version}).from(appResourceProjections).where(and(eq(appResourceProjections.org_id,caller.org_id),eq(appResourceProjections.resource_binding_id,resource_binding_id),eq(appResourceProjections.checkpoint_id,checkpoint.id))).limit(33);
    if(versions.length>32)throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');
+   if(!versions.length)throw new AppIntegrationSourcePendingError();
    const locators=secrets.locatorCandidates(logical,{org_id:caller.org_id,resource_binding_id,checkpoint_id:checkpoint.id},versions.map(row=>row.version));
    if(locators.length>32||!locators.length)throw new Error('APP_INTEGRATION_SOURCE_CHANGED_OR_DENIED');
    const rows=await tx.select().from(appResourceProjections).where(and(eq(appResourceProjections.org_id,caller.org_id),eq(appResourceProjections.resource_binding_id,resource_binding_id),eq(appResourceProjections.checkpoint_id,checkpoint.id),eq(appResourceProjections.generation,checkpoint.generation),eq(appResourceProjections.state,'live'),inArray(appResourceProjections.resource_id_hmac_key_version,locators.map(row=>row.key_version)),inArray(appResourceProjections.resource_id_hmac,locators.map(row=>row.fingerprint)))).limit(33).for('share');

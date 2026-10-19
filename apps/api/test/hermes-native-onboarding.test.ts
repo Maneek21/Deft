@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildRuntimeSetup } from '../src/routes/agent-employees.js';
+import { hermesBundleAvailability } from '../src/lib/hermes-release.js';
 
 test('fresh Hermes setup uses the native platform and direct HTTP MCP only', () => {
   const previousApiBase = process.env.PUBLIC_API_BASE_URL;
@@ -57,4 +58,38 @@ test('legacy Node assets are marked rollback-only and mutually exclusive', () =>
   assert.match(operatorGuidance, /disable deft-platform before using them/i);
   assert.match(setup.bridge_script ?? '', /LEGACY ROLLBACK ONLY/);
   assert.match(setup.bridge_script ?? '', /never run the native and legacy Deft adapters.*at the same time/);
+});
+
+test('core release setup reports the missing certification and omits a download command', () => {
+  const previous = process.env.DEFT_HERMES_BUNDLE_URL;
+  delete process.env.DEFT_HERMES_BUNDLE_URL;
+  try {
+    const setup = buildRuntimeSetup(
+      { name: 'Rita', slug: 'rita-hermes', runtime_kind: 'hermes' }, null,
+      hermesBundleAvailability('0.3.0-preview.122', 'core', ''),
+    );
+    assert.equal(setup.integration_bundle_url, null);
+    assert.equal(setup.integration_bundle_status, 'unavailable');
+    assert.match(setup.integration_bundle_detail ?? '', /onboarding is blocked/);
+    assert.match(setup.setup_steps[0], /does not include a certified Hermes integration/);
+    assert.ok(setup.commands.every(({ command }) => !command.startsWith('curl ')));
+  } finally {
+    if (previous === undefined) delete process.env.DEFT_HERMES_BUNDLE_URL;
+    else process.env.DEFT_HERMES_BUNDLE_URL = previous;
+  }
+});
+
+test('operator bundle setup preserves the URL without claiming certification', () => {
+  const previous = process.env.DEFT_HERMES_BUNDLE_URL;
+  process.env.DEFT_HERMES_BUNDLE_URL = 'https://operator.example/hermes.tar.gz';
+  try {
+    const setup = buildRuntimeSetup({ name: 'Rita', slug: 'rita-hermes', runtime_kind: 'hermes' }, null);
+    assert.equal(setup.integration_bundle_status, 'operator_provided');
+    assert.equal(setup.integration_bundle_url, process.env.DEFT_HERMES_BUNDLE_URL);
+    assert.match(setup.setup_steps[0], /does not establish certification/);
+    assert.match(setup.commands[0].description, /does not establish certification/);
+  } finally {
+    if (previous === undefined) delete process.env.DEFT_HERMES_BUNDLE_URL;
+    else process.env.DEFT_HERMES_BUNDLE_URL = previous;
+  }
 });

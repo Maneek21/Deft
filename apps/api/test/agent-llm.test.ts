@@ -36,3 +36,31 @@ test('Responses adapter rejects a completed response without usable text or tool
   t.mock.method(globalThis, 'fetch', async () => Response.json({ status: 'completed', output: [] }));
   await assert.rejects(createAgentMessage(params), /empty/);
 });
+
+for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-15']) {
+  test(`${model} uses Responses for text and tool calls, preserving continuation IDs and usage`, async (t) => {
+    const requests: any[] = [];
+    t.mock.method(globalThis, 'fetch', async (url: unknown, init: RequestInit) => {
+      assert.match(String(url), /\/responses$/);
+      const body = JSON.parse(String(init.body)); requests.push(body);
+      assert.equal(body.model, model); assert.equal(body.store, false);
+      assert.equal(body.reasoning.effort, 'medium');
+      return Response.json(requests.length === 1
+        ? { status: 'completed', output: [{ type: 'function_call', name: 'module_record_get', call_id: 'sol_call', arguments: '{"record_id":"1"}' }], usage: { input_tokens: 11, output_tokens: 3 } }
+        : { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Record found.' }] }], usage: { input_tokens: 15, output_tokens: 4 } });
+    });
+    const first = await createAgentMessage({ ...params, resolved: { ...params.resolved, model } });
+    assert.equal(first.stop_reason, 'tool_use'); assert.deepEqual(first.usage, { input_tokens: 11, output_tokens: 3 });
+    const final = await createAgentMessage({ ...params, resolved: { ...params.resolved, model }, messages: [...params.messages,
+      { role: 'assistant', content: first.content as any }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'sol_call', content: 'Record 1 found' }] }] });
+    assert.deepEqual(requests[1].input.slice(-2), [
+      { type: 'function_call', call_id: 'sol_call', name: 'module_record_get', arguments: '{"record_id":"1"}' },
+      { type: 'function_call_output', call_id: 'sol_call', output: 'Record 1 found' }]);
+    assert.equal(final.stop_reason, 'end_turn'); assert.deepEqual(final.content, [{ type: 'text', text: 'Record found.' }]);
+  });
+}
+
+test('Sol rejects malformed completed tool arguments rather than executing an empty object', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ status: 'completed', output: [{ type: 'function_call', name: 'module_record_get', call_id: 'bad', arguments: '{"record_id":' }] }));
+  await assert.rejects(createAgentMessage({ ...params, resolved: { ...params.resolved, model: 'gpt-6.1-sol' } }), /invalid tool call/i);
+});

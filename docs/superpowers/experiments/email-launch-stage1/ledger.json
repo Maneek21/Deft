@@ -683,9 +683,9 @@
     "host03_identity_passed": false
   },
   "real_provider": {
-    "sender": "maneek.hyprcstm@gmail.com",
+    "sender": "controlled.recipient@invalid.example",
     "sender_deft_connection_established": false,
-    "controlled_recipient": "maneek.mohan21@gmail.com",
+    "controlled_recipient": "source.sender@invalid.example",
     "recipient_gmail_connector_profile_verified": true,
     "connector_is_deft_connection": false,
     "live_mail_sent": 0,
@@ -821,7 +821,7 @@
     "no_live_effects": true
   },
   "recalibration": {
-    "priority": "Gmail connection → trusted draft/PDF Send → recipient verification",
+    "priority": "Gmail connection \u2192 trusted draft/PDF Send \u2192 recipient verification",
     "full_replacement_scope_retained": true,
     "separate_lanes": [
       "connection",
@@ -889,5 +889,10 @@
     "remote_runtime_staged": true,
     "staging_status": "demo-staging-status.json",
     "archive_relocation": "demo-archive-relocation.json"
+  },
+  "privacy_redaction": {
+    "scope": "Privacy redaction: controlled provider addresses replaced with reserved synthetic examples. These replacements are not the original observed provider values. Original source/evidence preserved privately with original SHA256.",
+    "original_sha256": "b49a021fbd943a7b31c4fe3a287004a2c4f1b7802fb3f7805b40a68c2eb86d0d",
+    "replacement_class": "reserved invalid.example addresses; no provider/account configuration change"
   }
 }

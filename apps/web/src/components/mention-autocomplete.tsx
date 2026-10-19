@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { api } from '@/lib/api';
+import { api, isSameWebSession } from '@/lib/api';
+import { matchingMentionGroups, type MentionGroup, type MentionSelection } from '@/lib/mention-suggestions';
 import { AtSign, Users } from 'lucide-react';
 import { PersonAvatar } from './person-avatar';
 
@@ -16,11 +17,9 @@ type ApiMember = Omit<Member, 'avatar_url'> & { avatar_url?: string | null; avat
 
 type Props = {
   query: string;
-  onSelect: (user: { id: string; name: string }) => void;
+  onSelect: (selection: MentionSelection) => void;
   onClose: () => void;
 };
-
-let cachedMembers: Member[] | null = null;
 
 function normalizeMembers(list: ApiMember[]): Member[] {
   return list.map((member) => ({
@@ -32,12 +31,17 @@ function normalizeMembers(list: ApiMember[]): Member[] {
 }
 
 export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
-  const [members, setMembers] = useState<Member[]>(cachedMembers || []);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [groups, setGroups] = useState<MentionGroup[]>([]);
+  const sessionRef = useRef(api.getAccessToken());
   const [selectedIndex, setSelectedIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (cachedMembers) return;
+    let active = true;
+    const session = api.getAccessToken();
+    sessionRef.current = session;
+    const current = () => active && isSameWebSession(session, api.getAccessToken());
     async function load() {
       try {
         const res = await api.get('/api/members');
@@ -45,14 +49,26 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
           const data = await res.json();
           const list: ApiMember[] = data.members || data || [];
           const normalized = normalizeMembers(list);
-          cachedMembers = normalized;
-          setMembers(normalized);
+          if (current()) setMembers(normalized);
         }
       } catch {
         // ignore
       }
     }
-    load();
+    async function loadGroups() {
+      try {
+        const res = await api.get('/api/groups');
+        if (res.ok) {
+          const data = await res.json();
+          if (current()) setGroups(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // Member selection remains available when group discovery fails.
+      }
+    }
+    void load();
+    void loadGroups();
+    return () => { active = false; };
   }, []);
 
   const lowerQuery = query.toLowerCase();
@@ -63,13 +79,22 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
   // Partition by kind: humans first, agents second (incl. Defty + BYOA), special last.
   const humans = filtered.filter((m) => m.kind !== 'agent');
   const agents = filtered.filter((m) => m.kind === 'agent');
+  const matchingGroups = matchingMentionGroups(groups, query);
 
   const specialOptions = [
     { id: 'here', name: 'here' },
     { id: 'all', name: 'all' },
   ].filter((o) => o.name.includes(lowerQuery));
 
-  const allOptions = [...humans, ...agents, ...specialOptions];
+  const allOptions: MentionSelection[] = [
+    ...[...humans, ...agents].map((member) => ({ type: 'person' as const, id: member.id, name: member.name })),
+    ...matchingGroups.map((group) => ({ ...group, type: 'group' as const })),
+    ...specialOptions.map((option) => ({ ...option, type: 'person' as const })),
+  ];
+  const select = useCallback((selection: MentionSelection) => {
+    if (isSameWebSession(sessionRef.current, api.getAccessToken())) onSelect(selection);
+    else onClose();
+  }, [onSelect, onClose]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -83,7 +108,7 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex((prev) => Math.min(prev + 1, allOptions.length - 1));
+        setSelectedIndex((prev) => Math.max(0, Math.min(prev + 1, allOptions.length - 1)));
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
@@ -92,11 +117,11 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
         if (allOptions[selectedIndex]) {
-          onSelect({ id: allOptions[selectedIndex].id, name: allOptions[selectedIndex].name });
+          select(allOptions[selectedIndex]);
         }
       }
     },
-    [allOptions, selectedIndex, onSelect, onClose]
+    [allOptions, selectedIndex, select, onClose]
   );
 
   useEffect(() => {
@@ -129,7 +154,7 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
       {humans.map((member, i) => (
         <button
           key={member.id}
-          onClick={() => onSelect({ id: member.id, name: member.name })}
+          onClick={() => select({ type: 'person', id: member.id, name: member.name })}
           className="w-full text-left px-3 py-2 flex items-center gap-2.5 text-[13px]"
           style={{
             background: selectedIndex === i ? 'var(--hover-tint)' : 'transparent',
@@ -150,7 +175,7 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
         return (
           <button
             key={agent.id}
-            onClick={() => onSelect({ id: agent.id, name: agent.name })}
+            onClick={() => select({ type: 'person', id: agent.id, name: agent.name })}
             className="w-full text-left px-3 py-2 flex items-center gap-2.5 text-[13px]"
             style={{
               background: selectedIndex === idx ? 'var(--hover-tint)' : 'transparent',
@@ -170,15 +195,28 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
           </button>
         );
       })}
-      {specialOptions.length > 0 && (humans.length > 0 || agents.length > 0) && (
+      {matchingGroups.map((group, i) => {
+        const idx = humans.length + agents.length + i;
+        return (
+          <button key={`group:${group.id}`} onClick={() => select({ ...group, type: 'group' })}
+            className="w-full text-left px-3 py-2 flex items-center gap-2.5 text-[13px]"
+            style={{ background: selectedIndex === idx ? 'var(--hover-tint)' : 'transparent', color: 'var(--foreground)' }}
+            onMouseEnter={() => setSelectedIndex(idx)}>
+            <Users size={18} />
+            <span><span className="block">@{group.handle}</span><span className="text-[11px]" style={{ color: 'var(--muted)' }}>{group.name}</span></span>
+            <span className="text-[11px] ml-auto" style={{ color: 'var(--muted)' }}>{group.member_count ?? 0} members</span>
+          </button>
+        );
+      })}
+      {specialOptions.length > 0 && (humans.length > 0 || agents.length > 0 || matchingGroups.length > 0) && (
         <div className="mx-3 my-1 h-px" style={{ background: 'var(--border)' }} />
       )}
       {specialOptions.map((opt, i) => {
-        const idx = humans.length + agents.length + i;
+        const idx = humans.length + agents.length + matchingGroups.length + i;
         return (
           <button
             key={opt.id}
-            onClick={() => onSelect({ id: opt.id, name: opt.name })}
+            onClick={() => select({ type: 'person', id: opt.id, name: opt.name })}
             className="w-full text-left px-3 py-2 flex items-center gap-2.5 text-[13px]"
             style={{
               background: selectedIndex === idx ? 'var(--hover-tint)' : 'transparent',

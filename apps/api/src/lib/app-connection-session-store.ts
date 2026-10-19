@@ -1,10 +1,11 @@
+import {unstartedReviewClosure,matchesUnstartedReviewClosure,UNSTARTED_REVIEW_CLOSURE_ACTION} from './app-connection-review-closure.js';
 import {appConnectionForms} from '../../../../packages/db/src/schema/app-connection-forms.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
 import {AppError} from './app-errors.js';
 import {appConnectionCredentialRepairReservation,appConnectionCredentialRepairSourceIsSuperseded} from './app-connection-credential-repair-fence.js';
 import { and, eq, ne, sql,inArray,or,notInArray } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
-import { appConnectionSessions,appRuns,appRunAttempts,appRuntimeBindings } from '@deft/db/schema';
+import { auditLog,appConnectionSessions,appRuns,appRunAttempts,appRuntimeBindings } from '@deft/db/schema';
 import { db } from './db.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord, type AppConnectionSessionLocator } from './app-connection-session-service.js';
 import type { ExperienceCaller } from './app-experience-service.js';
@@ -33,11 +34,15 @@ export function connectionSessionAdmissionFence(scope: AppConnectionSessionRecor
 /** Durable commit-before-IO store; every mutation scopes org and owner. */
 export class PostgresAppConnectionSessionStore {
   constructor(private readonly database: typeof db = db, private readonly caller?: ExperienceCaller) {}
-  async create(raw: AppConnectionSessionRecord) {
+  async create(raw: AppConnectionSessionRecord) {return this.insertSession(raw,false);}
+  async createUnstartedReviewClosure(raw:AppConnectionSessionRecord){return this.insertSession(raw,true);}
+  private async insertSession(raw:AppConnectionSessionRecord,closing:boolean) {
     const record = AppConnectionSessionRecordSchema.parse(raw);
     if (!this.caller || this.caller.org_id !== record.scope.org_id || this.caller.user_id !== record.scope.owner_user_id
       || !Number.isFinite(this.caller.access_expires_at)) return false;
     const caller = this.caller;
+    const closure=closing?unstartedReviewClosure(record):null;if(closing&&!closure)return false;
+    const admission=closing?AppConnectionSessionRecordSchema.parse({...record,revision:0,state:'starting'}):record;
     return this.database.transaction(async tx => {
       const domain = [record.scope.org_id, record.scope.owner_user_id, record.scope.installation_id, record.scope.target_key].join(':');
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('deft.app_connection_session.target.v1'),hashtext(${domain}))`);
@@ -55,11 +60,22 @@ export class PostgresAppConnectionSessionStore {
         .where(connectionSessionAdmissionFence(record.scope, new Date(),(record.upgrade??record.credential_repair)?.source.session_id)).limit(1).for('update');
       if (competing) return false;
       const rows = await tx.insert(appConnectionSessions).values({ org_id: record.scope.org_id,
-      owner_user_id: record.scope.owner_user_id, session_id: record.session_id, revision: record.revision,
-      web_session_id: caller.sid, access_expires_at: new Date(caller.access_expires_at!), record,
+      owner_user_id: record.scope.owner_user_id, session_id: record.session_id, revision: admission.revision,
+      web_session_id: caller.sid, access_expires_at: new Date(caller.access_expires_at!), record:admission,
       created_at: new Date(record.created_at), updated_at: new Date(record.updated_at) }).onConflictDoNothing().returning({ id: appConnectionSessions.session_id });
+      if(rows.length===1&&closure){
+        const closed=await tx.update(appConnectionSessions).set({revision:record.revision,record,updated_at:new Date(record.updated_at)}).where(and(where({org_id:record.scope.org_id,owner_user_id:record.scope.owner_user_id,session_id:record.session_id}),eq(appConnectionSessions.revision,0))).returning({id:appConnectionSessions.session_id});
+        if(closed.length!==1)throw new AppError('Unstarted review closure changed','APP_STATE_CONFLICT',409);
+        await tx.insert(auditLog).values({org_id:record.scope.org_id,actor_type:'user',actor_id:record.scope.owner_user_id,action:UNSTARTED_REVIEW_CLOSURE_ACTION,entity_type:'app_connection_session',entity_id:record.session_id,metadata:closure});}
       return rows.length === 1;
     });
+  }
+  /** Server-owned audit provenance; public audit API has no write operation. */
+  async readUnstartedReviewClosure(locator:AppConnectionSessionLocator){
+    if(!this.caller||this.caller.org_id!==locator.org_id||this.caller.user_id!==locator.owner_user_id)return null;
+    const row=await this.metadata(locator);if(!row)return null;const record=AppConnectionSessionRecordSchema.parse(row.record),expected=unstartedReviewClosure(record);if(!expected)return null;
+    const rows=await this.database.select({metadata:auditLog.metadata}).from(auditLog).where(and(eq(auditLog.org_id,locator.org_id),eq(auditLog.actor_type,'user'),eq(auditLog.actor_id,locator.owner_user_id),eq(auditLog.action,UNSTARTED_REVIEW_CLOSURE_ACTION),eq(auditLog.entity_type,'app_connection_session'),eq(auditLog.entity_id,locator.session_id),sql`${auditLog.metadata}->>'scope_digest'=${expected.scope_digest}`,sql`${auditLog.metadata}->>'closed_at'=${expected.closed_at}`)).limit(2);
+    return rows.length===1&&matchesUnstartedReviewClosure(rows[0]!.metadata,record)?expected:null;
   }
   async read(locator: AppConnectionSessionLocator, audience:'oauth'|'data'='oauth') {
     const row = await this.metadata(locator);

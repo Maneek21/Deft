@@ -410,6 +410,22 @@ function getMessageTarget(params: Record<string, any>) {
   return 'chat';
 }
 
+export function getAgentActionProposerName(action: AgentActionForPresentation): string {
+  const employee = cleanText(action.employee_name);
+  if (action.proposer === 'user') return 'Workspace user';
+  if (action.proposer === 'employee') return employee || 'Connected agent';
+  if (action.proposer === 'defty') return 'Defty';
+  return action.source === 'mcp' ? employee || 'Connected agent' : 'Defty';
+}
+
+export function getTaskReviewAssignment(params: Record<string, unknown>): { label: string; value: string }[] {
+  return [
+    { label: 'Assignee', name: getNestedStringParam(params, ['assignee_name', 'assignee', 'patch.assignee_name']), id: getNestedStringParam(params, ['assignee_id', 'patch.assignee_id']) },
+    { label: 'Project', name: getNestedStringParam(params, ['project_name', 'project_title']), id: getNestedStringParam(params, ['project_id', 'patch.project_id']) },
+  ].filter(field => field.name || field.id).map(field => ({ label: field.label,
+    value: field.name && field.id ? `${field.name} (ID: ${field.id})` : field.name || `ID: ${field.id}` }));
+}
+
 export function getAgentActionPresentation(action: AgentActionForPresentation): ApprovalCardPresentation {
   const { params } = action;
   const kind = actionKind(action.action);
@@ -423,6 +439,8 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
   const scope = getScopeLabel(params);
   const confidence = formatConfidence(getNumberParam(params, ['confidence', 'capture_confidence', 'classification_confidence']));
   const age = formatAge(action.created_at);
+  const proposerName = getAgentActionProposerName(action);
+  const sourceLabel = age ? `Source: ${proposerName} - ${age}` : `Source: ${proposerName}`;
   const chips: ApprovalCardPresentation['chips'] = [];
 
   if (action.action === 'app_run_invoke' || action.source === 'app_run') {
@@ -479,7 +497,7 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'task',
       eyebrow: 'Task draft',
-      headline: 'Defty drafted a task',
+      headline: `${proposerName} drafted a task`,
       title: title || 'Create a task',
       summary: content
         ? truncateApprovalText(content, 140)
@@ -488,7 +506,7 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
           : 'Review the proposed task before it is added to the workspace.',
       approveLabel: 'Approve task',
       doneLabel: 'Task created',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Task details',
       emptyDetails: 'Prepared from this thread. A receipt is saved after approval or dismissal.',
       badge: priority ? priority.toUpperCase() : undefined,
@@ -508,12 +526,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'task',
       eyebrow: 'Task update',
-      headline: 'Defty drafted a task update',
+      headline: `${proposerName} drafted a task update`,
       title: getTaskPatchSummary(params, action.action),
       summary: content ? truncateApprovalText(content, 140) : 'Review the proposed task change before it is applied.',
       approveLabel: 'Approve update',
       doneLabel: 'Task updated',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Change details',
       emptyDetails: 'The card shows the proposed task mutation. A receipt is saved after approval or dismissal.',
       chips,
@@ -528,12 +546,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'message',
       eyebrow: 'Message draft',
-      headline: 'Defty drafted a message',
+      headline: `${proposerName} drafted a message`,
       title: `Post to ${target}`,
       summary: content ? truncateApprovalText(content, 150) : 'Review the exact message before it is posted.',
       approveLabel: 'Approve post',
       doneLabel: 'Message posted',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Full message',
       emptyDetails: 'Nothing is posted until you approve this draft.',
       badge: 'Visible',
@@ -550,12 +568,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'knowledge',
       eyebrow: action.action.includes('update') || action.action === 'memory_update' ? 'Knowledge update' : 'Knowledge draft',
-      headline: 'Defty drafted a knowledge change',
+      headline: `${proposerName} drafted a knowledge change`,
       title: title || getNestedStringParam(params, ['slug']) || 'Save knowledge',
       summary: content ? truncateApprovalText(content, 150) : 'Review what will be saved into shared memory.',
       approveLabel: action.action.includes('update') ? 'Approve update' : 'Approve save',
       doneLabel: action.action.includes('update') ? 'Knowledge updated' : 'Knowledge saved',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Knowledge preview',
       emptyDetails: 'This changes the workspace memory. Review scope and source before approving.',
       chips,
@@ -569,12 +587,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'note',
       eyebrow: 'Note draft',
-      headline: 'Defty drafted a note',
+      headline: `${proposerName} drafted a note`,
       title: title || 'Create a note',
       summary: content ? truncateApprovalText(content, 150) : 'Review the note before it is saved.',
       approveLabel: 'Approve note',
       doneLabel: 'Note saved',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Note preview',
       emptyDetails: 'This creates a note using the visibility shown above.',
       chips,
@@ -588,12 +606,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'calendar',
       eyebrow: action.action === 'create_reminder' ? 'Reminder draft' : 'Calendar draft',
-      headline: 'Defty drafted a calendar change',
+      headline: `${proposerName} drafted a calendar change`,
       title: title || content || 'Create reminder',
       summary: content ? truncateApprovalText(content, 150) : 'Review the timing before this is scheduled.',
       approveLabel: action.action === 'create_reminder' ? 'Approve reminder' : 'Approve calendar',
       doneLabel: action.action === 'create_reminder' ? 'Reminder created' : 'Calendar updated',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Timing details',
       emptyDetails: 'This will create or change a scheduled item.',
       chips,
@@ -606,12 +624,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'canvas',
       eyebrow: 'Canvas update',
-      headline: 'Defty drafted a canvas update',
+      headline: `${proposerName} drafted a canvas update`,
       title: title || 'Update shared canvas',
       summary: content ? truncateApprovalText(content, 150) : 'Review the shared canvas change before applying it.',
       approveLabel: 'Approve canvas',
       doneLabel: 'Canvas updated',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Canvas preview',
       emptyDetails: 'This changes a shared surface visible to the space.',
       chips,
@@ -705,7 +723,7 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
         : 'Review the record and task before creating their link.',
       approveLabel: unlink ? 'Approve unlink' : 'Approve link',
       doneLabel: unlink ? 'Record unlinked' : 'Record linked',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Task link details',
       emptyDetails: 'The record and task are checked for workspace access before this link changes.',
       badge: 'Task link',
@@ -721,12 +739,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'plan',
       eyebrow: 'Plan draft',
-      headline: 'Defty drafted a plan',
+      headline: `${proposerName} drafted a plan`,
       title: title || 'Review plan',
       summary: content ? truncateApprovalText(content, 150) : 'Review the sequence before Defty starts executing.',
       approveLabel: 'Approve plan',
       doneLabel: 'Plan approved',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Plan details',
       emptyDetails: 'Plan steps are listed in the details payload.',
       badge: 'Multi-step',
@@ -742,12 +760,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       kind,
       icon: 'admin',
       eyebrow: 'Admin review',
-      headline: 'Defty drafted an admin change',
+      headline: `${proposerName} drafted an admin change`,
       title: title || action.action.replaceAll('_', ' '),
       summary: content ? truncateApprovalText(content, 150) : 'Review this workspace-level change carefully.',
       approveLabel: 'Approve change',
       doneLabel: 'Admin change applied',
-      sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+      sourceLabel,
       detailsLabel: 'Admin details',
       emptyDetails: 'This may affect workspace access, agents, or connected apps.',
       badge: 'Sensitive',
@@ -761,12 +779,12 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
     kind,
     icon: 'generic',
     eyebrow: 'Action draft',
-    headline: `Defty drafted ${action.action.replaceAll('_', ' ')}`,
+    headline: `${proposerName} drafted ${action.action.replaceAll('_', ' ')}`,
     title: title || action.action.replaceAll('_', ' '),
     summary: content ? truncateApprovalText(content, 150) : 'Review the proposed action before it runs.',
     approveLabel: 'Approve',
     doneLabel: 'Action completed',
-    sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
+    sourceLabel,
     detailsLabel: 'Action details',
     emptyDetails: 'Review the parameters below before approving.',
     chips,

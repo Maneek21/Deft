@@ -72,3 +72,9 @@ test('reason selector does not claim readiness when no provider is configured', 
   assert.equal(selected.ready, false);
   assert.equal(selected.source, 'none');
 });
+
+test('OpenAI default reasoning is Sol and explicit routes remain authoritative', () => {
+  assert.equal(selectReasonProvider({ orgApiKeys: { openai: 'org-key' } }).model, 'gpt-5.6-sol');
+  assert.equal(selectReasonProvider({ envApiKeys: { openai: 'env-key', anthropic: 'other-key' } }).model, 'gpt-5.6-sol');
+  assert.equal(selectReasonProvider({ route: { provider: 'openai', model: 'gpt-4o' }, orgApiKeys: { openai: 'key' } }).model, 'gpt-4o');
+});

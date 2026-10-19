@@ -6,8 +6,10 @@ import { once } from 'node:events';
 import { MessageChannel, Worker } from 'node:worker_threads';
 import { createReviewedResourceSyncFixture } from './fixtures/resource-sync-v5.js';
 
-const target = 'postgresql://gate_g_test@127.0.0.1:55435/gate_g_20260926_c10_exposure_matrix_test';
-const safe = process.env.DATABASE_URL === target && process.env.DEFT_TEST_DATABASE_URL === target;
+const target = process.env.DEFT_TEST_DATABASE_URL;
+const safe = target !== undefined && process.env.DATABASE_URL === target
+  && new URL(target).hostname === '127.0.0.1' && ['55435', '55436'].includes(new URL(target).port)
+  && new URL(target).pathname === '/gate_g_20260926_c10_exposure_matrix_test';
 Object.assign(process.env, { DEFT_APPS_ENABLED: 'true', DEFT_APP_RUNS_ENABLED: 'true',
   DEFT_APP_RUN_APP_ORIGIN_ENABLED: 'true', DEFT_APP_RESOURCE_SYNC_CHANNEL_ENABLED: 'true',
   DEFT_APP_RUNTIME_CHANNEL_ENABLED: 'false', DEFT_APP_EXPERIENCE_RESOURCE_EXPOSURE_ENABLED: 'true' });
@@ -46,7 +48,7 @@ async function harness(descriptor?: any, records?: Record<string, unknown>[], co
     return { status: response.status, body: await response.json() as any };
   };
   const open = async (accept = true) => {
-    const created = await call(`/${f.installation_id}/main/sessions`, 'POST'); assert.equal(created.status, 200);
+    const created = await call(`/${f.installation_id}/main/sessions`, 'POST', {}); assert.equal(created.status, 200);
     const id = created.body.pin.session_id as string;
     const prepared = await call(`/sessions/${id}/exposure/review`, 'POST', {}); assert.equal(prepared.status, 200);
     const input = { review_token: prepared.body.review_token, review_digest: prepared.body.review_digest, accept_exposure: true };
@@ -159,6 +161,9 @@ for (const mutation of mutations) test(`B04/B05/S02 held ${mutation.name}: deny 
         mutation.set.includes('$3') ? [h.f.org_id, ids, h.f.owner_user_id] : [h.f.org_id, ids]);
     }
     await blocker.query('COMMIT'); noDisclosure(await reading); if (accepting) noDisclosure(await accepting);
+    const status = await h.call(`/sessions/${accepted.id}/exposure`);
+    if (mutation.exposureOnly) assert.deepEqual(status, { status: 200, body: { active: false } });
+    else noDisclosure(status);
     const exposures = await h.db.select().from(h.s.appExperienceResourceExposures).where(h.d.eq(h.s.appExperienceResourceExposures.org_id, h.f.org_id));
     assert.equal(exposures.length, 1, 'failed acceptance creates no exposure');
     const audit = await h.db.select().from(h.s.appExperienceResourceExposureAudit).where(h.d.eq(h.s.appExperienceResourceExposureAudit.org_id, h.f.org_id));
@@ -196,6 +201,58 @@ test('B03/B04 immutable version grant registration and binding pins reject DB ta
   } finally { await client.query('ROLLBACK'); await client.end(); await h.close(); }
 });
 
+test('exposure status remains available during checkpoint publication while private reads keep their lock fence', { skip: !safe }, async () => {
+  const h = await harness(); const opened = await h.open();
+  const blocker = new h.pg.Client({ connectionString: target }); await blocker.connect();
+  try {
+    const baseline = await h.call(`/sessions/${opened.id}/exposure`);
+    assert.equal(baseline.status, 200);
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM app_sync_checkpoints WHERE org_id=$1 AND id=$2 FOR UPDATE', [h.f.org_id, h.f.checkpoint_id]);
+    // The writer remains uncommitted throughout both calls, exceeding the
+    // existing 250ms reader lock bound without introducing a retry.
+    const status = await h.call(`/sessions/${opened.id}/exposure`);
+    assert.deepEqual(status, baseline, 'status receipts need no publication cursor or content');
+    assert.deepEqual(Object.keys(status.body).sort(), ['active', 'expires_at', 'exposure_epoch', 'exposure_id', 'review_digest']);
+    const read = await h.call(`/sessions/${opened.id}/resources/inbox`, 'POST', list);
+    assert.equal(read.status, 503, 'private content still waits for the checkpoint publication fence');
+    assert.equal(JSON.stringify(read.body).includes(sentinel), false);
+    await blocker.query('UPDATE app_sync_checkpoints SET state=\'paused\' WHERE org_id=$1 AND id=$2', [h.f.org_id, h.f.checkpoint_id]);
+    await blocker.query('COMMIT');
+    noDisclosure(await h.call(`/sessions/${opened.id}/exposure`));
+  } finally { await blocker.query('ROLLBACK'); await blocker.end(); await h.close(); }
+});
+
+test('exposure status waits for exposure revocation and returns only inactive state', { skip: !safe }, async () => {
+  const h = await harness(); const opened = await h.open();
+  const blocker = new h.pg.Client({ connectionString: target }); await blocker.connect();
+  try {
+    await blocker.query('BEGIN');
+    const { rows: [process] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    await blocker.query('SELECT id FROM app_experience_resource_exposures WHERE org_id=$1 AND id=$2 FOR UPDATE', [h.f.org_id, opened.exposure.exposure_id]);
+    const status = h.call(`/sessions/${opened.id}/exposure`);
+    await actualWait(blocker, process.id);
+    await blocker.query('UPDATE app_experience_resource_exposures SET revoked_at=now(),exposure_epoch=exposure_epoch+1 WHERE org_id=$1 AND id=$2', [h.f.org_id, opened.exposure.exposure_id]);
+    await blocker.query('COMMIT');
+    assert.deepEqual(await status, { status: 200, body: { active: false } });
+  } finally { await blocker.query('ROLLBACK'); await blocker.end(); await h.close(); }
+});
+
+test('exposure status still waits for current binding authority and denies its committed revocation', { skip: !safe }, async () => {
+  const h = await harness(); const opened = await h.open();
+  const blocker = new h.pg.Client({ connectionString: target }); await blocker.connect();
+  try {
+    await blocker.query('BEGIN');
+    const { rows: [process] } = await blocker.query('SELECT pg_backend_pid() AS id');
+    await blocker.query('SELECT id FROM app_resource_bindings WHERE org_id=$1 AND id=$2 FOR UPDATE', [h.f.org_id, h.f.binding_id]);
+    const status = h.call(`/sessions/${opened.id}/exposure`);
+    await actualWait(blocker, process.id);
+    await blocker.query('UPDATE app_resource_bindings SET state=\'revoked\' WHERE org_id=$1 AND id=$2', [h.f.org_id, h.f.binding_id]);
+    await blocker.query('COMMIT');
+    noDisclosure(await status);
+  } finally { await blocker.query('ROLLBACK'); await blocker.end(); await h.close(); }
+});
+
 for (const mode of ['binding consent expiry', 'exposure expiry'] as const) test(`B05/S02 held ${mode} uses a private service clock and delivers no body`, { skip: !safe }, async () => {
   // Only this fixture's consent clock is shortened. Host and PostgreSQL clocks
   // remain untouched; the real exposure repository and SQL lock limits remain.
@@ -206,7 +263,7 @@ for (const mode of ['binding consent expiry', 'exposure expiry'] as const) test(
   let now = new Date();
   const service = new AppExperienceExposureService(h.runtime.keys, undefined, () => now);
   const caller = { org_id: verified.org_id, user_id: verified.id, sid: verified.sid, access_expires_at: verified.exp * 1000 };
-  const created = await h.call(`/${h.f.installation_id}/main/sessions`, 'POST'); assert.equal(created.status, 200);
+  const created = await h.call(`/${h.f.installation_id}/main/sessions`, 'POST', {}); assert.equal(created.status, 200);
   const id = created.body.pin.session_id;
   const prepared = await service.prepare(mode === 'exposure expiry' ? { ...caller, access_expires_at: now.getTime() + 5000 } : caller, id);
   const accepted = await service.accept(caller, id, { review_token: prepared.review_token, review_digest: prepared.review_digest, accept_exposure: true });
@@ -343,6 +400,10 @@ test(`B04 real Node Worker transferred-port transport: ${mode}`, { skip: !safe, 
   const send = async (value: unknown) => { const ack = once(worker, 'message'); worker.postMessage({ send: value }); await ack; };
   const request = { version: 'deft.experience_bridge.v1', kind: 'request', session_id: opened.id,
     sequence: 1, request_id: 'request_1', operation: 'resource', key: 'inbox', input: list };
+  const revocationReply = mode === 'late response after port revoke' ? new Promise<void>(resolve => {
+    const listener = (value: any) => { if (value.response) { worker.off('message', listener); resolve(); } };
+    worker.on('message', listener);
+  }) : undefined;
   try {
     const ready = once(worker, 'message'); worker.postMessage({ port: port2 }, [port2]); await ready;
     if (mode === 'late response after port revoke') {
@@ -355,7 +416,15 @@ test(`B04 real Node Worker transferred-port transport: ${mode}`, { skip: !safe, 
     await send(mode === 'replayed sequence' ? request : mode === 'undeclared resource' ? { ...request, key: 'private_other' }
       : { ...request, sequence: 2, request_id: 'request_2', session_id: randomUUID() });
     await closed; assert.equal(bridge.active, false);
-    if (mode === 'late response after port revoke') { release(); await callbackFinished; assert.equal(received.length, 0); }
+    if (mode === 'late response after port revoke') {
+      release(); await callbackFinished; await revocationReply;
+      await new Promise(resolve => setImmediate(resolve));
+      // Revocation settles the pending SDK promise with uncertainty. The late
+      // successful body must never replace that sole terminal cancellation.
+      assert.deepEqual(received, [{ version: 'deft.experience_bridge.v1', kind: 'response',
+        session_id: opened.id, request_id: 'request_1', ok: false, code: 'UNAVAILABLE' }]);
+      assert.equal(JSON.stringify(received).includes(sentinel), false);
+    }
     assert.equal(calls, mode === 'undeclared resource' ? 0 : 1);
     // The same old transferred port cannot be made authoritative by sending a
     // fresh-looking request after the production bridge has closed it.

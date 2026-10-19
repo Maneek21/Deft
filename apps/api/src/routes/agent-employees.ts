@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
+import { hermesBundleAvailability, type HermesBundleAvailability } from '../lib/hermes-release.js';
 import {
   EMPLOYEE_MCP_APP_SCOPES,
   EMPLOYEE_MCP_RESOURCE_SCOPES,
@@ -597,11 +598,6 @@ function agentChannelEndpointUrl(): string {
   return `${apiBase.replace(/\/$/, '')}/api/agent-channel/v1`;
 }
 
-function hermesIntegrationBundleUrl(): string {
-  return process.env.DEFT_HERMES_BUNDLE_URL?.trim()
-    || `https://github.com/Maneek21/Deft/releases/download/v${DEFT_RELEASE_VERSION}/deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz`;
-}
-
 export const HERMES_INTEGRATION_VERSION = '0.5.1';
 
 const CERTIFICATION_REQUIRED_TOOLS = [
@@ -628,6 +624,8 @@ type RuntimeSetup = {
   channel_capabilities: string[];
   integration_version: string | null;
   integration_bundle_url: string | null;
+  integration_bundle_status: HermesBundleAvailability['status'] | null;
+  integration_bundle_detail: string | null;
   mcp_endpoint_url: string;
   channel_endpoint_url: string;
   tool_name_style: 'bare' | 'server_prefixed';
@@ -1203,6 +1201,7 @@ function buildCertificationPrompt(
 export function buildRuntimeSetup(
   employee: { name: string; slug: string; runtime_kind?: string | null },
   nonce: string | null,
+  bundle = hermesBundleAvailability(DEFT_RELEASE_VERSION),
 ): RuntimeSetup {
   const runtimeKind = runtimeKindOf(employee);
   const endpoint = runtimeKind === 'hermes' ? hermesMcpEndpointUrl() : mcpEndpointUrl();
@@ -1216,13 +1215,17 @@ export function buildRuntimeSetup(
       channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
       channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
       integration_version: HERMES_INTEGRATION_VERSION,
-      integration_bundle_url: hermesIntegrationBundleUrl(),
+      integration_bundle_url: bundle.url,
+      integration_bundle_status: bundle.status,
+      integration_bundle_detail: bundle.detail,
       mcp_endpoint_url: endpoint,
       channel_endpoint_url: channelEndpoint,
       tool_name_style: 'server_prefixed',
       tool_call_names: CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool)),
       setup_steps: [
-        `Download and extract the immutable Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}.`,
+        bundle.url
+          ? `Download and verify the Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}. ${bundle.detail}`
+          : bundle.detail,
         'Install the bundled deft-platform, deft-employee, and deft-memory plugin directories into the active Hermes profile; do not copy them from another Deft checkout.',
         'Enable the three bundled plugins in the active Hermes config.yaml. deft-platform must be the only Agent Channel delivery adapter for this employee.',
         'The native adapter will auto-load the bundled deft-employee:runtime skill into each new Deft session; keep deft-employee enabled and restart old sessions after an integration upgrade.',
@@ -1236,11 +1239,11 @@ export function buildRuntimeSetup(
         'Rollback only: stop Hermes, disable deft-platform, rotate both employee credentials, and then use the matched legacy Node bridge. Never run native and legacy adapters together.',
       ],
       commands: [
-        {
+        ...(bundle.url ? [{
           label: 'Download matched Deft integration',
-          command: `curl -fL -o deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz ${hermesIntegrationBundleUrl()}`,
-          description: `Downloads the checksummed Hermes integration built for Deft ${DEFT_RELEASE_VERSION}.`,
-        },
+          command: `curl -fL -o deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz ${bundle.url}`,
+          description: bundle.detail,
+        }] : []),
         {
           label: 'Probe native Deft readiness',
           command: 'python ./plugins/deft-platform/readiness.py',
@@ -1329,6 +1332,8 @@ export function buildRuntimeSetup(
     channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
     integration_version: null,
     integration_bundle_url: null,
+    integration_bundle_status: null,
+    integration_bundle_detail: null,
     mcp_endpoint_url: endpoint,
     channel_endpoint_url: channelEndpoint,
     tool_name_style: 'bare',

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { workerStartup } from './lib/worker-startup.js';
 import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { app } from './index.js';
@@ -14,6 +15,7 @@ let shuttingDown = false;
 // index.ts (process.argv[1] string-endsWith check) silently disabled the
 // listen() under `tsx watch` because argv[1] became the tsx CLI script,
 // not our source file. Splitting removes the guard entirely.
+workerStartup.require();
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
 
@@ -38,28 +40,20 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     console.warn('[startup] MCP credential migration failed:', (err as Error).message);
   }
 
-  // Start background job workers — uses Postgres, no Redis needed
-  try {
+  // Startup maintenance is idempotent. A transient database outage must not
+  // leave an otherwise reachable server with a permanently unclaimed queue.
+  const workersReady = await workerStartup.start(async () => {
     const { startWorkers, stopWorkers } = await import('./workers/index.js');
     const { initScheduler } = await import('./lib/job-scheduler.js');
-    if (shuttingDown) return;
+    if (shuttingDown) throw Error('Server stopping');
     await startWorkers();
-    // SIGTERM can arrive while startup recovery/rehydration is awaiting the
-    // database. If shutdown already drained an as-yet-unstarted worker, stop
-    // the worker that just came online instead of leaving new timers behind.
-    if (shuttingDown) {
-      await stopWorkers({ timeoutMs: 10_000 });
-      return;
-    }
+    if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
     await initScheduler();
-    if (shuttingDown) {
-      await stopWorkers({ timeoutMs: 10_000 });
-      return;
-    }
-    console.log('[startup] Job workers and scheduler started');
-  } catch (err) {
-    console.warn('[startup] Job workers failed to start:', (err as Error).message);
-  }
+    if (shuttingDown) { await stopWorkers({ timeoutMs: 10_000 }); throw Error('Server stopping'); }
+  }, { onFailure: (attempt, error) => console.warn(`[startup] Job workers attempt ${attempt}/5 failed:`, (error as Error).message) });
+  if (shuttingDown) return;
+  if (workersReady) console.log('[startup] Job workers and scheduler started');
+  else console.warn('[startup] Job workers unavailable after bounded startup retries');
 
   // Self-hosted v1 — single-org hard-block. Warn the operator if the DB
   // already holds more than one workspace; signup is blocked server-side
@@ -86,6 +80,7 @@ setupSocket(server as unknown as Server);
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  workerStartup.stop();
   console.log(`[shutdown] ${signal} received; draining HTTP and job workers`);
 
   const httpServer = server as unknown as Server;

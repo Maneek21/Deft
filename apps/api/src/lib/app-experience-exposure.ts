@@ -127,7 +127,7 @@ export class AppExperienceExposureService {
 
 
 
-  private async locked(tx: Tx, caller: ExperienceCaller, sessionId: string, write: boolean, signal?: AbortSignal, allowExpired = false, actionKey?: string, connectionActions = false, metrics?: BrowseAuthorityPhase) {
+  private async locked(tx: Tx, caller: ExperienceCaller, sessionId: string, write: boolean, signal?: AbortSignal, allowExpired = false, actionKey?: string, connectionActions = false, metrics?: BrowseAuthorityPhase, checkpointMode: 'publication' | 'status' = 'publication') {
 
     uuid.parse(sessionId); signal?.throwIfAborted();
 
@@ -269,7 +269,11 @@ export class AppExperienceExposureService {
 
     if (checkpointLocators.length !== bindingIds.length || new Set(checkpointLocators.map(c => c.resource_binding_id)).size !== bindingIds.length) throw exposureUnavailable();
 
-    for (const checkpoint of checkpointLocators) await tx.execute(sql`SELECT id FROM app_sync_checkpoints WHERE org_id=${caller.org_id} AND id=${checkpoint.id} FOR SHARE`);
+    // Status returns only an exposure receipt, never checkpoint cursors,
+    // projections, content, or read/action capabilities. Its committed active
+    // checkpoint observations below need not serialize with page publication.
+    // Every data delivery and mutation retains the publication fence.
+    if (checkpointMode === 'publication') for (const checkpoint of checkpointLocators) await tx.execute(sql`SELECT id FROM app_sync_checkpoints WHERE org_id=${caller.org_id} AND id=${checkpoint.id} FOR SHARE`);
 
     const [session] = await tx.select().from(appExperienceSessions).where(and(eq(appExperienceSessions.org_id, caller.org_id),
 
@@ -1687,7 +1691,7 @@ export class AppExperienceExposureService {
 
     return this.repository.transaction(async tx => {
 
-      const context = await this.locked(tx, caller, sessionId, false, signal);
+      const context = await this.locked(tx, caller, sessionId, false, signal, false, undefined, false, undefined, 'status');
 
       if (!context.exposure) return { active: false as const };
 

@@ -23,6 +23,7 @@ const USER_B_EMAIL = 'mywork-user-b@test.local';
 
 let testApp: Hono | null = null;
 let projectId: string | null = null;
+let createdProjectId: string | null = null;
 const taskIds: string[] = [];
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
@@ -76,6 +77,7 @@ async function seedFixtures() {
         [ORG_ID, USER_A_ID],
       );
       projectId = r.rows[0].id as string;
+      createdProjectId = projectId;
     }
 
     // Seed 3 in_progress tasks for user A
@@ -119,6 +121,10 @@ async function teardownFixtures() {
         `DELETE FROM tasks WHERE id = ANY($1::text[])`,
         [taskIds],
       );
+    }
+    if (createdProjectId) {
+      await c.query(`DELETE FROM projects WHERE id = $1 AND org_id = $2`, [createdProjectId, ORG_ID]);
+      createdProjectId = null;
     }
     await c.query(
       `DELETE FROM org_members WHERE user_id IN ($1, $2)`,

@@ -1,3 +1,4 @@
+import {visibleCaptureActionSql} from '../lib/agent-action-visibility.js';
 import type { AppRunTransaction } from '../lib/app-run-repository.js';
 import { reconcileApprovalReplyText } from '../lib/agent-approval-copy.js';
 import { isPrivateDeftySpace } from '../lib/app-private-defty-message-guard.js';
@@ -43,6 +44,7 @@ import {
   spaceMembers,
 } from '@deft/db/schema';
 import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+import { DEFTY_EMAIL } from '../lib/defty-identity.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
 import { resolveReasonProvider, type ResolvedReasonProvider } from '../lib/org-ai-config.js';
@@ -244,6 +246,17 @@ async function maybePostApprovalConfirmation(params: {
       })
       .returning();
     const originalMetadata = (approvalMessage.metadata ?? {}) as Record<string, unknown>;
+    const [canonicalDeftyAuthor] = !proposingEmployeeId
+      ? await tx.select({ id: users.id }).from(users).where(and(
+          eq(users.id, approvalMessage.user_id), eq(users.email, DEFTY_EMAIL),
+          eq(users.kind, 'agent'), eq(users.is_agent, true),
+        )).limit(1)
+      : [];
+    // Only reconcile an agent's own proposal. A human request can also be the
+    // action source; its body and metadata belong to that human unchanged.
+    const canReconcileSource = proposingEmployee?.user_id === approvalMessage.user_id
+      || Boolean(canonicalDeftyAuthor);
+    if (!canReconcileSource) return { confirmation, approvalMessage, actor, reconciledMessage: undefined };
     const reconciledContent = reconcileApprovalReplyText(approvalMessage.content, content);
     const oldBlocks = Array.isArray(originalMetadata.agent_blocks) ? originalMetadata.agent_blocks : [];
     const [reconciledMessage] = await tx.update(messages).set({
@@ -271,63 +284,6 @@ async function maybePostApprovalConfirmation(params: {
   }
 }
 
-function visibleCaptureActionSql(user: { id: string; org_id: string }) {
-  return sql`(
-    ${agentActions.source} IS DISTINCT FROM 'defty_capture'
-    OR (
-      (
-        COALESCE(
-          ${agentActions.params}->>'source_space_id',
-          ${agentActions.params}->>'origin_space_id',
-          ${agentActions.params}->>'space_id'
-        ) IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM space_members agent_capture_sm
-          INNER JOIN spaces agent_capture_s
-            ON agent_capture_s.id = agent_capture_sm.space_id
-          WHERE agent_capture_sm.space_id = COALESCE(
-              ${agentActions.params}->>'source_space_id',
-              ${agentActions.params}->>'origin_space_id',
-              ${agentActions.params}->>'space_id'
-            )
-            AND agent_capture_sm.user_id = ${user.id}
-            AND agent_capture_s.org_id = ${user.org_id}
-            AND agent_capture_s.is_archived = false
-        )
-      )
-      AND (
-        ${agentActions.params}->>'source_message_id' IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM messages agent_capture_m
-          INNER JOIN space_members agent_capture_msg_sm
-            ON agent_capture_msg_sm.space_id = agent_capture_m.space_id
-          INNER JOIN spaces agent_capture_msg_s
-            ON agent_capture_msg_s.id = agent_capture_m.space_id
-          WHERE agent_capture_m.id = ${agentActions.params}->>'source_message_id'
-            AND agent_capture_m.org_id = ${user.org_id}
-            AND agent_capture_m.is_deleted = false
-            AND agent_capture_msg_sm.user_id = ${user.id}
-            AND agent_capture_msg_s.org_id = ${user.org_id}
-            AND agent_capture_msg_s.is_archived = false
-            AND (
-              COALESCE(
-                ${agentActions.params}->>'source_space_id',
-                ${agentActions.params}->>'origin_space_id',
-                ${agentActions.params}->>'space_id'
-              ) IS NULL
-              OR agent_capture_m.space_id = COALESCE(
-                ${agentActions.params}->>'source_space_id',
-                ${agentActions.params}->>'origin_space_id',
-                ${agentActions.params}->>'space_id'
-              )
-            )
-        )
-      )
-    )
-  )`;
-}
 
 function visibleActionSql(user: { id: string; org_id: string; role?: string }) {
   return and(
@@ -671,6 +627,7 @@ async function buildStreamContext(
 
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS, ...MANAGER_TOOLS];
+  if (!nativeMentionsEnabled()) tools = tools.filter(tool => tool.name !== 'native_mentions_search');
   const {installedToolSchemas}=await import('../lib/app-installed-tool-discovery.js');
   const installedSchemas=await installedToolSchemas({kind:'defty',org_id:user.org_id,user_id:user.id,conversation_id:convoId,employee_id:agentEmployeeId},tools.map(tool=>tool.name)).catch(()=>[]);
   tools=[...tools,...installedSchemas.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.inputSchema as Anthropic.Tool['input_schema']}))];

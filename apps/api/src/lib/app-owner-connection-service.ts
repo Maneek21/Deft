@@ -23,6 +23,7 @@ import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { samplePrivateAccessClock } from './app-private-access-clock.js';
 import { isAppOwnerConnectionsEnabled } from './env.js';
+import { compatibleOwnerRecoverySnapshot } from './app-owner-recovery-targets.js';
 
 type Human = Extract<ModuleActor, { kind: 'human' }>;
 const activation = { expected_review_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), accept_host_policy: z.literal(true) };
@@ -195,12 +196,47 @@ export class AppOwnerConnectionService {
         // optional provider must not hide another provider's usable account.
         const locator = locators.find(row => row.policy_key === policy.key && row.app_version_id === reviewed.version.id && row.grant_snapshot_id === reviewed.grant.id);
         let admission: OwnerConnectionContext['policies'][number]['admission'] = null;
+        const recoveryTargets = new Set<string>();
         const owned = locator ? await tx.select().from(appResourceBindings).innerJoin(appRuntimeRegistrations, and(
           eq(appRuntimeRegistrations.org_id, appResourceBindings.org_id), eq(appRuntimeRegistrations.id, appResourceBindings.runtime_registration_id)))
           .where(and(eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.owner_user_id, actor.actor_id),
             eq(appRuntimeRegistrations.owner_connection_admission_id, locator.id), inArray(appResourceBindings.state, ['active', 'disabled']))).limit(16) : [];
         if (locator) {
           const current = await loadOwnerConnectionAdmission(tx, actor.org_id, { admission_id: locator.id, admission_digest: locator.review_digest });
+          const retained = await tx.select({ binding: { target_key: appResourceBindings.target_key, app_version_id: appResourceBindings.app_version_id,
+            grant_snapshot_id: appResourceBindings.grant_snapshot_id, descriptor_digest: appResourceBindings.descriptor_digest },
+            registration: { app_installation_id: appRuntimeRegistrations.app_installation_id, app_version_id: appRuntimeRegistrations.app_version_id,
+              grant_snapshot_id: appRuntimeRegistrations.grant_snapshot_id, operator_user_id: appRuntimeRegistrations.operator_user_id },
+            historical: { snapshot: appOwnerConnectionAdmissions.snapshot, review_digest: appOwnerConnectionAdmissions.review_digest,
+              app_installation_id: appOwnerConnectionAdmissions.app_installation_id, app_version_id: appOwnerConnectionAdmissions.app_version_id,
+              grant_snapshot_id: appOwnerConnectionAdmissions.grant_snapshot_id, operator_user_id: appOwnerConnectionAdmissions.operator_user_id } }).from(appResourceBindings)
+            .innerJoin(appRuntimeRegistrations, and(eq(appRuntimeRegistrations.org_id, appResourceBindings.org_id),
+              eq(appRuntimeRegistrations.id, appResourceBindings.runtime_registration_id)))
+            .innerJoin(appOwnerConnectionAdmissions, and(eq(appOwnerConnectionAdmissions.org_id, appRuntimeRegistrations.org_id),
+              eq(appOwnerConnectionAdmissions.id, appRuntimeRegistrations.owner_connection_admission_id),
+              eq(appOwnerConnectionAdmissions.review_digest, appRuntimeRegistrations.owner_connection_admission_digest)))
+            .where(and(eq(appResourceBindings.org_id, actor.org_id), eq(appResourceBindings.app_installation_id, installationId),
+              eq(appResourceBindings.owner_user_id, actor.actor_id), eq(appResourceBindings.resource_key, policy.resource_key),
+              eq(appResourceBindings.owner_scope, 'private_user'), eq(appResourceBindings.reviewed_by_user_id, actor.actor_id),
+              inArray(appResourceBindings.state, ['active', 'disabled']), eq(appRuntimeRegistrations.reviewed_by_user_id, actor.actor_id),
+              eq(appRuntimeRegistrations.operator_user_id, current.row.operator_user_id),
+              inArray(appRuntimeRegistrations.state, ['active', 'disabled']),
+              eq(appOwnerConnectionAdmissions.state, 'active'), isNull(appOwnerConnectionAdmissions.revoked_at),
+              eq(appOwnerConnectionAdmissions.policy_key, policy.key))).limit(257);
+          if (retained.length > 256) throw stale();
+          for (const { binding, registration, historical } of retained) {
+            const parsed = OwnerConnectionAdmissionSnapshotSchema.safeParse(historical.snapshot);
+            if (!parsed.success || digestAppGrantValue(parsed.data) !== historical.review_digest
+              || historical.app_installation_id !== installationId || registration.app_installation_id !== installationId
+              || binding.app_version_id !== registration.app_version_id || historical.app_version_id !== registration.app_version_id
+              || binding.grant_snapshot_id !== registration.grant_snapshot_id || historical.grant_snapshot_id !== registration.grant_snapshot_id
+              || parsed.data.app_version_id !== historical.app_version_id || parsed.data.grant_snapshot_id !== historical.grant_snapshot_id
+              || parsed.data.operator_user_id !== historical.operator_user_id || registration.operator_user_id !== historical.operator_user_id
+              || binding.descriptor_digest !== parsed.data.resource_descriptor_digest
+              || !compatibleOwnerRecoverySnapshot(current.snapshot, parsed.data)) continue;
+            recoveryTargets.add(binding.target_key);
+          }
+          if (recoveryTargets.size > 16) throw stale();
           const [operator] = await tx.select({ name: users.name }).from(users).where(eq(users.id, current.row.operator_user_id));
           admission = { ...current.reference, operator_user_id: current.row.operator_user_id, operator_label: operator?.name ?? 'Reviewed operator',
             resource_request: { ...current.reference, target_key: 'personal', consent_expires_at: new Date(clock.issuance().getTime()
@@ -212,7 +248,8 @@ export class AppOwnerConnectionService {
           actions: await tx.select({ action_key: appRuntimeBindings.action_key, binding_id: appRuntimeBindings.id, state: appRuntimeBindings.state })
             .from(appRuntimeBindings).where(and(eq(appRuntimeBindings.org_id, actor.org_id), eq(appRuntimeBindings.owner_resource_binding_id, binding.id),
               inArray(appRuntimeBindings.state, ['active', 'disabled']))).limit(16) })));
-        policies.push({ policy, status: admission ? 'admitted' : 'deployment_review_required', admission, bindings });
+        policies.push({ policy, status: admission ? 'admitted' : 'deployment_review_required', admission,
+          recovery_targets: [...recoveryTargets].sort().map(key => ({ key })), bindings });
       }
       await guard(tx); const deadline = guard.current_web_session_expires_at();
       afterCommit = () => { if (!isAppOwnerConnectionsEnabled() || clock.current() >= deadline) throw ownerConnectionDenied(); };

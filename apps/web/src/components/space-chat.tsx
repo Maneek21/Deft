@@ -1,9 +1,12 @@
 'use client';
+import { NativeMentionMarkdown } from './native-mention-markdown';
+import { splitChatMarkdownBlocks, escapeChatCode } from '@/lib/chat-markdown-blocks';
 import { NativeMentionContent } from '@/components/native-mention-content';
+import { AnchoredOverlay } from '@/components/overlay-primitives';
 
-import { formatChatInline, linkifyChatTaskReferences, isSafeChatHref } from '@/lib/chat-links';
+import { formatChatInline, isSafeChatHref } from '@/lib/chat-links';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
@@ -11,6 +14,7 @@ import { createNativeCreateIntent } from '@/lib/native-create-intent';
 import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { ChatMessageEventScope, createChatMessageNewHandler } from '@/lib/chat-message-event-scope';
 import { subscribeToSpace } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -104,6 +108,7 @@ async function apiErrorMessage(res: Response, fallback: string) {
 }
 
 type Message = {
+  space_id?: string;
   id: string;
   content: string;
   user_id: string;
@@ -141,27 +146,14 @@ type WorkIntentReceipt = {
 function renderSimpleMarkdown(text: string): string {
   if (!text) return '';
 
-  // Extract code blocks to protect them
-  const codeBlocks: string[] = [];
-  let processed = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
-    codeBlocks.push(`<pre style="background:var(--surface-container-low);border-radius:6px;padding:12px 16px;font-family:var(--font-mono);font-size:0.75rem;line-height:1.5;margin:8px 0;overflow-x:auto"><code>${code.trim()}</code></pre>`);
-    return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
-  });
-
-  // Split into paragraphs by double newline
-  const paragraphs = processed.split(/\n\n+/);
   const htmlParts: string[] = [];
-
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (!trimmed) continue;
-
-    // Check for code block placeholder
-    const cbMatch = trimmed.match(/^%%CODEBLOCK_(\d+)%%$/);
-    if (cbMatch) {
-      htmlParts.push(codeBlocks[parseInt(cbMatch[1]!)]!);
+  for (const block of splitChatMarkdownBlocks(text)) {
+    if (block.kind === 'code') {
+      htmlParts.push(`<pre style="background:var(--surface-container-low);border-radius:6px;padding:12px 16px;font-family:var(--font-mono);font-size:0.75rem;line-height:1.5;margin:8px 0;overflow-x:auto"><code>${escapeChatCode(block.text)}</code></pre>`);
       continue;
     }
+    const trimmed = block.text.trim();
+    if (!trimmed) continue;
 
     // Check if entire paragraph is a list
     const lines = trimmed.split('\n');
@@ -486,7 +478,7 @@ function renderContent(content: string) {
 
   // Detect if content is HTML (from TipTap editor)
   const isHtml = text.startsWith('<') && /<\/?[a-z][\s>]/i.test(text);
-  if (text.includes('data-deft-ref-kind') || text.includes('[[deft:')) {
+  if (isHtml && (text.includes('data-deft-ref-kind') || text.includes('[[deft:'))) {
     return <span className="message-content"><NativeMentionContent html={isHtml ? text : renderSimpleMarkdown(text)} /></span>;
   }
 
@@ -512,77 +504,7 @@ function renderContent(content: string) {
     return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
-  // Plain text with markdown (agent replies, seed data, non-TipTap messages)
-  // Use the full markdown renderer for any text that has markdown patterns
-  const hasMarkdown = /\*\*|__|~~|`|^#{1,3} |^- |^\d+\. |^> /m.test(text);
-  if (hasMarkdown || text.includes('\n') || /\[[^\]]+\]\([^)]+\)/.test(text)) {
-    let html = renderSimpleMarkdown(text);
-    // Process mentions
-    html = html.replace(
-      /&lt;@([^|]+)\|([^&]+)&gt;/g,
-      '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>'
-    ).replace(
-      /<@([^|]+)\|([^>]+)>/g,
-      '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>'
-    );
-    // Process task references (DEFT-7 etc.)
-    html = linkifyChatTaskReferences(html);
-    // Highlight @here/@all/@channel broadcast mentions
-    html = html.replace(
-      /@(here|all|channel)\b/g,
-      '<span style="background:rgba(234,179,8,0.2);color:var(--accent);font-weight:600;padding:1px 4px;border-radius:3px">@$1</span>'
-    );
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
-  }
-
-  const parts = text.split(/(<@[^>]+>|#?[A-Z]{2,6}-\d+|@(?:here|all|channel)\b)/g);
-  const result: React.ReactNode[] = [];
-
-  parts.forEach((part, i) => {
-    const mentionMatch = part.match(/^<@([^|]+)\|([^>]+)>$/);
-    const taskRefMatch = part.match(/^#?([A-Z]{2,6})-(\d+)$/);
-    const broadcastMatch = part.match(/^@(here|all|channel)$/);
-    if (broadcastMatch) {
-      result.push(
-        <span key={`b-${i}`} className="px-1 py-0.5 rounded text-[13px] font-semibold"
-          style={{ background: 'rgba(234,179,8,0.2)', color: 'var(--accent)' }}>
-          @{broadcastMatch[1]}
-        </span>
-      );
-    } else if (mentionMatch) {
-      result.push(
-        <span
-          key={`m-${i}`}
-          className="px-1 py-0.5 rounded text-[13px] font-medium cursor-pointer"
-          style={{
-            background: 'var(--accent-light, rgba(124,107,79,0.15))',
-            color: 'var(--accent)',
-          }}
-        >
-          @{mentionMatch[2]}
-        </span>
-      );
-    } else if (taskRefMatch) {
-      result.push(
-        <a
-          key={`tr-${i}`}
-          href={`/tasks?task=${taskRefMatch[1]}-${taskRefMatch[2]}`}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium cursor-pointer hover:opacity-80"
-          style={{
-            background: 'var(--accent-subtle)',
-            color: 'var(--accent)',
-            textDecoration: 'none',
-          }}
-        >
-          {taskRefMatch[1]}-{taskRefMatch[2]}
-        </a>
-      );
-    } else if (part) {
-      result.push(<span key={`t-${i}`}>{part}</span>);
-    }
-  });
-
-  return result;
+  return <div className="message-content"><NativeMentionMarkdown content={text} chat linkifyTasks /></div>;
 }
 
 /** Extract embedded files from message content markers */
@@ -636,17 +558,18 @@ export function SpaceChat({
   spaceDescription?: string | null;
   highlightMessageId?: string;
 }) {
-  const { user } = useAuth();
+  const { user, sessionCacheScope } = useAuth();
   const router = useRouter();
   const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, huddleBusy, activeHuddles, openDmWith } = useChatContext();
   const [messages, setMessages] = useState<Message[]>([]);
+  const messageEventScopeRef = useRef(new ChatMessageEventScope());
+  useLayoutEffect(() => messageEventScopeRef.current.commit(spaceId, sessionCacheScope), [spaceId, sessionCacheScope]);
   const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
   // presence is provided by ChatContext — no local state needed
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
-  const [menuDirection, setMenuDirection] = useState<'down' | 'up'>('down');
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -802,6 +725,8 @@ export function SpaceChat({
     }
   };
 
+  const messageHasAttachments = (msg: Message) => Boolean(msg.file_ids?.length || msg.files?.length || getEmbeddedFiles(msg.content).length);
+
   const saveMessageToKnowledge = async (msg: Message) => {
     const title = plainMessageText(msg.content).split(/[.!?\n]/)[0]?.trim().slice(0, 100) || 'Decision';
     const res = await api.post(`/api/spaces/${spaceId}/knowledge`, {
@@ -810,7 +735,9 @@ export function SpaceChat({
       content: plainMessageText(msg.content),
       source_message_id: msg.id,
     });
-    setCmdToast(res.ok ? 'Saved to knowledge' : 'Failed to save knowledge');
+    setCmdToast(res.ok
+      ? messageHasAttachments(msg) ? 'Saved message text; attachments were not included' : 'Saved to knowledge'
+      : 'Failed to save knowledge');
   };
 
   const captureRecentDiscussion = async () => {
@@ -979,89 +906,70 @@ export function SpaceChat({
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   useEffect(() => {
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
     setMessages([]);
+    if (!visit.isCurrent()) return () => visit.dispose();
     let cancelled = false;
     async function load() {
       const res = await api.get(`/api/messages/${spaceId}`);
-      if (res.ok && !cancelled && activeSpaceIdRef.current === spaceId) {
+      if (res.ok && !cancelled && visit.isCurrent()) {
         const data = await res.json();
-        if (cancelled || activeSpaceIdRef.current !== spaceId) return;
-        setMessages(data.messages || data || []);
+        if (cancelled || !visit.isCurrent()) return;
+        setMessages(previous => visit.isCurrent() ? (data.messages || data || []) : previous);
         if (highlightMessageId) {
           // Scroll to the highlighted message after render
           setTimeout(() => {
-            if (cancelled || activeSpaceIdRef.current !== spaceId) return;
+            if (cancelled || !visit.isCurrent()) return;
             const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
             if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' });
               setHighlightedId(highlightMessageId);
               // Clear highlight after animation
               setTimeout(() => {
-                if (!cancelled && activeSpaceIdRef.current === spaceId) setHighlightedId(null);
+                if (!cancelled && visit.isCurrent()) setHighlightedId(null);
               }, 3000);
             }
           }, 200);
         } else {
           setTimeout(() => {
-            if (!cancelled && activeSpaceIdRef.current === spaceId) scrollToBottom();
+            if (!cancelled && visit.isCurrent()) scrollToBottom();
           }, 100);
         }
       }
     }
     void load().catch(() => {});
-    return () => { cancelled = true; };
-  }, [spaceId, scrollToBottom, highlightMessageId]);
+    return () => { cancelled = true; visit.dispose(); };
+  }, [spaceId, sessionCacheScope, scrollToBottom, highlightMessageId]);
 
   useEffect(() => {
+    if (!sessionCacheScope) return;
     const token = localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
     const unsubscribeFromSpace = subscribeToSpace(socket, spaceId);
 
-    const onNew = (msg: Message & { parent_id?: string | null; metadata?: { is_agent_reply?: boolean } }) => {
-      // Thread replies should NOT appear in the main message list
-      if (msg.parent_id) {
-        // If it's an agent reply, auto-open the thread so the user sees it
-        if (msg.metadata?.is_agent_reply) {
-          // Use setMessages to access current state (avoid stale closure)
-          setMessages((prev) => {
-            const parentMsg = prev.find(m => m.id === msg.parent_id);
-            if (parentMsg) {
-              // Schedule thread open outside of setState
-              setTimeout(() => {
-                setThreadMessage({
-                  id: parentMsg.id,
-                  content: parentMsg.content,
-                  user_id: parentMsg.user_id,
-                  user_name: parentMsg.user_name,
-                  user_avatar: parentMsg.user_avatar,
-                  is_deleted: parentMsg.is_deleted,
-                  edited_at: parentMsg.edited_at,
-                  created_at: parentMsg.created_at,
-                  reactions: parentMsg.reactions,
-                  file_ids: parentMsg.file_ids,
-                });
-              }, 0);
-            }
-            return prev; // don't modify messages
-          });
-        }
-        return;
-      }
-      const normalizedMessage: Message = {
-        ...msg,
-        reactions: msg.reactions ?? [],
-        reply_count: msg.reply_count ?? 0,
-        latest_reply_at: msg.latest_reply_at ?? null,
-        file_ids: msg.file_ids ?? [],
-      };
-      setMessages((prev) => (
-        prev.some((message) => message.id === normalizedMessage.id)
-          ? prev
-          : [...prev, normalizedMessage]
-      ));
-      setTimeout(scrollToBottom, 50);
-    };
+    const visit = messageEventScopeRef.current.capture(spaceId, sessionCacheScope);
+    const onNew = createChatMessageNewHandler<Message>({
+      visit,
+      update: setMessages,
+      normalize: (msg) => ({ ...msg, reactions: msg.reactions ?? [], reply_count: msg.reply_count ?? 0, latest_reply_at: msg.latest_reply_at ?? null, file_ids: msg.file_ids ?? [] }),
+      openThread: (parent) => {
+        setThreadMessage({
+          id: parent.id,
+          content: parent.content,
+          user_id: parent.user_id,
+          user_name: parent.user_name,
+          user_avatar: parent.user_avatar,
+          is_deleted: parent.is_deleted,
+          edited_at: parent.edited_at,
+          created_at: parent.created_at,
+          reactions: parent.reactions,
+          file_ids: parent.file_ids,
+        });
+      },
+      scroll: scrollToBottom,
+      schedule: (callback, delay) => setTimeout(callback, delay),
+    });
     const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
       setMessages((prev) =>
         prev.map((m) =>
@@ -1151,6 +1059,7 @@ export function SpaceChat({
     socket.on('message:unpinned', onMessageUnpinned);
 
     return () => {
+      visit.dispose();
       unsubscribeFromSpace();
       socket.off('message:new', onNew);
       socket.off('message:edited', onEdited);
@@ -1165,7 +1074,7 @@ export function SpaceChat({
       socket.off('message:pinned', onMessagePinned);
       socket.off('message:unpinned', onMessageUnpinned);
     };
-  }, [spaceId, user?.id, scrollToBottom]);
+  }, [spaceId, sessionCacheScope, user?.id, scrollToBottom]);
 
   const serializeMentions = (html: string) => html.replace(
     /<span[^>]*data-mention-uuid="([^"]+)"[^>]*data-mention-name="([^"]+)"[^>]*>[^<]*<\/span>/g,
@@ -1642,7 +1551,7 @@ export function SpaceChat({
                     if (hoveredId !== msg.id) setHoveredId(msg.id);
                   }}
                   onFocusCapture={() => setHoveredId(msg.id)}
-                  onMouseLeave={() => { setHoveredId(null); setMoreMenuId(null); }}
+                  onMouseLeave={() => { if (moreMenuId !== msg.id) setHoveredId(null); }}
                 >
                   {/* Mobile action button — always visible on touch */}
                   {!msg.is_deleted && editingId !== msg.id && (
@@ -1754,18 +1663,15 @@ export function SpaceChat({
 
                       <div className="relative">
                         <button
-                          ref={moreButtonRef}
                           className="p-1.5 rounded-full"
                           style={{ color: 'var(--muted)' }}
                           title="More"
                           aria-label="More message actions"
-                          onClick={() => {
+                          onClick={(event) => {
                             if (moreMenuId === msg.id) {
                               setMoreMenuId(null);
                             } else {
-                              const rect = moreButtonRef.current?.getBoundingClientRect();
-                              const spaceBelow = window.innerHeight - (rect?.bottom || 0);
-                              setMenuDirection(spaceBelow < 200 ? 'up' : 'down');
+                              moreButtonRef.current = event.currentTarget;
                               setMoreMenuId(msg.id);
                             }
                           }}
@@ -1773,10 +1679,7 @@ export function SpaceChat({
                           <MoreHorizontal size={16} strokeWidth={1.5} />
                         </button>
                         {moreMenuId === msg.id && (
-                          <div
-                            className={`absolute right-0 ${menuDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} w-44 rounded-xl py-1.5 z-20`}
-                            style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)' }}
-                          >
+                          <AnchoredOverlay open onClose={() => { setMoreMenuId(null); setHoveredId(null); }} anchorRef={moreButtonRef} viewportRef={scrollContainerRef} width={176} role="menu" ariaLabel="More message actions">
                             {msg.user_id === user?.id && (
                               <button
                                 className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
@@ -1821,7 +1724,7 @@ export function SpaceChat({
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
-                              <BookOpen size={13} strokeWidth={1.5} /> Save to Knowledge
+                              <BookOpen size={13} strokeWidth={1.5} /> {messageHasAttachments(msg) ? 'Save message text to Knowledge' : 'Save to Knowledge'}
                             </button>
                             <button
                               onClick={() => {
@@ -1880,7 +1783,7 @@ export function SpaceChat({
                                 <Trash2 size={13} strokeWidth={1.5} /> Delete
                               </button>
                             )}
-                          </div>
+                          </AnchoredOverlay>
                         )}
                       </div>
                     </div>
@@ -1888,14 +1791,7 @@ export function SpaceChat({
 
                   {/* Mobile more-menu (rendered at message level, outside hover toolbar) */}
                   {moreMenuId === msg.id && !isHovered && !msg.is_deleted && (
-                    <div
-                      className="md:hidden absolute right-1 z-20 w-44 rounded-xl py-1.5"
-                      style={{
-                        background: 'var(--surface-container-highest)',
-                        boxShadow: 'var(--glass-shadow)',
-                        ...(menuDirection === 'up' ? { bottom: '100%', marginBottom: '4px' } : { top: '2rem', marginTop: '4px' }),
-                      }}
-                    >
+                    <AnchoredOverlay open onClose={() => setMoreMenuId(null)} anchorRef={moreButtonRef} viewportRef={scrollContainerRef} width={176} role="menu" ariaLabel="More message actions">
                       {msg.user_id === user?.id && (
                         <button
                           className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
@@ -1954,7 +1850,7 @@ export function SpaceChat({
                           <Trash2 size={13} strokeWidth={1.5} /> Delete
                         </button>
                       )}
-                    </div>
+                    </AnchoredOverlay>
                   )}
 
                   {grouped ? (
@@ -2462,7 +2358,7 @@ export function SpaceChat({
             />
             <MobileMessageAction
               icon={<BookOpen size={18} strokeWidth={1.7} />}
-              label="Save to Knowledge"
+              label={messageHasAttachments(mobileActionMsg) ? 'Save message text to Knowledge' : 'Save to Knowledge'}
               onClick={() => {
                 void saveMessageToKnowledge(mobileActionMsg);
                 setMobileActionMsg(null);

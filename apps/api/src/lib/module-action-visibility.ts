@@ -1,5 +1,28 @@
 import { inArray, notInArray, sql, type SQL } from 'drizzle-orm';
 import { agentActionApprovers, agentActions, attentionItems } from '@deft/db/schema';
+import { currentAgentActionSourceAuthoritySql } from './agent-channel-authority.js';
+import { DEFTY_SYSTEM_EMPLOYEE_SLUG, DEFTY_SYSTEM_RUNTIME_KIND } from './defty-identity.js';
+
+/** The internal Defty action envelope has a different, established source contract. */
+export function canonicalDeftyActionSql(): SQL {
+  return sql`exists (select 1 from agent_employees internal_employee
+    where internal_employee.id = ${agentActions.agent_employee_id} and internal_employee.org_id = ${agentActions.org_id}
+      and internal_employee.runtime_kind = ${DEFTY_SYSTEM_RUNTIME_KIND} and internal_employee.slug = ${DEFTY_SYSTEM_EMPLOYEE_SLUG}
+      and internal_employee.is_byoa = false and internal_employee.is_active = true)`;
+}
+
+/** Source snapshots remain governed by their canonical source's current audience. */
+export function visibleAgentActionSourceSql(options?: { userId?: string; orgId?: string; agentEmployeeId?: string }): SQL {
+  const reader = options?.userId ? sql`${options.userId}` : options?.agentEmployeeId ? sql`(
+    select reader_employee.user_id from agent_employees reader_employee
+    where reader_employee.id = ${options.agentEmployeeId}
+      ${options.orgId ? sql`and reader_employee.org_id = ${options.orgId}` : sql``}
+      and reader_employee.is_active = true and reader_employee.is_deleted = false
+  )` : undefined;
+  return sql`case when ${agentActions.agent_employee_id} is null or ${canonicalDeftyActionSql()}
+    then true
+    else ${currentAgentActionSourceAuthoritySql('agent_actions', reader)} end`;
+}
 
 export const MODULE_WRITE_ACTION_NAMES = [
   'module_record_create',
@@ -51,6 +74,13 @@ export function visibleModuleActionSql(
     orgId?: string;
     agentEmployeeId?: string;
   },
+): SQL {
+  return sql`${visibleAgentActionSourceSql(options)} and (${moduleRoleVisibilitySql(role, options)})`;
+}
+
+function moduleRoleVisibilitySql(
+  role?: string,
+  options?: { userId?: string; orgId?: string; agentEmployeeId?: string },
 ): SQL {
   if (role === 'guest') {
     return notInArray(agentActions.action, [...MODULE_GOVERNED_WRITE_ACTION_NAMES]);

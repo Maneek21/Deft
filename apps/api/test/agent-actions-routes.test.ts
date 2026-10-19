@@ -404,6 +404,14 @@ async function insertDeftyCaptureActionWithSource(params: {
        VALUES ($1, $2, $3, $4, $5)`,
       [messageId, ORG_ID, params.spaceId, APPROVER_USER_ID, params.messageContent],
     );
+    // A non-system proposer must be able to read its own source message; the
+    // reader's space membership alone then decides visibility.
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES (gen_random_uuid()::text, $1, $2)
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [params.spaceId, SHADOW_USER_ID],
+    );
 
     const action = await c.query(
       `INSERT INTO agent_actions
@@ -1128,16 +1136,17 @@ test('POST /api/agent/actions/:id/approve executes the write', async () => {
   });
 });
 
-test('approval confirmation is authored by the proposing agent, not the human requester', async () => {
+for (const sourceAuthor of ['human', 'employee'] as const) test(`approval confirmation preserves ${sourceAuthor} source authorship`, async () => {
   const title = `routes-confirmation-author-${Date.now()}`;
   const { actionId, approvalMessageId } = await withClient(async (c) => {
+    await c.query('INSERT INTO space_members (id, space_id, user_id) VALUES (gen_random_uuid()::text, $1, $2) ON CONFLICT DO NOTHING', [VISIBLE_SPACE_ID, SHADOW_USER_ID]);
     const message = await c.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
        VALUES (gen_random_uuid()::text, $1, $2, $3,
          'Read [Playbook](/knowledge/verified). This is pending your approval before creation.',
          '{"citations":[{"url":"/knowledge/verified","title":"Playbook"}]}'::jsonb)
        RETURNING id`,
-      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID],
+      [ORG_ID, VISIBLE_SPACE_ID, sourceAuthor === 'human' ? APPROVER_USER_ID : SHADOW_USER_ID],
     );
     const action = await c.query(
       `INSERT INTO agent_actions
@@ -1158,7 +1167,7 @@ test('approval confirmation is authored by the proposing agent, not the human re
   });
 
   const res = await app().request(`/api/agent/actions/${actionId}/approve`, { method: 'POST' });
-  assert.equal(res.status, 200);
+  assert.equal(res.status, 200, await res.clone().text());
 
   await withClient(async (c) => {
     const confirmation = await c.query(
@@ -1171,6 +1180,13 @@ test('approval confirmation is authored by the proposing agent, not the human re
     assert.equal(confirmation.rows[0].user_id, SHADOW_USER_ID);
     assert.equal(confirmation.rows[0].requested_by_user_id, APPROVER_USER_ID);
     const original = await c.query('SELECT content, metadata FROM messages WHERE org_id=$1 AND id=$2', [ORG_ID, approvalMessageId]);
+    if (sourceAuthor === 'human') {
+      assert.equal(original.rows[0].content, 'Read [Playbook](/knowledge/verified). This is pending your approval before creation.');
+      assert.deepEqual(original.rows[0].metadata, { citations: [{ url: '/knowledge/verified', title: 'Playbook' }] });
+      const count = await c.query('SELECT count(*)::int AS n FROM tasks WHERE title=$1', [title]);
+      assert.equal(count.rows[0].n, 1);
+      return;
+    }
     assert.match(original.rows[0].content, /Created/i);
     assert.doesNotMatch(original.rows[0].content, /pending your approval/);
     assert.match(original.rows[0].content, /\[Playbook\]\(\/knowledge\/verified\)/);
@@ -1185,7 +1201,7 @@ test('the final rejected decision posts one settled-group confirmation', async (
       `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
        VALUES (gen_random_uuid()::text, $1, $2, $3, $4, '{}'::jsonb)
        RETURNING id`,
-      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID, `Read [Playbook](/knowledge/verified). Please review ${label}. This is pending your approval before creation.`],
+      [ORG_ID, VISIBLE_SPACE_ID, SHADOW_USER_ID, `Read [Playbook](/knowledge/verified). Please review ${label}. This is pending your approval before creation.`],
     );
     const actions = await c.query(
       `INSERT INTO agent_actions

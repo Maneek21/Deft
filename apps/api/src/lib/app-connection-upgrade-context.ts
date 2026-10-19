@@ -84,7 +84,7 @@ export async function appConnectionUpgradeInstallationContext(caller:ExperienceC
      authorization_origin:after.profile.authorization_origin},runtime_ready:after.runtime_ready,
     session:currentConnectionContextView(record?.credential_repair?.reservation_closed&&record.state==='not_connected'?source:record,after),
     credential_repair:currentCredentialRepairNomination(record,repairAuthority?source:null,repairAuthority??after),upgrade:currentConnectionUpgradeNomination(record,source,after),
-    reattachment:currentConnectionReattachmentContext(record,source?.action_consents!==undefined?source:null,after)});
+    reattachment:currentConnectionReattachmentContext(record,repairAuthority&&source?.action_consents!==undefined?source:null,repairAuthority??after)});
   }catch(error){if(error instanceof AppError&&error.code==='APP_ACCESS_DENIED')continue;throw error;}
  }
  await db.transaction(tx=>guard(tx));

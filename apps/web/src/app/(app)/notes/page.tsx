@@ -213,6 +213,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [visibility, setVisibility] = useState<'private' | 'org'>('private');
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
+  const [promotePreview, setPromotePreview] = useState<{ title: string; content: string } | null>(null);
   const [promoteType, setPromoteType] = useState('concept');
   const [promoting, setPromoting] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
@@ -368,14 +369,19 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     await saveCoordinator.save(field, revision, payload);
   }, [saveCoordinator]);
 
-  const handlePromoteToWiki = async () => {
+  const openPromoteReview = () => {
     if (!editor || !note || !title.trim()) return;
+    const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    setPromotePreview({ title: title.trim(), content: turndown.turndown(editor.getHTML()) });
+    setShowPromoteModal(true);
+  };
+  const handlePromoteToWiki = async () => {
+    if (!promotePreview || promoting) return;
     setPromoting(true);
     try {
-      const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-      const content = turndown.turndown(editor.getHTML());
+      const { title: reviewedTitle, content } = promotePreview;
       const res = await api.post('/api/wiki', {
-        title: title.trim(),
+        title: reviewedTitle,
         content,
         type: promoteType,
         scope: 'org',
@@ -695,7 +701,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 {
                   label: 'Promote to Wiki',
                   icon: <BookOpen size={14} />,
-                  onClick: () => setShowPromoteModal(true),
+                  onClick: openPromoteReview,
                 },
                 ...(isOwner ? [{
                   label: note?.is_pinned ? 'Unpin' : 'Pin',
@@ -724,7 +730,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               style={{ color: showHistory ? 'var(--accent)' : 'var(--muted)' }} title="Version history">
               <History size={15} />
             </button>
-            <button onClick={() => setShowPromoteModal(true)} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
+            <button onClick={openPromoteReview} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
               aria-label="Promote to Wiki"
               style={{ color: 'var(--muted)' }} title="Promote to Wiki">
               <BookOpen size={15} />
@@ -746,19 +752,33 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           </div>
 
           {/* Promote to Wiki Modal */}
-          {showPromoteModal && (
+          {showPromoteModal && promotePreview && (
             <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}
-              onClick={() => setShowPromoteModal(false)}>
-              <div className="w-80 p-4 rounded-xl" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
-                onClick={e => e.stopPropagation()}>
-                <h3 className="text-[14px] font-semibold mb-3" style={{ color: 'var(--foreground)' }}>Promote to Wiki</h3>
-                <p className="text-[11px] mb-3" style={{ color: 'var(--muted)' }}>
-                  Create a wiki page from this note. The note will remain in your notes.
+              onClick={() => { if (!promoting) setShowPromoteModal(false); }}>
+              <div role="dialog" aria-modal="true" aria-labelledby="promote-wiki-title" aria-describedby="promote-wiki-audience"
+                className="w-full max-w-lg max-h-[90vh] overflow-y-auto mx-4 p-4 rounded-xl" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
+                onClick={e => e.stopPropagation()} onKeyDown={event => {
+                  if (event.key === 'Escape' && !promoting) { event.preventDefault(); setShowPromoteModal(false); }
+                  if (event.key !== 'Tab') return;
+                  const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex="0"]'));
+                  const first = controls[0], last = controls.at(-1);
+                  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+                  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+                }}>
+                <h3 id="promote-wiki-title" className="text-[14px] font-semibold mb-3" style={{ color: 'var(--foreground)' }}>Promote to Wiki</h3>
+                <p id="promote-wiki-audience" className="text-[12px] mb-3" style={{ color: 'var(--foreground)' }}>
+                  This creates a published copy visible to everyone in your workspace. The original note keeps its current sharing settings.
                 </p>
+                <section aria-label="Wiki content preview" className="mb-4 rounded-lg border p-3" style={{ borderColor: 'var(--border)' }}>
+                  <p className="text-[11px] mb-1" style={{ color: 'var(--muted)' }}>Title</p>
+                  <p className="break-words text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>{promotePreview.title}</p>
+                  <p className="text-[11px] mt-3 mb-1" style={{ color: 'var(--muted)' }}>Markdown content to publish</p>
+                  <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[12px] font-sans" style={{ color: 'var(--foreground)' }}>{promotePreview.content || '(Empty content)'}</pre>
+                </section>
                 <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--muted)' }}>Page Type</label>
                 <div className="flex flex-wrap gap-1 mb-4">
                   {['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].map(t => (
-                    <button key={t} onClick={() => setPromoteType(t)}
+                    <button key={t} disabled={promoting} onClick={() => setPromoteType(t)}
                       className="px-2 py-1 rounded-md text-[10px] font-medium capitalize"
                       style={{
                         background: promoteType === t ? 'var(--accent)' : 'var(--surface-container-low)',
@@ -770,10 +790,10 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                   ))}
                 </div>
                 <div className="flex justify-end gap-2">
-                  <button onClick={() => setShowPromoteModal(false)}
+                  <button autoFocus disabled={promoting} onClick={() => setShowPromoteModal(false)}
                     className="px-3 py-1.5 rounded-lg text-[12px]"
                     style={{ color: 'var(--muted)' }}>Cancel</button>
-                  <button onClick={handlePromoteToWiki} disabled={promoting || !title.trim()}
+                  <button onClick={handlePromoteToWiki} disabled={promoting || !promotePreview.title}
                     className="px-3 py-1.5 rounded-lg text-[12px] font-medium text-white disabled:opacity-40"
                     style={{ background: 'var(--accent)' }}>
                     {promoting ? 'Promoting...' : 'Promote'}

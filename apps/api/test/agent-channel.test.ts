@@ -36,9 +36,14 @@ import {
   users,
 } from '@deft/db';
 import { agentChannelRoutes } from '../src/routes/agent-channel.js';
+import { currentAgentChannelEventAuthoritySql } from '../src/lib/agent-channel-authority.js';
+import { db as apiDb } from '../src/lib/db.js';
+import { executeSendMessage, executeTaskCreate } from '../src/lib/mcp-tools/writes.js';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   getActiveAgentChannelRuntimeCorrelation,
   publishAgentChannelEvent,
+  renewAgentChannelEventLease,
 } from '../src/lib/agent-channel.js';
 import { loadAgentActivity } from '../src/lib/agent-activity.js';
 import { projectRoutes } from '../src/routes/projects.js';
@@ -53,7 +58,7 @@ import { memoryRecall, memoryWrite } from '../src/lib/mcp-tools/memory.js';
 import { recordProgress } from '../src/lib/mcp-tools/cooperative.js';
 import { handleAgentEmployeeMessage } from '../src/workers/handlers/agent-employee-message.js';
 import { handleAgentEmployeeTask } from '../src/workers/handlers/agent-employee-task.js';
-import { rejectAction } from '../src/lib/agent-approval-resolver.js';
+import { approveAction, rejectAction } from '../src/lib/agent-approval-resolver.js';
 import {
   dispatchAgentEmployeeTask,
   publishTaskChannelEventForAssignee,
@@ -605,7 +610,7 @@ test('deleted tasks and tasks in soft-deleted projects cannot queue, deliver, re
     });
 
     for (const taskId of taskIds) {
-      assert.equal(await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, taskId), null);
+      await assert.rejects(getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, taskId), { status: 403, code: 'forbidden' });
     }
 
     const poll = await app.request(
@@ -1111,6 +1116,43 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
     ['autonomous_platform_adapter_v1', 'accepted_event_rehydration_v1'],
   );
   assert.equal(body.adapter_modes.autonomous_platform.delivery_acknowledgement, 'transport_acceptance');
+});
+
+test('normal cancelled accepted journal returns negotiated terminal disposition', async () => {
+  const contract = await (await app.request('/api/agent-channel/v1/contract')).json() as any;
+  assert.ok(contract.capabilities.includes('accepted_event_terminal_reconciliation_v1'));
+  assert.ok(!contract.adapter_modes.autonomous_platform.required_runtime_capabilities.includes('accepted_event_terminal_reconciliation_v1'));
+  const event = await publishMessageEvent(`normal-terminal-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const cancel = await operatorApp.request(`/api/agent-employees/${employeeId}/channel-events/${event.id}/cancel`, { method: 'POST' });
+  assert.equal(cancel.status, 200, await cancel.text());
+  const recover = (optIn = false) => app.request('/api/agent-channel/v1/accept', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, ...(optIn ? { recovery_capability: 'accepted_event_terminal_reconciliation_v1' } : {}) }),
+  });
+  // Older adapters keep their existing stale-claim behavior and response shape.
+  const legacy = await recover();
+  assert.equal(legacy.status, 409);
+  assert.equal((await legacy.json() as any).code, 'STALE_CLAIM');
+  const query = new URLSearchParams(autonomousCompatibilityQuery('normal-terminal-worker'));
+  query.set('capabilities', `${query.get('capabilities')},accepted_event_terminal_reconciliation_v1`);
+  const connect = await app.request(`/api/agent-channel/v1/connect?${query}`, { headers: { authorization: `Bearer ${bearer}` } });
+  assert.equal(connect.status, 200, await connect.text());
+  const legacyAfterNewConnect = await recover();
+  assert.equal(legacyAfterNewConnect.status, 409);
+  const terminal = await recover(true);
+  assert.equal(terminal.status, 200);
+  assert.deepEqual(await terminal.json(), { transport_state: 'terminal', event_id: event.id });
+  // A cancelled delivery that was never accepted is not a terminal journal receipt.
+  const unaccepted = await publishMessageEvent(`normal-never-accepted-${crypto.randomUUID()}`);
+  const cancelUnaccepted = await operatorApp.request(`/api/agent-employees/${employeeId}/channel-events/${unaccepted.id}/cancel`, { method: 'POST' });
+  assert.equal(cancelUnaccepted.status, 200, await cancelUnaccepted.text());
+  const notJournaled = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: unaccepted.id, recovery_capability: 'accepted_event_terminal_reconciliation_v1' }),
+  });
+  assert.equal(notJournaled.status, 409);
+  assert.equal((await notJournaled.json() as any).code, 'STALE_CLAIM');
 });
 
 test('autonomous platform reply terminalizes transport without completing business work', async () => {
@@ -1760,14 +1802,17 @@ test('approval resolution publishes once and a targetless autonomous response is
   assert.equal(Object.hasOwn(resolutions[0]!.payload as object, 'result'), false);
 
   // Also prove the no-origin fallback cannot poison the adapter's restart journal.
+  const targetlessActionId = crypto.randomUUID();
+  await db.insert(agentActions).values({ id: targetlessActionId, org_id: orgId, user_id: humanUserId,
+    agent_employee_id: employeeId, action: 'module_record_create', params: {}, approval_tier: 'full', approval_status: 'approved' });
   const targetless = (await publishAgentChannelEvent({
     orgId,
     employeeId,
     kind: 'approval.resolved',
     sourceKind: 'approval',
-    sourceId: crypto.randomUUID(),
+    sourceId: targetlessActionId,
     actorUserId: humanUserId,
-    idempotencyKey: `targetless-approval-${crypto.randomUUID()}`,
+    idempotencyKey: `approval.resolved:${targetlessActionId}:approved`,
     payload: { decision: 'approved', action: 'module_record_create' },
   })).event!;
   const poll = await app.request(
@@ -2860,4 +2905,293 @@ test('regenerating a channel credential revokes the old runtime immediately', as
       sql`${agentChannelTokens.revoked_at} IS NULL`,
     ));
   assert.equal(activeTokens[0]?.count, 1);
+});
+
+async function privateAuthorityFixture(run: (roomId: string, messageId: string) => Promise<void>) {
+  const roomId = crypto.randomUUID();
+  const messageId = crypto.randomUUID();
+  await db.insert(spaces).values({ id: roomId, org_id: orgId, name: 'authority-private', type: 'private', created_by: humanUserId });
+  await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: agentUserId });
+  await db.insert(messages).values({ id: messageId, org_id: orgId, space_id: roomId, user_id: humanUserId, content: 'private authority sentinel' });
+  try { await run(roomId, messageId); } finally {
+    await db.delete(agentChannelDeliveryAttempts).where(eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId));
+    await db.delete(agentChannelEvents).where(eq(agentChannelEvents.space_id, roomId));
+    await db.delete(messages).where(eq(messages.space_id, roomId));
+    await db.delete(spaceMembers).where(eq(spaceMembers.space_id, roomId));
+    await db.delete(spaces).where(eq(spaces.id, roomId));
+  }
+}
+
+async function authorityEvent(roomId: string, messageId: string) {
+  const result = await publishAgentChannelEvent({ orgId, employeeId, kind: 'message.created', sourceKind: 'message', sourceId: messageId,
+    spaceId: roomId, threadId: messageId, actorUserId: humanUserId, idempotencyKey: crypto.randomUUID(), payload: { content: 'private authority sentinel' } });
+  assert.ok(result.event);
+  return result.event;
+}
+
+async function revokeAuthorityRoom(roomId: string) {
+  await db.delete(spaceMembers).where(and(eq(spaceMembers.space_id, roomId), eq(spaceMembers.user_id, agentUserId)));
+}
+
+function authorityPost(path: string, body: unknown) {
+  return app.request(`/api/agent-channel/v1/${path}`, { method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+test('room authority: revoked queued event cannot starve an authorized public event', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    const denied = await authorityEvent(roomId, messageId);
+    await revokeAuthorityRoom(roomId);
+    const allowed = await publishMessageEvent(crypto.randomUUID());
+    const response = await app.request(`/api/agent-channel/v1/events?limit=1&${channelCompatibilityQuery()}`, { headers: { authorization: `Bearer ${bearer}` } });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.events.length, 1);
+    assert.equal(body.events[0].id, allowed.id, 'SQL must filter unauthorized events before LIMIT');
+    const [stored] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.id, denied.id));
+    assert.equal(stored!.delivery_count, 0);
+    assert.equal(stored!.claim_token, null);
+    await db.update(agentChannelEvents).set({ status: 'completed', completed_at: new Date() }).where(eq(agentChannelEvents.id, allowed.id));
+  });
+});
+
+test('room authority: revoked claimed and accepted events deny every recovery entrypoint', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    const event = await authorityEvent(roomId, messageId);
+    const claimed = await claimChannelEvent(event.id);
+    const ack = await authorityPost('ack', { event_id: event.id, claim_token: claimed.claim_token, state: 'received', runtime_request_key: `authority-${event.id}` });
+    assert.equal(ack.status, 200, await ack.text());
+    assert.ok(await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId));
+    await revokeAuthorityRoom(roomId);
+    assert.equal(await renewAgentChannelEventLease({ principal: { org_id: orgId, employee_id: employeeId, employee_slug: employeeSlug, runtime_kind: 'hermes', trust_level: 'autonomous' }, eventId: event.id, claimToken: claimed.claim_token }), null);
+    await assert.rejects(getActiveAgentChannelRuntimeCorrelation(orgId, employeeId), { status: 403, code: 'forbidden' });
+    for (const [path, body] of [
+      ['ack', { state: 'completed' }], ['reconcile', { runtime_request_key: `authority-${event.id}` }],
+      ['reply', { content: 'must not be written', idempotency_key: crypto.randomUUID() }], ['status', { state: 'working', detail: 'private authority sentinel' }],
+    ] as const) {
+      const response = await authorityPost(path, { event_id: event.id, claim_token: claimed.claim_token, ...body });
+      assert.equal(response.status, 404, `${path}: ${await response.text()}`);
+    }
+    const [stored] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.id, event.id));
+    assert.equal(stored!.status, 'acknowledged');
+    await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: agentUserId });
+    const acceptedEvent = await authorityEvent(roomId, messageId);
+    await acceptAutonomousEvent(acceptedEvent.id);
+    await revokeAuthorityRoom(roomId);
+    const replay = await authorityPost('accept', { event_id: acceptedEvent.id });
+    assert.equal(replay.status, 404, await replay.text());
+  });
+});
+
+async function authorityAllowed(eventId: string) {
+  const rows = await db.select({ id: agentChannelEvents.id }).from(agentChannelEvents)
+    .where(and(eq(agentChannelEvents.id, eventId), currentAgentChannelEventAuthoritySql(agentChannelEvents.id)));
+  return rows.length === 1;
+}
+
+test('room authority: canonical source, public and DM visibility, and approval ancestry fail closed', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    const root = await authorityEvent(roomId, messageId);
+    assert.equal(await authorityAllowed(root.id), true);
+    await db.update(spaces).set({ type: 'dm' }).where(eq(spaces.id, roomId));
+    assert.equal(await authorityAllowed(root.id), true, 'DM member remains authorized');
+    await revokeAuthorityRoom(roomId);
+    assert.equal(await authorityAllowed(root.id), false, 'DM nonmember denied');
+    await db.update(spaces).set({ type: 'public' }).where(eq(spaces.id, roomId));
+    assert.equal(await authorityAllowed(root.id), true, 'public room needs no explicit membership');
+    await db.update(spaces).set({ is_archived: true }).where(eq(spaces.id, roomId));
+    assert.equal(await authorityAllowed(root.id), false);
+    await db.update(spaces).set({ is_archived: false, type: 'private' }).where(eq(spaces.id, roomId));
+    await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: agentUserId });
+    for (const patch of [ { source_kind: null }, { source_id: null }, { source_id: crypto.randomUUID() }, { space_id: spaceId }, { space_id: null }, { source_kind: 'approval' } ]) {
+      await db.update(agentChannelEvents).set(patch).where(eq(agentChannelEvents.id, root.id));
+      assert.equal(await authorityAllowed(root.id), false, JSON.stringify(patch));
+      await db.update(agentChannelEvents).set({ source_kind: 'message', source_id: messageId, space_id: roomId }).where(eq(agentChannelEvents.id, root.id));
+    }
+    await db.update(messages).set({ is_deleted: true }).where(eq(messages.id, messageId));
+    assert.equal(await authorityAllowed(root.id), false);
+    await db.update(messages).set({ is_deleted: false }).where(eq(messages.id, messageId));
+    const foreignOrg = crypto.randomUUID();
+    await db.insert(orgs).values({ id: foreignOrg, name: 'Foreign authority org', slug: `foreign-${foreignOrg}` });
+    try {
+      await db.update(messages).set({ org_id: foreignOrg }).where(eq(messages.id, messageId));
+      assert.equal(await authorityAllowed(root.id), false, 'canonical message org must match');
+    } finally {
+      await db.update(messages).set({ org_id: orgId }).where(eq(messages.id, messageId));
+      await db.delete(orgs).where(eq(orgs.id, foreignOrg));
+    }
+    const actionIds: string[] = [];
+    let origin = root;
+    for (let depth = 0; depth < 3; depth++) {
+      const actionId = crypto.randomUUID(); actionIds.push(actionId);
+      await db.insert(agentActions).values({ id: actionId, org_id: orgId, user_id: humanUserId, agent_employee_id: employeeId,
+        channel_event_id: origin.id, action: 'task_create', params: {}, approval_tier: 'full', approval_status: 'approved' });
+      origin = (await publishAgentChannelEvent({ orgId, employeeId, kind: 'approval.resolved', sourceKind: 'approval', sourceId: actionId,
+        idempotencyKey: `approval.resolved:${actionId}:approved`, payload: { space_id: spaceId } })).event!;
+      assert.equal(await authorityAllowed(origin.id), true, 'nested approval retains canonical source authority');
+    }
+    await revokeAuthorityRoom(roomId);
+    assert.equal(await authorityAllowed(origin.id), false, 'targetless continuation cannot erase private ancestry');
+    await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: agentUserId });
+    await db.update(agentActions).set({ channel_event_id: origin.id }).where(eq(agentActions.id, actionIds[0]!));
+    assert.equal(await authorityAllowed(origin.id), false, 'cycle denied');
+    await db.update(agentActions).set({ channel_event_id: crypto.randomUUID() }).where(eq(agentActions.id, actionIds[0]!));
+    assert.equal(await authorityAllowed(origin.id), false, 'missing canonical origin denied');
+    await db.delete(agentChannelEvents).where(inArray(agentChannelEvents.source_id, actionIds));
+    await db.delete(agentActions).where(inArray(agentActions.id, actionIds));
+  });
+});
+
+test('room authority: reply write rechecks source after awaited preflight', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    const event = await authorityEvent(roomId, messageId);
+    const replyId = crypto.randomUUID();
+    const execute = apiDb.execute.bind(apiDb);
+    let intercepted = 0;
+    apiDb.execute = (async (query: any) => {
+      const statement = new PgDialect().sqlToQuery(query).sql;
+      if (/^insert into messages/i.test(statement)) { intercepted++; await revokeAuthorityRoom(roomId); }
+      return execute(query);
+    }) as typeof apiDb.execute;
+    try {
+      const result = await executeSendMessage({ orgId, spaceId, content: 'must not escape a revoked source', parentId: null, messageId: replyId,
+        ctx: { org_id: orgId, employee_id: employeeId, employee_slug: employeeSlug, trust_level: 'autonomous', channel_event_id: event.id } });
+      assert.equal(intercepted, 1, 'revocation occurs after preflight immediately before write');
+      assert.equal(result.isError, true);
+      assert.equal((await db.select().from(messages).where(eq(messages.id, replyId))).length, 0);
+    } finally { apiDb.execute = execute as typeof apiDb.execute; }
+  });
+});
+
+test('room authority: canonical hidden Defty public sends remain allowed, BYOA lookalikes fail closed', async () => {
+  const { DEFTY_SYSTEM_EMPLOYEE_SLUG } = await import('../src/lib/ensure-defty-membership.js');
+  const context = { org_id: orgId, employee_id: employeeId, employee_slug: DEFTY_SYSTEM_EMPLOYEE_SLUG, trust_level: 'autonomous' as const };
+  await db.update(agentEmployees).set({ slug: DEFTY_SYSTEM_EMPLOYEE_SLUG, runtime_kind: 'defty_system', is_byoa: false, is_deleted: true }).where(eq(agentEmployees.id, employeeId));
+  try {
+    const internal = await executeSendMessage({ orgId, spaceId, content: 'canonical hidden Defty', parentId: null, ctx: context }, { skipReceipt: true });
+    assert.notEqual(internal.isError, true, JSON.stringify(internal));
+    await db.update(agentEmployees).set({ is_byoa: true }).where(eq(agentEmployees.id, employeeId));
+    const fake = await executeSendMessage({ orgId, spaceId, content: 'fake hidden BYOA', parentId: null, ctx: context }, { skipReceipt: true });
+    assert.equal(fake.isError, true);
+    await db.update(agentEmployees).set({ is_deleted: false, is_active: false }).where(eq(agentEmployees.id, employeeId));
+    await assert.rejects(getActiveAgentChannelRuntimeCorrelation(orgId, employeeId), { status: 403, code: 'forbidden' });
+  } finally {
+    await db.update(agentEmployees).set({ slug: employeeSlug, runtime_kind: 'hermes', is_byoa: true, is_deleted: false, is_active: true }).where(eq(agentEmployees.id, employeeId));
+  }
+});
+
+test('room authority: canonical task assignment rechecks restricted visibility and source shape', async () => {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({ id: taskId, org_id: orgId, project_id: projectId, number: recoveryTaskNumber++, title: 'restricted authority', created_by: humanUserId,
+    assignee_id: agentUserId, metadata: { visibility: 'restricted' } });
+  const event = (await publishAgentChannelEvent({ orgId, employeeId, kind: 'task.assigned', sourceKind: 'task', sourceId: taskId, idempotencyKey: crypto.randomUUID() })).event!;
+  try {
+    assert.equal(await authorityAllowed(event.id), true);
+    await db.update(tasks).set({ assignee_id: null }).where(eq(tasks.id, taskId));
+    assert.equal(await authorityAllowed(event.id), false, 'restricted assignment loses direct relationship');
+    await db.update(tasks).set({ metadata: {} }).where(eq(tasks.id, taskId));
+    assert.equal(await authorityAllowed(event.id), true);
+    await db.update(agentChannelEvents).set({ source_kind: null }).where(eq(agentChannelEvents.id, event.id));
+    assert.equal(await authorityAllowed(event.id), false, 'task kind cannot hide a missing canonical source');
+  } finally {
+    await db.delete(agentChannelEvents).where(eq(agentChannelEvents.id, event.id));
+    await db.delete(tasks).where(eq(tasks.id, taskId));
+  }
+});
+
+test('room authority: late revocation suppresses accepted replay and claimed response payloads', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    const accepted = await authorityEvent(roomId, messageId);
+    await acceptAutonomousEvent(accepted.id);
+    const originalInsert = apiDb.insert.bind(apiDb);
+    let revoked = 0;
+    const wrap = (builder: any): any => new Proxy(builder, { get(target, property) {
+      if (property === 'then') return (resolve: any, reject: any) => target.then(async (value: any) => {
+        await revokeAuthorityRoom(roomId); revoked++; return value;
+      }).then(resolve, reject);
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? (...args: any[]) => wrap(value.apply(target, args)) : value;
+    } });
+    apiDb.insert = ((table: any) => table === agentChannelCursors ? wrap(originalInsert(table)) : originalInsert(table)) as typeof apiDb.insert;
+    try {
+      const replay = await authorityPost('accept', { event_id: accepted.id });
+      assert.equal(revoked, 1, 'revoke after the entry check, during awaited cursor write');
+      assert.equal(replay.status, 404, await replay.text());
+      await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: agentUserId });
+      await authorityEvent(roomId, messageId);
+      const poll = await app.request(`/api/agent-channel/v1/events?limit=100&after_event_id=${accepted.id}&${autonomousCompatibilityQuery()}`, { headers: { authorization: `Bearer ${bearer}` } });
+      const body = await poll.json() as any;
+      assert.equal(poll.status, 200, JSON.stringify(body));
+      assert.equal(revoked, 2);
+      assert.equal(body.events.length, 0, 'claimed snapshot cannot escape after membership removal');
+      assert.equal(body.cursor, null, 'no revoked event identifier in cursor');
+    } finally { apiDb.insert = originalInsert as typeof apiDb.insert; }
+  });
+});
+
+test('room authority: task creation rolls back its bundle when source is revoked after preflight', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    const event = await authorityEvent(roomId, messageId);
+    const title = `must rollback ${crypto.randomUUID()}`;
+    const [projectBefore] = await db.select({ counter: projects.task_counter }).from(projects).where(eq(projects.id, projectId));
+    const activityBefore = await db.select({ id: taskActivity.id }).from(taskActivity).where(eq(taskActivity.org_id, orgId));
+    const transact = apiDb.transaction.bind(apiDb);
+    let intercepted = 0;
+    apiDb.transaction = ((callback: any, ...options: any[]) => transact(async (tx: any) => {
+      const execute = tx.execute.bind(tx);
+      tx.execute = async (query: any) => {
+        const statement = new PgDialect().sqlToQuery(query).sql;
+        if (/UPDATE projects/.test(statement)) { intercepted++; await revokeAuthorityRoom(roomId); }
+        return execute(query);
+      };
+      return callback(tx);
+    }, options[0])) as typeof apiDb.transaction;
+    try {
+      const result = await executeTaskCreate({ caller_employee_slug: employeeSlug, project_id: projectId, title,
+        subtasks: [{ title: `${title} child` }] },
+        { org_id: orgId, employee_id: employeeId, employee_slug: employeeSlug, trust_level: 'autonomous', channel_event_id: event.id });
+      assert.equal(intercepted, 1, 'revocation occurs after task preflight before bundle writes');
+      assert.equal(result.isError, true, JSON.stringify(result));
+      assert.equal((await db.select().from(tasks).where(and(eq(tasks.org_id, orgId), sql`${tasks.title} like ${title + '%'}`))).length, 0);
+      const [projectAfter] = await db.select({ counter: projects.task_counter }).from(projects).where(eq(projects.id, projectId));
+      assert.equal(projectAfter!.counter, projectBefore!.counter, 'number reservation rolls back');
+      assert.equal((await db.select({ id: taskActivity.id }).from(taskActivity).where(eq(taskActivity.org_id, orgId))).length, activityBefore.length, 'activity rolls back');
+    } finally { apiDb.transaction = transact as typeof apiDb.transaction; }
+  });
+});
+
+async function publishActualApprovedContinuationPair(sourceMessageId?: string) {
+  const firstId = crypto.randomUUID(), secondId = crypto.randomUUID();
+  const first = { id: firstId, org_id: orgId, user_id: humanUserId, agent_employee_id: employeeId,
+    action: 'task_create', params: {}, approval_tier: 'full' as const, approval_status: 'approved' as const,
+    ...(sourceMessageId ? { message_id: sourceMessageId } : {}) };
+  await db.insert(agentActions).values(first);
+  assert.equal((await approveAction(firstId, humanUserId)).status, 'approved');
+  const [firstEvent] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.idempotency_key, `approval.resolved:${firstId}:approved`));
+  assert.ok(firstEvent, 'actual approveAction publisher emitted the first resolution');
+  await db.insert(agentActions).values({ ...first, id: secondId, message_id: null, channel_event_id: firstEvent.id });
+  assert.equal((await approveAction(secondId, humanUserId)).status, 'approved');
+  const [secondEvent] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.idempotency_key, `approval.resolved:${secondId}:approved`));
+  assert.ok(secondEvent, 'actual approveAction publisher emitted the second resolution');
+  assert.equal(secondEvent.source_kind, 'approval');
+  assert.equal(secondEvent.source_id, firstId, 'publisher legitimately inherits the origin approval source ID');
+  return secondEvent;
+}
+
+test('approval continuation: actual targetless publisher preserves a second approved event', async () => {
+  const event = await publishActualApprovedContinuationPair();
+  assert.equal(await authorityAllowed(event.id), true);
+  await acceptAutonomousEvent(event.id);
+});
+
+test('approval continuation: actual private ancestry remains revocable after a second approval', async () => {
+  await privateAuthorityFixture(async (roomId, messageId) => {
+    await db.insert(spaceMembers).values({ id: crypto.randomUUID(), space_id: roomId, user_id: humanUserId });
+    const event = await publishActualApprovedContinuationPair(messageId);
+    assert.equal(await authorityAllowed(event.id), true);
+    await acceptAutonomousEvent(event.id);
+    await revokeAuthorityRoom(roomId);
+    assert.equal(await authorityAllowed(event.id), false);
+    const replay = await authorityPost('accept', { event_id: event.id });
+    assert.equal(replay.status, 404, await replay.text());
+  });
 });

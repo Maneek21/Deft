@@ -67,18 +67,29 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     name: tool.name, description: tool.description, input_schema: tool.inputSchema as Anthropic.Tool['input_schema'],
   })),
   {
+    name: 'search_members',
+    description: 'Resolve ONE person or agent by name or user ID in this workspace before assignment. Works without native mentions. Returns member or an explicit no-match/ambiguity with candidates; never choose an ambiguous person.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 120 } }, required: ['query'] },
+  },
+  {
+    name: 'list_spaces',
+    description: 'Discover readable chat rooms and their exact names/IDs. Returns public rooms and private rooms you belong to. Use before selecting a room whose name is uncertain; absence does not prove an inaccessible room does not exist.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', maxLength: 120 }, limit: { type: 'integer', minimum: 1, maximum: 50 }, offset: { type: 'integer', minimum: 0 } }, required: [] },
+  },
+  {
     name: 'search_messages',
     description:
-      'Search chat messages across spaces in the organization. Use for questions about conversations, decisions, or what people said.',
+      'Search readable chat messages by literal keywords. Discover uncertain room names with list_spaces. Omit query only with an exact room ID/name to read latest messages. Empty search results do not establish that no conversations exist.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        query: { type: 'string', description: 'Search keywords' },
+        query: { type: 'string', description: 'Optional literal keywords; omit to read latest messages in a resolved room' },
+        space_id: { type: 'string', description: 'Exact room ID from list_spaces' },
         space_name: { type: 'string', description: 'Optional: filter to a specific space name' },
         author_name: { type: 'string', description: 'Optional: filter by message author name' },
         limit: { type: 'number', description: 'Max results (default 10)' },
       },
-      required: ['query'],
+      required: [],
     },
   },
   {
@@ -99,7 +110,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'search_tasks',
     description:
-      'Search tasks across all projects. Use for questions about work items, their status, assignments, etc.',
+      'Search readable tasks by title, description or project name. For a project summary, discover the project with list_projects then filter project_name without query to list its tasks. Structural person/project filters return explicit no-match or ambiguity instead of broadening results.',
     input_schema: {
       type: 'object' as const,
       properties: {

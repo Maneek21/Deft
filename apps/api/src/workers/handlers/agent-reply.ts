@@ -1,3 +1,4 @@
+import { projectAgentReadDiagnostics } from '../../lib/agent-read-diagnostics.js';
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -20,6 +21,7 @@ import { resolveAssigneeWithMatches } from '../../lib/resolve-assignee.js';
 import { resolveProjectTarget } from '../../lib/resolve-project-target.js';
 import {
   compileDeftyActionDraft,
+  hasUnrequestedWikiPlaceholder,
   persistAgentReplyWithActions,
   sanitizeAgentReplyActionMetadata,
   validateRegisteredProposalAction,
@@ -157,6 +159,7 @@ export function mergeWikiUpdateContent(
   const existing = existingContent.trim();
   const requested = requestedContent.trim();
   if (operation !== 'append' || !existing || !requested) return requested || existing;
+  if (requested.startsWith(existing)) return requested;
   if (existing.toLowerCase().includes(requested.toLowerCase())) return existing;
   return `${existing}\n\n${requested}`;
 }
@@ -244,11 +247,12 @@ function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-async function resolvePendingActionTargets(
+export async function resolvePendingActionTargets(
   orgId: string,
   userId: string,
   sourceSpaceId: string,
   actions: any[],
+  userRequest = '',
 ): Promise<{ actions: any[]; warnings: string[] }> {
   const resolvedActions: any[] = [];
   const warnings: string[] = [];
@@ -392,6 +396,10 @@ async function resolvePendingActionTargets(
 
     if (action.action === 'wiki_write') {
       const params = action.params;
+      if (hasUnrequestedWikiPlaceholder(params.content, userRequest)) {
+        warnings.push('The generated wiki proposal contains an existing-content placeholder. It was not prepared; use the actual append text or a complete replacement grounded in the current page.');
+        continue;
+      }
       const requestedSlug = typeof params.slug === 'string' ? params.slug.trim() : '';
       const requestedTitle = typeof params.title === 'string' ? params.title.trim() : '';
       const candidateSlug = requestedTitle
@@ -1696,6 +1704,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
                 orgId,
                 promptContent,
                 agentReplyText: queryResult.text,
+                successfulReadActions: queryResult.executedActions,
                 sourceMessageId: messageId,
                 projectNameHint: fallbackProjectName,
                 priorTaskReferences: recoveryPriorTaskReferences ?? [],
@@ -1816,6 +1825,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           orgId,
           promptContent,
           agentReplyText: result.text,
+          successfulReadActions: result.executedActions,
           sourceMessageId: messageId,
           projectNameHint: fallbackProjectName,
           priorTaskReferences,
@@ -1891,13 +1901,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       }),
     );
     const validatedPendingActions: any[] = [];
-    const proposalValidationWarnings: string[] = [];
+    const proposalValidationWarnings: string[] = [...(compiledActionDraft?.warnings ?? [])];
     for (const action of pendingActionsWithProvenance) {
       const validation = validateRegisteredProposalAction(action);
       if (validation.ok) validatedPendingActions.push(action);
       else proposalValidationWarnings.push(validation.message);
     }
-    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, validatedPendingActions);
+    const resolvedPendingActions = await resolvePendingActionTargets(orgId, userId, spaceId, validatedPendingActions, promptContent);
     let pendingActions = resolvedPendingActions.actions.map(normalizePendingApprovalTier);
     const pendingActionTargetWarnings = [...proposalValidationWarnings, ...resolvedPendingActions.warnings];
     if (pendingActions.length > MAX_INLINE_APPROVAL_ACTIONS) {
@@ -1971,7 +1981,9 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       pending_actions: pendingActions.length > 0 ? pendingActions : undefined,
       action_compiler_metrics: compiledActionDraft?.metrics,
       action_graph: compiledActionDraft?.graph,
+      proposal_preparation_warnings: pendingActionTargetWarnings.length ? pendingActionTargetWarnings : undefined,
       agent_run_metrics: result.metrics,
+      read_diagnostics: projectAgentReadDiagnostics(result.executedActions),
     };
 
     let agentMessage: typeof messages.$inferSelect;

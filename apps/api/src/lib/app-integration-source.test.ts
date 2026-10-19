@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createAppIntegrationSource,appIntegrationSourceDigest,type AppIntegrationSourceCaller,type AppIntegrationPublishedSource} from './app-integration-source.js';
-import {appIntegrationPublishedProjection,appIntegrationExactLocatorCandidate,appIntegrationProjectedIdentity} from './app-integration-source-projection.js';
+import {appIntegrationPublishedProjection,appIntegrationExactLocatorCandidate,appIntegrationProjectedIdentity,AppIntegrationSourcePendingError} from './app-integration-source-projection.js';
 import {openAppIntegrationSourceLocator,appIntegrationSourceLocator} from './app-integration-source-locator.js';
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const caller:AppIntegrationSourceCaller={org_id:id(1),user_id:id(2),kind:'human',principal_id:id(3)};
@@ -39,6 +39,11 @@ test('current checkpoint locator matches exact key/fingerprint pair and denies a
  assert.throws(()=>appIntegrationExactLocatorCandidate([row,{...row,id:'duplicate'}],locators));
  assert.throws(()=>appIntegrationExactLocatorCandidate([] ,locators));
  assert.throws(()=>appIntegrationExactLocatorCandidate(Array.from({length:33},()=>row),locators));
+});
+test('only an absent exact published locator reports recoverable pending; ambiguous sources still deny',()=>{
+ const locator={key_version:'current',fingerprint:'hash'},row={resource_id_hmac_key_version:'current',resource_id_hmac:'hash'};
+ assert.throws(()=>appIntegrationExactLocatorCandidate([],[locator]),AppIntegrationSourcePendingError);
+ assert.throws(()=>appIntegrationExactLocatorCandidate([row,row],[locator]),error=>error instanceof Error&&!(error instanceof AppIntegrationSourcePendingError));
 });
 test('fresh Runtime read precedes transaction and minted immutable guard performs no network',async()=>{
  const f=fixture(),snapshot=await f.service.read(caller,target,'read');assert.ok(Object.isFrozen(snapshot.presentation));

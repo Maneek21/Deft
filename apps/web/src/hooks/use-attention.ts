@@ -18,6 +18,9 @@ export type AttentionState =
   | 'superseded';
 
 export type AttentionApproval = {
+  has_receipt: boolean;
+  proposer: string | null;
+  source: string | null;
   id: string;
   action: string;
   params: Record<string, unknown>;
