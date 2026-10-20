@@ -22,7 +22,7 @@ test('non-mail app nominations declare source title, grouping and completeness w
 const url = process.env.DEFT_TEST_DATABASE_URL;
 const safe = !!url && url === process.env.DATABASE_URL && /^postgres(?:ql)?:\/\/(?:[^@]+@)?(?:127\.0\.0\.1|localhost):\d+\/[^?]*test(?:\?.*)?$/u.test(url);
 
-test('native source audience enforces current authority and output audience in PostgreSQL', { skip: !safe }, async () => {
+test('native source audience enforces current authority and output audience in PostgreSQL', { skip: !safe }, async t => {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
@@ -37,11 +37,12 @@ test('native source audience enforces current authority and output audience in P
       CREATE TEMP TABLE users (id text, is_agent boolean);
       CREATE TEMP TABLE agent_employees (id text, org_id text, user_id text, is_active boolean, is_deleted boolean, runtime_kind text, slug text, is_byoa boolean);
       CREATE TEMP TABLE app_integration_capture_sources (page_id text, org_id text);
-      INSERT INTO org_members VALUES ('org','owner',true),('org','other',true);
+      INSERT INTO org_members VALUES ('org','owner',true),('org','other',true),('org','agent',true);
       INSERT INTO users VALUES ('owner',false),('other',false),('agent',true);
       INSERT INTO spaces (id,org_id,type) VALUES ('dm','org','dm'),('shared','org','private'),('elsewhere','org','private'),('foreign','other-org','dm');
       INSERT INTO space_members VALUES ('dm','owner'),('dm','agent'),('shared','owner'),('shared','other'),('foreign','owner');
       INSERT INTO agent_employees VALUES ('employee','org','owner',true,false,'byoa','assistant',true);
+      INSERT INTO agent_employees VALUES ('canonical','org','agent',true,true,'defty_system','defty-system',false);
       INSERT INTO wiki_pages (id,org_id,created_via,scope,user_id,space_id) VALUES
         ('private','org','app_integration_capture','user','owner',null),
         ('shared-copy','org','app_integration_capture','space','owner','shared'),
@@ -74,6 +75,31 @@ test('native source audience enforces current authority and output audience in P
     assert.deepEqual(await visible('owner', 'shared'), []);
     await client.query("UPDATE org_members SET is_active=false WHERE user_id='owner'");
     assert.deepEqual(await visible('owner'), []);
+    await client.query("UPDATE org_members SET is_active=true WHERE user_id='owner'");
+    await client.query("DELETE FROM space_members WHERE space_id='dm' AND user_id='other'");
+    await t.test('canonical internal identity retains its existing active hidden-row authority', async () => {
+      assert.deepEqual(await visible('owner', 'dm', 'canonical'), ['private', 'provenance', 'retained']);
+    });
+    await client.query("UPDATE agent_employees SET is_deleted=false WHERE id='canonical'");
+    await t.test('another agent in the conversation makes a private answer shared', async () => {
+      await client.query("INSERT INTO users VALUES ('foreign-agent',true); INSERT INTO space_members VALUES ('dm','foreign-agent')");
+      assert.deepEqual(await visible('owner', 'dm', 'canonical'), []);
+    });
+    // Restore the audience before the independent employee-authority cases.
+    await client.query("DELETE FROM space_members WHERE space_id='dm' AND user_id='foreign-agent'");
+    await t.test('current membership of the acting internal employee is required', async () => {
+      await client.query("UPDATE org_members SET is_active=false WHERE user_id='agent'");
+      assert.deepEqual(await visible('owner', 'dm', 'canonical'), []);
+    });
+    await client.query("UPDATE org_members SET is_active=true WHERE user_id='agent'");
+    await t.test('paused or externally impersonated internal identities remain denied', async () => {
+      await client.query("UPDATE agent_employees SET is_active=false WHERE id='canonical'");
+      assert.deepEqual(await visible('owner', 'dm', 'canonical'), []);
+      await client.query("UPDATE agent_employees SET is_active=true,is_byoa=true WHERE id='canonical'");
+      assert.deepEqual(await visible('owner', 'dm', 'canonical'), []);
+      await client.query("UPDATE agent_employees SET is_byoa=false,slug='external' WHERE id='canonical'");
+      assert.deepEqual(await visible('owner', 'dm', 'canonical'), []);
+    });
   } finally {
     await client.query('ROLLBACK');
     await client.end();
