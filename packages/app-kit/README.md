@@ -1,6 +1,6 @@
 # `@deft/app-kit`
 
-The current authoring Kit is `0.1.0-alpha.38`, including targeted resource Refresh. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.16` on alpha.35, Host `0.3.0-preview.122` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
+The current authoring Kit is `0.1.0-alpha.39`, including an optional App-owned `background_refresh_description` in experience bundles and targeted resource Refresh. Bundles using the new field require Host `0.3.0-preview.127` or newer. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.16` on alpha.35, Host `0.3.0-preview.122` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
 
 Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
 
@@ -65,12 +65,12 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.38.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.39.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.38`. Package metadata,
+This review candidate is `0.1.0-alpha.39`. Package metadata,
 `DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
