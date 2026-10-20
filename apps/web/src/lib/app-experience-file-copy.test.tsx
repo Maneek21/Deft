@@ -3,7 +3,7 @@ import {createOriginalFileCopies,recordCopySource,verifyFileCopy,type FileCopyNo
 import {createExperienceRecordWriter,type ExperienceRecordRow} from './app-experience-record-writer';
 import {createExperienceDataClient,appDataInputDigest} from './app-experience-data-client';
 import {AppDataOperationInputSchema,AppDataRecordMetaSchema,AppDataSourceFileSchema,DeftExperienceRecordFormNodeSchema,APP_DATA_LIMITS} from '../../../../packages/app-kit/src/app-data';
-import {createDeftRecordFormNode} from '../../../../packages/app-kit/src/experience-sdk';
+import {createDeftRecordFormNode} from '../../../../packages/app-kit/src/experience-core';
 import {createExperienceBridge,parseExperienceView,type ExperiencePin} from './app-experience-bridge';
 const id='11111111-1111-4111-8111-111111111111',sid='22222222-2222-4222-8222-222222222222',originId='33333333-3333-4333-8333-333333333333',hash='sha256:'+'a'.repeat(64);
 const source={resource_key:'inbox',record_id:originId,content_digest:hash},file={file_ref:'sha256:'+'b'.repeat(64),filename:'synthetic.pdf',media_type:'application/pdf',size_bytes:1840,disposition:'attachment' as const,preview:'pdf' as const};

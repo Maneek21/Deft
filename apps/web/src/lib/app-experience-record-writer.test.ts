@@ -3,7 +3,7 @@ import test from 'node:test';
 import {createExperienceRecordWriter,experienceRecordSubmissionEvent,type ExperienceRecordRow} from './app-experience-record-writer';
 import {validateRecordFormValue,experienceRecordFormMode} from './app-experience-record-form';
 import {DeftExperienceRecordFormNodeSchema} from '../../../../packages/app-kit/src/app-data';
-import {createDeftRecordFormNode} from '../../../../packages/app-kit/src/experience-sdk';
+import {createDeftRecordFormNode} from '../../../../packages/app-kit/src/experience-core';
 import {parseExperienceView} from './app-experience-bridge';
 const id='11111111-1111-4111-8111-111111111111',digest='sha256:'+'a'.repeat(64);
 const profile={schema_version:'deft.record_form_profile.v1' as const,max_record_bytes:491520,addresses:[{field:'to',label:'To',optional:false},{field:'bcc',label:'Bcc',optional:true}],

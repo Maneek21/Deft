@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createExperienceBridge, parseExperienceView, type ExperiencePin, type ExperiencePort } from './app-experience-bridge';
-import { createDeftExperienceSdk } from '../../../../packages/app-kit/src/experience-sdk';
+import { createDeftExperienceSdk } from '../../../../packages/app-kit/src/experience-core';
 import {createExperienceConnection} from './app-experience-connection';
 const unavailable=(requestId:string)=>({version:'deft.experience_bridge.v1',kind:'response',session_id:pin.session_id,request_id:requestId,ok:false,code:'UNAVAILABLE'});
 
