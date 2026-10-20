@@ -1,8 +1,9 @@
+import { hostRetainedSourceStorage } from './host-source-storage.js';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { wikiPages } from '@deft/db/schema';
 import { visibleWikiPageCondition } from './wiki-visibility.js';
 
-export const EMAIL_KNOWLEDGE_ORIGIN = 'email_knowledge_auto';
+export const EMAIL_KNOWLEDGE_ORIGIN = hostRetainedSourceStorage.knowledge.origins[0]!;
 
 /** Captured mail is a retained Knowledge copy, but its declared audience still
  * applies to generated answers. A user's private page must not enter a reply
@@ -39,8 +40,4 @@ export function emailKnowledgeAudienceCondition(orgId: string, userId?: string, 
   ));
 }
 
-export function emailKnowledgeSourceUrl(accountId: string, messageId: string): string | null {
-  if (!accountId || accountId.length > 256 || /[\u0000-\u001f\u007f]/u.test(accountId)
-    || !/^mail_[a-f0-9]{64}$/u.test(messageId)) return null;
-  return `/email?account=${encodeURIComponent(accountId)}&message=${encodeURIComponent(messageId)}`;
-}
+export const emailKnowledgeSourceUrl = hostRetainedSourceStorage.knowledge.sourceUrl;

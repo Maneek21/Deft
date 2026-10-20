@@ -1,4 +1,5 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { events } from '@deft/db/schema';
 import { z } from 'zod';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { AppRunKeyReference } from './app-run-keyrings.js';
@@ -100,3 +101,88 @@ export async function listEmailMailboxKeyReferences(tx: Pick<AppRunTransaction, 
   `);
   return Object.freeze(result.rows.map(row => Object.freeze(reference.parse(row))));
 }
+
+function retainedKnowledgeSourceUrl(accountId: string, messageId: string): string | null {
+  if (!accountId || accountId.length > 256 || /[\u0000-\u001f\u007f]/u.test(accountId)
+    || !/^mail_[a-f0-9]{64}$/u.test(messageId)) return null;
+  return `/email?account=${encodeURIComponent(accountId)}&message=${encodeURIComponent(messageId)}`;
+}
+
+/** Call only after authorizing the retained Knowledge page. The excerpt is a
+ * destination-owned copy; the original mailbox link remains separately gated. */
+async function decorateRetainedKnowledgeCitations<T extends { source_type: string; source_id: string }>(
+  orgId: string, userId: string, citations: T[],
+): Promise<Array<T & { source_url?: string | null; source_label?: string }>> {
+  const ids = citations.filter(row => row.source_type === 'email').map(row => row.source_id);
+  if (!ids.length) return citations;
+  const [{ db }, { emailKnowledgeSources }] = await Promise.all([import('./db.js'), import('@deft/db/schema')]);
+  const rows = await db.select({ id: emailKnowledgeSources.id,
+    owner_user_id: emailKnowledgeSources.owner_user_id, account_id: emailKnowledgeSources.account_id,
+    logical_message_id: emailKnowledgeSources.logical_message_id }).from(emailKnowledgeSources)
+    .where(and(eq(emailKnowledgeSources.org_id, orgId), inArray(emailKnowledgeSources.id, ids)));
+  const byId = new Map(rows.map(row => [row.id, row]));
+  // A routing marker never grants access. The destination excerpt is already
+  // authorized; the link opens through a fresh Web/current App source check.
+  const adopted=await db.execute(sql`SELECT s.id,m.state FROM email_knowledge_sources s
+    JOIN native_email_adoptions m USING(org_id,owner_user_id,account_id)
+    WHERE s.org_id=${orgId} AND s.owner_user_id=${userId} AND s.id IN (${sql.join(ids.map(id=>sql`${id}`),sql`,`)})`);
+  const routes=new Map(adopted.rows.map(row=>[String(row.id),String(row.state)]));
+  return citations.map(citation => {
+    if (citation.source_type !== 'email') return citation;
+    const source = byId.get(citation.source_id);
+    return { ...citation, source_label: 'Email',
+      source_url: source?.owner_user_id === userId
+        ? routes.has(source.id) ? routes.get(source.id)==='runtime_active' ? `/apps/source/native-email/${encodeURIComponent(source.id)}` : null : retainedKnowledgeSourceUrl(source.account_id, source.logical_message_id) : null };
+  });
+}
+
+const dateISO=(value:string)=>`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}T00:00:00Z`;
+const TimeSchema=z.strictObject({value:z.string().regex(/^(?:[0-9]{8}|[0-9]{8}T[0-9]{6}Z?)$/u),value_type:z.enum(['date','date_time']),time_zone:z.string().regex(/^[A-Za-z0-9_+./-]{1,128}$/u).nullable(),instant:z.iso.datetime().nullable()});
+const ModelSchema=z.strictObject({schema_version:z.literal('deft.email_calendar_event.v1'),account_id:z.string().min(1).max(256),invitation_id:z.string().regex(/^[a-f0-9]{64}$/u),
+ uid:z.string().min(1).max(1024).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u),organizer:z.string().email().max(320),start:TimeSchema,end:TimeSchema,rrule:z.string().regex(/^[A-Z0-9=;,+-]{1,1024}$/iu).nullable(),
+ exdates:z.array(TimeSchema).max(256),recurrence_id:TimeSchema.nullable(),sequence:z.number().int().nonnegative(),dtstamp:z.iso.datetime()});
+type Model=z.infer<typeof ModelSchema>;
+type RetainedCalendarTime=z.infer<typeof TimeSchema>;
+type RetainedCalendarRow={timestamp:Date;metadata:unknown};
+const currentTime=(original:RetainedCalendarTime,instant:string):RetainedCalendarTime=>{
+ const parsed=new Date(instant);if(!Number.isFinite(parsed.getTime()))throw Error('EMAIL_CALENDAR_MODEL_INVALID');
+ if(original.value_type==='date')return {value:parsed.toISOString().slice(0,10).replaceAll('-',''),value_type:'date',time_zone:null,instant:null};
+ if(!original.time_zone)return {value:parsed.toISOString().replace(/[-:]/gu,'').replace(/\.\d{3}Z$/u,'Z'),value_type:'date_time',time_zone:null,instant:parsed.toISOString()};
+ const parts=new Map(new Intl.DateTimeFormat('en-US',{timeZone:original.time_zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(parsed).map(part=>[part.type,part.value]));
+ return {...original,value:`${parts.get('year')}${parts.get('month')}${parts.get('day')}T${parts.get('hour')}${parts.get('minute')}${parts.get('second')}`,instant:parsed.toISOString()};
+};
+const decodeRetainedCalendarModel=(row:RetainedCalendarRow):Model|null=>{
+ const metadata=row.metadata as Record<string,unknown>|null,value=metadata?.email_invitation as Model|undefined;
+ if(!value||value.schema_version!=='deft.email_calendar_event.v1')return null;
+ const model=ModelSchema.parse(value);
+ // Existing Calendar remains the editable time source. Keep the imported
+ // timezone/recurrence identity while projecting owner edits to start/end.
+ const start=row.timestamp.toISOString(),end=typeof metadata?.end==='string'?metadata.end:null;
+ const originalStart=model.start.instant??dateISO(model.start.value),originalEnd=model.end.instant??dateISO(model.end.value);
+ if(Date.parse(start)!==Date.parse(originalStart))model.start=currentTime(model.start,start);
+ if(end&&Date.parse(end)!==Date.parse(originalEnd))model.end=currentTime(model.end,end);
+ return model;
+};
+
+/** Sole trusted provider for retained source storage. Its wire decoders stay
+ * here until explicit provenance, restore and rollback migration gates pass. */
+export const retainedSourceStorageProvider = Object.freeze({
+ id: 'retained-source-storage',
+ listReferences: listEmailMailboxKeyReferences,
+ knowledge: Object.freeze({
+  origins: Object.freeze(['email_knowledge_auto']),
+  sourceUrl: retainedKnowledgeSourceUrl,
+  isCitation: (sourceType:string) => sourceType === 'email',
+  decorateCitations: decorateRetainedKnowledgeCitations,
+ }),
+ calendar: Object.freeze({
+  condition: sql`${events.metadata}->'email_invitation'->>'schema_version' = 'deft.email_calendar_event.v1'`,
+  decodeLegacyModel: decodeRetainedCalendarModel,
+  decodeProjectionModel(row:RetainedCalendarRow) {
+   const model=decodeRetainedCalendarModel(row);
+   return model ? {series_identity:[model.account_id,model.uid,model.organizer],uid:model.uid,
+    start:model.start,end:model.end,rrule:model.rrule,exdates:model.exdates,
+    recurrence_id:model.recurrence_id,sequence:model.sequence,dtstamp:model.dtstamp} : null;
+  },
+ }),
+});
