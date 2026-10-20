@@ -18,6 +18,8 @@ export async function createReviewedResourceSyncFixture(input: Readonly<{
   keys: AppRunKeyProvider; clock: () => Date; descriptor?: SyncDescriptorV1;
   experience_artifact?: DeftExperienceArtifact;
   consent_duration_ms?: number;
+  limits?: Partial<{ max_records_per_page: number; max_page_bytes: number;
+    max_retained_records: number; max_retained_bytes: number; min_interval_seconds: number }>;
 }>) {
   const [{ db }, schema, kit, apps, reviews, modules, managementModule, drizzle] = await Promise.all([
     import('../../src/lib/db.js'), import('@deft/db/schema'), import('@deft/app-kit'),
@@ -84,7 +86,7 @@ export async function createReviewedResourceSyncFixture(input: Readonly<{
     consent_expires_at: new Date(input.clock().getTime() + (input.consent_duration_ms ?? 60 * 60 * 1_000)).toISOString(),
     limits: { max_records_per_page: 100, max_page_bytes: 524_288,
       max_retained_records: 100_000, max_retained_bytes: 1_073_741_824,
-      min_interval_seconds: 60 },
+      min_interval_seconds: 60, ...input.limits },
   };
   const consentReview = await management.prepareConsent(ownerActor, consentRequest);
   const consent = await management.activateConsent(ownerActor, { ...consentRequest,
