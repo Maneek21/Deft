@@ -46,8 +46,8 @@ export const AppConnectionSessionRecordSchema = z.strictObject({
     ctx.addIssue({code:'custom',message:'Connection protocols cannot mix authority formats'});
   if(value.upgrade&&Date.parse(value.upgrade.review_expires_at)>appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime))
     ctx.addIssue({code:'custom',message:'Upgrade review exceeds current consent'});
-  if(value.upgrade?.closure&&(value.callback_consumed||value.account!==null||value.state!=='not_connected'))
-    ctx.addIssue({code:'custom',message:'Expired upgrade closure cannot admit a callback or account'});
+  if(value.upgrade?.closure&&(value.account!==null||value.state!=='not_connected'))
+    ctx.addIssue({code:'custom',message:'Expired upgrade closure cannot publish an account'});
   if(value.action_consents?.some(consent=>consent.consent_id!==consent.action_binding_id
     ||appConsentDeadline(consent.expires_at, consent.consent_lifetime)>appConsentDeadline(value.scope.consent_expires_at, value.scope.consent_lifetime)))
     ctx.addIssue({code:'custom',message:'Independent action consent exceeds its binding'});

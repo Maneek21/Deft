@@ -14,7 +14,7 @@
     "push": "drizzle-kit push",
     "push-full": "tsx scripts/push-full.ts",
     "upgrade": "tsx scripts/upgrade.ts",
-    "test:upgrade": "tsx --test scripts/upgrade.test.ts",
+    "test:upgrade": "tsx --test scripts/upgrade.test.ts && node --test scripts/reviewed-lineage-artifacts.test.mjs",
     "test:upgrade-ledger": "tsx --test scripts/upgrade-ledger-db.test.ts",
     "migrate": "drizzle-kit migrate",
     "seed": "tsx seed.ts",
