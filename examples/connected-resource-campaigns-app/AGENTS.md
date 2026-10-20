@@ -8,5 +8,6 @@
   email interface with an existing MCP connector selected by the host.
 - Do not add executable code, dynamic loading, App-controlled policy, connector
   creation, custom UI, public routes, sync, schedules, or automation.
-- Build with the public `@deft/app-kit` CLI and preserve deterministic package
+- Build with the optional `deft-example-email app` CLI from `@deft/app-kit`
+  alpha.40 and preserve deterministic package
   and lock-file bytes.

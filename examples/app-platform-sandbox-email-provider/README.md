@@ -6,8 +6,13 @@ connected App conformance path. It exposes exactly one stdio tool,
 the provider process memory and disappear when that process exits by default.
 
 The provider implements the frozen private sandbox-email schema independently
-from `@deft/app-kit`. Repeating the same `idempotency_key` and input returns the
+from `@deft/app-kit/examples/email`. Repeating the same `idempotency_key` and input returns the
 same deterministic result; reusing a key with different input is rejected.
+
+On Kit alpha.40, build the historical connected App fixtures with
+`deft-example-email app build`. The core `deft` CLI and Host do not register this
+educational interface. Root exports remain deprecated author-tool compatibility
+aliases until the next breaking Kit alpha.
 
 Pack it as a standalone artifact:
 
