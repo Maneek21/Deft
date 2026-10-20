@@ -20,7 +20,6 @@
     "apps/web/src/lib/app-experience-connection.ts": "63d49bfcaefc2ec7bfc6c8a59c5a3f106dfb742f4377c69c03fb5842589b22d2",
     "apps/web/src/app/app-experience-bootstrap/route.ts": "dbc44b388b0078e9c312d5adc92f5861fac4e10b7ca381e5b5257b1bc4f23077",
     "scripts/gate-g/experiences/rich-host.html": "fb6efd3f136a31a0690bed098f5454276bda38dfe39afae7c61eb997a609eadf",
-    "apps/api/test/email-graph-send-db.test.ts": "93674795094527f4d07f61a4a106023a2d5f22100aa6547498beca1d7508a082",
     "examples/apps/email/providers/connection-http.test.mjs": "fcae5cafa21621b082b508e7249c34cdb384b408db6bdbf48653cd58f3944ae7",
     "examples/apps/email/providers/incoming-source-files.test.mjs": "860c50fb2ae16642b4fdccbea33bbd60a097f6245ba4abea8ea0db6d474d8afa",
     "examples/apps/email/providers/oauth-account.mjs": "8ed6862ce390d87145803fe7614b9f7d97907144d53d5b51675ca3f397577ae7",
@@ -244,18 +243,6 @@
         "scripts/gate-g/experiences/rich-host.html"
       ],
       "justification": "This is an isolated loopback evidence fixture, sending public synthetic session/version metadata and a fixture MessagePort to its explicitly created sandbox frame. It does not transmit real mailbox data, tokens or application credentials and is not a deployed Host messaging policy."
-    },
-    {
-      "id": "FP-016",
-      "disposition": "false_positive",
-      "rule": "js/incomplete-url-substring-sanitization",
-      "path": "apps/api/test/email-graph-send-db.test.ts",
-      "line": 59,
-      "fingerprint": "c785a5263336427e4b4dd746f468d8ddc82fa819db41aadbf15adf67924528f5",
-      "sources": [
-        "apps/api/test/email-graph-send-db.test.ts"
-      ],
-      "justification": "This expression is a positive/negative assertion over synthetic fixture output or captured mock calls, not a URL allowlist or fetch/navigation decision. Actual scope/URL authority is validated in the tested production code. No external destination is authorized by this assertion."
     },
     {
       "id": "FP-017",
