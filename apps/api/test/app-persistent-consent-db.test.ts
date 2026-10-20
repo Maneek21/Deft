@@ -4,10 +4,56 @@ import {readFileSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {securityTestDatabaseIsSafe} from './fixtures/security-test-database.js';
+import {drizzle} from 'drizzle-orm/node-postgres';
+import {currentConsentContinuationSourceLocators} from '../src/lib/app-connection-current-locators.js';
+import type {AppRunTransaction} from '../src/lib/app-run-repository.js';
 
 const isolated=process.env.DATABASE_URL==='postgresql://e2_connection_test@127.0.0.1:33954/e3_reattach_process_20261010'
  && process.env.DEFT_E2_TEST_DATABASE_URL===process.env.DATABASE_URL;
 const upgrade=(name:string)=>readFileSync(new URL('../../../packages/db/upgrades/'+name,import.meta.url),'utf8');
+
+test('renewal nominates the one published current carrier while retaining history and exact persistent scope',
+ {skip:!isolated&&!securityTestDatabaseIsSafe(),timeout:30000},async()=>{
+ const c=new pg.Client({connectionString:process.env.DATABASE_URL});await c.connect();
+ const caller={org_id:randomUUID(),user_id:randomUUID()},binding:{id:string;consent_expires_at:Date|null;consent_lifetime:'until_revoked'|null}={id:randomUUID(),consent_expires_at:new Date('2030-01-01T00:00:00.000Z'),consent_lifetime:null};
+ const source=randomUUID(),successor=randomUUID(),other=randomUUID(),receipt={receipt_digest:'sha256:'+'a'.repeat(64),custody_generation:2};
+ const scope=()=>({resource_binding_id:binding.id,consent_expires_at:binding.consent_expires_at?.toISOString()??null,...(binding.consent_lifetime?{consent_lifetime:binding.consent_lifetime}:{})});
+ const carrier=(extra:Record<string,unknown>={})=>({state:'connected',scope:scope(),...extra});
+ const add=async(id:string,record:unknown,owner=caller)=>c.query('INSERT INTO pg_temp.app_connection_sessions VALUES($1,$2,$3,$4,$5,1,$6,$7,$7)',[owner.org_id,owner.user_id,id,randomUUID(),new Date('2030-01-01T01:00:00Z'),record,new Date()]);
+ const ids=async()=>{const q=currentConsentContinuationSourceLocators(drizzle.mock() as unknown as AppRunTransaction,caller,binding).limit(2).toSQL();return (await c.query(q.sql,q.params)).rows.map(r=>r.session_id).sort();};
+ const reset=async()=>c.query('TRUNCATE pg_temp.app_connection_sessions,pg_temp.app_connection_consent_continuations,pg_temp.app_connection_forms');
+ try{
+  await c.query('BEGIN');
+  await c.query('CREATE TEMP TABLE app_connection_sessions (LIKE public.app_connection_sessions INCLUDING DEFAULTS)');
+  await c.query('CREATE TEMP TABLE app_connection_consent_continuations(org_id text,owner_user_id text,source_session_id text,record jsonb)');
+  await c.query('CREATE TEMP TABLE app_connection_forms(org_id text,owner_user_id text,record jsonb)');
+  const upgradeRecord=(value:unknown=receipt)=>carrier({upgrade:{schema_version:'deft.app_connection_upgrade.v1',begin_consumed:true,source:{session_id:source},receipt:value}});
+  await add(source,carrier());await add(successor,upgradeRecord());
+  assert.deepEqual(await ids(),[successor],'successful same-binding upgrade supersedes its retained connected source before LIMIT2');
+  assert.equal((await c.query('SELECT count(*)::int AS n FROM pg_temp.app_connection_sessions')).rows[0].n,2,'locator never deletes history');
+  await add(other,carrier());assert.equal((await ids()).length,2,'two genuinely current carriers remain ambiguous');
+  for(const state of ['upgrade_starting','indeterminate','not_connected']){
+   await reset();await add(source,carrier());await add(successor,{...upgradeRecord(null),state});
+   assert.deepEqual(await ids(),[source],`${state} without a success receipt never supersedes metadata; live fences still apply`);
+  }
+  for(const foreign of [{org_id:randomUUID(),user_id:caller.user_id},{org_id:caller.org_id,user_id:randomUUID()}]){
+   await reset();await add(source,carrier());await add(successor,upgradeRecord(),foreign);assert.deepEqual(await ids(),[source]);
+  }
+  await reset();await add(source,carrier());await add(successor,carrier({credential_repair:{schema_version:'deft.app_connection_credential_repair.v1',source:{session_id:source},receipt}}));
+  assert.deepEqual(await ids(),[successor]);
+  await reset();await add(source,carrier());await add(successor,carrier());
+  await c.query('INSERT INTO pg_temp.app_connection_consent_continuations VALUES($1,$2,$3,$4)',[caller.org_id,caller.user_id,source,{state:'connected',activation_started:true,review:{digest:receipt.receipt_digest},result:{state:'connected',receipt_digest:receipt.receipt_digest}}]);
+  assert.deepEqual(await ids(),[successor]);
+  await reset();await add(source,carrier());await add(successor,carrier());
+  await c.query('INSERT INTO pg_temp.app_connection_forms VALUES($1,$2,$3)',[caller.org_id,caller.user_id,{state:'connected',begin_consumed:true,source:{session_id:source},receipt}]);
+  assert.deepEqual(await ids(),[successor]);
+  await reset();binding.consent_expires_at=null;binding.consent_lifetime='until_revoked';await add(source,carrier());
+  assert.deepEqual(await ids(),[source],'explicit persistent source matches its NULL expiry');
+  await add(other,carrier({scope:{resource_binding_id:binding.id,consent_expires_at:null}}));
+  assert.deepEqual(await ids(),[source],'implicit NULL is not persistent consent');
+  binding.consent_lifetime=null;binding.consent_expires_at=new Date('2030-01-01T00:00:00Z');assert.deepEqual(await ids(),[],'mode and deadline are both part of the exact binding identity');
+ }finally{await c.query('ROLLBACK');await c.end();}
+});
 
 test('persistent consent requires explicit mode, preserves finite consent, and keeps technical renewal bounded',
  {skip:!isolated&&!securityTestDatabaseIsSafe(),timeout:30000},async()=>{

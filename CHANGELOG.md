@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.130 candidate — publication pending
+
+Restores account-permission renewal after a successful connection upgrade retains its historical source. Schema remains128, Author Kit remains alpha.41, and Runtime protocols are unchanged.
+
+#### Fixed
+
+- Nominate the current connected carrier by excluding only receipt-proven superseded history before the two-row ambiguity bound. Fresh owner authority and pending, unknown, source, effect and Runtime fences remain enforced; historical records stay unchanged.
+- Match both nullable permission expiry and explicit lifetime mode. Rebuild a proposed scope without retaining its previous lifetime mode, so an account with until-revoked permission remains manageable.
+
 
 ### 0.3.0-preview.129 candidate — publication pending
 
