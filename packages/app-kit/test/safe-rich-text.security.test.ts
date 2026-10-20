@@ -20,7 +20,7 @@ test('Host safety preserves the frozen accepted URL, CID and plain-projection co
  for(const uri of ['HTTPS://EXAMPLE.test/path?q=one','https://example.test/a%20b','mailto:User@EXAMPLE.test','mailto:first+last@example.test']){
   assert.equal(canonicalRichtextLink(uri),canonicalNativeComposeLink(uri));
  }
- for(const uri of ['mailto:a..b@example.test','mailto:.a@example.test','mailto:a@-example.test','mailto:a@example..test','mailto:a@example','mailto:a@example.test;','https://user@example.test/','https://example.test/%ff']){
+ for(const uri of ['mailto:a..b@example.test','mailto:.a@example.test','mailto:a@-example.test','mailto:a@example..test','mailto:a@example','mailto:a@example.test;','mailto:a?b@example.test','mailto:a#b@example.test','https://example.test/a\u00a0b','https://user@example.test/','https://example.test/%ff']){
   assert.throws(()=>canonicalRichtextLink(uri));assert.throws(()=>canonicalNativeComposeLink(uri));
  }
  const file={file_id:'11111111-1111-4111-8111-111111111111',filename:'image.png',media_type:'image/png',size_bytes:100,sha256:'a'.repeat(64)};

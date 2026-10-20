@@ -2,7 +2,7 @@
 const invalid = (): never => { throw Error('SAFE_RICH_TEXT_INVALID'); };
 const unsafe = /[\u0000-\u0020\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069\ud800-\udfff\\]/u;
 export function canonicalSafeUri(raw: string): string {
-  if (typeof raw !== 'string' || !raw || unsafe.test(raw) || /%(?![a-f0-9]{2})/iu.test(raw)
+  if (typeof raw !== 'string' || !raw || unsafe.test(raw) || /\s/u.test(raw) || /%(?![a-f0-9]{2})/iu.test(raw)
     || new TextEncoder().encode(raw).byteLength > 4096) return invalid();
   let decoded: string;
   try { decoded = decodeURIComponent(raw); } catch { return invalid(); }
@@ -11,6 +11,7 @@ export function canonicalSafeUri(raw: string): string {
   if (/^mailto:/iu.test(raw)) {
     // This is a URI target, never a list/header parser. No query, display name,
     // fragment, recipient expansion or header synthesis is admitted.
+    if (/[?#]/u.test(raw.slice(7))) return invalid();
     const target = decoded.slice(7), at = target.lastIndexOf('@');
     if (target.length > 200 || at < 1 || at > 64
       || !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+$/u.test(target)) return invalid();
