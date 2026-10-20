@@ -75,7 +75,7 @@ export function ExperienceInitialConnectConsent(props: Props) {
     {notice && <p role="status">{notice}</p>}
     {policy && <>
       {available.length > 1 && !review && <label className="block">Account provider<select className="mt-1 min-h-11 w-full rounded-xl bg-[var(--surface-container-high)] px-3" value={policy.policy.key} disabled={busy || props.disabled} onChange={event => setSelected(event.target.value)}>{available.map(row => <option key={row.policy.key} value={row.policy.key}>{row.policy.key.replaceAll('_', ' ')}</option>)}</select></label>}
-      <p>Allow ordinary account reads, the app&apos;s declared private records and drafts, and background metadata refresh with one permission lifetime. Private files stay within the reviewed storage limits.</p>
+      <p>Allow ordinary account reads, the app&apos;s declared private records and drafts, and background metadata refresh with one permission lifetime. Private files use each declared store&apos;s size limits.</p>
       <p>Sending, organizing provider records, provider draft mirroring, and assistant access require their own permissions.</p>
       {!review ? <>
         <label className="block">Permission lifetime<select className="mt-1 min-h-11 w-full rounded-xl bg-[var(--surface-container-high)] px-3" value={persistent ? 'until_revoked' : 'date'} disabled={busy || props.disabled} onChange={event => setFinite(event.target.value === 'date')}>
@@ -89,7 +89,7 @@ export function ExperienceInitialConnectConsent(props: Props) {
         <p>Private record stores: {review.policy.record_store_keys!.map(key => key.replaceAll('_', ' ')).join(', ')}.</p>
         <p>Up to {review.request.limits.max_retained_records.toLocaleString()} saved records and {review.request.limits.max_retained_bytes.toLocaleString()} bytes. Idle refresh follows the reviewed interval; catch-up uses bounded consecutive pages.</p>
         <p>After the provider acknowledges the connection, Deft will apply this choice to private record storage and metadata observation{review.request.consent_lifetime === 'until_revoked' ? ' and install background access.' : '. Automatic renewable background access requires Until revoked.'}</p>
-        <details><summary className="min-h-11 cursor-pointer py-3">Reviewed storage limits</summary><p>Each page can save up to {review.request.limits.max_records_per_page} records and {review.request.limits.max_page_bytes.toLocaleString()} bytes. Private attachments may use {review.request.attachment_policy.allowed_media_types.join(', ')}, up to {review.request.attachment_policy.max_attachment_bytes.toLocaleString()} bytes each, retained for up to {review.request.attachment_policy.retention_days} days.</p></details>
+        <details><summary className="min-h-11 cursor-pointer py-3">Reviewed storage limits</summary><p>Each page can save up to {review.request.limits.max_records_per_page} records and {review.request.limits.max_page_bytes.toLocaleString()} bytes. Synchronized resource attachments may use {review.request.attachment_policy.allowed_media_types.join(', ')}, up to {review.request.attachment_policy.max_attachment_bytes.toLocaleString()} bytes each, retained for up to {review.request.attachment_policy.retention_days} days.</p></details>
         <button className="deft-pill min-h-11" type="button" disabled={busy || props.disabled} onClick={() => void act(true)}>Allow and continue to connect</button>
         <button className="deft-pill min-h-11" type="button" disabled={busy} onClick={() => setReview(null)}>Cancel</button>
       </div>}
