@@ -25,3 +25,4 @@ packages/db/upgrades/lineages/manifest-at128.ts -text whitespace=-blank-at-eof
 packages/db/upgrades/lineages/upgrade130-functions.json text eol=lf
 # Preserve the existing Windows bytes in the API isolation inventory.
 scripts/email-preview-api-isolation.json -text whitespace=cr-at-eol
+packages/db/upgrades/lineages/upgrade131-functions.json text eol=lf

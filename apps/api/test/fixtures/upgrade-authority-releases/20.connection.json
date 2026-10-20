@@ -1,0 +1,26 @@
+{
+  "org_id": "ORG_UUID",
+  "installation_id": "INSTALLATION_UUID",
+  "runtime_registration_id": "RESERVED_FRESH_UUID",
+  "runtime_epoch": 1,
+  "connection_protocol": "v2",
+  "profile": {
+    "schema_version": "deft.app_connection_profile.v1",
+    "key": "gmail_readwrite",
+    "provider_id": "gmail",
+    "operator_user_id": "OPERATOR_UUID",
+    "runtime_requirement_key": "sync_provider",
+    "resource_key": "inbox",
+    "action_keys": [
+      "mirror_drafts",
+      "organize_messages",
+      "send_message"
+    ],
+    "authorization_origin": "https://accounts.google.com",
+    "credential_custody": "runtime",
+    "executable": false
+  },
+  "endpoint": "https://RUNTIME_HOST/v1/connections",
+  "runtime_auth_token": "NEW_BASE64URL_SECRET_AT_LEAST_43_CHARACTERS",
+  "authority_token_sha256": "sha256:SHA256_OF_DISTINCT_AUTHORITY_TOKEN"
+}

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { diffUpgradeAuthority } from '../src/lib/app-upgrade-manifest-diff.js';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { diffUpgradeAuthority, UPGRADE_NON_AUTHORITY_STRING_PATHS, UPGRADE_NON_AUTHORITY_DIGEST_PATHS } from '../src/lib/app-upgrade-manifest-diff.js';
 const manifest = () => ({ schema_version: '7', id: 'community.example.connection', version: '1.0.0',
   name: 'Connection', compatibility: { app_protocol: '7' },
   owner_connections: [{ key: 'account', scopes: ['read'], purposes: ['metadata'], provider: { origin: 'https://provider.example' } }],
@@ -70,4 +72,67 @@ test('invalid sparse arrays, cycles and excessive nesting fail safe', () => {
     const after = Array.isArray(value) ? { ...manifest(), future: value } : value;
     assert.equal(diffUpgradeAuthority(after, after).requires_review, true);
   }
+});
+
+const release = (version: number | string, kind: 'manifest' | 'connection') => JSON.parse(readFileSync(
+  new URL('./fixtures/upgrade-authority-releases/' + version + '.' + kind + '.json', import.meta.url), 'utf8'));
+for (const [from,to] of [[17,18],[18,19],[19,20],[20,'main-pr14']] as const) test('published consecutive release ' + from + ' -> ' + to + ' preserves raw authority', () => {
+  const before=release(from,'manifest'),after=release(to,'manifest');
+  assert.deepEqual(diffUpgradeAuthority(before,after,{before:release(from,'connection'),after:release(to,'connection')}),{requires_review:false,changed_paths:[]});
+});
+function setLeaf(value: any, pointer: string, leaf: unknown) {
+  const parts=pointer.slice(1).split('/').map(part=>part==='*'?'0':part);
+  let at=value;
+  for(let index=0;index<parts.length-1;index++)at=at[parts[index]!]??=(parts[index+1]==='0'?[]:{});
+  at[parts.at(-1)!]=leaf;
+}
+for(const path of [...UPGRADE_NON_AUTHORITY_STRING_PATHS,...UPGRADE_NON_AUTHORITY_DIGEST_PATHS])test('only the exact typed code/compatibility leaf is free: '+path,()=>{
+  const before:any=manifest(),after:any=manifest(),digest=path.endsWith('_digest');
+  setLeaf(before,path,digest?'sha256:'+'a'.repeat(64):'old');setLeaf(after,path,digest?'sha256:'+'b'.repeat(64):'new');
+  assert.deepEqual(diffUpgradeAuthority(before,after).changed_paths,[]);
+  setLeaf(after,path,{future_authority:true});assert.equal(diffUpgradeAuthority(before,after).requires_review,true,'objects are not presentation or code pins');
+  setLeaf(after,path,null);assert.equal(diffUpgradeAuthority(before,after).requires_review,true,'JSON null is not a missing leaf');
+  if(digest){setLeaf(after,path,'not-a-digest');assert.equal(diffUpgradeAuthority(before,after).requires_review,true);}
+});
+for(const [name,mutate]of Object.entries({
+  scope:(m:any)=>{m.owner_connections[0].oauth_scopes=['delete'];},
+  destination:(m:any)=>{m.destinations=[{origin:'https://new.example',audience:'public'}];},
+  effect:(m:any)=>{m.runtime_actions.push({key:'delete',capability_key:'delete',runtime_requirement_key:'mail_provider'});},
+  origin:(m:any)=>{m.owner_connections[0].authorization_origin='https://new.example';},
+  unknown:(m:any)=>{m.future_authority={scopes:['all']};},
+  compatibilityUnknown:(m:any)=>{m.compatibility.future_permission='all';},
+  digestLookalike:(m:any)=>{m.experiences[0].future_digest='sha256:'+'a'.repeat(64);},
+  protocol:(m:any)=>{m.compatibility.app_protocol='6';},
+  artifactPath:(m:any)=>{m.experiences[0].artifact_path='other.json';},
+  resourceKey:(m:any)=>{m.sync_descriptors[0].key='new';},
+  order:(m:any)=>{m.owner_connections.reverse();},
+  resourceSchema:(m:any)=>{m.sync_descriptors[0].record_schema.properties.future={type:'string'};},
+}))test('real raw release requires review for '+name,()=>{
+ const before=release(20,'manifest'),after=release(20,'manifest');mutate(after);
+ assert.equal(diffUpgradeAuthority(before,after).requires_review,true);
+});
+test('real connection profile and transport remain strict even when keys resemble code pins',()=>{
+ for(const change of [(c:any)=>{c.profile.authorization_origin='https://new.example';},(c:any)=>{c.profile.action_keys.push('delete');},
+  c=>{c.endpoint='https://new.example/v1/connections';},(c:any)=>{c.profile.version='new';},(c:any)=>{c.runtime_auth_token='changed';}]){
+  const before=release(20,'connection'),after=release(20,'connection');change(after);
+  const result=diffUpgradeAuthority(release(20,'manifest'),release('main-pr14','manifest'),{before,after});
+  assert.equal(result.requires_review,true);assert.ok(result.changed_paths.every(path=>path.startsWith('/connection/')));
+ }
+});
+test('allowlist does not hide container addition/removal, unknown nested fields or numeric object keys',()=>{
+ const before:any=manifest(),after:any=manifest();after.compatibility.host={version:'new'};
+ assert.deepEqual(diffUpgradeAuthority(before,after).changed_paths,['/manifest/compatibility/host']);
+ before.compatibility.host={version:'old',permissions:['read']};after.compatibility.host.permissions=['all'];
+ assert.equal(diffUpgradeAuthority(before,after).requires_review,true);
+ const left={...manifest(),experiences:{'0':{artifact_digest:'sha256:'+'a'.repeat(64)}}};
+ const right={...manifest(),experiences:{'0':{artifact_digest:'sha256:'+'b'.repeat(64)}}};
+ assert.equal(diffUpgradeAuthority(left,right).requires_review,true);
+});
+
+test('raw release fixture bytes retain the recorded source evidence hashes',()=>{
+ const provenance=JSON.parse(readFileSync(new URL('./fixtures/upgrade-authority-releases/sources.json',import.meta.url),'utf8'));
+ for(const entry of provenance.releases)for(const kind of ['manifest','connection']){
+  const raw=readFileSync(new URL('./fixtures/upgrade-authority-releases/'+entry.id+'.'+kind+'.json',import.meta.url));
+  assert.equal(createHash('sha256').update(raw).digest('hex'),entry[kind+'_fixture_sha256']);
+ }
 });

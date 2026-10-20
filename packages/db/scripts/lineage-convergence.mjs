@@ -53,8 +53,20 @@ export function loadUpgrade130(){
   ||value.before.length!==1||value.after.length!==1||hash(readFileSync(resolve(directory,value.file)))!==value.checksum)fail('E5_FORWARD_UPGRADE_ARTIFACT_MISMATCH');
  return value;
 }
+export function loadUpgrade131(){
+ const raw=readFileSync(resolve(directory,'lineages/upgrade131-functions.json'));
+ if(hash(raw)!=='7eef7b8df35e92301db24362c765788048827156f61914590a4dc91a17381faa')fail('E5_FORWARD_UPGRADE_ARTIFACT_MISMATCH');
+ const value=JSON.parse(raw);
+ if(value.schema_version!=='deft.reviewed_function_upgrade.v1'||value.version!=='0.3.0-preview.131'
+  ||value.before.length!==1||value.after.length!==1||hash(readFileSync(resolve(directory,value.file)))!==value.checksum)fail('E5_FORWARD_UPGRADE_ARTIFACT_MISMATCH');
+ return value;
+}
 export function selectReviewedHistory(snapshot,plan){
- const forward=loadUpgrade130(),applied=snapshot.ledger?.filter(row=>row.version===forward.version)??[];
+ return selectForwardHistory(snapshot,plan,loadUpgrade131(),(state,reviewed)=>
+  selectForwardHistory(state,reviewed,loadUpgrade130(),selectPriorReviewedHistory));
+}
+function selectForwardHistory(snapshot,plan,forward,previous){
+ const applied=snapshot.ledger?.filter(row=>row.version===forward.version)??[];
  if(applied.length){
   if(applied.length!==1||canonical(identity(applied[0]))!==canonical(identity(forward))||!snapshot.catalog
    ||hash(canonical(snapshot.catalog))!==snapshot.digest)fail('E5_FORWARD_UPGRADE_INVALID');
@@ -66,7 +78,7 @@ export function selectReviewedHistory(snapshot,plan){
   }
   snapshot={...snapshot,catalog,digest:hash(canonical(catalog)),ledger:snapshot.ledger.filter(row=>row.version!==forward.version)};
  }
- const selected=selectPriorReviewedHistory(snapshot,plan);
+ const selected=previous(snapshot,plan);
  if(applied.length&&selected.append.length)fail('E5_FORWARD_UPGRADE_INVALID');
  return applied.length?selected:{...selected,append:[...selected.append,forward]};
 }
@@ -111,7 +123,7 @@ export async function assertReviewedCurrent(client){
 export async function assertReviewedFreshBootstrap(client){
  const plan=loadReviewedPlan();const selected=selectReviewedHistory(await snapshot(client),plan);
  if(!['fresh-current-contracts-complete-schema116-schema117','fresh-current-persistent-columns-schema117'].includes(selected.name)
-  ||selected.stage!=='current'||selected.append.length!==5
+  ||selected.stage!=='current'||selected.append.length!==6
   ||selected.append[0].version!=='0.3.0-preview.118'
   ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql'
   ||selected.append[1].version!=='0.3.0-preview.119'
@@ -119,7 +131,8 @@ export async function assertReviewedFreshBootstrap(client){
   ||selected.append[2].version!=='0.3.0-preview.120'
   ||selected.append[2].file!=='0.3.0-preview.120-app-persistent-consent.sql'
   ||selected.append[3].version!=='0.3.0-preview.128'
-  ||selected.append[4].version!=='0.3.0-preview.130')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
+  ||selected.append[4].version!=='0.3.0-preview.130'
+  ||selected.append[5].version!=='0.3.0-preview.131')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
  return selected;
 }
 export async function convergeReviewedRelease(client,{status=false,dryRun=false}={}){
@@ -135,7 +148,7 @@ export async function convergeReviewedRelease(client,{status=false,dryRun=false}
   try{
    const before=await snapshot(client);
    const selected=selectReviewedHistory(before,plan); // Re-select after acquiring the original migration lock.
-   const forward=loadUpgrade128(),allowed=new Map([...plan.files,forward,loadUpgrade130()].map(x=>[x.file,x.checksum]));
+   const forward=loadUpgrade128(),allowed=new Map([...plan.files,forward,loadUpgrade130(),loadUpgrade131()].map(x=>[x.file,x.checksum]));
    for(const migration of selected.append){
     if(migration.kind!=='migration'||allowed.get(migration.file)!==migration.checksum)fail('E5_REVIEWED_LINEAGE_APPEND_INVALID');
     const sql=readFileSync(resolve(directory,migration.file));

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import test from 'node:test';
-import {hash,canonical,loadReviewedPlan,loadUpgrade128,loadUpgrade130,selectReviewedHistory} from './lineage-convergence.mjs';
+import {hash,canonical,loadReviewedPlan,loadUpgrade128,loadUpgrade130,loadUpgrade131,selectReviewedHistory} from './lineage-convergence.mjs';
 
 test('all 181 reviewed lineage artifacts preserve their exact raw checksums',()=>{
  const plan=loadReviewedPlan();
@@ -25,7 +25,7 @@ test('canonical preview1 upgrade output is recognized exactly and drift is denie
  const {snapshot}=JSON.parse(raw);
  const selected=selectReviewedHistory(snapshot,plan);
  assert.equal(selected.name,'canonical-preview1-current-schema118');
- assert.deepEqual(selected.append.map(row=>row.version),['0.3.0-preview.119','0.3.0-preview.120','0.3.0-preview.128','0.3.0-preview.130']);
+ assert.deepEqual(selected.append.map(row=>row.version),['0.3.0-preview.119','0.3.0-preview.120','0.3.0-preview.128','0.3.0-preview.130','0.3.0-preview.131']);
  const wrongCatalog=structuredClone(snapshot);wrongCatalog.digest='0'.repeat(64);
  assert.throws(()=>selectReviewedHistory(wrongCatalog,plan),/E5_REVIEWED_LINEAGE_UNRECOGNIZED/);
  const wrongLedger=structuredClone(snapshot);wrongLedger.ledger[0].checksum='0'.repeat(64);
@@ -39,7 +39,7 @@ test('forward function upgrade preserves exact prior catalog and ledger admissio
  const old={functions:forward.before,unrelated:[{name:'retained'}]},catalog={...old,functions:forward.after};
  const plan={schema_version:'deft.reviewed_release_lineages.v1',variants:[{name:'fixture',lineage:'public61',stage:'current',catalog_digest:hash(canonical(old)),ledger:[row],append:[]}]};
  const snapshot={catalog,digest:hash(canonical(catalog)),ledger:[row,forward]};
- assert.deepEqual(selectReviewedHistory(snapshot,plan).append.map(row=>row.version),['0.3.0-preview.130']);
+ assert.deepEqual(selectReviewedHistory(snapshot,plan).append.map(row=>row.version),['0.3.0-preview.130','0.3.0-preview.131']);
  for(const change of [s=>s.catalog.functions[0].definition+=' ',s=>s.catalog.unrelated[0].name='drift',s=>s.ledger[1]={...forward,checksum:'b'.repeat(64)},s=>s.ledger.shift()]){
   const bad=structuredClone(snapshot);change(bad);bad.digest=hash(canonical(bad.catalog));assert.throws(()=>selectReviewedHistory(bad,plan));
  }
@@ -62,7 +62,7 @@ test('persistent successor forward upgrade accepts only the exact function, cata
  const catalog={...old,functions:[...previous.after,...forward.after]};
  const plan={schema_version:'deft.reviewed_release_lineages.v1',variants:[{name:'fixture',lineage:'public61',stage:'current',catalog_digest:hash(canonical(old)),ledger:[row],append:[]}]};
  const snapshot={catalog,digest:hash(canonical(catalog)),ledger:[row,previous,forward]};
- assert.equal(selectReviewedHistory(snapshot,plan).append.length,0);
+ assert.deepEqual(selectReviewedHistory(snapshot,plan).append.map(row=>row.version),['0.3.0-preview.131']);
  for(const change of [s=>s.catalog.functions.at(-1).definition+=' ',s=>s.catalog.unrelated[0].name='drift',s=>s.ledger[2]={...forward,checksum:'b'.repeat(64)},s=>s.ledger.splice(1,1)]){
   const bad=structuredClone(snapshot);change(bad);bad.digest=hash(canonical(bad.catalog));assert.throws(()=>selectReviewedHistory(bad,plan));
  }
@@ -71,4 +71,22 @@ test('persistent successor forward upgrade accepts only the exact function, cata
  assert.ok(sql.includes("source.consent_lifetime='until_revoked'"));
  assert.ok(sql.includes("prior.manifest-ARRAY['version','name','description']"));
  assert.ok(sql.includes("APP_RESOURCE_BINDING_IMMUTABLE"));
+});
+
+test('code-pin forward upgrade admits only its exact catalog and ledger after the persistent guard',()=>{
+ const previous=loadUpgrade128(),persistent=loadUpgrade130(),forward=loadUpgrade131();
+ assert.deepEqual(forward.before,persistent.after,'immutable schema130 function is the exact starting point');
+ const row={version:'0.2.0-preview.1',description:'fixture',checksum:'a'.repeat(64),kind:'baseline'};
+ const old={functions:[...previous.before,...persistent.before],unrelated:[{name:'retained'}]};
+ const catalog={...old,functions:[...previous.after,...forward.after]};
+ const plan={schema_version:'deft.reviewed_release_lineages.v1',variants:[{name:'fixture',lineage:'public61',stage:'current',catalog_digest:hash(canonical(old)),ledger:[row],append:[]}]};
+ const state={catalog,digest:hash(canonical(catalog)),ledger:[row,previous,persistent,forward]};
+ assert.equal(selectReviewedHistory(state,plan).append.length,0);
+ for(const change of [s=>s.catalog.functions.at(-1).definition+=' ',s=>s.catalog.unrelated[0].name='drift',s=>s.ledger[3]={...forward,checksum:'b'.repeat(64)},s=>s.ledger.splice(2,1)]){
+  const bad=structuredClone(state);change(bad);bad.digest=hash(canonical(bad.catalog));assert.throws(()=>selectReviewedHistory(bad,plan));
+ }
+ const sql=readFileSync(new URL('../upgrades/'+forward.file,import.meta.url),'utf8');
+ assert.ok(sql.includes(forward.after[0].definition));
+ assert.ok(sql.includes('WITH RECURSIVE nodes(path,b,a)'));
+ for(const pin of ["proof.action='app.upgrade_continuity.authorized'","source.consent_lifetime='until_revoked'",'APP_RESOURCE_BINDING_IMMUTABLE'])assert.ok(sql.includes(pin));
 });

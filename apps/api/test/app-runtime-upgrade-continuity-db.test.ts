@@ -4,6 +4,8 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { diffUpgradeAuthority, UPGRADE_NON_AUTHORITY_STRING_PATHS, UPGRADE_NON_AUTHORITY_DIGEST_PATHS } from '../src/lib/app-upgrade-manifest-diff.js';
 import { runtimeSecurityPackage } from './fixtures/runtime-security-package.js';
 const target = process.env.DEFT_TEST_DATABASE_URL;
 const safe = Boolean(target && target === process.env.DATABASE_URL && /(?:_test|deft_test)/.test(new URL(target).pathname));
@@ -160,14 +162,58 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     return { org, person, admin, installation, ownerWeb, adminWeb, current, manifest: pack.manifest, artifacts: pack.artifacts, connected, binding, actor, guard, caller, entry };
   };
   const upgrade = async (f: Awaited<ReturnType<typeof fixture>>, number: number, mutate?: (manifest: any) => void) => {
-    const manifest = structuredClone(f.manifest); manifest.version = '9.0.' + number; mutate?.(manifest);
-    const pack = await kit.buildDeftAppPackage({ manifest, artifacts: f.artifacts }), prior = await f.current(), root = `/api/apps/blob/composition/${f.installation.id}/upgrade`;
+    const manifest = structuredClone(f.manifest); manifest.version = '9.0.' + number;
+    const bundle = JSON.parse(f.artifacts[0].content);
+    const artifact = await kit.prepareDeftExperienceArtifact(f.artifacts[0].path, { ...bundle, worker_source: bundle.worker_source + '\n// code release ' + number });
+    manifest.experiences[0].artifact_digest = artifact.digest; mutate?.(manifest);
+    const pack = await kit.buildDeftAppPackage({ manifest, artifacts: [artifact] }), prior = await f.current(), root = `/api/apps/blob/composition/${f.installation.id}/upgrade`;
     const staged = await call(root + '/stage', f.adminWeb.accessToken, { schema_version: 'deft.app_attachment_upgrade_stage.v1', package_json: pack.json, expected_lifecycle_epoch: prior.lifecycle_epoch });
     const context = await call(root + '/context?app_version_id=' + staged.app_version_id, f.adminWeb.accessToken);
     const { review } = await call(root + '/review', f.adminWeb.accessToken, context.review_request);
     const result = await call(root + '/activate', f.adminWeb.accessToken, { ...context.review_request, expected_review_digest: review.review_digest, accept_host_policy: true });
     return { result, review, prior };
   };
+  await t.test('live database guard matches raw manifest authority comparison for real releases and every code pin', async () => {
+    const functionRow = await db.execute<{ definition: string }>(d.sql`SELECT pg_get_functiondef('public.enforce_app_resource_binding()'::regprocedure) AS definition`);
+    const definition = functionRow.rows[0]!.definition;
+    const start = definition.indexOf('NOT EXISTS (\n                -- Walk both raw JSON trees.');
+    assert.ok(start > 0, 'schema131 guard installed');
+    const end = definition.indexOf('\n          )) )', start); assert.ok(end > start);
+    const predicate = definition.slice(start, end);
+    const release = (version: number | string) => JSON.parse(readFileSync(new URL('./fixtures/upgrade-authority-releases/' + version + '.manifest.json', import.meta.url), 'utf8'));
+    const cases: { before: any; after: any; expected: boolean; name: string }[] = [];
+    for (const [from,to] of [[17,18],[18,19],[19,20],[20,'main-pr14']] as const)
+      cases.push({ before: release(from), after: release(to), expected: true, name: from + ' -> ' + to });
+    const leaf = (value: any, path: string, replacement: unknown) => {
+      const parts = path.slice(1).split('/').map(part => part === '*' ? '0' : part); let at = value;
+      for (let index = 0; index < parts.length - 1; index++) at = at[parts[index]!] ??= parts[index + 1] === '0' ? [] : {};
+      at[parts.at(-1)!] = replacement;
+    };
+    for (const path of [...UPGRADE_NON_AUTHORITY_STRING_PATHS, ...UPGRADE_NON_AUTHORITY_DIGEST_PATHS]) {
+      const before = release(20), after = release(20), digest = path.endsWith('_digest');
+      leaf(before, path, digest ? 'sha256:' + 'a'.repeat(64) : 'old'); leaf(after, path, digest ? 'sha256:' + 'b'.repeat(64) : 'new');
+      cases.push({ before, after, expected: true, name: path });
+      for (const bad of [null, { future_authority: true }, ['all']]) {
+        const changed = structuredClone(after); leaf(changed, path, bad);
+        cases.push({ before, after: changed, expected: false, name: path + ' malformed ' + JSON.stringify(bad) });
+      }
+    }
+    for (const mutate of [(m:any) => { m.future_authority = true; }, (m:any) => { m.compatibility.permissions = ['all']; },
+      (m:any) => { m.owner_connections.reverse(); }, (m:any) => { m.owner_connections[0].oauth_scopes = ['delete']; },
+      (m:any) => { m.destinations = [{ origin: 'https://new.example', audience: 'public' }]; },
+      (m:any) => { m.runtime_actions.push({ key: 'delete' }); }, (m:any) => { m.sync_descriptors[0].record_schema = {}; },
+      (m:any) => { m.experiences[0].artifact_path = 'other.json'; }, (m:any) => { m.experiences.pop(); },
+      (m:any) => { m.compatibility.host = { version: 'new' }; }, (m:any) => { m.owner_connections[0].authorization_origin = 'https://new.example'; }]) {
+      const before = release(20), after = release(20); mutate(after); cases.push({ before, after, expected: false, name: 'authority/container change' });
+    }
+    for (const item of cases) {
+      assert.equal(!diffUpgradeAuthority(item.before, item.after).requires_review, item.expected, item.name);
+      const result = await db.execute<{ eligible: boolean }>(d.sql`SELECT ${d.sql.raw(predicate)} AS eligible FROM
+        (SELECT ${JSON.stringify(item.before)}::jsonb manifest) prior CROSS JOIN (SELECT ${JSON.stringify(item.after)}::jsonb manifest) target`);
+      assert.equal(result.rows[0]!.eligible, item.expected, 'live SQL parity: ' + item.name);
+    }
+    t.diagnostic(cases.length + ' raw JSON pairs agree between Host and live persistent-consent guard');
+  });
   await t.test('trusted no-diff upgrade and a second upgrade keep background access with zero owner steps', async () => {
     const f = await fixture();
     const [oldBinding] = await db.select().from(s.appRuntimeBindings).where(and(eq(s.appRuntimeBindings.org_id, f.org), eq(s.appRuntimeBindings.owner_resource_binding_id, f.binding.binding_id)));
