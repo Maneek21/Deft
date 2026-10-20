@@ -33,3 +33,10 @@ have switched and their gates pass. Existing producers and saved policies keep
 their bounded decoder; they are never silently reinterpreted as the new version.
 The deployed Host 127 baseline does not accept the neutral policy version. A later
 activation change must declare the upgraded Host minimum before app rollout.
+
+Calendar and dashboard read both stored models through the native Calendar owner.
+Unknown versions and mixed models fail closed; ordinary rows without source
+metadata remain ordinary. No normalized writer is enabled by this reader switch.
+Once new writes are enabled, rollback requires a Host build containing this dual
+reader. An older binary that renders only a series master is not a safe rollback
+target for normalized recurrence. Keep the retained decoder and data available.

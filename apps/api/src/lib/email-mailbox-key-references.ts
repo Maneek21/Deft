@@ -176,7 +176,8 @@ export const retainedSourceStorageProvider = Object.freeze({
   decorateCitations: decorateRetainedKnowledgeCitations,
  }),
  calendar: Object.freeze({
-  condition: sql`${events.metadata}->'email_invitation'->>'schema_version' = 'deft.email_calendar_event.v1'`,
+  condition: sql`${events.metadata} ? 'email_invitation'`,
+  hasRecord: (row:RetainedCalendarRow) => Object.hasOwn(row.metadata ?? {}, 'email_invitation'),
   decodeLegacyModel: decodeRetainedCalendarModel,
   decodeProjectionModel(row:RetainedCalendarRow) {
    const model=decodeRetainedCalendarModel(row);
