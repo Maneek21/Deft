@@ -93,6 +93,18 @@ export function createAppConnectionSessionRoutes() {
       return c.json(await appConnectionUpgradeInstallationContext(caller,z.string().uuid().parse(c.req.param('installationId')),auth.guard));
     }catch(error){return failure(c,error);}
   });
+  routes.use('/installations/:installationId/background-access',ownerLimits);
+  routes.post('/installations/:installationId/background-access',async c=>{
+    try{
+      if(new URL(c.req.url).search)throw new AppError('Invalid background access request','APP_ACTION_INVALID',400);
+      const input=z.strictObject({target_key:z.string().min(1).max(128).regex(/^[a-z][a-z0-9_]*$/u)}).parse(await body(c));
+      const auth=await resourceSyncWebAuthority(c.req.header('authorization'));
+      const caller={org_id:auth.actor.org_id,user_id:auth.actor.actor_id,sid:auth.web_session.sid,access_expires_at:auth.web_session.expires_at};
+      const {reestablishBackgroundAccess,productionBackgroundAccessPorts}=await import('../lib/app-runtime-background-access.js');
+      return c.json(await reestablishBackgroundAccess(productionBackgroundAccessPorts(),auth.actor,caller,
+        {installation_id:z.string().uuid().parse(c.req.param('installationId')),target_key:input.target_key},auth.guard,AbortSignal.any([c.req.raw.signal,AbortSignal.timeout(30_000)])));
+    }catch(error){return failure(c,error);}
+  });
   for(const operation of ['begin','callback'])routes.use(`/v2/${operation}`,ownerLimits);
   for(const operation of ['upgrade-authority','authority-v2'] as const)routes.post(`/runtime/${operation}`,async c=>{
     try{const raw=await body(c);

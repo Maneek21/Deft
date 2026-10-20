@@ -12,6 +12,7 @@ import {LegacyConnectionSettingsGate} from './experience-connection-surface';
 import {verifiedExperienceAccountLabels} from '@/lib/app-experience-settings-display';
 import {ExperienceCapabilityUpgradeSettings} from './experience-capability-upgrade';
 import {ExperienceBackgroundRefresh} from './experience-background-refresh';
+import {ExperienceBackgroundAccess} from './experience-background-access';
 import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
 import { appConnectionSessionTag, createAppConnectionSessionFlow, type AppConnectionContext } from '@/lib/app-connection-session-flow';
@@ -135,6 +136,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
         </div>}
         {!reusePending&&(state==='connected'||state==='not_connected')&&<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Manage connection</summary><button type="button" className="deft-pill min-h-11 text-[var(--error)]" disabled={working||props.disabled} onClick={()=>void act('disconnect')}>Disconnect account</button></details>}
         {props.appOwnedRecords&&state==='connected'&&<ExperienceBackgroundRefresh target={target} ownerId={props.ownerId} orgId={props.orgId} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/>}
+        {props.appOwnedRecords&&state==='connected'&&<ExperienceBackgroundAccess target={target} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/>}
       </>}
     </section>}
     <LegacyConnectionSettingsGate appOwnedRecords={props.appOwnedRecords}>{context&&<RetainedConnectionSettings {...props} excludedTargets={context.targets.map(t=>t.target_key)}/>}</LegacyConnectionSettingsGate>

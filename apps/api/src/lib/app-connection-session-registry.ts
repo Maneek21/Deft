@@ -201,6 +201,11 @@ export class AppConnectionSessionRegistry {
     return {request:async(raw:AppConnectionUpgradeRuntimeRequest,signal:AbortSignal)=>AppConnectionUpgradeRuntimeResultSchema.parse(
       await this.requestClosed(entry,scope,AppConnectionUpgradeRuntimeRequestSchema.parse(raw),signal))};
   }
+  /** Delivers Host-issued channel sessions; the Runtime proves each with the Host before keeping it. */
+  channelInstallRuntime(scope:AppConnectionSessionScope,profile:AppConnectionProfile){
+    const entry=this.select(scope,profile);if(entry.connection_protocol!=='v2')throw unavailable();
+    return {request:async(input:{scope:AppConnectionSessionScope}&Record<string,unknown>,signal:AbortSignal)=>this.requestClosed(entry,scope,input,signal)};
+  }
   credentialRepairRuntime(scope:AppConnectionSessionScope,profile:AppConnectionProfile){
     const entry=this.select(scope,profile);if(entry.connection_protocol!=='v2')throw unavailable();
     return {request:async(raw:AppConnectionCredentialRepairRuntimeRequest,signal:AbortSignal)=>AppConnectionCredentialRepairRuntimeResultSchema.parse(
