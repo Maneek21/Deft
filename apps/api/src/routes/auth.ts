@@ -380,11 +380,11 @@ function cleanStringArray(values: string[] | undefined): string[] | undefined {
 // POST /api/auth/forgot-password — self-hosted Deft has no outbound email.
 // Returns a generic 200 so the public surface keeps the same shape, but no
 // link is generated and no message is sent. Users locked out should ask an
-// admin to generate a recovery URL via Settings → Members.
+// admin to generate a recovery URL via Settings → People.
 authRoutes.post('/forgot-password', async (c) => {
   return c.json({
     success: true,
-    message: 'Password reset is handled by your workspace admin. Ask an admin to generate a recovery link from Settings → Members.',
+    message: 'Password reset is handled by your workspace admin. Ask an admin to generate a recovery link from Settings → People (open the person, then Recovery link).',
     self_service: false,
   });
 });

@@ -133,7 +133,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
             <div className="flex flex-col gap-3">
               <h1 className="text-[1.25rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Invite expired</h1>
               <p className="text-[0.875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
-                This invitation link has expired. Ask the admin who invited you to generate a new link from <strong>Settings → Members</strong>.
+                This invitation link has expired. Ask the admin who invited you to generate a new link from <strong>Settings → People</strong>.
               </p>
             </div>
           )}
