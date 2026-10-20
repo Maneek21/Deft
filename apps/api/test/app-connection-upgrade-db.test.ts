@@ -20,7 +20,7 @@ test('Postgres upgrade CAS seals Begin against pending effects and permanently f
   await tx.execute(sql.raw(await readFile(new URL('../../../packages/db/upgrades/0.3.0-preview.99-app-connection-upgrade.sql',import.meta.url),'utf8')));
   // Source fences query form carriers. Install only that dependency and the
   // candidate closure functions inside this same rollback-only transaction.
-  for(const file of ['0.3.0-preview.101-app-connection-forms.sql','0.3.0-preview.108-app-connection-upgrade-expiry.sql'])
+  for(const file of ['0.3.0-preview.101-app-connection-forms.sql','0.3.0-preview.108-app-connection-upgrade-expiry.sql','0.3.0-preview.128-app-upgrade-callback-recovery.sql'])
    await tx.execute(sql.raw(await readFile(new URL('../../../packages/db/upgrades/'+file,import.meta.url),'utf8')));
   const [row]=await tx.select().from(s.appConnectionSessions).where(sql`${s.appConnectionSessions.record}->>'state'='connected'`)
    .orderBy(sql`${s.appConnectionSessions.created_at} DESC`).limit(1);assert.ok(row);
@@ -68,11 +68,14 @@ test('Postgres upgrade CAS seals Begin against pending effects and permanently f
   assert.equal(await fenceModule.appConnectionUpgradeSourceIsAvailable(tx,{org_id:caller.org_id,resource_binding_id:source.scope.resource_binding_id}),false);checks+=2;
   assert.equal(await store.compareAndSet(locator,record.revision,{...record,revision:record.revision+1,upgrade:{...record.upgrade!,begin_consumed:false}}),false);checks++;
   assert.equal(await write({state:'awaiting_callback',runtime_session_ref:'synthetic_upgrade'}),true);
+  for(const hostConsumed of [false,true]){
   const closureSavepoint=Symbol('closure proof');
   await assert.rejects(tx.transaction(async closureTx=>{
    const guarded=new storeModule.PostgresAppConnectionSessionStore(closureTx as unknown as typeof db,caller);
-   const checking={...record,state:'upgrade_checking' as const,revision:record.revision+1};
-   assert.equal(await guarded.compareAndSet(locator,record.revision,checking),true);checks++;
+   let pending=record;
+   if(hostConsumed){pending={...record,state:'connecting',callback_consumed:true,revision:record.revision+1};assert.equal(await guarded.compareAndSet(locator,record.revision,pending),true);checks++;}
+   const checking={...pending,state:'upgrade_checking' as const,revision:pending.revision+1};
+   assert.equal(await guarded.compareAndSet(locator,pending.revision,checking),true);checks++;
    const closed={...checking,revision:checking.revision+1,state:'not_connected' as const,upgrade:{...checking.upgrade,closure:{reason:'callback_expired' as const,custody_generation:3,receipt_digest:hash}}};
    const sourceChanged=Symbol('source changed');await assert.rejects(closureTx.transaction(async changedTx=>{
     await changedTx.update(s.appConnectionSessions).set({revision:source.revision+1,record:{...source,revision:source.revision+1}}).where(eq(s.appConnectionSessions.session_id,source.session_id));
@@ -86,6 +89,7 @@ test('Postgres upgrade CAS seals Begin against pending effects and permanently f
    assert.deepEqual(await guarded.read({org_id:caller.org_id,owner_user_id:caller.user_id,session_id:source.session_id}),before);checks++;
    throw closureSavepoint;
   }),error=>error===closureSavepoint);
+  }
   assert.equal(await write({state:'connecting',callback_consumed:true}),true);
   assert.equal(await write({state:'connected',account:source.account,upgrade:{...record.upgrade!,receipt:{custody_generation:3,receipt_digest:hash}}}),true);checks+=3;
   assert.equal(await fenceModule.appConnectionUpgradeSourceIsAvailable(tx,{org_id:caller.org_id,resource_binding_id:source.scope.resource_binding_id}),true);
