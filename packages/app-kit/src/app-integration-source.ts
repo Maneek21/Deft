@@ -22,6 +22,15 @@ export const AppIntegrationCapturePolicyInputSchema=z.strictObject({enabled:z.bo
  expected_revision:z.number().int().nonnegative()})
  .refine(value=>(value.destination.scope==='user')===(value.destination.space_id===null));
 export type AppIntegrationCapturePolicyInput=z.infer<typeof AppIntegrationCapturePolicyInputSchema>;
+/** Explicit opt-in contract: the app owns eligibility rules. Host owns consent,
+ * destination audience, history bounds, delivery authority and capture budgets.
+ * The existing policy decoder remains separate for compatibility. */
+export const AppIntegrationCapturePolicyV2InputSchema=z.strictObject({
+ schema_version:z.literal('deft.app_capture_policy.v2'),enabled:z.boolean(),
+ destination:z.strictObject({scope:z.enum(['user','space']),space_id:z.uuid().nullable()}),
+ history_days:z.number().int().min(1).max(365),expected_revision:z.number().int().nonnegative(),
+}).refine(value=>(value.destination.scope==='user')===(value.destination.space_id===null));
+export type AppIntegrationCapturePolicyV2Input=z.infer<typeof AppIntegrationCapturePolicyV2InputSchema>;
 export const AppIntegrationCaptureNominationV1Schema=z.strictObject({schema_version:z.literal('deft.app_capture_nomination.v1'),eligible:z.boolean(),
  reason:z.string().regex(/^[a-z_]{1,64}$/u).optional(),body_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
  thread_key:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),sender:z.string().max(320),received_at:z.string().max(64).nullable(),
@@ -36,5 +45,18 @@ export const AppIntegrationCaptureNominationV2Schema=z.strictObject({schema_vers
  is_bulk:z.boolean(),partial:z.literal(true),attachments_processed:z.literal(false)})
  .refine(row=>!row.eligible||!!row.body&&row.body.length>=40&&!!row.body_digest&&!!row.thread_key)
  .refine(row=>new TextEncoder().encode(JSON.stringify(row)).byteLength<=APP_INTEGRATION_CAPTURE_NOMINATION_BYTES);
-export const AppIntegrationCaptureNominationSchema=z.discriminatedUnion('schema_version',[AppIntegrationCaptureNominationV1Schema,AppIntegrationCaptureNominationV2Schema]);
+/** Domain-neutral nomination. Eligibility is decided by the app's reviewed
+ * policy; Host validates authority, destination, body digest and completeness. */
+export const AppIntegrationCaptureNominationV3Schema=z.strictObject({
+ schema_version:z.literal('deft.app_capture_nomination.v3'),eligible:z.boolean(),
+ reason:z.string().regex(/^[a-z_]{1,64}$/u).optional(),
+ body:z.string().max(16000).refine(value=>!value.includes('\0')).optional(),
+ body_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
+ grouping_key:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
+ source_title:z.string().min(1).max(320).regex(/^[^\u0000-\u001f\u007f]+$/u),
+ observed_at:z.iso.datetime(),
+ completeness:z.strictObject({partial:z.literal(true),attachments_processed:z.literal(false)}),
+}).refine(row=>!row.eligible||!!row.body&&row.body.length>=40&&!!row.body_digest&&!!row.grouping_key)
+ .refine(row=>new TextEncoder().encode(JSON.stringify(row)).byteLength<=APP_INTEGRATION_CAPTURE_NOMINATION_BYTES);
+export const AppIntegrationCaptureNominationSchema=z.discriminatedUnion('schema_version',[AppIntegrationCaptureNominationV1Schema,AppIntegrationCaptureNominationV2Schema,AppIntegrationCaptureNominationV3Schema]);
 export type AppIntegrationCaptureNomination=z.infer<typeof AppIntegrationCaptureNominationSchema>;

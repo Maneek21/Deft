@@ -5,8 +5,9 @@ import {fileURLToPath} from 'node:url';
 import {readCatalog,readLedger} from './lineage-catalog.mjs';
 
 const directory=resolve(dirname(fileURLToPath(import.meta.url)),'../upgrades');
-const PLAN_SHA256='dc52eb76b0c1acc1b5fdca5705cb07a4b9dd0901aa484fa1ee97c7fa2ed6d086';
+const PLAN_SHA256='130497c44c0d3688c6d83b7d8d47ec6ec4db768919de25bffb0ee5dd7fc5af21';
 const LOCK_ID=7314029421;
+const FORWARD128_SHA256='07152a1224e776cbfaa310f820908303113ef63559ec4ba484e7cca532bf4a47';
 const hex=v=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
 const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;
 export const canonical=v=>JSON.stringify(sort(v));
@@ -24,9 +25,32 @@ export function sameLedger(actual,expected){
 }
 export function selectReviewedHistory(snapshot,plan){
  if(plan?.schema_version!=='deft.reviewed_release_lineages.v1'||!Array.isArray(plan.variants)||!hex(snapshot?.digest))fail('E5_REVIEWED_LINEAGE_INVALID');
+ const forward=loadUpgrade128(),applied=snapshot.ledger?.filter(r=>r.version===forward.version)??[];
+ if(applied.length){
+  if(applied.length!==1||canonical(identity(applied[0]))!==canonical(identity(forward))||!snapshot.catalog
+   ||hash(canonical(snapshot.catalog))!==snapshot.digest)fail('E5_FORWARD_UPGRADE_INVALID');
+  const catalog=structuredClone(snapshot.catalog);
+  for(let i=0;i<forward.after.length;i++){
+   const expected=forward.after[i],matches=catalog.functions.filter(f=>f.proname===expected.proname&&f.arguments===expected.arguments);
+   if(matches.length!==1||canonical(matches[0])!==canonical(expected))fail('E5_FORWARD_UPGRADE_INVALID');
+   catalog.functions[catalog.functions.indexOf(matches[0])]=forward.before[i];
+  }
+  snapshot={...snapshot,catalog,digest:hash(canonical(catalog)),ledger:snapshot.ledger.filter(r=>r.version!==forward.version)};
+ }
  const matches=plan.variants.filter(v=>['public61','demo61'].includes(v.lineage)&&['original','current'].includes(v.stage)&&Array.isArray(v.append)&&v.catalog_digest===snapshot.digest&&sameLedger(snapshot.ledger,v.ledger));
  if(matches.length!==1)fail(matches.length?'E5_REVIEWED_LINEAGE_AMBIGUOUS':'E5_REVIEWED_LINEAGE_UNRECOGNIZED');
- return matches[0];
+ if(applied.length&&matches[0].append.length)fail('E5_FORWARD_UPGRADE_INVALID');
+ return applied.length?matches[0]:{...matches[0],append:[...matches[0].append,forward]};
+}
+/** Exactly two reviewed function replacements. Projection must reproduce the
+ * entire previously admitted catalog and ledger; unrelated drift still fails. */
+export function loadUpgrade128(){
+ const raw=readFileSync(resolve(directory,'lineages/upgrade128-functions.json'));
+ if(hash(raw)!==FORWARD128_SHA256)fail('E5_FORWARD_UPGRADE_ARTIFACT_MISMATCH');
+ const value=JSON.parse(raw);
+ if(value.schema_version!=='deft.reviewed_function_upgrade.v1'||value.version!=='0.3.0-preview.128'
+  ||value.before.length!==2||value.after.length!==2||hash(readFileSync(resolve(directory,value.file)))!==value.checksum)fail('E5_FORWARD_UPGRADE_ARTIFACT_MISMATCH');
+ return value;
 }
 export function loadReviewedPlan(){
  const raw=readFileSync(resolve(directory,'lineages/supported-histories.json'));
@@ -59,13 +83,14 @@ export async function assertReviewedCurrent(client){
 export async function assertReviewedFreshBootstrap(client){
  const plan=loadReviewedPlan();const selected=selectReviewedHistory(await snapshot(client),plan);
  if(!['fresh-current-contracts-complete-schema116-schema117','fresh-current-persistent-columns-schema117'].includes(selected.name)
-  ||selected.stage!=='current'||selected.append.length!==3
+  ||selected.stage!=='current'||selected.append.length!==4
   ||selected.append[0].version!=='0.3.0-preview.118'
   ||selected.append[0].file!=='0.3.0-preview.118-app-supplemental-effects.sql'
   ||selected.append[1].version!=='0.3.0-preview.119'
   ||selected.append[1].file!=='0.3.0-preview.119-app-resource-observation-continuation-receipts.sql'
   ||selected.append[2].version!=='0.3.0-preview.120'
-  ||selected.append[2].file!=='0.3.0-preview.120-app-persistent-consent.sql')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
+  ||selected.append[2].file!=='0.3.0-preview.120-app-persistent-consent.sql'
+  ||selected.append[3].version!=='0.3.0-preview.128')fail('E5_FRESH_BOOTSTRAP_UNRECOGNIZED');
  return selected;
 }
 export async function convergeReviewedRelease(client,{status=false,dryRun=false}={}){
@@ -81,7 +106,7 @@ export async function convergeReviewedRelease(client,{status=false,dryRun=false}
   try{
    const before=await snapshot(client);
    const selected=selectReviewedHistory(before,plan); // Re-select after acquiring the original migration lock.
-   const allowed=new Map(plan.files.map(x=>[x.file,x.checksum]));
+   const forward=loadUpgrade128(),allowed=new Map([...plan.files,forward].map(x=>[x.file,x.checksum]));
    for(const migration of selected.append){
     if(migration.kind!=='migration'||allowed.get(migration.file)!==migration.checksum)fail('E5_REVIEWED_LINEAGE_APPEND_INVALID');
     const sql=readFileSync(resolve(directory,migration.file));
