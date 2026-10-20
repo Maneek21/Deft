@@ -16,6 +16,21 @@ const bundle = {
 } as const;
 const path = 'experiences/workspace.json';
 
+test('background refresh copy survives signed artifact preparation and verification', async () => {
+  const description = 'Keep project updates current while this app is closed.';
+  const artifact = await prepareDeftExperienceArtifact(path, {...bundle, background_refresh_description: description});
+  const reference = {
+    artifact_path: path, artifact_digest: artifact.digest,
+    bridge_version: DEFT_EXPERIENCE_BRIDGE_VERSION, renderer_version: DEFT_EXPERIENCE_RENDERER_VERSION,
+  };
+  const verified = await verifyDeftExperienceArtifact(reference, artifact);
+  assert.equal(verified.background_refresh_description, description);
+  assert.equal(JSON.parse(artifact.content).background_refresh_description, description);
+  for (const invalid of ['', ' ', 'x'.repeat(501), 42, null, 'bad\u0000text']) {
+    await assert.rejects(() => prepareDeftExperienceArtifact(path, {...bundle, background_refresh_description: invalid}));
+  }
+});
+
 test('signed renderer profiles require an explicit implemented capability at artifact and authoring boundaries', async () => {
   const artifact = await prepareDeftExperienceArtifact(path, bundle);
   const legacy = { artifact_path: path, artifact_digest: artifact.digest,

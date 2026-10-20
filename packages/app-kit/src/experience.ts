@@ -47,9 +47,13 @@ export const DeftExperienceReferenceSchema = z.strictObject({
   'Unsupported Experience renderer profile');
 export type DeftExperienceReference = z.infer<typeof DeftExperienceReferenceSchema>;
 
+export const DeftExperienceBackgroundRefreshDescriptionSchema = z.string().min(1).max(500)
+  .regex(/\S/u).regex(/^[^\u0000-\u001f\u007f<>]+$/u);
+
 const bundleFields = {
   worker_source: z.string().min(1), entry_view: keySchema,
   resource_keys: uniqueKeys, action_keys: uniqueKeys,
+  background_refresh_description: DeftExperienceBackgroundRefreshDescriptionSchema.optional(),
 };
 const bundleV1 = z.strictObject({ schema_version: z.literal(DEFT_EXPERIENCE_BUNDLE_VERSION), ...bundleFields });
 const bundleV2 = z.strictObject({ schema_version: z.literal('deft.experience_bundle.v2'), ...bundleFields,
@@ -90,6 +94,7 @@ function canonicalBundleJson(input: unknown): string {
     entry_view: bundle.entry_view,
     resource_keys: bundle.resource_keys,
     action_keys: bundle.action_keys,
+    ...(bundle.background_refresh_description === undefined ? {} : {background_refresh_description: bundle.background_refresh_description}),
     ...((bundle.schema_version === 'deft.experience_bundle.v2' || (bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && bundle.search_resource_keys) ? { search_resource_keys: bundle.search_resource_keys } : {}),
     ...((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') ? { state_keys: bundle.state_keys } : {}),
     ...((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && bundle.record_store_keys ? {record_store_keys:bundle.record_store_keys} : {}),

@@ -20,7 +20,7 @@ import { appApiError } from '@/lib/apps';
 import { ownerConnectionContext, ownerResourceRequest, ownerActionRequest, ownerConnectionReview,
   type OwnerPolicy, type OwnerResourceRequest } from '@/lib/app-owner-connection';
 
-type SettingsProps = { onAccountLabels?:(labels:{key:string;label:string}[])=>void; appOwnedRecords?: boolean; sessionId?: string; targetKey?: string; installationId: string; experienceKey: string; ensureAuthority: () => Promise<boolean>;
+type SettingsProps = { backgroundRefreshDescription?: string; onAccountLabels?:(labels:{key:string;label:string}[])=>void; appOwnedRecords?: boolean; sessionId?: string; targetKey?: string; installationId: string; experienceKey: string; ensureAuthority: () => Promise<boolean>;
   disabled: boolean; onBusy: (busy: boolean) => void; onSetupComplete?: (target: string) => void; onReadingPreferencesChanged?: () => void; onConnectionNavigation: (pending: PendingAppConnection | null) => void };
 export function ExperienceConnectionSettings(props: SettingsProps) {
   const { user, org, sessionCacheScope } = useAuth();
@@ -112,7 +112,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       {context.targets.length>1&&<label className="block text-sm">Account connection<select className="mt-1 min-h-11 w-full rounded-xl bg-[var(--surface-container-high)] px-3" value={selected} disabled={working||props.disabled} onChange={event=>{setSelected(event.target.value);setNotice('');}}>
         {context.targets.map(t=><option key={t.target_key} value={t.target_key}>{t.session?.account?.label??`${t.profile.label} · ${t.target_key.replaceAll('_',' ')}`}</option>)}
       </select></label>}
-      {target?.upgrade&&!target.reattachment?.candidate&&!target.reattachment?.pending&&!reusePending&&flow.current?<ExperienceCapabilityUpgradeSettings key={JSON.stringify([selected,target.scope])} target={target} client={flow.current} disabled={working||props.disabled} ownerId={props.ownerId} orgId={props.orgId} appOwnedRecords={props.appOwnedRecords}
+      {target?.upgrade&&!target.reattachment?.candidate&&!target.reattachment?.pending&&!reusePending&&flow.current?<ExperienceCapabilityUpgradeSettings key={JSON.stringify([selected,target.scope])} target={target} client={flow.current} disabled={working||props.disabled} ownerId={props.ownerId} orgId={props.orgId} appOwnedRecords={props.appOwnedRecords} backgroundRefreshDescription={props.backgroundRefreshDescription}
         onBusy={busy=>{operation.current=busy;setWorking(busy);props.onBusy(busy);}} onContext={setContext} onNavigate={url=>{props.onConnectionNavigation(null);window.location.assign(url);}}
         onUse={props.onSetupComplete?()=>props.onSetupComplete?.(selected):undefined} onConnect={()=>void act('begin')} onStatus={()=>void act('status')} onDisconnect={()=>void act('disconnect')}/>:target&&<><ExperienceConnectionStatus label={target.session?.account?.label??target.reattachment?.candidate?.account.label??visibleReview?.account.label??target.profile.label} state={state} reviewAvailable={reviewAvailable} reusePending={reusePending} working={reuseWorking}/>
         {notice==='Review the current action operator setup before reusing this account. No account activation was requested.'&&<a className="deft-pill min-h-11" href="/settings/apps">Review action operator setup</a>}
@@ -135,7 +135,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
           <button type="button" className="deft-pill min-h-11" disabled={working||props.disabled||!target.runtime_ready} onClick={()=>void reuse('status')}>Check status</button>
         </div>}
         {!reusePending&&(state==='connected'||state==='not_connected')&&<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Manage connection</summary><button type="button" className="deft-pill min-h-11 text-[var(--error)]" disabled={working||props.disabled} onClick={()=>void act('disconnect')}>Disconnect account</button></details>}
-        {props.appOwnedRecords&&state==='connected'&&<ExperienceBackgroundRefresh target={target} ownerId={props.ownerId} orgId={props.orgId} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/>}
+        {props.appOwnedRecords&&state==='connected'&&<ExperienceBackgroundRefresh description={props.backgroundRefreshDescription} target={target} ownerId={props.ownerId} orgId={props.orgId} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/>}
         {props.appOwnedRecords&&state==='connected'&&<ExperienceBackgroundAccess target={target} disabled={working||props.disabled} onBusy={busy=>{setWorking(busy);props.onBusy(busy);}}/>}
       </>}
     </section>}
