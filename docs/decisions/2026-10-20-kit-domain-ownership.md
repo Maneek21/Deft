@@ -48,8 +48,10 @@ sandbox-specific data. Existing source fixture examples use that explicit CLI.
 ## Inventory and evidence
 
 The [machine-readable baseline inventory](../reports/2026-10-20-kit-domain-consumer-inventory.json)
-records both repositories' immutable starting commits, all deprecated public names
-and every source reference, including namespace users, direct internal imports,
+records both repositories' immutable starting commits, all public exports in both
+alpha.38/39 entry points, all deprecated names, and the entrypoint references in
+368 consumer files. Its focused list also covers every source reference to the
+35 extracted symbols, including namespace users, direct internal imports,
 Host API/web, the historical in-repo app, external app build and Runtime tests.
 Generated `.d.ts` ownership follows the same facades and optional subpath.
 

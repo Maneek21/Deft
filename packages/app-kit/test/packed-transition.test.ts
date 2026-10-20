@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {resolve,join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {build} from 'esbuild';
+import ts from 'typescript';
 import {seedPackedConsumerLock} from './fixtures/packed-consumer-lock.js';
 
 const kit=resolve(import.meta.dirname,'..');
@@ -23,6 +24,12 @@ test('packed alpha.40 preserves old consumer types and a non-mail build has no m
  const tsc=join(dirname(fileURLToPath(import.meta.resolve('typescript'))),'tsc.js');
  run([tsc,'--noEmit','--strict','--skipLibCheck','--module','NodeNext','--target','ES2022','legacy.ts'],consumer);
  const installed=await realpath(join(consumer,'node_modules/@deft/app-kit'));
+ const inventory=JSON.parse(await readFile(join(kit,'../../docs/reports/2026-10-20-kit-domain-consumer-inventory.json'),'utf8'));
+ for(const [entry,file] of [['@deft/app-kit','index.d.ts'],['@deft/app-kit/experience','experience-sdk.d.ts']]){
+  const path=join(installed,'dist',file!),program=ts.createProgram([path],{module:ts.ModuleKind.NodeNext,target:ts.ScriptTarget.ES2022,skipLibCheck:true}),checker=program.getTypeChecker();
+  const names=new Set(checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(path)!)!).map(s=>s.name));
+  for(const version of ['0.1.0-alpha.38','0.1.0-alpha.39'])for(const symbol of inventory.public_entrypoint_exports[version][entry!] as {name:string}[])assert.ok(names.has(symbol.name),`${version} ${entry} lost ${symbol.name}`);
+ }
  const cli=join(installed,'dist/cli.js');run([cli,'app','init','--template','runtime'],consumer);run([cli,'app','build'],consumer);
  await writeFile(join(consumer,'worker.mjs'),"import {createDeftExperienceSdk} from '@deft/app-kit/experience/core'; globalThis.workOrders=createDeftExperienceSdk;\n");
  const bundled=await build({entryPoints:[join(consumer,'worker.mjs')],bundle:true,platform:'browser',format:'esm',write:false,metafile:true});
