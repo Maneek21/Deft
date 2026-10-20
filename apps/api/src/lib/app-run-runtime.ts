@@ -8,8 +8,8 @@ import { assertAppRunReferencedKeysAvailable, parseEnvironmentAppRunKeyrings,
 import { listAppPrivateStateKeyReferences } from './app-private-state-key-references.js';
 import { AppPrivateFileCustody } from './app-private-file-custody.js';
 import { listAppResourceSyncKeyReferences } from './app-resource-sync-key-references.js';
-import { listPrivateDeftyKeyReferences } from './app-private-defty-key-references.js';
-import { listEmailMailboxKeyReferences } from './email-mailbox-key-references.js';
+import { listHostCustodyKeyReferences } from './host-custody-inventory.js';
+import { hostCustodyInventoryProviders } from './host-custody-providers.js';
 import { privateSearchDatabase } from './app-resource-private-search-db.js';
 import { PostgresAppRunLiveAuthorization } from './app-run-live-authorization.js';
 import {
@@ -129,10 +129,11 @@ async function createAppRunRuntime(): Promise<AppRunRuntime> {
     assertAppRunReferencedKeysAvailable(keys, await listAppResourceSyncKeyReferences());
     assertAppRunReferencedKeysAvailable(keys, await listAppPrivateStateKeyReferences());
     // Permanent encrypted history retains keys even after its grant ends.
+    // Preserve the previous combined bootstrap allowance for the two storage
+    // owners. A failure in either inventory aborts the complete result.
     assertAppRunReferencedKeysAvailable(keys, await privateSearchDatabase().transaction(
-      tx => listPrivateDeftyKeyReferences(tx), AbortSignal.timeout(3000), performance.now() + 3000));
-    assertAppRunReferencedKeysAvailable(keys, await privateSearchDatabase().transaction(
-      tx => listEmailMailboxKeyReferences(tx), AbortSignal.timeout(3000), performance.now() + 3000));
+      tx => listHostCustodyKeyReferences(tx, hostCustodyInventoryProviders),
+      AbortSignal.timeout(6000), performance.now() + 6000));
   } catch (error) {
     keys.destroy();
     throw error;
