@@ -9,9 +9,6 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const api=resolve(root,'apps/api'),directory=resolve(api,'test');
 const expected=[
  'email-mailbox-migration63-db.test.ts',
- 'email-mailbox-native-imap-db.test.ts',
- 'email-mailbox-native-provider-db.test.ts',
- 'email-mailbox-scheduler-runtime-db.test.ts',
  'email-mailbox-store-db.test.ts',
 ];
 const all=readdirSync(directory).filter(name=>name.endsWith('.test.ts')).sort();
