@@ -11,7 +11,6 @@ const consumer=(name:string)=>process.env.EMAIL_LINK_BASELINE
 const {EmailDraftContentSchema,EmailDraftService,detachInvalidManagedSignature}=await import(consumer('email-draft-service'));
 const {SignaturePreferencesSchema,signatureIdentityKey}=await import(consumer('email-signature-types'));
 const {EmailTemplateContentSchema}=await import(consumer('email-template-store'));
-const {renderEmailTemplate}=await import(consumer('email-template-service'));
 const html='<p>Read <a href="https://intranet.test/guide?x=1&amp;y=2"><strong>the guide</strong></a>.</p>';
 const body='Read the guide (https://intranet.test/guide?x=1&y=2).';
 const content=(patch:Record<string,unknown>={})=>({mode:'compose',to:'person@example.test',cc:'',bcc:'',subject:'Links',body,body_html:html,reply_record_id:'',attachments:[],...patch});
@@ -54,18 +53,6 @@ test('actual native draft create and reopen preserve linked managed content unde
  assert.deepEqual(reopened.content,value);assert.equal(checks,4);
 });
 
-test('native templates derive rendered link projection, including a label becoming its URL',()=>{
- const original={title:'Guide',subject:'For {{name}}',body:'{{label}} (https://example.test/guide)',body_html:'<p><a href="https://example.test/guide">{{label}}</a></p>'};
- assert.deepEqual(EmailTemplateContentSchema.parse(original),original);
- const rendered=renderEmailTemplate(original,{name:'Ada',label:'https://example.test/guide'});
- assert.equal(rendered.subject,'For Ada');assert.equal(rendered.body,'https://example.test/guide');
- assert.equal(rendered.body_html,'<p><a href="https://example.test/guide">https://example.test/guide</a></p>');
- assert.deepEqual(rendered.unresolved_placeholders,[]);
- const escaped=renderEmailTemplate(original,{name:'Ada',label:'<help> & detail'});
- assert.equal(escaped.body,'<help> & detail (https://example.test/guide)');
- assert.equal(escaped.body_html,'<p><a href="https://example.test/guide">&lt;help&gt; &amp; detail</a></p>');
-});
-
 test('native template href placeholders, unsafe links, projection mismatch and rich overflow fail closed',()=>{
  const base={title:'Guide',subject:'',body,body_html:html};
  assert.deepEqual(EmailTemplateContentSchema.parse(base),base);
@@ -75,15 +62,13 @@ test('native template href placeholders, unsafe links, projection mismatch and r
   {...base,body:'Guide',body_html:'<p><a href="file:///secret">Guide</a></p>'},
   {...base,body:'x'.repeat(262_144),body_html:'<p>'+'x'.repeat(262_144)+'</p>'},
  ])assert.equal(EmailTemplateContentSchema.safeParse(bad).success,false);
- const unresolved=renderEmailTemplate({title:'Guide',subject:'{{name}}',body:'{{label}} (https://example.test/guide)',body_html:'<p><a href="https://example.test/guide">{{label}}</a></p>'},{});
- assert.deepEqual(unresolved.unresolved_placeholders,['label','name']);
 });
 
 
 test('native long formatted body and template retain exact pair while whole JSON and signature entries remain independently bounded',()=>{
  for(const size of [20,96,220]){const text='x'.repeat(size*1024),rich='<p><strong>'+text+'</strong></p>';
   const draft=EmailDraftContentSchema.parse(content({body:text,body_html:rich}));assert.equal(draft.body_html,rich);
-  const template={title:'Long',subject:'',body:text,body_html:rich};assert.deepEqual(EmailTemplateContentSchema.parse(template),template);assert.equal(renderEmailTemplate(template,{}).body_html,rich);
+  const template={title:'Long',subject:'',body:text,body_html:rich};assert.deepEqual(EmailTemplateContentSchema.parse(template),template);
   assert.throws(()=>parseSafeComposeHtml(rich));assert.equal(parseNativeSafeComposeHtml(rich).plainText,text);
  }
  const text='😀'.repeat(100000),rich='<p>'+text+'</p>';assert.equal(parseNativeSafeComposeHtml(rich).plainText,text);

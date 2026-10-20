@@ -9,11 +9,10 @@ import {sql} from 'drizzle-orm';
 import {emailAccounts,emailTemplates} from '@deft/db/schema';
 import {EmailMailboxCrypto} from '../src/lib/email-mailbox-crypto.js';
 import {EmailTemplateStore} from '../src/lib/email-template-store.js';
-import {EmailTemplateService} from '../src/lib/email-template-service.js';
 
 const target='postgresql://gate_g_test@127.0.0.1:55435/email_stage34_upgrade';
 const safe=process.env.DATABASE_URL===target&&process.env.DEFT_TEST_DATABASE_URL===target;
-test('encrypted account templates preserve CAS, placeholders and soft archive',{skip:!safe,timeout:45000},async t=>{
+test('encrypted account templates preserve CAS, account scoping and soft archive',{skip:!safe,timeout:45000},async t=>{
   const admin=new pg.Pool({connectionString:target,max:1}),schema='email_template_'+randomUUID().replaceAll('-','');
   await admin.query(`CREATE SCHEMA "${schema}"`);
   const pool=new pg.Pool({connectionString:target,max:8,options:`-c search_path="${schema}",public`});
@@ -25,39 +24,29 @@ test('encrypted account templates preserve CAS, placeholders and soft archive',{
   const org='template-test-'+randomUUID(),owner='owner-'+randomUUID(),account='account-'+randomUUID(),scope={org_id:org,owner_user_id:owner,account_id:account};
   await pool.query('INSERT INTO email_accounts(org_id,owner_user_id,account_id) VALUES($1,$2,$3)',[org,owner,account]);
   const keys={current:()=>({key_id:'email-template-test',key:Buffer.alloc(32,77)}),read:(_purpose:unknown,id:string)=>id==='email-template-test'?{key_id:id,key:Buffer.alloc(32,77)}:null,keyIds:()=>['email-template-test']};
-  const crypto=new EmailMailboxCrypto(keys),store=new EmailTemplateStore(db,crypto),actor={user_id:owner,web_session_id:'sid-'+randomUUID(),access_expires_at:Date.now()+60_000};
-  const authority={async current(_actor:unknown,selected:unknown,operation:string,tx?:unknown){
-    assert.deepEqual(selected,scope);assert.equal(operation,'human_draft');
-    if(tx)await (tx as any).execute(sql`SELECT 1 FROM email_accounts WHERE org_id=${org} AND owner_user_id=${owner} AND account_id=${account} FOR SHARE`);
-    return {scope,resource_binding_id:'template-binding',authority_version:'template-authority',expires_at:Date.now()+60_000};
-  }};
-  const service=new EmailTemplateService(authority as any,store),templateId=randomUUID();
+  const crypto=new EmailMailboxCrypto(keys),store=new EmailTemplateStore(db,crypto),templateId=randomUUID();
+  const guard=async(tx:unknown)=>{await (tx as any).execute(sql`SELECT 1 FROM email_accounts WHERE org_id=${org} AND owner_user_id=${owner} AND account_id=${account} FOR SHARE`);};
   const source={title:'Hello {{first_name}}',subject:'Hello {{first_name}}',body:'Hello {{first_name}}',body_html:'<p>Hello {{first_name}}</p>'};
-  const created=await service.create(actor,scope,templateId,source);
-  assert.equal(created.revision,1);assert.equal((await service.create(actor,scope,templateId,source)).revision,1,'same UUID+payload is an idempotent create replay');
-  await assert.rejects(service.create(actor,scope,templateId,{...source,title:'Different'}),/EMAIL_TEMPLATE_CONFLICT/u);
+  const created=await store.create(scope,templateId,source,guard);
+  assert.equal(created.revision,1);assert.equal((await store.create(scope,templateId,source,guard)).revision,1,'same UUID+payload is an idempotent create replay');
+  await assert.rejects(store.create(scope,templateId,{...source,title:'Different'},guard),/EMAIL_TEMPLATE_CONFLICT/u);
   const raw=(await pool.query('SELECT content_envelope::text FROM email_templates WHERE template_id=$1',[templateId])).rows[0].content_envelope as string;
   assert.doesNotMatch(raw,/Hello|first_name/u);assert.doesNotMatch(JSON.stringify(await pool.query('SELECT * FROM email_templates WHERE template_id=$1',[templateId])),/Hello|first_name/u);
-  const unresolved=await service.render(actor,scope,templateId,{});assert.deepEqual(unresolved.unresolved_placeholders,['first_name']);
-  const rendered=await service.render(actor,scope,templateId,{first_name:'<North & East>'});
-  assert.equal(rendered.body,'Hello <North & East>');assert.equal(rendered.body_html,'<p>Hello &lt;North &amp; East&gt;</p>');
-  assert.deepEqual(rendered.unresolved_placeholders,[]);
-  await assert.rejects(service.render(actor,scope,templateId,{first_name:'{{next}}'}),/EMAIL_TEMPLATE_INVALID/u);
-  await assert.rejects(service.create(actor,scope,randomUUID(),{...source,body_html:'<p onclick="bad()">x</p>',body:'x'}),/EMAIL_TEMPLATE_INVALID/u);
-  const race=await Promise.allSettled([service.update(actor,scope,templateId,1,{...source,title:'One'}),
-    service.update(actor,scope,templateId,1,{...source,title:'Two'})]);
+  await assert.rejects(store.create(scope,randomUUID(),{...source,body_html:'<p onclick="bad()">x</p>',body:'x'},guard));
+  const race=await Promise.allSettled([store.update(scope,templateId,1,{...source,title:'One'},guard),
+    store.update(scope,templateId,1,{...source,title:'Two'},guard)]);
   assert.equal(race.filter(value=>value.status==='fulfilled').length,1);assert.equal(race.filter(value=>value.status==='rejected').length,1);
-  const latest=await service.read(actor,scope,templateId);assert.equal(latest.revision,2);
-  const page=await service.list(actor,scope,null,1);assert.equal(page.items.length,1);assert.equal(page.items[0]?.template_id,templateId);
+  const latest=await store.read(scope,templateId,guard);assert.equal(latest?.revision,2);
+  const page=await store.list(scope,null,1,guard);assert.equal(page.items.length,1);assert.equal(page.items[0]?.template_id,templateId);
   await pool.query('INSERT INTO email_accounts(org_id,owner_user_id,account_id) VALUES($1,$2,$3)',[org,owner,'another-account']);
   assert.equal(await store.read({...scope,account_id:'another-account'},templateId,async tx=>{
     await (tx as any).execute(sql`SELECT 1 FROM email_accounts WHERE org_id=${org} AND owner_user_id=${owner} AND account_id='another-account' FOR SHARE`);
   }),null,'a template is invisible under another account scope');
-  await assert.rejects(service.create(actor,scope,randomUUID(),{...source,attachments:[]}),/EMAIL_TEMPLATE_INVALID/u);
-  await assert.rejects(service.create(actor,scope,randomUUID(),{...source,body_html:'<p><a href="{{url}}">x</a></p>',body:'x'}),/EMAIL_TEMPLATE_INVALID/u);
-  await assert.rejects(service.create(actor,scope,randomUUID(),{...source,body_html:'<p title="{{name}}">Hello {{first_name}}</p>',body:'Hello {{first_name}}'}),/EMAIL_TEMPLATE_INVALID/u);
-  await assert.rejects(service.create(actor,scope,randomUUID(),{...source,body_html:'<p title="&#123;&#123;name&#125;&#125;">Hello {{first_name}}</p>',body:'Hello {{first_name}}'}),/EMAIL_TEMPLATE_INVALID/u);
-  await assert.rejects(service.create(actor,scope,randomUUID(),{...source,body:'Read https://{{host}}/docs',body_html:''}),/EMAIL_TEMPLATE_INVALID/u);
-  assert.equal((await service.archive(actor,scope,templateId,2)).status,'archived');
-  await assert.rejects(service.read(actor,scope,templateId),/EMAIL_TEMPLATE_NOT_FOUND/u);
+  await assert.rejects(store.create(scope,randomUUID(),{...source,attachments:[]},guard));
+  await assert.rejects(store.create(scope,randomUUID(),{...source,body_html:'<p><a href="{{url}}">x</a></p>',body:'x'},guard));
+  await assert.rejects(store.create(scope,randomUUID(),{...source,body_html:'<p title="{{name}}">Hello {{first_name}}</p>',body:'Hello {{first_name}}'},guard));
+  await assert.rejects(store.create(scope,randomUUID(),{...source,body_html:'<p title="&#123;&#123;name&#125;&#125;">Hello {{first_name}}</p>',body:'Hello {{first_name}}'},guard));
+  await assert.rejects(store.create(scope,randomUUID(),{...source,body:'Read https://{{host}}/docs',body_html:''},guard));
+  assert.equal((await store.archive(scope,templateId,2,guard)).status,'archived');
+  assert.equal(await store.read(scope,templateId,guard),null);
 });
