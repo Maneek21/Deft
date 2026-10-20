@@ -17,6 +17,7 @@ import { AppConnectionProfileSchema, AppConnectionRuntimeRequestSchema, AppConne
   canonicalAppConnectionProfileJson, type AppConnectionProfile, type AppConnectionSessionScope,
   type AppConnectionRegisteredRuntime, type OwnerConnectionPolicyDeclaration } from '@deft/app-kit';
 import { AppError } from './app-errors.js';
+import type { AppRunTransaction } from './app-run-repository.js';
 import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit';
 
 const unavailable = () => new AppError('Reviewed connection runtime unavailable', 'APP_CONNECTION_PROFILE_UNAVAILABLE', 503);
@@ -252,7 +253,9 @@ export async function readBoundedConnectionJson(stream: ReadableStream<Uint8Arra
   finally { signal?.removeEventListener('abort', cancel); reader.releaseLock(); }
 }
 
-export async function loadAppConnectionSessionRegistry(path: string | undefined) {
+/** Only an explicitly supplied authority transaction is reused. Callers without
+ * one retain an independent committed-state proof read. */
+export async function loadAppConnectionSessionRegistry(path: string | undefined, transaction?: AppRunTransaction) {
   if (!path) return new AppConnectionSessionRegistry({ schema_version: 'deft.app_connection_http_registrations.v1', entries: [] });
   try {
     if (!isAbsolute(path)) throw unavailable();
@@ -261,10 +264,10 @@ export async function loadAppConnectionSessionRegistry(path: string | undefined)
       || process.platform !== 'win32' && (stat.mode & 0o077) !== 0) throw unavailable();
     const config = AppConnectionSessionRegistryConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
     const { trustedUpgradeRegistryEntries } = await import('./app-upgrade-trust-registry.js');
-    const successors = await trustedUpgradeRegistryEntries(config.entries).catch(() => []);
+    const successors = await trustedUpgradeRegistryEntries(config.entries, transaction).catch(() => []);
     return new AppConnectionSessionRegistry(config, fetch, successors);
   } catch { throw unavailable(); }
 }
 // Reread deployment review on each authority check; replacement/removal revokes
 // access without waiting for an API restart. Credentials never enter responses.
-export const getAppConnectionSessionRegistry = () => loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG);
+export const getAppConnectionSessionRegistry = (transaction?: AppRunTransaction) => loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG, transaction);

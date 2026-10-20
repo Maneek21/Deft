@@ -46,7 +46,7 @@ export async function loadObservationConnection(tx:AppRunTransaction,authority:L
   ||scope.runtime_registration_id!==registration.id||scope.runtime_epoch!==registration.runtime_epoch
   ||scope.operator_user_id!==registration.operator_user_id||scope.target_key!==binding.target_key||scope.resource_key!==binding.resource_key
   ||scope.consent_expires_at!==(binding.consent_expires_at?.toISOString()??null)||scope.consent_lifetime!==(binding.consent_lifetime??undefined))throw observationDenied();
- const registry=await getAppConnectionSessionRegistry();registry.assertReady(scope,record.profile);
+ const registry=await getAppConnectionSessionRegistry(tx);registry.assertReady(scope,record.profile);
  const connection_receipt=await resolveObservationConnectionReceipt(tx,record,registry);
  return {...record,connection_receipt};
 }

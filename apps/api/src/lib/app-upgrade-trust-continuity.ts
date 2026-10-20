@@ -103,7 +103,7 @@ export async function captureUpgradeApprovals(tx: UpgradeTx, orgId: string, inst
       output.push({ source, web_session_id: stored.web_session_id, binding, registration, admission, actions,
         observations: liveObservations, data: liveData, owner_role: ownerRole as CapturedUpgradeApproval['owner_role'],
         operator_role: operatorRole as CapturedUpgradeApproval['operator_role'], transport_digest: String(admission.snapshot.connection_transport_digest),
-        connection_protocol: (await getAppConnectionSessionRegistry()).protocol(source.scope, source.profile) });
+        connection_protocol: (await getAppConnectionSessionRegistry(tx)).protocol(source.scope, source.profile) });
     } catch (error) { if (!(error instanceof AppError)) throw error; }
   }
   return output;

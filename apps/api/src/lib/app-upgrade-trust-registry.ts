@@ -34,9 +34,9 @@ async function checked(tx: UpgradeTx, alias: Alias, current: boolean) {
 /** Only installation-specific server-authored lineage may nominate a successor.
  * No endpoint, profile, credential, origin or epoch is inferred from app input.
  * The original deployment file remains the transport root of trust. */
-export async function trustedUpgradeRegistryEntries(entries: readonly Entry[]): Promise<Entry[]> {
+export async function trustedUpgradeRegistryEntries(entries: readonly Entry[], transaction?: UpgradeTx): Promise<Entry[]> {
   if (!entries.length) return [];
-  return db.transaction(async tx => {
+  const read = async (tx: UpgradeTx) => {
     // Bound current owners, not historical upgrade count. The server-authored
     // proof already pins the live prior approval and its exact reviewed transport.
     const rows = await tx.select({ metadata: auditLog.metadata }).from(auditLog)
@@ -66,5 +66,6 @@ export async function trustedUpgradeRegistryEntries(entries: readonly Entry[]): 
       } catch { /* A failed trust proof never changes an explicitly enrolled entry. */ }
     }
     return output;
-  });
+  };
+  return transaction ? read(transaction) : db.transaction(read);
 }

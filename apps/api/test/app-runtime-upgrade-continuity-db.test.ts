@@ -45,6 +45,8 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     dispatches.push({ schema: body.schema_version, operation: body.operation, scope: body.scope });
     const reply = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
     if (body.schema_version === background.CHANNEL_INSTALL_SCHEMA) {
+      const pool = db.$client as unknown as { totalCount: number; idleCount: number };
+      assert.equal(pool.totalCount - pool.idleCount, 0, 'successor issuance commits before the Runtime delivery network call');
       if (failDelivery) return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } });
       for (const item of body.channels) {
         const credential = item.channel.credential;
@@ -274,6 +276,49 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
       const rows = await db.select().from(s.appResourceBindings).where(and(eq(s.appResourceBindings.org_id, f.org), eq(s.appResourceBindings.app_version_id, state.active_version_id!)));
       assert.equal(rows.length, 0);
     } finally { Date.now = now; }
+  });
+  await t.test('four concurrent trusted carry-forward authority transactions complete with the real four-connection pool', async () => {
+    const f = await fixture(), next = await upgrade(f, 1);
+    assert.equal(next.result.upgrade_continuity?.[0]?.state, 'installed', JSON.stringify(next.result));
+    const { captureUpgradeApprovals } = await import('../src/lib/app-upgrade-trust-continuity.js');
+    const { loadObservationConnection } = await import('../src/lib/app-resource-observation-authority.js');
+    const { APP_DATABASE_POOL_BUDGET } = await import('../src/lib/app-database-pool-budget.js');
+    assert.equal(APP_DATABASE_POOL_BUDGET.ordinary, 4);
+    let entered = 0, release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const results = await Promise.allSettled(Array.from({ length: 4 }, () => db.transaction(async tx => {
+      await tx.execute(d.sql`SELECT 1`);
+      if (++entered === 4) release(); await barrier;
+      let timer: ReturnType<typeof setTimeout>;
+      try {
+        await Promise.race([(async () => {
+          const captured = await captureUpgradeApprovals(tx, f.org, f.installation.id, next.result.installation.active_version_id, [f.person], f.guard);
+          assert.equal(captured.length, 1);
+          assert.equal(captured[0]!.source.scope.app_version_id, next.result.installation.active_version_id);
+          const live = await attachmentAuthority.loadLiveAttachmentSyncBindingAuthority(tx, { org_id: f.org,
+            resource_binding_id: captured[0]!.binding.id, clock: () => new Date() });
+          assert.ok(live);
+          const record = await loadObservationConnection(tx, live, captured[0]!.source.session_id);
+          assert.equal(record.session_id, next.result.upgrade_continuity[0].session_id);
+        })(), new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(Error('TRUSTED_AUTHORITY_NESTED_POOL_WAIT')), 10000);
+        })]);
+      } finally { clearTimeout(timer!); }
+    })));
+    assert.equal(entered, 4); assert.ok(results.every(result => result.status === 'fulfilled'), JSON.stringify(results));
+    const { getAppConnectionSessionRegistry } = await import('../src/lib/app-connection-session-registry.js');
+    const [stored] = await db.select().from(s.appConnectionSessions).where(eq(s.appConnectionSessions.session_id, next.result.upgrade_continuity[0].session_id));
+    const record = stored!.record as any;
+    await assert.rejects(db.transaction(async tx => {
+      await tx.insert(s.auditLog).values({ org_id: f.org, actor_type: 'human', actor_id: f.admin,
+        action: 'app.upgrade_continuity_trust_changed', entity_type: 'app_installation', entity_id: f.installation.id,
+        before_state: { trusted: true, revision: 1 }, after_state: { trusted: false, revision: 2 } });
+      const explicit = await getAppConnectionSessionRegistry(tx);
+      assert.throws(() => explicit.protocol(record.scope, record.profile), 'the explicit reader sees its own uncommitted trust change');
+      const independent = await getAppConnectionSessionRegistry();
+      assert.equal(independent.protocol(record.scope, record.profile), 'v2', 'a reader without tx keeps its independent committed-state read');
+      throw Error('ROLLBACK_ISOLATION_TEST');
+    }), /ROLLBACK_ISOLATION_TEST/);
   });
   await t.test('database guard rejects persistent initial activation without a live trust proof', async () => {
     const f = await fixture(false, false);

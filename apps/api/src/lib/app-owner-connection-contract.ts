@@ -4,6 +4,7 @@ import { OwnerConnectionPolicyDeclarationSchema, AttachmentPolicySchema, AppConn
 import type { OwnerConnectionPolicyDeclaration } from '@deft/app-kit';
 import { AppResourceSyncConsentLimitsSchema } from './app-resource-sync-policy.js';
 import { AppError } from './app-errors.js';
+import type { AppRunTransaction } from './app-run-repository.js';
 
 /** E1 declarations cannot silently enter the in-process legacy connection
  * registry. E2 must compose admitted external profile/runtime authority first. */
@@ -26,15 +27,15 @@ export type OwnerConnectionAdmissionReference = z.infer<typeof OwnerConnectionAd
 /** The deployment profile is included in the admin review digest; config alone
  * never establishes an installation's external connection authority. */
 export async function resolveOwnerConnectionProfile(orgId: string, installationId: string,
-  policy: OwnerConnectionPolicyDeclaration, operatorId?: string) {
+  policy: OwnerConnectionPolicyDeclaration, operatorId?: string, transaction?: AppRunTransaction) {
   if (policy.provider_profile_key === undefined && policy.runtime_requirement_key === undefined) return undefined;
   const { getAppConnectionSessionRegistry } = await import('./app-connection-session-registry.js');
-  return (await getAppConnectionSessionRegistry()).profile(orgId, installationId, policy, operatorId);
+  return (await getAppConnectionSessionRegistry(transaction)).profile(orgId, installationId, policy, operatorId);
 }
 export async function ownerConnectionTransportDigest(orgId: string, installationId: string,
-  profile: z.infer<typeof AppConnectionProfileSchema>) {
+  profile: z.infer<typeof AppConnectionProfileSchema>, transaction?: AppRunTransaction) {
   const { getAppConnectionSessionRegistry } = await import('./app-connection-session-registry.js');
-  return (await getAppConnectionSessionRegistry()).transportDigest(orgId, installationId, profile);
+  return (await getAppConnectionSessionRegistry(transaction)).transportDigest(orgId, installationId, profile);
 }
 export const OwnerConnectionAdmissionInputSchema = z.strictObject({ installation_id: id, policy_key: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/),
   operator_user_id: id, limits: AppResourceSyncConsentLimitsSchema, expected_app_version_id: id,

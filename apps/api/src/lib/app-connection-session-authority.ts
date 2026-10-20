@@ -53,7 +53,7 @@ async function loadCurrentConnectionAuthority(caller: AppConnectionAuthorityOwne
     if(!policy)throw denied();
     // The live reader validates the admin admission snapshot including the
     // profile digest. Deployment configuration is an additional current pin.
-    const registry = await getAppConnectionSessionRegistry();
+    const registry = await getAppConnectionSessionRegistry(tx);
     const profile = registry.profile(caller.org_id, nomination.installation_id, policy, current.registration.operator_user_id);
     if(admission.snapshot.connection_profile_digest!==connectionProfileDigest(profile)
       ||admission.snapshot.connection_transport_digest!==registry.transportDigest(caller.org_id,nomination.installation_id,profile)
