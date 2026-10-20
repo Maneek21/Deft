@@ -10,6 +10,14 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.126 candidate — publication pending
+
+Restores background resource observation after replacing its consent before the first Runtime claim. Schema stays 120; no migration or App Kit protocol change.
+
+#### Fixed
+
+- The generic observation scheduler now retires a superseded, never-claimed pending read only after validating current consent and the existing recovery identity. Its pending attempt is cancelled and its Run expires without provider work. Existing observation recovery then creates a new Run using the current consent; checkpoint data and historical authority are preserved. Claimed, started, uncertain, and unrelated work remain governed by their existing recovery rules.
+
 ### 0.3.0-preview.125 candidate — publication pending
 
 Lets an owner restore an App Runtime's background work after an App upgrade without anyone copying session tokens. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.18 (App 1.9.0-preview.14, Runtime 0.4.0-preview.18).

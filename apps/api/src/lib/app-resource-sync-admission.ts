@@ -10,7 +10,7 @@ import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appRuns, appRunAttempts, appAttachmentStages, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
 import { APP_RUN_CONTRACT_VERSIONS, APP_RUN_DEFAULT_ATTEMPT_LIMIT,
-  AppRunSafePreviewSchema,
+  AppRunSafePreviewSchema, AppRunSafeOutcomeSchema,
   idempotencyDeadline, retentionDeadline } from '@deft/shared';
 import { parseSyncRequest } from '@deft/app-kit/experimental/resource-sync';
 import { AppError } from './app-errors.js';
@@ -23,7 +23,7 @@ import { PostgresAppRunRepository, safeRunSelection,
 import { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppRunSecretService } from './app-run-secrets.js';
 import {activeResourceObservation,observedResourceAuthorization,requireCurrentResourceObservationRun,hasResourceObservationPin} from './app-resource-observation-authority.js';
-import {appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
+import {appResourceObservationRuns,appResourceObservationConsents} from '../../../../packages/db/src/resource-observation-schema.js';
 import {requireObservationRecoveryPredecessor} from './app-resource-observation-recovery.js';
 
 const HostTargetSchema = z.strictObject({ org_id: z.string().uuid(),
@@ -67,7 +67,10 @@ export class AppResourceSyncAdmissionService {
 
   /** Host scanner only. Caller-selected observation/account pins are never accepted. */
   async admitObservation(raw:unknown,limits?:ResourceSyncAdmissionLimits){
-    const target=HostTargetSchema.parse(raw),first=await this.admitDue(target,limits,undefined,undefined,true);
+    const target=HostTargetSchema.parse(raw);
+    let first=await this.admitDue(target,limits,undefined,undefined,true);
+    if(first.state==='existing'&&await this.retireSupersededPendingObservation(target,first.run_id,limits))
+      first=await this.admitDue(target,limits,undefined,undefined,true);
     if(first.state!=='blocked')return first;
     // Only a terminal linked read is eligible for a NEW Run. This nomination
     // is untrusted until the existing recovery transaction rechecks all pins.
@@ -78,6 +81,57 @@ export class AppResourceSyncAdmissionService {
         inArray(appRuns.state,['unknown_outcome','expired']))).orderBy(desc(appRuns.created_at),desc(appRuns.id)).limit(1);return row;});
     if(!predecessor)return first;
     return this.admitDue(target,limits,undefined,predecessor.id,true);
+  }
+
+  /** Consent replacement cannot authorize an old Run. Retire only work proven
+   * never claimed, then let ordinary observation recovery admit a NEW read.
+   * Keep Run -> attempt -> authority lock order; never hold a checkpoint lock
+   * while acquiring an existing Run. Started/uncertain work is untouched. */
+  private async retireSupersededPendingObservation(target:z.infer<typeof HostTargetSchema>,runId:string,limits?:ResourceSyncAdmissionLimits){
+    if(!this.enabled()||this.internalMode!=='attachment_v3')return false;
+    const bounded=limits?AdmissionLimitsSchema.parse({lock_timeout_ms:limits.lock_timeout_ms,
+      statement_timeout_ms:limits.statement_timeout_ms,deadline_at:limits.deadline_at}):undefined;
+    return this.repository.transaction(async tx=>{
+      if(bounded)await tx.execute(sql`SELECT set_config('lock_timeout',${String(bounded.lock_timeout_ms)},true),
+        set_config('statement_timeout',${String(bounded.statement_timeout_ms)},true)`);
+      const budget=()=>{if(!this.enabled()||limits?.signal?.aborted||bounded&&bounded.deadline_at<=new Date())throw unavailable();};
+      budget();
+      const run=await this.repository.lockRun(tx,target.org_id,runId);
+      if(!run||run.state!=='pending'||run.started_at||run.cancel_requested_at
+        ||run.review_scope!=='reviewed_resource_sync'||run.provider_kind!=='app_runtime'
+        ||run.initiating_actor_type!=='system'||run.execution_actor_type!=='system')return false;
+      const [stored]=await tx.select().from(appRuns).where(and(eq(appRuns.org_id,target.org_id),eq(appRuns.id,runId))).limit(1);
+      if(!stored||stored.origin_resource_binding_id!==target.resource_binding_id)return false;
+      const attempts=await tx.select().from(appRunAttempts).where(and(eq(appRunAttempts.org_id,target.org_id),
+        eq(appRunAttempts.run_id,runId))).for('update');
+      if(attempts.length!==1||attempts.some(a=>a.state!=='pending'||a.claimed_at||a.claim_token||a.claim_owner
+        ||a.provider_call_started_at||a.provider_call_finished_at||a.runtime_session_id||a.lease_expires_at))return false;
+      const authority=await loadLiveAttachmentSyncBindingAuthority(tx,{...target,clock:this.clock});
+      if(!authority||!await appConnectionUpgradeSourceIsAvailable(tx,target))return false;
+      const current=await activeResourceObservation(tx,authority,this.clock);
+      if(!current)return false;
+      const [prior]=await tx.select({consent_id:appResourceObservationConsents.consent_id,state:appResourceObservationConsents.state})
+        .from(appResourceObservationRuns).innerJoin(appResourceObservationConsents,and(
+          eq(appResourceObservationConsents.org_id,appResourceObservationRuns.org_id),
+          eq(appResourceObservationConsents.consent_id,appResourceObservationRuns.consent_id)))
+        .where(and(eq(appResourceObservationRuns.org_id,target.org_id),eq(appResourceObservationRuns.run_id,runId))).limit(1);
+      if(!prior||prior.state!=='revoked'||prior.consent_id===current.row.consent_id)return false;
+      // Same immutable account/App/grant/descriptor pins as existing recovery.
+      // A changed target or a new account must never retire unrelated work.
+      await requireObservationRecoveryPredecessor(tx,runId,authority,current,stored.authorization_snapshot);
+      if(!await attachmentFinalAuthorityIsCurrent(tx,[authority.binding.owner_user_id,authority.registration.operator_user_id],
+        {clock:this.clock,signal:limits?.signal}))throw unavailable();
+      budget();
+      const now=this.clock(),attempt=attempts[0]!;
+      await tx.update(appRunAttempts).set({state:'cancelled',error_code:'APP_RUN_EXPIRED',updated_at:now})
+        .where(and(eq(appRunAttempts.org_id,target.org_id),eq(appRunAttempts.id,attempt.id),eq(appRunAttempts.state,'pending')));
+      await this.repository.appendEvent(tx,{id:randomUUID(),org_id:target.org_id,run_id:runId,event_type:'attempt_terminal',
+        payload:{attempt_id:attempt.id,state:'cancelled'},now});
+      await this.repository.transition(tx,{run,state:'expired',now,error_code:'APP_RUN_EXPIRED',
+        safe_outcome:AppRunSafeOutcomeSchema.parse({success:false,provider_call_attempted:false,
+          result_status:'unavailable',error_code:'APP_RUN_EXPIRED'})});
+      budget();return true;
+    });
   }
 
   async resumeObservation(raw: unknown, caller: { owner_user_id: string; guard: WebAuthorityGuard }): Promise<ResourceSyncAdmissionResult> {

@@ -522,7 +522,7 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     const reviewInput={connection_session_id:currentSessions[0].session_id,request_id:randomUUID(),interval_seconds:60,
       expires_at:new Date(Date.now()+86400000).toISOString()};
     assert.equal((await request(observationBase+'/review',reviewInput,tokens.other)).status,403);
-    const review=await call(observationBase+'/review',reviewInput,tokens.member);
+    let review=await call(observationBase+'/review',reviewInput,tokens.member);
     assert.equal(review.account.account_ref,currentSessions[0].account.account_ref);assert.equal(review.expected_custody_generation,reattachedProof?2:null);
     assert.equal(review.expires_at,currentSessions[0].scope.consent_expires_at);
     assert.deepEqual(await call(observationBase+'/review',reviewInput,tokens.member),review,'lost review acknowledgement resolves exact immutable request');
@@ -554,12 +554,40 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     const {AppResourceSyncAdmissionService}=await import('../src/lib/app-resource-sync-admission.js');
     const {AppRunSecretService}=await import('../src/lib/app-run-secrets.js'),{AppRunSecretRepository}=await import('../src/lib/app-run-secret-repository.js'),{AppResourceSyncSecretService}=await import('../src/lib/app-resource-sync-secrets.js');
     const secrets=new AppRunSecretService(attachment.keys);
-    let admissionLag=121000;
+    let admissionLag=181000;
     const earlierAdmission=new AppResourceSyncAdmissionService(attachment.repository,new AppRunSecretRepository(secrets),secrets,new AppResourceSyncSecretService(attachment.keys),attachment.runner,()=>new Date(Date.now()-admissionLag),()=>true,'attachment_v3');
     const scanned=await scanner.scanAppResourceSyncBindings({id:job.id,lockToken:job.lockToken!},(await runtime.getAppRunRuntime()).resourceSyncAdmission,earlierAdmission);
     assert.equal(scanned.created,1);assert.ok(scanned.rejected>=0);assert.equal(await queues.completeJob(job.id,job.lockToken!),true);
-    const links=await db.select().from(obsTables.appResourceObservationRuns).where(eq(obsTables.appResourceObservationRuns.consent_id,review.consent_id));assert.equal(links.length,1);
+    let links=await db.select().from(obsTables.appResourceObservationRuns).where(eq(obsTables.appResourceObservationRuns.consent_id,review.consent_id));assert.equal(links.length,1);
     assert.equal(links[0]!.consent_digest,review.review_digest);
+    // A real consent replacement before the Runtime's first claim used to
+    // strand this cursor on an unclaimable pending Run for the old consent.
+    const abandonedId=links[0]!.run_id;
+    const [abandoned]=await db.select().from(s.appRuns).where(eq(s.appRuns.id,abandonedId));
+    const checkpointBeforeReplacement=await db.select().from(s.appSyncCheckpoints).where(eq(s.appSyncCheckpoints.resource_binding_id,binding.binding_id));
+    await call(observationBase+'/revoke',{consent_id:review.consent_id},tokens.member);
+    await assert.rejects(earlierAdmission.admitObservation(nomination),'opt-out alone cannot retire or replace pending work');
+    assert.equal((await db.select().from(s.appRuns).where(eq(s.appRuns.id,abandonedId)))[0]!.state,'pending');
+    review=await call(observationBase+'/review',{...reviewInput,request_id:randomUUID()},tokens.member);
+    await call(observationBase+'/activate',{consent_id:review.consent_id,review_digest:review.review_digest},tokens.member);
+    assert.equal((await earlierAdmission.admitObservation(nomination)).state,'not_due',
+      'retiring obsolete pending work still preserves the reviewed observation interval');
+    admissionLag=121000;
+    const replaced=await earlierAdmission.admitObservation(nomination);
+    assert.equal(replaced.state,'created','replacement consent must create a new read instead of returning obsolete pending work');
+    assert.notEqual(replaced.run_id,abandonedId);
+    const [retired]=await db.select().from(s.appRuns).where(eq(s.appRuns.id,abandonedId));
+    assert.equal(retired!.state,'expired');
+    assert.equal(retired!.safe_outcome?.provider_call_attempted,false);
+    assert.deepEqual(retired!.authorization_snapshot,abandoned!.authorization_snapshot);
+    const abandonedAttempts=await db.select().from(s.appRunAttempts).where(eq(s.appRunAttempts.run_id,abandonedId));
+    assert.equal(abandonedAttempts.length,1);assert.equal(abandonedAttempts[0]!.state,'cancelled');
+    assert.equal(abandonedAttempts[0]!.claimed_at,null);
+    assert.equal(abandonedAttempts[0]!.provider_call_started_at,null);
+    assert.deepEqual(await db.select().from(s.appSyncCheckpoints).where(eq(s.appSyncCheckpoints.resource_binding_id,binding.binding_id)),checkpointBeforeReplacement);
+    assert.equal((await earlierAdmission.admitObservation(nomination)).state,'existing','replacement admission is idempotent');
+    links=await db.select().from(obsTables.appResourceObservationRuns).where(eq(obsTables.appResourceObservationRuns.consent_id,review.consent_id));
+    assert.equal(links.length,1);assert.equal(links[0]!.run_id,replaced.run_id);
     const issued=(await call(`/api/apps/blob/sync/bindings/${binding.binding_id}/sessions`,{},tokens.owner)).session;
     const {createDeftResourceSyncClientV3}=await import('@deft/app-kit');
     const {createResourceObservationClient}=await import('../../../packages/app-kit/src/resource-observation.js');
@@ -675,5 +703,5 @@ test(persistentProof?'explicit persistent account, data and observation grants u
     assert.equal((await request(`/api/apps/blob/sync/bindings/${binding.binding_id}/sync`,{continue:true},tokens.member)).status,403);
     assert.equal((await db.select({id:s.appRuns.id}).from(s.appRuns)).length,runsBeforeDenied,'revoked observation cannot downgrade to a manual continuation');
     assert.equal(providerRequests.length,providerBeforeContinuation,'continuation authority proof has no provider invocation');
-    console.log('# observation host proof '+JSON.stringify({accounts:2,reattached:reattachedProof,custody_generation:reattachedProof?2:null,reviewed_consents:3,scheduled_runs:5,revoked_consent_recovery:true,human_continuation_pin:true,revoked_continuation_denied:true,unknown_predecessor_preserved:true,external_v3_success:true,metadata_only:true,restart_provider_replay:0,provider_send_requests:0}));
+    console.log('# observation host proof '+JSON.stringify({accounts:2,reattached:reattachedProof,custody_generation:reattachedProof?2:null,reviewed_consents:4,scheduled_runs:6,superseded_pending_recovery:true,revoked_consent_recovery:true,human_continuation_pin:true,revoked_continuation_denied:true,unknown_predecessor_preserved:true,external_v3_success:true,metadata_only:true,restart_provider_replay:0,provider_send_requests:0}));
   });
