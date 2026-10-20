@@ -39,7 +39,7 @@ function Workspace({identity,disabled,onBusy}:{identity:ObservationIdentity;disa
  }
  const uncertain=client?.uncertain,expired=!!status&&appConsentDeadline(status.review.expires_at,status.review.consent_lifetime)<=clock;
  return <section aria-label="Background refresh" className="space-y-3 border-t pt-4 text-sm" style={{borderColor:'var(--ghost-border)'}}>
-  <h4 className="font-medium">Background refresh</h4><p>Keep mailbox metadata current while this app is closed. This requires a separate review for this account and app version. Files and attachments are not fetched in the background.</p>
+  <h4 className="font-medium">Background refresh</h4><p>Keep mailbox metadata current while this app is closed. This requires a separate review for this account and app version. Files and attachments are not fetched in the background. Turn this on to create Tasks or Knowledge from mail: it is how the app shares messages with Deft.</p>
   {notice&&<p role="status">{notice}</p>}{busy&&<p role="status">{uncertain?'Checking background refresh…':'Checking reviewed access…'}</p>}
   {client?.target?.consent===null&&!client.pending&&!notice&&<p>Off</p>}
   {status&&<p>{status.state==='active'&&!expired?'Enabled':expired?'Expired':status.state==='proposed'?'Review needed':status.state==='revoked'?'Off':'Unavailable'}{status.state==='active'&&!expired&&` · at most every ${observationIntervalLabel(status.review.interval_seconds)} ${status.review.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(status.review.expires_at!).toLocaleString()}`}`}</p>}
