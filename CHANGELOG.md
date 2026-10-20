@@ -23,6 +23,7 @@ Completes preview.128 account-update recovery at the Runtime authority boundary.
 
 - Prepare generic app-source capture and retained-storage adapters with normalized native Calendar sources (#391).
 - Update Zod from 4.6.5 to 4.6.7 (#361).
+- Update the MCP client to 2.3.0 for the cross-origin redirect advisory GHSA-6prh-2h8m-c8cw. Preserve the repository release-age policy and the admitted jose6.2.12 resolution.
 
 
 
