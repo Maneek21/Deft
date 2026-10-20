@@ -6,6 +6,7 @@ import type {AppConnectionContext,AppConnectionTarget,createAppConnectionSession
 import type {ConnectionUpgradeReview} from '@/lib/app-connection-upgrade';
 import {ExperienceConnectionStatus} from './experience-connection-status';
 import {ExperienceBackgroundRefresh} from './experience-background-refresh';
+import {ExperienceBackgroundAccess} from './experience-background-access';
 import {ExperienceCredentialRepair} from './experience-credential-repair';
 export function ExperienceCapabilityUpgradeReview({review,now,disabled,onAllow,onCheck,onClose}:{review:ConnectionUpgradeReview;now:number;disabled:boolean;onAllow:()=>void;onCheck:()=>void;onClose:()=>void}){
  const expired=Date.parse(review.expires_at)<=now;
@@ -24,6 +25,12 @@ export function ExperienceCapabilityUpgradeReview({review,now,disabled,onAllow,o
  </section>;
 }
 type Flow=ReturnType<typeof createAppConnectionSessionFlow>;
+export function ExperienceCapabilityUpgradeRecovery({consumed,disabled,onCheck}:{consumed:boolean;disabled:boolean;onCheck:()=>void}){
+ return <div className="space-y-2 text-sm">
+  <p>{consumed?'Check the original account update. If the operator confirms setup never started and the review expired, this safely closes it so you can review again.':'Account update is pending. Use its original callback or check status. This attempt will not be repeated.'}</p>
+  <button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={disabled} onClick={onCheck}>{consumed?'Recover account setup':'Check status'}</button>
+ </div>;
+}
 export function ExperienceCapabilityUpgradeSettings({target,client,disabled,onBusy,onContext,onNavigate,onUse,onConnect,onStatus,onDisconnect,ownerId,orgId,appOwnedRecords,backgroundRefreshDescription}:{
  target:AppConnectionTarget;client:Flow;disabled:boolean;onBusy:(busy:boolean)=>void;onContext:(value:AppConnectionContext)=>void;
  onNavigate:(url:string)=>void;onUse?:()=>void;onConnect:()=>void;onStatus:()=>void;onDisconnect:()=>void;ownerId:string;orgId:string;appOwnedRecords?:boolean;backgroundRefreshDescription?:string;
@@ -69,13 +76,14 @@ export function ExperienceCapabilityUpgradeSettings({target,client,disabled,onBu
   {!pending&&target.upgrade?.candidate&&<div className="space-y-2 text-sm"><p className="break-words">Existing account: {target.upgrade.candidate.account.label}</p>
    <button type="button" className="deft-pill min-h-11" disabled={!!working||disabled||!target.runtime_ready} onClick={()=>void act('review')}>Review account update</button></div>}
   {shown&&<ExperienceCapabilityUpgradeReview review={shown} now={clock} disabled={!!working||disabled||!target.runtime_ready} onAllow={()=>void act('begin')} onCheck={()=>void act('status')} onClose={()=>{setClosed(true);setNotice('Review remains pending. Resume it or check status before continuing.');}}/>}
-  {pending&&!shown&&<div className="space-y-2 text-sm">{!review&&!working&&<p>Account update is pending. Use its original callback or check status. This attempt will not be repeated.</p>}
+  {pending&&!shown&&<div className="space-y-2 text-sm">
    <div className="flex flex-wrap gap-2">{review&&<button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={!!working||disabled} onClick={()=>setClosed(false)}>Resume review</button>}
-    <button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={!!working||disabled||!target.runtime_ready} onClick={()=>void act('status')}>Check status</button></div></div>}
+    <ExperienceCapabilityUpgradeRecovery consumed={!!target.upgrade?.pending?.callback_consumed} disabled={!!working||disabled||!target.runtime_ready} onCheck={()=>void act('status')}/></div></div>}
   {!pending&&(!state||state==='not_connected'||state==='disconnected')&&<button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={!!working||disabled||!target.runtime_ready} onClick={onConnect}>Connect a new account</button>}
   {!pending&&target.session&&<button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={!!working||disabled||!target.runtime_ready} onClick={onStatus}>Check connection status</button>}
   {!pending&&state==='connected'&&onUse&&<button type="button" className="deft-pill min-h-11" disabled={!!working||disabled} onClick={onUse}>Use account</button>}
   {!pending&&(state==='connected'||state==='not_connected')&&<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Manage connection</summary><button type="button" className="deft-pill min-h-11 !bg-transparent text-[var(--error)]" disabled={!!working||disabled} onClick={onDisconnect}>Disconnect account</button></details>}
   {appOwnedRecords&&!pending&&state==='connected'&&<ExperienceBackgroundRefresh description={backgroundRefreshDescription} target={target} ownerId={ownerId} orgId={orgId} disabled={!!working||disabled} onBusy={onBusy}/>}
+  {appOwnedRecords&&!pending&&state==='connected'&&<ExperienceBackgroundAccess target={target} disabled={!!working||disabled} onBusy={onBusy}/>}
  </div>;
 }

@@ -34,7 +34,7 @@ export function ExperienceBackgroundAccess({target,disabled,onBusy}:{target:AppC
  }
  return <section aria-label="Background access" className="space-y-2 border-t pt-4 text-sm" style={{borderColor:'var(--ghost-border)'}}>
   <h4 className="font-medium">Background access</h4>
-  <p>Drafts, sends, organizing and background refresh run in the app&apos;s Runtime. After the app is updated, re-establish its access for your reviewed permissions. No codes are shown or copied.</p>
+  <p>Background actions and refresh run in the app&apos;s Runtime. After the app is updated, re-establish access for the permissions you reviewed. No codes are shown or copied.</p>
   {notice&&<p role="status">{notice}</p>}
   <button type="button" className="deft-pill min-h-11" disabled={busy||disabled} onClick={()=>void reestablish()}>{busy?'Re-establishing…':'Re-establish background access'}</button>
  </section>;
