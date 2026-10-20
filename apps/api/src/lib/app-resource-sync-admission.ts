@@ -25,6 +25,7 @@ import { AppRunSecretService } from './app-run-secrets.js';
 import {activeResourceObservation,observedResourceAuthorization,requireCurrentResourceObservationRun,hasResourceObservationPin} from './app-resource-observation-authority.js';
 import {appResourceObservationRuns,appResourceObservationConsents} from '../../../../packages/db/src/resource-observation-schema.js';
 import {requireObservationRecoveryPredecessor} from './app-resource-observation-recovery.js';
+import { resourceSyncDueAt } from './app-resource-sync-cadence.js';
 
 const HostTargetSchema = z.strictObject({ org_id: z.string().uuid(),
   resource_binding_id: z.string().uuid() });
@@ -250,8 +251,13 @@ export class AppResourceSyncAdmissionService {
       }
       const prior = await tx.select({id:appSyncIntents.id}).from(appSyncIntents).where(cursorPredicate).limit(1);
       if (prior.length && !recoveryRunId) { await finalAttachment(); return Object.freeze({state:'blocked',reason:'cursor_requires_recovery'}); }
-      const [latest] = await tx.select({ created_at: appSyncIntents.created_at })
-        .from(appSyncIntents).where(and(eq(appSyncIntents.org_id, target.org_id),
+      const [latest] = await tx.select({ created_at: appSyncIntents.created_at,
+        run_id: appRuns.id, state: appRuns.state, terminal_at: appRuns.terminal_at,
+        result_expires_at: appRuns.result_expires_at, authorization_snapshot: appRuns.authorization_snapshot,
+        checkpoint_id: appSyncIntents.checkpoint_id, generation: appSyncIntents.generation,
+        sequence: appSyncIntents.expected_cursor_sequence })
+        .from(appSyncIntents).innerJoin(appRuns, and(eq(appRuns.org_id, appSyncIntents.org_id),
+          eq(appRuns.id, appSyncIntents.run_id))).where(and(eq(appSyncIntents.org_id, target.org_id),
           eq(appSyncIntents.resource_binding_id, binding.id)))
         .orderBy(desc(appSyncIntents.created_at)).limit(1);
       const cursorContext = { org_id: target.org_id, resource_binding_id: binding.id,
@@ -286,7 +292,22 @@ export class AppResourceSyncAdmissionService {
         if (hasResourceObservationPin(committed.authorization_snapshot,binding.id) && !observation) throw unavailable();
       }
       if (latest && !continuation) {
-        const due = new Date(latest.created_at.getTime() + Math.max(binding.min_interval_seconds,observation?.snapshot.interval_seconds??0) * 1_000);
+        // Reuse the bounded durable scan rather than creating an in-process
+        // provider loop. Only the exact successful predecessor of the locked
+        // checkpoint may shorten cadence. Failed/uncertain cursors were fenced
+        // above. Reading evidence takes no Run/attempt locks (completion takes
+        // those before checkpoint). Current authority/consent is still required.
+        const committed = latest.run_id === checkpoint.last_applied_run_id && latest.state === 'succeeded'
+          && latest.checkpoint_id === checkpoint.id && latest.generation === checkpoint.generation
+          && latest.sequence + 1 === checkpoint.cursor_sequence && latest.result_expires_at > now
+          && (!hasResourceObservationPin(latest.authorization_snapshot, binding.id) || !!observation);
+        const [settled] = committed ? await tx.select({ id: appRunAttempts.id }).from(appRunAttempts).where(and(
+          eq(appRunAttempts.org_id, target.org_id), eq(appRunAttempts.run_id, latest.run_id),
+          eq(appRunAttempts.state, 'succeeded'))).limit(1) : [];
+        const output = settled ? await this.runInputs.readOutput(target.org_id, latest.run_id, settled.id, tx) : null;
+        const due = resourceSyncDueAt({ created_at: latest.created_at, terminal_at: latest.terminal_at,
+          interval_seconds: Math.max(binding.min_interval_seconds, observation?.snapshot.interval_seconds ?? 0),
+          committed, page_digest: checkpoint.last_applied_page_digest, cursor, output });
         if (due > now) { await finalAttachment(); return Object.freeze({ state: 'not_due', due_at: due.toISOString() }); }
       }
       const request = this.internalMode === 'attachment_v3'
