@@ -10,6 +10,14 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.125 candidate — publication pending
+
+Lets an owner restore an App Runtime's background work after an App upgrade without anyone copying session tokens. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.18 (App 1.9.0-preview.14, Runtime 0.4.0-preview.18).
+
+#### Added
+
+- Email settings → Accounts has **Re-establish background access**. After an App upgrade the reviewed bindings move to the new version while the Runtime still holds sessions for the old ones, which stopped drafts, sends, organizing and background refresh. The Host now issues sessions for the current reviewed bindings through the ordinary operator checks and delivers them to the Runtime over its authenticated connection transport. Background refresh is included when the account permission lasts until revoked. Tokens never reach the browser, an agent or an operator file.
+
 ### 0.3.0-preview.124 candidate — publication pending
 
 Email connection fixes found while running the live Email journey on preview.123. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.17.

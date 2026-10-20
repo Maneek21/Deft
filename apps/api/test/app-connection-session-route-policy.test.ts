@@ -27,6 +27,8 @@ test('connection routes fail closed before parsing when current App or owner rol
        const context=await routes.request('/installations/00000000-0000-0000-0000-000000000001/'+path);
        assert.equal(context.status,503);assert.equal((await context.json()).code,'APP_FEATURE_DISABLED');
       }
+      const access=await routes.request('/installations/00000000-0000-0000-0000-000000000001/background-access',{method:'POST',headers:{'content-type':'application/json'},body:'{'});
+      assert.equal(access.status,503);assert.equal((await access.json()).code,'APP_FEATURE_DISABLED');
     } finally {process.env[flag] = 'true';}
   }
 });
