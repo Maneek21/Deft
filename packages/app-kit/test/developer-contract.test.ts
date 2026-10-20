@@ -42,12 +42,12 @@ test('freezes one additive App Kit and protocol-flow compatibility contract', as
     await readFile(resolve(import.meta.dirname, '..', 'package.json'), 'utf8'),
   ) as { version: string };
   assert.equal(DEFT_APP_KIT_VERSION, packageJson.version);
-  assert.equal(DEFT_APP_KIT_VERSION, '0.1.0-alpha.38');
+  assert.equal(DEFT_APP_KIT_VERSION, '0.1.0-alpha.39');
   assert.equal(new Set<string>(DEFT_APP_DEVELOPER_COMPATIBILITY.app_kit.versions).has('0.1.0-alpha.9'), false,
     'the frozen alpha.9 metadata mismatch is not a reconciled compatibility promise');
   assert.deepEqual(DEFT_APP_DEVELOPER_COMPATIBILITY, {
     schema: 'deft.app_developer.compatibility.v1',
-    app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.38', '0.1.0-alpha.37', '0.1.0-alpha.36', '0.1.0-alpha.35', '0.1.0-alpha.29', '0.1.0-alpha.28', '0.1.0-alpha.27', '0.1.0-alpha.26', '0.1.0-alpha.25', '0.1.0-alpha.22', '0.1.0-alpha.21', '0.1.0-alpha.20', '0.1.0-alpha.19', '0.1.0-alpha.18', '0.1.0-alpha.17', '0.1.0-alpha.16', '0.1.0-alpha.15', '0.1.0-alpha.14', '0.1.0-alpha.13', '0.1.0-alpha.12', '0.1.0-alpha.11', '0.1.0-alpha.10', '0.1.0-alpha.7', '0.1.0-alpha.6', '0.1.0-alpha.5', '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1'] },
+    app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.39', '0.1.0-alpha.38', '0.1.0-alpha.37', '0.1.0-alpha.36', '0.1.0-alpha.35', '0.1.0-alpha.29', '0.1.0-alpha.28', '0.1.0-alpha.27', '0.1.0-alpha.26', '0.1.0-alpha.25', '0.1.0-alpha.22', '0.1.0-alpha.21', '0.1.0-alpha.20', '0.1.0-alpha.19', '0.1.0-alpha.18', '0.1.0-alpha.17', '0.1.0-alpha.16', '0.1.0-alpha.15', '0.1.0-alpha.14', '0.1.0-alpha.13', '0.1.0-alpha.12', '0.1.0-alpha.11', '0.1.0-alpha.10', '0.1.0-alpha.7', '0.1.0-alpha.6', '0.1.0-alpha.5', '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1'] },
     protocol_flows: {
       '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
       '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },

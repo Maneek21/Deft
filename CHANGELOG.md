@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.127 candidate — publication pending
+
+Lets each App supply its own background-refresh explanation through the optional experience-bundle field `background_refresh_description`. Schema stays 120; no migration.
+
+#### Changed
+
+- Background-refresh reviews use the App's description when present and a neutral Host default otherwise. The generic bundle contract validates 1–500 characters and rejects control characters and angle brackets.
+- Author Kit alpha.39 packages the updated contract under a new version, preserving support for alpha.38 and older supported Kits.
+
 ### 0.3.0-preview.126 candidate — publication pending
 
 Restores background resource observation after replacing its consent before the first Runtime claim. Schema stays 120; no migration or App Kit protocol change.
