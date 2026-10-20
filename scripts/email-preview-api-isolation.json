@@ -79,10 +79,7 @@
     "app-runtime-upgrade-http-db.test.ts",
     "app-supplemental-effects-db.test.ts",
     "apps-connected-grants-db.test.ts",
-    "email-calendar-invitation-index-db.test.ts",
-    "email-context-transfer-mounted-db.test.ts",
-    "email-knowledge-db.test.ts",
-    "email-mailbox-authority-db.test.ts"
+    "email-calendar-invitation-index-db.test.ts"
   ],
   "global_maintenance_consumers": [
     "app-connected-upgrade-http-db.test.ts",
@@ -147,8 +144,7 @@
     "app-runtime-channel-db.test.ts",
     "app-runtime-renewal-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
-    "apps-connected-grants-db.test.ts",
-    "email-context-transfer-mounted-db.test.ts"
+    "apps-connected-grants-db.test.ts"
   ],
   "isolated": [
     "app-action-batch-http-db.test.ts",
@@ -243,9 +239,6 @@
     "app-runtime-upgrade-http-db.test.ts",
     "app-supplemental-effects-db.test.ts",
     "apps-connected-grants-db.test.ts",
-    "email-calendar-invitation-index-db.test.ts",
-    "email-context-transfer-mounted-db.test.ts",
-    "email-knowledge-db.test.ts",
-    "email-mailbox-authority-db.test.ts"
+    "email-calendar-invitation-index-db.test.ts"
   ]
 }
