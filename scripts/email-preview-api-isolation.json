@@ -77,6 +77,7 @@
     "app-runtime-review-web-http.test.ts",
     "app-runtime-setup-http-db.test.ts",
     "app-runtime-setup-named-ordinary-db.test.ts",
+    "app-runtime-upgrade-continuity-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
     "app-supplemental-effects-db.test.ts",
     "apps-connected-grants-db.test.ts",
@@ -144,6 +145,7 @@
     "app-runtime-actions-http-db.test.ts",
     "app-runtime-channel-db.test.ts",
     "app-runtime-renewal-db.test.ts",
+    "app-runtime-upgrade-continuity-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
     "apps-connected-grants-db.test.ts"
   ],
@@ -238,6 +240,7 @@
     "app-runtime-review-web-http.test.ts",
     "app-runtime-setup-http-db.test.ts",
     "app-runtime-setup-named-ordinary-db.test.ts",
+    "app-runtime-upgrade-continuity-db.test.ts",
     "app-runtime-upgrade-http-db.test.ts",
     "app-supplemental-effects-db.test.ts",
     "apps-connected-grants-db.test.ts",

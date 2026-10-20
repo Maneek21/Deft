@@ -19,3 +19,9 @@ packages/db/upgrades/lineages/public61/manifest.ts -text whitespace=cr-at-eol
 packages/db/upgrades/lineages/public61/crlf-export/manifest.ts -text whitespace=cr-at-eol
 # This retained standalone test configuration is restored byte-for-byte.
 tsconfig.email-stage34.json -text whitespace=cr-at-eol
+
+# Upgrade continuity retains an immutable prior manifest and exact function artifact.
+packages/db/upgrades/lineages/manifest-at128.ts -text whitespace=-blank-at-eof
+packages/db/upgrades/lineages/upgrade130-functions.json text eol=lf
+# Preserve the existing Windows bytes in the API isolation inventory.
+scripts/email-preview-api-isolation.json -text whitespace=cr-at-eol
