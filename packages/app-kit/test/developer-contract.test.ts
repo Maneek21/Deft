@@ -82,7 +82,7 @@ test('freezes one additive App Kit and protocol-flow compatibility contract', as
       ...DEFT_APP_DEVELOPER_COMPATIBILITY,
       app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.0'] },
     }, '1'),
-    /does not support @deft\/app-kit 0\.1\.0-alpha\.38/,
+    /does not support @deft\/app-kit 0\.1\.0-alpha\.39/,
   );
   assert.throws(
     () => parseDeftAppDeveloperCompatibility({
@@ -97,7 +97,7 @@ test('candidate Kit refuses a host advertising only the preceding authoring cont
   assert.throws(() => resolveDeftAppDeveloperProtocolFlow({
     ...DEFT_APP_DEVELOPER_COMPATIBILITY,
     app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.2', '0.1.0-alpha.1'] },
-  }, '1'), /does not support @deft\/app-kit 0\.1\.0-alpha\.38/);
+  }, '1'), /does not support @deft\/app-kit 0\.1\.0-alpha\.39/);
 });
 
 test('checks a connected package against only the public host and provider contracts', async () => {
