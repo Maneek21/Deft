@@ -66,3 +66,14 @@ test('channel URLs and renewal requests are bounded', () => {
   assert.throws(() => backgroundRenewalRequest({ consent_expires_at: new Date(Date.now() + 30_000).toISOString() } as never), { code: 'APP_ACCESS_DENIED' });
   assert.deepEqual(backgroundRenewalRequest({ consent_expires_at: null, consent_lifetime: 'until_revoked' } as never), { renewal_lifetime: 'until_revoked', requested_until: null });
 });
+
+test('service fetch route fails closed before body parsing when the App rollout is off',async()=>{
+  const original=process.env.DEFT_APPS_ENABLED;process.env.DEFT_APPS_ENABLED='false';
+  try{
+    const {createAppConnectionSessionRoutes}=await import('../src/routes/app-connection-sessions.js');
+    const response=await createAppConnectionSessionRoutes().request('/runtime/background-access',
+      {method:'POST',headers:{'content-type':'application/json'},body:'{'});
+    assert.equal(response.status,503);assert.equal((await response.json()).code,'APP_FEATURE_DISABLED');
+    assert.equal(response.headers.get('cache-control'),'no-store');
+  }finally{if(original===undefined)delete process.env.DEFT_APPS_ENABLED;else process.env.DEFT_APPS_ENABLED=original;}
+});

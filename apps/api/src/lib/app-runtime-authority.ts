@@ -1,3 +1,4 @@
+import {isRuntimeServiceGuard} from './app-runtime-authority-service.js';
 import { humanActionReleaseIsCurrent } from './app-experience-human-action-live.js';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
@@ -373,7 +374,9 @@ export async function issueAppRuntimeSession(input: Readonly<{
       const target=await runtimeRenewalTargetDeadline(tx,lockedBinding,lockedRegistration,participants,input.technical_renewal.renewal_lifetime==='until_revoked');
       // This is a tentative ceiling only. The inserted session's full live
       // check locks/rechecks the SID last, then the original web guard runs.
-      const principal=await runtimeRenewalPrincipal(tx,{org_id:input.org_id,operator_user_id:input.operator_user_id,sid:input.technical_renewal.sid,role:input.technical_renewal.role},input.now??new Date(),false);
+      const service=input.technical_renewal.renewal_lifetime==='until_revoked'&&isRuntimeServiceGuard(input.guard);
+      const principal=service?(await runtimeRenewalPersistentPrincipal(tx,{org_id:input.org_id,operator_user_id:input.operator_user_id,role:input.technical_renewal.role})?new Date(8_640_000_000_000_000):null)
+        :await runtimeRenewalPrincipal(tx,{org_id:input.org_id,operator_user_id:input.operator_user_id,sid:input.technical_renewal.sid,role:input.technical_renewal.role},input.now??new Date(),false);
       const persistent=input.technical_renewal.renewal_lifetime==='until_revoked';
       const requested=input.technical_renewal.requested_until?.getTime()??Infinity;
       if(!principal||(!persistent&&!Number.isFinite(requested))||(persistent&&input.technical_renewal.requested_until!==null))throw Error('APP_RUNTIME_AUTHORITY_STALE');

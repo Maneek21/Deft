@@ -96,6 +96,16 @@ export async function reestablishBackgroundAccess(ports: BackgroundAccessPorts, 
   return { installed: result.installed, skipped };
 }
 
+/** Service reconciliation uses the same installer and current reviewed bindings.
+ * Its authenticated guard replaces only browser liveness, never grant checks. */
+export async function reconcileRuntimeBackgroundAccess(raw:unknown,authorization:string|undefined,signal:AbortSignal){
+  const {runtimeBackgroundAccessAuthority}=await import('./app-runtime-authority-service.js');
+  const authority=await runtimeBackgroundAccessAuthority(raw,authorization);
+  const ports=productionBackgroundAccessPorts();
+  return reestablishBackgroundAccess({...ports,currentAuthority:async()=>authority},authority.actor,authority.caller,
+    {installation_id:authority.scope.installation_id,target_key:authority.scope.target_key},authority.guard,signal);
+}
+
 export async function currentActionBindings(scope: AppConnectionSessionScope) {
   return db.select({ id: appRuntimeBindings.id, runtime_registration_id: appRuntimeBindings.runtime_registration_id,
     runtime_epoch: appRuntimeRegistrations.runtime_epoch })
