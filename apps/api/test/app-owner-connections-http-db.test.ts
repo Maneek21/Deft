@@ -107,6 +107,7 @@ test('reviewed owner connection admission enables only each eligible member’s 
   const context = await call(contextPath, 'GET', undefined, tokens.member), policy = context.policies[0];
   assert.equal(policy.status, 'admitted'); assert.equal(policy.admission.operator_user_id, people.owner.id);
   assert.equal(policy.admission.admission_id, admission.admission_id);
+  assert.deepEqual(policy.record_store_keys, (fixture.manifest.record_stores ?? []).filter((store: {resource_key: string}) => store.resource_key === policy.policy.resource_key).map((store: {key: string}) => store.key));
   const resourceInput = { ...policy.admission.resource_request, limits: { ...policy.admission.resource_request.limits, max_records_per_page: 1 } };
   await t.test('turning off the opt-in feature denies setup without changing the admission', async () => {
     process.env.DEFT_APP_OWNER_CONNECTIONS_ENABLED = 'false';

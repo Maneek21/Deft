@@ -8,6 +8,7 @@ import { getActiveSessionCacheScope } from '@/lib/session-cache';
 import { APP_CONNECTION_PENDING_KEY, pendingAppConnection, connectionCallback } from '@/lib/app-connection-flow';
 import {APP_CONNECTION_UPGRADE_PENDING_KEY,completeConnectionUpgrade} from '@/lib/app-connection-upgrade';
 import {APP_CONNECTION_REPAIR_PENDING_KEY,completeConnectionRepair} from '@/lib/app-connection-repair';
+import {finishAcknowledgedInitialConnection} from '@/lib/app-initial-connect-consent';
 import { APP_CONNECTION_SESSION_PENDING_KEY, appConnectionCallbackUsesGeneric, appConnectionSessionTag, completeAppConnectionSession } from '@/lib/app-connection-session-flow';
 
 type Result = { href: string; message: string; success: boolean };
@@ -66,6 +67,12 @@ export default function AppConnectionCallbackPage() {
             const identity={installationId:pointer.installationId,experienceKey:pointer.experienceKey,orgId:org.id,ownerId:user.id,sessionTag:await appConnectionSessionTag(scope)};
             const completed=await completeAppConnectionSession({search,identity,storage:sessionStorage,current:sameSession,fetch:(path,init)=>api.fetch(path,init)});
             href=`/apps/${encodeURIComponent(identity.installationId)}/${encodeURIComponent(identity.experienceKey)}`;
+            if(completed.state==='connected'){
+              try{await finishAcknowledgedInitialConnection({target:{target_key:completed.scope.target_key,scope:completed.scope,session:completed},
+                org:org.id,owner:user.id,installation:identity.installationId,sessionTag:identity.sessionTag,storage:sessionStorage,
+                current:sameSession,signal:new AbortController().signal,fetch:(path,init)=>api.fetch(path,init)});}
+              catch{return {href,message:'Your account is connected. Approved private storage or background refresh needs its status checked in account settings.',success:true};}
+            }
             return {href,message:completed.state==='connected'?'Your account is connected. Return to the app to continue.':completed.state==='indeterminate'?'Account setup has an uncertain outcome. Return to the app and check connection status; this attempt will not be repeated.':'Account setup was not completed. Return to the app to check its status.',success:completed.state==='connected'};
           }
           const stored = sessionStorage.getItem(APP_CONNECTION_PENDING_KEY);

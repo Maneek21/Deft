@@ -249,6 +249,7 @@ export class AppOwnerConnectionService {
             .from(appRuntimeBindings).where(and(eq(appRuntimeBindings.org_id, actor.org_id), eq(appRuntimeBindings.owner_resource_binding_id, binding.id),
               inArray(appRuntimeBindings.state, ['active', 'disabled']))).limit(16) })));
         policies.push({ policy, status: admission ? 'admitted' : 'deployment_review_required', admission,
+          record_store_keys: ('record_stores' in reviewed.manifest ? reviewed.manifest.record_stores ?? [] : []).filter(store => store.resource_key === policy.resource_key).map(store => store.key),
           recovery_targets: [...recoveryTargets].sort().map(key => ({ key })), bindings });
       }
       await guard(tx); const deadline = guard.current_web_session_expires_at();
