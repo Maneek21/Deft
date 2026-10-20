@@ -27,7 +27,16 @@ test('packed alpha.40 preserves old consumer types and a non-mail build has no m
  const inventory=JSON.parse(await readFile(join(kit,'../../docs/reports/2026-10-20-kit-domain-consumer-inventory.json'),'utf8'));
  for(const [entry,file] of [['@deft/app-kit','index.d.ts'],['@deft/app-kit/experience','experience-sdk.d.ts']]){
   const path=join(installed,'dist',file!),program=ts.createProgram([path],{module:ts.ModuleKind.NodeNext,target:ts.ScriptTarget.ES2022,skipLibCheck:true}),checker=program.getTypeChecker();
-  const names=new Set(checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(path)!)!).map(s=>s.name));
+  const symbols=checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(path)!)!);
+  const names=new Set(symbols.map(s=>s.name));
+  for(const name of ['parseMailboxList','NativeComposeOptions',...(entry==='@deft/app-kit'?['SandboxEmailSendInputSchema']:[])]){
+   const symbol=symbols.find(s=>s.name===name)!;
+   const target=symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+   const tag=target.getJsDocTags(checker).find(tag=>tag.name==='deprecated');
+   const text=tag?.text?.map(part=>part.text).join('')??'';
+   assert.match(text,/@deft\/app-kit\/examples\/email/);
+   assert.match(text,/next breaking Kit alpha/);
+  }
   for(const version of ['0.1.0-alpha.38','0.1.0-alpha.39'])for(const symbol of inventory.public_entrypoint_exports[version][entry!] as {name:string}[])assert.ok(names.has(symbol.name),`${version} ${entry} lost ${symbol.name}`);
  }
  const cli=join(installed,'dist/cli.js');run([cli,'app','init','--template','runtime'],consumer);run([cli,'app','build'],consumer);
