@@ -108,14 +108,15 @@ test('verified expired status survives a lost ACK, preserves source and consumes
  await assert.rejects(service.callback(f.caller,{session_id:review.session_id,state:begun.callback_state,outcome:'authorized',code:'never-exchanged'}));
 });
 
-test('expired closure rejects consumed callback, wrong proof, plain not_connected and active effects',async()=>{
- for(const kind of ['callback','digest','generation','plain','effect','authority'] as const){
+test('expired closure rejects wrong proof, unknown exchange, plain not_connected and active effects',async()=>{
+ for(const kind of ['unknown','digest','generation','plain','effect','authority'] as const){
   const f=fixture(),review=await f.service.review(f.caller,f.input);assert.ok('review_digest'in review);
   await f.service.begin(f.caller,{session_id:review.session_id,review_digest:review.review_digest});f.advance(301000);
-  const prior=f.records.get(review.session_id)!;if(kind==='callback')f.records.set(prior.session_id,{...prior,callback_consumed:true,state:'indeterminate'});
+  const prior=f.records.get(review.session_id)!;f.records.set(prior.session_id,{...prior,callback_consumed:true,state:'indeterminate'});
   if(kind==='effect')f.block();if(kind==='authority')f.caller.access_expires_at=f.now()-1;let io=0;
   const service=new AppConnectionUpgradeService({...f.ports,requestRuntime:async(record,input)=>{io++;
-   if(kind==='callback')assert.equal('close_expired'in input,false);
+   assert.ok('close_expired'in input&&input.close_expired);
+   if(kind==='unknown')return {schema_version:input.schema_version,session_id:record.session_id,state:'indeterminate'};
    return kind==='plain'?{schema_version:input.schema_version,session_id:record.session_id,state:'not_connected'}:
     {schema_version:input.schema_version,session_id:record.session_id,state:'expired',closure:{reason:'callback_expired',custody_generation:kind==='generation'?4:3,receipt_digest:kind==='digest'?digest('b'):connectionUpgradeClosureDigest(record)}};
   }},f.now);
@@ -123,4 +124,31 @@ test('expired closure rejects consumed callback, wrong proof, plain not_connecte
   assert.notEqual(f.records.get(prior.session_id)!.state,'not_connected');assert.equal(f.records.get(prior.session_id)!.upgrade!.closure,undefined);
   if(kind==='effect'||kind==='authority')assert.equal(io,0);
  }
+});
+
+test('callback admission rechecks authority latency and reserves a full runtime window before consuming',async()=>{
+ for(const remaining of [1,29999,30000]){
+  const f=fixture(),review=await f.service.review(f.caller,f.input);assert.ok('review_digest'in review);
+  const begun=await f.service.begin(f.caller,{session_id:review.session_id,review_digest:review.review_digest});assert.ok('callback_state'in begun);
+  f.advance(300000-remaining);
+  const service=new AppConnectionUpgradeService({...f.ports,currentAuthority:async()=>{f.advance(1);return f.current;}},f.now);
+  await assert.rejects(service.callback(f.caller,{session_id:review.session_id,state:begun.callback_state,outcome:'authorized',code:'never-exchanged'}));
+  assert.equal(f.records.get(review.session_id)!.callback_consumed,false);
+  assert.deepEqual(f.calls,['prepare','begin']);
+ }
+});
+
+test('Host-consumed callback absent from runtime can close only by exact expired proof, retaining history',async()=>{
+ const f=fixture(),review=await f.service.review(f.caller,f.input);assert.ok('review_digest'in review);
+ const begun=await f.service.begin(f.caller,{session_id:review.session_id,review_digest:review.review_digest});assert.ok('callback_state'in begun);
+ const prior=f.records.get(review.session_id)!;f.records.set(prior.session_id,{...prior,callback_consumed:true,state:'indeterminate'});f.advance(301000);
+ const source=structuredClone(f.source);let calls=0;
+ const service=new AppConnectionUpgradeService({...f.ports,requestRuntime:async(record,input)=>{
+  assert.equal(input.operation,'status');assert.ok('close_expired'in input&&input.close_expired);calls++;
+  return {schema_version:input.schema_version,session_id:record.session_id,state:'expired',closure:{reason:'callback_expired',custody_generation:3,receipt_digest:connectionUpgradeClosureDigest(record)}};
+ }},f.now);
+ const result=await service.status(f.caller,{session_id:review.session_id});assert.equal(result.schema_version,'deft.app_connection_upgrade_closed.v1');
+ assert.equal(f.records.get(review.session_id)!.callback_consumed,true);assert.deepEqual(f.records.get(f.source.session_id),source);
+ assert.deepEqual(await service.status(f.caller,{session_id:review.session_id}),result);assert.equal(calls,1);
+ await assert.rejects(service.callback(f.caller,{session_id:review.session_id,state:begun.callback_state,outcome:'authorized',code:'never-replayed'}));
 });

@@ -81,7 +81,7 @@ export class AppConnectionUpgradeService{
    session_id:record.session_id,scope:record.scope,source:data.source,transport_digest:data.transport_digest,
    review_expires_at:data.review_expires_at,expires_at:new Date(deadline).toISOString(),action_consents:record.action_consents,operation,
    ...(operation==='prepare'?{}:{review:data.review}),...(operation==='status'?{runtime_session_ref:record.runtime_session_ref,
-    ...(data.begin_consumed&&!record.callback_consumed&&!data.receipt&&Date.parse(data.review_expires_at)<=this.clock()&&Date.parse(record.callback_expires_at)<=this.clock()?{close_expired:true}:{})}:{}),...extra});
+    ...(data.begin_consumed&&!data.receipt&&Date.parse(data.review_expires_at)<=this.clock()&&Date.parse(record.callback_expires_at)<=this.clock()?{close_expired:true}:{})}:{}),...extra});
  }
  private async invoke(caller:ExperienceCaller,record:AppConnectionSessionRecord,operation:AppConnectionUpgradeRuntimeRequest['operation'],extra:Record<string,unknown>={}){
   const history=operation==='status',authority=await this.authority(caller,this.nomination(record),record,history),data=record.upgrade!;
@@ -94,7 +94,7 @@ export class AppConnectionUpgradeService{
   try{const timeout=new Promise<never>((_,reject)=>{rejectTimeout=reject;arm();});
    const work=(async()=>{const source=await this.source(caller,record);
     if(await this.ports.transportDigest(source)!==data.transport_digest||await this.ports.transportDigest(record)!==data.transport_digest)throw denied();
-    if(!history||data.begin_consumed&&!record.callback_consumed&&Date.parse(data.review_expires_at)<=this.clock())await this.ports.assertNoActiveEffects(source,authority,record.session_id);
+    if(!history||data.begin_consumed&&!data.receipt&&Date.parse(data.review_expires_at)<=this.clock())await this.ports.assertNoActiveEffects(source,authority,record.session_id);
     const current=await this.authority(caller,this.nomination(record),record,history);deadline=Math.min(deadline,current.expires_at);
     if(deadline<=this.clock())throw denied();arm();controller.signal.throwIfAborted();
     return this.ports.requestRuntime(record,this.request(record,operation,deadline,extra),controller.signal);})();
@@ -119,7 +119,9 @@ export class AppConnectionUpgradeService{
     if(data.receipt&&!isDeepStrictEqual(data.receipt,receipt))throw denied();
     committed=await this.write(record,{state:'connected',account:reply.account,runtime_session_ref:reply.runtime_session_ref,upgrade:{...data,receipt}});
    }else if(reply.state==='expired'){
-    if(operation!=='status'||!data.begin_consumed||record.callback_consumed||!data.review||data.receipt
+    // Host consumption fences replay; this proof certifies that the Runtime
+    // never started the provider exchange. Keep the consumed flag immutable.
+    if(operation!=='status'||!data.begin_consumed||!data.review||data.receipt
      ||Date.parse(data.review_expires_at)>this.clock()||Date.parse(record.callback_expires_at)>this.clock()
      ||reply.closure.custody_generation!==data.review.custody_generation+1||reply.closure.receipt_digest!==connectionUpgradeClosureDigest(record))throw denied();
     if(data.closure&&!isDeepStrictEqual(data.closure,reply.closure))throw denied();
@@ -156,7 +158,8 @@ export class AppConnectionUpgradeService{
  }
  async begin(caller:ExperienceCaller,raw:unknown){const input=AppConnectionUpgradeBeginRequestSchema.parse(raw),prior=await this.read(caller,input.session_id),data=prior.upgrade;
   if(!data?.review||prior.state!=='upgrade_reviewed'||data.begin_consumed||data.review.digest!==input.review_digest||Date.parse(data.review_expires_at)<=this.clock())throw conflict();
-  await this.authority(caller,this.nomination(prior),prior);
+  const authority=await this.authority(caller,this.nomination(prior),prior);
+  this.assertAdmissionWindow(prior,authority);
   // Exactly one Begin CAS sets the nonce hash and consumes the Begin intent.
   // A missing acknowledgement permanently fences another Begin.
   const nonce=randomBytes(32).toString('base64url');
@@ -166,9 +169,18 @@ export class AppConnectionUpgradeService{
  async callback(caller:ExperienceCaller,raw:unknown){const input=AppConnectionUpgradeCallbackRequestSchema.parse(raw),prior=await this.read(caller,input.session_id);
   if(!prior.upgrade?.begin_consumed||!prior.upgrade.review||prior.state!=='awaiting_callback'||prior.callback_consumed||!prior.runtime_session_ref
    ||Date.parse(prior.callback_expires_at)<=this.clock()||!timingSafeEqual(Buffer.from(prior.callback_state_hash,'hex'),Buffer.from(stateHash(input.state),'hex')))throw conflict();
-  await this.authority(caller,this.nomination(prior),prior);
+  const authority=await this.authority(caller,this.nomination(prior),prior);
+  this.assertAdmissionWindow(prior,authority);
   const record=await this.write(prior,{state:'connecting',callback_consumed:true});
   return this.invoke(caller,record,'callback',{runtime_session_ref:prior.runtime_session_ref,callback:input.outcome==='authorized'?{outcome:'authorized',code:input.code}:{outcome:'denied'}});
+ }
+ private assertAdmissionWindow(record:AppConnectionSessionRecord,authority:AppConnectionSessionAuthority){
+  // Authority resolution may outlive the initial expiry check. Reserve a full
+  // bounded Runtime request window before durably consuming Begin or callback.
+  const deadline=Math.min(authority.expires_at,Date.parse(record.callback_expires_at),Date.parse(record.upgrade!.review_expires_at),
+   appConsentDeadline(record.scope.consent_expires_at,record.scope.consent_lifetime),
+   ...record.action_consents!.map(item=>appConsentDeadline(item.expires_at,item.consent_lifetime)));
+  if(deadline-this.clock()<30_000)throw conflict();
  }
  async status(caller:ExperienceCaller,raw:unknown){const input=AppConnectionUpgradeStatusRequestSchema.parse(raw),prior=await this.read(caller,input.session_id);
   if(!prior.upgrade)throw conflict();await this.authority(caller,this.nomination(prior),prior,true);
