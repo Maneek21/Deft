@@ -31,7 +31,7 @@ export function appHttpFailure(
   error: unknown,
   requestLabel: 'App action' | 'App Run',
   logLabel: 'app-actions' | 'app-runs',
-) {
+): Response {
   if (error instanceof ExperienceExposureBusyError) {
     c.header('Retry-After', '1');
     return c.json({ error: error.message, code: error.code, retryable: error.retryable }, 503);
