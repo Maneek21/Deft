@@ -10,6 +10,18 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.124 candidate — publication pending
+
+Email connection fixes found while running the live Email journey on preview.123. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.17.
+
+#### Fixed
+
+- A reconnection whose review lapsed before reaching the provider no longer leaves the account reserved. Status now closes it through the reviewed prepared-cancel contract and releases the Runtime reservation, which had blocked reading mail.
+- The reconnect screen says when its review has expired instead of silently disabling Continue to provider.
+- Creating a Task from an email keeps the chosen project and task details when the app session refresh remounts the panel.
+- Background refresh explains that it is required to create Tasks or Knowledge from mail.
+- Recovery guidance points to Settings → People → Recovery link, and the People page title no longer says Members.
+
 ### 0.3.0-preview.123 candidate — publication pending
 
 Fixes from the 18 October live release rehearsal on Host preview.122. Schema stays 120; no migration. Pairs with Email bundle 1.9.0-preview.17 (App 1.9.0-preview.14, Runtime 0.4.0-preview.17).
