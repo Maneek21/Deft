@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';import test from 'node:test';import {randomUUID,webcrypto} from 'node:crypto';import {renderToStaticMarkup} from 'react-dom/server';import {readFileSync} from 'node:fs';
 import {APP_CONNECTION_UPGRADE_PENDING_KEY,completeConnectionUpgrade,parseConnectionUpgradeContext} from './app-connection-upgrade';
 import {APP_CONNECTION_SESSION_PENDING_KEY,createAppConnectionSessionFlow,completeAppConnectionSession,appConnectionCallbackUsesGeneric} from './app-connection-session-flow';
-import {ExperienceCapabilityUpgradeReview} from '../components/apps/experience-capability-upgrade';
+import {ExperienceCapabilityUpgradeReview,ExperienceCapabilityUpgradeRecovery} from '../components/apps/experience-capability-upgrade';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto,configurable:true});
 const identity={installationId:randomUUID(),orgId:randomUUID(),ownerId:randomUUID(),experienceKey:'main',sessionTag:'a'.repeat(64)},expiry=new Date(Date.now()+600000).toISOString(),nonce='n'.repeat(43),account={account_ref:randomUUID(),label:'Synthetic same account'};
 const scope={org_id:identity.orgId,owner_user_id:identity.ownerId,installation_id:identity.installationId,app_version_id:randomUUID(),grant_snapshot_id:randomUUID(),package_digest:'sha256:'+'a'.repeat(64),grant_snapshot_digest:'sha256:'+'b'.repeat(64),lifecycle_epoch:2,grant_epoch:2,target_key:'sender',resource_key:'inbox',resource_binding_id:randomUUID(),runtime_registration_id:randomUUID(),operator_user_id:randomUUID(),runtime_epoch:2,profile_digest:'sha256:'+'c'.repeat(64),consent_expires_at:expiry};
@@ -106,8 +106,14 @@ test('browser resolves a consumed Begin only from exact expired closure and keep
   }},flow=createAppConnectionSessionFlow(ports);
   await flow.load();await flow.reviewUpgrade('sender');await flow.beginUpgrade('sender');
   if(kind==='consumed')for(const [key,row]of f.rows){const value=JSON.parse(row);if(value.phase==='awaiting')f.storage.setItem(key,JSON.stringify({...value,phase:'consumed'}));}
-  if(kind==='valid'){assert.equal((await flow.checkUpgrade('sender') as any).state,'not_connected');assert.equal(flow.upgradePending('sender'),false);assert.equal(f.storage.getItem(APP_CONNECTION_UPGRADE_PENDING_KEY),null);}
+  if(kind==='valid'||kind==='consumed'){assert.equal((await flow.checkUpgrade('sender') as any).state,'not_connected');assert.equal(flow.upgradePending('sender'),false);assert.equal(f.storage.getItem(APP_CONNECTION_UPGRADE_PENDING_KEY),null);}
   else{await assert.rejects(flow.checkUpgrade('sender'));assert.equal(flow.upgradePending('sender'),true);assert.ok(f.storage.getItem(APP_CONNECTION_UPGRADE_PENDING_KEY));}
   assert.equal(f.calls.filter(row=>row.path.endsWith('/upgrade/begin')).length,1);assert.equal(f.calls.filter(row=>row.path.endsWith('/upgrade/callback')).length,0);
  }
+});
+
+test('consumed account update offers explicit original-attempt recovery with no new exchange control',()=>{
+ const html=renderToStaticMarkup(<ExperienceCapabilityUpgradeRecovery consumed disabled={false} onCheck={()=>{}}/>);
+ assert.match(html,/Recover account setup/);assert.match(html,/original account update/);assert.match(html,/operator confirms setup never started/);
+ assert.doesNotMatch(html,/Allow and connect|Connect a new account|Re-establish background access/);
 });

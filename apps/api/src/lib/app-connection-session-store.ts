@@ -121,7 +121,7 @@ export class PostgresAppConnectionSessionStore {
       const closing=!!next.upgrade?.closure&&!previous.upgrade?.closure;
       if(beginning||closing){
         if(!previous.upgrade?.review||beginning&&(previous.state!=='upgrade_reviewed'||next.state!=='upgrade_starting')
-          ||closing&&(previous.state!=='upgrade_checking'||!previous.upgrade.begin_consumed||previous.callback_consumed||next.callback_consumed||previous.upgrade.receipt
+          ||closing&&(previous.state!=='upgrade_checking'||!previous.upgrade.begin_consumed||previous.callback_consumed!==next.callback_consumed||previous.upgrade.receipt
             ||next.state!=='not_connected'||Date.parse(previous.callback_expires_at)>Date.now()||Date.parse(previous.upgrade.review_expires_at)>Date.now()))return false;
         const sourcePin=previous.upgrade.source;
         const [sourceRow]=await tx.select().from(appConnectionSessions).where(where({...locator,session_id:sourcePin.session_id})).limit(1).for('update');

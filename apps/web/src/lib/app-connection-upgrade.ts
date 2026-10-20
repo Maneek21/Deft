@@ -73,7 +73,7 @@ export function createConnectionUpgradeFlow(ports:Ports){
   let verifiedClosure=false;
   if((raw as {schema_version?:string})?.schema_version==='deft.app_connection_upgrade_closed.v1'){
    const closed=AppConnectionUpgradeClosedViewSchema.parse(raw);
-   if(expected.phase==='consumed'||target.upgrade?.pending?.callback_consumed||Date.parse(closed.review_expires_at)>now()
+   if(Date.parse(closed.review_expires_at)>now()
     ||expected.source_session_id!==null&&closed.source_session_id!==expected.source_session_id
     ||expected.source_revision!==null&&closed.source_revision!==expected.source_revision||expected.account&&closed.account_ref!==expected.account.account_ref)fail();
    raw={schema_version:'deft.app_connection_session.v1',session_id:closed.session_id,scope:closed.scope,state:closed.state,account:null,expires_at:closed.expires_at};verifiedClosure=true;

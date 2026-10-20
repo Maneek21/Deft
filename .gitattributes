@@ -13,6 +13,7 @@ packages/db/upgrades/0.3.0-preview.55-app-action-batches.sql -text whitespace=cr
 packages/db/upgrades/0.3.0-preview.56-app-action-batch-policy-revision.sql text eol=lf
 # Reviewed lineage artifacts include CRLF and intentional final blank lines.
 packages/db/upgrades/manifest.ts -text whitespace=-blank-at-eof
+packages/db/upgrades/lineages/upgrade128-functions.json text eol=lf
 packages/db/upgrades/lineages/demo61/manifest-at112.ts -text whitespace=-blank-at-eof
 packages/db/upgrades/lineages/public61/manifest.ts -text whitespace=cr-at-eol
 packages/db/upgrades/lineages/public61/crlf-export/manifest.ts -text whitespace=cr-at-eol
