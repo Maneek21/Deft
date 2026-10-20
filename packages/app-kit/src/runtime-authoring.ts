@@ -67,12 +67,12 @@ export function parseRuntimeObjectInput(contract: RuntimeObjectContract, value: 
     if (definition.type === 'string' && definition.format === 'mailbox_list') validator = z.string()
       .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
         try { parseAddressList(text, { maxItems: definition.maxItems, allowEmpty: (definition.minLength ?? 0) === 0 }); }
-        catch { ctx.addIssue({ code: 'custom', message: 'Enter a valid bounded mailbox list' }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a valid bounded address list' }); }
       });
     if (definition.type === 'string' && definition.format === 'safe_html') validator = z.string()
       .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
         try { parseBasicRichtextHtml(text, { maxCharacters: definition.maxLength }); }
-        catch { ctx.addIssue({ code: 'custom', message: 'Enter a canonical bounded compose document' }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a canonical bounded rich-text document' }); }
       });
     if (definition.type === 'string' && definition.format === 'resource_record_list') validator = z.string()
       .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
@@ -85,7 +85,7 @@ export function parseRuntimeObjectInput(contract: RuntimeObjectContract, value: 
     for (const [name, definition] of Object.entries(schema.properties)) if (definition.type === 'string' && definition.format === 'safe_html'
       && typeof input[name] === 'string' && input[name] !== '') {
       try { if (parseBasicRichtextHtml(input[name] as string).plainText !== input[definition.plainTextKey!])
-        ctx.addIssue({ code: 'custom', path: [definition.plainTextKey!], message: 'Plain input must exactly match the compose document' }); }
+        ctx.addIssue({ code: 'custom', path: [definition.plainTextKey!], message: 'Plain input must exactly match the rich-text document' }); }
       catch { /* The field validator reports malformed HTML. */ }
     }
   }).parse(value) as Record<string, string | number | boolean>;
