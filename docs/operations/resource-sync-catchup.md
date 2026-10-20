@@ -17,8 +17,8 @@ pages from earlier Host versions can immediately use this path.
 The ordinary attempt queue, lease and idempotency fences remain in force. A
 concurrent scan returns the existing Run. Provider errors, uncertain results and
 capacity failures do not advance the checkpoint and cannot create a new intent
-for that cursor; existing explicit recovery rules apply. No retry loop or new
-provider call path is introduced. A complete page (`has_more: false`) returns to
+for that cursor through the catch-up path; existing recovery rules apply.
+No retry loop or new provider call path is introduced. A complete page (`has_more: false`) returns to
 the reviewed refresh interval even when its delta cursor is non-null.
 
 The alternative of enqueuing a second per-binding continuation job would duplicate
