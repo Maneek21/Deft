@@ -38,7 +38,7 @@ entry points separate generic contracts from historical author-tool compatibilit
 | Generic authoring and Host contracts | `@deft/app-kit/core` |
 | Generic Worker SDK | `@deft/app-kit/experience/core` |
 | Educational sandbox schemas, policy and vectors | `@deft/app-kit/examples/email` |
-| Educational connected templates and CLI | `deft-example-email app ...` |
+| Educational connected templates and CLI | `@deft/app-kit/examples/email/register` (Node preload) |
 
 Production address, compose/signature-body, CID and raster helpers are maintained
 in deft-email's `runtime/domain` author/runtime library. The old root and
@@ -252,17 +252,17 @@ pnpm exec deft app build
 pnpm exec deft app permissions diff
 
 # In a different empty directory, load the optional Protocol v1 fixture.
-pnpm exec deft-example-email app init --template connected
-pnpm exec deft-example-email app check
-pnpm exec deft-example-email app build
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app init --template connected
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app check
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app build
 
 # Or, in another empty directory, load the optional bounded v2 fixture.
-pnpm exec deft-example-email app init --template connected-automation
-pnpm exec deft-example-email app simulate-automation --fixture fixtures/ordinary-ready.json
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app init --template connected-automation
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app simulate-automation --fixture fixtures/ordinary-ready.json
 ```
 
 The default CLI supports `declarative`, `runtime` and `installed` scaffolding.
-The explicit example CLI additionally registers `connected` and
+The optional preload additionally registers `connected` and
 `connected-automation`. Historical developer-host checks and local installation
 still require that Host to advertise and admit the selected protocol.
 `check` validates and builds in memory without writing generated artifacts.

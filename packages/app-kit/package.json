@@ -35,11 +35,18 @@
     "./examples/email": {
       "types": "./dist/examples/email/index.d.ts",
       "import": "./dist/examples/email/index.js"
+    },
+    "./examples/email/register": {
+      "types": "./dist/examples/email/register.d.ts",
+      "import": "./dist/examples/email/register.js"
+    },
+    "./examples/email/cli": {
+      "types": "./dist/examples/email/cli.d.ts",
+      "import": "./dist/examples/email/cli.js"
     }
   },
   "bin": {
-    "deft": "./dist/cli.js",
-    "deft-example-email": "./dist/examples/email/cli.js"
+    "deft": "./dist/cli.js"
   },
   "files": [
     "dist",
@@ -60,6 +67,7 @@
   },
   "sideEffects": [
     "./dist/examples/email/sandbox.js",
-    "./dist/examples/email/templates.js"
+    "./dist/examples/email/templates.js",
+    "./dist/examples/email/register.js"
   ]
 }

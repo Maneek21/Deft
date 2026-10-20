@@ -42,7 +42,8 @@ its key, and this does not change installed Runtime v3–v7 contracts.
 The generic core validates v1/v2 bindings through a registered trusted descriptor,
 without recipient/subject/body branches. The sandbox schema, policy, templates,
 binding specialization and vectors live together in the optional example. Its
-CLI is `deft-example-email`; default `deft` and its conformance output carry no
+tooling preload is `@deft/app-kit/examples/email/register`; default `deft` and
+its conformance output carry no
 sandbox-specific data. Existing source fixture examples use that explicit CLI.
 
 ## Inventory and evidence

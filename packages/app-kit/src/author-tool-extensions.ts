@@ -6,6 +6,6 @@ export function registerAuthorToolTemplate(name: string, initialize: (cwd: strin
 }
 export async function initializeAuthorToolTemplate(name: string, cwd: string): Promise<void> {
   const initialize = templates.get(name);
-  if (!initialize) throw Error('This template requires its optional example CLI');
+  if (!initialize) throw Error('This template requires its optional author-tool extension');
   await initialize(cwd);
 }

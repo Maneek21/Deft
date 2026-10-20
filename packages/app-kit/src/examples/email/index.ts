@@ -2,6 +2,7 @@ export * from './sandbox.js';
 export * from './safe-compose-html.js';
 export * from './mailbox-list.js';
 export * from './native-compose-raster.js';
+export {initializeConnected} from './templates.js';
 import {checkDeftAppDeveloperContract as checkCore} from '../../core.js';
 import {SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS as vectors,SandboxEmailSendInputSchema,SandboxEmailSendOutputSchema} from './sandbox.js';
 /** @deprecated Use checkDeftAppDeveloperContract from @deft/app-kit/core; use explicit example conformance data when needed. */
