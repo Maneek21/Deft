@@ -24,9 +24,9 @@ export function ExperienceCapabilityUpgradeReview({review,now,disabled,onAllow,o
  </section>;
 }
 type Flow=ReturnType<typeof createAppConnectionSessionFlow>;
-export function ExperienceCapabilityUpgradeSettings({target,client,disabled,onBusy,onContext,onNavigate,onUse,onConnect,onStatus,onDisconnect,ownerId,orgId,appOwnedRecords}:{
+export function ExperienceCapabilityUpgradeSettings({target,client,disabled,onBusy,onContext,onNavigate,onUse,onConnect,onStatus,onDisconnect,ownerId,orgId,appOwnedRecords,backgroundRefreshDescription}:{
  target:AppConnectionTarget;client:Flow;disabled:boolean;onBusy:(busy:boolean)=>void;onContext:(value:AppConnectionContext)=>void;
- onNavigate:(url:string)=>void;onUse?:()=>void;onConnect:()=>void;onStatus:()=>void;onDisconnect:()=>void;ownerId:string;orgId:string;appOwnedRecords?:boolean;
+ onNavigate:(url:string)=>void;onUse?:()=>void;onConnect:()=>void;onStatus:()=>void;onDisconnect:()=>void;ownerId:string;orgId:string;appOwnedRecords?:boolean;backgroundRefreshDescription?:string;
 }){
  const [review,setReview]=useState<ConnectionUpgradeReview|null>(null),[pending,setPending]=useState(false),[closed,setClosed]=useState(false),[working,setWorking]=useState<'review'|'begin'|'status'|null>(null),[notice,setNotice]=useState(''),[clock,setClock]=useState(Date.now());
  const alive=useRef(false),busy=useRef(false),token=useRef(api.getAccessToken()),visibility=useRef(0);
@@ -76,6 +76,6 @@ export function ExperienceCapabilityUpgradeSettings({target,client,disabled,onBu
   {!pending&&target.session&&<button type="button" className="deft-pill min-h-11 !bg-transparent" disabled={!!working||disabled||!target.runtime_ready} onClick={onStatus}>Check connection status</button>}
   {!pending&&state==='connected'&&onUse&&<button type="button" className="deft-pill min-h-11" disabled={!!working||disabled} onClick={onUse}>Use account</button>}
   {!pending&&(state==='connected'||state==='not_connected')&&<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Manage connection</summary><button type="button" className="deft-pill min-h-11 !bg-transparent text-[var(--error)]" disabled={!!working||disabled} onClick={onDisconnect}>Disconnect account</button></details>}
-  {appOwnedRecords&&!pending&&state==='connected'&&<ExperienceBackgroundRefresh target={target} ownerId={ownerId} orgId={orgId} disabled={!!working||disabled} onBusy={onBusy}/>}
+  {appOwnedRecords&&!pending&&state==='connected'&&<ExperienceBackgroundRefresh description={backgroundRefreshDescription} target={target} ownerId={ownerId} orgId={orgId} disabled={!!working||disabled} onBusy={onBusy}/>}
  </div>;
 }

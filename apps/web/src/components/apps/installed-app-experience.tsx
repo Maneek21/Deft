@@ -1241,6 +1241,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         connectAccount={<>
           {!!session.bundle.state_keys?.length && !recoveryReady && <p role="status" className="mb-3 text-sm" style={{ color: 'var(--text-secondary)' }}>Finish the saved-data review before reconnecting this account.</p>}
           <ExperienceConnectionSettings
+            backgroundRefreshDescription={session.bundle.background_refresh_description}
             key={session.pin.session_id} onAccountLabels={receiveAccountLabels} appOwnedRecords={!!session.bundle.record_store_keys?.length} sessionId={exposure&&!error&&!connectionUnavailable&&!suspended?session.pin.session_id:undefined} installationId={installationId} experienceKey={experienceKey}
             targetKey={session.resource_target_key ?? resourceTarget}
             onReadingPreferencesChanged={()=>readingPreferencesChanged.current?.()}

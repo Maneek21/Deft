@@ -1,4 +1,4 @@
-import {DeftExperienceBundleSchema} from '../../../../packages/app-kit/src/experience';
+import {DeftExperienceBundleSchema,DeftExperienceBackgroundRefreshDescriptionSchema} from '../../../../packages/app-kit/src/experience';
 import {normalizeAppResourceContent,type AppResourceContentPolicy} from './apps';
 import type { ExperiencePin } from './app-experience-bridge';
 import { parseComposerDraftPolicy, type ComposerFilesPolicy } from './app-experience-compose-files';
@@ -19,7 +19,7 @@ export type InstalledExperienceSession = Readonly<{
   app_name?: string;
   experience: Readonly<{ key: string; label: string; artifact_digest: string;
     bridge_version: 'deft.experience_bridge.v1' }> & DeftExperienceRendererProfile;
-  bundle: Readonly<{ schema_version: 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3' | 'deft.experience_bundle.v4'; record_intakes?: readonly import('../../../../packages/app-kit/src/record-intake').DeftExperienceRecordIntake[];state_keys?: readonly string[];record_store_keys?:readonly string[]; search_resource_keys?: readonly string[]; worker_source: string;
+  bundle: Readonly<{ background_refresh_description?: string; schema_version: 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3' | 'deft.experience_bundle.v4'; record_intakes?: readonly import('../../../../packages/app-kit/src/record-intake').DeftExperienceRecordIntake[];state_keys?: readonly string[];record_store_keys?:readonly string[]; search_resource_keys?: readonly string[]; worker_source: string;
     entry_view: string; resource_keys: readonly string[]; action_keys: readonly string[] }>;
   expires_at: string;
 }>;
@@ -176,6 +176,7 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
     || new TextEncoder().encode(bundle.worker_source).byteLength > 96 * 1024) {
     throw new Error('Unsupported Experience bundle.');
   }
+  const backgroundRefreshDescription = DeftExperienceBackgroundRefreshDescriptionSchema.optional().parse(bundle.background_refresh_description);
   const resourceKeys = keys(bundle.resource_keys);
   const searchKeys = bundle.schema_version === 'deft.experience_bundle.v2' || (bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && bundle.search_resource_keys !== undefined ? keys(bundle.search_resource_keys) : undefined;
   const stateKeys = (bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') ? keys(bundle.state_keys) : undefined;
@@ -186,7 +187,7 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
   const intakeBundle=bundle.schema_version==='deft.experience_bundle.v4'?DeftExperienceBundleSchema.parse(bundle):undefined;
   const intakes=intakeBundle?.schema_version==='deft.experience_bundle.v4'?intakeBundle.record_intakes:undefined;
   if(intakes&&!rendererProfile.capabilities?.includes('record_intake.mailto.v1'))throw Error('Unsupported intake capability');
-  const allowed = ['schema_version', 'worker_source', 'entry_view', 'resource_keys', 'action_keys',
+  const allowed = ['schema_version', 'worker_source', 'entry_view', 'resource_keys', 'action_keys', 'background_refresh_description',
     ...(searchKeys ? ['search_resource_keys'] : []), ...(stateKeys ? ['state_keys'] : []),...(storeKeys?['record_store_keys']:[]),...(intakes?['record_intakes']:[])];
   if (Object.keys(bundle).some(key => !allowed.includes(key)) || searchKeys && (!searchKeys.length
     || new Set(searchKeys).size !== searchKeys.length || searchKeys.some((key, index) => !resourceKeys.includes(key)
@@ -209,6 +210,7 @@ export function normalizeInstalledExperienceSession(value: unknown): InstalledEx
       bridge_version: 'deft.experience_bridge.v1', ...rendererProfile },
     bundle: { schema_version: bundle.schema_version as 'deft.experience_bundle.v1' | 'deft.experience_bundle.v2' | 'deft.experience_bundle.v3' | 'deft.experience_bundle.v4',
       ...(searchKeys ? { search_resource_keys: searchKeys } : {}), ...(stateKeys ? { state_keys: stateKeys } : {}),...(storeKeys?{record_store_keys:storeKeys}:{}),...(intakes?{record_intakes:intakes}:{}),
+      ...(backgroundRefreshDescription === undefined ? {} : {background_refresh_description: backgroundRefreshDescription}),
       worker_source: bundle.worker_source, entry_view: str(bundle.entry_view),
       resource_keys: keys(bundle.resource_keys), action_keys: keys(bundle.action_keys) },
     expires_at: str(result.expires_at),

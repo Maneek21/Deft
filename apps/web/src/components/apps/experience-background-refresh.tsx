@@ -6,12 +6,12 @@ import {createResourceObservationFlow,type ObservationIdentity} from '@/lib/app-
 import type {AppConnectionTarget} from '@/lib/app-connection-session-flow';
 import {observationIntervalChoices,observationIntervalLabel} from '@/lib/app-experience-settings-display';
 import {ExperienceBackgroundRefreshReview} from './experience-background-refresh-review';
-export function ExperienceBackgroundRefresh({target,ownerId,orgId,disabled,onBusy}:{target:AppConnectionTarget;ownerId:string;orgId:string;disabled:boolean;onBusy:(busy:boolean)=>void}){
+export function ExperienceBackgroundRefresh({target,ownerId,orgId,disabled,onBusy,description}:{target:AppConnectionTarget;ownerId:string;orgId:string;disabled:boolean;onBusy:(busy:boolean)=>void;description?:string}){
  if(target.session?.state!=='connected'||!target.session.account)return null;
  const identity:ObservationIdentity={installation_id:target.scope.installation_id,owner_user_id:ownerId,org_id:orgId,target_key:target.target_key,scope:target.scope,connection_session_id:target.session.session_id,account_ref:target.session.account.account_ref};
- return <Workspace key={JSON.stringify(identity)} identity={identity} disabled={disabled} onBusy={onBusy}/>;
+ return <Workspace key={JSON.stringify(identity)} identity={identity} disabled={disabled} onBusy={onBusy} description={description}/>;
 }
-function Workspace({identity,disabled,onBusy}:{identity:ObservationIdentity;disabled:boolean;onBusy:(busy:boolean)=>void}){
+function Workspace({identity,disabled,onBusy,description}:{identity:ObservationIdentity;disabled:boolean;onBusy:(busy:boolean)=>void;description?:string}){
  const [lifetime,setLifetime]=useState<'date'|'until_revoked'>('date');
  const [version,setVersion]=useState(0),[busy,setBusy]=useState(false),[notice,setNotice]=useState('Checking background refresh…'),[clock,setClock]=useState(Date.now()),[reload,setReload]=useState(0),[interval,setInterval]=useState(900),[hours,setHours]=useState(24);
  const flow=useRef<ReturnType<typeof createResourceObservationFlow>|null>(null),generation=useRef(0),operation=useRef(false),notify=useRef(onBusy);notify.current=onBusy;
@@ -39,7 +39,8 @@ function Workspace({identity,disabled,onBusy}:{identity:ObservationIdentity;disa
  }
  const uncertain=client?.uncertain,expired=!!status&&appConsentDeadline(status.review.expires_at,status.review.consent_lifetime)<=clock;
  return <section aria-label="Background refresh" className="space-y-3 border-t pt-4 text-sm" style={{borderColor:'var(--ghost-border)'}}>
-  <h4 className="font-medium">Background refresh</h4><p>Keep mailbox metadata current while this app is closed. This requires a separate review for this account and app version. Files and attachments are not fetched in the background. Turn this on to create Tasks or Knowledge from mail: it is how the app shares messages with Deft.</p>
+  <h4 className="font-medium">Background refresh</h4><p>{description ?? "Keep this app's data current while it is closed."}</p>
+  <p>This requires a separate review for this account and app version. Files and attachments are not fetched in the background.</p>
   {notice&&<p role="status">{notice}</p>}{busy&&<p role="status">{uncertain?'Checking background refresh…':'Checking reviewed access…'}</p>}
   {client?.target?.consent===null&&!client.pending&&!notice&&<p>Off</p>}
   {status&&<p>{status.state==='active'&&!expired?'Enabled':expired?'Expired':status.state==='proposed'?'Review needed':status.state==='revoked'?'Off':'Unavailable'}{status.state==='active'&&!expired&&` · at most every ${observationIntervalLabel(status.review.interval_seconds)} ${status.review.consent_lifetime==='until_revoked'?'until revoked':`until ${new Date(status.review.expires_at!).toLocaleString()}`}`}</p>}
