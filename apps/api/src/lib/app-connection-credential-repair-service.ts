@@ -44,6 +44,13 @@ export function connectionCredentialRepairIntentClosureDigest(record:AppConnecti
   transport_digest:data.transport_digest,review_expires_at:data.review_expires_at,action_consents:record.action_consents,historical_attempts:data.historical_attempts,
   publication_continuity_digest:null,intent_fence:fence,reason:'intent_cancelled',custody_generation:generation});
 }
+/** True when a reviewed repair lapsed before Begin and has no recorded outcome.
+ * Its Runtime reservation is still held, so the record must not stay closed. */
+export function lapsedPreparedCredentialRepair(record:AppConnectionSessionRecord,now:number){
+ const data=record.credential_repair;
+ return Boolean(data?.review&&!data.closure&&!data.receipt&&!data.begin_consumed&&!record.callback_consumed&&record.runtime_session_ref===null
+  &&Date.parse(data.review_expires_at)<=now&&['repair_reviewed','repair_checking','indeterminate','not_connected'].includes(record.state));
+}
 /** OAuth adds capability only after separate current owner review. Every
  * uncertain Begin/callback is retained; status never repeats either operation. */
 export class AppConnectionCredentialRepairService{
@@ -119,7 +126,9 @@ export class AppConnectionCredentialRepairService{
     const eligibility={account:reply.account,custody_generation:reply.custody_generation,custody_digest:reply.custody_digest,fence};
     const review={...eligibility,digest:connectionCredentialRepairReviewDigest(record,eligibility)};
     if(data.review&&!isDeepStrictEqual(data.review,review))throw denied();
-    committed=await this.write(record,{state:Date.parse(data.review_expires_at)<=this.clock()?'not_connected':'repair_reviewed',credential_repair:{...data,review}});
+    // A lapsed review is still an open reservation in the Runtime. Keep it
+    // reviewed so status closes it; never record it as closed here.
+    committed=await this.write(record,{state:'repair_reviewed',credential_repair:{...data,review}});
    }else if(reply.state==='awaiting_callback'){
     if(operation!=='begin'||reply.custody_generation!==data.review!.custody_generation+1||new URL(reply.authorization_url).origin!==record.profile.authorization_origin)throw denied();
     committed=await this.write(record,{state:'awaiting_callback',runtime_session_ref:reply.runtime_session_ref});
@@ -219,6 +228,17 @@ export class AppConnectionCredentialRepairService{
    if(prior.credential_repair.reservation_closed)return this.view(prior);
    const record=await this.write(prior,{state:'repair_checking'});
    return this.invoke(caller,record,'status',{acknowledged_closure:{session_id:record.session_id,session_revision:record.revision,receipt_digest:prior.credential_repair.closure.receipt_digest}});
+  }
+  // A reviewed reconnection that lapsed before Begin reached no provider, but
+  // its Runtime reservation still blocks the account. Close it through the
+  // reviewed prepared-cancel contract, then acknowledge the closure.
+  if(lapsedPreparedCredentialRepair(prior,this.clock())){
+   try{await this.invoke(caller,await this.write(prior,{state:'repair_checking'}),'status',{close_prepared:true});}
+   catch(error){if(prior.state==='not_connected')return this.view(prior);throw error;}
+   const closed=await this.read(caller,input.session_id),closure=closed.credential_repair?.closure;
+   if(!closure||closed.credential_repair!.reservation_closed)return this.view(closed);
+   const record=await this.write(closed,{state:'repair_checking'});
+   return this.invoke(caller,record,'status',{acknowledged_closure:{session_id:record.session_id,session_revision:record.revision,receipt_digest:closure.receipt_digest}});
   }
   if(input.close_uncertain){
    if(!prior.credential_repair.begin_consumed||!prior.callback_consumed||!prior.credential_repair.review||!prior.runtime_session_ref

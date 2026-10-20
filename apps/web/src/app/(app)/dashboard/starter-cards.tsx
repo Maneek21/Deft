@@ -42,7 +42,7 @@ const CARDS: readonly CardDef[] = [
     id: 'invite',
     icon: Users,
     title: 'Invite your team',
-    body: "Generate one-time invite links from Settings → Members. Self-hosted Deft doesn't send email.",
+    body: "Generate one-time invite links from Settings → People. Self-hosted Deft doesn't send email.",
     cta: 'Invite teammates',
     href: '/settings/members',
   },

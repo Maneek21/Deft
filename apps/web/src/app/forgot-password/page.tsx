@@ -30,7 +30,7 @@ export default function ForgotPasswordPage() {
           </h1>
 
           <p className="text-[0.875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
-            Self-hosted Deft doesn't send password emails. To reset your password, ask any owner or admin in your workspace to open <strong style={{ color: 'var(--on-surface)' }}>Settings → Members</strong>, click the key icon next to your name, and share the recovery link they generate.
+            Self-hosted Deft doesn't send password emails. To reset your password, ask any owner or admin in your workspace to open <strong style={{ color: 'var(--on-surface)' }}>Settings → People</strong>, open your name, choose <strong style={{ color: 'var(--on-surface)' }}>Recovery link</strong> under Admin actions, and share the link it generates.
           </p>
 
           <p className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
