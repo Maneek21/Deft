@@ -2313,6 +2313,7 @@ export * from './record-mirror.js';
 
 export * from './app-integration-tools.js';
 export * from './app-integration-source.js';
+export * from './app-calendar-event.js';
 export * from './app-integration-destination.js';
 
 export * from './connection-session-consent-continuation.js';
