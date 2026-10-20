@@ -13,7 +13,9 @@ const kit=resolve(import.meta.dirname,'..');
 function run(args:string[],cwd:string){const r=spawnSync(process.execPath,args,{cwd,encoding:'utf8',timeout:180_000});assert.equal(r.status,0,`${r.error??''}\n${r.stdout}\n${r.stderr}`);return r.stdout;}
 test('packed alpha.40 preserves old consumer types and a non-mail build has no mailbox or sandbox code',async()=>{
  assert.ok(process.env.npm_execpath,'Run through pnpm');
- const root=await mkdtemp(join(tmpdir(),'deft-kit-transition-')),pack=join(root,'pack'),consumer=join(root,'consumer');
+ // Windows can spell the same temp directory with short and long names. Keep
+ // preload resolution and the CLI's real path in the same ESM module identity.
+ const root=await realpath(await mkdtemp(join(tmpdir(),'deft-kit-transition-'))),pack=join(root,'pack'),consumer=join(root,'consumer');
  await mkdir(pack);await mkdir(consumer);
  run([process.env.npm_execpath,'--dir',kit,'pack','--pack-destination',pack,'--json'],kit);
  const archive=join(pack,(await readdir(pack)).find(p=>p.endsWith('.tgz'))!);
