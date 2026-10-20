@@ -10,6 +10,31 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.130 candidate — publication pending
+
+Restores account-permission renewal after a successful connection upgrade retains its historical source. Schema remains128, Author Kit remains alpha.41, and Runtime protocols are unchanged.
+
+#### Fixed
+
+- Nominate the current connected carrier by excluding only receipt-proven superseded history before the two-row ambiguity bound. Fresh owner authority and pending, unknown, source, effect and Runtime fences remain enforced; historical records stay unchanged.
+- Match both nullable permission expiry and explicit lifetime mode. Rebuild a proposed scope without retaining its previous lifetime mode, so an account with until-revoked permission remains manageable.
+
+
+### 0.3.0-preview.129 candidate — publication pending
+
+Completes preview.128 account-update recovery at the Runtime authority boundary. Schema remains 128 and the Runtime protocol is unchanged. Author Kit alpha.41 packages the additive source-capture contract merged after alpha.40, retaining alpha.40 compatibility.
+
+#### Fixed
+
+- Permit an expired, begun, receipt-free account update to request the Runtime's untouched-attempt closure proof even when Host consumed the callback. Fresh owner authority, exact pins, active-effect fences and immutable callback history still apply. Regression exercises the production Runtime-authority policy rather than bypassing it.
+
+#### Changed
+
+- Prepare generic app-source capture and retained-storage adapters with normalized native Calendar sources (#391).
+- Update Zod from 4.6.5 to 4.6.7 (#361).
+- Update the MCP client to 2.3.0 for the cross-origin redirect advisory GHSA-6prh-2h8m-c8cw. Preserve the repository release-age policy and the admitted jose6.2.12 resolution.
+
+
 
 ### 0.3.0-preview.128 candidate — publication pending
 

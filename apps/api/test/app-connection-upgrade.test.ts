@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {AppConnectionUpgradeService,connectionUpgradeReceiptDigest,connectionUpgradeClosureDigest,type AppConnectionUpgradePorts} from '../src/lib/app-connection-upgrade-service.js';
 import type {AppConnectionSessionRecord} from '../src/lib/app-connection-session-service.js';
+import {appConnectionUpgradeExpiredClosureAllowed} from '../src/lib/app-connection-upgrade-authority.js';
 const digest=(c:string)=>'sha256:'+c.repeat(64);
 function fixture(){
  let now=Date.parse('2026-10-10T01:00:00Z');
@@ -145,10 +146,30 @@ test('Host-consumed callback absent from runtime can close only by exact expired
  const source=structuredClone(f.source);let calls=0;
  const service=new AppConnectionUpgradeService({...f.ports,requestRuntime:async(record,input)=>{
   assert.equal(input.operation,'status');assert.ok('close_expired'in input&&input.close_expired);calls++;
+  assert.equal(appConnectionUpgradeExpiredClosureAllowed(record,f.now()),true,'production Runtime authority admits requesting the closure proof');
   return {schema_version:input.schema_version,session_id:record.session_id,state:'expired',closure:{reason:'callback_expired',custody_generation:3,receipt_digest:connectionUpgradeClosureDigest(record)}};
  }},f.now);
  const result=await service.status(f.caller,{session_id:review.session_id});assert.equal(result.schema_version,'deft.app_connection_upgrade_closed.v1');
  assert.equal(f.records.get(review.session_id)!.callback_consumed,true);assert.deepEqual(f.records.get(f.source.session_id),source);
  assert.deepEqual(await service.status(f.caller,{session_id:review.session_id}),result);assert.equal(calls,1);
  await assert.rejects(service.callback(f.caller,{session_id:review.session_id,state:begun.callback_state,outcome:'authorized',code:'never-replayed'}));
+});
+
+test('Runtime closure authority requires begun review, both elapsed deadlines and no receipt for either consumption state',async()=>{
+ const f=fixture(),review=await f.service.review(f.caller,f.input);assert.ok('review_digest'in review);
+ await f.service.begin(f.caller,{session_id:review.session_id,review_digest:review.review_digest});
+ const prior=f.records.get(review.session_id)!;
+ assert.equal(appConnectionUpgradeExpiredClosureAllowed(prior,f.now()),false);
+ f.advance(301000);
+ for(const consumed of [false,true]){
+  const row={...prior,callback_consumed:consumed};
+  assert.equal(appConnectionUpgradeExpiredClosureAllowed(row,f.now()),true);
+  for(const changed of [
+   {...row,upgrade:{...row.upgrade!,begin_consumed:false}},
+   {...row,upgrade:{...row.upgrade!,review:null}},
+   {...row,upgrade:{...row.upgrade!,receipt:{custody_generation:3,receipt_digest:digest('a')}}},
+   {...row,upgrade:{...row.upgrade!,review_expires_at:new Date(f.now()+1).toISOString()}},
+   {...row,callback_expires_at:new Date(f.now()+1).toISOString()},
+  ])assert.equal(appConnectionUpgradeExpiredClosureAllowed(changed,f.now()),false);
+ }
 });
