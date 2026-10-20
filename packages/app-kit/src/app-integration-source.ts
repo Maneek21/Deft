@@ -22,6 +22,15 @@ export const AppIntegrationCapturePolicyInputSchema=z.strictObject({enabled:z.bo
  expected_revision:z.number().int().nonnegative()})
  .refine(value=>(value.destination.scope==='user')===(value.destination.space_id===null));
 export type AppIntegrationCapturePolicyInput=z.infer<typeof AppIntegrationCapturePolicyInputSchema>;
+/** Explicit opt-in contract: the app owns eligibility rules. Host owns consent,
+ * destination audience, history bounds, delivery authority and capture budgets.
+ * The existing policy decoder remains separate for compatibility. */
+export const AppIntegrationCapturePolicyV2InputSchema=z.strictObject({
+ schema_version:z.literal('deft.app_capture_policy.v2'),enabled:z.boolean(),
+ destination:z.strictObject({scope:z.enum(['user','space']),space_id:z.uuid().nullable()}),
+ history_days:z.number().int().min(1).max(365),expected_revision:z.number().int().nonnegative(),
+}).refine(value=>(value.destination.scope==='user')===(value.destination.space_id===null));
+export type AppIntegrationCapturePolicyV2Input=z.infer<typeof AppIntegrationCapturePolicyV2InputSchema>;
 export const AppIntegrationCaptureNominationV1Schema=z.strictObject({schema_version:z.literal('deft.app_capture_nomination.v1'),eligible:z.boolean(),
  reason:z.string().regex(/^[a-z_]{1,64}$/u).optional(),body_digest:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
  thread_key:z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),sender:z.string().max(320),received_at:z.string().max(64).nullable(),
