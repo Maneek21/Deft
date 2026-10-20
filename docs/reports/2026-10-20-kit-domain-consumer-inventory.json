@@ -14798,7 +14798,7 @@
         {
           "line": 13,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15200,7 +15200,7 @@
         {
           "line": 3,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15230,7 +15230,7 @@
         {
           "line": 15,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15242,7 +15242,7 @@
         {
           "line": 6,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15278,7 +15278,7 @@
         {
           "line": 13,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15290,7 +15290,7 @@
         {
           "line": 2,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15326,7 +15326,7 @@
         {
           "line": 14,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15368,7 +15368,7 @@
         {
           "line": 4,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15386,7 +15386,7 @@
         {
           "line": 14,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15422,13 +15422,13 @@
         {
           "line": 29,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         },
         {
           "line": 74,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -15729,18 +15729,6 @@
           "line": 3,
           "entrypoints": [
             "@deft/app-kit"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/api/src/server.ts",
-      "references": [
-        {
-          "line": 5,
-          "entrypoints": [
-            "./index.js"
           ]
         }
       ]
@@ -16460,7 +16448,7 @@
         {
           "line": 38,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         },
         {
@@ -16520,7 +16508,7 @@
         {
           "line": 5,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -16556,7 +16544,7 @@
         {
           "line": 7,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -16568,7 +16556,7 @@
         {
           "line": 14,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         },
         {
@@ -16616,7 +16604,7 @@
         {
           "line": 41,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -16826,7 +16814,7 @@
         {
           "line": 23,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/dist/index.js"
           ]
         }
       ]
@@ -16838,7 +16826,7 @@
         {
           "line": 42,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/dist/index.js"
           ]
         }
       ]
@@ -16850,7 +16838,7 @@
         {
           "line": 15,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/dist/index.js"
           ]
         }
       ]
@@ -16862,7 +16850,7 @@
         {
           "line": 5,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
@@ -16922,7 +16910,7 @@
         {
           "line": 2,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         },
         {
@@ -16970,7 +16958,7 @@
         {
           "line": 51,
           "entrypoints": [
-            "app-kit/src/index"
+            "app-kit/src/index.ts"
           ]
         }
       ]
@@ -16989,132 +16977,12 @@
     },
     {
       "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-account-routing.test.ts",
-      "references": [
-        {
-          "line": 6,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-action-confirmation.test.ts",
-      "references": [
-        {
-          "line": 3,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-bridge.test.ts",
-      "references": [
-        {
-          "line": 4,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
       "path": "apps/web/src/lib/app-experience-consent-presentation.test.mjs",
       "references": [
         {
           "line": 1,
           "entrypoints": [
-            "app-kit/dist/index"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-controls.test.ts",
-      "references": [
-        {
-          "line": 6,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-file-copy.test.tsx",
-      "references": [
-        {
-          "line": 6,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-record-changes-bridge.test.ts",
-      "references": [
-        {
-          "line": 1,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-record-fields.test.ts",
-      "references": [
-        {
-          "line": 3,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-record-writer.test.ts",
-      "references": [
-        {
-          "line": 6,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-resource-action.test.tsx",
-      "references": [
-        {
-          "line": 10,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
-          ]
-        }
-      ]
-    },
-    {
-      "repository": "Deft",
-      "path": "apps/web/src/lib/app-experience-view-optional-properties.test.ts",
-      "references": [
-        {
-          "line": 4,
-          "entrypoints": [
-            "app-kit/src/experience-sdk"
+            "app-kit/dist/index.js"
           ]
         }
       ]
@@ -17630,7 +17498,7 @@
         {
           "line": 51,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         },
         {
@@ -17648,8 +17516,7 @@
         {
           "line": 33,
           "entrypoints": [
-            "@deft/app-kit/experience",
-            "app-kit/src/experience-sdk"
+            "@deft/app-kit/experience"
           ]
         }
       ]
@@ -17673,7 +17540,7 @@
         {
           "line": 21,
           "entrypoints": [
-            "app-kit/src/experience-sdk"
+            "app-kit/src/experience-sdk.ts"
           ]
         }
       ]
@@ -18225,7 +18092,7 @@
         {
           "line": 5,
           "entrypoints": [
-            "@deft/app-kit"
+            "@deft/app-kit/experimental/resource-sync"
           ]
         }
       ]
