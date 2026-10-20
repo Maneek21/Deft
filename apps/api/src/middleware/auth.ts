@@ -1,4 +1,5 @@
 import { createMiddleware } from 'hono/factory';
+import type { MiddlewareHandler } from 'hono';
 import { verifyWebAccess } from '../lib/web-sessions.js';
 import { OrgMembershipError, type OrgRole } from '../lib/org-membership.js';
 
@@ -16,7 +17,7 @@ declare module 'hono' {
   }
 }
 
-export const authMiddleware = createMiddleware(async (c, next) => {
+export const authMiddleware: MiddlewareHandler = createMiddleware(async (c, next) => {
   // Skip auth for auth routes (they're mounted before this middleware)
   const path = c.req.path;
   if (path.startsWith('/api/auth/')) {
