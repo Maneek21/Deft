@@ -982,7 +982,8 @@ export class AppRunAttemptRunner implements AppRunAttemptScheduler {
           provider_call_attempted: true, result_status: 'retained' });
         receiptFacts = { resource_binding_id: authority.binding.id,
           checkpoint_id: intent.checkpoint_id, page_digest: applied.page_digest,
-          cursor_sequence: applied.applied_sequence };
+          cursor_sequence: applied.applied_sequence, has_more: applied.has_more,
+          coverage: applied.has_more ? 'partial' : 'complete' };
       } else {
         outcome = AppRunSafeOutcomeSchema.parse({ success: false,
           provider_call_attempted: true, result_status: 'unavailable',
