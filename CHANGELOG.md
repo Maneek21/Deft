@@ -13,7 +13,7 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ### 0.3.0-preview.128 candidate — publication pending
 
-Recovers account updates when Host accepted a callback but the Runtime never started its provider exchange. Schema advances to 128 through a tracked guard-only upgrade; no historical rows, custody, consent deadlines, or existing migration checksums are rewritten. Author Kit remains alpha.39 and the existing Runtime protocol is unchanged.
+Recovers account updates when Host accepted a callback but the Runtime never started its provider exchange. Schema advances to 128 through a tracked guard-only upgrade; no historical rows, custody, consent deadlines, or existing migration checksums are rewritten. Author Kit alpha.40 packages the additive app-source nomination contract while preserving alpha.39 compatibility; the existing Runtime protocol is unchanged.
 
 #### Fixed
 
@@ -26,6 +26,8 @@ Recovers account updates when Host accepted a callback but the Runtime never sta
 - Remove 134 unreachable files from the retired built-in Email API implementation. The standalone Email App continues through generic App platform routes; historical database data and migration artifacts are retained (#379).
 - Record the app-neutral Host and Author Kit boundary plan for native source contracts, Kit cleanup, and CI enforcement (#378).
 - Update Hono from 4.13.9 to 4.13.11 and align generic authentication/error middleware with its stricter types (#380).
+- Add the generic trusted Host custody-inventory contract (#381).
+- Add native app-source Knowledge audience, versioned capture provenance, and domain-neutral nomination v3 contracts; prior nomination versions remain supported (#383).
 
 ### 0.3.0-preview.127 candidate — publication pending
 
