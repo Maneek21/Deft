@@ -28,7 +28,7 @@ function transientStatusRead(error: unknown): boolean {
 
 /** Only the original-result GET uses this; unavailable reads say nothing about
  * execution outcome and never retry or release the original action. */
-export function appRunStatusReadFailure(c: Context, error: unknown) {
+export function appRunStatusReadFailure(c: Context, error: unknown): Response {
   if (!transientStatusRead(error)) return appHttpFailure(c, error, 'App Run', 'app-runs');
   c.header('Retry-After', '2');
   return c.json({
