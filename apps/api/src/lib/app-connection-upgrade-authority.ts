@@ -17,6 +17,14 @@ import type {ExperienceCaller} from './app-experience-service.js';
 import type {WebAuthorityGuard} from './app-resource-sync-web-authority.js';
 const denied=()=>new AppError('Account upgrade access ended','APP_ACCESS_DENIED',403);
 const enabled=()=>{if(process.env.DEFT_APPS_ENABLED!=='true'||!isAppOwnerConnectionsEnabled())throw denied();};
+// Host callback consumption prevents replay. Only the Runtime can certify that
+// provider exchange never started; status authority permits asking for that
+// proof after both deadlines, without authorizing another callback.
+export function appConnectionUpgradeExpiredClosureAllowed(record:AppConnectionSessionRecord,now:number){
+ const data=record.upgrade;
+ return !!data?.begin_consumed&&!!data.review&&!data.receipt
+  &&Date.parse(data.review_expires_at)<=now&&Date.parse(record.callback_expires_at)<=now;
+}
 export async function assertNoActiveConnectionUpgradeEffects(source:AppConnectionSessionRecord,target:AppConnectionSessionAuthority,sessionId?:string){
  enabled();await db.transaction(async tx=>{
   const [competing]=await tx.select({id:appConnectionSessions.session_id}).from(appConnectionSessions).where(and(
@@ -49,8 +57,7 @@ export async function appConnectionUpgradeRuntimeAuthority(raw:unknown,authoriza
   ||!isDeepStrictEqual(data.source,input.source)||data.transport_digest!==input.transport_digest||data.review_expires_at!==input.review_expires_at
   ||!isDeepStrictEqual(record.action_consents,input.action_consents)||input.operation!=='prepare'&&!isDeepStrictEqual(data.review,input.review)
   ||['begin','callback'].includes(input.operation)&&!data.begin_consumed||input.operation==='callback'&&!record.callback_consumed)throw denied();
- if(input.operation==='status'&&input.close_expired&&(!data.begin_consumed||record.callback_consumed||!data.review||data.receipt
-  ||Date.parse(data.review_expires_at)>Date.now()||Date.parse(record.callback_expires_at)>Date.now()))throw denied();
+ if(input.operation==='status'&&input.close_expired&&!appConnectionUpgradeExpiredClosureAllowed(record,Date.now()))throw denied();
  if(input.operation==='begin'&&createHash('sha256').update(input.callback_state).digest('hex')!==record.callback_state_hash
   ||(input.operation==='callback'||input.operation==='status')&&input.runtime_session_ref!==record.runtime_session_ref)throw denied();
  const caller={org_id:locator.org_id,user_id:locator.owner_user_id,sid:row.web_session_id,access_expires_at:row.access_expires_at.getTime()};

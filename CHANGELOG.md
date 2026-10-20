@@ -11,6 +11,22 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 ## [Unreleased]
 
 
+### 0.3.0-preview.129 candidate — publication pending
+
+Completes preview.128 account-update recovery at the Runtime authority boundary. Schema remains 128 and the Runtime protocol is unchanged. Author Kit alpha.41 packages the additive source-capture contract merged after alpha.40, retaining alpha.40 compatibility.
+
+#### Fixed
+
+- Permit an expired, begun, receipt-free account update to request the Runtime's untouched-attempt closure proof even when Host consumed the callback. Fresh owner authority, exact pins, active-effect fences and immutable callback history still apply. Regression exercises the production Runtime-authority policy rather than bypassing it.
+
+#### Changed
+
+- Prepare generic app-source capture and retained-storage adapters with normalized native Calendar sources (#391).
+- Update Zod from 4.6.5 to 4.6.7 (#361).
+- Update the MCP client to 2.3.0 for the cross-origin redirect advisory GHSA-6prh-2h8m-c8cw. Preserve the repository release-age policy and the admitted jose6.2.12 resolution.
+
+
+
 ### 0.3.0-preview.128 candidate — publication pending
 
 Recovers account updates when Host accepted a callback but the Runtime never started its provider exchange. Schema advances to 128 through a tracked guard-only upgrade; no historical rows, custody, consent deadlines, or existing migration checksums are rewritten. Author Kit alpha.40 packages the additive app-source nomination contract while preserving alpha.39 compatibility; the existing Runtime protocol is unchanged.
