@@ -7,10 +7,10 @@ import {appConnectionSessions,appConnectionConsentContinuations as journals} fro
 import {db} from './db.js';
 import {getAppConnectionSessionRegistry,connectionProfileDigest} from './app-connection-session-registry.js';
 import {retainedWebGuard,currentConsentContinuationAuthority} from './app-connection-session-authority.js';
-import {currentConnectionBindingLocators} from './app-connection-current-locators.js';
+import {currentConnectionBindingLocators,currentConsentContinuationSourceLocators} from './app-connection-current-locators.js';
 import {loadConsentContinuationBindingIdentity} from './app-attachment-sync-authority.js';
 import {assertOwnerConnectionRegistration} from './app-owner-connection-authority.js';
-import {AppConnectionSessionRecordSchema} from './app-connection-session-service.js';
+import {AppConnectionSessionRecordSchema,type AppConnectionSessionRecord} from './app-connection-session-service.js';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import {PostgresConsentContinuationStore,ConsentContinuationRecordSchema,continuationDenied,type ConsentContinuationRecord} from './app-connection-consent-continuation-store.js';
 import {assertFreshContinuation,assertContinuationClosureIdentity,continuationRequest,continuationReviewView} from './app-connection-consent-continuation-service.js';
@@ -21,6 +21,11 @@ export function appConnectionConsentContinuationRuntimePhaseAllowed(r:Pick<Conse
  if(input.operation==='prepare')return r.state==='preparing';
  if(input.operation==='activate')return r.activation_started&&['activating','indeterminate'].includes(r.state);
  return !['connected','not_connected','committing'].includes(r.state)&&(r.activation_started?input.review!==null:input.review===null);
+}
+/** A proposed lifetime replaces the old optional mode; all identity pins stay. */
+export function appConnectionConsentContinuationProposedScope(scope:AppConnectionSessionRecord['scope'],expiry:string|null,lifetime?:'until_revoked'){
+ const next={...scope,consent_expires_at:expiry};delete next.consent_lifetime;
+ return {...next,...(lifetime?{consent_lifetime:lifetime}:{})};
 }
 export async function appConnectionConsentContinuationRuntimeAuthority(raw:unknown,authorization:string|undefined){
  const input=AppConnectionConsentContinuationAuthorityRequestSchema.parse(raw),registry=await getAppConnectionSessionRegistry();registry.authenticate(input.scope,authorization);
@@ -50,9 +55,7 @@ export async function appConnectionConsentContinuationContext(caller:ExperienceC
     if(!identity||identity.binding.owner_user_id!==caller.user_id)throw continuationDenied();
     const admission=await assertOwnerConnectionRegistration(tx,identity.registration,{owner_user_id:caller.user_id,resource_key:identity.binding.resource_key,lockedReviewed:identity});
     const max_consent_expires_at=new Date(Date.now()+admission.policy.max_consent_seconds*1000).toISOString();
-    const rows=await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id,caller.org_id),eq(appConnectionSessions.owner_user_id,caller.user_id),
-      sql`${appConnectionSessions.record}->'scope'->>'resource_binding_id'=${identity.binding.id}`,sql`${appConnectionSessions.record}->>'state'='connected'`,
-      sql`${appConnectionSessions.record}->'scope'->>'consent_expires_at'=${(identity.binding.consent_expires_at?.toISOString()??null)}`)).orderBy(desc(appConnectionSessions.created_at)).limit(2);
+    const rows=await currentConsentContinuationSourceLocators(tx,caller,identity.binding).orderBy(desc(appConnectionSessions.created_at)).limit(2);
     if(rows.length!==1)throw continuationDenied();const old=AppConnectionSessionRecordSchema.parse(rows[0]!.record);
     if(!old.account||!old.runtime_session_ref||!old.action_consents||old.revision<1)throw continuationDenied();
     const [pendingRow]=await tx.select().from(journals).where(and(eq(journals.org_id,caller.org_id),eq(journals.owner_user_id,caller.user_id),eq(journals.source_session_id,old.session_id),sql`${journals.record}->>'state' NOT IN ('connected','not_connected')`)).limit(1);
@@ -68,7 +71,7 @@ export async function appConnectionConsentContinuationContext(caller:ExperienceC
     const proposal=pending?pending.scope.consent_expires_at:max_consent_expires_at;
     const proposalLifetime=pending?.scope.consent_lifetime;
     const current=await currentConsentContinuationAuthority(caller,{installation_id,target_key},guard,proposal===null?null:new Date(proposal),tx,proposalLifetime);
-    if(!isDeepStrictEqual({...old.scope,consent_expires_at:proposal,...(proposalLifetime?{consent_lifetime:proposalLifetime}:{})},current.scope)||!isDeepStrictEqual(old.profile,current.profile))throw continuationDenied();
+    if(!isDeepStrictEqual(appConnectionConsentContinuationProposedScope(old.scope,proposal,proposalLifetime),current.scope)||!isDeepStrictEqual(old.profile,current.profile))throw continuationDenied();
     return {target_key,source:{session_id:old.session_id,session_revision:old.revision,scope:old.scope,runtime_session_ref:old.runtime_session_ref,account_ref:old.account.account_ref,action_consents:old.action_consents},
       account:old.account,max_consent_expires_at,...(admission.policy.allow_until_revoked?{allow_until_revoked:true}:{}),runtime_ready:current.runtime_ready,pending:pending?{session_id:pending.session_id,state:pending.state,activation_started:pending.activation_started,
        consent_expires_at:pending.scope.consent_expires_at,...(pending.scope.consent_lifetime?{consent_lifetime:pending.scope.consent_lifetime}:{}),review:pending.review?continuationReviewView(pending):null}:null};
