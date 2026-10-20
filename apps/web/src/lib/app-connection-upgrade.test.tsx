@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';import test from 'node:test';import {randomUUID,webcrypto} from 'node:crypto';import {renderToStaticMarkup} from 'react-dom/server';import {readFileSync} from 'node:fs';
 import {APP_CONNECTION_UPGRADE_PENDING_KEY,completeConnectionUpgrade,parseConnectionUpgradeContext} from './app-connection-upgrade';
 import {APP_CONNECTION_SESSION_PENDING_KEY,createAppConnectionSessionFlow,completeAppConnectionSession,appConnectionCallbackUsesGeneric} from './app-connection-session-flow';
-import {ExperienceCapabilityUpgradeReview,ExperienceCapabilityUpgradeRecovery} from '../components/apps/experience-capability-upgrade';
+import {ExperienceCapabilityUpgradeReview,ExperienceCapabilityUpgradeRecovery,ExperienceCapabilityUpgradeSettings} from '../components/apps/experience-capability-upgrade';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto,configurable:true});
 const identity={installationId:randomUUID(),orgId:randomUUID(),ownerId:randomUUID(),experienceKey:'main',sessionTag:'a'.repeat(64)},expiry=new Date(Date.now()+600000).toISOString(),nonce='n'.repeat(43),account={account_ref:randomUUID(),label:'Synthetic same account'};
 const scope={org_id:identity.orgId,owner_user_id:identity.ownerId,installation_id:identity.installationId,app_version_id:randomUUID(),grant_snapshot_id:randomUUID(),package_digest:'sha256:'+'a'.repeat(64),grant_snapshot_digest:'sha256:'+'b'.repeat(64),lifecycle_epoch:2,grant_epoch:2,target_key:'sender',resource_key:'inbox',resource_binding_id:randomUUID(),runtime_registration_id:randomUUID(),operator_user_id:randomUUID(),runtime_epoch:2,profile_digest:'sha256:'+'c'.repeat(64),consent_expires_at:expiry};
@@ -116,4 +116,14 @@ test('consumed account update offers explicit original-attempt recovery with no 
  const html=renderToStaticMarkup(<ExperienceCapabilityUpgradeRecovery consumed disabled={false} onCheck={()=>{}}/>);
  assert.match(html,/Recover account setup/);assert.match(html,/original account update/);assert.match(html,/operator confirms setup never started/);
  assert.doesNotMatch(html,/Allow and connect|Connect a new account|Re-establish background access/);
+});
+
+test('connected upgrade surface offers background installer, while uncertain account does not',async()=>{
+ const f=fixture();await f.flow.load();await f.flow.reviewUpgrade('sender');await f.flow.beginUpgrade('sender');
+ await completeConnectionUpgrade({...f.ports,search:'?state='+nonce+'&code=synthetic-once'});const target=(await f.flow.load()).targets[0]!;
+ const props={target,client:f.flow,disabled:false,onBusy:()=>{},onContext:()=>{},onNavigate:()=>{},onConnect:()=>{},onStatus:()=>{},onDisconnect:()=>{},ownerId:identity.ownerId,orgId:identity.orgId,appOwnedRecords:true};
+ const connected=renderToStaticMarkup(<ExperienceCapabilityUpgradeSettings {...props}/>);
+ assert.match(connected,/Re-establish background access/);assert.match(connected,/Background actions and refresh/);
+ const uncertain={...target,session:{...target.session!,state:'indeterminate' as const,account:null}};
+ assert.doesNotMatch(renderToStaticMarkup(<ExperienceCapabilityUpgradeSettings {...props} target={uncertain}/>),/Re-establish background access/);
 });

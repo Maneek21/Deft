@@ -11,13 +11,14 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 ## [Unreleased]
 
 
-### 0.3.0-preview.128 candidate — publication pending
+### 0.3.0-preview.128 candidate â€” publication pending
 
 Recovers account updates when Host accepted a callback but the Runtime never started its provider exchange. Schema advances to 128 through a tracked guard-only upgrade; no historical rows, custody, consent deadlines, or existing migration checksums are rewritten. Author Kit remains alpha.39 and the existing Runtime protocol is unchanged.
 
 #### Fixed
 
 - Recheck current authority and reserve the bounded Runtime request window before consuming an account-update Begin or callback. Expired delivery uncertainty can close through the original status request only with the Runtime's exact untouched-attempt closure proof. Consumed callback history stays immutable, active effects and unknown provider exchanges remain fenced, and the product offers **Recover account setup** before a fresh review (#388).
+- Keep **Re-establish background access** available on the connected capability-upgrade settings surface, using the existing generic Runtime installer and app-neutral wording (#388).
 - Admit schema128's two pinned function replacements only when the entire prior reviewed catalog and ledger remain exact. Fresh installs and supported upgrades use the same forward migration; repeated upgrades are a no-op (#388).
 
 #### Changed

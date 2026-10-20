@@ -6,6 +6,7 @@ import type {AppConnectionContext,AppConnectionTarget,createAppConnectionSession
 import type {ConnectionUpgradeReview} from '@/lib/app-connection-upgrade';
 import {ExperienceConnectionStatus} from './experience-connection-status';
 import {ExperienceBackgroundRefresh} from './experience-background-refresh';
+import {ExperienceBackgroundAccess} from './experience-background-access';
 import {ExperienceCredentialRepair} from './experience-credential-repair';
 export function ExperienceCapabilityUpgradeReview({review,now,disabled,onAllow,onCheck,onClose}:{review:ConnectionUpgradeReview;now:number;disabled:boolean;onAllow:()=>void;onCheck:()=>void;onClose:()=>void}){
  const expired=Date.parse(review.expires_at)<=now;
@@ -83,5 +84,6 @@ export function ExperienceCapabilityUpgradeSettings({target,client,disabled,onBu
   {!pending&&state==='connected'&&onUse&&<button type="button" className="deft-pill min-h-11" disabled={!!working||disabled} onClick={onUse}>Use account</button>}
   {!pending&&(state==='connected'||state==='not_connected')&&<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Manage connection</summary><button type="button" className="deft-pill min-h-11 !bg-transparent text-[var(--error)]" disabled={!!working||disabled} onClick={onDisconnect}>Disconnect account</button></details>}
   {appOwnedRecords&&!pending&&state==='connected'&&<ExperienceBackgroundRefresh description={backgroundRefreshDescription} target={target} ownerId={ownerId} orgId={orgId} disabled={!!working||disabled} onBusy={onBusy}/>}
+  {appOwnedRecords&&!pending&&state==='connected'&&<ExperienceBackgroundAccess target={target} disabled={!!working||disabled} onBusy={onBusy}/>}
  </div>;
 }
