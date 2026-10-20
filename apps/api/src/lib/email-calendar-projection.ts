@@ -3,7 +3,7 @@ import {and,eq,lte,sql} from 'drizzle-orm';
 import {events} from '@deft/db/schema';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import ical,{type VEvent} from 'node-ical';
-import {z} from 'zod';
+import {hostRetainedSourceStorage} from './host-source-storage.js';
 import type {EmailCalendarInvitation,EmailCalendarTime} from './email-calendar-invitation.js';
 const DAY=86400000,MAX_ROWS=512,MAX_OCCURRENCES=2048;
 /** The stored model is preserved even when projection is unsupported. This
@@ -25,30 +25,8 @@ const escaped=(value:string)=>value.replace(/\\/gu,'\\\\').replace(/\n/gu,'\\n')
 const dateLine=(name:string,time:EmailCalendarTime)=>time.value_type==='date'?`${name};VALUE=DATE:${time.value}`:
  time.time_zone?`${name};TZID=${time.time_zone}:${time.value}`:`${name}:${time.value}`;
 type Row=Readonly<{id:string;title:string|null;body?:string|null;url?:string|null;timestamp:Date;metadata:unknown;source?:string;event_type?:string}>;
-const TimeSchema=z.strictObject({value:z.string().regex(/^(?:[0-9]{8}|[0-9]{8}T[0-9]{6}Z?)$/u),value_type:z.enum(['date','date_time']),time_zone:z.string().regex(/^[A-Za-z0-9_+./-]{1,128}$/u).nullable(),instant:z.iso.datetime().nullable()});
-const ModelSchema=z.strictObject({schema_version:z.literal('deft.email_calendar_event.v1'),account_id:z.string().min(1).max(256),invitation_id:z.string().regex(/^[a-f0-9]{64}$/u),
- uid:z.string().min(1).max(1024).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u),organizer:z.string().email().max(320),start:TimeSchema,end:TimeSchema,rrule:z.string().regex(/^[A-Z0-9=;,+-]{1,1024}$/iu).nullable(),
- exdates:z.array(TimeSchema).max(256),recurrence_id:TimeSchema.nullable(),sequence:z.number().int().nonnegative(),dtstamp:z.iso.datetime()});
-type Model=z.infer<typeof ModelSchema>;
-const currentTime=(original:EmailCalendarTime,instant:string):EmailCalendarTime=>{
- const parsed=new Date(instant);if(!Number.isFinite(parsed.getTime()))throw Error('EMAIL_CALENDAR_MODEL_INVALID');
- if(original.value_type==='date')return {value:parsed.toISOString().slice(0,10).replaceAll('-',''),value_type:'date',time_zone:null,instant:null};
- if(!original.time_zone)return {value:parsed.toISOString().replace(/[-:]/gu,'').replace(/\.\d{3}Z$/u,'Z'),value_type:'date_time',time_zone:null,instant:parsed.toISOString()};
- const parts=new Map(new Intl.DateTimeFormat('en-US',{timeZone:original.time_zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(parsed).map(part=>[part.type,part.value]));
- return {...original,value:`${parts.get('year')}${parts.get('month')}${parts.get('day')}T${parts.get('hour')}${parts.get('minute')}${parts.get('second')}`,instant:parsed.toISOString()};
-};
-const getModel=(row:Row):Model|null=>{
- const metadata=row.metadata as Record<string,unknown>|null,value=metadata?.email_invitation as Model|undefined;
- if(!value||value.schema_version!=='deft.email_calendar_event.v1')return null;
- const model=ModelSchema.parse(value);
- // Existing Calendar remains the editable time source. Keep the imported
- // timezone/recurrence identity while projecting owner edits to start/end.
- const start=row.timestamp.toISOString(),end=typeof metadata?.end==='string'?metadata.end:null;
- const originalStart=model.start.instant??dateISO(model.start.value),originalEnd=model.end.instant??dateISO(model.end.value);
- if(Date.parse(start)!==Date.parse(originalStart))model.start=currentTime(model.start,start);
- if(end&&Date.parse(end)!==Date.parse(originalEnd))model.end=currentTime(model.end,end);
- return model;
-};
+type Model=NonNullable<ReturnType<typeof hostRetainedSourceStorage.calendar.decodeLegacyModel>>;
+const getModel=hostRetainedSourceStorage.calendar.decodeLegacyModel;
 const civil=(date:Date)=>`${date.getFullYear()}${String(date.getMonth()+1).padStart(2,'0')}${String(date.getDate()).padStart(2,'0')}`;
 const modelInstanceKey=(model:Model)=>model.recurrence_id?model.recurrence_id.value_type==='date'?'date:'+model.recurrence_id.value:'instant:'+model.recurrence_id.instant:null;
 /** Projects existing owner event rows, retaining the original editable event

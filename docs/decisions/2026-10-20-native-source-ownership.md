@@ -25,3 +25,11 @@ PostgreSQL audience checks, current-authority races, idempotency and custody ref
 tests before removing a helper. Keep legacy data and the registered storage owner
 until backfill, interrupted resume, rollback and restore are independently proven.
 No table or key retirement is authorized by this refactor.
+
+Neutral capture uses an explicitly versioned policy with app-owned eligibility
+and v3 body nominations. The schemas and evidence adapter land before activation.
+Do not enable new producers until the native audience and dual provenance readers
+have switched and their gates pass. Existing producers and saved policies keep
+their bounded decoder; they are never silently reinterpreted as the new version.
+The deployed Host 127 baseline does not accept the neutral policy version. A later
+activation change must declare the upgraded Host minimum before app rollout.

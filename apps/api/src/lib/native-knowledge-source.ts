@@ -31,16 +31,25 @@ export function appSourceKnowledgeAudienceCondition(orgId: string, userId?: stri
   if (!userId) return ordinary;
   const employee = !agentEmployeeId ? sql`true` : sql`exists (
     select 1 from agent_employees employee where employee.id = ${agentEmployeeId}
-      and employee.org_id = ${orgId} and employee.is_active = true and employee.is_deleted = false
+      and employee.org_id = ${orgId} and employee.is_active = true
+      and exists (select 1 from org_members membership where membership.org_id = employee.org_id
+        and membership.user_id = employee.user_id and membership.is_active = true)
       and ((employee.runtime_kind = 'defty_system' and employee.slug = 'defty-system' and employee.is_byoa = false)
-        or employee.user_id = ${userId}))`;
+        or (employee.user_id = ${userId} and employee.is_deleted = false)))`;
   const audience = !conversationId ? sql`true` : or(
     and(eq(wikiPages.scope, 'user'), sql`exists (
       select 1 from spaces conversation where conversation.id = ${conversationId}
         and conversation.org_id = ${orgId} and conversation.type = 'dm' and conversation.is_archived = false
         and exists (select 1 from space_members member where member.space_id = conversation.id and member.user_id = ${userId})
         and not exists (select 1 from space_members member join users person on person.id = member.user_id
-          where member.space_id = conversation.id and member.user_id <> ${userId} and person.is_agent = false))`),
+          where member.space_id = conversation.id and member.user_id <> ${userId}
+            and not (person.is_agent = true and exists (
+              select 1 from agent_employees participant join org_members membership
+                on membership.org_id = participant.org_id and membership.user_id = participant.user_id
+              where participant.user_id = person.id and participant.org_id = ${orgId}
+                and participant.is_active = true and membership.is_active = true
+                and participant.runtime_kind = 'defty_system' and participant.slug = 'defty-system'
+                and participant.is_byoa = false))))`),
     and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, conversationId)));
   return or(ordinary, and(appSourceKnowledgeDestinationCondition(userId, orgId), employee, audience));
 }
