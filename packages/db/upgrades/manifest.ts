@@ -322,6 +322,7 @@ export const upgradeManifest = {
     {version:'0.3.0-preview.118',file:'0.3.0-preview.118-app-supplemental-effects.sql',description:'Validate generic signed supplemental effect declarations with bounded scalar details and declared action ownership'},
     {version:'0.3.0-preview.119',file:'0.3.0-preview.119-app-resource-observation-continuation-receipts.sql',description:'Bind resource observations to exact connected consent-continuation receipts'},
     {version:'0.3.0-preview.120',file:'0.3.0-preview.120-app-persistent-consent.sql',description:'Explicit owner-reviewed persistent consent with finite reviews and renewable technical sessions'},
+    {version:'0.3.0-preview.128',file:'0.3.0-preview.128-app-upgrade-callback-recovery.sql',description:'Recover Runtime-proven untouched account upgrades while preserving consumed callback fences'},
   ] satisfies UpgradeMigration[],
 } as const;
 
