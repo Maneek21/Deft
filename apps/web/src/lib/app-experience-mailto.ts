@@ -22,8 +22,8 @@ export function parseExperienceMailto(raw:string):ExperienceMailtoSuggestion{
   const result:ExperienceMailtoSuggestion={to:'',cc:'',bcc:'',subject:fields.get('subject')??'',plain:(fields.get('body')??'').replace(/\r\n/g,'\n'),ignored_fields:[...ignored]};
   for(const key of ['to','cc','bcc'] as const){
    const source=key==='to'?[decode(path),fields.get(key)??''].filter(Boolean).join(','):fields.get(key)??'';
-   const parsed=parseAddressList(source,{maxItems:32,allowEmpty:true});if(parsed.some(mailbox=>mailbox.displayName))return fail();
-   const seen=new Set<string>();result[key]=formatAddressList(parsed.filter(mailbox=>{const id=mailbox.address.toLowerCase();if(seen.has(id))return false;seen.add(id);return true;}));
+   const parsed=parseAddressList(source,{maxItems:32,allowEmpty:true});if(parsed.some(entry=>entry.displayName))return fail();
+   const seen=new Set<string>();result[key]=formatAddressList(parsed.filter(entry=>{const id=entry.address.toLowerCase();if(seen.has(id))return false;seen.add(id);return true;}));
   }
   if(['to','cc','bcc'].reduce((count,key)=>count+parseAddressList(result[key as 'to'|'cc'|'bcc'],{allowEmpty:true,maxItems:32}).length,0)>32)return fail();
   if(result.subject.length>998||!result.subject.isWellFormed()||/[\r\n\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(result.subject)

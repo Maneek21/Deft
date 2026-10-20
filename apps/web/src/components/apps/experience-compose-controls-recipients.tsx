@@ -8,8 +8,8 @@ import { formatAddressList, parseAddressList, type StructuredAddress } from '../
 const control = 'w-full min-h-11 rounded-lg border border-[var(--outline-variant)] px-3 py-2 bg-transparent outline-none focus:border-[var(--primary)] disabled:opacity-60';
 const secondary = 'text-xs text-[var(--on-surface-variant)]';
 
-type MailboxEdit = { value: string; addresses: readonly StructuredAddress[]; pending: string };
-function mailboxEdit(value: string, maxItems: number): MailboxEdit {
+type AddressEdit = { value: string; addresses: readonly StructuredAddress[]; pending: string };
+function addressEdit(value: string, maxItems: number): AddressEdit {
   try { return { value, addresses: parseAddressList(value, { maxItems, allowEmpty: true }), pending: '' }; }
   catch { return { value, addresses: [], pending: value }; }
 }
@@ -21,11 +21,11 @@ export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, m
   label: string; value: string; maxItems?: number; maxLength?: number; disabled?: boolean; onChange: (value: string) => void;
 }) {
   const id = useId();
-  const [edit, setEdit] = useState(() => mailboxEdit(value, maxItems));
+  const [edit, setEdit] = useState(() => addressEdit(value, maxItems));
   const [notice, setNotice] = useState('');
   // External recovery replacement is displayed immediately; it cannot retain
   // chip state from a previous saved version or overwrite that replacement.
-  const current = edit.value === value ? edit : mailboxEdit(value, maxItems);
+  const current = edit.value === value ? edit : addressEdit(value, maxItems);
   const visibleNotice = edit.value === value ? notice : '';
   const write = (addresses: readonly StructuredAddress[], pending: string) => {
     const committed = formatAddressList(addresses);

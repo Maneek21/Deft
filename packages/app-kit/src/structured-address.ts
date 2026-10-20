@@ -1,7 +1,8 @@
-/** A bounded address list, not arbitrary RFC headers. Shared unchanged by
- * Runtime validation, native controls and provider payload construction. */
+/** Bounded named-principal syntax for trusted controls. URI admission belongs
+ * to the independent URI safety gate; provider payloads use app-owned parsers. */
+import {canonicalSafeUri} from './safe-uri.js';
 export type StructuredAddress = Readonly<{ address: string; displayName: string }>;
-export type StructuredAddressOptions = Readonly<{ maxItems?: number; allowEmpty?: boolean }>;
+export type StructuredAddressOptions = Readonly<{ maxItems?: number; allowEmpty?: boolean; scheme?: 'opaque' | 'mailto' }>;
 export class StructuredAddressError extends Error {
   readonly code: 'ADDRESS_LIST_INVALID' | 'ADDRESS_LIST_LIMIT';
   constructor(code: 'ADDRESS_LIST_INVALID' | 'ADDRESS_LIST_LIMIT') {
@@ -21,27 +22,30 @@ function wellFormed(text: string): boolean {
   }
   return true;
 }
-function normalizeAddress(address: string, displayName: string): StructuredAddress {
+function normalizeAddress(address: string, displayName: string, options: StructuredAddressOptions): StructuredAddress {
   if (controls.test(address) || controls.test(displayName) || !wellFormed(displayName)) invalid();
   address = address.trim(); displayName = displayName.trim().normalize('NFC');
-  const at = address.lastIndexOf('@');
-  if (address.length > 200 || at < 1 || at > 64 || !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+$/u.test(address)) invalid();
-  const local = address.slice(0, at), domain = address.slice(at + 1).toLowerCase();
-  if (local.startsWith('.') || local.endsWith('.') || local.includes('..') || !domain.includes('.')
-    || domain.split('.').some(label => !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label))) invalid();
+  if (!address || address.length > 200 || !wellFormed(address) || /[<>,;"\\]/u.test(address)) invalid();
+  if (options.scheme !== undefined && options.scheme !== 'opaque' && options.scheme !== 'mailto') invalid();
+  // The retained scalar field profile defaults to a mailto URI target. Opaque
+  // principals use the same label/list grammar without adopting URI semantics.
+  if (options.scheme !== 'opaque') {
+    try { address = decodeURIComponent(canonicalSafeUri('mailto:' + encodeURIComponent(address).replaceAll('%40','@')).slice(7)); }
+    catch { invalid(); }
+  }
   if (displayName.length > 128 || controls.test(displayName) || /[<>]/u.test(displayName) || !wellFormed(displayName)) invalid();
-  return { address: `${local}@${domain}`, displayName };
+  return { address, displayName };
 }
-function addressToken(token: string): StructuredAddress {
+function addressToken(token: string, options: StructuredAddressOptions): StructuredAddress {
   const value = token.trim(), bracket = value.indexOf('<');
-  if (bracket < 0) return normalizeAddress(value, '');
+  if (bracket < 0) return normalizeAddress(value, '', options);
   if (!value.endsWith('>') || value.indexOf('<', bracket + 1) >= 0 || value.indexOf('>') !== value.length - 1) invalid();
   let name = value.slice(0, bracket).trim();
   if (name.startsWith('"') || name.endsWith('"')) {
     if (!/^"(?:[^"\\]|\\["\\])*"$/u.test(name)) invalid();
     name = name.slice(1, -1).replace(/\\(["\\])/gu, '$1');
   } else if (name.includes('"')) invalid();
-  return normalizeAddress(value.slice(bracket + 1, -1), name);
+  return normalizeAddress(value.slice(bracket + 1, -1), name, options);
 }
 
 /** Does not deduplicate or change the caller's scalar. Empty optional fields
@@ -68,7 +72,7 @@ function parseProfile(value: string, options: StructuredAddressOptions, native: 
   if (token.trim()) tokens.push(token);
   if (!tokens.length) invalid();
   if (tokens.length > maxItems) limited();
-  return tokens.map(addressToken);
+  return tokens.map(token => addressToken(token, options));
 }
 export function parseAddressList(value: string, options: StructuredAddressOptions = {}): readonly StructuredAddress[] {
   return parseProfile(value, options, false);
@@ -80,11 +84,11 @@ export function parseExtendedAddressList(value: string, options: StructuredAddre
 
 /** Canonical text only after an explicit UI edit/commit. Display names are
  * safely quoted; roundtrip preserves names, recipient order and duplicates. */
-function formatProfile(addresses: readonly StructuredAddress[], native: boolean): string {
+function formatProfile(addresses: readonly StructuredAddress[], native: boolean, options: StructuredAddressOptions): string {
   if (!Array.isArray(addresses) || addresses.length > (native ? 200 : 32)) limited();
   const result = addresses.map(value => {
     if (!value || typeof value.address !== 'string' || typeof value.displayName !== 'string') invalid();
-    const address = normalizeAddress(value.address, value.displayName);
+    const address = normalizeAddress(value.address, value.displayName, options);
     const name = /[,;"\\]/u.test(address.displayName)
       ? `"${address.displayName.replace(/["\\]/gu, '\\$&')}"` : address.displayName;
     return name ? `${name} <${address.address}>` : address.address;
@@ -92,9 +96,9 @@ function formatProfile(addresses: readonly StructuredAddress[], native: boolean)
   if (native && new TextEncoder().encode(result).length > 16384) limited();
   return result;
 }
-export function formatAddressList(addresses: readonly StructuredAddress[]): string {
-  return formatProfile(addresses, false);
+export function formatAddressList(addresses: readonly StructuredAddress[], options: StructuredAddressOptions = {}): string {
+  return formatProfile(addresses, false, options);
 }
-export function formatExtendedAddressList(addresses: readonly StructuredAddress[]): string {
-  return formatProfile(addresses, true);
+export function formatExtendedAddressList(addresses: readonly StructuredAddress[], options: StructuredAddressOptions = {}): string {
+  return formatProfile(addresses, true, options);
 }

@@ -3,6 +3,21 @@ import test from 'node:test';
 import {spawnSync} from 'node:child_process';
 import {parseTrustedRichtextHtml,canonicalRichtextLink,richtextImageReference} from '../dist/experience-core.js';
 import {parseNativeSafeComposeHtml,canonicalNativeComposeLink} from '../dist/examples/email/safe-compose-html.js';
+import {parseAddressList,formatAddressList} from '../dist/core.js';
+import {parseMailboxList,formatMailboxList} from '../dist/examples/email/mailbox-list.js';
+
+test('named principals are domain neutral while retained URI fields keep rendered parity',()=>{
+ const text='West warehouse <warehouse:west/42>, Build worker <worker:build-7>';
+ assert.equal(formatAddressList(parseAddressList(text,{scheme:'opaque'}),{scheme:'opaque'}),text);
+ assert.throws(()=>parseMailboxList(text));
+ for(const text of ['a@example.test','User@EXAMPLE.test','"Ada, Team" <a?x#y%z@example.test>; second@example.test']){
+  assert.deepEqual(parseAddressList(text),parseMailboxList(text));
+  assert.equal(formatAddressList(parseAddressList(text)),formatMailboxList(parseMailboxList(text)));
+ }
+ for(const text of ['not-an-address','a..b@example.test','a@-example.test','a@example','a@example.test\r\nBcc: hidden@example.test']){
+  assert.throws(()=>parseAddressList(text));assert.throws(()=>parseMailboxList(text));
+ }
+});
 
 test('Host independently rejects active markup, malformed URLs and unscoped image references',()=>{
  const unsafe=['<script>alert(1)</script>','<p onclick="run()">x</p>','<p><a href="javascript:alert(1)">x</a></p>',

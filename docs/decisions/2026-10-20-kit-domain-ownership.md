@@ -17,6 +17,12 @@ The rich-text URI gate independently validates a single `mailto:` URI target; it
 does not call a mailbox-list parser. Existing CID/node spellings remain serialized
 compatibility data and still require exact scoped file context.
 
+Named-principal lists also support opaque values such as `warehouse:west/42`.
+The retained URI field profile delegates target admission to `safe-uri`; the list
+module has no production address/domain parser. Tests preserve the existing URI
+field's formatting and rejection behavior while proving opaque principals do not
+inherit Email semantics.
+
 Keeping all production mail code under an optional Kit subpath would reduce the
 initial copy, but retain the wrong maintenance owner. Removing the public names
 immediately would break alpha.38/39 source consumers. Instead, explicit deprecated
