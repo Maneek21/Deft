@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {and,eq} from 'drizzle-orm';
 import {appRuntimeSessions,appRuns,appRunAttempts,appSyncIntents,appSyncCheckpoints} from '@deft/db/schema';
 import {ResourceObservationAuthorityRequestSchema,ResourceObservationAuthorityResultSchema} from '../../../../packages/app-kit/src/resource-observation.js';

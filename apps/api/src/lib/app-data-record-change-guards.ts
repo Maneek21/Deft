@@ -1,7 +1,7 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {AppRecordChangeAuthoritiesSchema,AppPreparedRecordChangeSchema,canonicalAppDataJson,type AppRecordPrepareChangeInput,type AppPreparedRecordChange} from '@deft/app-kit';
+import {AppRecordChangeAuthoritiesSchema,AppPreparedRecordChangeSchema,canonicalAppDataJson,type AppRecordPrepareChangeInput,type AppPreparedRecordChange} from '@deft/app-kit/core';
 import type {CurrentAppDataAuthority} from './app-data-authority.js';
 import {AppError} from './app-errors.js';
 const denied=()=>{throw new AppError('App data access ended','APP_ACCESS_DENIED',403);};

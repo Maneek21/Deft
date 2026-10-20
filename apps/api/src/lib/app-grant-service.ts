@@ -3,7 +3,7 @@ import { appGrantSnapshots } from '@deft/db/schema';
 import {
   projectDeftAppRequestedAuthority,
   type DeftAppManifest,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import { db } from './db.js';
 
 export const APP_GRANT_SNAPSHOT_VERSION = 'deft.app_grant_snapshot.v1' as const;

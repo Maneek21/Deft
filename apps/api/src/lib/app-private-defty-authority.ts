@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { canonicalCapabilityJson } from '@deft/shared';

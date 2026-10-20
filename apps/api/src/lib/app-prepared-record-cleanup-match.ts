@@ -1,5 +1,5 @@
 import {isDeepStrictEqual} from 'node:util';
-import type {AppPreparedMirrorInput} from '@deft/app-kit';
+import type {AppPreparedMirrorInput} from '@deft/app-kit/core';
 import type {ReviewedRecordMirrorAuthority} from './app-record-mirror-authority.js';
 const object=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 /** Positive outcome alone grants nothing: the signed cleanup declaration,

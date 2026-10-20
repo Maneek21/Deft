@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {sql} from 'drizzle-orm';
-import {AppFutureRecordActionStatusSchema,type AppDataPreparedRecordAction} from '@deft/app-kit';
+import {AppFutureRecordActionStatusSchema,type AppDataPreparedRecordAction} from '@deft/app-kit/core';
 import type {AppRunTransaction} from './app-run-repository.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 import type {ReviewedFutureRecordActionTicket} from './app-future-record-action-review.js';

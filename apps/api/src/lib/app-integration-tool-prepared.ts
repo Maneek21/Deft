@@ -1,7 +1,7 @@
 import {verifiedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {isDeepStrictEqual} from 'node:util';
 import {sql} from 'drizzle-orm';
-import {AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit';
+import {AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit/core';
 import {db} from './db.js';
 import type {AppRunTransaction,AppRunSafeView} from './app-run-repository.js';
 import type {ExperienceCaller} from './app-experience-service.js';

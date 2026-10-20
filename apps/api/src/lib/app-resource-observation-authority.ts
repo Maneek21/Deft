@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {validateContinuationCarrier} from './app-connection-consent-continuation-fence.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
 import {and,eq,sql} from 'drizzle-orm';

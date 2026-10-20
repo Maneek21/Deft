@@ -1,7 +1,7 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { AttachmentStageHeaderSchema,canonicalAttachmentJson } from '@deft/app-kit';
+import { AttachmentStageHeaderSchema,canonicalAttachmentJson } from '@deft/app-kit/core';
 import { appAttachmentStages,appResourceProjections,appResourceBindings,appSyncCheckpoints } from '@deft/db/schema';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import type { AppRunTransaction } from './app-run-repository.js';

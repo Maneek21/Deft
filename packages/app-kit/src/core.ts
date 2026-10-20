@@ -1,0 +1,2134 @@
+import {privateInterfaceDescriptors,privateInterfaceProfile,parsePrivateInterfaceInput,ReviewedOperationPolicySchema,type PrivateInterfaceDescriptor} from './private-interface-registry.js';
+export {REVIEWED_AUTOMATION_POLICY,parsePrivateInterfaceInput} from './private-interface-registry.js';
+export * from './safe-rich-text.js';
+export * from './safe-raster.js';
+export * from './structured-address.js';
+export * from './prepared-effect.js';
+import { z } from 'zod';
+import { RuntimeAuthoringShape, RuntimeAuthoringSchema, RuntimeRequestedAuthoritySchema } from './runtime-authoring.js';
+import { InstalledAuthoringShape, InstalledAuthoringSchema, InstalledRequestedAuthoritySchema, PUBLIC_AVAILABILITY_SCALAR_TYPES } from './installed-authoring.js';
+import { ResourceAuthoringShape, ResourceAuthoringSchema, ResourceRequestedAuthoritySchema } from './resource-authoring.js';
+import { NativeAuthoringShape, NativeAuthoringSchema, NativeRequestedAuthoritySchema } from './native-authoring.js';
+import { AttachmentAuthoringShape, AttachmentAuthoringSchema, AttachmentRequestedAuthoritySchema } from './attachment-authoring.js';
+import { DeftExperienceArtifactSchema, verifyDeftExperienceArtifact } from './experience.js';
+export * from './installed-authoring.js';
+export * from './public-hmac.js';
+export * from './runtime-authoring.js';
+export * from './runtime-client.js';
+export * from './experience.js';
+export * from './experience-capabilities.js';
+export * from './experience-keyboard.js';
+export * from './record-mirror-controls.js';
+export * from './connection-session.js';
+export * from './connection-session-reattach.js';
+export * from './app-data.js';
+export * from './app-data-client.js';
+export * from './experience-core.js';
+export * from './resource-authoring.js';
+export * from './native-authoring.js';
+export * from './attachment-authoring.js';
+export * from './owner-connection-policy.js';
+export * from './resource-content-policy.js';
+export * from './resource-record-list.js';
+export * from './resource-sync-attachments.js';
+export * from './resource-sync-client-v3.js';
+export * from './resource-observation.js';
+import { abortOnUnknownContractKeys } from './module-contract/zod-compat.js';
+import {
+  classifyAppAutomationOccurrence,
+  resolveAppAutomationOccurrence,
+} from './automation-schedule.js';
+import {
+  DEFT_MODULE_MANIFEST_FILENAME,
+  DEFT_MODULE_MANIFEST_SCHEMA_VERSION,
+  DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2,
+  DeftModuleManifestSchema,
+  type PortableModuleSchemaIssue,
+} from './module-contract/modules.js';
+
+export {
+  appAutomationLocalDate,
+  classifyAppAutomationOccurrence,
+  listAppAutomationLogicalDates,
+  nextEligibleAppAutomationOccurrence,
+  resolveAppAutomationOccurrence,
+  type AppAutomationOccurrence,
+  type AppAutomationOccurrenceDecision,
+} from './automation-schedule.js';
+
+export const DEFT_APP_MANIFEST_FILENAME = 'deft.app.json';
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION = '0' as const;
+export const DEFT_APP_PROTOCOL_VERSION = '0' as const;
+export const DEFT_APP_PACKAGE_FORMAT = 'deft.app.package.v0' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V1 = '1' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V1 = '1' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V1 = 'deft.app.package.v1' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V2 = '2' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V2 = '2' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V2 = 'deft.app.package.v2' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V3 = '3' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V3 = '3' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V3 = 'deft.app.package.v3' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V4 = '4' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V4 = '4' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V4 = 'deft.app.package.v4' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V5 = '5' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V5 = '5' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V5 = 'deft.app.package.v5' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V6 = '6' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V6 = '6' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V6 = 'deft.app.package.v6' as const;
+export const DEFT_APP_MANIFEST_SCHEMA_VERSION_V7 = '7' as const;
+export const DEFT_APP_PROTOCOL_VERSION_V7 = '7' as const;
+export const DEFT_APP_PACKAGE_FORMAT_V7 = 'deft.app.package.v7' as const;
+export const DEFT_MODULE_ARTIFACT_MEDIA_TYPE = 'application/vnd.deft.module+json' as const;
+export const DEFT_APP_KIT_PACKAGE_NAME = '@deft/app-kit' as const;
+export const DEFT_APP_KIT_VERSION = '0.1.0-alpha.40' as const;
+export const DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA = 'deft.app_developer.compatibility.v1' as const;
+export const DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA = 'deft.app_developer.contract_check.v1' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA = 'deft.app.requested_authority.v1' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA_V2 = 'deft.app.requested_authority.v2' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_DIFF_SCHEMA = 'deft.app.requested_authority_diff.v1' as const;
+export const DEFT_APP_AUTOMATION_SIMULATION_SCHEMA = 'deft.app.automation_simulation.v1' as const;
+export const DEFT_APP_REQUESTED_AUTHORITY_REPORT_PATH = '.deft/requested-authority.json' as const;
+
+const DeftAppDeveloperProtocolV0FlowSchema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT),
+  install_mode: z.literal('stage_and_activate'),
+});
+
+const DeftAppDeveloperProtocolV1FlowSchema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V1),
+  install_mode: z.literal('stage_only'),
+});
+
+const DeftAppDeveloperProtocolV2FlowSchema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V2),
+  install_mode: z.literal('stage_only'),
+});
+
+export const DeftAppDeveloperCompatibilitySchema = z.strictObject({
+  schema: z.literal(DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA),
+  app_kit: z.strictObject({
+    package: z.literal(DEFT_APP_KIT_PACKAGE_NAME),
+    versions: z.array(z.string().min(1)).min(1),
+  }),
+  protocol_flows: z.strictObject({
+    '0': DeftAppDeveloperProtocolV0FlowSchema,
+    '1': DeftAppDeveloperProtocolV1FlowSchema,
+    '2': DeftAppDeveloperProtocolV2FlowSchema.optional(),
+    '3': z.strictObject({ package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V3), install_mode: z.literal('stage_only') }).optional(),
+    '4': z.strictObject({ package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V4), install_mode: z.literal('stage_only') }).optional(),
+  }),
+}).superRefine((value, ctx) => {
+  if (abortOnUnknownContractKeys(ctx)) return;
+  if (new Set(value.app_kit.versions).size !== value.app_kit.versions.length) {
+    ctx.addIssue({ code: 'custom', path: ['app_kit', 'versions'], message: 'App Kit versions must be unique' });
+  }
+});
+
+export type DeftAppDeveloperCompatibility = z.infer<typeof DeftAppDeveloperCompatibilitySchema>;
+export type DeftAppDeveloperProtocol = keyof DeftAppDeveloperCompatibility['protocol_flows'];
+export type DeftAppDeveloperProtocolFlow = NonNullable<
+  DeftAppDeveloperCompatibility['protocol_flows'][DeftAppDeveloperProtocol]
+>;
+export type DeftAppDeveloperInstallMode = DeftAppDeveloperProtocolFlow['install_mode'];
+
+export const DEFT_APP_DEVELOPER_COMPATIBILITY = Object.freeze({
+  schema: DEFT_APP_DEVELOPER_COMPATIBILITY_SCHEMA,
+  app_kit: Object.freeze({
+    package: DEFT_APP_KIT_PACKAGE_NAME,
+    versions: Object.freeze([DEFT_APP_KIT_VERSION, '0.1.0-alpha.39', '0.1.0-alpha.38', '0.1.0-alpha.37', '0.1.0-alpha.36', '0.1.0-alpha.35', '0.1.0-alpha.29', '0.1.0-alpha.28', '0.1.0-alpha.27', '0.1.0-alpha.26', '0.1.0-alpha.25', '0.1.0-alpha.22', '0.1.0-alpha.21', '0.1.0-alpha.20', '0.1.0-alpha.19', '0.1.0-alpha.18', '0.1.0-alpha.17', '0.1.0-alpha.16', '0.1.0-alpha.15', '0.1.0-alpha.14', '0.1.0-alpha.13', '0.1.0-alpha.12', '0.1.0-alpha.11', '0.1.0-alpha.10', '0.1.0-alpha.7', '0.1.0-alpha.6', '0.1.0-alpha.5', '0.1.0-alpha.4', '0.1.0-alpha.3', '0.1.0-alpha.2', '0.1.0-alpha.1']),
+  }),
+  protocol_flows: Object.freeze({
+    '3': Object.freeze({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, install_mode: 'stage_only' as const }),
+    '4': Object.freeze({ package_format: DEFT_APP_PACKAGE_FORMAT_V4, install_mode: 'stage_only' as const }),
+    '0': Object.freeze({
+      package_format: DEFT_APP_PACKAGE_FORMAT,
+      install_mode: 'stage_and_activate' as const,
+    }),
+    '1': Object.freeze({
+      package_format: DEFT_APP_PACKAGE_FORMAT_V1,
+      install_mode: 'stage_only' as const,
+    }),
+    '2': Object.freeze({
+      package_format: DEFT_APP_PACKAGE_FORMAT_V2,
+      install_mode: 'stage_only' as const,
+    }),
+  }),
+});
+
+export function parseDeftAppDeveloperCompatibility(value: unknown): DeftAppDeveloperCompatibility {
+  return DeftAppDeveloperCompatibilitySchema.parse(value);
+}
+
+export function resolveDeftAppDeveloperProtocolFlow(
+  value: unknown,
+  protocol: string,
+): DeftAppDeveloperProtocolFlow {
+  const compatibility = parseDeftAppDeveloperCompatibility(value);
+  if (!compatibility.app_kit.versions.includes(DEFT_APP_KIT_VERSION)) {
+    throw new Error(`Host does not support ${DEFT_APP_KIT_PACKAGE_NAME} ${DEFT_APP_KIT_VERSION}`);
+  }
+  if (
+    protocol !== DEFT_APP_PROTOCOL_VERSION
+    && protocol !== DEFT_APP_PROTOCOL_VERSION_V1
+    && protocol !== DEFT_APP_PROTOCOL_VERSION_V2
+    && protocol !== DEFT_APP_PROTOCOL_VERSION_V3
+    && protocol !== DEFT_APP_PROTOCOL_VERSION_V4
+  ) {
+    throw new Error(`Host does not support App Protocol v${protocol}`);
+  }
+  const flow = compatibility.protocol_flows[protocol];
+  if (!flow) throw new Error(`Host does not support App Protocol v${protocol}`);
+  return flow;
+}
+
+export function resolveDeftAppDeveloperInstallFlow(
+  value: unknown,
+  protocol: string,
+): DeftAppDeveloperInstallMode {
+  return resolveDeftAppDeveloperProtocolFlow(value, protocol).install_mode;
+}
+
+export const APP_LIMITS = Object.freeze({
+  manifest_bytes: 128 * 1024,
+  package_bytes: 1024 * 1024,
+  artifacts_per_app: 16,
+  artifact_bytes: 128 * 1024,
+  artifact_path_chars: 240,
+  app_id_chars: 128,
+  display_name_chars: 80,
+  description_chars: 500,
+  navigation_items: 32,
+  dependencies: 16,
+  resource_requirements: 16,
+  resource_fields_per_requirement: 32,
+  capability_requirements: 8,
+  connector_requirements: 8,
+  actions: 16,
+  automation_requests: 16,
+} as const);
+
+const APP_ID_PATTERN =
+  /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+$/;
+const KEY_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff<>]/u;
+const ARTIFACT_PATH_PATTERN = /^[a-z0-9][a-z0-9._/-]*$/;
+const SPDX_EXPRESSION_PATTERN = /^[A-Za-z0-9.+()-]+(?: [A-Za-z0-9.+()-]+)*$/;
+const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const textEncoder = new TextEncoder();
+
+function boundedPlainText(max: number, label: string) {
+  return z
+    .string()
+    .trim()
+    .min(1, `${label} is required`)
+    .max(max, `${label} must be at most ${max} characters`)
+    .refine((value) => !UNSAFE_TEXT.test(value), `${label} must be safe single-line plain text`);
+}
+
+export const AppIdSchema = z
+  .string()
+  .min(3)
+  .max(APP_LIMITS.app_id_chars)
+  .regex(APP_ID_PATTERN, 'App id must be a lowercase reverse-DNS identifier');
+
+export const AppSemverSchema = z
+  .string()
+  .max(64)
+  .regex(SEMVER_PATTERN, 'Version must be strict semantic versioning');
+
+export const AppDigestSchema = z
+  .string()
+  .regex(SHA256_PATTERN, 'Digest must be sha256:<lowercase hex>');
+
+export const AppArtifactPathSchema = z
+  .string()
+  .min(1)
+  .max(APP_LIMITS.artifact_path_chars)
+  .regex(ARTIFACT_PATH_PATTERN, 'Artifact path must use lowercase portable ASCII characters')
+  .superRefine((path, ctx) => {
+    const segments = path.split('/');
+    if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+      ctx.addIssue({ code: 'custom', message: 'Artifact path contains an unsafe segment' });
+    }
+    if (path.startsWith('/') || path.includes('\\') || /^[a-z]:/i.test(path)) {
+      ctx.addIssue({ code: 'custom', message: 'Artifact path must be relative and portable' });
+    }
+    const reserved = new Set(['.git', 'node_modules']);
+    if (
+      segments.some((segment) => reserved.has(segment)) ||
+      path === DEFT_APP_MANIFEST_FILENAME ||
+      path === 'package.json'
+    ) {
+      ctx.addIssue({ code: 'custom', message: 'Artifact path is reserved' });
+    }
+  });
+
+export const DeftAppModuleReferenceV0Schema = z.strictObject({
+  module_id: AppIdSchema,
+  version: AppSemverSchema,
+  manifest_path: AppArtifactPathSchema,
+  manifest_digest: AppDigestSchema,
+});
+
+export const DeftAppNavigationItemV0Schema = z.strictObject({
+  key: z.string().min(1).max(48).regex(KEY_PATTERN, 'Navigation key must be lowercase snake_case'),
+  label: boundedPlainText(APP_LIMITS.display_name_chars, 'Navigation label'),
+  module_id: AppIdSchema,
+  collection_key: z
+    .string()
+    .min(1)
+    .max(48)
+    .regex(KEY_PATTERN, 'Collection key must be lowercase snake_case'),
+  view_key: z.string().min(1).max(48).regex(KEY_PATTERN, 'View key must be lowercase snake_case').optional(),
+});
+
+export const DeftAppManifestV0Schema = z
+  .strictObject({
+    schema_version: z.literal(DEFT_APP_MANIFEST_SCHEMA_VERSION),
+    id: AppIdSchema,
+    version: AppSemverSchema,
+    name: boundedPlainText(APP_LIMITS.display_name_chars, 'App name'),
+    description: boundedPlainText(APP_LIMITS.description_chars, 'App description').optional(),
+    license: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(SPDX_EXPRESSION_PATTERN, 'License must be a bounded SPDX-style expression'),
+    compatibility: z.strictObject({
+      app_protocol: z.literal(DEFT_APP_PROTOCOL_VERSION),
+    }),
+    provenance: z
+      .strictObject({
+        source_repository: z.url().refine((value) => /^https?:\/\//.test(value), 'Repository must use HTTP(S)'),
+        source_commit: z.string().regex(/^[a-f0-9]{7,64}$/, 'Commit must be lowercase hexadecimal'),
+      })
+      .optional(),
+    modules: z.array(DeftAppModuleReferenceV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
+    navigation: z
+      .array(DeftAppNavigationItemV0Schema)
+      .max(APP_LIMITS.navigation_items)
+      .default([]),
+  })
+  .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
+    const identities = new Set<string>();
+    const moduleIds = new Set<string>();
+    const paths = new Set<string>();
+    for (const [index, module] of manifest.modules.entries()) {
+      const identity = `${module.module_id}@${module.version}`;
+      if (identities.has(identity)) {
+        ctx.addIssue({ code: 'custom', path: ['modules', index], message: `Duplicate module identity ${identity}` });
+      }
+      if (moduleIds.has(module.module_id)) {
+        ctx.addIssue({ code: 'custom', path: ['modules', index, 'module_id'], message: `Module id appears more than once: ${module.module_id}` });
+      }
+      if (paths.has(module.manifest_path)) {
+        ctx.addIssue({ code: 'custom', path: ['modules', index, 'manifest_path'], message: 'Duplicate artifact path' });
+      }
+      identities.add(identity);
+      moduleIds.add(module.module_id);
+      paths.add(module.manifest_path);
+    }
+    const navigationKeys = new Set<string>();
+    for (const [index, item] of manifest.navigation.entries()) {
+      if (!moduleIds.has(item.module_id)) {
+        ctx.addIssue({ code: 'custom', path: ['navigation', index, 'module_id'], message: 'Navigation references an undeclared module' });
+      }
+      if (navigationKeys.has(item.key)) {
+        ctx.addIssue({ code: 'custom', path: ['navigation', index, 'key'], message: 'Navigation key must be unique' });
+      }
+      navigationKeys.add(item.key);
+    }
+  });
+
+export const AppMachineKeyV1Schema = z
+  .string()
+  .min(1)
+  .max(48)
+  .regex(KEY_PATTERN, 'App key must be lowercase snake_case');
+
+// Only identifiers that enter host authority/binding namespaces reserve these
+// prefixes. App-scoped resource and Module field keys remain ordinary machine
+// keys so names such as `system_prompt` stay compatible.
+export const AppAuthorityKeyV1Schema = AppMachineKeyV1Schema
+  .refine(
+    (value) => !/^(deft|core|system)(_|$)/.test(value),
+    'App authority key uses a reserved host namespace',
+  );
+
+export const AppPrivateInterfaceIdentityInputSchema = z.strictObject({
+  organization_id: z.uuid().transform((value) => value.toLowerCase()),
+  app_lineage_id: z.uuid().transform((value) => value.toLowerCase()),
+  interface_key: AppAuthorityKeyV1Schema,
+  interface_version: z.string().regex(/^[1-9]\d*$/, 'Private interface version must be a positive integer'),
+});
+
+export type AppPrivateInterfaceIdentityInput = z.infer<typeof AppPrivateInterfaceIdentityInputSchema>;
+export type AppPrivateInterfaceIdentity =
+  `deft.private.v1:${string}:${string}:${string}:v${string}`;
+
+/**
+ * Builds the host-owned identity for an App-private capability. Callers must
+ * supply persisted organization and immutable App-lineage ids; package-authored
+ * App ids, repository metadata, and publisher labels are intentionally absent.
+ */
+export function canonicalAppPrivateInterfaceIdentity(
+  value: AppPrivateInterfaceIdentityInput,
+): AppPrivateInterfaceIdentity {
+  const input = AppPrivateInterfaceIdentityInputSchema.parse(value);
+  return `deft.private.v1:${input.organization_id}:${input.app_lineage_id}:${input.interface_key}:v${input.interface_version}`;
+}
+
+export const DeftAppDependencyRequirementV1Schema = z.strictObject({
+  key: AppAuthorityKeyV1Schema,
+  app_id: AppIdSchema,
+  version: AppSemverSchema,
+});
+
+export const DeftAppResourceRequirementV1Schema = z.strictObject({
+  key: AppMachineKeyV1Schema,
+  source: z.discriminatedUnion('kind', [
+    z.strictObject({
+      kind: z.literal('included_module'),
+      module_id: AppIdSchema,
+      version: AppSemverSchema,
+    }),
+    z.strictObject({
+      kind: z.literal('dependency_module'),
+      dependency_key: AppAuthorityKeyV1Schema,
+      module_id: AppIdSchema,
+      version: AppSemverSchema,
+    }),
+  ]),
+  resource_type: AppMachineKeyV1Schema,
+  fields: z.array(AppMachineKeyV1Schema).min(1).max(APP_LIMITS.resource_fields_per_requirement),
+});
+
+export const DeftAppCapabilityRequirementV1Schema = z.strictObject({
+  key: AppAuthorityKeyV1Schema,
+  interface: z.strictObject({
+    kind: z.literal('private'),
+    namespace: z.literal('app_lineage'),
+    key: AppAuthorityKeyV1Schema,
+    version: z.string().min(1).max(64),
+  }),
+});
+
+export const DeftAppConnectorRequirementV1Schema = z.strictObject({
+  key: AppAuthorityKeyV1Schema,
+  provider_kind: z.literal('mcp'),
+});
+
+export const DeftAppActionInputSourceV1Schema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('resource_field'),
+    resource_requirement_key: AppMachineKeyV1Schema,
+    field_key: AppMachineKeyV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal('selected_relation_field'),
+    source_resource_requirement_key: AppMachineKeyV1Schema,
+    relation_field_key: AppMachineKeyV1Schema,
+    target_resource_requirement_key: AppMachineKeyV1Schema,
+    target_field_key: AppMachineKeyV1Schema,
+    selection: z.literal('one'),
+  }),
+  z.strictObject({
+    kind: z.literal('user_input'),
+    input_type: z.enum(['email', 'text']),
+    label: boundedPlainText(APP_LIMITS.display_name_chars, 'Action input label'),
+    required: z.literal(true),
+  }),
+]);
+
+export const DeftAppActionBindingV1Schema = z.strictObject({
+  key: AppAuthorityKeyV1Schema,
+  label: boundedPlainText(APP_LIMITS.display_name_chars, 'Action label'),
+  capability_requirement_key: AppAuthorityKeyV1Schema,
+  connector_requirement_key: AppAuthorityKeyV1Schema,
+  placement: z.strictObject({
+    kind: z.literal('resource_detail'),
+    resource_requirement_key: AppMachineKeyV1Schema,
+  }),
+  input_bindings: z.array(z.strictObject({
+    input_key: AppAuthorityKeyV1Schema,
+    source: DeftAppActionInputSourceV1Schema,
+  })).min(1).max(32),
+});
+
+function addDuplicateIssue(
+  ctx: z.RefinementCtx,
+  seen: Set<string>,
+  value: string,
+  path: PropertyKey[],
+  label: string,
+): void {
+  if (seen.has(value)) ctx.addIssue({ code: 'custom', path, message: `${label} must be unique` });
+  seen.add(value);
+}
+
+export const DeftAppManifestV1Schema = z
+  .strictObject({
+    schema_version: z.literal(DEFT_APP_MANIFEST_SCHEMA_VERSION_V1),
+    id: AppIdSchema,
+    version: AppSemverSchema,
+    name: boundedPlainText(APP_LIMITS.display_name_chars, 'App name'),
+    description: boundedPlainText(APP_LIMITS.description_chars, 'App description').optional(),
+    license: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(SPDX_EXPRESSION_PATTERN, 'License must be a bounded SPDX-style expression'),
+    compatibility: z.strictObject({
+      app_protocol: z.literal(DEFT_APP_PROTOCOL_VERSION_V1),
+    }),
+    provenance: z
+      .strictObject({
+        source_repository: z.url().refine((value) => /^https?:\/\//.test(value), 'Repository must use HTTP(S)'),
+        source_commit: z.string().regex(/^[a-f0-9]{7,64}$/, 'Commit must be lowercase hexadecimal'),
+      })
+      .optional(),
+    modules: z.array(DeftAppModuleReferenceV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
+    navigation: z.array(DeftAppNavigationItemV0Schema).max(APP_LIMITS.navigation_items).default([]),
+    dependencies: z.array(DeftAppDependencyRequirementV1Schema).max(APP_LIMITS.dependencies),
+    resource_requirements: z
+      .array(DeftAppResourceRequirementV1Schema)
+      .min(1)
+      .max(APP_LIMITS.resource_requirements),
+    capability_requirements: z
+      .array(DeftAppCapabilityRequirementV1Schema)
+      .min(1)
+      .max(APP_LIMITS.capability_requirements),
+    connector_requirements: z
+      .array(DeftAppConnectorRequirementV1Schema)
+      .min(1)
+      .max(APP_LIMITS.connector_requirements),
+    actions: z.array(DeftAppActionBindingV1Schema).min(1).max(APP_LIMITS.actions),
+  })
+  .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
+    const moduleIdentities = new Set<string>();
+    const moduleIds = new Set<string>();
+    const modulePaths = new Set<string>();
+    const moduleById = new Map(manifest.modules.map((item) => [item.module_id, item]));
+    for (const [index, module] of manifest.modules.entries()) {
+      addDuplicateIssue(ctx, moduleIdentities, `${module.module_id}@${module.version}`, ['modules', index], 'Module identity');
+      addDuplicateIssue(ctx, moduleIds, module.module_id, ['modules', index, 'module_id'], 'Module id');
+      addDuplicateIssue(ctx, modulePaths, module.manifest_path, ['modules', index, 'manifest_path'], 'Artifact path');
+    }
+
+    const navigationKeys = new Set<string>();
+    for (const [index, item] of manifest.navigation.entries()) {
+      if (!moduleIds.has(item.module_id)) {
+        ctx.addIssue({ code: 'custom', path: ['navigation', index, 'module_id'], message: 'Navigation references an undeclared module' });
+      }
+      addDuplicateIssue(ctx, navigationKeys, item.key, ['navigation', index, 'key'], 'Navigation key');
+    }
+
+    const dependencyKeys = new Set<string>();
+    const dependencyAppIds = new Set<string>();
+    for (const [index, dependency] of manifest.dependencies.entries()) {
+      addDuplicateIssue(ctx, dependencyKeys, dependency.key, ['dependencies', index, 'key'], 'Dependency key');
+      addDuplicateIssue(ctx, dependencyAppIds, dependency.app_id, ['dependencies', index, 'app_id'], 'Dependency App id');
+      if (dependency.app_id === manifest.id) {
+        ctx.addIssue({ code: 'custom', path: ['dependencies', index, 'app_id'], message: 'An App cannot depend on itself' });
+      }
+    }
+
+    const resourceKeys = new Set<string>();
+    const resourceByKey = new Map<string, z.infer<typeof DeftAppResourceRequirementV1Schema>>();
+    for (const [index, resource] of manifest.resource_requirements.entries()) {
+      addDuplicateIssue(ctx, resourceKeys, resource.key, ['resource_requirements', index, 'key'], 'Resource requirement key');
+      resourceByKey.set(resource.key, resource);
+      const fields = new Set<string>();
+      for (const [fieldIndex, field] of resource.fields.entries()) {
+        addDuplicateIssue(ctx, fields, field, ['resource_requirements', index, 'fields', fieldIndex], 'Resource field');
+      }
+      if (resource.source.kind === 'included_module') {
+        const included = moduleById.get(resource.source.module_id);
+        if (!included || included.version !== resource.source.version) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['resource_requirements', index, 'source'],
+            message: 'Included resource source must reference one exact included Module version',
+          });
+        }
+      } else if (!dependencyKeys.has(resource.source.dependency_key)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['resource_requirements', index, 'source', 'dependency_key'],
+          message: 'Dependency resource source references an undeclared dependency',
+        });
+      }
+    }
+
+    const capabilityKeys = new Set<string>();
+    for (const [index, capability] of manifest.capability_requirements.entries()) {
+      addDuplicateIssue(ctx, capabilityKeys, capability.key, ['capability_requirements', index, 'key'], 'Capability requirement key');
+    }
+    const connectorKeys = new Set<string>();
+    for (const [index, connector] of manifest.connector_requirements.entries()) {
+      addDuplicateIssue(ctx, connectorKeys, connector.key, ['connector_requirements', index, 'key'], 'Connector requirement key');
+    }
+
+    for(const [index,requirement] of manifest.capability_requirements.entries()) {
+      if(!privateInterfaceProfile(requirement.interface)) ctx.addIssue({code:'custom',path:['capability_requirements',index,'interface'],message:'Private interface is not registered'});
+    }
+    const actionKeys = new Set<string>();
+    for (const [index, action] of manifest.actions.entries()) {
+      addDuplicateIssue(ctx, actionKeys, action.key, ['actions', index, 'key'], 'Action key');
+      if (!capabilityKeys.has(action.capability_requirement_key)) {
+        ctx.addIssue({ code: 'custom', path: ['actions', index, 'capability_requirement_key'], message: 'Action references an undeclared capability requirement' });
+      }
+      if (!connectorKeys.has(action.connector_requirement_key)) {
+        ctx.addIssue({ code: 'custom', path: ['actions', index, 'connector_requirement_key'], message: 'Action references an undeclared connector requirement' });
+      }
+      if (!resourceKeys.has(action.placement.resource_requirement_key)) {
+        ctx.addIssue({ code: 'custom', path: ['actions', index, 'placement', 'resource_requirement_key'], message: 'Action placement references an undeclared resource requirement' });
+      }
+
+      const requirement=manifest.capability_requirements.find(item=>item.key===action.capability_requirement_key);
+      const profile=requirement?privateInterfaceProfile(requirement.interface):undefined;
+      const inputKeys = new Set<string>();
+      for (const [bindingIndex, binding] of action.input_bindings.entries()) {
+        if(profile&&!profile.requiredInputs.includes(binding.input_key)) ctx.addIssue({code:'custom',path:['actions',index,'input_bindings',bindingIndex,'input_key'],message:'Input is not declared by the registered private interface'});
+        addDuplicateIssue(ctx, inputKeys, binding.input_key, ['actions', index, 'input_bindings', bindingIndex, 'input_key'], 'Action input key');
+        const source = binding.source;
+        if (source.kind === 'resource_field') {
+          const resource = resourceByKey.get(source.resource_requirement_key);
+          if (source.resource_requirement_key !== action.placement.resource_requirement_key) {
+            ctx.addIssue({ code: 'custom', path: ['actions', index, 'input_bindings', bindingIndex, 'source', 'resource_requirement_key'], message: 'Resource input must use the action placement resource' });
+          }
+          if (!resource || !resource.fields.includes(source.field_key)) {
+            ctx.addIssue({ code: 'custom', path: ['actions', index, 'input_bindings', bindingIndex, 'source'], message: 'Resource input must use a declared resource field' });
+          }
+        } else if (source.kind === 'selected_relation_field') {
+          const sourceResource = resourceByKey.get(source.source_resource_requirement_key);
+          const targetResource = resourceByKey.get(source.target_resource_requirement_key);
+          if (source.source_resource_requirement_key !== action.placement.resource_requirement_key) {
+            ctx.addIssue({ code: 'custom', path: ['actions', index, 'input_bindings', bindingIndex, 'source', 'source_resource_requirement_key'], message: 'Selected relation must start from the action placement resource' });
+          }
+          if (!sourceResource?.fields.includes(source.relation_field_key)) {
+            ctx.addIssue({ code: 'custom', path: ['actions', index, 'input_bindings', bindingIndex, 'source', 'relation_field_key'], message: 'Selected relation must use a declared source field' });
+          }
+          if (!targetResource?.fields.includes(source.target_field_key)) {
+            ctx.addIssue({ code: 'custom', path: ['actions', index, 'input_bindings', bindingIndex, 'source', 'target_field_key'], message: 'Selected relation must use a declared target field' });
+          }
+        } else {
+          const message=profile?.validateBinding(binding);
+          if(message) ctx.addIssue({code:'custom',path:['actions',index,'input_bindings',bindingIndex,'source','input_type'],message});
+        }
+      }
+      for (const requiredInput of profile?.requiredInputs ?? []) {
+        if (!inputKeys.has(requiredInput)) {
+          ctx.addIssue({ code: 'custom', path: ['actions', index, 'input_bindings'], message: `Action must bind ${requiredInput}` });
+        }
+      }
+    }
+  });
+
+export const DeftAppAutomationRequestV2Schema = z.strictObject({
+  key: AppAuthorityKeyV1Schema,
+  label: boundedPlainText(APP_LIMITS.display_name_chars, 'Automation request label'),
+  trigger: z.strictObject({
+    kind: z.literal('daily_local_time'),
+  }),
+  action_key: AppAuthorityKeyV1Schema,
+});
+
+export const DeftAppManifestV2Schema = z
+  .strictObject({
+    ...DeftAppManifestV1Schema.shape,
+    schema_version: z.literal(DEFT_APP_MANIFEST_SCHEMA_VERSION_V2),
+    compatibility: z.strictObject({
+      app_protocol: z.literal(DEFT_APP_PROTOCOL_VERSION_V2),
+    }),
+    automation_requests: z
+      .array(DeftAppAutomationRequestV2Schema)
+      .min(1)
+      .max(APP_LIMITS.automation_requests),
+  })
+  .superRefine((manifest, ctx) => {
+    if (abortOnUnknownContractKeys(ctx)) return;
+    const { automation_requests: _automationRequests, ...v1Fields } = manifest;
+    const v1Validation = DeftAppManifestV1Schema.safeParse({
+      ...v1Fields,
+      schema_version: DEFT_APP_MANIFEST_SCHEMA_VERSION_V1,
+      compatibility: { app_protocol: DEFT_APP_PROTOCOL_VERSION_V1 },
+    });
+    if (!v1Validation.success) {
+      for (const issue of v1Validation.error.issues) {
+        if (issue.code !== 'custom') {
+          throw new TypeError('Protocol v2 base validation diverged from Protocol v1');
+        }
+        ctx.addIssue({ code: 'custom', path: [...issue.path], message: issue.message });
+      }
+    }
+
+    const actionByKey = new Map(manifest.actions.map((action) => [action.key, action]));
+    const requestKeys = new Set<string>();
+    for (const [index, request] of manifest.automation_requests.entries()) {
+      addDuplicateIssue(
+        ctx,
+        requestKeys,
+        request.key,
+        ['automation_requests', index, 'key'],
+        'Automation request key',
+      );
+      const action = actionByKey.get(request.action_key);
+      if (!action) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['automation_requests', index, 'action_key'],
+          message: 'Automation request references an undeclared action',
+        });
+      } else if (action.input_bindings.some((binding) => binding.source.kind === 'user_input')) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['automation_requests', index, 'action_key'],
+          message: 'Automation request action cannot require user input',
+        });
+      }
+    }
+  });
+
+export const DEFT_APP_PROTOCOL_OPERATIONS = Object.freeze([
+  'authoring',
+  'inspect',
+  'stage',
+  'review',
+  'route',
+  'activate',
+  'invoke',
+] as const);
+
+export type DeftAppProtocolOperation = typeof DEFT_APP_PROTOCOL_OPERATIONS[number];
+type DeftAppProtocolHandlerMatrix = Readonly<Record<DeftAppProtocolOperation, string | null>>;
+
+function handlerMatrix(
+  handlers: Partial<Record<DeftAppProtocolOperation, string>>,
+): DeftAppProtocolHandlerMatrix {
+  return Object.freeze(Object.fromEntries(
+    DEFT_APP_PROTOCOL_OPERATIONS.map((operation) => [operation, handlers[operation] ?? null]),
+  ) as Record<DeftAppProtocolOperation, string | null>);
+}
+
+function protocolAtoms(
+  names: readonly string[],
+  handlers: DeftAppProtocolHandlerMatrix,
+): Readonly<Record<string, DeftAppProtocolHandlerMatrix>> {
+  return Object.freeze(Object.fromEntries(names.map((name) => [name, handlers])));
+}
+
+const V0_HANDLER_MATRIX = handlerMatrix({
+  authoring: 'app-kit:v0',
+  inspect: 'app-service:inspect-v0',
+  stage: 'app-service:stage-v0',
+  route: 'app-service:route-v0',
+  activate: 'app-service:activate-v0',
+});
+
+const V1_HANDLER_MATRIX = handlerMatrix({
+  authoring: 'app-kit:v1',
+  inspect: 'app-service:inspect-v1',
+  stage: 'app-service:stage-v1-requested-grant',
+  review: 'app-review-service:prepare-v1',
+  route: 'app-action-service:route-v1',
+  activate: 'app-review-service:activate-v1',
+  invoke: 'app-action-service:invoke-v1',
+});
+
+const V2_HANDLER_MATRIX = handlerMatrix({
+  authoring: 'app-kit:v2',
+  inspect: 'app-service:inspect-v2',
+  stage: 'app-service:stage-v2-requested-automation',
+  review: 'app-review-service:review-v2',
+  route: 'app-action-service:route-v2',
+  activate: 'app-review-service:activate-v2',
+  invoke: 'app-action-service:invoke-v2',
+});
+
+export const DEFT_APP_PROTOCOL_SUPPORT = Object.freeze({
+  '7': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions', 'sync_descriptors', 'experiences', 'public_actions', 'private_state', 'owner_connections', 'resource_content', 'record_stores', 'integration_tools']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'native.calendar_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({ authoring: 'app-kit:v7', inspect: 'app-service:inspect-v7',
+      stage: 'app-service:stage-v7', review: 'app-attachment-review:v7', activate: 'app-attachment-review:v7' })),
+    private_interfaces: Object.freeze([]),
+  }),
+  '6': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'native_actions', 'sync_descriptors', 'experiences', 'public_actions']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'native.calendar_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({
+      authoring: 'app-kit:v6', inspect: 'app-service:inspect-v6', stage: 'app-service:stage-v6',
+      review: 'app-native-review:v6', activate: 'app-native-review:v6',
+    })),
+    private_interfaces: Object.freeze([]),
+  }),
+  '5': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'sync_descriptors', 'experiences', 'public_actions']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'resources.owner_private_sync', 'experiences.installed', 'public.claim_actions'], handlerMatrix({
+      authoring: 'app-kit:v5', inspect: 'app-service:inspect-v5', stage: 'app-service:stage-v5',
+      review: 'app-runtime-review:v5', activate: 'app-runtime-review:v5',
+    })),
+    private_interfaces: Object.freeze([]),
+  }),
+  '4': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions', 'experiences', 'public_actions']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'modules.included', 'navigation.host_rendered', 'runtime.private_actions', 'experiences.installed', 'public.claim_actions'], handlerMatrix({
+      authoring: 'app-kit:v4', inspect: 'app-service:inspect-v4', stage: 'app-service:stage-v4',
+      review: 'app-runtime-review:v4', activate: 'app-runtime-review:v4',
+      route: 'app-experiences:v4', invoke: 'app-runtime-actions:v4',
+    })),
+    private_interfaces: Object.freeze([]),
+  }),
+  '3': Object.freeze({
+    manifest_keys: Object.freeze(['schema_version', 'id', 'version', 'name', 'description', 'license', 'compatibility', 'provenance', 'modules', 'navigation', 'runtime_requirements', 'private_capabilities', 'runtime_actions']),
+    atoms: protocolAtoms(['manifest.identity', 'manifest.provenance', 'runtime.private_actions'], handlerMatrix({
+      authoring: 'app-kit:v3', inspect: 'app-service:inspect-v3', stage: 'app-service:stage-v3',
+      review: 'app-runtime-review:v3', activate: 'app-runtime-review:v3',
+      route: 'app-runtime-actions:v3', invoke: 'app-runtime-actions:v3',
+    })),
+    private_interfaces: Object.freeze([]),
+  }),
+  '0': Object.freeze({
+    manifest_keys: Object.freeze([
+      'schema_version', 'id', 'version', 'name', 'description', 'license',
+      'compatibility', 'provenance', 'modules', 'navigation',
+    ]),
+    atoms: protocolAtoms([
+      'manifest.identity',
+      'manifest.provenance',
+      'modules.included',
+      'navigation.host_rendered',
+      'package.module_artifacts',
+    ], V0_HANDLER_MATRIX),
+    private_interfaces: Object.freeze([]),
+  }),
+  '1': Object.freeze({
+    manifest_keys: Object.freeze([
+      'schema_version', 'id', 'version', 'name', 'description', 'license',
+      'compatibility', 'provenance', 'modules', 'navigation', 'dependencies',
+      'resource_requirements', 'capability_requirements',
+      'connector_requirements', 'actions',
+    ]),
+    atoms: protocolAtoms([
+      'manifest.identity',
+      'manifest.provenance',
+      'modules.included',
+      'navigation.host_rendered',
+      'dependencies.exact_app',
+      'resources.included_module',
+      'resources.dependency_module',
+      'capabilities.private_app_lineage',
+      'connectors.existing_mcp',
+      'actions.resource_detail',
+      'action_inputs.resource_field',
+      'action_inputs.selected_relation_field',
+      'action_inputs.user_input',
+      'package.module_artifacts',
+    ], V1_HANDLER_MATRIX),
+    get private_interfaces() {return privateInterfaceDescriptors();},
+  }),
+  '2': Object.freeze({
+    manifest_keys: Object.freeze([
+      'schema_version', 'id', 'version', 'name', 'description', 'license',
+      'compatibility', 'provenance', 'modules', 'navigation', 'dependencies',
+      'resource_requirements', 'capability_requirements',
+      'connector_requirements', 'actions', 'automation_requests',
+    ]),
+    atoms: protocolAtoms([
+      'manifest.identity',
+      'manifest.provenance',
+      'modules.included',
+      'navigation.host_rendered',
+      'dependencies.exact_app',
+      'resources.included_module',
+      'resources.dependency_module',
+      'capabilities.private_app_lineage',
+      'connectors.existing_mcp',
+      'actions.resource_detail',
+      'action_inputs.resource_field',
+      'action_inputs.selected_relation_field',
+      'action_inputs.user_input',
+      'automation_requests.daily_local_time',
+      'package.module_artifacts',
+    ], V2_HANDLER_MATRIX),
+    get private_interfaces() {return privateInterfaceDescriptors();},
+  }),
+} as const);
+
+export type DeftAppPrivateInterfaceDescriptorV1 = PrivateInterfaceDescriptor;
+export type DeftAppPrivateInterfaceDescriptorV2 = PrivateInterfaceDescriptor;
+
+export function isDeftAppProtocolOperationSupported(
+  protocol: string,
+  operation: DeftAppProtocolOperation,
+): boolean {
+  const support = DEFT_APP_PROTOCOL_SUPPORT[protocol as keyof typeof DEFT_APP_PROTOCOL_SUPPORT];
+  return support !== undefined
+    && Object.values(support.atoms).every((handlers) => handlers[operation] !== null);
+}
+
+export const DeftAppPackageArtifactV0Schema = z.strictObject({
+  path: AppArtifactPathSchema,
+  media_type: z.literal(DEFT_MODULE_ARTIFACT_MEDIA_TYPE),
+  content: z.string().max(APP_LIMITS.artifact_bytes),
+  byte_length: z.number().int().nonnegative().max(APP_LIMITS.artifact_bytes),
+  digest: AppDigestSchema,
+});
+
+export const DeftAppPackageV0Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT),
+  manifest: DeftAppManifestV0Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(DeftAppPackageArtifactV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
+});
+
+export const DeftAppPackageV1Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V1),
+  manifest: DeftAppManifestV1Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(DeftAppPackageArtifactV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
+});
+
+export const DeftAppPackageV2Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V2),
+  manifest: DeftAppManifestV2Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(DeftAppPackageArtifactV0Schema).min(1).max(APP_LIMITS.artifacts_per_app),
+});
+
+/** Runtime-only candidate. Other surfaces require their own validated contract. */
+export const DeftAppManifestV3Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('3'),
+  compatibility: z.strictObject({ app_protocol: z.literal('3') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(0),
+  navigation: z.array(DeftAppNavigationItemV0Schema).max(0).default([]),
+  ...RuntimeAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const result = RuntimeAuthoringSchema.safeParse({ runtime_requirements: manifest.runtime_requirements,
+    private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions });
+  if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+});
+export const DeftAppPackageV3Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V3), manifest: DeftAppManifestV3Schema,
+  manifest_digest: AppDigestSchema, artifacts: z.array(DeftAppPackageArtifactV0Schema).max(0),
+});
+export type DeftAppManifestV3 = z.infer<typeof DeftAppManifestV3Schema>;
+export type DeftAppManifestV3Input = z.input<typeof DeftAppManifestV3Schema>;
+export type DeftAppPackageV3 = z.infer<typeof DeftAppPackageV3Schema>;
+
+export const DeftAppManifestV4Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('4'), compatibility: z.strictObject({ app_protocol: z.literal('4') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(APP_LIMITS.artifacts_per_app - 1),
+  ...InstalledAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const installed = InstalledAuthoringSchema.safeParse({ runtime_requirements: manifest.runtime_requirements,
+    private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions,
+    experiences: manifest.experiences, public_actions: manifest.public_actions });
+  if (!installed.success) for (const issue of installed.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  if (manifest.modules.length) {
+    const declarative = DeftAppManifestV0Schema.safeParse({ ...Object.fromEntries(
+      Object.keys(DeftAppManifestV0Schema.shape).map((key) => [key, manifest[key as keyof typeof manifest]])),
+      schema_version: '0', compatibility: { app_protocol: '0' } });
+    if (!declarative.success) for (const issue of declarative.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  } else if (manifest.navigation.length) ctx.addIssue({ code: 'custom', path: ['navigation'], message: 'Navigation requires included Modules' });
+  for (const [index, item] of manifest.public_actions.entries()) {
+    if (!manifest.modules.some((module) => module.module_id === item.module_id)) ctx.addIssue({ code: 'custom',
+      path: ['public_actions', index, 'module_id'], message: 'Public claims require an included Module' });
+  }
+  if (manifest.experiences.some((item) => manifest.modules.some((module) => module.manifest_path === item.artifact_path))) {
+    ctx.addIssue({ code: 'custom', path: ['experiences'], message: 'Artifact paths must be unique across surfaces' });
+  }
+});
+export const DeftAppPackageV4Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V4), manifest: DeftAppManifestV4Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.union([DeftAppPackageArtifactV0Schema, DeftExperienceArtifactSchema])).max(APP_LIMITS.artifacts_per_app),
+});
+export type DeftAppManifestV4 = z.infer<typeof DeftAppManifestV4Schema>;
+export type DeftAppManifestV4Input = z.input<typeof DeftAppManifestV4Schema>;
+export type DeftAppPackageV4 = z.infer<typeof DeftAppPackageV4Schema>;
+export const DeftAppManifestV5Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('5'), compatibility: z.strictObject({ app_protocol: z.literal('5') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(APP_LIMITS.artifacts_per_app - 1),
+  navigation: z.array(DeftAppNavigationItemV0Schema).default([]),
+  ...ResourceAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const resource = ResourceAuthoringSchema.safeParse({ runtime_requirements: manifest.runtime_requirements,
+    private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions,
+    sync_descriptors: manifest.sync_descriptors, experiences: manifest.experiences, public_actions: manifest.public_actions });
+  if (!resource.success) for (const issue of resource.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  if (manifest.modules.length) {
+    const declarative = DeftAppManifestV0Schema.safeParse({ ...Object.fromEntries(
+      Object.keys(DeftAppManifestV0Schema.shape).map((key) => [key, manifest[key as keyof typeof manifest]])),
+      schema_version: '0', compatibility: { app_protocol: '0' } });
+    if (!declarative.success) for (const issue of declarative.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  } else if (manifest.navigation.length) ctx.addIssue({ code: 'custom', path: ['navigation'], message: 'Navigation requires included Modules' });
+  for (const [index, item] of manifest.public_actions.entries()) {
+    if (!manifest.modules.some((module) => module.module_id === item.module_id)) ctx.addIssue({ code: 'custom',
+      path: ['public_actions', index, 'module_id'], message: 'Public claims require an included Module' });
+  }
+  if (manifest.experiences.some((item) => manifest.modules.some((module) => module.manifest_path === item.artifact_path))) {
+    ctx.addIssue({ code: 'custom', path: ['experiences'], message: 'Artifact paths must be unique across surfaces' });
+  }
+});
+export const DeftAppPackageV5Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V5), manifest: DeftAppManifestV5Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.union([DeftAppPackageArtifactV0Schema, DeftExperienceArtifactSchema])).max(APP_LIMITS.artifacts_per_app),
+});
+export type DeftAppManifestV5 = z.infer<typeof DeftAppManifestV5Schema>;
+export type DeftAppManifestV5Input = z.input<typeof DeftAppManifestV5Schema>;
+export type DeftAppPackageV5 = z.infer<typeof DeftAppPackageV5Schema>;
+export function parseResourceAppManifest(value: unknown): DeftAppManifestV5 {
+  if (recordWithString(value, 'schema_version') !== '5') throw new TypeError('Resource App manifest must use Protocol v5');
+  return parseDeftAppManifest(value) as DeftAppManifestV5;
+}
+export const DeftAppManifestV6Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('6'), compatibility: z.strictObject({ app_protocol: z.literal('6') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(APP_LIMITS.artifacts_per_app - 1),
+  navigation: z.array(DeftAppNavigationItemV0Schema).default([]),
+  ...NativeAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const native = NativeAuthoringSchema.safeParse(Object.fromEntries(
+    Object.keys(NativeAuthoringShape).map(key => [key, manifest[key as keyof typeof manifest]])));
+  if (!native.success) for (const issue of native.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  if (manifest.modules.length) {
+    const declarative = DeftAppManifestV0Schema.safeParse({ ...Object.fromEntries(
+      Object.keys(DeftAppManifestV0Schema.shape).map(key => [key, manifest[key as keyof typeof manifest]])),
+      schema_version: '0', compatibility: { app_protocol: '0' } });
+    if (!declarative.success) for (const issue of declarative.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  } else if (manifest.navigation.length) ctx.addIssue({ code: 'custom', path: ['navigation'], message: 'Navigation requires included Modules' });
+  for (const [index, item] of manifest.public_actions.entries()) {
+    if (!manifest.modules.some(module => module.module_id === item.module_id)) ctx.addIssue({ code: 'custom',
+      path: ['public_actions', index, 'module_id'], message: 'Public claims require an included Module' });
+  }
+  if (manifest.experiences.some(item => manifest.modules.some(module => module.manifest_path === item.artifact_path))) {
+    ctx.addIssue({ code: 'custom', path: ['experiences'], message: 'Artifact paths must be unique across surfaces' });
+  }
+});
+export const DeftAppPackageV6Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V6), manifest: DeftAppManifestV6Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.union([DeftAppPackageArtifactV0Schema, DeftExperienceArtifactSchema])).max(APP_LIMITS.artifacts_per_app),
+});
+export type DeftAppManifestV6 = z.infer<typeof DeftAppManifestV6Schema>;
+export type DeftAppManifestV6Input = z.input<typeof DeftAppManifestV6Schema>;
+export type DeftAppPackageV6 = z.infer<typeof DeftAppPackageV6Schema>;
+export function parseNativeAppManifest(value: unknown): DeftAppManifestV6 {
+  if (recordWithString(value, 'schema_version') !== '6') throw new TypeError('Native App manifest must use Protocol v6');
+  return parseDeftAppManifest(value) as DeftAppManifestV6;
+}
+export const DeftAppManifestV7Schema = z.strictObject({
+  ...DeftAppManifestV0Schema.shape,
+  schema_version: z.literal('7'), compatibility: z.strictObject({ app_protocol: z.literal('7') }),
+  modules: z.array(DeftAppModuleReferenceV0Schema).max(APP_LIMITS.artifacts_per_app - 1),
+  navigation: z.array(DeftAppNavigationItemV0Schema).default([]),
+  ...AttachmentAuthoringShape,
+}).superRefine((manifest, ctx) => {
+  const native = AttachmentAuthoringSchema.safeParse(Object.fromEntries(
+    Object.keys(AttachmentAuthoringShape).map(key => [key, manifest[key as keyof typeof manifest]])));
+  if (!native.success) for (const issue of native.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  if (manifest.modules.length) {
+    const declarative = DeftAppManifestV0Schema.safeParse({ ...Object.fromEntries(
+      Object.keys(DeftAppManifestV0Schema.shape).map(key => [key, manifest[key as keyof typeof manifest]])),
+      schema_version: '0', compatibility: { app_protocol: '0' } });
+    if (!declarative.success) for (const issue of declarative.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  } else if (manifest.navigation.length) ctx.addIssue({ code: 'custom', path: ['navigation'], message: 'Navigation requires included Modules' });
+  for (const [index, item] of manifest.public_actions.entries()) {
+    if (!manifest.modules.some(module => module.module_id === item.module_id)) ctx.addIssue({ code: 'custom',
+      path: ['public_actions', index, 'module_id'], message: 'Public claims require an included Module' });
+  }
+  if (manifest.experiences.some(item => manifest.modules.some(module => module.manifest_path === item.artifact_path))) {
+    ctx.addIssue({ code: 'custom', path: ['experiences'], message: 'Artifact paths must be unique across surfaces' });
+  }
+});
+export const DeftAppPackageV7Schema = z.strictObject({
+  package_format: z.literal(DEFT_APP_PACKAGE_FORMAT_V7), manifest: DeftAppManifestV7Schema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.union([DeftAppPackageArtifactV0Schema, DeftExperienceArtifactSchema])).max(APP_LIMITS.artifacts_per_app),
+});
+export type DeftAppManifestV7 = z.infer<typeof DeftAppManifestV7Schema>;
+export type DeftAppManifestV7Input = z.input<typeof DeftAppManifestV7Schema>;
+export type DeftAppPackageV7 = z.infer<typeof DeftAppPackageV7Schema>;
+export function parseAttachmentAppManifest(value: unknown): DeftAppManifestV7 {
+  if (recordWithString(value, 'schema_version') !== '7') throw new TypeError('Attachment App manifest must use Protocol v7');
+  return parseDeftAppManifest(value) as DeftAppManifestV7;
+}
+export type RuntimeAppManifest = DeftAppManifestV3 | DeftAppManifestV4;
+export function parseRuntimeAppManifest(value: unknown): RuntimeAppManifest {
+  return recordWithString(value, 'schema_version') === '4'
+    ? DeftAppManifestV4Schema.parse(value) : DeftAppManifestV3Schema.parse(value);
+}
+
+export const DeftAppManifestSchema = z.union([
+  DeftAppManifestV0Schema,
+  DeftAppManifestV1Schema,
+  DeftAppManifestV2Schema,
+  DeftAppManifestV3Schema,
+  DeftAppManifestV4Schema,
+  DeftAppManifestV5Schema,
+  DeftAppManifestV6Schema,
+  DeftAppManifestV7Schema,
+]);
+export const DeftAppPackageSchema = z.union([
+  DeftAppPackageV0Schema,
+  DeftAppPackageV1Schema,
+  DeftAppPackageV2Schema,
+  DeftAppPackageV3Schema,
+  DeftAppPackageV4Schema,
+  DeftAppPackageV5Schema,
+  DeftAppPackageV6Schema,
+  DeftAppPackageV7Schema,
+]);
+
+export type DeftAppManifestV0 = z.infer<typeof DeftAppManifestV0Schema>;
+export type DeftAppManifestV0Input = z.input<typeof DeftAppManifestV0Schema>;
+export type DeftAppManifestV1 = z.infer<typeof DeftAppManifestV1Schema>;
+export type DeftAppManifestV1Input = z.input<typeof DeftAppManifestV1Schema>;
+export type DeftAppAutomationRequestV2 = z.infer<typeof DeftAppAutomationRequestV2Schema>;
+export type DeftAppAutomationRequestV2Input = z.input<typeof DeftAppAutomationRequestV2Schema>;
+export type DeftAppManifestV2 = z.infer<typeof DeftAppManifestV2Schema>;
+export type DeftAppManifestV2Input = z.input<typeof DeftAppManifestV2Schema>;
+export type DeftAppManifest = z.infer<typeof DeftAppManifestSchema>;
+export type DeftAppManifestInput = z.input<typeof DeftAppManifestSchema>;
+export type DeftAppPackageV0 = z.infer<typeof DeftAppPackageV0Schema>;
+export type DeftAppPackageV1 = z.infer<typeof DeftAppPackageV1Schema>;
+export type DeftAppPackageV2 = z.infer<typeof DeftAppPackageV2Schema>;
+export type DeftAppPackage = z.infer<typeof DeftAppPackageSchema>;
+export type DeftAppPackageArtifactV0 = z.infer<typeof DeftAppPackageArtifactV0Schema>;
+export type AppDigest = z.infer<typeof AppDigestSchema>;
+
+export const DeftAppRequestedAuthorityProjectionSchema = z.strictObject({
+  requirements: z.strictObject({
+    dependencies: z.array(DeftAppDependencyRequirementV1Schema).max(APP_LIMITS.dependencies),
+    resources: z.array(DeftAppResourceRequirementV1Schema).max(APP_LIMITS.resource_requirements),
+    capabilities: z.array(DeftAppCapabilityRequirementV1Schema).max(APP_LIMITS.capability_requirements),
+    connectors: z.array(DeftAppConnectorRequirementV1Schema).max(APP_LIMITS.connector_requirements),
+    actions: z.array(DeftAppActionBindingV1Schema).max(APP_LIMITS.actions),
+  }),
+  resource_rights: z.array(z.strictObject({
+    requirement_key: AppMachineKeyV1Schema,
+    source: DeftAppResourceRequirementV1Schema.shape.source,
+    resource_type: AppMachineKeyV1Schema,
+    fields: z.array(AppMachineKeyV1Schema).min(1).max(APP_LIMITS.resource_fields_per_requirement),
+    right: z.literal('read'),
+  })).max(APP_LIMITS.resource_requirements),
+  classification: z.strictObject({
+    authority_state: z.literal('requested_only'),
+    executable: z.literal(false),
+    provider_access: z.literal(false),
+    review_required: z.boolean(),
+    actions: z.array(z.strictObject({
+      action_key: AppAuthorityKeyV1Schema,
+      capability_requirement_key: AppAuthorityKeyV1Schema,
+      host_policy: ReviewedOperationPolicySchema,
+    })).max(APP_LIMITS.actions),
+  }),
+});
+
+export const DeftAppRequestedAuthorityProjectionV2Schema = z.strictObject({
+  requirements: z.strictObject({
+    ...DeftAppRequestedAuthorityProjectionSchema.shape.requirements.shape,
+    automation_requests: z
+      .array(DeftAppAutomationRequestV2Schema)
+      .min(1)
+      .max(APP_LIMITS.automation_requests),
+  }),
+  resource_rights: DeftAppRequestedAuthorityProjectionSchema.shape.resource_rights,
+  classification: DeftAppRequestedAuthorityProjectionSchema.shape.classification,
+});
+
+export const DeftAppRequestedAuthorityReportSchema = z.strictObject({
+  schema: z.literal(DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA),
+  app: z.strictObject({
+    id: AppIdSchema,
+    version: AppSemverSchema,
+    protocol_version: z.union([
+      z.literal(DEFT_APP_PROTOCOL_VERSION),
+      z.literal(DEFT_APP_PROTOCOL_VERSION_V1),
+    ]),
+  }),
+  requested_authority: DeftAppRequestedAuthorityProjectionSchema,
+});
+
+export const DeftAppRequestedAuthorityReportV2Schema = z.strictObject({
+  schema: z.literal(DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA_V2),
+  app: z.strictObject({
+    id: AppIdSchema,
+    version: AppSemverSchema,
+    protocol_version: z.literal(DEFT_APP_PROTOCOL_VERSION_V2),
+  }),
+  requested_authority: DeftAppRequestedAuthorityProjectionV2Schema,
+});
+
+export const DeftAppRequestedAuthorityProjectionAnySchema = z.union([
+  DeftAppRequestedAuthorityProjectionSchema,
+  DeftAppRequestedAuthorityProjectionV2Schema,
+]);
+export const DeftAppRequestedAuthorityReportAnySchema = z.union([
+  z.strictObject({ schema: z.literal('deft.app.requested_authority.v7'),
+    app: z.strictObject({ id: AppIdSchema, version: AppSemverSchema, protocol_version: z.literal('7') }),
+    requested_authority: AttachmentRequestedAuthoritySchema }),
+  DeftAppRequestedAuthorityReportSchema,
+  DeftAppRequestedAuthorityReportV2Schema,
+  z.strictObject({
+    schema: z.literal('deft.app.requested_authority.v6'),
+    app: z.strictObject({ id: AppIdSchema, version: AppSemverSchema, protocol_version: z.literal('6') }),
+    requested_authority: NativeRequestedAuthoritySchema,
+  }),
+  z.strictObject({
+    schema: z.literal('deft.app.requested_authority.v5'),
+    app: z.strictObject({ id: AppIdSchema, version: AppSemverSchema, protocol_version: z.literal('5') }),
+    requested_authority: ResourceRequestedAuthoritySchema,
+  }),
+]);
+
+export type DeftAppRequestedAuthorityProjection =
+  z.infer<typeof DeftAppRequestedAuthorityProjectionSchema>;
+export type DeftAppRequestedAuthorityProjectionV2 =
+  z.infer<typeof DeftAppRequestedAuthorityProjectionV2Schema>;
+export type DeftAppRequestedAuthorityProjectionAny =
+  DeftAppRequestedAuthorityProjection | DeftAppRequestedAuthorityProjectionV2 | z.infer<typeof RuntimeRequestedAuthoritySchema> | z.infer<typeof InstalledRequestedAuthoritySchema> | z.infer<typeof ResourceRequestedAuthoritySchema> | z.infer<typeof NativeRequestedAuthoritySchema> | z.infer<typeof AttachmentRequestedAuthoritySchema>;
+export type DeftAppRequestedAuthorityReport = z.infer<typeof DeftAppRequestedAuthorityReportSchema>;
+export type DeftAppRequestedAuthorityReportV2 = z.infer<typeof DeftAppRequestedAuthorityReportV2Schema>;
+export type DeftAppRequestedAuthorityReportAny =
+  DeftAppRequestedAuthorityReport | DeftAppRequestedAuthorityReportV2 | { schema: 'deft.app.requested_authority.v3'; app: {id: string; version: string; protocol_version: '3'}; requested_authority: z.infer<typeof RuntimeRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v4'; app: {id: string; version: string; protocol_version: '4'}; requested_authority: z.infer<typeof InstalledRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v5'; app: {id: string; version: string; protocol_version: '5'}; requested_authority: z.infer<typeof ResourceRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v6'; app: {id: string; version: string; protocol_version: '6'}; requested_authority: z.infer<typeof NativeRequestedAuthoritySchema> } | { schema: 'deft.app.requested_authority.v7'; app: {id: string; version: string; protocol_version: '7'}; requested_authority: z.infer<typeof AttachmentRequestedAuthoritySchema> };
+
+const DeftAppRequestedAuthorityAtomSchema = z.enum([
+  'dependencies',
+  'resources',
+  'capabilities',
+  'connectors',
+  'actions',
+  'automation_requests',
+  'experiences',
+  'public_actions',
+  'sync_descriptors',
+  'private_state',
+  'owner_connections',
+  'resource_content',
+  'record_stores',
+]);
+
+export const DeftAppRequestedAuthorityDiffSchema = z.strictObject({
+  schema: z.literal(DEFT_APP_REQUESTED_AUTHORITY_DIFF_SCHEMA),
+  kind: z.enum(['initial', 'unchanged', 'widening_or_incompatible']),
+  carry_forward_eligible: z.boolean(),
+  changed_atoms: z.array(DeftAppRequestedAuthorityAtomSchema),
+  prior_requested_authority_digest: AppDigestSchema.nullable(),
+  proposed_requested_authority_digest: AppDigestSchema,
+});
+
+export type DeftAppRequestedAuthorityDiff = z.infer<typeof DeftAppRequestedAuthorityDiffSchema>;
+
+export const DeftAppLockV2Schema = z.strictObject({
+  schema: z.literal('deft.app.lock.v2'),
+  app_id: AppIdSchema,
+  version: AppSemverSchema,
+  package_digest: AppDigestSchema,
+  manifest_digest: AppDigestSchema,
+  artifacts: z.array(z.strictObject({
+    path: AppArtifactPathSchema,
+    digest: AppDigestSchema,
+    byte_length: z.number().int().nonnegative().max(APP_LIMITS.artifact_bytes),
+    media_type: z.literal(DEFT_MODULE_ARTIFACT_MEDIA_TYPE),
+  })).min(1).max(APP_LIMITS.artifacts_per_app),
+  permissions: z.array(z.never()).max(0),
+  requested_authority_digest: AppDigestSchema,
+  permission_diff: DeftAppRequestedAuthorityDiffSchema,
+});
+
+export type DeftAppLockV2 = z.infer<typeof DeftAppLockV2Schema>;
+
+const AppAutomationSimulatorPinSchema = z.strictObject({
+  revision: z.string().min(1).max(128),
+  content_digest: AppDigestSchema,
+});
+
+export const DeftAppAutomationSimulationInputSchema = z.strictObject({
+  manifest: DeftAppManifestV2Schema,
+  request_key: AppAuthorityKeyV1Schema,
+  occurrence: z.strictObject({
+    logical_local_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    local_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    timezone: z.string().min(1).max(128),
+    now: z.string().datetime({ offset: true }),
+    eligible_after: z.string().datetime({ offset: true }),
+    eligible_before: z.string().datetime({ offset: true }).optional(),
+  }),
+  pins: z.strictObject({
+    placement: z.strictObject({
+      approved: AppAutomationSimulatorPinSchema,
+      current: AppAutomationSimulatorPinSchema,
+    }),
+    selected: z.strictObject({
+      approved: AppAutomationSimulatorPinSchema,
+      current: AppAutomationSimulatorPinSchema,
+    }),
+  }),
+  provider_input: z.unknown(),
+});
+
+export type DeftAppAutomationSimulationInput = z.input<typeof DeftAppAutomationSimulationInputSchema>;
+
+/** Deterministic public authoring diff. This compares requested declarations
+ * only; it never represents an effective host grant or approval decision. */
+export async function diffDeftAppRequestedAuthority(input: Readonly<{
+  prior?: DeftAppManifestInput | DeftAppManifest | null;
+  proposed: DeftAppManifestInput | DeftAppManifest;
+}>): Promise<DeftAppRequestedAuthorityDiff> {
+  const proposed = projectDeftAppRequestedAuthority(input.proposed);
+  const prior = input.prior === undefined || input.prior === null
+    ? null
+    : projectDeftAppRequestedAuthority(input.prior);
+  const digest = (value: unknown) => digestText(JSON.stringify(canonicalizeJson(value)));
+  const proposedDigest = await digest(proposed);
+  const priorDigest = prior === null ? null : await digest(prior);
+  const atoms = DeftAppRequestedAuthorityAtomSchema.options;
+  const requirement = (value: DeftAppRequestedAuthorityProjectionAny, atom: typeof atoms[number]) => {
+    if (atom === 'experiences') return 'experiences' in value.requirements ? value.requirements.experiences : [];
+    if (atom === 'public_actions') return 'public_actions' in value.requirements ? value.requirements.public_actions : [];
+    if (atom === 'sync_descriptors') return 'sync_descriptors' in value.requirements ? value.requirements.sync_descriptors : [];
+    if (atom === 'private_state') return 'private_state' in value.requirements ? value.requirements.private_state ?? [] : [];
+    if (atom === 'owner_connections') return 'owner_connections' in value.requirements ? value.requirements.owner_connections ?? [] : [];
+    if (atom === 'resource_content') return 'resource_content' in value.requirements ? value.requirements.resource_content ?? [] : [];
+    if (atom === 'record_stores') return 'record_stores' in value.requirements ? value.requirements.record_stores ?? [] : [];
+    if ('runtime_actions' in value.requirements) return atom === 'capabilities'
+      ? value.requirements.private_capabilities : atom === 'connectors'
+        ? value.requirements.runtime_requirements : atom === 'actions' ? [...value.requirements.runtime_actions, ...('native_actions' in value.requirements ? value.requirements.native_actions : [])] : [];
+    if (atom === 'automation_requests') {
+      return 'automation_requests' in value.requirements ? value.requirements.automation_requests : [];
+    }
+    return value.requirements[atom];
+  };
+  const changedAtoms = prior === null
+    ? atoms.filter((atom) => requirement(proposed, atom).length > 0)
+    : (await Promise.all(atoms.map(async (atom) => ({
+        atom,
+        changed: await digest(requirement(prior, atom)) !== await digest(requirement(proposed, atom)),
+      })))).filter(({ changed }) => changed).map(({ atom }) => atom);
+  return DeftAppRequestedAuthorityDiffSchema.parse({
+    schema: DEFT_APP_REQUESTED_AUTHORITY_DIFF_SCHEMA,
+    kind: priorDigest === null
+      ? 'initial'
+      : priorDigest === proposedDigest
+        ? 'unchanged'
+        : 'widening_or_incompatible',
+    carry_forward_eligible: priorDigest !== null && priorDigest === proposedDigest,
+    changed_atoms: changedAtoms,
+    prior_requested_authority_digest: priorDigest,
+    proposed_requested_authority_digest: proposedDigest,
+  });
+}
+
+/** Pure non-executable simulator for the bounded v2 request. It calls the
+ * exact schedule resolver/classifier and frozen provider-input validator used
+ * by Deft contracts; it does not resolve workspace data or invoke a provider. */
+export function simulateDeftAppAutomation(value: DeftAppAutomationSimulationInput) {
+  const input = DeftAppAutomationSimulationInputSchema.parse(value);
+  const request = input.manifest.automation_requests.find((item) => item.key === input.request_key);
+  if (!request) throw new Error(`Automation request ${input.request_key} is not declared`);
+  const occurrence = resolveAppAutomationOccurrence({
+    logical_local_date: input.occurrence.logical_local_date,
+    local_time: input.occurrence.local_time,
+    timezone: input.occurrence.timezone,
+  });
+  const decision = classifyAppAutomationOccurrence({
+    occurrence,
+    now: new Date(input.occurrence.now),
+    eligible_after: new Date(input.occurrence.eligible_after),
+    ...(input.occurrence.eligible_before
+      ? { eligible_before: new Date(input.occurrence.eligible_before) }
+      : {}),
+    catch_up_window_minutes: 15,
+  });
+  const changedPins = (['placement', 'selected'] as const).flatMap((key) => {
+    const { approved, current } = input.pins[key];
+    return [
+      ...(approved.revision === current.revision ? [] : [`${key}.revision`]),
+      ...(approved.content_digest === current.content_digest ? [] : [`${key}.content_digest`]),
+    ];
+  });
+  const action=input.manifest.actions.find(item=>item.key===request.action_key)!;
+  const requirement=input.manifest.capability_requirements.find(item=>item.key===action.capability_requirement_key)!;
+  const providerInput = parsePrivateInterfaceInput(requirement.interface,input.provider_input);
+  return Object.freeze({
+    schema: DEFT_APP_AUTOMATION_SIMULATION_SCHEMA,
+    request: Object.freeze({
+      key: request.key,
+      action_key: request.action_key,
+      trigger: request.trigger,
+    }),
+    schedule: Object.freeze({
+      decision: decision.kind,
+      ...(decision.kind === 'skipped' ? { reason: decision.reason } : {}),
+      resolution: occurrence.resolution.kind,
+      ...(occurrence.resolution.kind === 'resolved'
+        ? { resolved_at_utc: occurrence.resolution.resolved_at_utc.toISOString() }
+        : {}),
+    }),
+    pinned_inputs: Object.freeze({
+      status: changedPins.length === 0 ? 'ready' as const : 'stale' as const,
+      changed: Object.freeze(changedPins),
+    }),
+    provider_input: Object.freeze({
+      status: providerInput.success ? 'valid' as const : 'invalid' as const,
+      issues: Object.freeze(providerInput.success
+        ? []
+        : providerInput.error.issues.map(({ path, message }) => ({ path, message }))),
+    }),
+    executable: false as const,
+    provider_access: false as const,
+  });
+}
+
+export const APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS = Object.freeze({
+  schema: 'deft.app.automation_simulator.conformance.v1',
+  occurrences: Object.freeze([
+    Object.freeze({
+      label: 'ordinary_pending', logical_local_date: '2026-02-10', local_time: '09:00',
+      timezone: 'UTC', now: '2026-02-10T09:05:00.000Z', expected: 'pending',
+    }),
+    Object.freeze({
+      label: 'dst_fold_earlier', logical_local_date: '2026-11-01', local_time: '01:30',
+      timezone: 'America/New_York', now: '2026-11-01T05:35:00.000Z',
+      expected: 'pending', resolved_at_utc: '2026-11-01T05:30:00.000Z',
+    }),
+    Object.freeze({
+      label: 'dst_gap', logical_local_date: '2026-03-08', local_time: '02:30',
+      timezone: 'America/New_York', now: '2026-03-08T08:00:00.000Z', expected: 'skipped',
+    }),
+    Object.freeze({
+      label: 'misfire', logical_local_date: '2026-02-10', local_time: '09:00',
+      timezone: 'UTC', now: '2026-02-10T09:16:00.000Z', expected: 'skipped',
+    }),
+  ]),
+  pins: Object.freeze({
+    ready: Object.freeze({ expected: 'ready', changed: Object.freeze([]) }),
+    stale: Object.freeze({ expected: 'stale', changed: Object.freeze(['selected.revision']) }),
+  }),
+} as const);
+
+/**
+ * Project only App-authored requested authority. Host identities, effective
+ * grants, connector/provider selection, tokens, and lineage never enter this
+ * portable report.
+ */
+export function projectDeftAppRequestedAuthority(
+  value: DeftAppManifestInput | DeftAppManifest,
+): DeftAppRequestedAuthorityProjectionAny {
+  const manifest = parseDeftAppManifest(value);
+  if (manifest.schema_version === '7') return AttachmentRequestedAuthoritySchema.parse({
+    requirements: Object.fromEntries(Object.keys(AttachmentAuthoringShape).map(key => [key, manifest[key as keyof typeof manifest]])),
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
+  if (manifest.schema_version === '6') return NativeRequestedAuthoritySchema.parse({
+    requirements: Object.fromEntries(Object.keys(NativeAuthoringShape).map(key => [key, manifest[key as keyof typeof manifest]])),
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
+  if (manifest.schema_version === '5') return ResourceRequestedAuthoritySchema.parse({
+    requirements: { runtime_requirements: manifest.runtime_requirements, private_capabilities: manifest.private_capabilities,
+      runtime_actions: manifest.runtime_actions, sync_descriptors: manifest.sync_descriptors,
+      experiences: manifest.experiences, public_actions: manifest.public_actions },
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
+  if (manifest.schema_version === '4') return InstalledRequestedAuthoritySchema.parse({
+    requirements: { runtime_requirements: manifest.runtime_requirements, private_capabilities: manifest.private_capabilities,
+      runtime_actions: manifest.runtime_actions, experiences: manifest.experiences, public_actions: manifest.public_actions },
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
+  if (manifest.schema_version === '3') return RuntimeRequestedAuthoritySchema.parse({
+    requirements: { runtime_requirements: manifest.runtime_requirements, private_capabilities: manifest.private_capabilities, runtime_actions: manifest.runtime_actions },
+    classification: { authority_state: 'requested_only', executable: false, provider_access: false, review_required: true },
+  });
+  const connected = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION
+    ? null
+    : manifest;
+  const projection = {
+    requirements: connected
+      ? {
+          dependencies: connected.dependencies,
+          resources: connected.resource_requirements,
+          capabilities: connected.capability_requirements,
+          connectors: connected.connector_requirements,
+          actions: connected.actions,
+        }
+      : { dependencies: [], resources: [], capabilities: [], connectors: [], actions: [] },
+    resource_rights: connected
+      ? connected.resource_requirements.map((requirement) => ({
+          requirement_key: requirement.key,
+          source: requirement.source,
+          resource_type: requirement.resource_type,
+          fields: requirement.fields,
+          right: 'read' as const,
+        }))
+      : [],
+    classification: {
+      authority_state: 'requested_only' as const,
+      executable: false as const,
+      provider_access: false as const,
+      review_required: connected !== null,
+      actions: connected
+        ? connected.actions.map((action) => ({
+            action_key: action.key,
+            capability_requirement_key: action.capability_requirement_key,
+            host_policy: privateInterfaceProfile(connected!.capability_requirements.find(item=>item.key===action.capability_requirement_key)!.interface)!.descriptor.host_policy,
+          }))
+        : [],
+    },
+  };
+  if (manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2) {
+    return DeftAppRequestedAuthorityProjectionV2Schema.parse(canonicalizeJson({
+      ...projection,
+      requirements: {
+        ...projection.requirements,
+        automation_requests: manifest.automation_requests,
+      },
+    }));
+  }
+  return DeftAppRequestedAuthorityProjectionSchema.parse(canonicalizeJson(projection));
+}
+
+export function buildDeftAppRequestedAuthorityReport(
+  value: DeftAppManifestInput | DeftAppManifest,
+): DeftAppRequestedAuthorityReportAny {
+  const manifest = parseDeftAppManifest(value);
+  if (manifest.schema_version === '7') return { schema: 'deft.app.requested_authority.v7',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '7' },
+    requested_authority: AttachmentRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)) };
+  if (manifest.schema_version === '6') return {
+    schema: 'deft.app.requested_authority.v6',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '6' },
+    requested_authority: NativeRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)),
+  };
+  if (manifest.schema_version === '5') return DeftAppRequestedAuthorityReportAnySchema.parse({
+    schema: 'deft.app.requested_authority.v5',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '5' },
+    requested_authority: ResourceRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)),
+  }) as DeftAppRequestedAuthorityReportAny;
+  if (manifest.schema_version === '4') return {
+    schema: 'deft.app.requested_authority.v4',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '4' },
+    requested_authority: InstalledRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)),
+  };
+  if (manifest.schema_version === '3') return {
+    schema: 'deft.app.requested_authority.v3',
+    app: { id: manifest.id, version: manifest.version, protocol_version: '3' },
+    requested_authority: RuntimeRequestedAuthoritySchema.parse(projectDeftAppRequestedAuthority(manifest)),
+  };
+  if (manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2) {
+    return DeftAppRequestedAuthorityReportV2Schema.parse({
+      schema: DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA_V2,
+      app: {
+        id: manifest.id,
+        version: manifest.version,
+        protocol_version: manifest.compatibility.app_protocol,
+      },
+      requested_authority: projectDeftAppRequestedAuthority(manifest),
+    });
+  }
+  return DeftAppRequestedAuthorityReportSchema.parse({
+    schema: DEFT_APP_REQUESTED_AUTHORITY_REPORT_SCHEMA,
+    app: {
+      id: manifest.id,
+      version: manifest.version,
+      protocol_version: manifest.compatibility.app_protocol,
+    },
+    requested_authority: projectDeftAppRequestedAuthority(manifest),
+  });
+}
+
+export function canonicalDeftAppRequestedAuthorityReportJson(
+  value: DeftAppManifestInput | DeftAppManifest,
+): string {
+  return JSON.stringify(canonicalizeJson(buildDeftAppRequestedAuthorityReport(value)), null, 2);
+}
+
+/**
+ * Validate only portable authoring contracts. Package verification performs
+ * the static Module/resource/action binding checks; this helper does not
+ * inspect a workspace, resolve effective grants, or call a provider.
+ */
+export async function checkDeftAppDeveloperContract(input: {
+  package_json: string;
+  host_compatibility: unknown;
+}) {
+  const verified = await verifyDeftAppPackageJson(input.package_json);
+  const protocol = verified.package.manifest.compatibility.app_protocol;
+  const installFlow = resolveDeftAppDeveloperProtocolFlow(input.host_compatibility, protocol);
+  if (installFlow.package_format !== verified.package.package_format) {
+    throw new Error(`Host advertises an incompatible package format for App Protocol v${protocol}`);
+  }
+  return {
+    schema: DEFT_APP_DEVELOPER_CONTRACT_CHECK_SCHEMA,
+    package: {
+      format: verified.package.package_format,
+      digest: verified.digest,
+      protocol_version: protocol,
+    },
+    install_flow: installFlow,
+    requested_authority: buildDeftAppRequestedAuthorityReport(verified.package.manifest),
+    ...(protocol === DEFT_APP_PROTOCOL_VERSION_V2 ? {
+      automation_simulator_conformance: APP_AUTOMATION_SIMULATOR_CONFORMANCE_VECTORS,
+    } : {}),
+  };
+}
+
+function recordWithString(value: unknown, key: string): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === 'string' ? item : undefined;
+}
+
+type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
+
+function canonicalizeJson(value: unknown): CanonicalJson {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.normalize('NFC');
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('Canonical JSON cannot contain non-finite numbers');
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (typeof value === 'object') {
+    const output: Record<string, CanonicalJson> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item !== undefined) output[key.normalize('NFC')] = canonicalizeJson(item);
+    }
+    return output;
+  }
+  throw new TypeError(`Canonical JSON cannot contain ${typeof value}`);
+}
+
+function assertByteLimit(value: string, limit: number, label: string): void {
+  const bytes = textEncoder.encode(value).byteLength;
+  if (bytes > limit) throw new Error(`${label} exceeds ${limit} bytes`);
+}
+
+async function digestText(value: string): Promise<AppDigest> {
+  if (!globalThis.crypto?.subtle) throw new Error('Web Crypto SHA-256 is unavailable in this runtime');
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', textEncoder.encode(value));
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return AppDigestSchema.parse(`sha256:${hex}`);
+}
+
+export function parseDeftAppManifest(value: unknown): DeftAppManifest {
+  // Preserve v0 rejection behavior exactly: anything not explicitly marked
+  // v1 or v2 continues through the original direct v0 schema instead of a
+  // union branch.
+  const schemaVersion = recordWithString(value, 'schema_version');
+  const manifest = schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V7
+    ? DeftAppManifestV7Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V6
+    ? DeftAppManifestV6Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V5
+    ? DeftAppManifestV5Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V4
+    ? DeftAppManifestV4Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V3
+    ? DeftAppManifestV3Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
+    ? DeftAppManifestV2Schema.parse(value)
+    : schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
+      ? DeftAppManifestV1Schema.parse(value)
+      : DeftAppManifestV0Schema.parse(value);
+  if (!isDeftAppProtocolOperationSupported(manifest.compatibility.app_protocol, 'authoring')) {
+    throw new TypeError(`App Protocol v${manifest.compatibility.app_protocol} authoring is not registered`);
+  }
+  const registeredKeys = DEFT_APP_PROTOCOL_SUPPORT[manifest.compatibility.app_protocol].manifest_keys;
+  for (const key of Object.keys(manifest)) {
+    if (!(registeredKeys as readonly string[]).includes(key)) {
+      throw new TypeError(`App Protocol v${manifest.compatibility.app_protocol} manifest key is not registered: ${key}`);
+    }
+  }
+  assertByteLimit(JSON.stringify(manifest), APP_LIMITS.manifest_bytes, 'App manifest');
+  return manifest;
+}
+
+export function parseDeftAppManifestJson(value: string): DeftAppManifest {
+  assertByteLimit(value, APP_LIMITS.manifest_bytes, 'App manifest');
+  try {
+    return parseDeftAppManifest(JSON.parse(value) as unknown);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('App manifest is not valid JSON', { cause: error });
+    throw error;
+  }
+}
+
+export function canonicalAppManifestJson(value: unknown): string {
+  return JSON.stringify(canonicalizeJson(parseDeftAppManifest(value)));
+}
+
+export async function digestAppManifest(value: unknown): Promise<AppDigest> {
+  return digestText(canonicalAppManifestJson(value));
+}
+
+export function getDeftAppManifestV0JsonSchema(): Record<string, unknown> {
+  return {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    title: 'Deft declarative app manifest v0',
+    ...z.toJSONSchema(DeftAppManifestV0Schema, { target: 'draft-2020-12', unrepresentable: 'any' }),
+  } as Record<string, unknown>;
+}
+
+export function getDeftAppManifestV1JsonSchema(): Record<string, unknown> {
+  return {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    title: 'Deft connected app manifest v1',
+    ...z.toJSONSchema(DeftAppManifestV1Schema, { target: 'draft-2020-12', unrepresentable: 'any' }),
+  } as Record<string, unknown>;
+}
+
+export function getDeftAppManifestV2JsonSchema(): Record<string, unknown> {
+  return {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    title: 'Deft bounded automation request manifest v2',
+    ...z.toJSONSchema(DeftAppManifestV2Schema, { target: 'draft-2020-12', unrepresentable: 'any' }),
+  } as Record<string, unknown>;
+}
+
+export function getDeftAppManifestJsonSchema(schemaVersion: string): Record<string, unknown> {
+  if (schemaVersion === '7') return { title: 'Deft attachment resource App manifest v7',
+    ...z.toJSONSchema(DeftAppManifestV7Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
+  if (schemaVersion === '6') return { title: 'Deft native Calendar App manifest v6',
+    ...z.toJSONSchema(DeftAppManifestV6Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
+  if (schemaVersion === '5') return { title: 'Deft resource Runtime App manifest v5',
+    ...z.toJSONSchema(DeftAppManifestV5Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
+  if (schemaVersion === '4') return { title: 'Deft installed Runtime App manifest v4',
+    ...z.toJSONSchema(DeftAppManifestV4Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
+  if (schemaVersion === '3') return { title: 'Deft Runtime App manifest v3',
+    ...z.toJSONSchema(DeftAppManifestV3Schema, { target: 'draft-2020-12', unrepresentable: 'any' }) };
+  if (schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2) {
+    return getDeftAppManifestV2JsonSchema();
+  }
+  if (schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1) {
+    return getDeftAppManifestV1JsonSchema();
+  }
+  if (schemaVersion === DEFT_APP_MANIFEST_SCHEMA_VERSION) {
+    return getDeftAppManifestV0JsonSchema();
+  }
+  throw new Error(`App manifest schema v${schemaVersion} is not supported`);
+}
+
+type ModuleIdentity = { schema_version: string; id: string; version: string };
+
+export type DeftModuleSemanticValidationIssue = Readonly<{
+  artifact_path: string;
+  field_path: string;
+  reason: string;
+  correction: string;
+}>;
+
+export type DeftModuleSemanticValidationResult =
+  | Readonly<{ success: true; issues: readonly [] }>
+  | Readonly<{ success: false; issues: readonly DeftModuleSemanticValidationIssue[] }>;
+
+function moduleFieldPath(path: readonly PropertyKey[]): string {
+  if (path.length === 0) return '$';
+  return path.reduce<string>((result, segment) => typeof segment === 'number'
+    ? `${result}[${segment}]`
+    : `${result}${result ? '.' : ''}${String(segment)}`, '');
+}
+
+function moduleIssueCorrection(issue: PortableModuleSchemaIssue): string {
+  const reason = issue.message;
+  if (/schema version|Invalid input/i.test(reason) && moduleFieldPath(issue.path) === 'schema_version') {
+    return `Set schema_version to ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION} or ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2}.`;
+  }
+  if (/Relation target collection does not exist|Reference target collection does not exist/i.test(reason)) {
+    return 'Declare the referenced collection or change the relation target to an existing collection key.';
+  }
+  if (/Latest related summary/i.test(reason)) {
+    return 'Use a source collection with a direct relation back to this collection, a date or datetime field, and declared select filter values.';
+  }
+  if (/Summary requires/i.test(reason)) {
+    return 'Use a number value field and single-select group and unit fields for the board summary.';
+  }
+  if (/Default is invalid/i.test(reason)) {
+    return 'Choose a default accepted by the field type and, for select fields, one of the declared option values.';
+  }
+  if (/Search/i.test(reason)) {
+    return 'Reference declared searchable fields and include the title and subtitle fields in search.fields.';
+  }
+  if (/Default collection|Default view/i.test(reason)) {
+    return 'Point navigation to a declared collection and to a view that belongs to that collection.';
+  }
+  return `Correct ${moduleFieldPath(issue.path)} so it satisfies the Module manifest contract: ${reason}`;
+}
+
+/**
+ * Runs the same pure Module semantic schema used by the Deft host. This proves
+ * static manifest validity only; installation compatibility, setup, grants,
+ * and tenant-scoped authorization remain host decisions.
+ */
+export function validateDeftModuleManifest(
+  value: unknown,
+  options: Readonly<{ artifactPath?: string }> = {},
+): DeftModuleSemanticValidationResult {
+  const artifactPath = options.artifactPath ?? DEFT_MODULE_MANIFEST_FILENAME;
+  const schemaVersion = value && typeof value === 'object' && 'schema_version' in value
+    ? (value as { schema_version?: unknown }).schema_version
+    : undefined;
+  if (
+    schemaVersion !== DEFT_MODULE_MANIFEST_SCHEMA_VERSION
+    && schemaVersion !== DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2
+  ) {
+    return {
+      success: false,
+      issues: [{
+        artifact_path: artifactPath,
+        field_path: 'schema_version',
+        reason: `Unsupported Module schema version: ${String(schemaVersion)}`,
+        correction: `Set schema_version to ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION} or ${DEFT_MODULE_MANIFEST_SCHEMA_VERSION_V2}.`,
+      }],
+    };
+  }
+
+  const result = DeftModuleManifestSchema.safeParse(value);
+  if (result.success) return { success: true, issues: [] };
+  return {
+    success: false,
+    issues: result.error.issues.map((issue) => ({
+      artifact_path: artifactPath,
+      field_path: moduleFieldPath(issue.path),
+      reason: issue.message,
+      correction: moduleIssueCorrection(issue),
+    })),
+  };
+}
+
+export class DeftModuleSemanticValidationError extends Error {
+  readonly issues: readonly DeftModuleSemanticValidationIssue[];
+
+  constructor(issues: readonly DeftModuleSemanticValidationIssue[]) {
+    super(issues.map((issue) => (
+      `${issue.artifact_path}:${issue.field_path}: ${issue.reason} Correction: ${issue.correction}`
+    )).join('\n'));
+    this.name = 'DeftModuleSemanticValidationError';
+    this.issues = issues;
+  }
+}
+
+export function assertValidDeftModuleManifest<T>(
+  value: T,
+  options: Readonly<{ artifactPath?: string }> = {},
+): T {
+  const result = validateDeftModuleManifest(value, options);
+  if (!result.success) throw new DeftModuleSemanticValidationError(result.issues);
+  return value;
+}
+
+const ModuleResourceShapeSchema = z.object({
+  collections: z.array(z.object({
+    key: AppMachineKeyV1Schema,
+    views: z.array(z.object({
+      key: AppMachineKeyV1Schema,
+    }).passthrough()).optional(),
+    fields: z.array(z.object({
+      key: AppMachineKeyV1Schema,
+      type: z.string(),
+      target_collection: AppMachineKeyV1Schema.optional(),
+      target: z.object({
+        module_id: AppIdSchema,
+        resource_type: AppMachineKeyV1Schema,
+      }).optional(),
+    }).passthrough()),
+  }).passthrough()),
+}).passthrough();
+
+function verifyNavigationBindings(
+  manifest: DeftAppManifest,
+  moduleManifests: ReadonlyMap<string, unknown>,
+): void {
+  for (const item of manifest.navigation) {
+    const moduleManifest = ModuleResourceShapeSchema.parse(moduleManifests.get(item.module_id));
+    const collection = moduleManifest.collections.find((candidate) => candidate.key === item.collection_key);
+    if (!collection) {
+      throw new Error(`Navigation ${item.key} references unknown collection ${item.collection_key}`);
+    }
+    if (item.view_key && !collection.views?.some((view) => view.key === item.view_key)) {
+      throw new Error(`Navigation ${item.key} references unknown view ${item.view_key} in collection ${item.collection_key}`);
+    }
+  }
+}
+
+function parseModuleArtifactIdentity(value: unknown): ModuleIdentity {
+  return z
+    .strictObject({
+      schema_version: z.union([z.literal('1'), z.literal('2')]),
+      id: AppIdSchema,
+      version: AppSemverSchema,
+    })
+    .passthrough()
+    .parse(value);
+}
+
+export async function prepareModuleArtifact(input: {
+  path: string;
+  manifest: unknown;
+}): Promise<DeftAppPackageArtifactV0> {
+  const path = AppArtifactPathSchema.parse(input.path);
+  assertValidDeftModuleManifest(input.manifest, { artifactPath: path });
+  parseModuleArtifactIdentity(input.manifest);
+  const content = JSON.stringify(canonicalizeJson(input.manifest));
+  assertByteLimit(content, APP_LIMITS.artifact_bytes, 'Module artifact');
+  return DeftAppPackageArtifactV0Schema.parse({
+    path,
+    media_type: DEFT_MODULE_ARTIFACT_MEDIA_TYPE,
+    content,
+    byte_length: textEncoder.encode(content).byteLength,
+    digest: await digestText(content),
+  });
+}
+
+async function verifyPackage(packageValue: DeftAppPackage): Promise<void> {
+  const artifacts = new Map<string, DeftAppPackageArtifactV0 | z.infer<typeof DeftExperienceArtifactSchema>>();
+  const moduleManifests = new Map<string, unknown>();
+  for (const artifact of packageValue.artifacts) {
+    if (artifacts.has(artifact.path)) throw new Error(`Duplicate package artifact path ${artifact.path}`);
+    assertByteLimit(artifact.content, APP_LIMITS.artifact_bytes, 'Module artifact');
+    if (textEncoder.encode(artifact.content).byteLength !== artifact.byte_length) {
+      throw new Error(`Artifact byte length mismatch for ${artifact.path}`);
+    }
+    if ((await digestText(artifact.content)) !== artifact.digest) {
+      throw new Error(`Artifact digest mismatch for ${artifact.path}`);
+    }
+    artifacts.set(artifact.path, artifact);
+  }
+  if ((await digestAppManifest(packageValue.manifest)) !== packageValue.manifest_digest) {
+    throw new Error('App manifest digest mismatch');
+  }
+  const experiences = packageValue.manifest.schema_version === '4' || packageValue.manifest.schema_version === '5' || (packageValue.manifest.schema_version === '6' || packageValue.manifest.schema_version === '7')
+    ? packageValue.manifest.experiences : [];
+  if (artifacts.size !== packageValue.manifest.modules.length + experiences.length) {
+    throw new Error('Package must contain exactly the artifacts declared by the app manifest');
+  }
+  for (const moduleReference of packageValue.manifest.modules) {
+    const artifact = artifacts.get(moduleReference.manifest_path);
+    if (!artifact) throw new Error(`Missing module artifact ${moduleReference.manifest_path}`);
+    if (artifact.media_type !== DEFT_MODULE_ARTIFACT_MEDIA_TYPE) throw new Error('Module artifact media type mismatch');
+    if (artifact.digest !== moduleReference.manifest_digest) {
+      throw new Error(`Manifest digest does not match artifact ${artifact.path}`);
+    }
+    let moduleManifest: unknown;
+    try {
+      moduleManifest = JSON.parse(artifact.content) as unknown;
+    } catch (error) {
+      throw new Error(`Module artifact ${artifact.path} is not valid JSON`, { cause: error });
+    }
+    assertValidDeftModuleManifest(moduleManifest, { artifactPath: artifact.path });
+    const identity = parseModuleArtifactIdentity(moduleManifest);
+    if (identity.id !== moduleReference.module_id || identity.version !== moduleReference.version) {
+      throw new Error(`Module identity does not match app manifest for ${artifact.path}`);
+    }
+    moduleManifests.set(identity.id, moduleManifest);
+  }
+  verifyNavigationBindings(packageValue.manifest, moduleManifests);
+  if (packageValue.manifest.schema_version === '4' || packageValue.manifest.schema_version === '5' || (packageValue.manifest.schema_version === '6' || packageValue.manifest.schema_version === '7')) {
+    const installedManifest = packageValue.manifest;
+    for (const reference of experiences) {
+      const bundle = await verifyDeftExperienceArtifact({ artifact_path: reference.artifact_path,
+        artifact_digest: reference.artifact_digest, bridge_version: reference.bridge_version,
+        renderer_version: reference.renderer_version,
+        ...(reference.capabilities === undefined ? {} : { capabilities: reference.capabilities }) }, artifacts.get(reference.artifact_path));
+      if ((bundle.schema_version === 'deft.experience_bundle.v3'||bundle.schema_version === 'deft.experience_bundle.v4') && (installedManifest.schema_version !== '7'
+        || bundle.state_keys.some(key => !installedManifest.private_state?.some(state => state.key === key))
+        || bundle.record_store_keys?.some(key => !installedManifest.record_stores?.some(store => store.key === key)))) {
+        throw new Error('Experience must use only Protocol v7 declared private state keys');
+      }
+      if (bundle.action_keys.some((key) => !installedManifest.runtime_actions.some((action) => action.key === key)
+        && !((installedManifest.schema_version === '6' || installedManifest.schema_version === '7') && installedManifest.native_actions.some(action => action.key === key)))) {
+        throw new Error('Experience must use only declared actions');
+      }
+      if (installedManifest.schema_version === '4' && bundle.resource_keys.length) {
+        throw new Error('Experience resource bridge is not supported by Protocol v4');
+      }
+      if ((installedManifest.schema_version === '5' || (installedManifest.schema_version === '6' || installedManifest.schema_version === '7')) && (bundle.resource_keys.length > 8
+        || bundle.resource_keys.some((key) => !installedManifest.sync_descriptors.some((descriptor) => descriptor.key === key)))) {
+        throw new Error('Experience must use at most eight declared sync resource keys');
+      }
+    }
+    for (const declaration of packageValue.manifest.public_actions) {
+      const module = moduleManifests.get(declaration.module_id) as { collections?: { key?: string; fields?: { key: string; type: string }[] }[] } | undefined;
+      const collection = module?.collections?.find(collection => collection.key === declaration.collection_key);
+      if (!collection) {
+        throw new Error('Public claim must select a declared included Module collection');
+      }
+      if ((packageValue.manifest.schema_version === '6' || packageValue.manifest.schema_version === '7') && packageValue.manifest.native_actions.some(action => action.key === declaration.action_key)) {
+        for (const source of Object.values(declaration.input_mapping)) {
+          if (typeof source !== 'object') throw new Error('Native public mapping must use the closed v6 source union');
+          if (source.source === 'record.field' && !collection.fields?.some(field => field.key === source.field_key
+            && PUBLIC_AVAILABILITY_SCALAR_TYPES.includes(field.type))) {
+            throw new Error('Native public mapping requires declared scalar fields');
+          }
+        }
+      }
+      if (declaration.availability && (collection.fields?.find(field => field.key === declaration.availability!.claim_deadline_field)?.type !== 'datetime'
+        || declaration.availability.fields.some(key => !collection.fields?.some(field => field.key === key
+          && PUBLIC_AVAILABILITY_SCALAR_TYPES.includes(field.type))))) {
+        throw new Error('Public availability requires declared scalar fields and a datetime claim deadline');
+      }
+    }
+  }
+  if (
+    packageValue.manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
+    || packageValue.manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
+  ) {
+    verifyV1ResourceBindings(packageValue.manifest, moduleManifests);
+  }
+}
+
+function verifyV1ResourceBindings(
+  manifest: DeftAppManifestV1 | DeftAppManifestV2,
+  moduleManifests: ReadonlyMap<string, unknown>,
+): void {
+  const resources = new Map(manifest.resource_requirements.map((resource) => [resource.key, resource]));
+  const includedCollections = new Map<string, z.infer<typeof ModuleResourceShapeSchema>['collections'][number]>();
+
+  for (const resource of manifest.resource_requirements) {
+    if (resource.source.kind !== 'included_module') continue;
+    const moduleManifest = ModuleResourceShapeSchema.parse(moduleManifests.get(resource.source.module_id));
+    const collection = moduleManifest.collections.find((item) => item.key === resource.resource_type);
+    if (!collection) throw new Error(`Resource requirement ${resource.key} references an unknown included collection`);
+    const fieldKeys = new Set(collection.fields.map((field) => field.key));
+    for (const field of resource.fields) {
+      if (!fieldKeys.has(field)) {
+        throw new Error(`Resource requirement ${resource.key} references unknown included field ${field}`);
+      }
+    }
+    includedCollections.set(resource.key, collection);
+  }
+
+  for (const action of manifest.actions) {
+    for (const binding of action.input_bindings) {
+      if (binding.source.kind !== 'selected_relation_field') continue;
+      const source = binding.source;
+      const sourceCollection = includedCollections.get(source.source_resource_requirement_key);
+      if (!sourceCollection) continue;
+      const relation = sourceCollection.fields.find((field) => field.key === source.relation_field_key);
+      const targetResource = resources.get(source.target_resource_requirement_key);
+      const sourceResource = resources.get(source.source_resource_requirement_key);
+      const matchesResourceRef = relation?.type === 'resource_ref'
+        && relation.target?.module_id === targetResource?.source.module_id
+        && relation.target?.resource_type === targetResource?.resource_type;
+      const matchesDirectRelation = relation?.type === 'relation'
+        && sourceResource?.source.kind === 'included_module'
+        && targetResource?.source.kind === 'included_module'
+        && sourceResource.source.module_id === targetResource.source.module_id
+        && relation.target_collection === targetResource.resource_type;
+      if (!targetResource || (!matchesResourceRef && !matchesDirectRelation)) {
+        throw new Error(`Action ${action.key} selected relation does not target the declared resource requirement`);
+      }
+    }
+  }
+}
+
+export async function buildDeftAppPackage(input: {
+  manifest: DeftAppManifestInput;
+  artifacts: (DeftAppPackageArtifactV0 | z.infer<typeof DeftExperienceArtifactSchema>)[];
+}): Promise<{ package: DeftAppPackage; json: string; digest: AppDigest }> {
+  const manifest = parseDeftAppManifest(input.manifest);
+  const packageInput = {
+    manifest,
+    manifest_digest: await digestAppManifest(manifest),
+    artifacts: [...input.artifacts].sort((left, right) => left.path.localeCompare(right.path)),
+  };
+  const packageValue: DeftAppPackage = manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V7
+    ? DeftAppPackageV7Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V7, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V6
+    ? DeftAppPackageV6Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V6, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V5
+    ? DeftAppPackageV5Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V5, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V4
+    ? DeftAppPackageV4Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V4, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V3
+    ? DeftAppPackageV3Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V3, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V2
+    ? DeftAppPackageV2Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V2, ...packageInput })
+    : manifest.schema_version === DEFT_APP_MANIFEST_SCHEMA_VERSION_V1
+      ? DeftAppPackageV1Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT_V1, ...packageInput })
+      : DeftAppPackageV0Schema.parse({ package_format: DEFT_APP_PACKAGE_FORMAT, ...packageInput });
+  await verifyPackage(packageValue);
+  const json = JSON.stringify(canonicalizeJson(packageValue));
+  assertByteLimit(json, APP_LIMITS.package_bytes, 'App package');
+  return { package: packageValue, json, digest: await digestText(json) };
+}
+
+export async function verifyDeftAppPackageJson(
+  value: string,
+): Promise<{ package: DeftAppPackage; json: string; digest: AppDigest }> {
+  assertByteLimit(value, APP_LIMITS.package_bytes, 'App package');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(value) as unknown;
+  } catch (error) {
+    throw new Error('App package is not valid JSON', { cause: error });
+  }
+  // As with manifest parsing, direct dispatch keeps invalid-v0 issue shapes
+  // stable while allowing the explicitly versioned v1 and v2 formats.
+  const packageFormat = recordWithString(raw, 'package_format');
+  const packageValue = packageFormat === DEFT_APP_PACKAGE_FORMAT_V7
+    ? DeftAppPackageV7Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V6
+    ? DeftAppPackageV6Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V5
+    ? DeftAppPackageV5Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V4
+    ? DeftAppPackageV4Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V3
+    ? DeftAppPackageV3Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V2
+    ? DeftAppPackageV2Schema.parse(raw)
+    : packageFormat === DEFT_APP_PACKAGE_FORMAT_V1
+      ? DeftAppPackageV1Schema.parse(raw)
+      : DeftAppPackageV0Schema.parse(raw);
+  await verifyPackage(packageValue);
+  const json = JSON.stringify(canonicalizeJson(packageValue));
+  return { package: packageValue, json, digest: await digestText(json) };
+}
+
+export { PrivateStateDeclarationSchema, PrivateStateDeclarationsSchema, PrivateStateFilesPolicySchema,
+  PrivateStateActionPayloadSchema, PRIVATE_STATE_LIMITS, PRIVATE_STATE_FILE_LIMITS,
+  type PrivateStateDeclaration, type PrivateStateFilesPolicy, type PrivateStateActionPayload } from './private-state.js';
+
+export * from './connection-session-v2.js';
+export * from './connection-session-upgrade.js';
+export * from './app-resource-action.js';
+export * from './connection-session-upgrade-context.js';
+
+export * from './record-change.js';
+export * from './prepared-copy-effect.js';
+export * from './connection-form.js';
+
+export * from './record-intake.js';
+
+export * from './local-job.js';
+
+export * from './local-job-controls.js';
+
+export * from './app-resource-action-batch.js';
+export * from './future-record-action.js';
+
+export * from './run-inspection.js';
+
+export * from './record-mirror.js';
+
+export * from './app-integration-tools.js';
+export * from './app-integration-source.js';
+export * from './app-integration-destination.js';
+
+export * from './connection-session-consent-continuation.js';
+export * from './connection-session-credential-repair.js';
+
+export * from './consent-lifetime.js';

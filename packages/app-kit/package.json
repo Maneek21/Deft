@@ -1,6 +1,6 @@
 {
   "name": "@deft/app-kit",
-  "version": "0.1.0-alpha.39",
+  "version": "0.1.0-alpha.40",
   "description": "Portable authoring and packaging contract for declarative Deft apps.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -23,10 +23,23 @@
     "./experimental/resource-sync": {
       "types": "./dist/experimental/resource-sync.d.ts",
       "import": "./dist/experimental/resource-sync.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./experience/core": {
+      "types": "./dist/experience-core.d.ts",
+      "import": "./dist/experience-core.js"
+    },
+    "./examples/email": {
+      "types": "./dist/examples/email/index.d.ts",
+      "import": "./dist/examples/email/index.js"
     }
   },
   "bin": {
-    "deft": "./dist/cli.js"
+    "deft": "./dist/cli.js",
+    "deft-example-email": "./dist/examples/email/cli.js"
   },
   "files": [
     "dist",
@@ -44,5 +57,9 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "sideEffects": [
+    "./dist/examples/email/sandbox.js",
+    "./dist/examples/email/templates.js"
+  ]
 }

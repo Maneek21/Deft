@@ -15,7 +15,7 @@ import { loadHistoricalSyncClosureAuthority } from './app-resource-sync-historic
 import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';
 import {appResourceObservationConsents,appResourceObservationRuns} from '../../../../packages/db/src/resource-observation-schema.js';
-import {appConsentDeadline,ResourceObservationSnapshotSchema} from '@deft/app-kit';
+import {appConsentDeadline,ResourceObservationSnapshotSchema} from '@deft/app-kit/core';
 import {hasResourceObservationPin,loadObservationConnection,observedResourceAuthorization,observationPolicyDigest} from './app-resource-observation-authority.js';
 import {isDeepStrictEqual} from 'node:util';
 import { attachmentFinalAuthorityIsCurrent, assertAttachmentBrokerEnabled } from './app-attachment-authority.js';

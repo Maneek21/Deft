@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { AppDigestSchema } from '@deft/app-kit';
+import { AppDigestSchema } from '@deft/app-kit/core';
 import type { AuthUser } from '../middleware/auth.js';
 import { resourceSyncWebAuthority, ResourceSyncWebAuthenticationError } from '../lib/app-resource-sync-web-authority.js';
 import { assertNativeCalendarEnabled } from '../lib/app-native-authority.js';

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseRuntimeObjectInput, RuntimeObjectSchema } from '@deft/app-kit';
+import { parseRuntimeObjectInput, RuntimeObjectSchema } from '@deft/app-kit/core';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import type { AppExperienceExposureService, BrowseAuthorityPhase } from './app-experience-exposure.js';
 import type { ExperienceCaller } from './app-experience-service.js';

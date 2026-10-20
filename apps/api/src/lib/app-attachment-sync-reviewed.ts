@@ -1,4 +1,4 @@
-import { digestResourceSyncDescriptorV2 } from '@deft/app-kit';
+import { digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { attachmentStale, loadReviewedAttachmentApp } from './app-attachment-authority.js';
 

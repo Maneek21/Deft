@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DeftExperienceRendererProfileSchema } from '@deft/app-kit';
+import { DeftExperienceRendererProfileSchema } from '@deft/app-kit/core';
 import { ExposureSnapshotSchema, exposureDigest, type ExposureSnapshot } from './app-experience-exposure-contract.js';
 
 // Durable permission is independent of any tab, Web SID, access token or lease.

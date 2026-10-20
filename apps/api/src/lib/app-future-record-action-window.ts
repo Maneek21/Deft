@@ -1,5 +1,5 @@
-import {appConsentDeadline} from '@deft/app-kit';
-import {AppFutureExecutionWindowSchema,type AppDataPreparedRecordAction} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
+import {AppFutureExecutionWindowSchema,type AppDataPreparedRecordAction} from '@deft/app-kit/core';
 import {appDataDenied,appDataDigest,type CurrentAppDataAuthority} from './app-data-authority.js';
 import {resolveFutureRecordActionSchedule} from './app-future-record-action-schedule.js';
 export function futureRecordActionWindowDeadline(current:CurrentAppDataAuthority,action:string,raw:unknown,resolve=true){

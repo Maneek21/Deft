@@ -14,11 +14,11 @@ import {
   moduleVersions,
 } from '@deft/db/schema';
 import {
-  APP_AUTOMATION_POLICY_V1,
+  REVIEWED_AUTOMATION_POLICY,
   DeftAppManifestV1Schema,
   DeftAppManifestV2Schema,
   type DeftAppPrivateInterfaceDescriptorV1,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import type { MCPToolOverride } from '@deft/mcp';
 import {
   APP_RUN_CONTRACT_VERSIONS,
@@ -120,16 +120,16 @@ export type AppActionListResult = Readonly<{
 }>;
 
 export type AppActionResolvedInput = Readonly<
-  | { input_key: 'to' | 'subject' | 'body_text'; kind: 'resource_field' }
+  | { input_key: string; kind: 'resource_field' }
   | {
-      input_key: 'to' | 'subject' | 'body_text';
+      input_key: string;
       kind: 'selected_relation_field';
       relation_key: string;
       relation_revision: number;
       options: readonly ResourceSafeProjectionV1[];
     }
   | {
-      input_key: 'to' | 'subject' | 'body_text';
+      input_key: string;
       kind: 'user_input';
       input_type: 'email' | 'text';
       label: string;
@@ -1275,7 +1275,7 @@ export class AppActionService {
       || current.definition.state !== 'active'
       || current.definition.valid_from > checkedAt
       || current.definition.valid_until <= checkedAt
-      || current.definition.policy_version !== APP_AUTOMATION_POLICY_V1.version
+      || current.definition.policy_version !== REVIEWED_AUTOMATION_POLICY.version
       || current.definition.policy_digest !== APP_AUTOMATION_POLICY_DIGEST
       || current.fire.state !== 'pending'
       || current.fire.app_run_id !== null
@@ -1462,10 +1462,10 @@ export class AppActionService {
         provider_snapshot_id: prepared.authority_vector.provider.snapshot_id,
         operation_name: prepared.authority_vector.provider.operation_name,
         policy: {
-          risk_class: APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class,
-          review_requirement: APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement,
-          review_scope: APP_AUTOMATION_POLICY_V1.review_scope,
-          retry_class: APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class,
+          risk_class: REVIEWED_AUTOMATION_POLICY.base_host_policy.risk_class,
+          review_requirement: REVIEWED_AUTOMATION_POLICY.base_host_policy.review_requirement,
+          review_scope: REVIEWED_AUTOMATION_POLICY.review_scope,
+          retry_class: REVIEWED_AUTOMATION_POLICY.base_host_policy.retry_class,
         },
         required_token_scopes: [],
         token_authorities: [],
@@ -1507,8 +1507,8 @@ export class AppActionService {
           resolved_at_utc: initial.fire.resolved_at_utc.toISOString(),
         },
         policy: {
-          key: APP_AUTOMATION_POLICY_V1.key,
-          version: APP_AUTOMATION_POLICY_V1.version,
+          key: REVIEWED_AUTOMATION_POLICY.key,
+          version: REVIEWED_AUTOMATION_POLICY.version,
           digest: APP_AUTOMATION_POLICY_DIGEST,
         },
         budgets: {

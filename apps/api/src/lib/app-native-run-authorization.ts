@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { NativePublicActionDeclarationSchema, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
+import { NativePublicActionDeclarationSchema, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit/core';
 import { APP_RUN_CONTRACT_VERSIONS, AppRunAuthorizationSnapshotSchema, canonicalCapabilityJson,
   type AppRunAuthorizationSnapshot } from '@deft/shared';
 import { appCanonicalClaims, appModuleBindings, appPublicEndpoints, appPublicIngress,

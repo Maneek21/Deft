@@ -3,7 +3,7 @@ import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appPrivateStateRecords } from '@deft/db/schema';
 import { canonicalCapabilityJson } from '@deft/shared';
-import { parseAttachmentAppManifest } from '@deft/app-kit';
+import { parseAttachmentAppManifest } from '@deft/app-kit/core';
 import { AppExperienceExposureService } from './app-experience-exposure.js';
 import { verifiedExperienceBundle, type ExperienceCaller } from './app-experience-service.js';
 import { exposureDigest } from './app-experience-exposure-contract.js';

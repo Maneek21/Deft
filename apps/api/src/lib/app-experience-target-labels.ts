@@ -1,4 +1,4 @@
-import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit';
+import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit/core';
 type Target=Readonly<{key:string;label:string}>;
 type Binding=Readonly<{id:string;key:string;target:string}>;
 type Pins=Readonly<{org_id:string;owner_user_id:string;installation_id:string;app_version_id:string;grant_snapshot_id:string;lifecycle_epoch:number;grant_epoch:number}>;

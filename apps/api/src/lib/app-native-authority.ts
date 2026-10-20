@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { AppDigestSchema, NATIVE_ACTION_HOST_POLICY, parseNativeAppManifest } from '@deft/app-kit';
+import { AppDigestSchema, NATIVE_ACTION_HOST_POLICY, parseNativeAppManifest } from '@deft/app-kit/core';
 import { appNativeBindings, appInstallations, appVersions, appGrantSnapshots, capabilityProviderSnapshots, orgMembers, users } from '@deft/db/schema';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { AppError } from './app-errors.js';

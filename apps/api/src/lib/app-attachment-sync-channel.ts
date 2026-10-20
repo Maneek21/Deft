@@ -13,7 +13,7 @@ import { hashAppAttachmentSessionToken } from './app-attachment-policy.js';
 import {
   ResourceSyncClaimRequestV3Schema, ResourceSyncHeartbeatRequestV3Schema,
   ResourceSyncResultRequestV3Schema, ResourceSyncStartRequestV3Schema,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 
 /** Separate channel3 entry point; channel2 credentials and envelopes remain closed. */
 export function appAttachmentSyncChannelEnabled(): boolean {

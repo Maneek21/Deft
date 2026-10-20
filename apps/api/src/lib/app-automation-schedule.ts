@@ -9,4 +9,4 @@ export {
   resolveAppAutomationOccurrence,
   type AppAutomationOccurrence,
   type AppAutomationOccurrenceDecision,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';

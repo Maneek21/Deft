@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectNativeComposeRaster,validateNativeComposeRaster} from '../src/native-compose-raster.js';
+import {inspectNativeComposeRaster,validateNativeComposeRaster} from '../src/examples/email/native-compose-raster.js';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/wAAAABJRU5ErkJggg==','base64');
 const dimensions=(width:number,height:number)=>{const bytes=Buffer.from(png);bytes.writeUInt32BE(width,16);bytes.writeUInt32BE(height,20);return bytes;};
 const gif=(width:number,height:number,frames:number)=>{const head=Buffer.alloc(13);head.write('GIF89a');head.writeUInt16LE(width,6);head.writeUInt16LE(height,8);const frame=Buffer.alloc(14);frame[0]=44;frame.writeUInt16LE(width,5);frame.writeUInt16LE(height,7);frame[10]=2;frame[11]=1;frame[12]=0;return Buffer.concat([head,...Array.from({length:frames},()=>frame),Buffer.from([59])]);};

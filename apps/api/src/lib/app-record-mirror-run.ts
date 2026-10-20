@@ -1,7 +1,7 @@
 import {assertPreparedRecordCleanupSource} from './app-prepared-record-action-receipt.js';
 import {randomUUID} from 'node:crypto';
 import {sql} from 'drizzle-orm';
-import {AppPreparedMirrorInputSchema} from '@deft/app-kit';
+import {AppPreparedMirrorInputSchema} from '@deft/app-kit/core';
 import type {AppRunSafeView,AppRunTransaction} from './app-run-repository.js';
 import {appDataDigest,appDataDenied} from './app-data-authority.js';
 import {PostgresRecordMirrorStore} from './app-record-mirror-store.js';

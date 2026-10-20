@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { canonicalAttachmentJson, RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit';
+import { canonicalAttachmentJson, RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit/core';
 import { AppRunKeyVersionUnavailableError, type AppRunKeyProvider } from './app-run-keyrings.js';
 
 const uuid = z.uuid();

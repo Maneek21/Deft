@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ActionPayloadBinding, PrivateFileReference, PrivateFilePolicy } from './app-private-file-contract.js';
-import type { ResourceContentPolicy } from '@deft/app-kit';
+import type { ResourceContentPolicy } from '@deft/app-kit/core';
 import type { HumanActionSourceRecord } from './app-experience-human-action-service.js';
 
 const key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/);

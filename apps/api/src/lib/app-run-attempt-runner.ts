@@ -1,5 +1,5 @@
 import {futureRecordActionGate,optionalFutureRecordAction,settleFutureRecordAction} from './app-future-record-action-dispatch.js';
-import { appConsentDeadline, APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit';
+import { appConsentDeadline, APP_RESOURCE_SYNC_CHANNEL_VERSION_V3, SyncRequestV2Schema } from '@deft/app-kit/core';
 import {requireCurrentResourceObservationRun,observedResourceAuthorization,hasResourceObservationPin} from './app-resource-observation-authority.js';
 import { loadLiveAttachmentSyncAuthority, loadLiveAttachmentSyncBindingAuthority,
   type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { appRunAttempts, appRuns, appRuntimeSessions, appSyncCheckpoints, appSyncIntents } from '@deft/db/schema';
-import { parseRuntimeObjectInput, parseAttachmentAppManifest, parseResourceRecordList, type AppRuntimeActionResources } from '@deft/app-kit';
+import { parseRuntimeObjectInput, parseAttachmentAppManifest, parseResourceRecordList, type AppRuntimeActionResources } from '@deft/app-kit/core';
 import { appRunHumanAuthorizations, appVersions, appRuntimeBindings, appResourceBindings, appResourceProjections } from '@deft/db/schema';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import { decodePrivateProjection } from './app-resource-private-projection.js';

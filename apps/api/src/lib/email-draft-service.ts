@@ -1,6 +1,6 @@
 import { EmailOperationActorSchema } from './email-agent-actor.js';
 import { z } from 'zod';
-import { parseNativeSafeComposeHtml as parseSafeComposeHtml } from '@deft/app-kit/experience';
+import { parseTrustedRichtextHtml as parseBasicRichtextHtml } from '@deft/app-kit/experience/core';
 import { signatureIdentityKey } from './email-signature-types.js';
 import type { EmailOperationActor, EmailAuthority, EmailCapability, EmailScope } from './email-mailbox-service.js';
 import { EmailDraftStore, type EmailDraftRow, type EmailDraftSummaryPage } from './email-draft-store.js';
@@ -47,10 +47,10 @@ export function detachInvalidManagedSignature(content: EmailDraftContent): Email
   if (region.rich === null) valid &&= content.body_html.length === 0;
   else {
     try {
-      const full = parseSafeComposeHtml(content.body_html, { maxCharacters:256*1024,maxBytes:480*1024,inlineAttachments:content.attachments });
-      const prefix = parseSafeComposeHtml(content.body_html.slice(0, region.rich.start), { maxCharacters:256*1024,maxBytes:480*1024,inlineAttachments:content.attachments });
+      const full = parseBasicRichtextHtml(content.body_html, { maxCharacters:256*1024,maxBytes:480*1024,inlineAttachments:content.attachments });
+      const prefix = parseBasicRichtextHtml(content.body_html.slice(0, region.rich.start), { maxCharacters:256*1024,maxBytes:480*1024,inlineAttachments:content.attachments });
       // Entry signatures stay image-closed even when the surrounding body owns files.
-      parseSafeComposeHtml(region.rich.html,{maxCharacters:16_384,maxBytes:65_536});
+      parseBasicRichtextHtml(region.rich.html,{maxCharacters:16_384,maxBytes:65_536});
       valid &&= content.body_html.slice(region.rich.start) === region.rich.html
         && full.plainText === content.body && region.plain.start === prefix.plainText.length;
     } catch { valid = false; }

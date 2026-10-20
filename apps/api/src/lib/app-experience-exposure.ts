@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { StoredPrivateSourceSchema, type StoredPrivateSource } from './app-private-state-secrets.js';
 
 import {loadOwnerConnectionCleanup} from './app-connection-cleanup-authority.js';
@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 
 import { experienceProviderHandles, type ProviderSourceRecord } from './app-experience-provider-handles.js';
 
-import { RuntimeObjectSchema, parseResourceRecordList, type PrivateStateDeclaration, type RuntimeObjectContract } from '@deft/app-kit';
+import { RuntimeObjectSchema, parseResourceRecordList, type PrivateStateDeclaration, type RuntimeObjectContract } from '@deft/app-kit/core';
 
 import type { HumanActionSourceRecord } from './app-experience-human-action-service.js';
 

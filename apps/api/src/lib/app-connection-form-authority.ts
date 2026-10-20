@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {isDeepStrictEqual} from 'node:util';
 import {AppConnectionFormAuthorityRequestSchema,AppConnectionFormAuthorityResultSchema} from '../../../../packages/app-kit/src/connection-form.js';
 import {db} from './db.js';

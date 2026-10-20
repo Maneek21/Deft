@@ -8,7 +8,7 @@ import { connectionProfileDigest } from './app-connection-session-registry.js';
 import { isAppOwnerConnectionsEnabled } from './env.js';
 import { AppError } from './app-errors.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';
-import { digestResourceSyncDescriptorV2, parseAttachmentAppManifest } from '@deft/app-kit';
+import { digestResourceSyncDescriptorV2, parseAttachmentAppManifest } from '@deft/app-kit/core';
 
 type LockedReviewedApp = Pick<Awaited<ReturnType<typeof loadReviewedAttachmentApp>>, 'installation' | 'version' | 'grant'>;
 

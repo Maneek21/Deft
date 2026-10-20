@@ -1,8 +1,8 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {and,eq,sql,desc} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {AppConnectionConsentContinuationAuthorityRequestSchema,AppConnectionConsentContinuationAuthorityResultSchema,
- appConnectionConsentContinuationPins} from '@deft/app-kit';
+ appConnectionConsentContinuationPins} from '@deft/app-kit/core';
 import {appConnectionSessions,appConnectionConsentContinuations as journals} from '@deft/db/schema';
 import {db} from './db.js';
 import {getAppConnectionSessionRegistry,connectionProfileDigest} from './app-connection-session-registry.js';

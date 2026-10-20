@@ -1,5 +1,5 @@
 import {sql} from 'drizzle-orm';
-import {AppPreparedMirrorInputSchema} from '@deft/app-kit';
+import {AppPreparedMirrorInputSchema} from '@deft/app-kit/core';
 import {appDataDigest} from './app-data-authority.js';
 import type {AppRunTransaction} from './app-run-repository.js';
 

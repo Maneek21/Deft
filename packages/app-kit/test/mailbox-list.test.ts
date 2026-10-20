@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatMailboxList, MailboxListError, parseMailboxList } from '../src/mailbox-list.ts';
+import { formatMailboxList, MailboxListError, parseMailboxList } from '../src/examples/email/mailbox-list.ts';
 import { parseRuntimeObjectInput, RuntimeObjectSchema } from '../src/runtime-authoring.ts';
 
 test('mailbox list preserves order, display names and duplicates and safely roundtrips quoted names', () => {

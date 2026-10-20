@@ -1,4 +1,4 @@
-import { appConsentDeadline, appConsentExpiryValid } from '@deft/app-kit';
+import { appConsentDeadline, appConsentExpiryValid } from '@deft/app-kit/core';
 import { and, asc, eq, gt, isNull, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appResourceBindings, appRuntimeRegistrations, appRuntimeSessions, orgMembers, users } from '@deft/db/schema';

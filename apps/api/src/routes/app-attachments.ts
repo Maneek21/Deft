@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { APP_LIMITS } from '@deft/app-kit';
+import { APP_LIMITS } from '@deft/app-kit/core';
 import { AppError } from '../lib/app-errors.js';
 import { AppRunError } from '../lib/app-run-errors.js';
 import { appHttpFailure } from './app-http-errors.js';

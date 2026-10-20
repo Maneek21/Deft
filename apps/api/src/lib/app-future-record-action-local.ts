@@ -1,5 +1,5 @@
 import {sql} from 'drizzle-orm';
-import {AppPreparedActionLifecycleInputSchema,AppPreparedActionLifecycleReceiptSchema,type AppDataPreparedRecordAction} from '@deft/app-kit';
+import {AppPreparedActionLifecycleInputSchema,AppPreparedActionLifecycleReceiptSchema,type AppDataPreparedRecordAction} from '@deft/app-kit/core';
 import type {AppRunTransaction} from './app-run-repository.js';
 import {PostgresFutureRecordActionStore,type FutureReleaseRow} from './app-future-record-action-store.js';
 import {appDataDenied,appDataDigest,type CurrentAppDataAuthority} from './app-data-authority.js';

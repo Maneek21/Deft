@@ -2,7 +2,7 @@ import {and,asc,eq,gt,or} from 'drizzle-orm';
 import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {emailAccounts,emailTemplates} from '@deft/db/schema';
 import {canonicalCapabilityJson} from '@deft/shared';
-import {parseNativeSafeComposeHtml as parseSafeComposeHtml} from '@deft/app-kit/experience';
+import {parseTrustedRichtextHtml as parseBasicRichtextHtml} from '@deft/app-kit/experience/core';
 import {z} from 'zod';
 import {EmailMailboxCrypto} from './email-mailbox-crypto.js';
 import type {EmailScope} from './email-mailbox-service.js';
@@ -40,7 +40,7 @@ export const EmailTemplateContentSchema=z.strictObject({
   if(markerStrings.some(text=>/(?:https?:\/\/|mailto:|www\.)[^\s<>()]*\{\{[A-Za-z][A-Za-z0-9_]{0,63}\}\}[^\s<>()]*/iu.test(text)))
     ctx.addIssue({code:'custom',message:'Placeholders cannot occur in URL text'});
   if(value.body_html){
-    try{const parsed=parseSafeComposeHtml(value.body_html);if(parsed.plainText!==value.body)ctx.addIssue({code:'custom',message:'Rich and plain text must match'});}
+    try{const parsed=parseBasicRichtextHtml(value.body_html);if(parsed.plainText!==value.body)ctx.addIssue({code:'custom',message:'Rich and plain text must match'});}
     catch{ctx.addIssue({code:'custom',message:'Rich compose content is invalid'});}
   }
 });

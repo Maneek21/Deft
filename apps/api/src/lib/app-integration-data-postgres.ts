@@ -5,7 +5,7 @@ import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fe
 import {and,eq,sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {isDeepStrictEqual} from 'node:util';
-import {AppDataRuntimeAuthorityRequestSchema,type AppDataRuntimeRequest} from '@deft/app-kit';
+import {AppDataRuntimeAuthorityRequestSchema,type AppDataRuntimeRequest} from '@deft/app-kit/core';
 import {appConnectionSessions,orgMembers,users} from '@deft/db/schema';
 import {db} from './db.js';
 import {currentConnectionSessionLocators} from './app-connection-current-locators.js';

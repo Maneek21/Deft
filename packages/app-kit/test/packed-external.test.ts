@@ -59,7 +59,7 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
     const installedRoot = await realpath(resolve(consumer, 'node_modules', '@deft', 'app-kit'));
     assert.equal(installedRoot.startsWith(await realpath(consumer)), true);
     const installedPackage = JSON.parse(await readFile(resolve(installedRoot, 'package.json'), 'utf8')) as any;
-    assert.equal(installedPackage.version, '0.1.0-alpha.39');
+    assert.equal(installedPackage.version, '0.1.0-alpha.40');
     for (const notice of ['LICENSE', 'NOTICE']) {
       assert.equal(await readFile(resolve(installedRoot, notice), 'utf8'),
         await readFile(resolve(repositoryRoot, notice), 'utf8'));
@@ -90,7 +90,7 @@ test('packed App Kit builds Contacts, connected Campaigns, and scheduled Campaig
       sdk.close();
     `], consumer);
 
-    const cli = resolve(installedRoot, 'dist', 'cli.js');
+    const cli = resolve(installedRoot, 'dist', 'examples', 'email', 'cli.js');
     const contacts = resolve(temporaryRoot, 'contacts');
     await cp(resolve(repositoryRoot, 'examples', 'resource-participation-contacts-app'), contacts, {
       recursive: true,

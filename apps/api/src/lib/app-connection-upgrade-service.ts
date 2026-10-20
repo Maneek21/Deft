@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { createHash,randomBytes,timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { AppConnectionUpgradeReviewRequestSchema,AppConnectionUpgradeBeginRequestSchema,
@@ -6,7 +6,7 @@ import { AppConnectionUpgradeReviewRequestSchema,AppConnectionUpgradeBeginReques
   AppConnectionUpgradeReviewViewSchema,AppConnectionUpgradeRuntimeRequestSchema,
   AppConnectionUpgradeRuntimeResultSchema,AppConnectionUpgradeBegunSchema,AppConnectionUpgradeClosedViewSchema,AppConnectionSessionViewSchema,
   canonicalConnectionReattachmentJson,type AppConnectionUpgradeRuntimeRequest,type AppConnectionUpgradeRuntimeResult,
-  type AppConnectionActionConsents } from '@deft/app-kit';
+  type AppConnectionActionConsents } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 import { AppConnectionSessionRecordSchema,type AppConnectionSessionRecord,type AppConnectionSessionPorts,
   type AppConnectionSessionAuthority } from './app-connection-session-service.js';

@@ -1,13 +1,12 @@
 import {
+  parsePrivateInterfaceInput,
   DEFT_APP_PROTOCOL_SUPPORT,
-  SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE,
-  SandboxEmailSendInputSchema,
   type DeftAppManifestV1,
   type DeftAppManifestV2,
   type DeftAppPackageV1,
   type DeftAppPackageV2,
   type DeftAppPrivateInterfaceDescriptorV1,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
 import {
   canonicalCapabilityJson,
@@ -36,21 +35,13 @@ type PrivateInterfaceReference = Readonly<{
   version: string;
 }>;
 
-type ProviderInputParseResult = ReturnType<typeof SandboxEmailSendInputSchema.safeParse>;
-type ProviderInputSchema = Readonly<{
-  safeParse(value: unknown): ProviderInputParseResult;
-}>;
+type ProviderInputParseResult=ReturnType<typeof parsePrivateInterfaceInput>;
 
 export function connectedAppPrivateInterfaceRegistryKey(
   value: PrivateInterfaceReference,
 ): string {
   return `${value.key}:v${value.version}`;
 }
-
-const CONNECTED_APP_PROVIDER_INPUT_SCHEMAS: Readonly<Record<string, ProviderInputSchema>> = Object.freeze({
-  [connectedAppPrivateInterfaceRegistryKey(SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE)]:
-    SandboxEmailSendInputSchema,
-});
 
 /** One canonical interpretation of historical/current MCP override names for
  * connected-App review, health, preparation, and later execution checks. */
@@ -167,11 +158,7 @@ export function parseConnectedAppProviderInput(
   privateInterface: DeftAppPrivateInterfaceDescriptorV1,
   value: unknown,
 ): ProviderInputParseResult {
-  const schema = CONNECTED_APP_PROVIDER_INPUT_SCHEMAS[
-    connectedAppPrivateInterfaceRegistryKey(privateInterface)
-  ];
-  if (!schema) throw new TypeError('Connected App private interface input parser is not registered');
-  return schema.safeParse(value);
+  return parsePrivateInterfaceInput(privateInterface,value);
 }
 
 export function parseConnectedAppProviderInputForOperation(

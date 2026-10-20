@@ -33,9 +33,9 @@ test('large rich draft keeps exact persisted source and CID while reopening',asy
  const file={file_id:'44444444-4444-4444-8444-444444444444',filename:'inline.png',media_type:'image/png',size_bytes:67,sha256:'b'.repeat(64)};
  const plain='  large\ttext  '.repeat(12000)+'\n[Image: inline.png]',html='<p>'+ '  large\ttext  '.repeat(12000)+'</p><p><img src="cid:deft-compose-44444444-4444-4444-8444-444444444444@inline" alt="inline.png"></p>';
  // Canonical CID generation is shared with the frozen native writer.
- const f=fixture();const {nativeComposeImageCid,parseNativeSafeComposeHtml}=await import('../../../../packages/app-kit/src/safe-compose-html');
- const exact=html.replace('deft-compose-44444444-4444-4444-8444-444444444444@inline',nativeComposeImageCid(file.file_id));
- const pair=parseNativeSafeComposeHtml(exact,{inlineAttachments:[file]});assert.ok(pair.html.length>65536);assert.ok(pair.plainText.length>65536);
+ const f=fixture();const {richtextImageReference,parseTrustedRichtextHtml}=await import('../../../../packages/app-kit/src/safe-rich-text');
+ const exact=html.replace('deft-compose-44444444-4444-4444-8444-444444444444@inline',richtextImageReference(file.file_id));
+ const pair=parseTrustedRichtextHtml(exact,{inlineAttachments:[file]});assert.ok(pair.html.length>65536);assert.ok(pair.plainText.length>65536);
  f.writer.edit({...value(),body:pair.plainText,body_html:pair.html,attachments:[file]});assert.equal(await f.writer.save(),true);
  assert.equal(await f.writer.reopen(),true);assert.equal(f.writer.snapshot.value.body_html,pair.html);assert.equal(f.writer.snapshot.value.body,pair.plainText);
  assert.deepEqual(f.writer.snapshot.value.attachments,[file]);assert.ok(plain.length>65536);

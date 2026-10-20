@@ -1,4 +1,4 @@
-import { ResourceSyncResultRequestV3Schema, parseSyncPageV2 } from '@deft/app-kit';
+import { ResourceSyncResultRequestV3Schema, parseSyncPageV2 } from '@deft/app-kit/core';
 import { APP_RUN_CONTRACT_VERSIONS,AppRunRetainedProviderResultSchema,assertAppRunOutputWithinBudget } from '@deft/shared';
 export type AttachmentSyncResultRequest = ReturnType<typeof ResourceSyncResultRequestV3Schema.parse>;
 export function parseAttachmentSyncResult(value: unknown,pin:{descriptor:unknown;starting_request:unknown}) {

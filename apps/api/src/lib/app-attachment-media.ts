@@ -1,4 +1,4 @@
-import { RESOURCE_ATTACHMENT_LIMITS, type AttachmentPolicy } from '@deft/app-kit';
+import { RESOURCE_ATTACHMENT_LIMITS, type AttachmentPolicy } from '@deft/app-kit/core';
 
 /** Classification only, not malware certification. Nothing is rendered inline,
  * expanded, or fetched from a provider URL. Unknown/mismatched bytes are blocked. */

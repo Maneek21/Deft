@@ -4,13 +4,13 @@ import { experienceRunState } from './app-experience-run-presentation.js';
 import {experienceTerminalOutput} from './app-experience-run-output.js';
 import {samplePrivateAccessClock,type PrivateAccessClock} from './app-private-access-clock.js';
 import { randomUUID,createHash } from 'node:crypto';
-import {canonicalAppDataJson} from '@deft/app-kit';
+import {canonicalAppDataJson} from '@deft/app-kit/core';
 import { and, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appExperienceSessions, appGrantSnapshots, appInstallations, appRuntimeBindings, appRuntimeRegistrations, appResourceBindings,
   appVersions, appNativeBindings, appRuns, appRunAttempts, appRunSecretPayloads, agentActions, orgMembers, users, webSessions, appExperienceConsentGrants } from '@deft/db/schema';
 import { parseRuntimeAppManifest,
-  verifyDeftExperienceArtifact, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit';
+  verifyDeftExperienceArtifact, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit/core';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';
 import { AppRuntimeActionService, appRuntimeActionService } from './app-runtime-action-service.js';

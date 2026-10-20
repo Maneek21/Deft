@@ -1,6 +1,6 @@
 import {and,desc,eq,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
-import {AppConnectionSessionViewSchema,AppConnectionReattachAnyReviewViewSchema} from '@deft/app-kit';
+import {AppConnectionSessionViewSchema,AppConnectionReattachAnyReviewViewSchema} from '@deft/app-kit/core';
 import {appConnectionSessions} from '@deft/db/schema';
 import {currentConnectionBindingLocators} from './app-connection-current-locators.js';
 import {db} from './db.js';

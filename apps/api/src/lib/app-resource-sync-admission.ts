@@ -1,4 +1,4 @@
-import { SyncRequestV2Schema,appConsentDeadline } from '@deft/app-kit';
+import { SyncRequestV2Schema,appConsentDeadline } from '@deft/app-kit/core';
 import { loadLiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import { buildAttachmentSyncAuthorizationSnapshot } from './app-attachment-sync-run.js';

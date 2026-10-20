@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { PublicAvailabilityPolicySchema, PUBLIC_AVAILABILITY_SCALAR_TYPES } from '@deft/app-kit';
+import { PublicAvailabilityPolicySchema, PUBLIC_AVAILABILITY_SCALAR_TYPES } from '@deft/app-kit/core';
 import { parseSupportedDeftModuleManifest } from '@deft/shared/modules';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 

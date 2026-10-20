@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {randomUUID,randomBytes,createHash,timingSafeEqual} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {sql} from 'drizzle-orm';

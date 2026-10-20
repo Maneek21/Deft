@@ -1,4 +1,4 @@
-import {AppDataConsentSnapshotSchema,appConsentDeadline} from '@deft/app-kit';
+import {AppDataConsentSnapshotSchema,appConsentDeadline} from '@deft/app-kit/core';
 import {humanRecordSaveReceipt} from './app-data-human-save.js';
 import {and,eq,inArray,sql} from 'drizzle-orm';
 import {appDataConsents,appDataInvocations} from '@deft/db/schema';

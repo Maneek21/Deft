@@ -1,0 +1,8 @@
+export * from './sandbox.js';
+export * from './safe-compose-html.js';
+export * from './mailbox-list.js';
+export * from './native-compose-raster.js';
+import {checkDeftAppDeveloperContract as checkCore} from '../../core.js';
+import {SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS as vectors} from './sandbox.js';
+/** @deprecated Use checkDeftAppDeveloperContract from @deft/app-kit/core; use explicit example conformance data when needed. */
+export async function checkDeftAppDeveloperContract(input:Parameters<typeof checkCore>[0]) {return {...await checkCore(input),sandbox_email_conformance:{schema:vectors.schema,valid_input:vectors.valid.input,expected_output:vectors.valid.output}};}

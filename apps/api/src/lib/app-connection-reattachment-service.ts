@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -7,7 +7,7 @@ import {
   AppConnectionReattachAnyRuntimeRequestSchema, AppConnectionReattachAnyRuntimeResultSchema,
   AppConnectionSessionViewSchema, canonicalConnectionReattachmentJson,
   type AppConnectionReattachAnyRuntimeRequest, type AppConnectionReattachAnyRuntimeResult,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord,
   type AppConnectionSessionLocator, type AppConnectionSessionAuthority, type AppConnectionSessionPorts, type AppConnectionSessionPurpose } from './app-connection-session-service.js';

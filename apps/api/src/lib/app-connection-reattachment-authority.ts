@@ -1,7 +1,7 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { and, eq, inArray, or, notInArray, sql } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
-import { AppConnectionReattachAnyRuntimeRequestSchema, AppConnectionReattachAnyAuthorityResultSchema } from '@deft/app-kit';
+import { AppConnectionReattachAnyRuntimeRequestSchema, AppConnectionReattachAnyAuthorityResultSchema } from '@deft/app-kit/core';
 import { appRuns, appRunAttempts, appRuntimeBindings, appResourceBindings } from '@deft/db/schema';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';

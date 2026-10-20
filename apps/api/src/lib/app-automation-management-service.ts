@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { AppDigestSchema } from '@deft/app-kit';
+import { AppDigestSchema } from '@deft/app-kit/core';
 import { appActionBindings, appAutomationFires, appGrantSnapshots, appInstallations, appRuns, appVersions, capabilityProviderSnapshots, mcpConnections, mcpToolOverrides, moduleInstallations, moduleRecords, orgMembers, resourceRelationEdges, resourceRelationSets } from '@deft/db/schema';
 import { ResourceRefV1Schema, canonicalCapabilityJson } from '@deft/shared';
 import type { ModuleActor } from '@deft/shared/modules';

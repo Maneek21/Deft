@@ -4,7 +4,7 @@ import {
   APP_LIMITS,
   DEFT_APP_DEVELOPER_COMPATIBILITY,
   resolveDeftAppDeveloperProtocolFlow,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import { activateAppInstallation, inspectAppPackageJson, stageAppPackage } from '../lib/app-service.js';
 import { claimAppDeveloperSession, exchangeAppDeveloperPairing } from '../lib/app-developer-pairing.js';
 import { AppError, isAppError } from '../lib/app-errors.js';

@@ -3,7 +3,7 @@ import {readRecordMirrorRuntimeStatus} from './app-record-mirror-unstarted.js';
 import {assertPreparedRecordCleanupSource} from './app-prepared-record-action-receipt.js';
 import {z} from 'zod';
 import {sql} from 'drizzle-orm';
-import {AppConnectionSessionScopeSchema,AppPreparedMirrorInputSchema} from '@deft/app-kit';
+import {AppConnectionSessionScopeSchema,AppPreparedMirrorInputSchema} from '@deft/app-kit/core';
 import {db} from './db.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
 import {appDataDenied,appDataDigest} from './app-data-authority.js';

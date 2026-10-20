@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { AppRunAuthorizationSnapshotSchema } from '@deft/shared';
 import { appCanonicalClaims, appPublicCancellations, appPublicCancellationSelections, appPublicEndpoints, appRuns } from '@deft/db/schema';
-import { parseNativeCalendarInput } from '@deft/app-kit';
+import { parseNativeCalendarInput } from '@deft/app-kit/core';
 import { nativeStale } from './app-native-authority.js';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { loadCertifiedPublicCreate } from './app-public-cancellation-ancestry.js';

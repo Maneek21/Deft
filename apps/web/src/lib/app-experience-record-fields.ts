@@ -1,4 +1,4 @@
-import {parseNativeSafeComposeHtml} from '../../../../packages/app-kit/src/safe-compose-html';
+import {parseTrustedRichtextHtml} from '../../../../packages/app-kit/src/safe-rich-text';
 import type {DeftExperienceRecordFormV2Node,DeftExperienceRecordFormV2Profile} from '../../../../packages/app-kit/src/app-data';
 import type {ExperienceRecordValue,ExperienceRecordRow} from './app-experience-record-writer';
 import type {RecordFormIdentity} from './app-experience-record-form';
@@ -18,7 +18,7 @@ export function validateRecordFields(value:ExperienceRecordValue,profile:DeftExp
  }
  const rich=profile.richtext;if(rich){const html=value[rich.html_field],plain=value[rich.plain_field];
   if(typeof html!=='string'||typeof plain!=='string'||html.length>rich.max_html_characters||plain.length>rich.max_plain_characters||!plain.isWellFormed()||controls.test(plain))throw Error('Record text limit');
-  if(html&&parseNativeSafeComposeHtml(html,{maxCharacters:rich.max_html_characters,maxBytes:profile.max_record_bytes}).plainText!==plain)throw Error('Record text pair changed');
+  if(html&&parseTrustedRichtextHtml(html,{maxCharacters:rich.max_html_characters,maxBytes:profile.max_record_bytes}).plainText!==plain)throw Error('Record text pair changed');
  }
 }
 export function recordChoiceValue(value:ExperienceRecordValue,field:Extract<DeftExperienceRecordFormV2Profile['fields'][number],{kind:'choice'}>){

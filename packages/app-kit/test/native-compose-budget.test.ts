@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
-const h=await import(process.env.EMAIL_NATIVE_BUDGET_BASELINE?pathToFileURL(process.env.EMAIL_NATIVE_BUDGET_BASELINE).href:new URL('../src/safe-compose-html.js',import.meta.url).href);
+const h=await import(process.env.EMAIL_NATIVE_BUDGET_BASELINE?pathToFileURL(process.env.EMAIL_NATIVE_BUDGET_BASELINE).href:new URL('../src/examples/email/safe-compose-html.js',import.meta.url).href);
 const doc=(text:string)=>({type:'doc',content:[{type:'paragraph',content:[{type:'text',text}]}]});
 
 test('native 20/96/220 KiB text enters rich mode and preserves exact text while legacy limits stay fixed',()=>{

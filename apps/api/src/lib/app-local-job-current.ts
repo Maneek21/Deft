@@ -1,14 +1,14 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {and,eq} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
-import {AppDataConsentSnapshotSchema,parseAttachmentAppManifest} from '@deft/app-kit';
+import {AppDataConsentSnapshotSchema,parseAttachmentAppManifest} from '@deft/app-kit/core';
 import {appDataConsents,appVersions,appGrantSnapshots} from '@deft/db/schema';
 import {AppError} from './app-errors.js';
 import {appDataDigest} from './app-data-authority.js';
 import {resourceObservationBindingAuthority,loadObservationConnection} from './app-resource-observation-authority.js';
 import type {AppRunTransaction} from './app-run-repository.js';
 import type {AppLocalJobSnapshot} from '../../../../packages/app-kit/src/local-job.js';
-import type {AppConnectionSessionScope} from '@deft/app-kit';
+import type {AppConnectionSessionScope} from '@deft/app-kit/core';
 export const localJobDenied=()=>new AppError('Local job authority ended','APP_ACCESS_DENIED',403);
 /** Reuses only the live resource/connected-account readers. Observation
  * consent, channel credential, human SID and effect grants are not reused. */

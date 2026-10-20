@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {canonicalAppDataJson,AppDataOperationInputSchema} from '@deft/app-kit';
+import {canonicalAppDataJson,AppDataOperationInputSchema} from '@deft/app-kit/core';
 import {AppIntegrationToolDeclarationSchema,AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeAuthorityRequestSchema} from '../../../../packages/app-kit/src/app-integration-tools.js';
 
 const digest=(value:unknown)=>'sha256:'+createHash('sha256').update(canonicalAppDataJson(value)).digest('hex');

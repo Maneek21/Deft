@@ -1,0 +1,4702 @@
+{
+  "schema": "deft.kit.domain_extraction_inventory.v1",
+  "kit_baseline": "4df841c4",
+  "old_versions": [
+    "0.1.0-alpha.38",
+    "0.1.0-alpha.39"
+  ],
+  "next_version": "0.1.0-alpha.40",
+  "deprecated_symbols": [
+    "APP_AUTOMATION_POLICY_V1",
+    "AppAutomationPolicyV1",
+    "MailboxAddress",
+    "MailboxListError",
+    "MailboxListOptions",
+    "NATIVE_COMPOSE_BODY_LIMITS",
+    "NativeComposeInlineAttachment",
+    "NativeComposeOptions",
+    "NativeComposeRasterInfo",
+    "NativeComposeRasterProfile",
+    "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS",
+    "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT",
+    "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE",
+    "SafeComposeDocument",
+    "SandboxEmailSendInput",
+    "SandboxEmailSendInputSchema",
+    "SandboxEmailSendOutput",
+    "SandboxEmailSendOutputSchema",
+    "canonicalNativeComposeLink",
+    "formatMailboxList",
+    "formatNativeMailboxList",
+    "inspectNativeComposeRaster",
+    "nativeComposeDraftFromEditorDocument",
+    "nativeComposeImageCid",
+    "nativeComposeInlineFileIds",
+    "nativeSafeComposeHtmlFromEditorDocument",
+    "parseMailboxList",
+    "parseNativeMailboxList",
+    "parseNativeSafeComposeHtml",
+    "parseSafeComposeHtml",
+    "plainTextToNativeComposeHtml",
+    "plainTextToSafeComposeHtml",
+    "removeNativeComposeInlineFiles",
+    "safeComposeHtmlFromEditorDocument",
+    "validateNativeComposeRaster"
+  ],
+  "consumers": [
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/app-action-service.ts",
+      "references": [
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1278,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1465,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1466,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1467,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1468,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1510,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1511,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/app-automation-definition-service.ts",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 52,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 275,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 330,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 331,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 334,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 432,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 505,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 506,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/app-connected-contract.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 51,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 52,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/app-integration-contacts.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/app-run-live-authorization.ts",
+      "references": [
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 251,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 252,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 253,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 254,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 680,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 681,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1589,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1590,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1617,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1621,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1622,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1623,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1624,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1625,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1626,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1628,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1679,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 1680,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/app-run-service.ts",
+      "references": [
+        {
+          "line": 31,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 457,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 458,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 459,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 460,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 468,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/calendar-invitation.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 36,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/email-attachment-store.ts",
+      "references": [
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 70,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/email-draft-service.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 50,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 51,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 53,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/email-signature-types.ts",
+      "references": [
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 18,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/src/lib/email-template-store.ts",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 43,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-action-service-db.test.ts",
+      "references": [
+        {
+          "line": 6,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 109,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 110,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 125,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 126,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 768,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 770,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 774,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-automation-definition-service.test.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 59,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 60,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 61,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-connected-contract.test.ts",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 124,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 125,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 126,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-origin-run-cutover-db.test.ts",
+      "references": [
+        {
+          "line": 6,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 107,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 108,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 119,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 120,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-origin-run-lifecycle-db.test.ts",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 229,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 230,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 238,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 239,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1449,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1451,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1455,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-platform-sandbox-provider.test.ts",
+      "references": [
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 135,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 136,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 142,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 145,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 149,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 157,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 159,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 160,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 161,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 162,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 164,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 173,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 183,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 192,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-public-service-db.test.ts",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 57,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 58,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 67,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 68,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/app-run-attempt-runner.test.ts",
+      "references": [
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 22,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/apps-connected-grants-db.test.ts",
+      "references": [
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 198,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 199,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 212,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 213,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1833,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1835,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1839,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/crm-public-lifecycle-db.test.ts",
+      "references": [
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 32,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 33,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 43,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "references": [
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 72,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 74,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/api/test/fixtures/phase4-sandbox-email-provider.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "SandboxEmailSendInput"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 14,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 22,
+          "symbols_or_modules": [
+            "SandboxEmailSendInput"
+          ]
+        },
+        {
+          "line": 31,
+          "symbols_or_modules": [
+            "SandboxEmailSendInput"
+          ]
+        },
+        {
+          "line": 32,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/next.config.ts",
+      "references": [
+        {
+          "line": 41,
+          "symbols_or_modules": [
+            "mailbox-list"
+          ]
+        },
+        {
+          "line": 44,
+          "symbols_or_modules": [
+            "safe-compose-html"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/components/apps/experience-action-composer.tsx",
+      "references": [
+        {
+          "line": 14,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 459,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "references": [
+        {
+          "line": 6,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "formatMailboxList",
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 31,
+          "symbols_or_modules": [
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 40,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 45,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 65,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.test.tsx",
+      "references": [
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS",
+            "canonicalNativeComposeLink",
+            "nativeComposeDraftFromEditorDocument",
+            "nativeComposeImageCid",
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "plainTextToSafeComposeHtml",
+            "safe-compose-html",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 28,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 36,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS",
+            "canonicalNativeComposeLink",
+            "nativeComposeDraftFromEditorDocument",
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "plainTextToSafeComposeHtml",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 60,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 61,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 72,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 85,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 113,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.tsx",
+      "references": [
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS",
+            "NativeComposeInlineAttachment",
+            "canonicalNativeComposeLink",
+            "nativeComposeDraftFromEditorDocument",
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "plainTextToSafeComposeHtml",
+            "safe-compose-html",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 29,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 46,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 50,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 54,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 59,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 63,
+          "symbols_or_modules": [
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 85,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 87,
+          "symbols_or_modules": [
+            "plainTextToNativeComposeHtml",
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 100,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 113,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 114,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "references": [
+        {
+          "line": 18,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 78,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 79,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 163,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 57,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 60,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-controls.test.ts",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 18,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-inline-images.test.ts",
+      "references": [
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 23,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 26,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 46,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-inline-images.ts",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster",
+            "native-compose-raster"
+          ]
+        },
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 40,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "formatMailboxList",
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 26,
+          "symbols_or_modules": [
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 28,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-presentation-headers.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "formatNativeMailboxList",
+            "mailbox-list",
+            "parseNativeMailboxList"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "formatNativeMailboxList",
+            "parseNativeMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-recipient-presentation.test.mjs",
+      "references": [
+        {
+          "line": 16,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-record-fields.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-record-form.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 51,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-record-writer.test.ts",
+      "references": [
+        {
+          "line": 36,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 37,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 38,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-rich-mode.test.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS",
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS",
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "apps/web/src/lib/app-experience-rich-mode.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "examples/apps/email/compose-intents.mjs",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "formatMailboxList",
+            "parseMailboxList",
+            "parseSafeComposeHtml",
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 31,
+          "symbols_or_modules": [
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 33,
+          "symbols_or_modules": [
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 41,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 46,
+          "symbols_or_modules": [
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 47,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "examples/apps/email/outgoing-payload-builder.mjs",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "parseMailboxList",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 29,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 34,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "examples/apps/email/outgoing-snapshot.mjs",
+      "references": [
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "nativeComposeInlineFileIds",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 38,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 43,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 133,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "examples/apps/email/providers/remote-image-proxy.mjs",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 44,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/experience-capabilities.ts",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 101,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "references": [
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster",
+            "native-compose-raster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 15,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 149,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo",
+            "NativeComposeRasterProfile",
+            "native-compose-raster"
+          ]
+        },
+        {
+          "line": 150,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment",
+            "NativeComposeOptions",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 151,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS",
+            "canonicalNativeComposeLink",
+            "nativeComposeDraftFromEditorDocument",
+            "nativeComposeImageCid",
+            "nativeComposeInlineFileIds",
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "plainTextToSafeComposeHtml",
+            "removeNativeComposeInlineFiles",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 153,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 154,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument",
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 155,
+          "symbols_or_modules": [
+            "removeNativeComposeInlineFiles",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 158,
+          "symbols_or_modules": [
+            "formatMailboxList",
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/index.ts",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 28,
+          "symbols_or_modules": [
+            "mailbox-list"
+          ]
+        },
+        {
+          "line": 390,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 397,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 402,
+          "symbols_or_modules": [
+            "SandboxEmailSendInput",
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 403,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutput",
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 405,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 450,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 451,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 452,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 455,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 456,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 457,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 492,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 499,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 500,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 501,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 512,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1",
+            "AppAutomationPolicyV1"
+          ]
+        },
+        {
+          "line": 518,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 584,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 585,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 998,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 1026,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 1281,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1282,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1283,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1284,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1285,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1286,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1288,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1291,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1546,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 1667,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 1764,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 1765,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS",
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 1766,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS",
+            "SandboxEmailSendOutputSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "MailboxListOptions"
+          ]
+        },
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 35,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 49,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "MailboxListOptions"
+          ]
+        },
+        {
+          "line": 73,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "MailboxListOptions",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 77,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "MailboxListOptions",
+            "parseNativeMailboxList"
+          ]
+        },
+        {
+          "line": 83,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 95,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 98,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "formatNativeMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/native-compose-raster.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "NativeComposeRasterProfile"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "NativeComposeRasterProfile",
+            "inspectNativeComposeRaster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo",
+            "NativeComposeRasterProfile",
+            "inspectNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 69,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 74,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 87,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment",
+            "NativeComposeOptions"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment",
+            "NativeComposeOptions"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 57,
+          "symbols_or_modules": [
+            "SafeComposeDocument",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 61,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 62,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 64,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 65,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 66,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 74,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 96,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 120,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 124,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 131,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 132,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 142,
+          "symbols_or_modules": [
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 145,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 148,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 149,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 151,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 154,
+          "symbols_or_modules": [
+            "SafeComposeDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 157,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 162,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 165,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 167,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 170,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 178,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 186,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 190,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 201,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 227,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 232,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 233,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 239,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "removeNativeComposeInlineFiles"
+          ]
+        },
+        {
+          "line": 240,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 246,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/developer-contract.test.ts",
+      "references": [
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 119,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 176,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 177,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 179,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 180,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 182,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 186,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 187,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 188,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/mailbox-list.test.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "formatMailboxList",
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "formatMailboxList",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 22,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 23,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 41,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 43,
+          "symbols_or_modules": [
+            "MailboxListError",
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/native-compose-budget.test.ts",
+      "references": [
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml",
+            "plainTextToSafeComposeHtml",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 16,
+          "symbols_or_modules": [
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 26,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 27,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 28,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 29,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 35,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 36,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 37,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 38,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 40,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 44,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 46,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 48,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 54,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/native-compose-raster.test.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster",
+            "native-compose-raster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 15,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 16,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 18,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 22,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 23,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 34,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 36,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/native-safe-compose-images.test.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 16,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 18,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 23,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 26,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 31,
+          "symbols_or_modules": [
+            "removeNativeComposeInlineFiles"
+          ]
+        },
+        {
+          "line": 33,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "removeNativeComposeInlineFiles"
+          ]
+        },
+        {
+          "line": 34,
+          "symbols_or_modules": [
+            "removeNativeComposeInlineFiles"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/native-safe-compose-links.test.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink",
+            "nativeComposeDraftFromEditorDocument",
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "safe-compose-html",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 14,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 15,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 16,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 22,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 23,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 25,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 28,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 29,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 31,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 32,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/protocol-v1.test.ts",
+      "references": [
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 186,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 189,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 190,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 191,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 200,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 201,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 202,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 237,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 243,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 250,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 256,
+          "symbols_or_modules": [
+            "SandboxEmailSendInputSchema"
+          ]
+        },
+        {
+          "line": 262,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 263,
+          "symbols_or_modules": [
+            "SandboxEmailSendOutputSchema"
+          ]
+        },
+        {
+          "line": 264,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 274,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/protocol-v2.test.ts",
+      "references": [
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 16,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 18,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 167,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 230,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 235,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 236,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 237,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 238,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 239,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1",
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 240,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1",
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 241,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1",
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 242,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 243,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 244,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 245,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 246,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 247,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 248,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 249,
+          "symbols_or_modules": [
+            "APP_AUTOMATION_POLICY_V1"
+          ]
+        },
+        {
+          "line": 250,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_CONTRACT"
+          ]
+        },
+        {
+          "line": 289,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_PRIVATE_INTERFACE"
+          ]
+        },
+        {
+          "line": 368,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        },
+        {
+          "line": 393,
+          "symbols_or_modules": [
+            "SANDBOX_EMAIL_SEND_CONFORMANCE_VECTORS"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "Deft",
+      "path": "packages/app-kit/test/safe-compose-html.test.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml",
+            "plainTextToSafeComposeHtml",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 6,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml",
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 11,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 15,
+          "symbols_or_modules": [
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/adoption.test.mjs",
+      "references": [
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 45,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/data.test.mjs",
+      "references": [
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 49,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/domain/mailbox-list.mjs",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 119,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 123,
+          "symbols_or_modules": [
+            "parseNativeMailboxList"
+          ]
+        },
+        {
+          "line": 143,
+          "symbols_or_modules": [
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 146,
+          "symbols_or_modules": [
+            "formatNativeMailboxList"
+          ]
+        },
+        {
+          "line": 149,
+          "symbols_or_modules": [
+            "mailbox-list"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/domain/native-compose-raster.mjs",
+      "references": [
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 6,
+          "symbols_or_modules": [
+            "inspectNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 114,
+          "symbols_or_modules": [
+            "native-compose-raster"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/domain/safe-compose-html.mjs",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 6,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 14,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 67,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 71,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 72,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 76,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 85,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 125,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 160,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 165,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 184,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 209,
+          "symbols_or_modules": [
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 213,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 217,
+          "symbols_or_modules": [
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 218,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 221,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 225,
+          "symbols_or_modules": [
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 228,
+          "symbols_or_modules": [
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 233,
+          "symbols_or_modules": [
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 240,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 266,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 283,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 288,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 308,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 356,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 363,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 364,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 372,
+          "symbols_or_modules": [
+            "removeNativeComposeInlineFiles"
+          ]
+        },
+        {
+          "line": 373,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 382,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 384,
+          "symbols_or_modules": [
+            "safe-compose-html"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/domain/source/mailbox-list.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "MailboxListOptions"
+          ]
+        },
+        {
+          "line": 5,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 13,
+          "symbols_or_modules": [
+            "MailboxListError"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 35,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 49,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "MailboxListOptions"
+          ]
+        },
+        {
+          "line": 73,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "MailboxListOptions",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 77,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "MailboxListOptions",
+            "parseNativeMailboxList"
+          ]
+        },
+        {
+          "line": 83,
+          "symbols_or_modules": [
+            "MailboxAddress"
+          ]
+        },
+        {
+          "line": 95,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "formatMailboxList"
+          ]
+        },
+        {
+          "line": 98,
+          "symbols_or_modules": [
+            "MailboxAddress",
+            "formatNativeMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/domain/source/native-compose-raster.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "NativeComposeRasterProfile"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "NativeComposeRasterProfile",
+            "inspectNativeComposeRaster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo",
+            "NativeComposeRasterProfile",
+            "inspectNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "NativeComposeRasterInfo"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/domain/source/safe-compose-html.ts",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 8,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 9,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment",
+            "NativeComposeOptions"
+          ]
+        },
+        {
+          "line": 19,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 20,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment",
+            "NativeComposeOptions"
+          ]
+        },
+        {
+          "line": 21,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 39,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 57,
+          "symbols_or_modules": [
+            "SafeComposeDocument",
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 61,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 62,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 64,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 65,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 66,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 74,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 96,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 120,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 124,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 131,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 132,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 142,
+          "symbols_or_modules": [
+            "plainTextToSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 145,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 148,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 149,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 151,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 154,
+          "symbols_or_modules": [
+            "SafeComposeDocument",
+            "safeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 157,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "nativeSafeComposeHtmlFromEditorDocument"
+          ]
+        },
+        {
+          "line": 162,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "nativeComposeDraftFromEditorDocument"
+          ]
+        },
+        {
+          "line": 165,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument"
+          ]
+        },
+        {
+          "line": 167,
+          "symbols_or_modules": [
+            "NativeComposeInlineAttachment"
+          ]
+        },
+        {
+          "line": 170,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 178,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 186,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        },
+        {
+          "line": 190,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 201,
+          "symbols_or_modules": [
+            "canonicalNativeComposeLink"
+          ]
+        },
+        {
+          "line": 227,
+          "symbols_or_modules": [
+            "NATIVE_COMPOSE_BODY_LIMITS"
+          ]
+        },
+        {
+          "line": 232,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 233,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 239,
+          "symbols_or_modules": [
+            "NativeComposeOptions",
+            "SafeComposeDocument",
+            "removeNativeComposeInlineFiles"
+          ]
+        },
+        {
+          "line": 240,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 246,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/draft-store.mjs",
+      "references": [
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds",
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "native-compose-raster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 33,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 38,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 54,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 55,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 120,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 121,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds",
+            "validateNativeComposeRaster"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/integration-calendar-parser.mjs",
+      "references": [
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 60,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/native-activation-fixture.mjs",
+      "references": [
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 45,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/native-adoption-contract.test.mjs",
+      "references": [
+        {
+          "line": 10,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 45,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/prepare-latency.test.mjs",
+      "references": [
+        {
+          "line": 7,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 35,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/record-change-native.mjs",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "plainTextToNativeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 12,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 24,
+          "symbols_or_modules": [
+            "plainTextToNativeComposeHtml"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "plainTextToNativeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/settings-store.mjs",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 33,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 44,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/template-parameters.mjs",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 17,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/vendor/outgoing-payload-builder.mjs",
+      "references": [
+        {
+          "line": 2,
+          "symbols_or_modules": [
+            "mailbox-list",
+            "parseMailboxList"
+          ]
+        },
+        {
+          "line": 3,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 30,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 35,
+          "symbols_or_modules": [
+            "parseMailboxList"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/vendor/outgoing-snapshot.mjs",
+      "references": [
+        {
+          "line": 4,
+          "symbols_or_modules": [
+            "nativeComposeImageCid",
+            "nativeComposeInlineFileIds",
+            "parseNativeSafeComposeHtml",
+            "parseSafeComposeHtml",
+            "safe-compose-html"
+          ]
+        },
+        {
+          "line": 38,
+          "symbols_or_modules": [
+            "parseSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "parseNativeSafeComposeHtml"
+          ]
+        },
+        {
+          "line": 43,
+          "symbols_or_modules": [
+            "nativeComposeInlineFileIds"
+          ]
+        },
+        {
+          "line": 133,
+          "symbols_or_modules": [
+            "nativeComposeImageCid"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "deft-email",
+      "path": "runtime/vendor/providers/remote-image-proxy.mjs",
+      "references": [
+        {
+          "line": 1,
+          "symbols_or_modules": [
+            "native-compose-raster",
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 42,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        },
+        {
+          "line": 44,
+          "symbols_or_modules": [
+            "validateNativeComposeRaster"
+          ]
+        }
+      ]
+    }
+  ],
+  "Deft_baseline_commit": "4df841c4ea736ddc4aa8e400cc13a999b4997545",
+  "deft-email_baseline_commit": "d56e01e011dccd2adfe0e877b78186637751256b"
+}
