@@ -49,9 +49,13 @@ test('packed alpha.40 preserves old consumer types and a non-mail build has no m
  run([...optional,'app','init','--template','connected'],legacyApp);run([...optional,'app','build'],legacyApp);
  await writeFile(join(consumer,'worker.mjs'),"import {createDeftExperienceSdk} from '@deft/app-kit/experience/core'; globalThis.onmessage=event=>{if(event.data?.type!=='deft.experience_bootstrap.v1')return;const sdk=createDeftExperienceSdk(event.ports[0],event.data.session_id);sdk.render({root:{kind:'text',id:'work_orders',text:'Work orders'}});};\n");
  const bundled=await build({entryPoints:[join(consumer,'worker.mjs')],bundle:true,minify:true,platform:'browser',format:'esm',write:false,metafile:true});
+ await writeFile(join(consumer,'build-tool.mjs'),"export {buildDeftAppPackage} from '@deft/app-kit/core';\n");
+ const coreBundled=await build({entryPoints:[join(consumer,'build-tool.mjs')],bundle:true,minify:true,platform:'node',format:'esm',write:false,metafile:true});
  const forbidden=/(?:examples[\\/]email|mailbox-list|sandbox|safe-compose-html|native-compose-raster)/i;
- for(const path of Object.keys(bundled.metafile!.inputs))assert.doesNotMatch(path,forbidden);
- for(const file of bundled.outputFiles!)assert.doesNotMatch(file.text,/SandboxEmailSend|MAILBOX_LIST|sandbox_email_send|parseMailboxList/);
+ for(const artifact of [bundled,coreBundled]){
+  for(const path of Object.keys(artifact.metafile!.inputs))assert.doesNotMatch(path,forbidden);
+  for(const file of artifact.outputFiles!)assert.doesNotMatch(file.text,/SandboxEmailSend|MAILBOX_LIST|sandbox_email_send|parseMailboxList/);
+ }
  const experienceApp=join(consumer,'installed');await mkdir(experienceApp);run([cli,'app','init','--template','installed'],experienceApp);
  await writeFile(join(consumer,'worker.bundle.js'),bundled.outputFiles![0]!.text);
  await writeFile(join(consumer,'prepare-worker.mjs'),"import {prepareDeftExperienceArtifact} from '@deft/app-kit/core';import {readFileSync,writeFileSync} from 'node:fs';const path='installed/experiences/main.json',source=JSON.parse(readFileSync(path,'utf8'));source.worker_source=readFileSync('worker.bundle.js','utf8');const artifact=await prepareDeftExperienceArtifact('experiences/main.json',source);writeFileSync(path,JSON.stringify(source));const manifest=JSON.parse(readFileSync('installed/deft.app.json','utf8'));manifest.experiences[0].artifact_digest=artifact.digest;writeFileSync('installed/deft.app.json',JSON.stringify(manifest));");
@@ -59,5 +63,5 @@ test('packed alpha.40 preserves old consumer types and a non-mail build has no m
  await writeFile(join(consumer,'verify.mjs'),"import {verifyDeftAppPackageJson,checkDeftAppDeveloperContract,DEFT_APP_DEVELOPER_COMPATIBILITY,DEFT_APP_PROTOCOL_SUPPORT} from '@deft/app-kit/core';import {readFileSync} from 'node:fs';if(DEFT_APP_PROTOCOL_SUPPORT['1'].private_interfaces.length)throw Error('example registration');const text=readFileSync('.deft/app.deftapp.json','utf8');await verifyDeftAppPackageJson(text);await verifyDeftAppPackageJson(readFileSync('installed/.deft/app.deftapp.json','utf8'));const checked=await checkDeftAppDeveloperContract({package_json:text,host_compatibility:DEFT_APP_DEVELOPER_COMPATIBILITY});if('sandbox_email_conformance'in checked)throw Error('example conformance');console.log('packed core verified');");
  assert.match(run(['verify.mjs'],consumer),/packed core verified/);
  const declarations=await readFile(join(installed,'dist/compatibility.d.ts'),'utf8');assert.match(declarations,/@deprecated/);assert.match(declarations,/next breaking Kit alpha/);
- console.log(`Packed transition consumer: ${consumer}; Worker inputs: ${Object.keys(bundled.metafile!.inputs).length}`);
+ console.log(`Packed transition consumer: ${consumer}; Worker inputs: ${Object.keys(bundled.metafile!.inputs).length}; core inputs: ${Object.keys(coreBundled.metafile!.inputs).length}`);
 });

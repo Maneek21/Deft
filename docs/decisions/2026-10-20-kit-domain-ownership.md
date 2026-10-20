@@ -58,8 +58,8 @@ Generated `.d.ts` ownership follows the same facades and optional subpath.
 
 `packed-transition.test.ts` packs and installs the real tarball externally, compiles
 an unmigrated alpha.38/39 root and `/experience` fixture, builds a non-mail Runtime
-example, and bundles a non-mail Worker with a metafile assertion excluding all
-mailbox/sandbox/compose modules. It also verifies default conformance output and
+example, and bundles both a core authoring tool and a Worker with metafile
+assertions excluding all mailbox/sandbox/compose modules. It also verifies default conformance output and
 deprecation declarations. `safe-rich-text.security.test.ts` checks independent
 Host rejection and frozen URL/CID/projection parity. Existing Host rich-text tests
 now cross that independent interface. deft-email owns the copied security and
