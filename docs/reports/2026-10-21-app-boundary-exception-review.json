@@ -5,10 +5,10 @@
   "before": 1269,
   "retained_exactly": 1005,
   "removed": 264,
-  "added": 268,
-  "after": 1273,
+  "added": 269,
+  "after": 1274,
   "added_categories": {
-    "reviewed-fixture": 13,
+    "reviewed-fixture": 14,
     "retained-wire": 10,
     "isolated-compatibility": 237,
     "historical-lineage": 8
@@ -4006,6 +4006,14 @@
       "rule": "host-import-reference",
       "token": "packages/app-kit/src/examples/email/index.ts",
       "digest": "df4b4615ac19feb70f93f80d92a97e79e3a892d303abf53e6a10d28431c5aae8",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/api/test/phase5-proof-package-determinism.test.ts",
+      "rule": "host-import-reference",
+      "token": "packages/app-kit/dist/examples/email/cli.js",
+      "digest": "ca20f3aaa3fafe4acadc8a53e59a481d93a49f784075f074b4c96b8af9763270",
       "occurrences": 1,
       "review_category": "reviewed-fixture"
     }

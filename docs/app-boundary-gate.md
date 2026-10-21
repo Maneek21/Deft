@@ -70,8 +70,8 @@ or retire custody keys. Those require the plan's migration gates.
 ## Host134 / Kit alpha.42 review
 
 This gate is stacked on Kit extraction PR #407 and must land last, after #393,
-#394, the Kit release and deft-email #12. The final endpoint has 1,273 exact
-findings: 1,005 old records unchanged, 264 obsolete records removed, and 268
+#394, the Kit release and deft-email #12. The final endpoint has 1,274 exact
+findings: 1,005 old records unchanged, 264 obsolete records removed, and 269
 reviewed replacements/additions. The exact before/after identities and review
 categories are in `docs/reports/2026-10-21-app-boundary-exception-review.json`.
 

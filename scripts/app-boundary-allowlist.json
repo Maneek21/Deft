@@ -14001,5 +14001,16 @@
     "owner": "@Maneek21",
     "issue": "https://github.com/Maneek21/Deft/issues/382",
     "milestone": "permanent reviewed tooling/test boundary; re-review on context change"
+  },
+  {
+    "path": "apps/api/test/phase5-proof-package-determinism.test.ts",
+    "rule": "host-import-reference",
+    "token": "packages/app-kit/dist/examples/email/cli.js",
+    "digest": "ca20f3aaa3fafe4acadc8a53e59a481d93a49f784075f074b4c96b8af9763270",
+    "occurrences": 1,
+    "reason": "Historical connected-fixture determinism test explicitly selects the trusted optional example CLI in a child process. Ordinary proof Apps retain the clean CLI; this path is never loaded by production Host/core.",
+    "owner": "@Maneek21",
+    "issue": "https://github.com/Maneek21/Deft/issues/382",
+    "milestone": "remove with historical connected sandbox fixture retirement"
   }
 ]
