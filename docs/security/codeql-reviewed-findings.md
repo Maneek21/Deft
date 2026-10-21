@@ -22,3 +22,19 @@ node scripts/codeql-reviewed-findings.mjs /path/to/sarif-directory
 ```
 
 The catalog is deliberately conservative: edits anywhere in a pinned file require a new source review. Reviewers must inspect changed source semantics and the fresh raw finding before updating a catalog entry. A real vulnerability must be repaired; it cannot be classified merely to make CI pass.
+
+## FX-A review, 2026-10-22
+
+Fresh [Security run 39689516157](https://github.com/Maneek21/Deft/actions/runs/39689516157) analyzed PR #410 commit `f4c17114708faeef49600158c0a269df45aa1786`. Its untouched raw SARIF has SHA-256 `afebaad11408dc67df2be0d2b327c7bd381f119e08f63c5aabbfdb5cb3ed0f11` and 26 findings: 23 still matched existing reviews, and only the three existing opaque-frame findings required renewed location/source pins.
+
+| Review | Previous line | Fresh line | Fresh exact fingerprint |
+| --- | --- | --- | --- |
+| FP-012 | 1047 | 1050 | `9c4c2dca93762555508d94c6b51cdad9a32e02416aa3dba293157ad95678083b` |
+| FP-013 | 1062 | 1065 | `f7783c0a30ec6761f888c8ae879b7622dd8817c8eb63fd484502413addc42e74` |
+| FP-014 | 1142 | 1145 | `e45188d1045fa7671fafa4524057a5ecce0297d8f40c5ac811782068f432b03d` |
+
+Review of the fresh source-to-sink flows confirms that they still carry the existing scoped session ID in the stop/start messages to the exact Host-created opaque iframe. Subtracting the three-line offset from every fresh result/flow location reproduces each previous exact fingerprint; the query, message, columns, partial fingerprints and inner path steps did not change. The sandbox omits allow-same-origin, readiness requires the exact contentWindow and null origin, startup requires current identity/lease/visibility and one transfer, and teardown stops the lifetime, revokes the bridge, closes the port and removes the frame. The FX-A access-summary state and feature-local read-error handling do not alter those boundaries or extend consent.
+
+Only `apps/web/src/components/apps/installed-app-experience.tsx` changed among all pinned source files. Its reviewed SHA-256 is now `9a096d791fd9d1f305f4fc2412e19863a918e09b26a8917d5e45deb1c000c691`; every supporting guard pin and every unrelated finding remains unchanged. No query, path, finding, or GitHub alert disposition is excluded or automatically dismissed. The exact disposition gate must continue rejecting any other changed or new finding.
+
+Validation: all 10 disposition unit tests passed, and the unchanged fresh raw SARIF passed the updated exact gate with 26 reviewed findings, zero unresolved findings and zero unused reviews. The raw SHA-256 remained unchanged after the gate.

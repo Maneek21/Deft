@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import vm from 'node:vm';import ts from 'typescript';
+import {AppDataRequestSchema} from '../../../../../packages/app-kit/src/app-data.ts';
 const errorsText=readFileSync(new URL('../../lib/app-request-error.ts',import.meta.url),'utf8');
-const errorsContext={exports:{},Response,TextDecoder,Uint8Array,Error,TypeError};
+const errorsContext={exports:{},Response,TextDecoder,Uint8Array,Error,TypeError,require:specifier=>{assert.equal(specifier,'../../../../packages/app-kit/src/app-data');return {AppDataRequestSchema};}};
 vm.runInNewContext(ts.transpileModule(errorsText,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,errorsContext);
 const {AppRequestError,readAppRequestError,appRequestFailureMessage}=errorsContext.exports;
 const text=readFileSync(new URL('./runtime-app-setup.tsx',import.meta.url),'utf8'),tree=ts.createSourceFile('setup.tsx',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
