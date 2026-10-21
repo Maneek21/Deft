@@ -1,4 +1,4 @@
-import { AppConsentExpirySchema, AppConsentLifetimeSchema, appConsentExpiryValid } from '@deft/app-kit';
+import { AppConsentExpirySchema, AppConsentLifetimeSchema, appConsentExpiryValid } from '@deft/app-kit/core';
 import { z } from 'zod';
 
 const id = z.string().uuid();

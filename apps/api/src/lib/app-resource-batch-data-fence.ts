@@ -1,4 +1,4 @@
-import {appConsentDeadline,AppDataConsentSnapshotSchema} from '@deft/app-kit';
+import {appConsentDeadline,AppDataConsentSnapshotSchema} from '@deft/app-kit/core';
 import {and,eq} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {appConnectionSessions,appDataConsents} from '@deft/db/schema';

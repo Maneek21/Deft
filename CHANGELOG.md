@@ -10,6 +10,16 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.134 candidate - publication pending
+
+- Isolate app-owned Kit domain modules behind clean core and explicit optional
+  compatibility/example entries; preserve Host133 transport and authority fixes.
+- Publish additive Author Kit alpha.42 with an exact source/digest metadata asset.
+- Prepare native Knowledge provenance/budget and destination revision adapters
+  without activating new audience/capture producers or Calendar writers.
+
+Schema stays131. Historical Host133 and Kit41 artifacts remain immutable.
+
 ### 0.3.0-preview.133 candidate â€” publication pending
 
 - Allow the three retained-account review, activation and status UI requests150seconds of transport time for the bounded120-second server phase and its fresh surrounding checks. Ordinary requests retain35seconds. Server authorization, consent lifetimes and revocation checks remain unchanged.

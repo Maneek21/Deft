@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { parseRuntimeAppManifest, parseNativeAppManifest, PublicAvailabilityPolicySchema } from '@deft/app-kit';
+import { parseRuntimeAppManifest, parseNativeAppManifest, PublicAvailabilityPolicySchema } from '@deft/app-kit/core';
 import {
   AppInstallationAuthoritySchema,
   AppPublicPrincipalSchema,

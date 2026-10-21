@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -14,7 +14,7 @@ import {
   type AppConnectionActionConsents, type AppConnectionRuntimeV2Request,
   type AppConnectionProfile, type AppConnectionSessionScope, type AppConnectionSessionView,
   type AppConnectionSessionBegun, type AppConnectionRegisteredRuntime, type AppConnectionRuntimeRequest,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 import type { ExperienceCaller } from './app-experience-service.js';
 

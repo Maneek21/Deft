@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
-import {AppCompoundSendReceiptSchema,canonicalAppDataJson} from '@deft/app-kit';
+import {AppCompoundSendReceiptSchema,canonicalAppDataJson} from '@deft/app-kit/core';
 import {verifiedPreparedRecordAction,verifiedRetainedPreparedRecordAction} from './app-data-prepared-effect.js';
 
 const hash='sha256:'+'a'.repeat(64);

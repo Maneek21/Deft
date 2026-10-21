@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { agentEmployees, agentMcpCallAudit, oauthAuditEvents, auditLog, mcpTokens, orgMembers, users, appResourceProjections } from '@deft/db/schema';

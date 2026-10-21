@@ -11,7 +11,7 @@ import { ExperienceComposeCapturedSummary, ExperienceComposeFilesControl, Experi
 import { composerFileDigest, composerFileSelectionError, composerInputDigest, composerSnapshotCurrent,
   parseComposerDraftPolicy, parseComposerPrivateFiles, parseComposerSnapshot, privateFilesForControls,
   type ComposerDraftPolicy, type ComposerFilesPolicy, type ComposerPrivateFile, type ComposerSnapshot } from '@/lib/app-experience-compose-files';
-import { parseMailboxList } from '../../../../../packages/app-kit/src/mailbox-list';
+import { parseAddressList } from '../../../../../packages/app-kit/src/structured-address';
 
 type Context = { label: string; input_schema: unknown; contract_digest: string; runtime_binding_id: string; app_version_id: string; grant_snapshot_id: string; expires_at: string; draft_policy?: ComposerDraftPolicy };
 type LocalFile = { key: string; file: File; status: 'pending' | 'uploading' | 'failed'; notice?: string };
@@ -456,7 +456,7 @@ export function ExperienceActionComposer({ request, sessionId, draftScope, ensur
     {optionalRecipients.map(field => {
       const expanded = !hiddenRecipients.includes(field), value = String(input[field.key] ?? '');
       let count: number | null = 0;
-      try { count = parseMailboxList(value, { maxItems: field.maxItems, allowEmpty: true }).length; } catch { count = null; }
+      try { count = parseAddressList(value, { maxItems: field.maxItems, allowEmpty: true }).length; } catch { count = null; }
       const presence = count === null ? ' · !' : count > 0 ? ` · ${count}` : '';
       return <button key={field.key} type="button" className={`min-h-11 rounded-full px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] ${expanded ? 'text-[var(--primary)]' : 'text-[var(--on-surface-variant)]'}`}
         disabled={busy || fileBusy} aria-expanded={expanded} aria-controls={`compose-field-${field.key}`} aria-label={`${expanded ? 'Hide' : 'Show'} ${field.label}${count === null ? ', recipient input needs review' : count > 0 ? `, ${count} ${count === 1 ? 'recipient' : 'recipients'} retained` : ''}`}

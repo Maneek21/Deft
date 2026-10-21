@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { appRuns, appRunAttempts, appSyncIntents, appSyncCheckpoints } from '@deft/db/schema';
 import { AppRunAuthorizationSnapshotSchema, canonicalCapabilityJson } from '@deft/shared';
-import { appConsentExpiryValid, type AttachmentStageHeader } from '@deft/app-kit';
+import { appConsentExpiryValid, type AttachmentStageHeader } from '@deft/app-kit/core';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { buildResourceSyncAuthorizationSnapshot } from './app-resource-sync-authorization.js';
 import { loadLiveAttachmentSyncAuthority, type LiveAttachmentSyncBindingAuthority } from './app-attachment-sync-authority.js';

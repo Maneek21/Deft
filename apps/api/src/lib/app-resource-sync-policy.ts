@@ -1,4 +1,4 @@
-import {AppConsentLifetimeSchema,AppConsentExpirySchema,appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
+import {AppConsentLifetimeSchema,AppConsentExpirySchema,appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit/core';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 

@@ -1,9 +1,9 @@
 import {sql} from 'drizzle-orm';
-import type {AppDataPreparedRecordAction} from '@deft/app-kit';
+import type {AppDataPreparedRecordAction} from '@deft/app-kit/core';
 import type {AppRunTransaction} from './app-run-repository.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 import {appDataDenied,appDataDigest,type CurrentAppDataAuthority} from './app-data-authority.js';
-import type {AppPreparedMirrorInput} from '@deft/app-kit';
+import type {AppPreparedMirrorInput} from '@deft/app-kit/core';
 import type {ReviewedRecordMirrorAuthority} from './app-record-mirror-authority.js';
 
 import {preparedRecordCleanupMatches} from './app-prepared-record-cleanup-match.js';

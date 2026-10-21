@@ -16,7 +16,7 @@ import {
 import {
   DeftAppManifestSchema,
   type DeftAppManifest,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import { CapabilityProviderDiscoverySnapshotSchema } from '@deft/shared';
 import type { ModuleActor, ModuleSummary } from '@deft/shared/modules';
 import { db } from './db.js';

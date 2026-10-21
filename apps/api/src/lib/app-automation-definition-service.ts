@@ -2,10 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
-  APP_AUTOMATION_POLICY_V1,
+  REVIEWED_AUTOMATION_POLICY,
   canonicalAppPrivateInterfaceIdentity,
   DeftAppManifestV2Schema,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import {
   appActionBindings,
   appAutomationFires,
@@ -49,7 +49,7 @@ export const APP_AUTOMATION_DEFINITION_REVIEW_VERSION =
   'deft.app_automation_definition_review.v1' as const;
 export const APP_AUTOMATION_DEFINITION_VERSION =
   'deft.app_automation_definition.v1' as const;
-export const APP_AUTOMATION_POLICY_DIGEST = digestAppGrantValue(APP_AUTOMATION_POLICY_V1);
+export const APP_AUTOMATION_POLICY_DIGEST = digestAppGrantValue(REVIEWED_AUTOMATION_POLICY);
 
 export const APP_AUTOMATION_FOUNDATION_LIMITS = Object.freeze({
   validity_seconds: 30 * 24 * 60 * 60,
@@ -272,7 +272,7 @@ async function loadDefinitionContext(
   );
   if (!request) invalid('Automation request does not exist in the exact App version');
   const action = manifest.data.actions.find((candidate) => candidate.key === request.action_key);
-  if (!action || !connectedAppActionBindingMatches(APP_AUTOMATION_POLICY_V1.private_interface, action)) {
+  if (!action || !connectedAppActionBindingMatches(REVIEWED_AUTOMATION_POLICY.private_interface, action)) {
     stale('Automation request no longer resolves to the exact code-owned action interface');
   }
   const selectedBindings = action.input_bindings.filter(
@@ -327,11 +327,11 @@ async function loadDefinitionContext(
   const expectedInterfaceIdentity = canonicalAppPrivateInterfaceIdentity({
     organization_id: actor.org_id,
     app_lineage_id: installation.id,
-    interface_key: APP_AUTOMATION_POLICY_V1.private_interface.key,
-    interface_version: APP_AUTOMATION_POLICY_V1.private_interface.version,
+    interface_key: REVIEWED_AUTOMATION_POLICY.private_interface.key,
+    interface_version: REVIEWED_AUTOMATION_POLICY.private_interface.version,
   });
   if (binding.interface_identity !== expectedInterfaceIdentity
-    || binding.operation_name !== APP_AUTOMATION_POLICY_V1.private_interface.operation_name) {
+    || binding.operation_name !== REVIEWED_AUTOMATION_POLICY.private_interface.operation_name) {
     stale('Exact code-owned provider interface is unavailable');
   }
   const [providerSnapshot] = await executor.select().from(capabilityProviderSnapshots).where(and(
@@ -429,7 +429,7 @@ function buildReview(
     schedule,
     budgets,
     validity_seconds: input.validity_seconds,
-    policy_version: APP_AUTOMATION_POLICY_V1.version,
+    policy_version: REVIEWED_AUTOMATION_POLICY.version,
     policy_digest: APP_AUTOMATION_POLICY_DIGEST,
     authorization_digest: authorizationDigest,
   };
@@ -502,8 +502,8 @@ function buildHostAuthorizationVector(input: Readonly<{
     budgets: input.budgets,
     validity_seconds: input.input.validity_seconds,
     policy: {
-      key: APP_AUTOMATION_POLICY_V1.key,
-      version: APP_AUTOMATION_POLICY_V1.version,
+      key: REVIEWED_AUTOMATION_POLICY.key,
+      version: REVIEWED_AUTOMATION_POLICY.version,
       digest: APP_AUTOMATION_POLICY_DIGEST,
     },
   }, 'Host automation authorization vector');

@@ -3,7 +3,7 @@ import {z} from 'zod';
 import {isDeepStrictEqual} from 'node:util';
 import {AppConnectionConsentContinuationSourceSchema,AppConnectionConsentContinuationStoredReviewSchema,
   AppConnectionSessionScopeSchema,AppConnectionProfileSchema,AppConnectionActionConsentsSchema,
-  AppConnectionConsentContinuationRuntimeResultSchema} from '@deft/app-kit';
+  AppConnectionConsentContinuationRuntimeResultSchema} from '@deft/app-kit/core';
 import {appConnectionConsentContinuations as journals,appConnectionSessions,appResourceBindings} from '@deft/db/schema';
 import {db} from './db.js';
 import {AppConnectionSessionRecordSchema,type AppConnectionSessionRecord} from './app-connection-session-service.js';

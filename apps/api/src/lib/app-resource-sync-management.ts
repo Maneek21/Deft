@@ -1,5 +1,5 @@
-import {appConsentDeadline} from '@deft/app-kit';
-import { digestResourceSyncDescriptorV2 } from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
+import { digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
 import { assertAttachmentBrokerEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-reviewed.js';
 import { loadLiveAttachmentSyncBindingAuthority, loadLiveAttachmentSyncAuthority } from './app-attachment-sync-authority.js';

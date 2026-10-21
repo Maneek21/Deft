@@ -1,4 +1,4 @@
-import {type AppConsentLifetime} from '@deft/app-kit';
+import {type AppConsentLifetime} from '@deft/app-kit/core';
 import { captureRuntimeAgent } from './app-experience-human-action-agent-capture.js';
 import { loadRuntimeOwnerTarget,loadConsentContinuationOwnerTarget } from './app-runtime-owner-target.js';
 import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';
@@ -22,7 +22,7 @@ import {
   type ModuleResourceRefV1,
 } from '@deft/shared';
 import {
-  APP_AUTOMATION_POLICY_V1,
+  REVIEWED_AUTOMATION_POLICY,
   canonicalAppPrivateInterfaceIdentity,
   DeftAppManifestV1Schema,
   DeftAppManifestV2Schema,
@@ -30,7 +30,7 @@ import {
   RuntimeObjectSchema,
   parseRuntimeAppManifest, parseNativeAppManifest,
   parseRuntimeObjectInput,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import {
   agentEmployees,
   appActionBindings,
@@ -248,10 +248,10 @@ function sameAuthorityRefs(
 }
 
 function automationRunPolicyMatches(policy: AppRunPolicySnapshot): boolean {
-  return policy.risk_class === APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class
-    && policy.review_requirement === APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement
-    && policy.review_scope === APP_AUTOMATION_POLICY_V1.review_scope
-    && policy.retry_class === APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class;
+  return policy.risk_class === REVIEWED_AUTOMATION_POLICY.base_host_policy.risk_class
+    && policy.review_requirement === REVIEWED_AUTOMATION_POLICY.base_host_policy.review_requirement
+    && policy.review_scope === REVIEWED_AUTOMATION_POLICY.review_scope
+    && policy.retry_class === REVIEWED_AUTOMATION_POLICY.base_host_policy.retry_class;
 }
 
 /**
@@ -677,8 +677,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
         || submission.execution_actor.user_id !== prepared.automation.definition.approved_by_user_id
         || submission.initiating_actor.user_id !== prepared.automation.definition.approved_by_user_id
         || !automationRunPolicyMatches(submission.policy)
-        || prepared.automation.policy.key !== APP_AUTOMATION_POLICY_V1.key
-        || prepared.automation.policy.version !== APP_AUTOMATION_POLICY_V1.version
+        || prepared.automation.policy.key !== REVIEWED_AUTOMATION_POLICY.key
+        || prepared.automation.policy.version !== REVIEWED_AUTOMATION_POLICY.version
         || prepared.automation.policy.digest !== APP_AUTOMATION_POLICY_DIGEST
       )
     ) throw new Error('APP_RUN_AUTHORIZATION_STALE');
@@ -1586,8 +1586,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
     const expectedInterfaceIdentity = canonicalAppPrivateInterfaceIdentity({
       organization_id: input.org_id,
       app_lineage_id: definition.app_installation_id,
-      interface_key: APP_AUTOMATION_POLICY_V1.private_interface.key,
-      interface_version: APP_AUTOMATION_POLICY_V1.private_interface.version,
+      interface_key: REVIEWED_AUTOMATION_POLICY.private_interface.key,
+      interface_version: REVIEWED_AUTOMATION_POLICY.private_interface.version,
     });
     if (
       definition.state !== 'active'
@@ -1614,18 +1614,18 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
       || definition.provider_snapshot_digest !== common.provider.snapshot_digest
       || definition.operation_name !== common.provider.operation_name
       || definition.operation_schema_digest !== common.provider.operation_schema_digest
-      || definition.policy_version !== APP_AUTOMATION_POLICY_V1.version
+      || definition.policy_version !== REVIEWED_AUTOMATION_POLICY.version
       || definition.policy_digest !== APP_AUTOMATION_POLICY_DIGEST
       || digestAppGrantValue(definition.authorization_vector) !== definition.authorization_digest
       || digestAppGrantValue(definition.canonical_definition) !== definition.definition_digest
-      || binding.risk_class !== APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class
-      || binding.review_requirement !== APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement
-      || binding.review_scope !== APP_AUTOMATION_POLICY_V1.base_host_policy.review_scope
-      || binding.retry_class !== APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class
-      || binding.retention_class !== APP_AUTOMATION_POLICY_V1.base_host_policy.retention_class
-      || binding.automation_eligibility !== APP_AUTOMATION_POLICY_V1.base_host_policy.automation_eligibility
+      || binding.risk_class !== REVIEWED_AUTOMATION_POLICY.base_host_policy.risk_class
+      || binding.review_requirement !== REVIEWED_AUTOMATION_POLICY.base_host_policy.review_requirement
+      || binding.review_scope !== REVIEWED_AUTOMATION_POLICY.base_host_policy.review_scope
+      || binding.retry_class !== REVIEWED_AUTOMATION_POLICY.base_host_policy.retry_class
+      || binding.retention_class !== REVIEWED_AUTOMATION_POLICY.base_host_policy.retention_class
+      || binding.automation_eligibility !== REVIEWED_AUTOMATION_POLICY.base_host_policy.automation_eligibility
       || binding.provider_idempotency_key_required
-        !== APP_AUTOMATION_POLICY_V1.base_host_policy.provider_idempotency_key_required
+        !== REVIEWED_AUTOMATION_POLICY.base_host_policy.provider_idempotency_key_required
       || definition.interface_identity !== binding.interface_identity
       || definition.interface_identity !== expectedInterfaceIdentity
       || !request
@@ -1676,8 +1676,8 @@ export class PostgresAppRunLiveAuthorization implements AppRunExecutionAuthorize
           resolved_at_utc: fire.resolved_at_utc.toISOString(),
         },
         policy: {
-          key: APP_AUTOMATION_POLICY_V1.key,
-          version: APP_AUTOMATION_POLICY_V1.version,
+          key: REVIEWED_AUTOMATION_POLICY.key,
+          version: REVIEWED_AUTOMATION_POLICY.version,
           digest: APP_AUTOMATION_POLICY_DIGEST,
         },
         budgets: {

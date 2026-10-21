@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';import test from 'node:test';import {webcrypto} from 'node:crypto';
 import {parseExperienceConfirmationRequest,createExperienceActionConfirmation,experienceActionDialogKeys,boundedConfirmationErrorCode,boundedConfirmationJson} from './app-experience-action-confirmation';
-import {composerInputDigest} from './app-experience-compose-files';import {createExperienceBridge,type ExperiencePin,type ExperiencePort}from './app-experience-bridge';import {createDeftExperienceSdk}from '../../../../packages/app-kit/src/experience-sdk';
+import {composerInputDigest} from './app-experience-compose-files';import {createExperienceBridge,type ExperiencePin,type ExperiencePort}from './app-experience-bridge';import {createDeftExperienceSdk}from '../../../../packages/app-kit/src/experience-core';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto,configurable:true});
 test('recoverable error parsing accepts only bounded machine codes and ordinary confirmation still rejects errors',async()=>{
  assert.equal(await boundedConfirmationErrorCode(Response.json({code:'APP_INTEGRATION_SOURCE_PENDING'},{status:409})),'APP_INTEGRATION_SOURCE_PENDING');

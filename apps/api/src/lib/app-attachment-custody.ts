@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { AttachmentStageHeaderSchema, AttachmentStagedReplySchema, canonicalAttachmentJson,
-  RESOURCE_ATTACHMENT_LIMITS, type AttachmentStageHeader } from '@deft/app-kit';
+  RESOURCE_ATTACHMENT_LIMITS, type AttachmentStageHeader } from '@deft/app-kit/core';
 import { appAttachmentStages, appRuntimeSessions } from '@deft/db/schema';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';

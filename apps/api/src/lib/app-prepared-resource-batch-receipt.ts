@@ -1,4 +1,4 @@
-import {AppResourceActionSourcesSchema} from '@deft/app-kit';
+import {AppResourceActionSourcesSchema} from '@deft/app-kit/core';
 /** Only an original retained generic receipt can unlock the next child. */
 export function knownPreparedResourceBatchReceipt(value:unknown,runId:string,operation:string,sources:unknown):boolean{
  const refs=AppResourceActionSourcesSchema.safeParse(sources);if(!refs.success)return false;

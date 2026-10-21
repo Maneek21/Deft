@@ -1,5 +1,5 @@
 import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {assertFutureRecordActionLocalRequest,acknowledgeFutureRecordActionLocal} from './app-future-record-action-local.js';
 import {futureRecordActionWindowDeadline,assertPreparedFutureRecordAction} from './app-future-record-action-window.js';
 import {invokeRecordChange} from './app-data-record-change-service.js';
@@ -8,7 +8,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {AppDataRequestSchema,AppDataOperationInputSchema,AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema,
  AppDataConsentSnapshotSchema,AppDataConsentReviewRequestSchema,AppDataConsentActivateRequestSchema,AppDataContextSchema,AppDataResolveInputSchema,
- type AppDataRequest} from '@deft/app-kit';
+ type AppDataRequest} from '@deft/app-kit/core';
 import {currentConnectionSessionLocators} from './app-connection-current-locators.js';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';

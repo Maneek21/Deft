@@ -1,6 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,canonicalAppDataJson,type AppDataRuntimeRequest} from '@deft/app-kit';
+import {AppDataRuntimeRequestSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,canonicalAppDataJson,type AppDataRuntimeRequest} from '@deft/app-kit/core';
 import type {AppIntegrationSourceCaller,AppIntegrationSourceAuthority} from './app-integration-source.js';
 import type {AppIntegrationSourcePurpose,AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
 export type AppIntegrationAccountScope=Readonly<{installation_id:string;account_ref:string;store_key:string}>;

@@ -1,4 +1,4 @@
-import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
 import { APP_RESOURCE_SYNC_HOST_POLICY, AppResourceSyncConsentLimitsSchema } from './app-resource-sync-policy.js';
 import { APP_ATTACHMENT_RETAINED_STAGE_LIMIT, parseAttachmentConsentPolicy } from './app-attachment-policy.js';
 import type { loadReviewedAttachmentSyncDescriptor } from './app-attachment-sync-reviewed.js';

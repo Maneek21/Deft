@@ -1,8 +1,8 @@
-import {AppConnectionConsentContinuationRuntimeRequestSchema,AppConnectionConsentContinuationRuntimeResultSchema,type AppConnectionConsentContinuationRuntimeRequest} from '@deft/app-kit';
-import {AppConnectionCredentialRepairRuntimeRequestSchema,AppConnectionCredentialRepairRuntimeResultSchema,type AppConnectionCredentialRepairRuntimeRequest} from '@deft/app-kit';
-import {AppConnectionReattachAnyRuntimeRequestSchema,AppConnectionReattachAnyRuntimeResultSchema,type AppConnectionReattachAnyRuntimeRequest} from '@deft/app-kit';
-import {AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeResultSchema,canonicalAppDataJson} from '@deft/app-kit';
-import {AppRunInspectionRuntimeRequestSchema,AppRunInspectionRuntimeResultSchema} from '@deft/app-kit';
+import {AppConnectionConsentContinuationRuntimeRequestSchema,AppConnectionConsentContinuationRuntimeResultSchema,type AppConnectionConsentContinuationRuntimeRequest} from '@deft/app-kit/core';
+import {AppConnectionCredentialRepairRuntimeRequestSchema,AppConnectionCredentialRepairRuntimeResultSchema,type AppConnectionCredentialRepairRuntimeRequest} from '@deft/app-kit/core';
+import {AppConnectionReattachAnyRuntimeRequestSchema,AppConnectionReattachAnyRuntimeResultSchema,type AppConnectionReattachAnyRuntimeRequest} from '@deft/app-kit/core';
+import {AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeResultSchema,canonicalAppDataJson} from '@deft/app-kit/core';
+import {AppRunInspectionRuntimeRequestSchema,AppRunInspectionRuntimeResultSchema} from '@deft/app-kit/core';
 import {AppLocalJobRuntimeRequestSchema,AppLocalJobInteractiveResultSchema} from '../../../../packages/app-kit/src/local-job.js';
 import {AppConnectionFormRuntimeRequestSchema,AppConnectionFormRuntimeResultSchema,type AppConnectionFormRuntimeRequest} from '../../../../packages/app-kit/src/connection-form.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -15,10 +15,10 @@ import { AppConnectionProfileSchema, AppConnectionRuntimeRequestSchema, AppConne
   AppConnectionRuntimeV2RequestSchema,AppConnectionUpgradeRuntimeRequestSchema,AppConnectionUpgradeRuntimeResultSchema,
   type AppConnectionRuntimeV2Request,type AppConnectionUpgradeRuntimeRequest,
   canonicalAppConnectionProfileJson, type AppConnectionProfile, type AppConnectionSessionScope,
-  type AppConnectionRegisteredRuntime, type OwnerConnectionPolicyDeclaration } from '@deft/app-kit';
+  type AppConnectionRegisteredRuntime, type OwnerConnectionPolicyDeclaration } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 import type { AppRunTransaction } from './app-run-repository.js';
-import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit';
+import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit/core';
 
 const unavailable = () => new AppError('Reviewed connection runtime unavailable', 'APP_CONNECTION_PROFILE_UNAVAILABLE', 503);
 const id = z.string().uuid();

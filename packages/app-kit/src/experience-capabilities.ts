@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseNativeSafeComposeHtml, parseSafeComposeHtml } from './safe-compose-html.js';
+import { parseTrustedRichtextHtml, parseBasicRichtextHtml } from './safe-rich-text.js';
 
 /** Candidate public UI profiles. A declaration is not a host capability grant. */
 export const DEFT_EXPERIENCE_CAPABILITIES_VERSION = 'deft.experience_capabilities.v1' as const;
@@ -98,7 +98,7 @@ export const DeftExperienceRichtextFieldNodeSchema = z.strictObject({
       || v.html.length > p.max_characters || v.plain_text.length > p.max_characters
       || new TextEncoder().encode(JSON.stringify(v)).byteLength > p.max_bytes) throw Error();
     if (v.html !== '') {
-      const parse = p.links === 'host_validated' ? parseNativeSafeComposeHtml : parseSafeComposeHtml;
+      const parse = p.links === 'host_validated' ? parseTrustedRichtextHtml : parseBasicRichtextHtml;
       if (parse(v.html, { maxCharacters: p.max_characters, maxBytes: p.max_bytes }).plainText !== v.plain_text) throw Error();
     } else if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff]/u.test(v.plain_text)) throw Error();
   } catch { ctx.addIssue({ code: 'custom', message: 'Unsupported richtext selection or mismatched HTML/plain pair' }); }

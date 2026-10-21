@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
 import {and,eq,sql} from 'drizzle-orm';
-import {AppConnectionSessionScopeSchema,canonicalAppDataJson} from '@deft/app-kit';
+import {AppConnectionSessionScopeSchema,canonicalAppDataJson} from '@deft/app-kit/core';
 import {appConnectionSessions} from '@deft/db/schema';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';

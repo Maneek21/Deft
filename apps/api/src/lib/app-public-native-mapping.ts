@@ -1,7 +1,7 @@
 import {
   NativePublicActionDeclarationSchema, NATIVE_CALENDAR_CONTRACTS, parseNativeCalendarInput,
   type NativeCalendarOperation, type NativePublicActionDeclaration,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import { parseSupportedDeftModuleManifest } from '@deft/shared/modules';
 
 export type PublicNativeMapping = NativePublicActionDeclaration['input_mapping'];

@@ -22,7 +22,7 @@ export async function appConnectionCredentialRepairPurposeIsAvailable(tx:AppRunT
    resource_binding_id:input.resource_binding_id,clock:()=>new Date()});
   if(!authority||authority.connection_profile_required!==false
    ||input.owner_user_id&&authority.binding.owner_user_id!==input.owner_user_id)return false;
-  try{const {parseAttachmentAppManifest}=await import('@deft/app-kit');
+  try{const {parseAttachmentAppManifest}=await import('@deft/app-kit/core');
    const manifest=parseAttachmentAppManifest(authority.version.manifest);
    assertLegacyOwnerConnectionResourcePolicies(manifest.owner_connections,authority.binding.resource_key);}
   catch{return false;}

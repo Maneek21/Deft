@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseRuntimeObjectInput } from '@deft/app-kit';
+import { parseRuntimeObjectInput } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 import type { AppExperienceExposureService } from './app-experience-exposure.js';
 import type { ExperienceCaller } from './app-experience-service.js';

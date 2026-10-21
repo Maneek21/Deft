@@ -4,7 +4,7 @@ import type {NodePgDatabase} from 'drizzle-orm/node-postgres';
 import {emailAccounts,emailAttachments,emailDrafts,emailProviderDraftMirrors} from '@deft/db/schema';
 import {canonicalCapabilityJson} from '@deft/shared';
 import {z} from 'zod';
-import {nativeComposeInlineFileIds} from '@deft/app-kit/experience';
+import {trustedRichtextInlineFileIds} from '@deft/app-kit/experience/core';
 import type {EmailScope} from './email-mailbox-service.js';
 import {EmailDraftStore,emailDraftContext as draftContext,type EmailDraftGuard} from './email-draft-store.js';
 import {EmailDraftContentSchema} from './email-draft-service.js';
@@ -67,7 +67,7 @@ export class EmailAttachmentStore{
    // Removing a file must not orphan a saved body reference. The caller first
    // removes its image atom and acknowledges the current draft save.
    if(/<img\b|cid:deft-/iu.test(content.body_html)){
-    let references:readonly string[];try{references=nativeComposeInlineFileIds(content.body_html,{inlineAttachments:content.attachments});}
+    let references:readonly string[];try{references=trustedRichtextInlineFileIds(content.body_html,{inlineAttachments:content.attachments});}
     catch{failure('EMAIL_DRAFT_CONFLICT');}
     if(references!.includes(fileId))failure('EMAIL_DRAFT_CONFLICT');
    }

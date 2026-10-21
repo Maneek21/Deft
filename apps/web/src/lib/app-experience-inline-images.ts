@@ -1,6 +1,6 @@
 import {Node as TiptapNode} from '@tiptap/core';
-import {nativeComposeImageCid} from '../../../../packages/app-kit/src/safe-compose-html';
-import {inspectNativeComposeRaster} from '../../../../packages/app-kit/src/native-compose-raster';
+import {richtextImageReference} from '../../../../packages/app-kit/src/safe-rich-text';
+import {inspectSafeRaster} from '../../../../packages/app-kit/src/safe-raster';
 import type {RecordFormFile} from './app-experience-record-form';
 export const inlineRaster=(file:RecordFormFile)=>['image/png','image/jpeg','image/gif','image/webp'].includes(file.media_type);
 type Preview={url:string;pixels:number;bytes:number};
@@ -22,7 +22,7 @@ export function createInlinePreviews(options:{current:()=>boolean;read:(file:Rec
   const row={file,users:1,controller,value:null as Preview|null,promise:Promise.resolve(null) as Promise<string|null>};encoded+=file.size_bytes;rows.set(key,row);
   row.promise=(async()=>{if(!await enter(signal))return null;let bytes:Uint8Array|undefined;
    try{bytes=await options.read(file,signal);if(!current()||signal.aborted||rows.get(key)!==row)return null;
-    const shape=inspectNativeComposeRaster(bytes,file.media_type,'preview');if(!shape||pixels+shape.pixels>32_000_000)return null;
+    const shape=inspectSafeRaster(bytes,file.media_type,'preview');if(!shape||pixels+shape.pixels>32_000_000)return null;
     const url=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:file.media_type}));row.value={url,pixels:shape.pixels,bytes:bytes.byteLength};pixels+=shape.pixels;return url;
    }catch(error){if(current()&&!signal.aborted&&error&&typeof error==='object'&&'kind' in error&&error.kind==='denied'){api.dispose();options.denied();}return null;}
    finally{bytes?.fill(0);readers--;wake();}
@@ -36,8 +36,8 @@ export type InlinePreviews=ReturnType<typeof createInlinePreviews>;
 export function inlineImageExtension(options:{files:()=>readonly RecordFormFile[];preview:(file:RecordFormFile)=>{ready:Promise<string|null>;release:()=>void;current?:()=>boolean}}){
  return TiptapNode.create({name:'nativeInlineImage',inline:true,group:'inline',atom:true,selectable:true,
   addAttributes(){return {fileId:{default:null},alt:{default:''}};},
-  parseHTML(){return [{tag:'img[src]',getAttrs:element=>{if(typeof element==='string')return false;const file=options.files().find(file=>{try{return 'cid:'+nativeComposeImageCid(file.file_id)===element.getAttribute('src');}catch{return false;}});return file?{fileId:file.file_id,alt:element.getAttribute('alt')??''}:false;}}];},
-  renderHTML({node}){return ['img',{src:'cid:'+nativeComposeImageCid(String(node.attrs.fileId)),alt:String(node.attrs.alt)}];},
+  parseHTML(){return [{tag:'img[src]',getAttrs:element=>{if(typeof element==='string')return false;const file=options.files().find(file=>{try{return 'cid:'+richtextImageReference(file.file_id)===element.getAttribute('src');}catch{return false;}});return file?{fileId:file.file_id,alt:element.getAttribute('alt')??''}:false;}}];},
+  renderHTML({node}){return ['img',{src:'cid:'+richtextImageReference(String(node.attrs.fileId)),alt:String(node.attrs.alt)}];},
   addNodeView(){return ({node})=>{const dom=document.createElement('span');dom.contentEditable='false';dom.className='inline-flex max-w-full items-center rounded-lg bg-[var(--surface-container-low)] px-2 py-1 align-middle';
    const label=document.createElement('span');label.textContent='[Image: '+String(node.attrs.alt)+']';dom.append(label);
    const file=options.files().find(file=>file.file_id===node.attrs.fileId),lease=file?options.preview(file):null;let alive=true,released=false,image:HTMLImageElement|null=null;

@@ -1,5 +1,5 @@
 import { sql, eq, and } from 'drizzle-orm';
-import { PublicBudgetPolicySchema } from '@deft/app-kit';
+import { PublicBudgetPolicySchema } from '@deft/app-kit/core';
 import { APP_RUN_TERMINAL_STATES } from '@deft/shared';
 import { appCanonicalClaims, appPublicEndpoints } from '@deft/db/schema';
 import type { db } from './db.js';

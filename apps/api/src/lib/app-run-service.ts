@@ -1,6 +1,6 @@
 import {optionalFutureRecordAction} from './app-future-record-action-dispatch.js';
 import {PostgresFutureRecordActionStore} from './app-future-record-action-store.js';
-import { parseNativeCalendarInput, parseNativeCalendarResult, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit';
+import { parseNativeCalendarInput, parseNativeCalendarResult, NATIVE_ACTION_HOST_POLICY } from '@deft/app-kit/core';
 import {appConnectionUpgradeSourceIsAvailable} from './app-connection-upgrade-fence.js';
 import { isAppNativeCalendarEnabled } from './env.js';
 import { nativeFinalAuthorityIsCurrent } from './app-native-final-authority.js';
@@ -28,7 +28,7 @@ import {
   type AppRunRiskClass,
   type AppRunSubmission,
 } from '@deft/shared';
-import { APP_AUTOMATION_POLICY_V1, RuntimeObjectSchema, parseRuntimeObjectInput } from '@deft/app-kit';
+import { REVIEWED_AUTOMATION_POLICY, RuntimeObjectSchema, parseRuntimeObjectInput } from '@deft/app-kit/core';
 import {
   assertAppRunReferencedKeysAvailable,
   type AppRunKeyProvider,
@@ -454,10 +454,10 @@ export class AppRunService {
       },
       provider_snapshot_digest: vector.provider.snapshot_digest,
       policy: isAutomation ? {
-        risk_class: APP_AUTOMATION_POLICY_V1.base_host_policy.risk_class,
-        review_requirement: APP_AUTOMATION_POLICY_V1.base_host_policy.review_requirement,
-        review_scope: APP_AUTOMATION_POLICY_V1.review_scope,
-        retry_class: APP_AUTOMATION_POLICY_V1.base_host_policy.retry_class,
+        risk_class: REVIEWED_AUTOMATION_POLICY.base_host_policy.risk_class,
+        review_requirement: REVIEWED_AUTOMATION_POLICY.base_host_policy.review_requirement,
+        review_scope: REVIEWED_AUTOMATION_POLICY.review_scope,
+        retry_class: REVIEWED_AUTOMATION_POLICY.base_host_policy.retry_class,
       } : {
         risk_class: 'external_write',
         review_requirement: 'always',
@@ -465,7 +465,7 @@ export class AppRunService {
         retry_class: 'idempotent_with_key',
       },
       retention_class: isAutomation
-        ? APP_AUTOMATION_POLICY_V1.base_host_policy.retention_class
+        ? REVIEWED_AUTOMATION_POLICY.base_host_policy.retention_class
         : 'standard',
       idempotency_key: isAutomation
         ? `app-automation:${vector.automation.fire.identity}`

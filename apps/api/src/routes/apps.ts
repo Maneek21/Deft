@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { APP_LIMITS, AppDigestSchema } from '@deft/app-kit';
+import { APP_LIMITS, AppDigestSchema } from '@deft/app-kit/core';
 import type { AuthUser } from '../middleware/auth.js';
 import { humanModuleActor } from '../lib/module-service.js';
 import {

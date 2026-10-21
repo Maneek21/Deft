@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appPrivateFiles, appActionPayloads, appActionPayloadFiles, appPrivateStateRecords, appVersions } from '@deft/db/schema';
-import { canonicalAttachmentJson, PrivateStateDeclarationSchema, type PrivateStateDeclaration } from '@deft/app-kit';
+import { canonicalAttachmentJson, PrivateStateDeclarationSchema, type PrivateStateDeclaration } from '@deft/app-kit/core';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { AppRunKeyProvider, AppRunKeyReference } from './app-run-keyrings.js';
 import { AppRunKeyVersionUnavailableError } from './app-run-keyrings.js';

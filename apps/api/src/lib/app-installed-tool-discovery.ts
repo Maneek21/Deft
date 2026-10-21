@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {and,eq,isNull,sql} from 'drizzle-orm';
-import {canonicalAppDataJson} from '@deft/app-kit';
+import {canonicalAppDataJson} from '@deft/app-kit/core';
 import {AppIntegrationToolsDeclarationSchema,parseAppIntegrationToolDeclaredInput,type AppIntegrationToolDeclaration} from '../../../../packages/app-kit/src/app-integration-tools.js';
 import type {AppIntegrationToolCaller} from './app-integration-tool-authority.js';
 

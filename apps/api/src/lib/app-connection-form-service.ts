@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {AppConnectionFormBeginSchema,AppConnectionFormManageSchema,AppConnectionFormRecordSchema,

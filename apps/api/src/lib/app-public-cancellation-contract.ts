@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AppDigestSchema } from '@deft/app-kit';
+import { AppDigestSchema } from '@deft/app-kit/core';
 import { canonicalCapabilityJson } from '@deft/shared';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';

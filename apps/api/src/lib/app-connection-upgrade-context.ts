@@ -1,6 +1,6 @@
 import {and,desc,eq,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
-import {AppConnectionUpgradeContextSchema,AppConnectionUpgradeReviewViewSchema,AppConnectionCredentialRepairReviewViewSchema} from '@deft/app-kit';
+import {AppConnectionUpgradeContextSchema,AppConnectionUpgradeReviewViewSchema,AppConnectionCredentialRepairReviewViewSchema} from '@deft/app-kit/core';
 import {appConnectionSessions} from '@deft/db/schema';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';

@@ -1,7 +1,7 @@
-import {AppConsentLifetimeSchema,AppConsentExpirySchema,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
+import {AppConsentLifetimeSchema,AppConsentExpirySchema,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit/core';
 import { z } from 'zod';
-import { OwnerConnectionPolicyDeclarationSchema, AttachmentPolicySchema, AppConnectionProfileSchema } from '@deft/app-kit';
-import type { OwnerConnectionPolicyDeclaration } from '@deft/app-kit';
+import { OwnerConnectionPolicyDeclarationSchema, AttachmentPolicySchema, AppConnectionProfileSchema } from '@deft/app-kit/core';
+import type { OwnerConnectionPolicyDeclaration } from '@deft/app-kit/core';
 import { AppResourceSyncConsentLimitsSchema } from './app-resource-sync-policy.js';
 import { AppError } from './app-errors.js';
 import type { AppRunTransaction } from './app-run-repository.js';

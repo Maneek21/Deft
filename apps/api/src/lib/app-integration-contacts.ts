@@ -1,4 +1,4 @@
-import {parseMailboxList} from '../../../../packages/app-kit/src/mailbox-list.js';
+import {parseAddressList} from '../../../../packages/app-kit/src/structured-address.js';
 import type {ModuleActor} from '@deft/shared/modules';
 import type {ModuleInstallationView,ModuleRecordPage} from './module-service.js';
 type Ports={list(actor:ModuleActor):Promise<ModuleInstallationView[]>;query(actor:ModuleActor,input:{module_id:string;collection_key:string;search:string;filters:[];limit:number}):Promise<ModuleRecordPage>};
@@ -17,7 +17,7 @@ export class GovernedAppIntegrationContacts{
   if(!Array.isArray(page.records)||page.records.length>Math.min(input.limit,20)||page.records.some(record=>record.installation_id!==selected.id||record.module_id!==selected.module_id||record.collection_key!==collection.key||record.manifest_digest!==selected.manifest_digest))throw Error('CONTACTS_SCOPE');
   const final=(await this.ports.list(actor)).find(m=>m.id===selected.id);signal?.throwIfAborted();
   if(!final?.enabled||final.module_id!==selected.module_id||final.active_version_id!==selected.active_version_id||final.manifest_digest!==selected.manifest_digest)throw Error('CONTACTS_AUTHORITY_CHANGED');
-  const items:{address:string;name:string}[]=[];for(const record of page.records){try{const address=record.data.email,label=record.data.name;if(typeof address!=='string'||typeof label!=='string')continue;const parsed=parseMailboxList(address,{maxItems:1})[0]!;if(parsed.displayName)continue;items.push({address:parsed.address,name:label});}catch{/* Never infer an email from other fields. */}}
+  const items:{address:string;name:string}[]=[];for(const record of page.records){try{const address=record.data.email,label=record.data.name;if(typeof address!=='string'||typeof label!=='string')continue;const parsed=parseAddressList(address,{maxItems:1})[0]!;if(parsed.displayName)continue;items.push({address:parsed.address,name:label});}catch{/* Never infer an email from other fields. */}}
   return {items,status:'available' as const,has_more:page.next_cursor!==null};
  }
 }

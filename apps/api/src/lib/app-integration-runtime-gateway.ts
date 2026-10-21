@@ -3,7 +3,7 @@ import {createAppIntegrationNotificationPolicyAuthority} from './app-integration
 import {db} from './db.js';
 import {createPostgresAppIntegrationDataGateway,type AppIntegrationPolicyAuthority} from './app-integration-data-postgres.js';
 import {createAppIntegrationCapturePolicyAuthority} from './app-integration-capture-authority.js';
-import {AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit';
+import {AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit/core';
 let gateway:ReturnType<typeof createPostgresAppIntegrationDataGateway>|undefined;
 /** One concrete journal/dispatcher shared by tools, source reads and capture.
  * Policy delivery authority is reconstructed from retained Host metadata. */

@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { appAttachmentStages, appSyncCheckpoints } from '@deft/db/schema';
-import { AttachmentStageHeaderSchema, canonicalAttachmentJson, type SyncPageV2 } from '@deft/app-kit';
+import { AttachmentStageHeaderSchema, canonicalAttachmentJson, type SyncPageV2 } from '@deft/app-kit/core';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 import { AppAttachmentSecretService } from './app-attachment-secrets.js';

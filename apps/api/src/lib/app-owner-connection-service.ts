@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { digestResourceSyncDescriptorV2 } from '@deft/app-kit';
+import { digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
 import { appInstallations, appOwnerConnectionAdmissions, appResourceBindings, appRuntimeBindings, appRuntimeRegistrations, appRuntimeSessions, appRuns, auditLog, users } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';

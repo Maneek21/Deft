@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { appGrantSnapshots, appInstallations, appVersions } from '@deft/db/schema';
-import { parseResourceAppManifest } from '@deft/app-kit';
+import { parseResourceAppManifest } from '@deft/app-kit/core';
 import { digestResourceSyncDescriptor } from '@deft/app-kit/experimental/resource-sync';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { AppError } from './app-errors.js';

@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { framePublicHmacClaim, publicHmacClaimPath, PublicHmacPolicySchema } from '@deft/app-kit';
+import { framePublicHmacClaim, publicHmacClaimPath, PublicHmacPolicySchema } from '@deft/app-kit/core';
 import { appPublicHmacKeys, appPublicHmacNonces, appPublicEndpoints } from '@deft/db/schema';
 import type { db } from './db.js';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';

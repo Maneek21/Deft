@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {and,asc,eq,gt,sql} from 'drizzle-orm';
 import {emailSendOperations,appConnectionSessions} from '@deft/db/schema';
-import {canonicalAppDataJson} from '@deft/app-kit';
+import {canonicalAppDataJson} from '@deft/app-kit/core';
 import {db} from './db.js';
 import type {ExperienceCaller} from './app-experience-service.js';
 import type {WebAuthorityGuard} from './app-resource-sync-web-authority.js';

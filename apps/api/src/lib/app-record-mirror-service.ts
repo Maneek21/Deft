@@ -1,11 +1,11 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {discloseRecordMirrorRead} from './app-record-mirror-read-deadline.js';
 import {AppRunRetainedProviderResultSchema} from '@deft/shared';
 import {randomUUID} from 'node:crypto';
 import {db} from './db.js';
 import {sql} from 'drizzle-orm';
 import {z} from 'zod';
-import {AppRecordMirrorReviewRequestSchema,AppRecordMirrorControlRequestSchema,AppRecordMirrorStatusSchema} from '@deft/app-kit';
+import {AppRecordMirrorReviewRequestSchema,AppRecordMirrorControlRequestSchema,AppRecordMirrorStatusSchema} from '@deft/app-kit/core';
 import {AppDataService} from './app-data-service.js';
 import {appDataDigest,appDataDenied,type CurrentAppDataAuthority} from './app-data-authority.js';
 import type {HumanActionAuthorityPort,HumanActionAuthority} from './app-experience-human-action-service.js';

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-const grammar=await import(process.env.EMAIL_INLINE_GRAMMAR_BASELINE??new URL('../src/safe-compose-html.js',import.meta.url).href);
+const grammar=await import(process.env.EMAIL_INLINE_GRAMMAR_BASELINE??new URL('../src/examples/email/safe-compose-html.js',import.meta.url).href);
 const file={file_id:'12345678-1234-4234-8234-123456789abc',filename:'diagram.png',media_type:'image/png',size_bytes:68,sha256:'a'.repeat(64)};
 const cid='deft-'+file.file_id+'@deft.invalid',image=`<img src="cid:${cid}" alt="A &amp; B">`,html='<p>Diagram '+image+'</p>';
 const options={inlineAttachments:[file]};

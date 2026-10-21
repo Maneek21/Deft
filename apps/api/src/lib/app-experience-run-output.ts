@@ -1,5 +1,5 @@
 import {AppRunRetainedProviderResultSchema} from '@deft/shared';
-import {parseRuntimeObjectInput,RuntimeObjectSchema} from '@deft/app-kit';
+import {parseRuntimeObjectInput,RuntimeObjectSchema} from '@deft/app-kit/core';
 
 /** No retained input, provider envelope, runtime credential or unreviewed field
  * enters the author status channel. Failed acknowledged output remains useful

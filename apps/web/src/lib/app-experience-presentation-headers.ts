@@ -1,4 +1,4 @@
-import {parseNativeMailboxList,formatNativeMailboxList} from '../../../../packages/app-kit/src/mailbox-list';
+import {parseExtendedAddressList,formatExtendedAddressList} from '../../../../packages/app-kit/src/structured-address';
 import type {SourcePresentation} from './app-experience-source-view';
 const addressFields:Readonly<Record<string,string>>={From:'reply_from',To:'reply_to_list',Cc:'reply_cc','Reply-To':'reply_to'};
 /** Derive display only from the already scoped presentation. Metadata contains
@@ -8,7 +8,7 @@ export function experiencePresentationHeaders(presentation:SourcePresentation){
   const field=addressFields[header.label],raw=field?presentation.metadata?.[field]:undefined;
   let value=header.value,incomplete=!!field&&header.value.length>=2048;
   if(typeof raw==='string'&&raw.trim()){
-   try{value=formatNativeMailboxList(parseNativeMailboxList(raw));incomplete=false;}
+   try{value=formatExtendedAddressList(parseExtendedAddressList(raw));incomplete=false;}
    catch{incomplete=true;}
   }
   return {label:header.label,value,incomplete};

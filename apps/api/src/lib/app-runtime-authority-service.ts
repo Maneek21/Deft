@@ -1,7 +1,7 @@
 import {and,eq} from 'drizzle-orm';
 import {z} from 'zod';
 import {appRuntimeRegistrations,orgMembers} from '@deft/db/schema';
-import type {AppConnectionSessionScope} from '@deft/app-kit';
+import type {AppConnectionSessionScope} from '@deft/app-kit/core';
 import type {ModuleActor} from '@deft/shared/modules';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';

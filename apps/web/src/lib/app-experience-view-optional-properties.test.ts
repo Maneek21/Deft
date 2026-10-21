@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createExperienceBridge,type ExperiencePin} from './app-experience-bridge';
-import {createDeftExperienceSdk} from '../../../../packages/app-kit/src/experience-sdk';
+import {createDeftExperienceSdk} from '../../../../packages/app-kit/src/experience-core';
 
 const pin:ExperiencePin={org_id:'org_test',user_id:'user_test',app_installation_id:'install_test',app_version_id:'version_test',grant_snapshot_id:'grant_test',lifecycle_epoch:1,grant_epoch:1,session_id:'11111111-1111-4111-8111-111111111111',session_epoch:1};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));

@@ -1,6 +1,6 @@
 import { validateComposePlainContent } from './app-experience-compose-controls';
-import { parseSafeComposeHtml } from '../../../../packages/app-kit/src/safe-compose-html';
-import { parseMailboxList } from '../../../../packages/app-kit/src/mailbox-list';
+import { parseBasicRichtextHtml } from '../../../../packages/app-kit/src/safe-rich-text';
+import { parseAddressList } from '../../../../packages/app-kit/src/structured-address';
 import { parseResourceRecordList } from '../../../../packages/app-kit/src/resource-record-list';
 import { RuntimeObjectSchema } from '../../../../packages/app-kit/src/runtime-authoring';
 
@@ -54,10 +54,10 @@ export function composerValidationError(fields: readonly ComposerField[], input:
       if (field.format === 'email' && !/^[^\s<>,;"@]+@[^\s<>,;"@]+\.[^\s<>,;"@]+$/.test(value)) return `Enter one valid email address for ${field.label.toLowerCase()}.`;
       if (field.format === 'single_line' && /[\r\n\0]/u.test(value)) return `Use one line without null characters for ${field.label.toLowerCase()}.`;
       if (field.format === 'mailbox_list') {
-        try { parseMailboxList(value, {maxItems:field.maxItems,allowEmpty:(field.minLength ?? 0) === 0}); } catch { return `Check ${field.label.toLowerCase()}.`; }
+        try { parseAddressList(value, {maxItems:field.maxItems,allowEmpty:(field.minLength ?? 0) === 0}); } catch { return `Check ${field.label.toLowerCase()}.`; }
       }
       if (field.format === 'safe_html') {
-        try { if (value !== '' && parseSafeComposeHtml(value, {maxCharacters:field.maxLength}).plainText !== input[field.plainTextKey!])
+        try { if (value !== '' && parseBasicRichtextHtml(value, {maxCharacters:field.maxLength}).plainText !== input[field.plainTextKey!])
           return `The plain text for ${field.label.toLowerCase()} must match its formatting.`; }
         catch { return `Check the bounded formatting for ${field.label.toLowerCase()}.`; }
       }
