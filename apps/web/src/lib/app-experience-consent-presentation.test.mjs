@@ -28,7 +28,7 @@ function opener({canFlush=true}={}){
 }
 test('outside access summary is one action that opens Access settings through the existing save fences',async()=>{
  const host=opener(),tree=flatten(render({onOpenSettings:host.callback})),button=tree.find(node=>node.type==='button');
- assert.equal(tree.filter(node=>node.type==='button').length,1);assert.equal(tree.filter(node=>node.type.displayName==='RecordAccessStatusRow').length,0);assert.equal(button.props.children[0],'Review access');
+ assert.equal(tree.filter(node=>node.type==='button').length,1);assert.equal(tree.filter(node=>node.type.displayName==='RecordAccessStatusRow').length,0);assert.equal(button.props.children[0],'Review record access');
  button.props.onClick();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(host.calls.slice(0,2),[['section','access'],['open',true]]);
  const blocked=opener({canFlush:false});blocked.callback();await new Promise(resolve=>setImmediate(resolve));assert.equal(blocked.calls.some(call=>call[0]==='open'),false);assert.match(blocked.calls[0][1],/Save the draft/);
 });
@@ -39,7 +39,7 @@ test('full settings retains every reviewed store row and an unavailable notice s
 test('partial record access does not claim all saves require permission',()=>{
  const compact=flatten(render({onOpenSettings:()=>{}}));
  assert.equal(compact.find(node=>node.type==='p').props.children[0],'Saving store 1, store 2, store 3, store 4, store 5, store 6, store 7, store 8, store 9, store 10 needs access.');
- assert.equal(compact.find(node=>node.type==='button').props.children[0],'Review access');
+ assert.equal(compact.find(node=>node.type==='button').props.children[0],'Review record access');
 });
 test('changing account scope clears an old notice and pending review state',()=>{
  let cursor=0,effect;const updates=[],states=[[],null,true,'Old account denial',true];

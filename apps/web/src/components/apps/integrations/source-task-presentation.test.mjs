@@ -38,3 +38,26 @@ test('Task original source can retry only the same GET and still requires a vali
 test('an aborted original-source response cannot navigate after the source changes',async()=>{
  let finish;const f=sourceOpenFixture([()=>new Promise(resolve=>{finish=resolve;}),{ok:false}]);f.render();f.changeSource('00000000-0000-4000-8000-000000000002');f.render();finish({ok:true,json:async()=>({href:validSourceHref})});await new Promise(setImmediate);assert.equal(f.requests[0].options.signal.aborted,true);assert.equal(f.navigated.length,0);
 });
+
+
+test('task review stays in a focused panel beside the source and before source settings',()=>{
+ const nodes=fixture(true).render();const aside=nodes.find(n=>n.type==='aside');assert.ok(aside,'task controls need a focused side panel');assert.match(aside.props.className,/order-first/);assert.match(aside.props.className,/sticky/);
+ const controls=[];const walk=n=>{if(!n||typeof n!=='object')return;controls.push(n);n.props.children.forEach(walk);};walk(aside);assert.ok(controls.some(n=>n.props['aria-label']==='Create from source'));assert.ok(!controls.some(n=>['Access','Knowledge'].includes(n.type?.displayName)));
+});
+
+
+test('capture failures name the problem and open actionable source and destination guidance',()=>{
+ const parsed=ts.createSourceFile('capture.tsx',readFileSync(new URL('./knowledge-capture-settings.tsx',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),fn=parsed.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='KnowledgeCaptureSettings');
+ const code=ts.transpileModule('('+fn.getText(parsed).replace(/^export /u,'')+')',{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
+ const policy={enabled:true,destination:{scope:'user',space_id:null},history_days:30,include_bulk:false,excluded_senders:[],excluded_folders:[]},states=[{policy,progress:{processed:112,captured:7,skipped:103,failed:2}},policy,'',false,false,true,false];let cursor=0,calls=0;
+ const Component=runInNewContext(code,{React:{createElement:(type,props,...children)=>({type,props:{...props,children:children.flat(Infinity)}})},useState:()=>{const i=cursor++;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];},useEffect:()=>{},Link:'a',AppIntegrationCapturePolicyInputSchema:{safeParse:()=>({success:true})},api:{fetch:()=>{calls++;throw Error('No request from problem disclosure');}}});
+ const render=()=>{cursor=0;const all=[],walk=n=>{if(!n||typeof n!=='object')return;all.push(n);n.props.children.forEach(walk);};walk(Component({source:{},spaces:[],current:()=>true,signal:new AbortController().signal}));return all;};let nodes=render();
+ assert.ok(nodes.some(n=>n.props.role==='status'&&n.props.children.join('').includes('2 could not be saved')));assert.ok(!nodes.some(n=>n.props['aria-label']==='Capture problems'));
+ nodes.find(n=>n.type==='button'&&n.props.children[0]==='Review capture problems (').props.onClick();nodes=render();assert.ok(nodes.some(n=>n.props['aria-label']==='Capture problems'));assert.ok(nodes.some(n=>n.type==='a'&&n.props.href==='/settings/apps/private-resources'));assert.ok(nodes.some(n=>n.type==='p'&&n.props.children.includes('Private Knowledge')));assert.equal(calls,0);
+});
+
+test('assistant selector and notification navigation use owner-readable labels',()=>{
+ assert.doesNotMatch(readFileSync(new URL('./integration-access-settings.tsx',import.meta.url),'utf8'),/>Assistant or personal MCP token/);
+ assert.match(readFileSync(new URL('./integration-access-settings.tsx',import.meta.url),'utf8'),/>Assistant or connected tool/);
+ assert.match(readFileSync(new URL('../../sidebar.tsx',import.meta.url),'utf8'),/name: 'Notifications', href: '\/inbox'/);
+});

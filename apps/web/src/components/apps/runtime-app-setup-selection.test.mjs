@@ -14,6 +14,7 @@ test('normal owner target selection remounts review workspace and sequences cata
  const flatten=node=>!node||typeof node!=='object'?[]:[node,...(node.props?.children??[]).flat(Infinity).flatMap(flatten)];
  const render=()=>{index=0;return flatten(ctx.globalThis.render({app:{id:'app',version_id:'version'},operatorId:'owner'}));};
  let nodes=render();assert.equal(nodes.find(n=>n.type===Workspace).props.key,'one');
+ const account=nodes.find(n=>n.type==='select');assert.equal(account.props['aria-label'],'Account for these actions');assert.match(account.props.className,/w-full/u);assert.ok(nodes.some(n=>n.type==='option'&&n.props.children.includes('Default account')));
  nodes.find(n=>n.type==='select').props.onChange({target:{value:'two'}});nodes=render();const selected=nodes.find(n=>n.type===Workspace);assert.equal(selected.props.key,'two');assert.equal(selected.props.target.target_key,'fresh_mailbox');
  values[2]=true;nodes=render();assert.equal(nodes.some(n=>n.type===Workspace),false);
  values[2]=false;values[3]='Account targets unavailable';nodes=render();assert.equal(nodes.some(n=>n.type===Workspace),false);assert.ok(nodes.some(n=>n.props?.role==='alert'));

@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { api,isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { PageHeader } from '@/components/page-header';
+import { SavedResourceUnavailable } from './app-management-summary';
 import { TaskQuickCreate } from '@/components/task-quick-create';
 import { APP_ATTACHMENT_BROKER_ENABLED, APP_PRIVATE_SHARING_ENABLED, APP_PRIVATE_MCP_ENABLED } from '@/lib/feature-flags';
 import { attachmentId,attachmentObject,attachmentParent,attachmentParentPage,attachmentWebDeadline,
@@ -43,7 +44,7 @@ function OwnerView({bindingId,projectionId,compact}:{bindingId:string;projection
       if(!response.ok)throw new Error('This saved private resource is unavailable.');const raw=await response.json();
       const value=projectionId?attachmentParent(raw,projectionId):attachmentParentPage(raw);stamp.deadline=Math.min(stamp.deadline,appConsentDeadline(value.consent_expires_at,value.consent_lifetime));
       if(current(stamp)){if(projectionId)setParent({value:value as AttachmentParent,stamp});else setPage({value:value as AttachmentParentPage,stamp});arm(stamp);}
-    }catch{if(current(stamp))setError('This saved private resource is unavailable. Check your current owner session and connection.');}
+    }catch{if(current(stamp))setError('This saved item is unavailable. Check your connection and open it again.');}
     finally{if(!disposed.current&&stamp.generation===generation.current)setBusy(false);}};
   useLayoutEffect(()=>{void load();},[]); // eslint-disable-line react-hooks/exhaustive-deps
   const download=async(attachment:AttachmentParent['attachments'][number])=>{if(!parent||!display(parent.stamp)||attachment.state!=='available')return;
@@ -67,11 +68,12 @@ function OwnerView({bindingId,projectionId,compact}:{bindingId:string;projection
       if(current(stamp)){setProjects(list);setProject('');}
     }catch{if(current(stamp))setError('Choose a project in Tasks before creating a source reference.');}finally{if(!disposed.current&&stamp.generation===generation.current)setBusy(false);}};
   const visibleParent=parent&&display(parent.stamp)?parent.value:null,visiblePage=page&&display(page.stamp)?page.value:null;
-  return <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden"><PageHeader title={compact?'Files and follow-ups':'Saved private App resource'}/>
-    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-8 pt-3 md:px-6"><div className="flex flex-wrap gap-2">{!compact&&<Link className={button} style={tap} href="/settings/apps/private-resources">Private connections</Link>}
-      {projectionId&&!compact&&<Link className={button} style={tap} href={`/app-attachments/${encodeURIComponent(bindingId)}`}>Saved records</Link>}<button className={button} style={tap} disabled={busy} onClick={()=>void load()}>Reload saved resource</button></div>
-      <p className="text-sm">Saved information is private to its owner. Source freshness is unknown. Every read and download checks current access.</p>
-      {busy&&<p role="status">Checking private access…</p>}{error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
+  const unavailable=!!error&&!visibleParent&&!visiblePage;
+  return <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden"><PageHeader title={compact?'Files and follow-ups':'Saved item'}/>
+    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-8 pt-3 md:px-6">{!unavailable&&<div className="flex flex-wrap gap-2">{!compact&&<Link className={button} style={tap} href="/settings/apps/private-resources">Your connections</Link>}
+      {projectionId&&!compact&&<Link className={button} style={tap} href={`/app-attachments/${encodeURIComponent(bindingId)}`}>Saved records</Link>}<button className={button} style={tap} disabled={busy} onClick={()=>void load()}>Reload saved item</button></div>}
+      {(visibleParent||visiblePage)&&<p className="text-sm">Only you can read this saved copy. It may not include later changes at the source. Opening or downloading it requires your current access.</p>}
+      {busy&&<p role="status">Checking your access…</p>}{unavailable?<SavedResourceUnavailable/>:error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
       {visiblePage&&<section aria-label="Saved App records" className="space-y-3">{visiblePage.items.length?visiblePage.items.map(item=><Link key={item.projection_id} className="block break-words rounded border p-3" style={tap} href={`/app-attachments/${encodeURIComponent(bindingId)}/${encodeURIComponent(item.projection_id)}`}>{item.label}</Link>):<p>No saved records are available.</p>}
         {visiblePage.next_cursor&&<button className={button} style={tap} disabled={busy} onClick={()=>void load(visiblePage.next_cursor!)}>Next saved records</button>}</section>}
       {visibleParent&&<><h2 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{visibleParent.label}</h2><p className="text-sm">{visibleParent.consent_lifetime==='until_revoked'?'Until revoked':`Consent ends ${new Date(visibleParent.consent_expires_at!).toLocaleString()}`}.</p>

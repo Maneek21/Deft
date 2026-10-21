@@ -68,28 +68,26 @@ export function ExperienceSettings({
       .deft-experience-settings-policy > section { font-size: 14px; line-height: 1.5; }
       .deft-experience-settings-policy select { border-color: var(--outline-variant); border-radius: 12px; background: var(--surface-container-low); color: var(--foreground); }
     `}</style>
-    <div className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6 sm:py-7">
-      <button type="button" onClick={onBack} className="deft-pill mb-5 max-w-full" style={{ minHeight: 44, whiteSpace: 'normal' }}>
+    <div className="mx-auto w-full max-w-3xl px-4 py-3 sm:px-6 sm:py-5">
+      <button type="button" onClick={onBack} className="deft-pill mb-3 max-w-full" style={{ minHeight: 44, whiteSpace: 'normal' }}>
         <ArrowLeft size={14} aria-hidden="true" /> <span className="min-w-0 break-words text-left">Back to {experienceLabel}</span>
       </button>
-      <header className="mb-6">
+      <header className="mb-4">
         <h1 className="break-words text-xl font-semibold tracking-tight sm:text-2xl" style={{ fontFamily: 'var(--font-heading)' }}>{title}</h1>
-        <p className="mt-2 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Accounts, private access, and approvals for {experienceLabel}.</p>
       </header>
       <SettingsSectionNav label={`${experienceLabel} settings sections`} sections={sections} value={visibleSection} onChange={setSection} />
 
       <section hidden={visibleSection !== 'accounts'} aria-labelledby={`${id}-accounts`}>
-        <div className="mb-4">
-          <h2 id={`${id}-accounts`} className="text-base font-semibold">Accounts</h2>
-          <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Choose the account you use in {experienceLabel}.</p>
-        </div>
+        <h2 id={`${id}-accounts`} className="sr-only">Accounts</h2>
+        {connectAccount && <div className="mt-4 min-w-0 rounded-2xl bg-[var(--surface-container-low)] p-4 sm:p-5">{connectAccount}</div>}
+        <details className="mt-3 min-w-0"><summary className="min-h-11 cursor-pointer py-3 text-sm">Accounts</summary>
         <div className="overflow-hidden rounded-xl">
           {accounts.length ? <ul className="space-y-1" style={{ borderColor: 'var(--border-default)' }}>
             {accounts.map(account => {
               const selected = account.key === selectedAccountKey;
               return <li key={account.key} className="flex flex-wrap items-center gap-3 rounded-xl px-4 py-4 sm:px-5" style={{ background: selected ? 'color-mix(in srgb, var(--accent) 5%, var(--surface))' : undefined, boxShadow: selected ? 'inset 2px 0 var(--accent)' : undefined }}>
-                <div className="min-w-0 flex-1 basis-36">
-                  <p className="break-words text-sm font-medium">{account.label}</p>
+                <div className="min-w-0 w-full sm:flex-1 sm:basis-36">
+                  <p className="overflow-x-auto whitespace-nowrap text-sm font-medium">{account.label}</p>
                   <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{account.statusLabel ?? 'Reviewed source'}</p>
                   {account.detail && <details className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                     <summary className="flex min-h-11 cursor-pointer items-center">Source details</summary>
@@ -105,7 +103,7 @@ export function ExperienceSettings({
           </ul> : <p className="px-4 py-5 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>Set up an account to get started.</p>}
         </div>
         <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>Switching accounts uses the access already reviewed for that account.</p>
-        {connectAccount && <div className="mt-8 rounded-2xl bg-[var(--surface-container-low)] p-4 sm:p-5">{connectAccount}</div>}
+        </details>
       </section>
 
       <section hidden={visibleSection !== 'access'} aria-labelledby={`${id}-access`}>

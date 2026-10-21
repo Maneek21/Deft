@@ -26,12 +26,13 @@ export function SourceNominationPanel({surface,onClose}:{surface:NominatedSource
  useEffect(()=>{let alive=true;void Promise.all([taskOnly?Promise.resolve([]):api.fetch('/api/spaces',{signal:surface.signal}).then(boundedChoiceListJson),knowledgeOnly?Promise.resolve([]):api.fetch('/api/projects',{signal:surface.signal}).then(boundedChoiceListJson)]).then(([spaceRows,projectRows])=>{if(alive&&surface.current()){setSpaces(Choices.parse(spaceRows));setProjects(Choices.parse(projectRows));}}).catch(()=>{if(alive&&surface.current())setNotice(taskOnly?'Projects are unavailable. Reopen this source to try again.':'Spaces or projects are unavailable. A private Note is still available.');});return()=>{alive=false;};},[surface,taskOnly,knowledgeOnly]);
  return <section className="mx-auto w-full max-w-4xl space-y-5 px-5 py-6" aria-label="Original source">
   <div className="flex items-center justify-between gap-3"><h2 className="min-w-0 break-words text-lg font-semibold">{title}</h2><button type="button" className="deft-pill min-h-11 shrink-0" disabled={reviewing} onClick={onClose}>Back to app</button></div>
-  <dl className="space-y-2 text-sm">{surface.presentation.headers.map((header,index)=><div key={index} className="flex gap-3"><dt className="w-16 shrink-0 text-[var(--muted)]">{header.label}</dt><dd className="min-w-0 break-words">{header.value}</dd></div>)}</dl>
+  <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(0,1fr)_minmax(300px,380px)] md:items-start">
+  <article className="min-w-0 space-y-5" aria-label="Source content">
+  <dl className="space-y-2 text-sm">{surface.presentation.headers.map((header,index)=><div key={index} className="flex gap-3"><dt className="w-16 shrink-0 text-[var(--muted)]">{header.label}</dt><dd className="min-w-0 break-words [overflow-wrap:anywhere]">{header.value}</dd></div>)}</dl>
   <div className="whitespace-pre-wrap break-words text-sm leading-7">{surface.presentation.plain_text}</div>
   {surface.presentation.truncated&&<p role="status" className="text-xs text-[var(--muted)]">This source view is truncated.</p>}
-  {!taskOnly&&!knowledgeOnly&&<CalendarInvitationControls source={source} ports={surface.calendar} current={surface.current} signal={surface.signal} scopeKey={surface.scopeKey}/>}
-  {!taskOnly&&!knowledgeOnly&&<IntegrationAccessSettings account={accessAccount} current={surface.current} signal={surface.signal}/>}
-  {!taskOnly&&<KnowledgeCaptureSettings source={source} spaces={spaces} current={surface.current} signal={surface.signal}/>}
+  </article>
+  <aside className="order-first min-w-0 space-y-4 md:sticky md:top-4 md:order-last" aria-label="Create and review">
   {reviewing&&input?<ReviewedDestination input={input} current={surface.current} journal={journal} onClose={()=>setReviewing(false)}/>:<section className="space-y-3 rounded-xl bg-[var(--surface-container-low)] p-4" aria-label="Create from source">
    <h3 className="text-sm font-medium">{taskOnly?'Create task from this source':knowledgeOnly?'Save this source to Knowledge':'Create from this source'}</h3><div className="flex flex-wrap gap-3">{!taskOnly&&!knowledgeOnly&&<label className="text-xs">Destination<select className="mt-1 block min-h-11 rounded-lg bg-[var(--surface)] px-3 text-sm" value={kind} onChange={event=>{setKind(event.target.value as AppIntegrationDestination['kind']);setSpace('');setProject('');setTaskDraft(undefined);}}><option value="note">Private Note</option><option value="knowledge">Knowledge</option><option value="chat">Chat</option><option value="task">Task</option></select></label>}
    {(kind==='knowledge'||kind==='chat')&&<label className="text-xs">Space<select className="mt-1 block min-h-11 max-w-full rounded-lg bg-[var(--surface)] px-3 text-sm" value={space} onChange={event=>setSpace(event.target.value)}><option value="">Choose space</option>{spaces.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>}
@@ -40,6 +41,13 @@ export function SourceNominationPanel({surface,onClose}:{surface:NominatedSource
    {mode==='excerpt'&&<label className="block text-xs">Copy exact text from the displayed source<textarea className="mt-1 block min-h-24 w-full rounded-lg bg-[var(--surface)] p-3 text-sm" maxLength={20000} value={excerpt} onChange={event=>setExcerpt(event.target.value)}/></label>}
    {notice&&<p role="status" className="text-xs text-[var(--muted)]">{notice}</p>}<button type="button" className="deft-pill min-h-11" disabled={!surface.current()||!input||mode==='excerpt'&&(!excerpt||!surface.presentation.plain_text.includes(excerpt))} onClick={()=>kind==='task'?setDetailsOpen(true):setReviewing(true)}>{kind==='task'?'Task details and review':'Review audience and create'}</button>
   </section>}
+  </aside>
+  </div>
+  {!taskOnly&&<details className="rounded-xl border p-4"><summary className="min-h-11 cursor-pointer py-2 text-sm">Source settings</summary><div className="space-y-5 pt-4">
+  {!taskOnly&&!knowledgeOnly&&<CalendarInvitationControls source={source} ports={surface.calendar} current={surface.current} signal={surface.signal} scopeKey={surface.scopeKey}/>}
+  {!taskOnly&&!knowledgeOnly&&<IntegrationAccessSettings account={accessAccount} current={surface.current} signal={surface.signal}/>}
+  {!taskOnly&&<KnowledgeCaptureSettings source={source} spaces={spaces} current={surface.current} signal={surface.signal}/>}
+  </div></details>}
   {detailsOpen&&kind==='task'&&project&&<TaskQuickCreate projectId={project} initialTitle={taskDraft?.title??title} initialDescription={taskDraft?.description} defaultDueDate={taskDraft?.due_date} defaultStatus={taskDraft?.status} defaultPriority={taskDraft?.priority} defaultAssigneeId={taskDraft?.assignee_id} onReview={draft=>{if(!surface.current()||surface.signal.aborted)return;AppIntegrationTaskDetailsSchema.parse({description:draft.description,status:draft.status,priority:draft.priority,assignee_id:draft.assignee_id,due_date:draft.due_date});setTaskDraft(draft);setDetailsOpen(false);setReviewing(true);}} onClose={()=>setDetailsOpen(false)} onCreated={()=>{}}/>}
  </section>;
 }
