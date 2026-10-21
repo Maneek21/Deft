@@ -15,6 +15,7 @@ import { digestAppGrantValue } from './app-grant-service.js';
 import { readInstallationUpgradeTrust, upgradeContinuityDecision } from './app-upgrade-trust-policy.js';
 import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord } from './app-connection-session-service.js';
 import { getAppConnectionSessionRegistry } from './app-connection-session-registry.js';
+import { currentConsentContinuationSourceLocators } from './app-connection-current-locators.js';
 import { currentAppConnectionReadAuthority } from './app-connection-session-authority.js';
 import { appConnectionUpgradeSourceIsAvailable } from './app-connection-upgrade-fence.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
@@ -62,11 +63,8 @@ export async function captureUpgradeApprovals(tx: UpgradeTx, orgId: string, inst
   const output: CapturedUpgradeApproval[] = [];
   for (const binding of resources) {
     if (!participants.includes(binding.owner_user_id) || appConsentDeadline(binding.consent_expires_at, binding.consent_lifetime ?? undefined) <= Date.now()) continue;
-    const sources = await tx.select().from(appConnectionSessions).where(and(eq(appConnectionSessions.org_id, orgId),
-      eq(appConnectionSessions.owner_user_id, binding.owner_user_id), sql`${appConnectionSessions.record}->'scope'->>'resource_binding_id'=${binding.id}`,
-      sql`${appConnectionSessions.record}->>'state'='connected'`,
-      sql`${appConnectionSessions.record}->'scope'->>'consent_lifetime' IS NOT DISTINCT FROM ${binding.consent_lifetime}`,
-      sql`${appConnectionSessions.record}->'scope'->>'consent_expires_at' IS NOT DISTINCT FROM ${binding.consent_expires_at?.toISOString() ?? null}`)).limit(2);
+    const sources = await currentConsentContinuationSourceLocators(tx,
+      { org_id: orgId, user_id: binding.owner_user_id }, binding).limit(2);
     if (sources.length !== 1) continue;
     const stored = sources[0]!, source = AppConnectionSessionRecordSchema.parse(stored.record);
     if (source.scope.app_version_id !== priorVersion || !await appConnectionUpgradeSourceIsAvailable(tx, { org_id: orgId,

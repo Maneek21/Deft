@@ -93,7 +93,7 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
       ...(value === undefined ? {} : { 'content-type': 'application/json' }) }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
     const body = await response.json() as any; assert.ok(response.ok, path + ': ' + response.status + ' ' + JSON.stringify(body)); return body;
   };
-  const fixture = async (trusted = true, persistent = true, shared = false, stores = false, shortConsent = false) => {
+  const fixture = async (trusted = true, persistent = true, shared = false, stores = false, shortConsent = false, retainedPersistentHistory = false) => {
     entries.length = 0;
     const org = randomUUID(), person = randomUUID(), admin = randomUUID();
     await db.insert(s.orgs).values({ id: org, name: 'Upgrade continuity', slug: 'p2-' + org });
@@ -145,6 +145,15 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
       const reviewed = await continuationService.review({ installation_id: installation.id, target_key: resourceInput.target_key, source_session_id: connected.session_id,
         request_id: randomUUID(), consent_expires_at: null, consent_lifetime: 'until_revoked' });
       connected = await continuationService.activate({ session_id: reviewed.session_id, review_digest: reviewed.review_digest });
+      if (retainedPersistentHistory) {
+        const renewed = await continuationService.review({ installation_id: installation.id, target_key: resourceInput.target_key,
+          source_session_id: connected.session_id, request_id: randomUUID(), consent_expires_at: null, consent_lifetime: 'until_revoked' });
+        connected = await continuationService.activate({ session_id: renewed.session_id, review_digest: renewed.review_digest });
+        const retained = await db.select().from(s.appConnectionSessions).where(and(eq(s.appConnectionSessions.org_id, org),
+          d.sql`${s.appConnectionSessions.record}->>'state'='connected'`,
+          d.sql`${s.appConnectionSessions.record}->'scope'->>'consent_lifetime'='until_revoked'`));
+        assert.equal(retained.length, 2, 'successful persistent continuation retains both historical and current carriers');
+      }
     }
     const observationService = new (await import('../src/lib/app-resource-observation-service.js')).AppResourceObservationService();
     const observation = await observationService.review(actor, { connection_session_id: connected.session_id, request_id: randomUUID(), interval_seconds: 60,
@@ -214,8 +223,8 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     }
     t.diagnostic(cases.length + ' raw JSON pairs agree between Host and live persistent-consent guard');
   });
-  await t.test('trusted no-diff upgrade and a second upgrade keep background access with zero owner steps', async () => {
-    const f = await fixture();
+  await t.test('trusted upgrades retain background access despite receipt-proven persistent history with zero owner steps', async () => {
+    const f = await fixture(true, true, false, false, false, true);
     const [oldBinding] = await db.select().from(s.appRuntimeBindings).where(and(eq(s.appRuntimeBindings.org_id, f.org), eq(s.appRuntimeBindings.owner_resource_binding_id, f.binding.binding_id)));
     const old = await (await import('../src/lib/app-runtime-management.js')).issueRuntimeOperatorSession(f.actor,
       oldBinding!.id, { guard: f.guard });
