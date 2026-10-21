@@ -15,7 +15,7 @@ test('only generated Host diagnostic suffixes fold; arbitrary messages stay lite
  assert.deepEqual(appRequestNoticeParts('Open the app (work account)'),{message:'Open the app (work account)'});
  assert.deepEqual(appRequestNoticeParts('The app did not start. (APP_EXPERIENCE_STARTUP_FAILED: first_view)'),{message:'The app did not start.',details:'APP_EXPERIENCE_STARTUP_FAILED: first_view'});
  const html=renderToStaticMarkup(<AppRequestNotice message={'A failure <script>private</script> (untrusted)'}/>);
- assert.doesNotMatch(html,/<script>/);
+ assert.ok(html.includes('&lt;script&gt;private&lt;/script&gt;'));
  assert.doesNotMatch(html,/<details/);
 });
 

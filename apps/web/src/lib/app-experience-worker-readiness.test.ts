@@ -32,7 +32,7 @@ visit(source);
 assert.equal(Object.keys(callbacks).length,3);
 
 function mount(){
-  const context=vm.createContext({experienceStartupFailureMessage});
+  const context=vm.createContext({experienceStartupFailureMessage,AppRequestNotice:()=>null,renewalBusy:false});
   const code=`
     let identity=true,authority=false,started=false,bootstrapReady=false,unavailable=false,latestView=null,remembered=0,stopped=false,snapshot,phase,startupDiagnostic=null,startupPhase=null,error='';
     const React={createElement(type,props,...children){return {type,props,children};}};
