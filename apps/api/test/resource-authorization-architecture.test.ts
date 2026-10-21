@@ -48,7 +48,7 @@ test('Phase 4 Resource authorization stays closed and owns no external effect pa
   assert.deepEqual(routeConsumers, ['routes/modules.ts']);
   assert.deepEqual(generalizedResourceRoutes, []);
 
-  const appKitSource = await readFile(join(repositoryRoot, 'packages/app-kit/src/index.ts'), 'utf8');
+  const appKitSource = await readFile(join(repositoryRoot, 'packages/app-kit/src/core.ts'), 'utf8');
   assert.doesNotMatch(
     appKitSource,
     /ResourceAuthorizationService|resourceAuthorizationService|resource-provider-adapters|resource-authorization/,

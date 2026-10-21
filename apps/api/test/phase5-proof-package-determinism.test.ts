@@ -66,7 +66,12 @@ async function buildIsolatedCopy(
     },
   });
 
-  const built = spawnSync(process.execPath, [appKitCli, 'app', 'build'], {
+  // The historical connected fixture explicitly opts into trusted example author tools.
+  // Ordinary declarative builds keep the clean CLI and register no private interface.
+  const cli = proof.lock_schema === 'deft.app.lock.v1'
+    ? resolve(repositoryRoot, 'packages/app-kit/dist/examples/email/cli.js')
+    : appKitCli;
+  const built = spawnSync(process.execPath, [cli, 'app', 'build'], {
     cwd: project,
     encoding: 'utf8',
   });
