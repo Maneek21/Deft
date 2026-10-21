@@ -10,6 +10,19 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.135 candidate - publication pending
+
+- Prevent read-only account-target and background authority checks from
+  contending on exclusive organization-membership locks; keep current identity,
+  membership, consent and trusted-upgrade checks.
+- Return structured, owner-readable account-target, app-open and Runtime
+  failures so a temporary infrastructure failure does not request reconnect.
+- Pause the foreground startup deadline while the browser tab is hidden and
+  resume after the existing authority revalidation when the tab becomes visible.
+
+Schema stays131. Author Kit alpha.42, Email App and Runtime artifacts are
+unchanged. Visible-tab acceptance is verified separately from API health.
+
 ### 0.3.0-preview.134 candidate - publication pending
 
 - Isolate app-owned Kit domain modules behind clean core and explicit optional

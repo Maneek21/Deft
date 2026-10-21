@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { experienceStartupFailureMessage } from './app-request-error';
 
 // Execute the component's actual callbacks; no copied handshake implementation.
 const path=new URL('../components/apps/installed-app-experience.tsx',import.meta.url);
@@ -31,7 +32,7 @@ visit(source);
 assert.equal(Object.keys(callbacks).length,3);
 
 function mount(){
-  const context=vm.createContext({});
+  const context=vm.createContext({experienceStartupFailureMessage});
   const code=`
     let identity=true,authority=false,started=false,bootstrapReady=false,unavailable=false,latestView=null,remembered=0,stopped=false,snapshot,phase,startupDiagnostic=null,startupPhase=null,error='';
     const React={createElement(type,props,...children){return {type,props,children};}};

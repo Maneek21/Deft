@@ -47,8 +47,13 @@ export async function getRuntimeSetupContext(actor: ModuleActor, installationId:
         inArray(appRuntimeBindings.state, ['active','disabled']))).limit(17);
     if (locators.length > 16) throw stale();
     const participants = [...new Set([actor.actor_id, ...locators.map(row => row.operator)])].sort();
-    for (const userId of participants) await tx.execute(sql`SELECT id FROM org_members WHERE org_id=${actor.org_id} AND user_id=${userId} ${sql.raw(userId === actor.actor_id ? 'FOR UPDATE' : 'FOR SHARE')}`);
-    try { await assertCurrentModuleManagerWithExecutor(tx, actor); } catch (error) { if (isModuleError(error)) throw denied(); throw error; }
+    // Informational metadata does not mutate membership or issue authority.
+    // Shared locks still fence role/active changes through the final web guard,
+    // and coexist with renewal, sync and Knowledge's current-authority reads.
+    // Both the participant lock and manager helper must stay read-only here;
+    // an exclusive request can also queue otherwise compatible readers behind it.
+    for (const userId of participants) await tx.execute(sql`SELECT id FROM org_members WHERE org_id=${actor.org_id} AND user_id=${userId} FOR SHARE`);
+    try { await assertCurrentModuleManagerWithExecutor(tx, actor, 'share'); } catch (error) { if (isModuleError(error)) throw denied(); throw error; }
     const parent = await loadReviewedAttachmentApp(tx, actor.org_id, installationId);
     if (!parent.composition || parent.version.id !== versionId || parent.grant.id !== locator.grant) throw stale();
     const currentSet = await tx.select({ id: appRuntimeBindings.id }).from(appRuntimeBindings).where(and(

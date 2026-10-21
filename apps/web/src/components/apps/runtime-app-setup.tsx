@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, isSameWebSession } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { appApiError, type AppInstallation } from '@/lib/apps';
+import { type AppInstallation } from '@/lib/apps';
+import { AppRequestError, readAppRequestError, appRequestFailureMessage } from '@/lib/app-request-error';
 import { parseRuntimeSetupContext, parseRuntimeSetupTargets, type RuntimeSetupTarget, runtimeSetupWebDeadline, type RuntimeSetupContext, type RuntimeSetupRequest } from '@/lib/app-runtime-setup';
 import { PrivateSyncClosure } from './private-sync-closure';
 type Review = { owner_resource_binding_id?:string; schema_version:'deft.app_runtime_management_review.v1';org_id:string;installation_id:string;app_version_id:string;
@@ -13,7 +14,7 @@ type Credential = { session_id:string;session_token:string;expires_at:string };
 const tap={minHeight:44};
 const sha=(x:unknown)=>typeof x==='string'&&/^sha256:[a-f0-9]{64}$/.test(x);
 const uuid=(x:unknown)=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(x);
-async function json(r:Response):Promise<unknown>{if(!r.ok)throw new Error(await appApiError(r,'Runtime setup is unavailable.'));const text=await r.text();if(text.length>65536)throw new Error('Runtime setup response is too large.');return JSON.parse(text);}
+async function json(r:Response):Promise<unknown>{if(!r.ok)throw await readAppRequestError(r,'Runtime setup is unavailable.');const text=await r.text();if(text.length>65536)throw new Error('Runtime setup response is too large.');return JSON.parse(text);}
 export function RuntimeAppSetup({app}:{app:AppInstallation}){
   const {sessionCacheScope,user}=useAuth();
   if(!sessionCacheScope||!user||app.state!=='active'||app.manifest.schema_version!=='7'||!app.manifest.runtime_actions.length)return null;
@@ -25,7 +26,10 @@ function TargetWorkspace({app,operatorId}:{app:AppInstallation;operatorId:string
   useEffect(()=>{let active=true;const controller=new AbortController(),token=api.getAccessToken();setCatalogLoading(true);setCatalogError(null);
     const timer=setTimeout(()=>controller.abort(),15_000);
     void api.fetch(`/api/apps/blob/composition/${encodeURIComponent(app.id)}/runtime/targets?app_version_id=${encodeURIComponent(app.version_id)}`,{signal:controller.signal,cache:'no-store'})
-      .then(json).then(value=>{const catalog=parseRuntimeSetupTargets(value);if(!catalog||catalog.installation_id!==app.id||catalog.app_version_id!==app.version_id)throw Error('Account target list changed. Reload targets.');if(active&&!controller.signal.aborted&&isSameWebSession(token,api.getAccessToken()))setTargets(catalog.targets);}).catch(()=>{if(active&&isSameWebSession(token,api.getAccessToken()))setCatalogError('Account targets could not be checked. Reload targets.');}).finally(()=>{clearTimeout(timer);if(active&&isSameWebSession(token,api.getAccessToken()))setCatalogLoading(false);});
+      .then(json).then(value=>{const catalog=parseRuntimeSetupTargets(value);if(!catalog||catalog.installation_id!==app.id||catalog.app_version_id!==app.version_id)throw new AppRequestError('Account target list changed. Reload targets.','APP_TARGET_CATALOG_CHANGED');if(active&&!controller.signal.aborted&&isSameWebSession(token,api.getAccessToken()))setTargets(catalog.targets);}).catch(error=>{
+        if(!active||!isSameWebSession(token,api.getAccessToken()))return;
+        setCatalogError(appRequestFailureMessage(error,'Account targets could not be checked. Reload targets.'));
+      }).finally(()=>{clearTimeout(timer);if(active&&isSameWebSession(token,api.getAccessToken()))setCatalogLoading(false);});
     return()=>{active=false;clearTimeout(timer);controller.abort();};
   },[app.id,app.version_id,catalogReload]);
   return <>{catalogLoading?<p role="status">Checking account targets…</p>:catalogError?<p role="alert">{catalogError} <button type="button" className="deft-pill" onClick={()=>setCatalogReload(n=>n+1)}>Reload targets</button></p>:targets.length===0?<p className="text-xs">No eligible named account targets.</p>:null}<label className="mt-3 block text-sm">Action account target<select aria-label="Action account target" disabled={catalogLoading||!!catalogError} className="ml-2 rounded border p-2" value={target?.resource_binding_id??''} onChange={event=>setTarget(targets.find(row=>row.resource_binding_id===event.target.value)??null)}>

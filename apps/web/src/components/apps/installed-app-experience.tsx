@@ -21,6 +21,7 @@ import { createExperienceConnection, experienceAuthorityResponse, ExperienceAuth
 import { readExperienceAuthority, readExperienceAuthorityPair } from '@/lib/app-experience-revalidation';
 import { useAuth } from '@/lib/auth-context';
 import { appApiError } from '@/lib/apps';
+import { AppRequestError, readAppRequestError, appRequestFailureMessage, experienceStartupFailureMessage, reportAppRequestFailure } from '@/lib/app-request-error';
 import { createExperienceSuspension, experienceOperationAllowedWhileHidden } from '@/lib/app-experience-suspension';
 import { ExperiencePreferences } from './experience-preferences';
 import type { ExperienceNode, ExperienceView } from '@/lib/app-experience-bridge';
@@ -319,15 +320,14 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         const targetsResponse = await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/targets`, {
           signal: abort.signal,
         });
-        if (experienceAuthorityResponse(targetsResponse) === 'unavailable') throw new ExperienceAuthorityUnavailable();
-        if (!targetsResponse.ok) throw new Error(await appApiError(targetsResponse, 'Private sources are unavailable.'));
+        if (!targetsResponse.ok) throw await readAppRequestError(targetsResponse, 'Private sources are unavailable.');
         const targets = await targetsResponse.json();
         if (targets?.schema_version !== 'deft.experience_targets.v1' || !Array.isArray(targets.targets)
           || targets.targets.length > 64 || targets.targets.some((item: { key?: unknown; label?: unknown }) =>
             typeof item?.key !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(item.key)
             || typeof item.label !== 'string' || item.label.length > 80)
           || new Set(targets.targets.map((item: { key: string }) => item.key)).size !== targets.targets.length) {
-          throw new Error('Private source list is invalid.');
+          throw new AppRequestError('Private source list is invalid.','APP_TARGET_CATALOG_INVALID');
         }
         if (!openingCurrent()) return;
         setResourceTargets(targets.targets);
@@ -339,21 +339,19 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         const response = await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/sessions`, {
           method: 'POST', signal: abort.signal, body: JSON.stringify({ resource_target_key: selectedTarget }),
         });
-        if (experienceAuthorityResponse(response) === 'unavailable') throw new ExperienceAuthorityUnavailable();
-        if (!response.ok) throw new Error(await appApiError(response, 'This Experience is unavailable.'));
+        if (!response.ok) throw await readAppRequestError(response, 'The app could not open.');
         const created = normalizeInstalledExperienceSession(await response.json());
         ownedSessionId = created.pin.session_id;
         if (created.pin.org_id !== org.id || created.pin.user_id !== user.id
           || created.pin.app_installation_id !== installationId
           || (created.resource_target_key ?? 'primary') !== selectedTarget
-          || created.experience.key !== experienceKey) throw new Error('Experience session identity changed.');
+          || created.experience.key !== experienceKey) throw new AppRequestError('The app session identity changed. Retry opening the app.','APP_EXPERIENCE_SESSION_CHANGED');
       if (openingCurrent() && created.app_name) setAppName(created.app_name);
         if (!cancelled && !document.hidden) {
           if (created.bundle.resource_keys.length || created.bundle.state_keys?.length || created.bundle.record_store_keys?.length) {
             setExposureBusy(true);
             const acquired = await api.fetch(`${root}/sessions/${encodeURIComponent(created.pin.session_id)}/access/acquire`, { method: 'POST', signal: abort.signal, body: '{}' });
-            if (experienceAuthorityResponse(acquired) === 'unavailable') throw new ExperienceAuthorityUnavailable();
-            if (!acquired.ok) throw new Error(await appApiError(acquired, 'Private access is unavailable.'));
+            if (!acquired.ok) throw await readAppRequestError(acquired, 'Private access is unavailable.');
             const access = normalizeExperienceAccess(await acquired.json());
             if (cancelled) { retireOwnedSession(); return; }
             setRecoveryStates(access.states); setExposure(access.exposure); setExposureBusy(false);
@@ -372,9 +370,10 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         retireOwnedSession();
         if (openingCurrent()) {
           setAccountSetupPending(false);
-          if (cause instanceof ExperienceAuthorityUnavailable || cause instanceof SessionRefreshUnavailableError || cause instanceof TypeError || cause instanceof Error && ['AbortError', 'TimeoutError'].includes(cause.name)) {
+          setError(appRequestFailureMessage(cause,'The app could not open.'));
+          if (cause instanceof AppRequestError&&cause.retryable || cause instanceof ExperienceAuthorityUnavailable || cause instanceof SessionRefreshUnavailableError || cause instanceof TypeError || cause instanceof Error && ['AbortError', 'TimeoutError'].includes(cause.name)) {
             setConnectionUnavailable(true); retry = setTimeout(() => { if (!document.hidden && openingCurrent()) setOpening(value => value + 1); }, 5000);
-          } else setError(cause instanceof Error ? cause.message : 'This Experience is unavailable.');
+          }
         }
       } finally { openingRequest = false; clearTimeout(deadline); }
     };
@@ -573,7 +572,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       },
     });
     const sourceNominationAbort=new AbortController();
-    const dataClient=createExperienceDataClient({installationId,principal:{orgId:session.pin.org_id,userId:session.pin.user_id},targetKey:session.resource_target_key??resourceTarget,current:locallyCurrent,fetch:(path,options)=>api.fetch(path,options),
+    const appDataFetch=async(path:string,options:RequestInit)=>reportAppRequestFailure(await api.fetch(path,options),()=>locallyCurrent()&&!options.signal?.aborted,setRenewalNotice);
+    const dataClient=createExperienceDataClient({installationId,principal:{orgId:session.pin.org_id,userId:session.pin.user_id},targetKey:session.resource_target_key??resourceTarget,current:locallyCurrent,fetch:appDataFetch,
       review:async(node,row,signal,recovery)=>{
         if(!locallyCurrent()||!node.action_key||!session.bundle.action_keys.includes(node.action_key)||!await live())throw Error('Review unavailable');
         const target=await dataClient.select(node.store_key,signal);if(!locallyCurrent()||signal.aborted)throw Error('Review unavailable');
@@ -589,7 +589,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
         const response=await api.fetch(`${root}/${encodeURIComponent(installationId)}/${encodeURIComponent(experienceKey)}/sessions`,{method:'POST',signal,body:JSON.stringify({resource_target_key:targetKey})});if(!response.ok)throw Error('Account unavailable');const child=normalizeInstalledExperienceSession(await response.json());
         try{if(child.pin.org_id!==session.pin.org_id||child.pin.user_id!==session.pin.user_id||child.pin.app_installation_id!==installationId||child.resource_target_key!==targetKey||child.experience.artifact_digest!==session.experience.artifact_digest)throw Error('Account child changed');
           const response=await api.fetch(`${root}/sessions/${encodeURIComponent(child.pin.session_id)}/access/acquire`,{method:'POST',signal,body:'{}'});if(!response.ok)throw Error('Account review required');const access=normalizeExperienceAccess(await response.json());if(!access.exposure)throw Error('Account review required');
-          let pinnedAccount:string|undefined;let client:typeof dataClient;client=createExperienceDataClient({installationId,targetKey,accountRef:()=>pinnedAccount,principal:{orgId:child.pin.org_id,userId:child.pin.user_id},current:locallyCurrent,fetch:(path,options)=>api.fetch(path,options),review:async(node,row,signal,recovery)=>{
+          let pinnedAccount:string|undefined;let client:typeof dataClient;client=createExperienceDataClient({installationId,targetKey,accountRef:()=>pinnedAccount,principal:{orgId:child.pin.org_id,userId:child.pin.user_id},current:locallyCurrent,fetch:appDataFetch,review:async(node,row,signal,recovery)=>{
             const target=await client.select(node.store_key,signal);if(!locallyCurrent()||!node.action_key||!child.bundle.action_keys.includes(node.action_key)||!await live(signal))throw Error('Review unavailable');
             return new Promise<boolean>(resolve=>{let finished=false;const finish=(submitted=false)=>{if(finished)return;finished=true;signal.removeEventListener('abort',aborted);setRecordAction(current=>current?.finish===finish?null:current);resolve(submitted);};const aborted=()=>finish(false);signal.addEventListener('abort',aborted,{once:true});setRecordAction({node,row,signal,current:locallyCurrent,ports:client.ports,sessionId:child.pin.session_id,targetKey,connectionSessionId:target.session_id,futureSubmissionId:typeof row.summary?.future_submission_id==='string'?row.summary.future_submission_id:undefined,futurePolicy:target.stores.find(store=>store.declaration.key===node.store_key)?.declaration.future_record_actions?.find(policy=>policy.action_key===node.action_key),dataAuthorityExpiresAt:target.stores.find(store=>store.declaration.key===node.store_key)?.consent?.expires_at,dataAuthorityLifetime:target.stores.find(store=>store.declaration.key===node.store_key)?.consent?.consent_lifetime,recovery,finish});});
           }});const target=await client.select(child.bundle.record_store_keys?.[0]??'drafts',signal);pinnedAccount=target.account.account_ref;
@@ -806,8 +806,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       stop();
       setStartupDiagnostic(diagnostic);
       setStartupPhase(phase);
-      setError('The app could not open. Reconnect to try again.');
-    });
+      setError(experienceStartupFailureMessage(phase));
+    }, { hidden: () => document.hidden });
     const bridge = createExperienceBridge({
       port: port.port1, pin: session.pin,
       resourceKeys: session.bundle.resource_keys,
@@ -1113,8 +1113,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     const suspension = createExperienceSuspension({
       current: authorityCurrent, live:async(signal)=>{if(!await live(signal))return false;const ended=await accounts.sweep(signal);if(ended.length){latestView=null;for(const target of ended){setResourceBatch(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setResourceAction(current=>{if(current?.targetKey===target){current.finish(undefined);return null;}return current;});setRecordAction(current=>{if(current?.targetKey===target){current.finish(false);return null;}return current;});await bridge.sendUiEvent({kind:'click',node_id:'account_visibility_'+target});}}return locallyCurrent();}, hidden: () => document.hidden,
       flush: () => { if (viewHost.current) flushExperienceInputs(viewHost.current); },
-      clear: () => { setResumeUnavailable(false);clearNavigation(navigationOwner); setSuspended(true); setSource(null); setRunReview(null); if (viewHost.current) suspendExperienceView(viewHost.current); rendered.current = false; },
-      restore: () => { setResumeUnavailable(false);setSuspended(false); startWorker(); if (latestView && viewHost.current) { publishViewNavigation(latestView); renderHostView(latestView); rendered.current = true; } },
+      clear: () => { startup.pause();setResumeUnavailable(false);clearNavigation(navigationOwner); setSuspended(true); setSource(null); setRunReview(null); if (viewHost.current) suspendExperienceView(viewHost.current); rendered.current = false; },
+      restore: () => { startup.resume();setResumeUnavailable(false);setSuspended(false); startWorker(); if (latestView && viewHost.current) { publishViewNavigation(latestView); renderHostView(latestView); rendered.current = true; } },
       end: stop,unavailable:()=>setResumeUnavailable(true),
     });
     retryResume.current=()=>{setResumeUnavailable(false);void suspension.show();};
@@ -1212,10 +1212,10 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     {suspended && !connectionUnavailable && !error && <p role="status" className="shrink-0 px-6 py-4 text-sm">{resumeUnavailable?<>The app could not resume. <button type="button" className="underline" onClick={()=>retryResume.current?.()}>Retry connection</button></>:'Resuming app…'}</p>}
     {session&&(error||!exposure)&&!settingsOpen&&<div className="shrink-0 px-5 py-2"><button type="button" className="deft-pill min-h-11" disabled={connectionSetupBusy||!!composer}
       onClick={()=>void showSettings(true)}>Account settings</button></div>}
-    {error && session && !accountSetupOpen ? <p role="alert" data-experience-startup-phase={startupPhase ?? undefined} data-experience-startup-diagnostic={startupPhase ? startupDiagnostic ?? undefined : undefined} className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
+    {error && !accountSetupOpen ? <p role="alert" data-experience-startup-phase={startupPhase ?? undefined} data-experience-startup-diagnostic={startupPhase ? startupDiagnostic ?? undefined : undefined} className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>{error}</p>
       : !ready && !error && !accountSetupOpen ? <p role="status" className="shrink-0 px-6 py-4 text-sm" style={{ background: 'var(--surface-container-low)' }}>Opening app…</p>
       : null}
-    {!session && user && user.role !== 'guest' && org && sessionCacheScope && !accountSetupOpen && <section className="shrink-0 space-y-3 px-5 py-4 text-sm">
+    {!session && !error && user && user.role !== 'guest' && org && sessionCacheScope && !accountSetupOpen && <section className="shrink-0 space-y-3 px-5 py-4 text-sm">
       <p>Set up your own account to use this app.</p>
       <button type="button" className="deft-pill" style={{ minHeight: 44 }} disabled={connectionSetupBusy}
         onClick={() => { if (!document.hidden) setAccountSetupOpen(true); }}>Set up account</button>
@@ -1229,8 +1229,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             ensureAuthority={composerAuthority} disabled={renewalBusy || accountSetupPending} onBusy={connectionBusy} onConnectionNavigation={onConnectionNavigation} onSetupComplete={completeAccountSetup} /></>} />
     </div>}
     {!settingsOpen&&privateAccessReview}
-    {error && session && !accountSetupOpen && <section className="shrink-0 space-y-2 px-5 py-3 text-sm"><p>Your saved drafts remain private. Reconnect to recover them; sign in again if your login has ended.</p>
-      <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={renewalBusy} onClick={() => void renewPrivateAccess()}>{renewalBusy ? 'Reconnecting…' : 'Reconnect app'}</button></section>}
+    {error && !accountSetupOpen && <section className="shrink-0 space-y-2 px-5 py-3 text-sm"><p>Your saved drafts remain private. Retry opening the app to check the connection again.</p>
+      <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={renewalBusy} onClick={() => { if(!document.hidden)setOpening(value=>value+1); }}>Retry app</button></section>}
     {session && exposure && recoveryDismissalScope && !error && !!session.bundle.state_keys?.length && !recoveryReady && <PrivateStateRecoveryGate suspended={connectionUnavailable}
       key={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`} sessionId={session.pin.session_id} exposure={exposure}
       states={recoveryStates} dismissalScope={recoveryDismissalScope} currentTarget={session.resource_target_key ?? resourceTarget} onContinue={continueRecovery} />}

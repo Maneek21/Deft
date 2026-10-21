@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { APP_LIMITS } from '@deft/app-kit/core';
 import { AppError } from '../lib/app-errors.js';
 import { AppRunError } from '../lib/app-run-errors.js';
+import { ExperienceExposureBusyError } from '../lib/app-experience-exposure-db-error.js';
 import { appHttpFailure } from './app-http-errors.js';
 import { assertAttachmentBrokerEnabled } from '../lib/app-attachment-authority.js';
 import { attachmentFinalAuthorityIsCurrent } from '../lib/app-attachment-authority.js';
@@ -69,8 +70,8 @@ async function body(c: Context, maxBytes=16_384, rawText=false): Promise<unknown
 }
 
 function failure(c:Context,error:unknown){
-  if(error instanceof AppRunError)return appHttpFailure(c,error,'App Run','app-runs');
-  if(error instanceof AppError||error instanceof ResourceSyncWebAuthenticationError)return c.json({error:error.message,code:error.code},error.status);
+  if(error instanceof AppRunError||error instanceof ExperienceExposureBusyError)return appHttpFailure(c,error,'App Run','app-runs');
+  if(error instanceof AppError||error instanceof ResourceSyncWebAuthenticationError)return c.json({error:error.message,code:error.code,...(error instanceof AppError&&error.details?{details:error.details}:{})},error.status);
   if(error instanceof z.ZodError||error instanceof SyntaxError||error instanceof TypeError)return c.json({error:'Invalid attachment request',code:'VALIDATION_ERROR'},400);
   console.error('[app-attachments] failure metadata', {name:error instanceof Error?error.name:'UNKNOWN',cause_code:(error as {cause?:{code?:string}})?.cause?.code,constraint:(error as {cause?:{constraint?:string}})?.cause?.constraint});
   return c.json({error:'Attachment request failed',code:'INTERNAL_ERROR'},500);

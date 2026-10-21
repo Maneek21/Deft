@@ -3,6 +3,25 @@ import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { AppConnectionSessionRegistry, AppConnectionSessionRegistryConfigSchema, connectionProfileDigest,
   readBoundedConnectionJson } from '../src/lib/app-connection-session-registry.js';
+import { AppError } from '../src/lib/app-errors.js';
+
+test('data transport retains safe structured Runtime reasons instead of reporting profile unavailability',async()=>{
+ const cases=[['EMAIL_DATA_SOURCE_CHANGED','APP_RUNTIME_SOURCE_CHANGED',409],['EMAIL_DATA_AUTHORITY_DENIED','APP_RUNTIME_ACCESS_DENIED',403],
+  ['MAIL_DATA_CONNECTION_DENIED','APP_RUNTIME_ACCESS_DENIED',403],['MAIL_RUNTIME_SESSION_DENIED','APP_RUNTIME_ACCESS_DENIED',403],
+  ['EMAIL_DATA_CONFLICT','APP_RUNTIME_CONFLICT',409],['EMAIL_DATA_NOT_FOUND','APP_RUNTIME_NOT_FOUND',404],
+  ['EMAIL_DATA_INPUT_INVALID','APP_RUNTIME_INPUT_INVALID',400]] as const;
+ for(const [runtimeCode,code,status] of cases){
+  const f=fixture((async()=>Response.json({error:runtimeCode},{status:403})) as typeof fetch);
+  const input={schema_version:'deft.app_data_runtime.v1' as const,request_id:randomUUID(),scope:f.scope,
+   connection:{session_id:randomUUID(),session_revision:1,runtime_session_ref:'runtime',account_ref:'account'},
+   authority:{consent_id:null,consent_digest:null,data_policy_digest:'sha256:'+'a'.repeat(64)},expires_at:f.scope.consent_expires_at,
+   operation:'resource_read_presentation' as const,input:{store_key:'inbox',resource_key:'messages',record_id:randomUUID(),content_digest:'sha256:'+'b'.repeat(64)}};
+  await assert.rejects(f.registry.dataRuntime(f.scope,f.profile).request(input,new AbortController().signal),(error:unknown)=>{
+   assert.ok(error instanceof AppError);assert.equal(error.code,code);assert.equal(error.status,status);assert.equal(error.details?.runtime_code,runtimeCode);
+   assert.doesNotMatch(error.message,/profile unavailable/);return true;
+  });
+ }
+});
 
 function fixture(fetcher: typeof fetch = fetch) {
   const token = 'a'.repeat(43);
