@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { events } from '@deft/db/schema';
+import { events, wikiPages, emailKnowledgeBudgets } from '@deft/db/schema';
 import { z } from 'zod';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { AppRunKeyReference } from './app-run-keyrings.js';
@@ -164,6 +164,35 @@ const decodeRetainedCalendarModel=(row:RetainedCalendarRow):Model|null=>{
  return model;
 };
 
+const retainedBudgetConfigKeys=Object.freeze({org:'email_knowledge_daily_token_budget',account:'email_knowledge_account_daily_token_budget'});
+
+const retainedDestinationKey=sql`case ${wikiPages.scope} when 'user' then 'user'
+ when 'space' then 'space:' || ${wikiPages.space_id} else null end`;
+const retainedThreadMatches=sql`thread.owner_user_id = ${wikiPages.user_id}
+ and thread.destination_key = ${retainedDestinationKey}
+ and thread.page_version > 0 and thread.page_version <= ${wikiPages.version}`;
+const retainedKnowledgeOriginCondition=sql`(exists (select 1 from email_knowledge_threads thread
+ where thread.org_id = ${wikiPages.org_id} and thread.page_id = ${wikiPages.id})
+ or exists (select 1 from wiki_citations citation where citation.page_id = ${wikiPages.id} and citation.source_type = 'email'))`;
+const retainedKnowledgeProvenanceCondition=sql`(
+ exists (select 1 from email_knowledge_threads thread
+  where thread.org_id = ${wikiPages.org_id} and thread.page_id = ${wikiPages.id}
+   and ${retainedThreadMatches} and exists (select 1 from wiki_citations citation
+    join email_knowledge_sources source on source.id = citation.source_id and source.org_id = thread.org_id
+    where citation.org_id = thread.org_id and citation.page_id = thread.page_id and citation.source_type = 'email'
+     and source.owner_user_id = thread.owner_user_id and source.account_id = thread.account_id and source.thread_key = thread.thread_key))
+ and not exists (select 1 from email_knowledge_threads thread
+  where thread.org_id = ${wikiPages.org_id} and thread.page_id = ${wikiPages.id}
+   and not coalesce((${retainedThreadMatches}),false))
+ and not exists (select 1 from wiki_citations citation
+  where citation.page_id = ${wikiPages.id} and citation.source_type = 'email'
+   and not coalesce((citation.org_id = ${wikiPages.org_id} and exists (
+    select 1 from email_knowledge_sources source join email_knowledge_threads thread
+     on thread.org_id = source.org_id and thread.owner_user_id = source.owner_user_id
+      and thread.account_id = source.account_id and thread.thread_key = source.thread_key
+    where source.id = citation.source_id and source.org_id = ${wikiPages.org_id}
+     and thread.page_id = ${wikiPages.id} and ${retainedThreadMatches})),false)))`;
+
 /** Sole trusted provider for retained source storage. Its wire decoders stay
  * here until explicit provenance, restore and rollback migration gates pass. */
 export const retainedSourceStorageProvider = Object.freeze({
@@ -171,6 +200,13 @@ export const retainedSourceStorageProvider = Object.freeze({
  listReferences: listEmailMailboxKeyReferences,
  knowledge: Object.freeze({
   origins: Object.freeze(['email_knowledge_auto']),
+  originCondition: retainedKnowledgeOriginCondition,
+  provenanceCondition: retainedKnowledgeProvenanceCondition,
+  budgetStorage: emailKnowledgeBudgets,
+  budgetConfigKeys: retainedBudgetConfigKeys,
+  readBudgetConfig(config:Record<string,unknown>) {
+   return {org:config[retainedBudgetConfigKeys.org],account:config[retainedBudgetConfigKeys.account]};
+  },
   sourceUrl: retainedKnowledgeSourceUrl,
   isCitation: (sourceType:string) => sourceType === 'email',
   decorateCitations: decorateRetainedKnowledgeCitations,
