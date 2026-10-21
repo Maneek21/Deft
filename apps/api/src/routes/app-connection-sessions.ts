@@ -56,6 +56,15 @@ export function createAppConnectionSessionRoutes() {
     globalConcurrent: 60, peerConcurrent: 16, maxPeerBuckets: 1024 }));
   for(const path of ['authority-v2','upgrade-authority'])routes.use(`/runtime/${path}`,createAppResourceSyncLimits({globalPerMinute:600,peerPerMinute:600,globalConcurrent:60,peerConcurrent:16,maxPeerBuckets:1024}));
   routes.use('/runtime/consent-continuation-authority',createAppResourceSyncLimits({globalPerMinute:600,peerPerMinute:600,globalConcurrent:60,peerConcurrent:16,maxPeerBuckets:1024}));
+  routes.use('/runtime/background-access',createAppResourceSyncLimits({globalPerMinute:60,peerPerMinute:30,
+    globalConcurrent:8,peerConcurrent:4,maxPeerBuckets:1024}));
+  routes.post('/runtime/background-access',async c=>{
+    try{
+      const {reconcileRuntimeBackgroundAccess}=await import('../lib/app-runtime-background-access.js');
+      return c.json(await reconcileRuntimeBackgroundAccess(await body(c),c.req.header('authorization'),
+        AbortSignal.any([c.req.raw.signal,AbortSignal.timeout(30_000)])));
+    }catch(error){return failure(c,error);}
+  });
   const ownerLimits = createAppResourcePrivateReadLimits({peerPerMinute: 600, globalConcurrent: 32, peerConcurrent: 16});
   routes.use('/installations/:installationId/context',ownerLimits);
   routes.use('/installations/:installationId/consent-continuation-context',ownerLimits);
