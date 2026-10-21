@@ -13,6 +13,7 @@ import {verifiedExperienceAccountLabels} from '@/lib/app-experience-settings-dis
 import {ExperienceCapabilityUpgradeSettings} from './experience-capability-upgrade';
 import {ExperienceBackgroundRefresh} from './experience-background-refresh';
 import {ExperienceBackgroundAccess} from './experience-background-access';
+import {ExperienceInitialConnectConsent,ExperienceInitialConnectCompletion} from './experience-initial-connect-consent';
 import {ExperienceConnectionForms} from './experience-connection-forms';
 import {ExperienceConsentContinuation} from './experience-consent-continuation';
 import { appConnectionSessionTag, createAppConnectionSessionFlow, type AppConnectionContext } from '@/lib/app-connection-session-flow';
@@ -24,12 +25,15 @@ type SettingsProps = { backgroundRefreshDescription?: string; onAccountLabels?:(
   disabled: boolean; onBusy: (busy: boolean) => void; onSetupComplete?: (target: string) => void; onReadingPreferencesChanged?: () => void; onConnectionNavigation: (pending: PendingAppConnection | null) => void };
 export function ExperienceConnectionSettings(props: SettingsProps) {
   const { user, org, sessionCacheScope } = useAuth();
+  const [initialRevision,setInitialRevision]=useState(0),[discoveredRecords,setDiscoveredRecords]=useState(false);
+  const appOwnedRecords=props.appOwnedRecords??discoveredRecords;
   if (!user || !org || !sessionCacheScope || user.role === 'guest') return null;
   return <div key={`${sessionCacheScope}/${props.installationId}`} className="space-y-4">
-    <GenericConnectionSettings {...props} ownerId={user.id} orgId={org.id} sessionScope={sessionCacheScope}/>
+    {props.appOwnedRecords!==false&&<ExperienceInitialConnectConsent {...props} ownerId={user.id} orgId={org.id} sessionScope={sessionCacheScope} onRecords={setDiscoveredRecords} onConfigured={()=>setInitialRevision(value=>value+1)}/>}
+    <GenericConnectionSettings key={initialRevision} {...props} appOwnedRecords={appOwnedRecords} ownerId={user.id} orgId={org.id} sessionScope={sessionCacheScope}/>
     <ExperienceConsentContinuation {...props} ownerId={user.id} orgId={org.id} sessionScope={sessionCacheScope}/>
-    {props.appOwnedRecords&&<ExperienceConnectionForms {...props} ownerId={user.id} orgId={org.id} sessionScope={sessionCacheScope}/>}
-    <LegacyConnectionSettingsGate appOwnedRecords={props.appOwnedRecords}>{(user.role === 'member' || !props.sessionId) && <OwnerConnectionSettings {...props} ownerId={user.id} orgId={org.id}/>}</LegacyConnectionSettingsGate>
+    {appOwnedRecords&&<ExperienceConnectionForms {...props} ownerId={user.id} orgId={org.id} sessionScope={sessionCacheScope}/>}
+    <LegacyConnectionSettingsGate appOwnedRecords={appOwnedRecords}>{(user.role === 'member' || !props.sessionId) && <OwnerConnectionSettings {...props} ownerId={user.id} orgId={org.id}/>}</LegacyConnectionSettingsGate>
   </div>;
 }
 
@@ -51,7 +55,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       setContext(value);setSelected(previous=>value.targets.some(t=>t.target_key===(props.targetKey??previous))?props.targetKey??previous:value.targets[0]?.target_key??'');setNotice('');
     })().catch(error=>{if(current()){setContext(null);setNotice(error instanceof Error?error.message:'Account connections are unavailable.');}});
     return()=>{active=false;alive.current=false;flow.current?.dispose();flow.current=null;operation.current=false;props.onBusy(false);document.removeEventListener('visibilitychange',hidden);};
-  },[props.installationId,props.experienceKey,props.ownerId,props.orgId,props.sessionScope,props.targetKey,props.onBusy,reload]);
+  },[props.installationId,props.experienceKey,props.ownerId,props.orgId,props.sessionScope,props.targetKey,props.onBusy,props.appOwnedRecords,reload]);
   useEffect(()=>{if(context&&context.installation_id===props.installationId&&context.org_id===props.orgId&&context.owner_user_id===props.ownerId)props.onAccountLabels?.(verifiedExperienceAccountLabels(context));},[context,props.onAccountLabels,props.installationId,props.orgId,props.ownerId]);
   const target=context?.targets.find(t=>t.target_key===selected),state=target?.session?.state;
   const visibleReview=reuseReview&&target&&JSON.stringify(reuseReview.scope)===JSON.stringify(target.scope)?reuseReview:null;
@@ -112,6 +116,7 @@ function GenericConnectionSettings(props:SettingsProps&{ownerId:string;orgId:str
       {context.targets.length>1&&<label className="block text-sm">Account connection<select className="mt-1 min-h-11 w-full rounded-xl bg-[var(--surface-container-high)] px-3" value={selected} disabled={working||props.disabled} onChange={event=>{setSelected(event.target.value);setNotice('');}}>
         {context.targets.map(t=><option key={t.target_key} value={t.target_key}>{t.session?.account?.label??`${t.profile.label} · ${t.target_key.replaceAll('_',' ')}`}</option>)}
       </select></label>}
+      {props.appOwnedRecords&&target&&state==='connected'&&<ExperienceInitialConnectCompletion installationId={props.installationId} ownerId={props.ownerId} orgId={props.orgId} sessionScope={props.sessionScope} target={target} disabled={working||props.disabled}/>}
       {target?.upgrade&&!target.reattachment?.candidate&&!target.reattachment?.pending&&!reusePending&&flow.current?<ExperienceCapabilityUpgradeSettings key={JSON.stringify([selected,target.scope])} target={target} client={flow.current} disabled={working||props.disabled} ownerId={props.ownerId} orgId={props.orgId} appOwnedRecords={props.appOwnedRecords} backgroundRefreshDescription={props.backgroundRefreshDescription}
         onBusy={busy=>{operation.current=busy;setWorking(busy);props.onBusy(busy);}} onContext={setContext} onNavigate={url=>{props.onConnectionNavigation(null);window.location.assign(url);}}
         onUse={props.onSetupComplete?()=>props.onSetupComplete?.(selected):undefined} onConnect={()=>void act('begin')} onStatus={()=>void act('status')} onDisconnect={()=>void act('disconnect')}/>:target&&<><ExperienceConnectionStatus label={target.session?.account?.label??target.reattachment?.candidate?.account.label??visibleReview?.account.label??target.profile.label} state={state} reviewAvailable={reviewAvailable} reusePending={reusePending} working={reuseWorking}/>

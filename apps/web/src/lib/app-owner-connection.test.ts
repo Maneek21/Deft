@@ -103,3 +103,11 @@ test('action review remains bound to the admitted own account and per invocation
   for (const changed of [{ ...review, owner_resource_binding_id: id(99) }, { ...review, action_key: 'other' },
     { ...review, host_policy: { ...review.host_policy, review_requirement: 'never' } }]) assert.throws(() => ownerConnectionReview({ review: changed }, input));
 });
+
+
+test('current account setup exposes only bounded declared private-store metadata', () => {
+  const withStores = { ...context, policies: [{ ...context.policies[0], record_store_keys: ['drafts','preferences'] }] };
+  assert.deepEqual(ownerConnectionContext(withStores, installationId)[0]!.record_store_keys, ['drafts','preferences']);
+  for (const record_store_keys of [['drafts','drafts'],['__proto__'],Array.from({length:17},(_,i)=>'store_'+i)])
+    assert.throws(() => ownerConnectionContext({ ...context, policies: [{ ...context.policies[0], record_store_keys }] }, installationId));
+});

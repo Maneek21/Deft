@@ -7,7 +7,7 @@ type AdmissionRef = { admission_id: string; admission_digest: string };
 export type OwnerResourceRequest = AdmissionRef & { target_key: string; consent_expires_at: string|null;consent_lifetime?:AppConsentLifetime; limits: OwnerLimits; attachment_policy: OwnerAttachments };
 export type OwnerBinding = { binding_id: string; target_key: string; state: 'active' | 'disabled'; consent_expires_at: string | null;consent_lifetime?:AppConsentLifetime;
   actions: { action_key: string; binding_id: string; state: 'active' | 'disabled' }[] };
-export type OwnerPolicy = { policy: { key: string; resource_key: string; action_keys: string[]; max_consent_seconds: number;allow_until_revoked?:true };
+export type OwnerPolicy = { record_store_keys?: string[]; policy: { key: string; resource_key: string; action_keys: string[]; max_consent_seconds: number;allow_until_revoked?:true };
   status: 'admitted' | 'deployment_review_required'; admission: null | (AdmissionRef & { operator_user_id: string; operator_label: string;
     resource_request: OwnerResourceRequest }); recovery_targets: { key: string }[]; bindings: OwnerBinding[] };
 const fail = (): never => { throw Error('Personal account setup changed. Reload before continuing.'); };
@@ -49,7 +49,7 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
   const row = object(value); keys(row, 'schema_version,installation_id,policies');
   if (row.schema_version !== 'deft.owner_connection_context.v1' || row.installation_id !== installationId) fail();
   const policies = array(row.policies, 16).map(value => {
-    const entry = object(value); keys(entry, 'policy,status,admission,bindings', 'recovery_targets'); const policy = object(entry.policy);
+    const entry = object(value); keys(entry, 'policy,status,admission,bindings', 'recovery_targets,record_store_keys'); const policy = object(entry.policy);
     keys(policy, 'key,resource_key,action_keys,max_consent_seconds','allow_until_revoked,provider_profile_key,runtime_requirement_key');
     if(policy.allow_until_revoked!==undefined&&policy.allow_until_revoked!==true)fail();
     const profileKey=policy.provider_profile_key,runtimeRequirementKey=policy.runtime_requirement_key;
@@ -88,7 +88,9 @@ export function ownerConnectionContext(value: unknown, installationId: string): 
     });
     if (recovery_targets.some((target, i) => i > 0 && target.key <= recovery_targets[i - 1]!.key)
       || !admission && recovery_targets.length) fail();
-    return { policy: selected, status: entry.status, admission, recovery_targets, bindings } as OwnerPolicy;
+    const record_store_keys = entry.record_store_keys === undefined ? undefined : array(entry.record_store_keys, 16).map(key);
+    if (record_store_keys && new Set(record_store_keys).size !== record_store_keys.length) fail();
+    return { policy: selected, status: entry.status, admission, recovery_targets, bindings, ...(record_store_keys ? { record_store_keys } : {}) } as OwnerPolicy;
   });
   if (policies.some((policy, i) => i > 0 && policy.policy.key <= policies[i - 1]!.policy.key)) fail();
   return policies;

@@ -3,6 +3,7 @@ import {useEffect,useRef,useState} from 'react';
 import type {AppConnectionFormContext} from '../../../../../packages/app-kit/src/connection-form';
 import {api,isSameWebSession} from '@/lib/api';
 import {createConnectionFormFlow} from '@/lib/app-connection-form-flow';
+import {ExperienceInitialConnectCompletion} from './experience-initial-connect-consent';
 
 type Props={installationId:string;ownerId:string;orgId:string;sessionScope:string;targetKey?:string;disabled:boolean;onBusy:(busy:boolean)=>void;onSetupComplete?:(target:string)=>void};
 export function ExperienceConnectionForms(props:Props){
@@ -39,6 +40,9 @@ export function ExperienceConnectionForms(props:Props){
    {target.session?.account&&<p className="text-sm text-[var(--on-surface-variant)]">{target.session.account.address}</p>}
    <p className="text-sm text-[var(--on-surface-variant)]">{state==='connected'?'Connected':state==='awaiting_input'?'Waiting for account setup':state==='indeterminate'?'Check setup status':state==='disconnected'?'Disconnected':'Connect using your mail server details.'}</p>
    {notice&&<p role="status" className="text-sm">{notice}</p>}
+   {target.session?.state==='connected'&&target.session.account&&<ExperienceInitialConnectCompletion {...props} target={{target_key:target.target_key,scope:target.scope,
+    session:{schema_version:'deft.app_connection_session.v1',session_id:target.session.session_id,state:'connected',scope:target.scope,
+     expires_at:target.scope.consent_expires_at,account:{account_ref:target.session.account.account_ref,label:target.session.account.label}}}}/>}
    <div className="flex flex-wrap gap-2">
     {(!state||state==='not_connected'||state==='disconnected')&&<button className="deft-pill min-h-11" disabled={busy||props.disabled||!target.runtime_ready} onClick={()=>void act('begin')}>{target.candidate?'Reconnect existing account':'Connect account'}</button>}
     {target.session&&<button className="deft-pill min-h-11" disabled={busy||props.disabled||!target.runtime_ready} onClick={()=>void act('status')}>Check connection status</button>}

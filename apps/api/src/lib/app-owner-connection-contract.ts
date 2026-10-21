@@ -60,6 +60,7 @@ export type OwnerConnectionContext = Readonly<{ schema_version: 'deft.owner_conn
     admission: null | (OwnerConnectionAdmissionReference & { operator_user_id: string; operator_label: string;
       resource_request: z.infer<typeof OwnerConnectionResourceRequestSchema> });
     recovery_targets: readonly Readonly<{ key: string }>[];
+    record_store_keys?: readonly string[];
     bindings: readonly Readonly<{ binding_id: string; target_key: string; state: string; consent_expires_at: string | null; consent_lifetime?:AppConsentLifetime;
       actions: readonly Readonly<{ action_key: string; binding_id: string; state: string }>[] }>[] }>[] }>;
 export type OwnerConnectionResourceActivation = Readonly<{ registration_id: string; binding_id: string; checkpoint_id: string;
