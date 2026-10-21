@@ -43,7 +43,7 @@ function fixture(images:SourcePresentation['images'],readBinary:NonNullable<Para
     restore:()=>{mount();Object.assign(globalThis,{document:originalDocument,MutationObserver:originalObserver});URL.createObjectURL=originalCreate;URL.revokeObjectURL=originalRevoke;}};
 }
 const image=(character:string,index:number,kind:'remote'|'cid'='remote')=>({image_ref:character.repeat(64),kind,index,alt:''});
-const loadButton=(wrap:Element)=>{const button=descendants(wrap).find(node=>node.textContent==='Load external images');assert.ok(button?.onclick);return button;};
+const loadButton=(wrap:Element)=>{const button=descendants(wrap).find(node=>node.textContent==='Show images');assert.ok(button?.onclick);return button;};
 
 test('actual image queue starts at most two requests until a predecessor settles',async()=>{
   const pending:{ref:string;value:ReturnType<typeof deferred>}[]=[];let active=0,maximum=0;

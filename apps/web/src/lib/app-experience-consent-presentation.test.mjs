@@ -13,10 +13,10 @@ const marker=name=>Object.assign(()=>null,{displayName:name});
 const React={createElement:(type,props,...children)=>({type,props:{...props,children:children.flat(Infinity)}})};
 function flatten(tree){const result=[];const visit=node=>{if(!node||typeof node!=='object')return;result.push(node);node.props?.children?.forEach(visit);};visit(tree);return result;}
 const stores=Array.from({length:11},(_,index)=>({declaration:{key:'store_'+index},consent:index===0?{expires_at:'2099-01-01T00:00:00Z'}:null}));
-function render({showEnabled=false,onOpenSettings,notice=''}={}){
+function render({showEnabled=false,onOpenSettings,notice='',storeKeys=stores.map(store=>store.declaration.key)}={}){
  let cursor=0;const states=[[{target_key:'primary',session_id:'one',account:{label:'Personal'},stores}],null,false,notice,false];
  const Component=compile(find(consent,node=>ts.isFunctionDeclaration(node)&&node.name?.text==='ExperienceDataConsent'),{React,appConsentDeadline,useState:()=>[states[cursor++],()=>{}],useRef:current=>({current}),useEffect:()=>{},RecordAccessStatusRow:marker('RecordAccessStatusRow'),AppDialog:marker('AppDialog'),AbortController,Date});
- return Component({installationId:'app',targetKey:'primary',storeKeys:stores.map(store=>store.declaration.key),scopeKey:'one',showEnabled,onOpenSettings});
+ return Component({installationId:'app',targetKey:'primary',storeKeys,scopeKey:'one',showEnabled,onOpenSettings});
 }
 function opener({canFlush=true}={}){
  const calls=[],ref=current=>({current});
@@ -38,7 +38,7 @@ test('full settings retains every reviewed store row and an unavailable notice s
 });
 test('partial record access does not claim all saves require permission',()=>{
  const compact=flatten(render({onOpenSettings:()=>{}}));
- assert.equal(compact.find(node=>node.type==='p').props.children[0],'Some features need access.');
+ assert.equal(compact.find(node=>node.type==='p').props.children[0],'Saving store 1, store 2, store 3, store 4, store 5, store 6, store 7, store 8, store 9, store 10 needs access.');
  assert.equal(compact.find(node=>node.type==='button').props.children[0],'Review access');
 });
 test('changing account scope clears an old notice and pending review state',()=>{
@@ -67,3 +67,9 @@ test('draft choice cannot manufacture persistent authority when current target l
 
 test('settings revoke is explicit, matches current consent and refreshes to disabled without deleting records',async()=>{const f=permissionFixture({active:true}),rows=f.render().filter(n=>n.type.displayName==='RecordAccessStatusRow');assert.equal(rows[0].props.active,true);assert.equal(f.calls.length,0);rows[0].props.onRevoke();await f.tick();assert.equal(f.calls.filter(c=>c.path.endsWith('/revoke')).length,1);assert.deepEqual(f.calls.find(c=>c.path.endsWith('/revoke')).body,{consent_id:'11111111-1111-4111-8111-111111111111'});assert.equal(f.calls.filter(c=>c.path.includes('/context?')).length,2);assert.equal(f.render().find(n=>n.type.displayName==='RecordAccessStatusRow').props.active,false);assert.match(f.states[3],/Saved records were not deleted/);});
 test('revoke refuses a replaced current consent before dispatch',async()=>{const f=permissionFixture({active:true}),row=f.render().find(n=>n.type.displayName==='RecordAccessStatusRow');f.replaceServerConsent();row.props.onRevoke();await f.tick();assert.equal(f.calls.some(c=>c.path.endsWith('/revoke')),false);assert.match(f.states[3],/not confirmed/);});
+
+test('no current write feature means no access banner, even with unrelated missing grants',()=>{
+ assert.equal(render({onOpenSettings:()=>{},storeKeys:[]}),null);
+ assert.equal(render({onOpenSettings:()=>{},storeKeys:['store_0']}),null);
+ const needed=flatten(render({onOpenSettings:()=>{},storeKeys:['store_1']}));assert.equal(needed.find(node=>node.type==='p').props.children[0],'Saving store 1 needs access.');
+});

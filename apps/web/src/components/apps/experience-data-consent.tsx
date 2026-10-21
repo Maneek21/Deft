@@ -46,9 +46,10 @@ export function ExperienceDataConsent({installationId,targetKey,storeKeys,scopeK
   }catch{if(current(request)){setNotice('Revocation was not confirmed. Check access status before trying again.');await load(request).catch(()=>undefined);}}finally{if(current(request))setBusy(false);}}
  const visibleTargets=targets.flatMap(target=>target.stores.filter(store=>storeKeys.includes(store.declaration.key)).map(store=>({target,store,active:!!store.consent&&appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)>Date.now()})));
  const visibleNotice=showEnabled||notice!=='Private record access enabled.'?notice:'';
+ if(!showEnabled&&!storeKeys.length)return null;
  if(!review&&!visibleNotice&&!visibleTargets.some(row=>showEnabled||!row.active))return null;
  if(!showEnabled&&onOpenSettings&&!review)return <section aria-label="Private record access" className="flex shrink-0 flex-wrap items-center gap-2 px-5 py-2 text-xs text-[var(--foreground-secondary)]">
-  <p role="status">{visibleNotice||'Some features need access.'}</p>
+  <p role="status">{visibleNotice||`Saving ${visibleTargets.filter(row=>!row.active).map(row=>row.store.declaration.key.replaceAll('_',' ')).join(', ')} needs access.`}</p>
   <button type="button" className="deft-pill" disabled={busy} onClick={onOpenSettings}>Review access</button>
  </section>;
  return <section aria-label="Private record access" className="mb-3 rounded-xl bg-[var(--surface-container-low)] px-3 py-2 text-xs">

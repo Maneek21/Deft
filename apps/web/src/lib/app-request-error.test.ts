@@ -55,3 +55,14 @@ test('expected Host store access denial stays with the feature while Runtime den
   details:{runtime_code:'EMAIL_DATA_AUTHORITY_DENIED'}},{status:403});
  await reportAppRequestFailure(runtime,()=>true,message=>notices.push(message));assert.match(notices[0],/APP_RUNTIME_ACCESS_DENIED; EMAIL_DATA_AUTHORITY_DENIED/);
 });
+
+test('validated readonly data failures stay with the screen while writes and malformed intents retain notices',async()=>{
+ const notices:string[]=[],request={schema_version:'deft.app_data_request.v1',request_id:'11111111-1111-4111-8111-111111111111',operation:'resource_list',input:{store_key:'drafts',resource_key:'inbox',cursor:null,limit:10,query:'Deft Email Stage 1'}};
+ for(const operation of ['resource_list','record_list','record_create','invalid']){
+  const input=operation==='resource_list'?request.input:operation==='record_list'?{store_key:'drafts',cursor:null,limit:10}:operation==='record_create'?{store_key:'drafts',record_id:request.request_id,value:{}}:{};
+  const response=Response.json({error:'The app Runtime is temporarily unavailable.',code:'APP_RUNTIME_UNAVAILABLE'},{status:503});
+  const before=notices.length;
+  assert.equal(await reportAppRequestFailure(response,()=>true,message=>notices.push(message),{method:'POST',body:JSON.stringify({...request,operation,input})}),response);
+  assert.equal(notices.length-before,['resource_list','record_list'].includes(operation)?0:1);assert.equal((await response.json()).code,'APP_RUNTIME_UNAVAILABLE');
+ }
+});

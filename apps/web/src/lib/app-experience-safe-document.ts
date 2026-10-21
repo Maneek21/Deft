@@ -169,7 +169,9 @@ function createDocumentElement(value: ExperienceDocumentContent, images: readonl
       const detail = `${alt} · ${status}`;
       slot.setAttribute('role', 'img'); slot.setAttribute('aria-label', detail);
       slot.setAttribute('title', detail);
-      slot.textContent = `\u25a7 ${alt.length > 60 ? alt.slice(0, 59) + '\u2026' : alt}`;
+      if (nominated.kind === 'remote' && state === undefined) {
+        slot.style.display = 'none'; slot.textContent = '';
+      } else slot.textContent = `\u25a7 ${alt.length > 60 ? alt.slice(0, 59) + '\u2026' : alt}`;
     }
   }
   return wrapper;

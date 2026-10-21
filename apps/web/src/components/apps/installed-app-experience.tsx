@@ -47,6 +47,7 @@ import {parseExperienceDataPresentation} from '@/lib/app-experience-data-present
 import {createExperienceRecordDocumentHost} from '@/lib/app-experience-record-document';
 import {mountExperienceDataSourceFiles} from '@/lib/app-experience-data-source-files';
 import {ExperienceDataConsent} from './experience-data-consent';
+import {experienceScreenStoreKeys} from '@/lib/app-experience-screen-access';
 import {ExperienceRecordAction,type RecordActionRequest} from './experience-record-action';
 import {ExperienceResourceAction,type ResourceActionRequest} from './experience-resource-action';
 import {parseExperienceResourceAction} from '@/lib/app-experience-resource-action';
@@ -100,6 +101,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
   const sourceQuery=sourceNominationQuery(useSearchParams()),sourceNavigationChanged=useRef<((query:string)=>void)|null>(null);
   useEffect(()=>{sourceNavigationChanged.current?.(sourceQuery);},[sourceQuery]);
   const [preferencesNode,setPreferencesNode]=useState<ExperienceNode|null>(null);
+  const [screenStoreKeys,setScreenStoreKeys]=useState<string[]>([]);
   const intakePrepare=useRef<((suggestion:ExperienceMailtoSuggestion)=>Promise<{account:string;intake:ReturnType<typeof createRecordIntake>}>)|null>(null);
   const preferencesEvent=useRef<((event:unknown)=>void)|null>(null);
   const readingPreferencesChanged=useRef<(()=>void)|null>(null);
@@ -572,7 +574,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       },
     });
     const sourceNominationAbort=new AbortController();
-    const appDataFetch=async(path:string,options:RequestInit)=>reportAppRequestFailure(await api.fetch(path,options),()=>locallyCurrent()&&!options.signal?.aborted,setRenewalNotice);
+    const appDataFetch=async(path:string,options:RequestInit)=>reportAppRequestFailure(await api.fetch(path,options),()=>locallyCurrent()&&!options.signal?.aborted,setRenewalNotice,options);
     const dataClient=createExperienceDataClient({installationId,principal:{orgId:session.pin.org_id,userId:session.pin.user_id},targetKey:session.resource_target_key??resourceTarget,current:locallyCurrent,fetch:appDataFetch,
       review:async(node,row,signal,recovery)=>{
         if(!locallyCurrent()||!node.action_key||!session.bundle.action_keys.includes(node.action_key)||!await live())throw Error('Review unavailable');
@@ -1016,6 +1018,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       onView(view) {
         if (!authorityCurrent()) return;
         latestView = view;setPreferencesNode(view.preferences??null);
+        const nextStoreKeys=experienceScreenStoreKeys(view.root);setScreenStoreKeys(previous=>previous.join(',')===nextStoreKeys.join(',')?previous:nextStoreKeys);
         if (!locallyCurrent() || !viewHost.current) return;
         publishViewNavigation(view);
         renderHostView(view);
@@ -1041,7 +1044,7 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
       startup.dispose();
       frame.removeEventListener('load', onBootstrapLoad);
       sourceNominationAbort.abort();sourceLoader.dispose();sourceNavigationChanged.current=null;retrySourceNomination.current=null;setSourceOpening(null);setNominatedSource(null);
-      stopped = true; latestView = null;trustedDocument=null;sourceReview.clear();sourcePresentations.clear();for(const entry of presentationDisposals.values())entry.mount();presentationDisposals.clear();setPreferencesNode(null);preferencesEvent.current=null;intakePrepare.current=null;readingPreferencesChanged.current=null; setSuspended(false); setSource(null); setRunReview(null);
+      stopped = true; latestView = null;trustedDocument=null;sourceReview.clear();sourcePresentations.clear();for(const entry of presentationDisposals.values())entry.mount();presentationDisposals.clear();setPreferencesNode(null);setScreenStoreKeys([]);preferencesEvent.current=null;intakePrepare.current=null;readingPreferencesChanged.current=null; setSuspended(false); setSource(null); setRunReview(null);
       clearInterval(childTimer);accounts.close();connection.dispose(); lease?.dispose(); ensureAuthority.current = null;flushRecordWrites.current=null; setConnectionUnavailable(false);
       clearNavigation(navigationOwner);
       frame.contentWindow?.postMessage({ kind: 'stop', session_id: session.pin.session_id }, '*');
@@ -1234,8 +1237,8 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     {session && exposure && recoveryDismissalScope && !error && !!session.bundle.state_keys?.length && !recoveryReady && <PrivateStateRecoveryGate suspended={connectionUnavailable}
       key={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`} sessionId={session.pin.session_id} exposure={exposure}
       states={recoveryStates} dismissalScope={recoveryDismissalScope} currentTarget={session.resource_target_key ?? resourceTarget} onContinue={continueRecovery} />}
-    {!settingsOpen&&session&&exposure&&!error&&!suspended&&!connectionUnavailable&&!!session.bundle.record_store_keys?.length&&<ExperienceDataConsent installationId={installationId}
-      targetKey={session.resource_target_key??resourceTarget} storeKeys={session.bundle.record_store_keys} scopeKey={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`}
+    {!settingsOpen&&!nominatedSource&&!source&&!accountSetupOpen&&session&&exposure&&!error&&!suspended&&!connectionUnavailable&&!!screenStoreKeys.length&&<ExperienceDataConsent installationId={installationId}
+      targetKey={session.resource_target_key??resourceTarget} storeKeys={screenStoreKeys} scopeKey={`${session.pin.session_id}/${exposure.exposure_id}/${exposure.exposure_epoch}`}
       onOpenSettings={()=>void showSettings(true,'access')} onChanged={()=>setOpening(value=>value+1)}/>}
     {nominatedSource&&!settingsOpen&&!error&&!suspended&&!connectionUnavailable&&<div className="min-h-0 flex-1 overflow-auto"><SourceNominationPanel key={JSON.stringify([nominatedSource.nomination,nominatedSource.focusedKind])} surface={nominatedSource} onClose={()=>setNominatedSource(null)}/></div>}
     <div ref={viewHost} className="min-h-0 flex-1 overflow-auto" style={nominatedSource || source || settingsOpen || accountSetupOpen ? { display: 'none' } : undefined} aria-label="App Experience" />
