@@ -9,6 +9,8 @@
   },
   "packageManager": "pnpm@11.10.0",
   "scripts": {
+    "check:app-boundary": "node scripts/check-app-boundary.mjs",
+    "test:app-boundary": "node --test scripts/check-app-boundary.test.mjs",
     "test:email-preview-api": "node scripts/email-preview-api-tests.mjs",
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
     "audit:session2": "tsx docs/superpowers/audits/agent-ui-session-2.audit.ts",

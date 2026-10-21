@@ -1,0 +1,4021 @@
+{
+  "schema": "deft.app_boundary_exception_review.v1",
+  "base_gate_commit": "38bc405eb922ed6e2feb4e9377ffe420c52fbe73",
+  "integration_kit_commit": "b956d9bad093b6b705b88980ff68d01806beff7a",
+  "before": 1269,
+  "retained_exactly": 1005,
+  "removed": 264,
+  "added": 269,
+  "after": 1274,
+  "added_categories": {
+    "reviewed-fixture": 14,
+    "retained-wire": 10,
+    "isolated-compatibility": 237,
+    "historical-lineage": 8
+  },
+  "review": "Exact relocations, deprecated facades, retained serialized spellings, immutable lineage copy and reviewed fixtures only. No compatibility-facade-import exception; no production loader or new core domain capability is admitted.",
+  "removed_findings": [
+    {
+      "path": "apps/api/src/lib/app-connected-contract.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "923f629d2244a22b908e86ae0f5487f5f88119c2f1916704cc4709f762312888",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/api/src/lib/app-connected-contract.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "debe2c8b154738c38823902250cd1971e847cfd7034903176a48168b586e864f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/app-integration-contacts.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "8c0c4bf93f5201db55958709715501cdb30179ea0e81ded8e2ac740d088a4a98",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/app-integration-contacts.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "8c0c4bf93f5201db55958709715501cdb30179ea0e81ded8e2ac740d088a4a98",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/app-integration-contacts.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "8c0c4bf93f5201db55958709715501cdb30179ea0e81ded8e2ac740d088a4a98",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/app-integration-contacts.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "b5559290e88e76a5db0963ffa66cd7f46eceebe927cb47763dbd0948b02d5dea",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/calendar-invitation.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "8c0c4bf93f5201db55958709715501cdb30179ea0e81ded8e2ac740d088a4a98",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/calendar-invitation.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "8c0c4bf93f5201db55958709715501cdb30179ea0e81ded8e2ac740d088a4a98",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/calendar-invitation.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "8c0c4bf93f5201db55958709715501cdb30179ea0e81ded8e2ac740d088a4a98",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/src/lib/calendar-invitation.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "6c5f36294c40fbed1bebdede471c7ed8180f9291806e63c95d6ac3b390a8ec9f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "rule": "computed-import",
+      "token": "import(consumer('email-draft-service'))",
+      "digest": "74990f9cb1e62799c0f5a9a8b66f14ce0d574d0258471f57a5151b1bde4cdd04",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "rule": "computed-import",
+      "token": "import(consumer('email-signature-types'))",
+      "digest": "74990f9cb1e62799c0f5a9a8b66f14ce0d574d0258471f57a5151b1bde4cdd04",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "rule": "computed-import",
+      "token": "import(consumer('email-template-store'))",
+      "digest": "74990f9cb1e62799c0f5a9a8b66f14ce0d574d0258471f57a5151b1bde4cdd04",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/next.config.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "40229e0e8bfb29973b02dbe754e8e69268e8c3ca7ea7276957654c8c0611299a",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/next.config.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "40229e0e8bfb29973b02dbe754e8e69268e8c3ca7ea7276957654c8c0611299a",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/next.config.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "ab10d16be2cedec5887017a13b0a9873d0b1d3d6a19f205b26463840f30ea3d1",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-action-composer.tsx",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "6dbfde4e16bbd61703771acd1e227c46c36bd011551b6078386ea27790ce2c1a",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-action-composer.tsx",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "6dbfde4e16bbd61703771acd1e227c46c36bd011551b6078386ea27790ce2c1a",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-action-composer.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "6dbfde4e16bbd61703771acd1e227c46c36bd011551b6078386ea27790ce2c1a",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-action-composer.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d3c8896e3dbb1fd114cfd598b333508dd0836f9eded296e8ad5a5a6fe47e7158",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "47d5a632120d6a037546d89747345edc035e7e54248bb1e1a6a3fd7a014172dd",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "47d5a632120d6a037546d89747345edc035e7e54248bb1e1a6a3fd7a014172dd",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "47d5a632120d6a037546d89747345edc035e7e54248bb1e1a6a3fd7a014172dd",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "47d5a632120d6a037546d89747345edc035e7e54248bb1e1a6a3fd7a014172dd",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "4f11e94cea0817183fe6e365cf483d1a1a2cbac5e9dbca5293c8d478b3f7fccc",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxEdit",
+      "digest": "4f11e94cea0817183fe6e365cf483d1a1a2cbac5e9dbca5293c8d478b3f7fccc",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "mailboxEdit",
+      "digest": "d2edf1271d2904d03bafa24b30065a5fa16ea43c9bb2c53ed50cca7fba2d17f7",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxEdit",
+      "digest": "d2edf1271d2904d03bafa24b30065a5fa16ea43c9bb2c53ed50cca7fba2d17f7",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "3485082362a2b713121916990d3cb6305204ea58f35608e2fca258793de9ad38",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "mailboxEdit",
+      "digest": "c1c04991a3f6a82a9916c744b438da13640ff6e769de497ab1f4126bde9c0b96",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "mailboxEdit",
+      "digest": "883841f1d46be3cc437a7e79c6af38f1b6c56e61761d7698192fce6670dd1b36",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "7e964c4322c11ccc05eb728d55f3890f9abc9ecc176f183a73853c71e317a53a",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "8a1c4d8a8077fdbd323539e346df21b4d62c01c50b3f47ec3ee283d9918f838b",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "5b481a82c533c08e922a85abcc750c144708e51022781c8b210a79067c3a75ed",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "f700cb21adf4179896ae218e95125cd11617e745d65ad7225facbf4b2b01368c",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-recipients.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "de6095a8e78fbcb50a8d3d468d799c02eeaa2ec3cc012db2ab205b27181f95de",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.test.tsx",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "866fc5942a59fa6582ddce03f5775fa5ba45f9394fb6e4f70a0365b5218c7106",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.test.tsx",
+      "rule": "computed-import",
+      "token": "require(web+'@tiptap/core')",
+      "digest": "ac9d0f7564ea4b007b3ff8edab804ae361f3bd32d40aca613c7924f7b0df2900",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.test.tsx",
+      "rule": "computed-import",
+      "token": "require(web+'@tiptap/starter-kit')",
+      "digest": "ac9d0f7564ea4b007b3ff8edab804ae361f3bd32d40aca613c7924f7b0df2900",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.tsx",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "d7bb2c8a053b8b064b5828445d20cfd48a60163f25fc8b8131db1da01bac8fd5",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "dd383f69a9aaf812d36fc2ca2ae700725718301b0c5f36724c3a89651cb092dd",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "b956910e8417d2774d41b74820ccde2e4e4f120ec43778bee138553efdedc43f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "b956910e8417d2774d41b74820ccde2e4e4f120ec43778bee138553efdedc43f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "b956910e8417d2774d41b74820ccde2e4e4f120ec43778bee138553efdedc43f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mailbox",
+      "token": "mailbox_list",
+      "digest": "aed5906965ba01278d67aed2e809377aba7d882c9ce59a653abc9bbbf91d509d",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "aed5906965ba01278d67aed2e809377aba7d882c9ce59a653abc9bbbf91d509d",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/components/apps/installed-app-experience.tsx",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "c45315476e062f8e52f706f292baecf315d0e7613e338c88309998277eee02dd",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "3525c9f0736049537185039142ac75455635d204c2342b9bb80fa32bada3611b",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "193ea674ae162352fa096efbf3b3fb6c52231e4c1e8cc67bddf65cc48a52848c",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "193ea674ae162352fa096efbf3b3fb6c52231e4c1e8cc67bddf65cc48a52848c",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "193ea674ae162352fa096efbf3b3fb6c52231e4c1e8cc67bddf65cc48a52848c",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-action-composer.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "46688a98c68bb67b2916fcea29aacdfdf4313cb4a30afbfe5ce5daf04b981138",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-controls.test.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "0dfcf008274da14330f5db75c83a3299c0aa55e721e1bee00228431e4e7ca05f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-inline-images.test.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "3b5a938cc3e276ab7b4ba45093af6a081dbcdf513db32dc0fb012350a84e7a6f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-inline-images.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "0167dcf1a64aaef51f49a49a8ef6170997b4646976006491a6502311f5e2252a",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-inline-images.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "63be03a3eb9ec5de33e39cb0f9ac05a1ebb8e067194b0883a14de1a3e1e364f4",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "9cd34e8889c9c3773b0d021db92a4b55a47000eb21deb704016a9d6bac04dcae",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "9cd34e8889c9c3773b0d021db92a4b55a47000eb21deb704016a9d6bac04dcae",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "9cd34e8889c9c3773b0d021db92a4b55a47000eb21deb704016a9d6bac04dcae",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "44ca181fda4a845ce5bad124c170dd03f257bcb754a9f050e679bcd116688fdd",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "44ca181fda4a845ce5bad124c170dd03f257bcb754a9f050e679bcd116688fdd",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "45240eb5410b81f7096ca77f72cd47e95a9382613393bfb59ee99d31324becf7",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "45240eb5410b81f7096ca77f72cd47e95a9382613393bfb59ee99d31324becf7",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-mailto.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "9a8e9a678465ba547edfef32139b1cf3d81c3be0cb132c324547cdb80477fcfe",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-presentation-headers.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "372d7088e5f3161d85b988e5e394930dd2339d26c50456f6103d096180115cad",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-presentation-headers.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "372d7088e5f3161d85b988e5e394930dd2339d26c50456f6103d096180115cad",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-presentation-headers.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "372d7088e5f3161d85b988e5e394930dd2339d26c50456f6103d096180115cad",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-presentation-headers.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "e215d630d2f94df5829a64557a5abfe3fc1bb654a34e72764425576fc668b157",
+      "occurrences": 2
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-record-fields.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "92e0d2f50433cc2a474c20e53f71787f680f446dcf714b8ccf1a336cff5b6f6f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-record-form.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "92e0d2f50433cc2a474c20e53f71787f680f446dcf714b8ccf1a336cff5b6f6f",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-record-writer.test.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "a65ee30a5a9c4230cdc7208665c857253ec45c4f1db50f1effa278335b2a7799",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-rich-mode.test.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "934d1570839b8610e9cb97926ffb349a64281940474a4cdfe2dc41548916dd91",
+      "occurrences": 1
+    },
+    {
+      "path": "apps/web/src/lib/app-experience-rich-mode.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "2da742ec88648697b8555dde89db605f7dd6600add4172bf102c8d657af63b41",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-capabilities.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "165f8a1ff02d39e84a33166a62492ab4abdfe4262f3910c0e16cdb6e7a18f808",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "33d445333475529dfa273532fb5880dd8951ac0a8e2047d92c5c987ba4c528ad",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "7ab8b1d8cfd0729e15f76ca0a1208600d02de894ce73bbb66cd0809436c366e2",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "798e5ea69ce54a9c4c6622468168ea6810eb6ba3f5fcd54e6f94aa84c81ca1d3",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "a5294868ccd4e7eeb161bf1bda0073c8ae7a11f9ae1f04c4ed8c1385460266d3",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "754f67f54e7fe4679f4b8b23c8d9d9738e7b48032a0072f1ef33593c7341d35d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "1ee9c263fc3536ea0ef3fb61337c05ecc3e7dd550debe4dcd1e1417c9ba75534",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.d.ts",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "1ee9c263fc3536ea0ef3fb61337c05ecc3e7dd550debe4dcd1e1417c9ba75534",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "33d445333475529dfa273532fb5880dd8951ac0a8e2047d92c5c987ba4c528ad",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "7dc280897c9743e93eb5d64512950f17892ea1215812d0587e4b93bcbfc2a4a7",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "a5294868ccd4e7eeb161bf1bda0073c8ae7a11f9ae1f04c4ed8c1385460266d3",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "754f67f54e7fe4679f4b8b23c8d9d9738e7b48032a0072f1ef33593c7341d35d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "b5f835451028727ec2cea440960b3e29613c915f77fd822ec8dda73198c129de",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/experience-sdk.js",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "b5f835451028727ec2cea440960b3e29613c915f77fd822ec8dda73198c129de",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "bdb6de4b55b102c8a28e910a29d2d783d201b9f5e54e89cf1b1cfa829101d7bd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "55b7e461140e64bc823226d3ef5f62cb7329b62d69eae08090f3817f7f16f981",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "c807198f0869d873f598a55b4df6c9ab9426dee730e4d46eccd453fd400fcba7",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInput",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutput",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox_list",
+      "digest": "95b750aaef0ad1ee03e2bdb0387778b234bad00b0418e394e4ecda4b75bccecf",
+      "occurrences": 152
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "bdb6de4b55b102c8a28e910a29d2d783d201b9f5e54e89cf1b1cfa829101d7bd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "c2a1cbc23af8c0880b6b5ff593a110d161425aeb7c18f77af092959c8fcdc123",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "c7416ace251f86e654e293ee79d0abd449cd916786be50e94af0b4e40e6dc674",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "a4a67bf56349a199b811e43f15665233f984f853edfdf0d0a60a78855e06604c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "9e28a82bc708664a9509b9c3d8942829a73629140fc1663ee84fc684831f297d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "7f9a56c5be5078258f923d851ddf5d4871b47e37e3e96034fa2d76be7192865d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mail-compose-path",
+      "token": "mailbox-list",
+      "digest": "e99e09cb771133bc4c464f266050cc1b5e4b7865d437056f9fbe0b84c4c6041c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "b78b313e20753eb20b3b081acaaacdb36c9b1a99339a9ccccaef57a8997d5b66",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox-path",
+      "token": "mailbox-list",
+      "digest": "e99e09cb771133bc4c464f266050cc1b5e4b7865d437056f9fbe0b84c4c6041c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "9df92824781d36e61cf95f4246abf034f756ac081a67f19afbaf03621c81936c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "21ac5c84a4f81cfdacbfc8565b54c5b295a77df1f4ba17439ca8cd9ddeb93845",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "cf34462cf04667fc5f0f8bed9316cdfe34e7878c9c8a05284285c8f757d84593",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "ded65e1e3b6394e6951b0b0bde40f852c2f8638403a447e7fe8acb808fd83acf",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "ded65e1e3b6394e6951b0b0bde40f852c2f8638403a447e7fe8acb808fd83acf",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "139ba7e3c6606df6e00e15ee95286a2500de9713235d296de9ef63282324f24d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "139ba7e3c6606df6e00e15ee95286a2500de9713235d296de9ef63282324f24d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "139ba7e3c6606df6e00e15ee95286a2500de9713235d296de9ef63282324f24d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "12a73a212cbf6bf708e590987aa173425eaa91a74981b9d5606726c6cdd76762",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "12a73a212cbf6bf708e590987aa173425eaa91a74981b9d5606726c6cdd76762",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "12a73a212cbf6bf708e590987aa173425eaa91a74981b9d5606726c6cdd76762",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "fb5be5f3335744d3999b44c02a0351318f606e8bfd4f0a0ab50f086a2677d98e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "fb5be5f3335744d3999b44c02a0351318f606e8bfd4f0a0ab50f086a2677d98e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "037177bcbd7ea888dd3dfd417c24b430bdc57e7d830c937432c5d2421824d864",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "037177bcbd7ea888dd3dfd417c24b430bdc57e7d830c937432c5d2421824d864",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "a90edec782e7dbc7cab04ba24af379c53203d3a48ef331214786e9375ea9c039",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "a90edec782e7dbc7cab04ba24af379c53203d3a48ef331214786e9375ea9c039",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mail-compose-path",
+      "token": "mailbox-list",
+      "digest": "d43777a45e942e9bff44a670d586c3dcedb6bba76372f2d7c0d27ccbb208cef3",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "b0bb30ceb2759d8dad3a4e3acce00b6c570aa11a107b709481c548a32d197607",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox-path",
+      "token": "mailbox-list",
+      "digest": "d43777a45e942e9bff44a670d586c3dcedb6bba76372f2d7c0d27ccbb208cef3",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "a33049496e807653ce104cc2c68a5477c4f26f6edafedccd0cfb0d44f44f0e86",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "95db0ab3293adec828a5e35b4745a0274d1bdb0e0d26204764a8eebb1a3244b9",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "95db0ab3293adec828a5e35b4745a0274d1bdb0e0d26204764a8eebb1a3244b9",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "898c1d20879469b0585671ffbba5367244421434e1ec43303dee847571f69842",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "898c1d20879469b0585671ffbba5367244421434e1ec43303dee847571f69842",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "a38b8b45908a6b860c279b8ada36ec65d8cd16293b453c996656ee18ed354422",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "963eb33d1b999a03b6cdbafbbb47cbc47ea5654218432fca914c507f9fe7b38c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "6fa05f4e87a15540dabb698bd5a9ee669ca5727100c76b2040f324582003ca69",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "7aac155aeadf43d175c96acb972c78b28d03f8a7eb2bca42bd6480ead0e41307",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "0f8909cab49ed094de8ee6ffcf19ffaff3613e0e2e790d504ec1ca38ec4231ff",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "f70485082969138d4e6c8c1d96013ba734d1992588766721247cbb9c80e6fe39",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d0b46acf5fba4b1cac0e0a468f0a5c25ce9d0d6a18911357fd356f6d595999fd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "aa4333387a14f4010a9311be3b91e6a5f75855a94475fdd83ff3a9597e336800",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fbf1ec6b710c89e2a6af07c08658468b2a9fe5e8afab995cd5803046f986a4cd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "a0c464ebf7950c9027f2e77d563d933cd49515d096d09623faa7de6a890ba207",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "9996f9935296f7853943006b2f40ebb2ae63bfc0766eb17a112594c4debcc9a6",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "b3d907238b34f64352cec419702d68917e7c97cf741d47b14105fae5fa2428bc",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "9833cfd24658dcdc73577f68bd2e2498ea1800e74760cfb011bf796c8e3c6922",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "cd132a06d2dae05e9336c2729f1a99e0279be7b29b3a755b23b652ef789060c8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "cd132a06d2dae05e9336c2729f1a99e0279be7b29b3a755b23b652ef789060c8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/native-compose-raster.d.ts",
+      "rule": "mail-compose-path",
+      "token": "native-compose-raster",
+      "digest": "cf1b0a5cc0a37bf5effcb70a9f25e60a52a779046c140131dce5eddf449e019f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/native-compose-raster.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "3da8bf4dbea1197d628532246a9dc404cbc6d5104c07110053d6807db0faaf7e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/native-compose-raster.js",
+      "rule": "mail-compose-path",
+      "token": "native-compose-raster",
+      "digest": "38a746df3166222e02c9abc2fc98ffd1f55a2308756d967671351cb709142d58",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/native-compose-raster.js",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "c304aa6d5407cf369354f66ccf1f54b0e302f51c335e3e6488f4ca08117ef363",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/runtime-authoring.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/runtime-authoring.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/runtime-authoring.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/runtime-authoring.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "29ba20efebd71fbafc58b291ff92e8f783c1bfd16a9e6717291ffb730b780ff1",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/runtime-authoring.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "6a9a0947bf272d9aa952f2d33c955b183ed05ac5fc35c2574afc5d1d53d8d847",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/runtime-authoring.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "ba8c5f4366676866fd35a130bf531c3b5e740612cad6543a7d98ba0a871d3940",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.d.ts",
+      "rule": "mail-compose-path",
+      "token": "safe-compose-html",
+      "digest": "9bb85caf7e86638d8f7f018451d4f6bb812e2405e0edbcdbd5c5948a49a4d1c4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "60746ddc3a0a3511edc30e2fb389f11cb9a0361ae4c000c780337d64196759a8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.js",
+      "rule": "mail-compose-path",
+      "token": "safe-compose-html",
+      "digest": "a7d29cb154900465459d7b9ded83a6b26235ad23f1a1da648ec5bd317ca7c36a",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "c53881fa71586da235e22efa6829ee6f21821d00ef72c7be2a7180ef30c7f018",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/dist/safe-compose-html.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "4346eb6ae3e59b4ea182cb4141ce991acdbe9c5a04742882671db5ca971367a2",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-capabilities.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "165f8a1ff02d39e84a33166a62492ab4abdfe4262f3910c0e16cdb6e7a18f808",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "d50e3270fb3763d0dfdb68418525791417ba967ef075fb3fa9f1b694db9640b6",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "7dc280897c9743e93eb5d64512950f17892ea1215812d0587e4b93bcbfc2a4a7",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "f461e243378550efa8a9c7adeafcfb7858113888b35513a86f02801ec81786ea",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "d7ddf75e061416dc125f22eb8950da06d6fa9ec55ea0b310f2f417790a3d197b",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "c69b70ee285b87757ba8af4da64fbb809dfefff013be8747bb7f4c01afd48781",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "7a63b14f8c23366ab66fc91016e7224e15a493d2f32befc2bdecba82d792089d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d551b5abe3ae5f850700faffb28f03618bcb7d47c191fa2ce0809001b920d63f",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "7201194cf586fd45b1b6f4761614ebd6a108b5928c72862a02b79c627d8f8baa",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "7201194cf586fd45b1b6f4761614ebd6a108b5928c72862a02b79c627d8f8baa",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "5ea8b4d47c88b699c7b623a2370cdb8f6551e8a21f5e6ae06ef050adb733b96f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/experience-sdk.ts",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "5ea8b4d47c88b699c7b623a2370cdb8f6551e8a21f5e6ae06ef050adb733b96f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "bdb6de4b55b102c8a28e910a29d2d783d201b9f5e54e89cf1b1cfa829101d7bd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "c2a1cbc23af8c0880b6b5ff593a110d161425aeb7c18f77af092959c8fcdc123",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "c7416ace251f86e654e293ee79d0abd449cd916786be50e94af0b4e40e6dc674",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInput",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutput",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "a4a67bf56349a199b811e43f15665233f984f853edfdf0d0a60a78855e06604c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "9e28a82bc708664a9509b9c3d8942829a73629140fc1663ee84fc684831f297d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "7f9a56c5be5078258f923d851ddf5d4871b47e37e3e96034fa2d76be7192865d",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mail-compose-path",
+      "token": "mailbox-list",
+      "digest": "0239cbf604522ce8362d8167c6decb12ab0bc10765cb2969abceecbb8ed71dc4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "b78b313e20753eb20b3b081acaaacdb36c9b1a99339a9ccccaef57a8997d5b66",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox-path",
+      "token": "mailbox-list",
+      "digest": "0239cbf604522ce8362d8167c6decb12ab0bc10765cb2969abceecbb8ed71dc4",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "d5158db6f54a78f9cc5a71ed255ed63669a2a46ae433af3b274d6090605c3718",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "442ca1e9081bcc09182088278cb21a5da22a4aafdb9ab14053dea09c5e61c40f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "b0bb30ceb2759d8dad3a4e3acce00b6c570aa11a107b709481c548a32d197607",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "11f9ad2136dd638c8996b049b7a71cf02d2ba257054653861414b8d75bd61385",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "11f9ad2136dd638c8996b049b7a71cf02d2ba257054653861414b8d75bd61385",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "7582af046c4f108aa062766944bebcf53d04caa351a195a20d6780e9a1330913",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "cf5fcccfdda927fac2d3e33788f07e1ea0d2e43e4e7041fcc9810901287c03f2",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "cf5fcccfdda927fac2d3e33788f07e1ea0d2e43e4e7041fcc9810901287c03f2",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "5d7c56215088dc2934eb5cdb661aa82ef10b43658543cd65d568a97fdbbe3e9b",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "5d7c56215088dc2934eb5cdb661aa82ef10b43658543cd65d568a97fdbbe3e9b",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "9866e077c5a5db5626cf0ac52c28f96d763bb226c3bb9bb8d5bb2e884f24a491",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "9866e077c5a5db5626cf0ac52c28f96d763bb226c3bb9bb8d5bb2e884f24a491",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "e658a951a4b3e4ba1ac13bfaf08ee72ff6ad4372dbecdf6cc3bafcd0e2e9dcd1",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "e658a951a4b3e4ba1ac13bfaf08ee72ff6ad4372dbecdf6cc3bafcd0e2e9dcd1",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "4a9cbd5a119e3874ffa9fb45633103a4476e702fcb6e345c12169245937691fd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "7aac155aeadf43d175c96acb972c78b28d03f8a7eb2bca42bd6480ead0e41307",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "0f8909cab49ed094de8ee6ffcf19ffaff3613e0e2e790d504ec1ca38ec4231ff",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "86b1d0d6b7a58f3c65e2d4c8ae431a6316f77571d9c7519351a71861fdbd686c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "86b1d0d6b7a58f3c65e2d4c8ae431a6316f77571d9c7519351a71861fdbd686c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "f70485082969138d4e6c8c1d96013ba734d1992588766721247cbb9c80e6fe39",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "fdbc585146bfcd46d05f4178bfe3f5c88cded17b6dbd45fa75593cf291f8748c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "fdbc585146bfcd46d05f4178bfe3f5c88cded17b6dbd45fa75593cf291f8748c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "fdbc585146bfcd46d05f4178bfe3f5c88cded17b6dbd45fa75593cf291f8748c",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "f9e611fb29e3a046cba260f71d9d0737c996c4e40ed2b6419a451a0e208ddda5",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "f9e611fb29e3a046cba260f71d9d0737c996c4e40ed2b6419a451a0e208ddda5",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "f9e611fb29e3a046cba260f71d9d0737c996c4e40ed2b6419a451a0e208ddda5",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "7395762229490861d968cf3651f838e9cdd25c0748703a27508323f4ffa4d184",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fbf1ec6b710c89e2a6af07c08658468b2a9fe5e8afab995cd5803046f986a4cd",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "a0c464ebf7950c9027f2e77d563d933cd49515d096d09623faa7de6a890ba207",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "9996f9935296f7853943006b2f40ebb2ae63bfc0766eb17a112594c4debcc9a6",
+      "occurrences": 2
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "39f2a45d63a56a10fd823d258fc1555a1736526fffc9a06870bec9371c8eff8f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "39f2a45d63a56a10fd823d258fc1555a1736526fffc9a06870bec9371c8eff8f",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "52b015497022b41173da6c6039a42e54a5f132c649735813efd236c2217ba94a",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "52b015497022b41173da6c6039a42e54a5f132c649735813efd236c2217ba94a",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/native-compose-raster.ts",
+      "rule": "mail-compose-path",
+      "token": "native-compose-raster",
+      "digest": "5713a7bd5ae0ec276f0312ddf9052d3b3aeabc70a7ba9de4c68c146875438cbb",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "29ba20efebd71fbafc58b291ff92e8f783c1bfd16a9e6717291ffb730b780ff1",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "ac604ba17ce855142ae1128744a7b892eb92e663566fc89719fd00a4aa743395",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/runtime-authoring.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "6e3c940914453df9ee07c747b4d5361935c7b5ea49cf0df2543063239ba68f85",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "rule": "mail-compose-path",
+      "token": "safe-compose-html",
+      "digest": "b1ec40c986ff1897a5f2d10d38df29d835c84e416cd9e74bb8c98108cd822cf9",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "5ec12e36c02da88500fd2a9e9e9da8a878b271be4023f1038090b9597dd83bfe",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "5ec12e36c02da88500fd2a9e9e9da8a878b271be4023f1038090b9597dd83bfe",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "5ec12e36c02da88500fd2a9e9e9da8a878b271be4023f1038090b9597dd83bfe",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "8f07cbc862f6bcadd4f94cc31880773e40ff03aed45ad990a53c740e13785cd1",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/src/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "031d557028a156c68aab69bd844808501f605b1baea030af420635eb1cb3310a",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/test/native-compose-budget.test.ts",
+      "rule": "computed-import",
+      "token": "import(process.env.EMAIL_NATIVE_BUDGET_BASELINE?pathToFileURL(process.env.EMAIL_NATIVE_BUDGET_BASELINE).href:new URL('../src/safe-compose-html.js',import.meta.url).href)",
+      "digest": "12afa21a013260e42db1297eb3c934c019889b0717ec0cd327eb6f5699291757",
+      "occurrences": 1
+    },
+    {
+      "path": "packages/app-kit/test/native-safe-compose-images.test.ts",
+      "rule": "computed-import",
+      "token": "import(process.env.EMAIL_INLINE_GRAMMAR_BASELINE??new URL('../src/safe-compose-html.js',import.meta.url).href)",
+      "digest": "9d88f0e5485c80c62efc28c093b434f5094ea3bc790314e5c70bc2a8607c6401",
+      "occurrences": 1
+    }
+  ],
+  "added_findings": [
+    {
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "rule": "computed-import",
+      "token": "import(consumer('email-draft-service'))",
+      "digest": "40e6a64290445b5cc0548332ca88141fa44eeb5e6ab9bfc2c497bef2e4c84891",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "rule": "computed-import",
+      "token": "import(consumer('email-signature-types'))",
+      "digest": "40e6a64290445b5cc0548332ca88141fa44eeb5e6ab9bfc2c497bef2e4c84891",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/api/test/email-native-compose-links.test.ts",
+      "rule": "computed-import",
+      "token": "import(consumer('email-template-store'))",
+      "digest": "40e6a64290445b5cc0548332ca88141fa44eeb5e6ab9bfc2c497bef2e4c84891",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.test.tsx",
+      "rule": "computed-import",
+      "token": "require(web+'@tiptap/core')",
+      "digest": "412464d615f2b564450060d2882e6d239e73913142ded6d07757566f4d7c485c",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-compose-controls-rich-editor.test.tsx",
+      "rule": "computed-import",
+      "token": "require(web+'@tiptap/starter-kit')",
+      "digest": "412464d615f2b564450060d2882e6d239e73913142ded6d07757566f4d7c485c",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/web/src/components/apps/experience-record-form.tsx",
+      "rule": "mailbox",
+      "token": "mailbox_list",
+      "digest": "31b8f3b1ca887d43e0458e2d0b943bd1d83363fb82d99b8dcfb03099e17022b6",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "email-import",
+      "token": "./examples/email/safe-compose-html.js",
+      "digest": "62b1263a07b6e95a7e48d600c3b574b15a8214025f5cb09d234b4ee27a8be047",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "62b1263a07b6e95a7e48d600c3b574b15a8214025f5cb09d234b4ee27a8be047",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "email-import",
+      "token": "./examples/email/mailbox-list.js",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "email-import",
+      "token": "./examples/email/native-compose-raster.js",
+      "digest": "ced60db7d088236c59c8c95d51c6bbb9f05fef449b81f943a399a1bd3bccdb33",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "ced60db7d088236c59c8c95d51c6bbb9f05fef449b81f943a399a1bd3bccdb33",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "2f2dfe5564a9a02d197a6eccf79a98d515344a54a839366572993f36277f0fa9",
+      "occurrences": 15,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "23071b8f6b803d5dec6cfdd44730770442c5331159bc499b000f0db7ccf79907",
+      "occurrences": 8,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "23071b8f6b803d5dec6cfdd44730770442c5331159bc499b000f0db7ccf79907",
+      "occurrences": 8,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "86c078e99fe34d1ea82a6dda6500ac3b348c655df3a66c348cc92471f3c81c14",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "15d19737e7e9fd719f0cf06831b3d0cbe58b574e5da0951ff8210a49d0918fba",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "e6b955e9908a9057cf4a80b48d97f2a8c3eebdb39f0df1cbb4be49063daf527e",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "295019f62be6b3c445d47fb09e07a1e05696bfeb05c33952155f37e496faee6a",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "7c37f521accffa03dafdd6247cf5aa10f338ea80cdb8d1183017151f0f6d3bad",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "a32eff579f766bd3bfbcf0c72e51ce2e27036295b524560cae9b309698130a91",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "f3582785bb3933cf0d5c1cc2ab6e31234ab02f7c9a3dc2c87e197c4e8ee5ec3b",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "8fdebbecb1d5c215d83315d80432b3e28ff81dbcc340f0b599d8d8617cd97db7",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "418861850545a73ed4ce6f49a5df58387d534bc6c4fc8c69a56acdb7ba74d943",
+      "occurrences": 4,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "email-import",
+      "token": "./examples/email/safe-compose-html.js",
+      "digest": "62b1263a07b6e95a7e48d600c3b574b15a8214025f5cb09d234b4ee27a8be047",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "62b1263a07b6e95a7e48d600c3b574b15a8214025f5cb09d234b4ee27a8be047",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "email-import",
+      "token": "./examples/email/mailbox-list.js",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "email-import",
+      "token": "./examples/email/native-compose-raster.js",
+      "digest": "ced60db7d088236c59c8c95d51c6bbb9f05fef449b81f943a399a1bd3bccdb33",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "ced60db7d088236c59c8c95d51c6bbb9f05fef449b81f943a399a1bd3bccdb33",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "2f2dfe5564a9a02d197a6eccf79a98d515344a54a839366572993f36277f0fa9",
+      "occurrences": 12,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "23071b8f6b803d5dec6cfdd44730770442c5331159bc499b000f0db7ccf79907",
+      "occurrences": 5,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "23071b8f6b803d5dec6cfdd44730770442c5331159bc499b000f0db7ccf79907",
+      "occurrences": 5,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "414fdcb407ad2507bbf8329e33da0c02fe01033b371ab5b5905c655f29b8c8d6",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d2079ffbb075bbb2eb862a17fdfdf41ee88a68ce9ded26e4e9bdd8689a85f96b",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "b7a134239dde6d45e2caea0c78ccea7a97a3d6ca1b77d53baf27e14c08389d89",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "bd3dad5544a55e20051745b4ea235dd5859d0f996d6af5600bca7af65eacd258",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "b8bf3f9f6d6d3c10ea3080f228d0ab97bc77582418a8a67885efc982d570f267",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/compatibility.js",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "418861850545a73ed4ce6f49a5df58387d534bc6c4fc8c69a56acdb7ba74d943",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/core.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox_list",
+      "digest": "95b750aaef0ad1ee03e2bdb0387778b234bad00b0418e394e4ecda4b75bccecf",
+      "occurrences": 152,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.d.ts",
+      "rule": "email-import",
+      "token": "./examples/email/sandbox.js",
+      "digest": "1dec3dd3c95dfe3220cd2b15beb7de670cd19b5356174f70d17f7def4b6223bc",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "3b914ea1cfa9c876c71737804125d1548617de5b56c07540671ad144f0092f99",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "f6b28ef86127b40eedcf6999c77fede068b165a4b3f192303204e609225c0489",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInput",
+      "digest": "e551c6870c354b90f7b0782460503ebb8b1e6bd19045820578f631a73df10a67",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutput",
+      "digest": "c79832ed2abfd33787f69724c90fa1e8b9c101c4664a87b4037dea92507b0ae1",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.js",
+      "rule": "email-import",
+      "token": "./examples/email/sandbox.js",
+      "digest": "1dec3dd3c95dfe3220cd2b15beb7de670cd19b5356174f70d17f7def4b6223bc",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "bd60a23bfd32ba21ec5734fb658656e01359f59e25ad37de6bd4b0d675b90b34",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/example-compatibility.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "df681ff1ad886767baddf3023b80d5763438b2243600ffe9361e7ebbd91a06bb",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.d.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "0488a98303a6990911f0b2d4bc8113ea1a547c55ca2c70c4e0a740001771bfcb",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "bdb6de4b55b102c8a28e910a29d2d783d201b9f5e54e89cf1b1cfa829101d7bd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "3019691a754ecca250f042e5f7cba73803c99641961ab683ad117a754197bf69",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "c891054617590018fe45ad21ab73aee4ddafc5ea5fd2f15bdedb5d7ef5a83431",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "bdb6de4b55b102c8a28e910a29d2d783d201b9f5e54e89cf1b1cfa829101d7bd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "3019691a754ecca250f042e5f7cba73803c99641961ab683ad117a754197bf69",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "90996aa16faf845bb9a605d1b93624bdc3069aa855d7d6a71b650e810b440a87",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "90996aa16faf845bb9a605d1b93624bdc3069aa855d7d6a71b650e810b440a87",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "d318003b2dd25dd4d7aae2423864d4eaf3f7ddc3f82941460c0fee139332ee80",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/index.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "d318003b2dd25dd4d7aae2423864d4eaf3f7ddc3f82941460c0fee139332ee80",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "27b9f392f1a64d66db99f9d102a413523137df4a8a955cfa54e9f5bb4de2c3f3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mail-compose-path",
+      "token": "mailbox-list",
+      "digest": "27b9f392f1a64d66db99f9d102a413523137df4a8a955cfa54e9f5bb4de2c3f3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "b78b313e20753eb20b3b081acaaacdb36c9b1a99339a9ccccaef57a8997d5b66",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox-path",
+      "token": "mailbox-list",
+      "digest": "27b9f392f1a64d66db99f9d102a413523137df4a8a955cfa54e9f5bb4de2c3f3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "9df92824781d36e61cf95f4246abf034f756ac081a67f19afbaf03621c81936c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "21ac5c84a4f81cfdacbfc8565b54c5b295a77df1f4ba17439ca8cd9ddeb93845",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "cf34462cf04667fc5f0f8bed9316cdfe34e7878c9c8a05284285c8f757d84593",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "ded65e1e3b6394e6951b0b0bde40f852c2f8638403a447e7fe8acb808fd83acf",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "ded65e1e3b6394e6951b0b0bde40f852c2f8638403a447e7fe8acb808fd83acf",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "139ba7e3c6606df6e00e15ee95286a2500de9713235d296de9ef63282324f24d",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "139ba7e3c6606df6e00e15ee95286a2500de9713235d296de9ef63282324f24d",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "139ba7e3c6606df6e00e15ee95286a2500de9713235d296de9ef63282324f24d",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "12a73a212cbf6bf708e590987aa173425eaa91a74981b9d5606726c6cdd76762",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "12a73a212cbf6bf708e590987aa173425eaa91a74981b9d5606726c6cdd76762",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "12a73a212cbf6bf708e590987aa173425eaa91a74981b9d5606726c6cdd76762",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "fb5be5f3335744d3999b44c02a0351318f606e8bfd4f0a0ab50f086a2677d98e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "fb5be5f3335744d3999b44c02a0351318f606e8bfd4f0a0ab50f086a2677d98e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "037177bcbd7ea888dd3dfd417c24b430bdc57e7d830c937432c5d2421824d864",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "037177bcbd7ea888dd3dfd417c24b430bdc57e7d830c937432c5d2421824d864",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "a90edec782e7dbc7cab04ba24af379c53203d3a48ef331214786e9375ea9c039",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.d.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "a90edec782e7dbc7cab04ba24af379c53203d3a48ef331214786e9375ea9c039",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "0d662f480fdafd59dd91cac6a055f73a7f8cf57204e62323adfaf9a3030a861e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mail-compose-path",
+      "token": "mailbox-list",
+      "digest": "0d662f480fdafd59dd91cac6a055f73a7f8cf57204e62323adfaf9a3030a861e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "b0bb30ceb2759d8dad3a4e3acce00b6c570aa11a107b709481c548a32d197607",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox-path",
+      "token": "mailbox-list",
+      "digest": "0d662f480fdafd59dd91cac6a055f73a7f8cf57204e62323adfaf9a3030a861e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "a33049496e807653ce104cc2c68a5477c4f26f6edafedccd0cfb0d44f44f0e86",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "95db0ab3293adec828a5e35b4745a0274d1bdb0e0d26204764a8eebb1a3244b9",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "95db0ab3293adec828a5e35b4745a0274d1bdb0e0d26204764a8eebb1a3244b9",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "898c1d20879469b0585671ffbba5367244421434e1ec43303dee847571f69842",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "898c1d20879469b0585671ffbba5367244421434e1ec43303dee847571f69842",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "a38b8b45908a6b860c279b8ada36ec65d8cd16293b453c996656ee18ed354422",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "963eb33d1b999a03b6cdbafbbb47cbc47ea5654218432fca914c507f9fe7b38c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "6fa05f4e87a15540dabb698bd5a9ee669ca5727100c76b2040f324582003ca69",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "7aac155aeadf43d175c96acb972c78b28d03f8a7eb2bca42bd6480ead0e41307",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "0f8909cab49ed094de8ee6ffcf19ffaff3613e0e2e790d504ec1ca38ec4231ff",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "f70485082969138d4e6c8c1d96013ba734d1992588766721247cbb9c80e6fe39",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "d0b46acf5fba4b1cac0e0a468f0a5c25ce9d0d6a18911357fd356f6d595999fd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "aa4333387a14f4010a9311be3b91e6a5f75855a94475fdd83ff3a9597e336800",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fbf1ec6b710c89e2a6af07c08658468b2a9fe5e8afab995cd5803046f986a4cd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "a0c464ebf7950c9027f2e77d563d933cd49515d096d09623faa7de6a890ba207",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "9996f9935296f7853943006b2f40ebb2ae63bfc0766eb17a112594c4debcc9a6",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "b3d907238b34f64352cec419702d68917e7c97cf741d47b14105fae5fa2428bc",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "9833cfd24658dcdc73577f68bd2e2498ea1800e74760cfb011bf796c8e3c6922",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "cd132a06d2dae05e9336c2729f1a99e0279be7b29b3a755b23b652ef789060c8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/mailbox-list.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "cd132a06d2dae05e9336c2729f1a99e0279be7b29b3a755b23b652ef789060c8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/native-compose-raster.d.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "f031b36bb06fd428c0372f76f083e7775765b6fdb3adc8c75889df781593495e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/native-compose-raster.d.ts",
+      "rule": "mail-compose-path",
+      "token": "native-compose-raster",
+      "digest": "f031b36bb06fd428c0372f76f083e7775765b6fdb3adc8c75889df781593495e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/native-compose-raster.d.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "3da8bf4dbea1197d628532246a9dc404cbc6d5104c07110053d6807db0faaf7e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/native-compose-raster.js",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "a3a6f3c311ba3c539aab06274a99f8af2f9dcdadfb815cd01f5705be501a7e18",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/native-compose-raster.js",
+      "rule": "mail-compose-path",
+      "token": "native-compose-raster",
+      "digest": "a3a6f3c311ba3c539aab06274a99f8af2f9dcdadfb815cd01f5705be501a7e18",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/native-compose-raster.js",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "c304aa6d5407cf369354f66ccf1f54b0e302f51c335e3e6488f4ca08117ef363",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.d.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "3d795bfd447afdfcb924f25223314aa50abc547c216c9d4dba0ead0742d3f245",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.d.ts",
+      "rule": "mail-compose-path",
+      "token": "safe-compose-html",
+      "digest": "3d795bfd447afdfcb924f25223314aa50abc547c216c9d4dba0ead0742d3f245",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.d.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "60746ddc3a0a3511edc30e2fb389f11cb9a0361ae4c000c780337d64196759a8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "e9cb35a171664ca8aad59c54e274bf47b09c6d94b62cae71c46ddab303ad9207",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "mail-compose-path",
+      "token": "safe-compose-html",
+      "digest": "e9cb35a171664ca8aad59c54e274bf47b09c6d94b62cae71c46ddab303ad9207",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "a923dc8af58a4bea799077c7f5cba03069a1fffe9a7c2439e0754def90bb4702",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "c53881fa71586da235e22efa6829ee6f21821d00ef72c7be2a7180ef30c7f018",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/safe-compose-html.js",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "4346eb6ae3e59b4ea182cb4141ce991acdbe9c5a04742882671db5ca971367a2",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "864d5ea3c6831c2c091e1f9682e03a00c5d6d940928ba35e2c9edd4d76c23c24",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "55b7e461140e64bc823226d3ef5f62cb7329b62d69eae08090f3817f7f16f981",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "c807198f0869d873f598a55b4df6c9ab9426dee730e4d46eccd453fd400fcba7",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInput",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutput",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.d.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.js",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "b825c8ad5365bb5520fb7c52071bad63343b4c746133679c7dfc7670122afdf8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "c2a1cbc23af8c0880b6b5ff593a110d161425aeb7c18f77af092959c8fcdc123",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "c7416ace251f86e654e293ee79d0abd449cd916786be50e94af0b4e40e6dc674",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/sandbox.js",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "548d04bff94557766fc87ec8d648264862c8c0aa796bd9e95dc24ccee841e2f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/templates.d.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "a657ac89fe6caf70f739771af8c4c306da2127d866f1cc21f1b8fd341d2ae4d9",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/examples/email/templates.js",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "f33bc8415fe5c8d11bab399b0d36a1f54cf024a983dd45b09de596f7a0e498dd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/experience-core.d.ts",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "1ee9c263fc3536ea0ef3fb61337c05ecc3e7dd550debe4dcd1e1417c9ba75534",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/dist/experience-core.d.ts",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "1ee9c263fc3536ea0ef3fb61337c05ecc3e7dd550debe4dcd1e1417c9ba75534",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/dist/experience-core.js",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "b5f835451028727ec2cea440960b3e29613c915f77fd822ec8dda73198c129de",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/dist/experience-core.js",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "b5f835451028727ec2cea440960b3e29613c915f77fd822ec8dda73198c129de",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/dist/index.d.ts",
+      "rule": "email-import",
+      "token": "./examples/email/index.js",
+      "digest": "fba6ece1821e68d070029611411cad4a3bdbf5dfe2bfeb3787fb1b26462dfaa6",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/dist/index.js",
+      "rule": "email-import",
+      "token": "./examples/email/index.js",
+      "digest": "fba6ece1821e68d070029611411cad4a3bdbf5dfe2bfeb3787fb1b26462dfaa6",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "email-import",
+      "token": "./examples/email/safe-compose-html.js",
+      "digest": "62b1263a07b6e95a7e48d600c3b574b15a8214025f5cb09d234b4ee27a8be047",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "62b1263a07b6e95a7e48d600c3b574b15a8214025f5cb09d234b4ee27a8be047",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "email-import",
+      "token": "./examples/email/mailbox-list.js",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "74772fe19d27a23827ae1e99ecaf307f4da16b979e787d1c75ab94cc3ffe91a3",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "email-import",
+      "token": "./examples/email/native-compose-raster.js",
+      "digest": "ced60db7d088236c59c8c95d51c6bbb9f05fef449b81f943a399a1bd3bccdb33",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "ced60db7d088236c59c8c95d51c6bbb9f05fef449b81f943a399a1bd3bccdb33",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "2f2dfe5564a9a02d197a6eccf79a98d515344a54a839366572993f36277f0fa9",
+      "occurrences": 15,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "23071b8f6b803d5dec6cfdd44730770442c5331159bc499b000f0db7ccf79907",
+      "occurrences": 8,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "23071b8f6b803d5dec6cfdd44730770442c5331159bc499b000f0db7ccf79907",
+      "occurrences": 8,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "86c078e99fe34d1ea82a6dda6500ac3b348c655df3a66c348cc92471f3c81c14",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "15d19737e7e9fd719f0cf06831b3d0cbe58b574e5da0951ff8210a49d0918fba",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "176465a02cd3708fee56bd03de719c8cbd5b5e004870f86ad27677b2677ca734",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "295019f62be6b3c445d47fb09e07a1e05696bfeb05c33952155f37e496faee6a",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "470eb4275d2f63fe22c532f59c73f47e0920ca4d993490ccde87eeb9fae9ce4b",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "cdcf32c87bb7f4d9dede4478bb07c9ccfcce33e240c5900c53118e46c8a75edc",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "562a7325ce0fb0f7acc50ac7add8ebaa45dad21394adca87ee607e63c95dc09a",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "dd101a4ca4fc49eb9276876c322bdb9966a49143e6ea227c448ed7f0a1436e34",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/compatibility.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "418861850545a73ed4ce6f49a5df58387d534bc6c4fc8c69a56acdb7ba74d943",
+      "occurrences": 4,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/example-compatibility.ts",
+      "rule": "email-import",
+      "token": "./examples/email/sandbox.js",
+      "digest": "1dec3dd3c95dfe3220cd2b15beb7de670cd19b5356174f70d17f7def4b6223bc",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/example-compatibility.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "0f1ca2b796def2b2ffc3802194f07b06728dd4cbcd85a5fbe71375a161b15382",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/example-compatibility.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "806b8884e97c937ef4b164de0a3c7bab3476079772ea1dbf483e0fb088fff7ed",
+      "occurrences": 3,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/example-compatibility.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInput",
+      "digest": "e551c6870c354b90f7b0782460503ebb8b1e6bd19045820578f631a73df10a67",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/example-compatibility.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutput",
+      "digest": "c79832ed2abfd33787f69724c90fa1e8b9c101c4664a87b4037dea92507b0ae1",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "b75151e5954b3d54d5713457b6a9a2e8c064ee594296386a27732e666587c3e8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "mail-compose",
+      "token": "safe-compose-html",
+      "digest": "bdb6de4b55b102c8a28e910a29d2d783d201b9f5e54e89cf1b1cfa829101d7bd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "e203567e57748713dd23afc4d26b04914b5631153f8f192bd6e13d4df0a804f4",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "mail-compose",
+      "token": "native-compose-raster",
+      "digest": "3019691a754ecca250f042e5f7cba73803c99641961ab683ad117a754197bf69",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "ad03991035f99189e2ccc06125d67ddde937dea1f867fef6757b10422d0c1b36",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "ad03991035f99189e2ccc06125d67ddde937dea1f867fef6757b10422d0c1b36",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "9b5b2458fa758437f0873fd5347ccf6d77117e7c95c675e0f8feac8ae30b31e9",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/index.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "9b5b2458fa758437f0873fd5347ccf6d77117e7c95c675e0f8feac8ae30b31e9",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "2fb73eb0e93141380ff8a15ff31731737a524e5120f52afbe4e4d52f9a7930a6",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mail-compose-path",
+      "token": "mailbox-list",
+      "digest": "2fb73eb0e93141380ff8a15ff31731737a524e5120f52afbe4e4d52f9a7930a6",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "b78b313e20753eb20b3b081acaaacdb36c9b1a99339a9ccccaef57a8997d5b66",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox-path",
+      "token": "mailbox-list",
+      "digest": "2fb73eb0e93141380ff8a15ff31731737a524e5120f52afbe4e4d52f9a7930a6",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "d5158db6f54a78f9cc5a71ed255ed63669a2a46ae433af3b274d6090605c3718",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "442ca1e9081bcc09182088278cb21a5da22a4aafdb9ab14053dea09c5e61c40f",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "b0bb30ceb2759d8dad3a4e3acce00b6c570aa11a107b709481c548a32d197607",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "e43e8969ab16a5be3ee1fe28f002f24031bdabbf494fb01a9df2a0abf9e9c14c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "11f9ad2136dd638c8996b049b7a71cf02d2ba257054653861414b8d75bd61385",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "11f9ad2136dd638c8996b049b7a71cf02d2ba257054653861414b8d75bd61385",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "8b4958086065e724c27049c6c4cd43ae245f69e90af5c26e00d741c7b0443ec8",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "7582af046c4f108aa062766944bebcf53d04caa351a195a20d6780e9a1330913",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_INVALID",
+      "digest": "cf5fcccfdda927fac2d3e33788f07e1ea0d2e43e4e7041fcc9810901287c03f2",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "cf5fcccfdda927fac2d3e33788f07e1ea0d2e43e4e7041fcc9810901287c03f2",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MAILBOX_LIST_LIMIT",
+      "digest": "5d7c56215088dc2934eb5cdb661aa82ef10b43658543cd65d568a97fdbbe3e9b",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListError",
+      "digest": "5d7c56215088dc2934eb5cdb661aa82ef10b43658543cd65d568a97fdbbe3e9b",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "9866e077c5a5db5626cf0ac52c28f96d763bb226c3bb9bb8d5bb2e884f24a491",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "9866e077c5a5db5626cf0ac52c28f96d763bb226c3bb9bb8d5bb2e884f24a491",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "e658a951a4b3e4ba1ac13bfaf08ee72ff6ad4372dbecdf6cc3bafcd0e2e9dcd1",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "e658a951a4b3e4ba1ac13bfaf08ee72ff6ad4372dbecdf6cc3bafcd0e2e9dcd1",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "4a9cbd5a119e3874ffa9fb45633103a4476e702fcb6e345c12169245937691fd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "7aac155aeadf43d175c96acb972c78b28d03f8a7eb2bca42bd6480ead0e41307",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "0f8909cab49ed094de8ee6ffcf19ffaff3613e0e2e790d504ec1ca38ec4231ff",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "86b1d0d6b7a58f3c65e2d4c8ae431a6316f77571d9c7519351a71861fdbd686c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "86b1d0d6b7a58f3c65e2d4c8ae431a6316f77571d9c7519351a71861fdbd686c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailboxToken",
+      "digest": "f70485082969138d4e6c8c1d96013ba734d1992588766721247cbb9c80e6fe39",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "fdbc585146bfcd46d05f4178bfe3f5c88cded17b6dbd45fa75593cf291f8748c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "fdbc585146bfcd46d05f4178bfe3f5c88cded17b6dbd45fa75593cf291f8748c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "fdbc585146bfcd46d05f4178bfe3f5c88cded17b6dbd45fa75593cf291f8748c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "f9e611fb29e3a046cba260f71d9d0737c996c4e40ed2b6419a451a0e208ddda5",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "f9e611fb29e3a046cba260f71d9d0737c996c4e40ed2b6419a451a0e208ddda5",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxListOptions",
+      "digest": "f9e611fb29e3a046cba260f71d9d0737c996c4e40ed2b6419a451a0e208ddda5",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "7395762229490861d968cf3651f838e9cdd25c0748703a27508323f4ffa4d184",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "Mailbox",
+      "digest": "fa75c2d3b5df17dc4972ea5e08be482c28f91d0c0d9e5f77975c9f54389c8d2e",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "fbf1ec6b710c89e2a6af07c08658468b2a9fe5e8afab995cd5803046f986a4cd",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "a0c464ebf7950c9027f2e77d563d933cd49515d096d09623faa7de6a890ba207",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "9996f9935296f7853943006b2f40ebb2ae63bfc0766eb17a112594c4debcc9a6",
+      "occurrences": 2,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "39f2a45d63a56a10fd823d258fc1555a1736526fffc9a06870bec9371c8eff8f",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "39f2a45d63a56a10fd823d258fc1555a1736526fffc9a06870bec9371c8eff8f",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxAddress",
+      "digest": "52b015497022b41173da6c6039a42e54a5f132c649735813efd236c2217ba94a",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/mailbox-list.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "52b015497022b41173da6c6039a42e54a5f132c649735813efd236c2217ba94a",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/native-compose-raster.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "0d94fea4f27bae7a8f4afccf0cd1ad7b2bc67bc9e51abef149b8bb85b79c6aef",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/native-compose-raster.ts",
+      "rule": "mail-compose-path",
+      "token": "native-compose-raster",
+      "digest": "0d94fea4f27bae7a8f4afccf0cd1ad7b2bc67bc9e51abef149b8bb85b79c6aef",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "9426001bd590727dbad5d55105c1b16fa4ad1a745b5432778467d501c3c1dddf",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "mail-compose-path",
+      "token": "safe-compose-html",
+      "digest": "9426001bd590727dbad5d55105c1b16fa4ad1a745b5432778467d501c3c1dddf",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "mail-compose",
+      "token": "mailbox-list",
+      "digest": "5ec12e36c02da88500fd2a9e9e9da8a878b271be4023f1038090b9597dd83bfe",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "mailbox-list",
+      "digest": "5ec12e36c02da88500fd2a9e9e9da8a878b271be4023f1038090b9597dd83bfe",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "5ec12e36c02da88500fd2a9e9e9da8a878b271be4023f1038090b9597dd83bfe",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "8f07cbc862f6bcadd4f94cc31880773e40ff03aed45ad990a53c740e13785cd1",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/safe-compose-html.ts",
+      "rule": "mailbox",
+      "token": "MailboxList",
+      "digest": "031d557028a156c68aab69bd844808501f605b1baea030af420635eb1cb3310a",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "d0b220701976ba1c7227dacc11e5fc0ec13464ad584251ccaf904fc0a283ce48",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "c2a1cbc23af8c0880b6b5ff593a110d161425aeb7c18f77af092959c8fcdc123",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "c7416ace251f86e654e293ee79d0abd449cd916786be50e94af0b4e40e6dc674",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInput",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "f5549f1be476c2e73c0de3d49040ea21a6b00725496ac75c1f21afaa4a2ee99c",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutput",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendOutputSchema",
+      "digest": "163e6bede94c057353d7dbac438156c6df8070488f830d66fcac84508c58cb41",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/sandbox.ts",
+      "rule": "sandbox-send",
+      "token": "SandboxEmailSendInputSchema",
+      "digest": "a67f73c4756570140ce310d028558758d323e0838ece3a87978b243dbf9dc1fa",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/examples/email/templates.ts",
+      "rule": "email-path",
+      "token": "email",
+      "digest": "b92a65f2cd05ed30f7a58a969b856634271e18222350b4186fed53712e90e4ad",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/src/experience-core.ts",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "7201194cf586fd45b1b6f4761614ebd6a108b5928c72862a02b79c627d8f8baa",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/src/experience-core.ts",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "7201194cf586fd45b1b6f4761614ebd6a108b5928c72862a02b79c627d8f8baa",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/src/experience-core.ts",
+      "rule": "mail-protocol",
+      "token": "imap_smtp",
+      "digest": "5ea8b4d47c88b699c7b623a2370cdb8f6551e8a21f5e6ae06ef050adb733b96f",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/src/experience-core.ts",
+      "rule": "mail-provider",
+      "token": "gmail",
+      "digest": "5ea8b4d47c88b699c7b623a2370cdb8f6551e8a21f5e6ae06ef050adb733b96f",
+      "occurrences": 1,
+      "review_category": "retained-wire"
+    },
+    {
+      "path": "packages/app-kit/src/index.ts",
+      "rule": "email-import",
+      "token": "./examples/email/index.js",
+      "digest": "aa779e1e899b0d7d3113be653b5661ea869312ff1a67f77cf4810ccf1e330136",
+      "occurrences": 1,
+      "review_category": "isolated-compatibility"
+    },
+    {
+      "path": "packages/app-kit/test/mailbox-list.test.ts",
+      "rule": "email-import",
+      "token": "../src/examples/email/mailbox-list.ts",
+      "digest": "c468aa4e24cdf24bc4d288268a2cf649a013b487115a92cdd56aedfc3fd2893e",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/app-kit/test/native-compose-budget.test.ts",
+      "rule": "computed-import",
+      "token": "import(process.env.EMAIL_NATIVE_BUDGET_BASELINE?pathToFileURL(process.env.EMAIL_NATIVE_BUDGET_BASELINE).href:new URL('../src/examples/email/safe-compose-html.js',import.meta.url).href)",
+      "digest": "4083a46e13364725229e61875d609c177ba2402b38f25bd25ce074576a22d43e",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/app-kit/test/native-compose-raster.test.ts",
+      "rule": "email-import",
+      "token": "../src/examples/email/native-compose-raster.js",
+      "digest": "de17116f7f8d982c17bb97c92205060ed0251cd019cfe5c60ad973f9611caead",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/app-kit/test/native-safe-compose-images.test.ts",
+      "rule": "computed-import",
+      "token": "import(process.env.EMAIL_INLINE_GRAMMAR_BASELINE??new URL('../src/examples/email/safe-compose-html.js',import.meta.url).href)",
+      "digest": "5c408edd2c0133f6c9b1c66c55f7971272b1103d6abddb2a381d8d2f10cf70de",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/app-kit/test/native-safe-compose-links.test.ts",
+      "rule": "email-import",
+      "token": "../src/examples/email/safe-compose-html.js",
+      "digest": "fb478b001d622ce44057a950973f7d81e69192d6d950c9c17a131aecdad7bbb7",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/app-kit/test/safe-rich-text.security.test.ts",
+      "rule": "email-import",
+      "token": "../dist/examples/email/safe-compose-html.js",
+      "digest": "12192cb12840c04238ed79d0c8db7f331a88a354f0c4274e5b0de132d6544e08",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/app-kit/test/safe-rich-text.security.test.ts",
+      "rule": "email-import",
+      "token": "../dist/examples/email/mailbox-list.js",
+      "digest": "34d59e60898e8f85e13dd27a1a49aeb5d7f1b25bed4b73344f5282eecb75c849",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mailbox",
+      "token": "mailbox",
+      "digest": "612f87f9bdeb2e08b6733d69b18fbe82920e25ffe63f2ef068458dc3cc608aa7",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-protocol",
+      "token": "IMAP",
+      "digest": "2310029cd7b8dfc3617f08967f4a199d0ff6cbb61db54602918fea3dd1de4b6d",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-protocol",
+      "token": "imap-credentials",
+      "digest": "2310029cd7b8dfc3617f08967f4a199d0ff6cbb61db54602918fea3dd1de4b6d",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-provider",
+      "token": "email-provider-draft-mirrors",
+      "digest": "55b89ee9b4044bad311cb9c3f9107ba0d5e0194c59931353db7a22d05b8732d9",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-protocol",
+      "token": "IMAP",
+      "digest": "6d2695d97d51e946ebc348a33733faf962bcc166d9919de816ef13939a7a5211",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-protocol",
+      "token": "imap-move-aliases",
+      "digest": "6d2695d97d51e946ebc348a33733faf962bcc166d9919de816ef13939a7a5211",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-protocol",
+      "token": "SMTP",
+      "digest": "8c1b8460365747f72ffaf6dff50e7d43136eb2d1303afb581ab844d1ebac80c1",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "packages/db/upgrades/lineages/manifest-at128.ts",
+      "rule": "mail-protocol",
+      "token": "smtp-sent-copy",
+      "digest": "8c1b8460365747f72ffaf6dff50e7d43136eb2d1303afb581ab844d1ebac80c1",
+      "occurrences": 1,
+      "review_category": "historical-lineage"
+    },
+    {
+      "path": "scripts/check-app-boundary.test.mjs",
+      "rule": "host-import-reference",
+      "token": "packages/app-kit/src/examples/email/index.ts",
+      "digest": "df4b4615ac19feb70f93f80d92a97e79e3a892d303abf53e6a10d28431c5aae8",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    },
+    {
+      "path": "apps/api/test/phase5-proof-package-determinism.test.ts",
+      "rule": "host-import-reference",
+      "token": "packages/app-kit/dist/examples/email/cli.js",
+      "digest": "ca20f3aaa3fafe4acadc8a53e59a481d93a49f784075f074b4c96b8af9763270",
+      "occurrences": 1,
+      "review_category": "reviewed-fixture"
+    }
+  ]
+}
