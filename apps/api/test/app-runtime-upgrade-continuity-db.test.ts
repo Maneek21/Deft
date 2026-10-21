@@ -287,14 +287,21 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
       const next = await upgrade(f, number);
       assert.equal(next.result.upgrade_continuity[0].state, 'installed');
       current = await open();
-      const acquired = await call(current + '/access/acquire', f.ownerWeb.accessToken, {});
+      const other = await open();
+      const [acquired, concurrent] = await Promise.all([call(current + '/access/acquire', f.ownerWeb.accessToken, {}),
+        call(other + '/access/acquire', f.ownerWeb.accessToken, {})]);
+      assert.equal(concurrent.grant_status, 'active');assert.equal(concurrent.grant.id, acquired.grant.id, 'concurrent tabs reuse one carried permission');
       assert.equal(acquired.grant_status, 'active', 'the existing exact private permission follows the completed trusted upgrade');
       const [grant] = await db.select().from(s.appExperienceConsentGrants).where(eq(s.appExperienceConsentGrants.id, acquired.grant.id));
       assert.equal(grant!.app_version_id, next.result.installation.active_version_id);
     }
-    await call(current + '/access', f.ownerWeb.accessToken, undefined, 'DELETE');
+    const racing = await open();
+    await Promise.all([call(current + '/access', f.ownerWeb.accessToken, undefined, 'DELETE'),
+      call(racing + '/access/acquire', f.ownerWeb.accessToken, {})]);
     const revoked = await call(await open() + '/access/acquire', f.ownerWeb.accessToken, {});
     assert.equal(revoked.grant_status, 'review_required', 'revocation must never become automatic re-approval');
+    const issued = await db.select().from(s.auditLog).where(and(eq(s.auditLog.org_id, f.org), eq(s.auditLog.action, 'app.upgrade_continuity.experience_consent_issued')));
+    assert.equal(issued.length, 2, 'two upgrades issue two permissions; concurrent tabs and revocation do not issue more');
   });
   await t.test('shared operator and two private-store approvals retain their actual principals across two upgrades', async () => {
     const f = await fixture(true, true, true, true);

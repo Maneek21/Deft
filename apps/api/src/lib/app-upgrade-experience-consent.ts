@@ -75,7 +75,12 @@ export async function acquireTrustedUpgradeExperienceConsent(tx:UpgradeTx,scope:
    const [inserted]=await tx.insert(appExperienceConsentGrants).values({org_id:scope.org_id,owner_user_id:scope.owner_user_id,
     app_installation_id:scope.installation_id,app_version_id:scope.app_version_id,experience_key:scope.experience_key,
     scope_digest:digest,snapshot:scope}).onConflictDoNothing().returning();
-   if(!inserted)return null;
+   if(!inserted){
+    const [existing]=await tx.select().from(appExperienceConsentGrants).where(and(eq(appExperienceConsentGrants.org_id,scope.org_id),
+     eq(appExperienceConsentGrants.owner_user_id,scope.owner_user_id),eq(appExperienceConsentGrants.app_installation_id,scope.installation_id),
+     eq(appExperienceConsentGrants.experience_key,scope.experience_key),eq(appExperienceConsentGrants.scope_digest,digest),
+     isNull(appExperienceConsentGrants.revoked_at))).limit(1).for('share');return existing??null;
+   }
    await tx.insert(auditLog).values({org_id:scope.org_id,actor_type:'system',actor_id:scope.owner_user_id,
     action:'app.upgrade_continuity.experience_consent_issued',entity_type:'app_experience_consent_grant',entity_id:inserted.id,
     metadata:{proof_id:proof.request_id,source_consent_grant_id:grant.id,prior_version_id:proof.prior_version_id,app_version_id:proof.version_id}});
