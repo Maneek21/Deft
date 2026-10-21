@@ -16,6 +16,8 @@ import type { AppRunTransaction } from './app-run-repository.js';
 import type { AppRunSecretRepository } from './app-run-secret-repository.js';
 import { AppResourceSyncSecretService } from './app-resource-sync-secrets.js';
 import type { AppRunSecretEnvelope } from './app-run-secrets.js';
+import { enqueueResourceSyncSuccessor } from './app-resource-sync-successor.js';
+import { hasResourceObservationPin } from './app-resource-observation-authority.js';
 
 /** This primitive is deliberately not connected to either Runtime channel.
  * Its caller must first lock the Run and verify live authority, session,
@@ -309,6 +311,12 @@ export class AppResourceSyncStore {
       eq(appSyncCheckpoints.cursor_sequence, intent.expected_cursor_sequence),
     )).returning({ id: appSyncCheckpoints.id });
     if (!applied) throw new Error('APP_RESOURCE_SYNC_CURSOR_CAS_FAILED');
+    const observation = hasResourceObservationPin(run.authorization_snapshot, binding.id);
+    if (page.has_more && (!this.attachmentMode || observation)) {
+      await enqueueResourceSyncSuccessor(tx, { kind: 'continuation', org_id: input.org_id,
+        resource_binding_id: binding.id, checkpoint_id: checkpoint.id, generation: checkpoint.generation,
+        cursor_sequence: nextSequence, run_id: run.id, observation });
+    }
     // Independent notification opt-in queues only signed UUID/digest metadata
     // within the same publication transaction; final expiry rolls both back.
     if(this.attachmentMode){

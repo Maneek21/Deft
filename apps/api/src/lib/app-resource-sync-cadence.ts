@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { APP_RUN_CONTRACT_VERSIONS, canonicalCapabilityJson } from '@deft/shared';
 
-export const APP_RESOURCE_SYNC_CONTINUATION_DELAY_MS = 5_000;
+export const APP_RESOURCE_SYNC_CONTINUATION_DELAY_MS = 1_000;
 
 /** Evidence is loaded under the checkpoint admission lock. An opaque cursor
  * alone is never a continuation signal: completed streams also retain one. */
