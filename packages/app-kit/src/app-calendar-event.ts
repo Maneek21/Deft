@@ -47,6 +47,8 @@ const rule = z.string().regex(/^[A-Z0-9=;,+-]{1,1024}$/iu).refine(value => {
     if (!/^(?:[0-9]{8}|[0-9]{8}T[0-9]{6}Z)$/u.test(until)) return false;
     const date = civilDate(until);
     if (!Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date) return false;
+    if (until.includes('T') && !AppCalendarTimeSchema.safeParse({ value: until, value_type: 'date_time', time_zone: null,
+      instant: `${date}T${until.slice(9,11)}:${until.slice(11,13)}:${until.slice(13,15)}Z` }).success) return false;
   }
   return true;
 });
