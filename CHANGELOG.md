@@ -10,6 +10,18 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.132 candidate — publication pending
+
+Corrects the live connect-once acceptance failure found after preview.131. Revalidating multiple declared purposes can exhaust a thirty-second reattachment phase even when every authority check succeeds.
+
+- Bound each retained-account reattachment phase at two minutes, still clipped by the current caller, review, account and action deadlines. Keep every fresh authority, revocation, effect and receipt check.
+- Permit only read-only status reconciliation under a still-current trusted upgrade proof after its short issuance window. Revalidate trust revision, roles, source approval and current installation; never restore expired activation authority or issue a background lease from this status path.
+- Pair the phase correction with the separately released Runtime HTTP/checker update. Ordinary data/effect budgets and fifteen-minute Runtime sessions remain unchanged.
+- Add slow multi-purpose, hard ceiling, finite permission, expired-proof status and revoked-trust regressions.
+
+Schema remains131 with no new migration; historical migration bytes and sealed Author Kit alpha.41 are unchanged.
+
+
 ### 0.3.0-preview.131 candidate — publication pending
 
 Connect-once platform integration. Schema advances directly from128 to131; Author Kit remains the immutable alpha.41, and Runtime wire contracts remain unchanged.

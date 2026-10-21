@@ -208,6 +208,32 @@ function v2Fixture() {
   f.source.action_consents=actions(f.source.scope);f.current.action_consents=actions(f.current.scope);
   f.records.set(f.source.session_id,structuredClone(f.source));return f;
 }
+test('v2 multi-purpose reattachment tolerates cumulative live-check latency without another owner step',async()=>{
+ const f=v2Fixture(),source=structuredClone(f.source);
+ const service=new AppConnectionReattachmentService({...f.ports,currentAuthority:async()=>{f.advance(10_000);return f.current;}},f.now);
+ const review=await service.review(f.caller,f.reviewInput);assert.ok('review_digest' in review);
+ const connected=await service.activate(f.caller,{session_id:review.session_id,review_digest:review.review_digest});
+ assert.equal('state' in connected&&connected.state,'connected');assert.equal(f.activationCount(),1);
+ assert.deepEqual(f.calls,['prepare','activate']);assert.deepEqual(f.records.get(f.source.session_id),source);
+ assert.match(f.records.get(review.session_id)!.reattachment!.receipt!.receipt_digest,/^sha256:[a-f0-9]{64}$/);
+});
+test('a longer reattachment phase never extends finite account or action permission',async()=>{
+ for(const bound of ['account','action']){
+  const f=v2Fixture(),expiry=new Date(f.now()+35_000).toISOString();
+  if(bound==='account')f.current.scope.consent_expires_at=expiry;else f.current.action_consents![0]!.expires_at=expiry;
+  const service=new AppConnectionReattachmentService({...f.ports,currentAuthority:async()=>{f.advance(10_000);return f.current;}},f.now);
+  await assert.rejects(service.review(f.caller,f.reviewInput));
+  assert.equal(f.activationCount(),0);assert.ok([...f.records.values()].every(row=>row.session_id===f.source.session_id||row.state!=='connected'));
+ }
+});
+test('reattachment still rejects a reply outside its bounded phase even with live permission',async()=>{
+ const f=v2Fixture();
+ const service=new AppConnectionReattachmentService({...f.ports,requestRuntime:async(record,request,signal)=>{
+  f.advance(130_000);return f.ports.requestRuntime(record,request,signal);
+ }},f.now);
+ await assert.rejects(service.review(f.caller,f.reviewInput));assert.equal(f.activationCount(),0);
+ assert.equal(f.records.get(f.reviewInput.request_id)!.state,'indeterminate');
+});
 test('v2 retained custody pins fresh independent purposes and recovers exact lost activation after expiry',async()=>{
  const f=v2Fixture(),before=structuredClone(f.source),review=await f.service.review(f.caller,f.reviewInput);
  assert.ok('review_digest' in review);

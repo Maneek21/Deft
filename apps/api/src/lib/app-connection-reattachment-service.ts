@@ -13,6 +13,7 @@ import { AppConnectionSessionRecordSchema, type AppConnectionSessionRecord,
   type AppConnectionSessionLocator, type AppConnectionSessionAuthority, type AppConnectionSessionPorts, type AppConnectionSessionPurpose } from './app-connection-session-service.js';
 import type {UnstartedReviewClosure} from './app-connection-review-closure.js';
 import type { ExperienceCaller } from './app-experience-service.js';
+import { REATTACH_PHASE_MS } from './app-connection-reattachment-deadline.js';
 
 const denied = () => new AppError('Account reattachment access ended', 'APP_ACCESS_DENIED', 403);
 const conflict = () => new AppError('Account reattachment changed', 'APP_STATE_CONFLICT', 409);
@@ -109,7 +110,7 @@ export class AppConnectionReattachmentService {
     const purpose = operation === 'prepare' ? 'reattach_review' : operation === 'activate' ? 'reattach_activate' : 'reattach_status';
     const authority = await this.authority(caller, this.nomination(record), purpose, record);
     const data = record.reattachment!;
-    let deadline = Math.min(this.clock() + 30_000, authority.expires_at, appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
+    let deadline = Math.min(this.clock() + REATTACH_PHASE_MS, authority.expires_at, appConsentDeadline(record.scope.consent_expires_at, record.scope.consent_lifetime),
       operation === 'status' ? Infinity : Math.min(Date.parse(data.review_expires_at),...(record.action_consents??[]).map(consent=>appConsentDeadline(consent.expires_at, consent.consent_lifetime))));
     if (deadline <= this.clock()) throw denied();
     const controller = new AbortController();
