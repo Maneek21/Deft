@@ -3,16 +3,19 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 import {createAppIntegrationDestination} from '../src/lib/app-integration-destination.js';
+import {appIntegrationSourceDigest} from '../src/lib/app-integration-source.js';
 const uuid=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
-function fixture(){
+function fixture(withState=false){
  let now=1000,inTx=false,writes=0,after=0,version=1,changed=false,expireOnCreate=false,sourceAllowed=true;
  let receipts=new Map<string,any>();
+ let destinationRevision=1,stateReads=0;
  const caller={org_id:uuid(1),user_id:uuid(2),kind:'human' as const,principal_id:uuid(3)};
  const source={installation_id:uuid(4),account_ref:'account_one',store_key:'inbox',ref:{resource_key:'message',record_id:uuid(5),content_digest:'sha256:'+'a'.repeat(64)}};
  const snapshot=()=>({caller,purpose:'transfer',publication:{target:{...source,resource_binding_id:uuid(6),projection_id:uuid(7)},checkpoint_id:uuid(8),generation:1,cursor_sequence:1,projection_revision:'r1',applied_sequence:1,payload_digest:'sha256:'+'b'.repeat(64),observed_at:'2026-10-11T00:00:00Z',partial:true},authority:{identity:'grant1',expires_at:2000},resource:{record_id:source.ref.record_id,content_digest:changed?'sha256:'+'c'.repeat(64):source.ref.content_digest},presentation:{plain_text:'Observed source body'}});
- const service=createAppIntegrationDestination<any>({clock:()=>now,transaction:async fn=>{assert.equal(inTx,false);inTx=true;const old=new Map(receipts),oldWrites=writes;try{return await fn({});}catch(e){receipts=old;writes=oldWrites;throw e;}finally{inTx=false;}},source:{resolve:async()=>{assert.equal(inTx,false);return snapshot().publication.target;},read:async()=>{assert.equal(inTx,false);if(!sourceAllowed)throw Error('SOURCE_DENIED');return snapshot() as any;},guard:async()=>{}},audience:async()=>({identity:{version},visibility:'private',label:'Only you',member_count:1}),receipt:async(_tx,c,id)=>receipts.get(c.user_id+id)??null,reserve:async(_tx,c,input)=>{const key=c.user_id+input.request_id;if(receipts.has(key))return false;receipts.set(key,{...input});return true;},create:async()=>{writes++;if(expireOnCreate)now=2001;return {destination_kind:'note',destination_id:uuid(9),destination_url:'/notes/'+uuid(9),replayed:false};},visibleResult:async()=>{},complete:async(_tx,c,id,result)=>{receipts.set(c.user_id+id,{...receipts.get(c.user_id+id),result});},afterCommit:async()=>{assert.equal(inTx,false);after++;}});
+ const service=createAppIntegrationDestination<any>({clock:()=>now,transaction:async fn=>{assert.equal(inTx,false);inTx=true;const old=new Map(receipts),oldWrites=writes;try{return await fn({});}catch(e){receipts=old;writes=oldWrites;throw e;}finally{inTx=false;}},source:{resolve:async()=>{assert.equal(inTx,false);return snapshot().publication.target;},read:async()=>{assert.equal(inTx,false);if(!sourceAllowed)throw Error('SOURCE_DENIED');return snapshot() as any;},guard:async()=>{}},audience:async()=>({identity:{version},visibility:'private',label:'Only you',member_count:1}),
+ ...(withState?{reviewState:async()=>{assert.equal(inTx,true);stateReads++;return {identity:{revision:destinationRevision},summary:{has_local_edits:destinationRevision>1}};}}:{}),receipt:async(_tx,c,id)=>receipts.get(c.user_id+id)??null,reserve:async(_tx,c,input)=>{const key=c.user_id+input.request_id;if(receipts.has(key))return false;receipts.set(key,{...input});return true;},create:async()=>{writes++;destinationRevision++;if(expireOnCreate)now=2001;return {destination_kind:'note',destination_id:uuid(9),destination_url:'/notes/'+uuid(9),replayed:false};},visibleResult:async()=>{},complete:async(_tx,c,id,result)=>{receipts.set(c.user_id+id,{...receipts.get(c.user_id+id),result});},afterCommit:async()=>{assert.equal(inTx,false);after++;}});
  const input={source,destination:{kind:'note',visibility:'private',space_id:null},title:'Reviewed note',mode:'excerpt',excerpt:'Observed source'};
- return {service,caller,input,get writes(){return writes},get after(){return after},revokeSource:()=>{sourceAllowed=false},restoreSource:()=>{sourceAllowed=true},changeSource:()=>{changed=true},changeAudience:()=>{version++},expire:()=>{expireOnCreate=true}};
+ return {service,caller,input,snapshot,changeDestination:()=>{destinationRevision++},get stateReads(){return stateReads},get writes(){return writes},get after(){return after},revokeSource:()=>{sourceAllowed=false},restoreSource:()=>{sourceAllowed=true},changeSource:()=>{changed=true},changeAudience:()=>{version++},expire:()=>{expireOnCreate=true}};
 }
 test('exact review, original UUID replay and lost ACK status create once',async()=>{const f=fixture(),r=await f.service.review(f.caller,f.input);const input={...f.input,request_id:uuid(10),review_digest:r.review_digest};await f.service.commit(f.caller,input);assert.equal((await f.service.commit(f.caller,input)).replayed,true);assert.equal((await f.service.status(f.caller,uuid(10))).replayed,true);assert.equal(f.writes,1);assert.equal(f.after,1);await assert.rejects(f.service.commit(f.caller,{...input,title:'Changed'}),/CONFLICT/);});
 test('source digest or audience changed after review denies native creation',async()=>{for(const kind of ['source','audience']){const f=fixture(),r=await f.service.review(f.caller,f.input);kind==='source'?f.changeSource():f.changeAudience();await assert.rejects(f.service.commit(f.caller,{...f.input,request_id:uuid(10),review_digest:r.review_digest}),/CHANGED_OR_DENIED/);assert.equal(f.writes,0);assert.equal(f.after,0);}});
@@ -54,4 +57,30 @@ test('both status interfaces require current source access after a successful or
  await assert.rejects(f.service.status(f.caller,request_id),/SOURCE_DENIED/);
  await assert.rejects(f.service.statusWithSource(f.caller,request_id),/SOURCE_DENIED/);assert.equal(f.writes,1);
  f.restoreSource();assert.equal((await f.service.status(f.caller,request_id)).destination_id,created.destination_id);assert.equal(f.writes,1);
+});
+
+
+test('destination revision changes require fresh review; own writes and exact replay retain the reviewed intent',async()=>{
+ const f=fixture(true),review=await f.service.review(f.caller,f.input);
+ assert.deepEqual(review.destination_state,{has_local_edits:false});
+ f.changeDestination();
+ await assert.rejects(f.service.commit(f.caller,{...f.input,request_id:uuid(90),review_digest:review.review_digest}),/CHANGED_OR_DENIED/);
+ assert.equal(f.writes,0);
+ const fresh=await f.service.review(f.caller,f.input);
+ assert.notEqual(fresh.review_digest,review.review_digest);
+ assert.deepEqual(fresh.destination_state,{has_local_edits:true});
+ const intent={...f.input,request_id:uuid(90),review_digest:fresh.review_digest};
+ const created=await f.service.commit(f.caller,intent);assert.equal(f.writes,1);
+ f.changeDestination();const reads=f.stateReads;
+ assert.equal((await f.service.commit(f.caller,intent)).destination_id,created.destination_id);
+ assert.equal(f.stateReads,reads,'replay does not mutate or reinterpret current destination state');
+ assert.equal(f.writes,1);
+});
+
+test('destinations without a revision port keep their original public review shape',async()=>{
+ const f=fixture(),review=await f.service.review(f.caller,f.input);
+ const c=f.caller,s=f.snapshot();
+ assert.equal(review.review_digest,appIntegrationSourceDigest(['deft.app_integration_destination_review.v1',c.org_id,c.user_id,c.kind,c.principal_id,f.input,{publication:s.publication,authority_identity:s.authority.identity,resource:s.resource},{version:1}]));
+ assert.equal(Object.hasOwn(review,'destination_state'),false);
+ assert.equal(f.stateReads,0);
 });

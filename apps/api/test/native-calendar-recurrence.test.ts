@@ -51,6 +51,7 @@ test('versioned destination accepts non-mail event models and rejects invalid da
   const event={schema_version:'deft.app_calendar_event.v1',event_key:'booking-1',series_key:'booking-series',source_revision:'1',status:'confirmed',start,end,rrule:null,exdates:[],recurrence_id:null,sequence:1,dtstamp:'2026-10-04T12:00:00Z'};
   const destination={kind:'calendar',schema_version:'deft.app_calendar_destination.v1',audience:'current_user',event};
   assert.ok(AppIntegrationCalendarDestinationSchema.safeParse(destination).success);
-  for(const patch of [{start:{...start,value:'20260230T120000Z'}},{start:{...start,time_zone:'Invalid/Zone'}},{rrule:'FREQ=SECONDLY'},{rrule:'FREQ=DAILY;BYMONTH=99'},{end:start},{exdates:Array(257).fill(start)}])assert.equal(AppCalendarEventSchema.safeParse({...event,...patch}).success,false);
+  for(const rrule of ['FREQ=DAILY;UNTIL=20261026','FREQ=DAILY;UNTIL=20261026T235959Z'])assert.ok(AppCalendarEventSchema.safeParse({...event,rrule}).success);
+  for(const patch of [{start:{...start,value:'20260230T120000Z'}},{start:{...start,time_zone:'Invalid/Zone'}},{rrule:'FREQ=SECONDLY'},{rrule:'FREQ=DAILY;UNTIL=20261026T250000Z'},{rrule:'FREQ=DAILY;UNTIL=20261026T126000Z'},{rrule:'FREQ=DAILY;UNTIL=20261026T120099Z'},{rrule:'FREQ=DAILY;BYMONTH=99'},{end:start},{exdates:Array(257).fill(start)}])assert.equal(AppCalendarEventSchema.safeParse({...event,...patch}).success,false);
   assert.equal(AppIntegrationCalendarDestinationSchema.safeParse({...destination,audience:'organization'}).success,false);
 });
