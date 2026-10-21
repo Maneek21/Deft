@@ -1,12 +1,13 @@
 import {randomUUID} from 'node:crypto';
 import {and,eq,sql} from 'drizzle-orm';
-import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations,emailKnowledgeBudgets} from '@deft/db/schema';
+import {orgs,orgMembers,users,spaces,spaceMembers,wikiPages,wikiPageVersions,wikiCitations} from '@deft/db/schema';
 import {appIntegrationCapturePolicies as policies,appIntegrationCaptureClaims as claims,appIntegrationCaptureThreads as threads,appIntegrationCaptureSources as sources} from '../../../../packages/db/src/app-integration-capture-schema.js';
 import {AppIntegrationCapturePolicyInputSchema,type AppIntegrationSourceTarget} from '../../../../packages/app-kit/src/app-integration-source.js';
 import type {AppRunTransaction as Tx} from './app-run-repository.js';
 import type {AppIntegrationSourceCaller} from './app-integration-source.js';
 import type {AppIntegrationCapturePolicy,AppIntegrationCapturePorts} from './app-integration-capture.js';
 import {createNativeKnowledge} from './native-context-create.js';
+import {reserveKnowledgeCaptureBudget} from './native-knowledge-budget.js';
 
 const scope=(caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget)=>({org_id:caller.org_id,owner_user_id:caller.user_id,installation_id:target.installation_id,account_ref:target.account_ref,store_key:target.store_key});
 const where=(table:typeof policies|typeof claims|typeof threads|typeof sources,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget)=>{
@@ -56,19 +57,8 @@ export function createAppIntegrationCaptureStore(input:{
   async skipped(tx:Tx,claim_id:string,caller:AppIntegrationSourceCaller,reason:string){await tx.update(claims).set({state:reason==='protected'?'protected':'skipped',error_code:reason,updated_at:new Date(now())})
    .where(and(eq(claims.org_id,caller.org_id),eq(claims.owner_user_id,caller.user_id),eq(claims.id,claim_id),eq(claims.state,'processing')));},
   async reserveBudget(tx:Tx,caller:AppIntegrationSourceCaller,target:AppIntegrationSourceTarget,tokens:number){
-   if(!Number.isSafeInteger(tokens)||tokens<1||tokens>100000)throw denied();
-   const [org]=await tx.select({config:orgs.ai_config}).from(orgs).where(eq(orgs.id,caller.org_id)).limit(1);
-   const config=org?.config??{},clamp=(value:unknown,fallback:number,max:number)=>Number.isFinite(Number(value))?Math.max(0,Math.min(max,Number(value))):Math.min(fallback,max);
-   const orgLimit=clamp(config.email_knowledge_daily_token_budget,500000,1000000),accountLimit=clamp(config.email_knowledge_account_daily_token_budget,128000,orgLimit);
-   const day=new Date(now()).toISOString().slice(0,10);
-   // Reuse the native Knowledge org reservation pool, including its limit.
-   // Installation/account distinguish opted capture accounts within that pool.
-   for(const [budget_key,limit] of [['org',orgLimit],[`app-account:${caller.user_id}:${target.installation_id}:${target.account_ref}`,accountLimit]] as const){
-    await tx.insert(emailKnowledgeBudgets).values({org_id:caller.org_id,day,budget_key}).onConflictDoNothing();
-    const [reserved]=await tx.update(emailKnowledgeBudgets).set({reserved_tokens:sql`${emailKnowledgeBudgets.reserved_tokens}+${tokens}`,updated_at:new Date(now())})
-     .where(and(eq(emailKnowledgeBudgets.org_id,caller.org_id),eq(emailKnowledgeBudgets.day,day),eq(emailKnowledgeBudgets.budget_key,budget_key),sql`${emailKnowledgeBudgets.reserved_tokens}+${tokens}<=${limit}`)).returning({key:emailKnowledgeBudgets.budget_key});
-    if(!reserved)throw new Error('APP_INTEGRATION_CAPTURE_BUDGET_EXCEEDED');
-   }return config;
+   return reserveKnowledgeCaptureBudget(tx,{org_id:caller.org_id,user_id:caller.user_id,
+    installation_id:target.installation_id,account_ref:target.account_ref,tokens,at:new Date(now())});
   },
   async commit(tx:Tx,operation:Parameters<AppIntegrationCapturePorts<Tx>['commit']>[1]){
    const {caller,snapshot,policy:p,evidence,extracted,prior,claim_id}=operation,target=snapshot.publication.target;

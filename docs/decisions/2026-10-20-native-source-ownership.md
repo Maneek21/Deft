@@ -26,6 +26,12 @@ tests before removing a helper. Keep legacy data and the registered storage owne
 until backfill, interrupted resume, rollback and restore are independently proven.
 No table or key retirement is authorized by this refactor.
 
+Capture budget settings accept `knowledge_capture_daily_token_budget` and
+`knowledge_capture_account_daily_token_budget`. The storage owner reads retained
+setting spellings during rollback. If both spellings are configured, the lower
+cap wins. Both use the same physical UTC-day org and app-account reservation
+rows; no counter reset, copy or destructive migration accompanies these aliases.
+
 Neutral capture uses an explicitly versioned policy with app-owned eligibility
 and v3 body nominations. The schemas and evidence adapter land before activation.
 Do not enable new producers until the native audience and dual provenance readers

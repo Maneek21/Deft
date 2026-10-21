@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import pg from 'pg';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { hostRetainedSourceStorage } from '../src/lib/host-source-storage.js';
 import { and, eq } from 'drizzle-orm';
 import { orgs, users, orgMembers, spaces, spaceMembers, wikiPages } from '@deft/db/schema';
 import { db, closeDb } from '../src/lib/db.js';
@@ -110,4 +113,58 @@ test('captured Email knowledge respects personal, shared and changing Defty audi
     for (const id of [owner, other, agent]) await db.delete(users).where(eq(users.id, id));
     await closeDb();
   }
+});
+
+
+const mappingUrl=process.env.DEFT_TEST_DATABASE_URL;
+const mappingSafe=!!mappingUrl&&mappingUrl===process.env.DATABASE_URL&&/^postgres(?:ql)?:\/\/(?:[^@]+@)?(?:127\.0\.0\.1|localhost):\d+\/[^?]*test(?:\?.*)?$/u.test(mappingUrl);
+test('registered retained storage accepts only exact historical destination mappings',{skip:!mappingSafe},async()=>{
+ const client=new pg.Client({connectionString:mappingUrl});await client.connect();
+ try{
+  await client.query(`BEGIN;
+   CREATE TEMP TABLE wiki_pages(id text,org_id text,user_id text,scope text,space_id text,version integer);
+   CREATE TEMP TABLE wiki_citations(page_id text,org_id text,source_type text,source_id text);
+   CREATE TEMP TABLE email_knowledge_threads(org_id text,owner_user_id text,account_id text,thread_key text,destination_key text,page_id text,page_version integer);
+   CREATE TEMP TABLE email_knowledge_sources(id text,org_id text,owner_user_id text,account_id text,thread_key text);
+   INSERT INTO wiki_pages VALUES ('private','org','owner','user',null,1),('shared','org','owner','space','space',1),
+    ('unknown','org','owner','user',null,1),('ordinary','org','owner','user',null,1);
+   INSERT INTO email_knowledge_threads VALUES ('org','owner','account','private-thread','user','private',1),('org','owner','account','shared-thread','space:space','shared',1);
+   INSERT INTO email_knowledge_sources VALUES ('private-source','org','owner','account','private-thread'),('shared-source','org','owner','account','shared-thread');
+   INSERT INTO wiki_citations VALUES ('private','org','email','private-source'),('shared','org','email','shared-source'),('unknown','org','email','unknown-source');`);
+  const query=(condition:Parameters<PgDialect['sqlToQuery']>[0])=>new PgDialect().sqlToQuery(condition);
+  const select=async(condition:Parameters<PgDialect['sqlToQuery']>[0])=>{const q=query(condition);return (await client.query('SELECT id FROM wiki_pages WHERE '+q.sql+' ORDER BY id',q.params)).rows.map(row=>row.id);};
+  const facet=hostRetainedSourceStorage.knowledge;
+  assert.deepEqual(await select(facet.originCondition),['private','shared','unknown']);
+  const mapped=()=>select(facet.provenanceCondition);
+  assert.deepEqual(await mapped(),['private','shared']);assert.deepEqual(await mapped(),['private','shared'],'read-only replay is deterministic');
+  for(const [table,where,column,value] of [
+   ['email_knowledge_threads',"page_id='private'",'org_id','foreign'],
+   ['email_knowledge_threads',"page_id='private'",'owner_user_id','foreign'],
+   ['email_knowledge_threads',"page_id='private'",'account_id','foreign'],
+   ['email_knowledge_threads',"page_id='private'",'thread_key','foreign'],
+   ['email_knowledge_threads',"page_id='private'",'destination_key','space:space'],
+   ['email_knowledge_threads',"page_id='private'",'page_id','foreign'],
+   ['email_knowledge_threads',"page_id='private'",'page_version',2],
+   ['email_knowledge_sources',"id='private-source'",'org_id','foreign'],
+   ['email_knowledge_sources',"id='private-source'",'owner_user_id','foreign'],
+   ['email_knowledge_sources',"id='private-source'",'account_id','foreign'],
+   ['email_knowledge_sources',"id='private-source'",'thread_key','foreign'],
+   ['wiki_citations',"page_id='private'",'org_id','foreign'],
+   ['wiki_citations',"page_id='private'",'org_id',null],
+   ['wiki_citations',"page_id='private'",'source_id','unknown'],
+  ] as const){
+   await client.query('SAVEPOINT mismatch');
+   await client.query(`UPDATE ${table} SET ${column}=$1 WHERE ${where}`,[value]);
+   assert.deepEqual(await mapped(),['shared'],table+'.'+column+' cannot nominate a different audience');
+   await client.query('ROLLBACK TO SAVEPOINT mismatch');
+  }
+  await client.query("UPDATE wiki_pages SET scope='space',space_id='space' WHERE id='private'");
+  assert.deepEqual(await mapped(),['shared'],'private-to-space widening has no retained consent');
+  await client.query("UPDATE wiki_pages SET scope='user',space_id=null WHERE id='private'");
+  await client.query("UPDATE wiki_pages SET space_id='foreign-space' WHERE id='shared'");
+  assert.deepEqual(await mapped(),['private'],'a retained copy cannot move to another space');
+  await client.query("UPDATE wiki_pages SET space_id='space' WHERE id='shared'");
+  await client.query("INSERT INTO email_knowledge_threads VALUES ('org','owner','account','private-thread','space:space','private',1)");
+  assert.deepEqual(await mapped(),['shared'],'one valid thread cannot override conflicting consent');
+ }finally{await client.query('ROLLBACK');await client.end();}
 });
