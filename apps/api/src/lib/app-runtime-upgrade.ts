@@ -18,6 +18,11 @@ import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
 import { buildAttachmentAppReviewedAuthority, ATTACHMENT_APP_EFFECTIVE_CLASSIFICATION, assertAttachmentManifestAdmission,
   assertAttachmentCompositionActionsEnabled, attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 
+import { readInstallationUpgradeTrust, upgradeContinuityDecision } from './app-upgrade-trust-policy.js';
+import { upgradeContinuityParticipants, captureUpgradeApprovals, continuityProof, UPGRADE_PROOF_ACTION,
+  type CapturedUpgradeApproval, type UpgradeContinuityProof } from './app-upgrade-trust-continuity.js';
+import { issueUpgradeSuccessor } from './app-upgrade-trust-successors.js';
+
 const Id = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 const stale = () => new AppError('Runtime upgrade authority changed', 'APP_STALE', 409);
 export const RuntimeUpgradeStageSchema = z.strictObject({ schema_version: z.literal('deft.app_runtime_upgrade_stage.v1'),
@@ -232,6 +237,9 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
     expected_prior_grant_snapshot_digest: effective.snapshot_digest, app_version_id: target.id,
     expected_package_digest: target.package_digest, expected_requested_snapshot_digest: requested.snapshot_digest,
     expected_lifecycle_epoch: installation.lifecycle_epoch, expected_grant_epoch: installation.grant_epoch });
+  const trust = await readInstallationUpgradeTrust(tx, actor.org_id, installationId);
+  const continuity = upgradeContinuityDecision(trust.trusted, prior.manifest, target.manifest);
+  const carry = mode === 'attachment' && continuity.eligible && Boolean('owner_connections' in manifest && manifest.owner_connections?.length);
   const review = { schema_version: upgradeSchema(mode, 'review'), organization_id: actor.org_id,
     pending_work_policy: request.pending_work_policy,
     installation_id: installationId, request, prior_authority: priorAuthority, target_authority: targetAuthority,
@@ -239,7 +247,8 @@ async function context(tx: Tx, actor: Actor, installationId: string, targetId: s
       active_dependents: dependencies?.count ?? 0, pending_public_followups: followups?.count ?? 0 }, fresh_runtime_binding_review_required: true,
     fresh_resource_binding_consent_required: manifest.schema_version === '5' || manifest.schema_version === '6' || manifest.schema_version === '7',
     ...(mode === 'attachment' ? { private_state_adoption_required: true } : {}),
-    ...(mode === 'native' ? { fresh_native_binding_consent_required: true } : {}), authority_carry_forward: false };
+    ...(mode === 'native' ? { fresh_native_binding_consent_required: true } : {}), authority_carry_forward: carry,
+    ...(trust.trusted ? { upgrade_continuity: { trust_revision: trust.revision, ...continuity } } : {}) };
   return { mode: 'review', installation, prior, target, manifest, effective, requested, targetAuthority, modules, request,
     review: { ...review, review_digest: digestAppGrantValue(review) }, recovered: null } as const;
 }
@@ -266,7 +275,10 @@ async function activateUpgrade(actor: ModuleActor, installationId: string, raw: 
   manager(actor); installationId = Id.parse(installationId);
   const { expected_review_digest, accept_host_policy: _accept, ...request } = (mode === 'attachment' ? AttachmentUpgradeActivateSchema : mode === 'native' ? NativeUpgradeActivateSchema : RuntimeUpgradeActivateSchema).parse(raw);
   const effects: ModuleLifecyclePostCommit[] = [];
+  const participants = mode === 'attachment' ? await upgradeContinuityParticipants(actor.org_id, installationId, actor.actor_id) : null;
+  const carryPlans: { proof: UpgradeContinuityProof; approval: CapturedUpgradeApproval }[] = [];
   const result = await db.transaction(async tx => {
+    if (participants) for (const id of participants) await tx.execute(sql`SELECT id FROM org_members WHERE org_id=${actor.org_id} AND user_id=${id} FOR UPDATE`);
     const current = await context(tx, actor, installationId, request.app_version_id, options, mode);
     if (current.mode === 'recovered' || digestAppGrantValue(request) !== digestAppGrantValue(current.request)
       || current.review.review_digest !== expected_review_digest) throw stale();
@@ -274,6 +286,13 @@ async function activateUpgrade(actor: ModuleActor, installationId: string, raw: 
       || Object.values(current.review.blockers.old_work).some(count => count > 0)) {
       throw new AppError('Old App work or active dependents block upgrade', 'APP_UPGRADE_BLOCKED', 409);
     }
+    const trust = await readInstallationUpgradeTrust(tx, actor.org_id, installationId);
+    const mayCarry = mode === 'attachment' && participants && upgradeContinuityDecision(trust.trusted, current.prior.manifest, current.target.manifest).eligible;
+    const policyDeadline = new Date(Date.now() + 300000);
+    const captureGuard: WebAuthorityGuard = Object.assign(async () => {
+      if (!mayCarry || Date.now() >= policyDeadline.getTime()) throw stale();
+    }, { current_web_session_expires_at: () => policyDeadline });
+    const approvals = mayCarry ? await captureUpgradeApprovals(tx, actor.org_id, installationId, current.prior.id, participants, captureGuard) : [];
     for (const item of current.modules) {
       let installationIdForModule: string; let versionIdForModule: string;
       if (!item.old) {
@@ -314,20 +333,43 @@ async function activateUpgrade(actor: ModuleActor, installationId: string, raw: 
       active_grant_snapshot_id: grantId, active_grant_snapshot_kind: 'effective', lifecycle_epoch: sql`${appInstallations.lifecycle_epoch}+1`,
       grant_epoch: sql`${appInstallations.grant_epoch}+1`, updated_by_actor_type: 'human', updated_by_actor_id: actor.actor_id })
       .where(and(eq(appInstallations.org_id, actor.org_id), eq(appInstallations.id, installationId))).returning();
+    for (const approval of approvals) {
+      const proof = continuityProof(approval, installation!, trust.revision);
+      await tx.insert(auditLog).values({ org_id: actor.org_id, actor_type: 'system', actor_id: actor.actor_id,
+        action: UPGRADE_PROOF_ACTION, entity_type: 'app_connection_session', entity_id: proof.request_id, metadata: proof });
+      carryPlans.push({ proof, approval });
+    }
     await tx.insert(auditLog).values({ org_id: actor.org_id, actor_type: 'human', actor_id: actor.actor_id,
       action: upgradeAction(mode), entity_type: 'app_installation', entity_id: installationId,
       before_state: { app_version_id: current.prior.id, grant_snapshot_id: current.effective.id },
       after_state: { app_version_id: current.target.id, grant_snapshot_id: grantId, review_digest: expected_review_digest },
       metadata: { source: actor.source, schema_version: upgradeSchema(mode, 'activation'),
         pending_work_policy: request.pending_work_policy,
-        prior_grant_snapshot_digest: current.effective.snapshot_digest, review_schema_version: current.review.schema_version, authority_carry_forward: false } });
+        prior_grant_snapshot_digest: current.effective.snapshot_digest, review_schema_version: current.review.schema_version, authority_carry_forward: carryPlans.length > 0,
+        ...(carryPlans.length ? { continuity_proof_ids: carryPlans.map(plan => plan.proof.request_id), trust_revision: trust.revision } : {}) } });
     await final(tx, actor, current.manifest, options);
     return { schema_version: upgradeSchema(mode, 'activation'), installation: installation!, grant_snapshot_id: grantId,
       review_digest: expected_review_digest };
   });
   for (const effect of effects) effect.emit();
   await Promise.all(effects.map(effect => effect.invalidate())); await invalidateModuleCatalogCaches(actor.org_id);
-  return result;
+  const continuityResults = [];
+  for (const { proof, approval } of carryPlans) {
+    let outcome: { state: string; source_session_id: string; session_id: string };
+    let failureCode: string | undefined;
+    try { outcome = await issueUpgradeSuccessor(proof, approval, actor, options.guard as WebAuthorityGuard); }
+    catch (error) {
+      const candidate = error as { code?: unknown; message?: unknown; cause?: { message?: unknown } };
+      const diagnostic = [candidate.code, candidate.cause?.message, candidate.message].find(value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{1,100}$/.test(value));
+      failureCode = typeof diagnostic === 'string' ? diagnostic : 'UPGRADE_CONTINUITY_RECOVERY_REQUIRED';
+      outcome = { state: 'recovery_required', source_session_id: proof.source_session_id, session_id: proof.request_id }; }
+    await db.insert(auditLog).values({ org_id: actor.org_id, actor_type: 'system', actor_id: actor.actor_id,
+      action: 'app.upgrade_continuity.completed', entity_type: 'app_connection_session', entity_id: proof.request_id,
+      metadata: { ...outcome, prior_version_id: proof.prior_version_id, app_version_id: proof.version_id,
+        trust_revision: proof.trust_revision, ...(failureCode ? { failure_code: failureCode } : {}), provenance: 'carried_by_installation_trust_policy' } });
+    continuityResults.push(outcome);
+  }
+  return continuityResults.length ? { ...result, upgrade_continuity: continuityResults } : result;
 }
 
 // Existing Runtime entry points keep their parsers, wire identities and review

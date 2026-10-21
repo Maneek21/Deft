@@ -575,11 +575,25 @@ export class AppExperienceExposureService {
 
 
 
+  /** Serialize consent acquisition, explicit acceptance and revocation before
+   * taking any member/App/grant row locks. Distinct browser sessions must not
+   * recreate a scope while another tab is revoking it. Data operations retain
+   * their existing concurrency and publication fences. */
+  private async lockConsentChange(tx: Tx, caller: ExperienceCaller, sessionId: string) {
+    const [locator] = await tx.select({ installation: appExperienceSessions.app_installation_id,
+      experience: appExperienceSessions.experience_key }).from(appExperienceSessions).where(and(
+      eq(appExperienceSessions.org_id, caller.org_id), eq(appExperienceSessions.user_id, caller.user_id),
+      eq(appExperienceSessions.id, sessionId))).limit(1);
+    if (locator) await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+      'app.experience.consent', caller.org_id, caller.user_id, locator.installation, locator.experience])},0))`);
+  }
+
   async acquire(caller: ExperienceCaller, sessionId: string, signal?: AbortSignal) {
 
     this.enabled(caller, signal);
 
     return this.repository.transaction(async tx => {
+      await this.lockConsentChange(tx, caller, sessionId);
 
       const context = await this.locked(tx, caller, sessionId, true, signal);
 
@@ -587,7 +601,7 @@ export class AppExperienceExposureService {
 
         const scope = experienceConsentScope(this.snapshot(caller, context, this.clock(), new Date(caller.access_expires_at!)));
 
-        const [grant] = await tx.select().from(appExperienceConsentGrants).where(and(
+        let [grant] = await tx.select().from(appExperienceConsentGrants).where(and(
 
           eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.owner_user_id, caller.user_id),
 
@@ -596,6 +610,11 @@ export class AppExperienceExposureService {
           eq(appExperienceConsentGrants.experience_key, context.session.experience_key),
 
           eq(appExperienceConsentGrants.scope_digest, experienceConsentDigest(scope)), isNull(appExperienceConsentGrants.revoked_at))).limit(1).for('share');
+
+        if (!grant) {
+          const { acquireTrustedUpgradeExperienceConsent } = await import('./app-upgrade-experience-consent.js');
+          grant = await acquireTrustedUpgradeExperienceConsent(tx, scope) ?? undefined;
+        }
 
         if (grant) {
 
@@ -656,6 +675,7 @@ export class AppExperienceExposureService {
     const token = ExperienceConsentReviewTokenSchema.parse(openExposureToken(this.keys, 'durable_review', input.review_token));
 
     return this.repository.transaction(async tx => {
+      await this.lockConsentChange(tx, caller, sessionId);
 
       const context = await this.locked(tx, caller, sessionId, true, signal);
 
@@ -752,6 +772,7 @@ export class AppExperienceExposureService {
     this.enabled(caller, signal);
 
     return this.repository.transaction(async tx => {
+      await this.lockConsentChange(tx, caller, sessionId);
 
       const context = await this.locked(tx, caller, sessionId, true, signal, true);
 
@@ -1724,6 +1745,7 @@ export class AppExperienceExposureService {
     this.enabled(caller, signal);
 
     return this.repository.transaction(async tx => {
+      await this.lockConsentChange(tx, caller, sessionId);
 
       const context = await this.locked(tx, caller, sessionId, true, signal);
 

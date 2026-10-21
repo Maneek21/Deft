@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "releases": [
+    {
+      "id": "17",
+      "source": "https://github.com/Maneek21/deft-email/releases/tag/v1.9.0-preview.17",
+      "package_url": "https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.17/app.deft.json",
+      "package_sha256": "2d6c035c479b4152a1186cdefa656bd7d19173f9299b6e776fd221fa7d3c675b",
+      "manifest_version": "1.9.0-preview.14",
+      "manifest_fixture_sha256": "7091f1251f51734108dd1683d28f2ca0dfacca09f417a0b2620117361473cc87",
+      "connection_fixture_sha256": "7a9dbeb1a13bda1e40965e0feb9f47af09eaeb4c030ebe578a8e62793420cc77",
+      "corresponding_source_sha256": "fd0f014c9950adbedecd05b4bcd0c4428e34461ea22c2121fe658b70e7ba9fbf"
+    },
+    {
+      "id": "18",
+      "source": "https://github.com/Maneek21/deft-email/releases/tag/v1.9.0-preview.18",
+      "package_url": "https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.18/app.deft.json",
+      "package_sha256": "2d6c035c479b4152a1186cdefa656bd7d19173f9299b6e776fd221fa7d3c675b",
+      "manifest_version": "1.9.0-preview.14",
+      "manifest_fixture_sha256": "7091f1251f51734108dd1683d28f2ca0dfacca09f417a0b2620117361473cc87",
+      "connection_fixture_sha256": "7a9dbeb1a13bda1e40965e0feb9f47af09eaeb4c030ebe578a8e62793420cc77",
+      "corresponding_source_sha256": "4cc19b7608b1f698b477eccd5c605b22f0be16f3842899f5db191f3dd2cda231"
+    },
+    {
+      "id": "19",
+      "source": "https://github.com/Maneek21/deft-email/releases/tag/v1.9.0-preview.19",
+      "package_url": "https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.19/app.deft.json",
+      "package_sha256": "95c353105b2106ed7f2ab3620f45fd6b06615cee7dce1d2176b4acf383e2e729",
+      "manifest_version": "1.9.0-preview.15",
+      "manifest_fixture_sha256": "455ab8d9b75a674776e9352e8ddcca3cac927a3afb836458a1ac917305eca9db",
+      "connection_fixture_sha256": "7a9dbeb1a13bda1e40965e0feb9f47af09eaeb4c030ebe578a8e62793420cc77",
+      "corresponding_source_sha256": "00342a6b1dc6b02237abedbcfa2dbb5900cedd1b6634ebf57046ddbc9ee00c93"
+    },
+    {
+      "id": "20",
+      "source": "https://github.com/Maneek21/deft-email/releases/tag/v1.9.0-preview.20",
+      "package_url": "https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.20/app.deft.json",
+      "package_sha256": "fdc57f15b14104e5ce4eb30269d701cb10c9de1813b3d44f5bcd634168937151",
+      "manifest_version": "1.9.1-preview.1",
+      "manifest_fixture_sha256": "929cb050f8b8c6ac52bddfaee81059ed16c3a09a826c697f940a4c765f8f2bff",
+      "connection_fixture_sha256": "7a9dbeb1a13bda1e40965e0feb9f47af09eaeb4c030ebe578a8e62793420cc77",
+      "corresponding_source_sha256": "e1fc82aeaae9661ca7ca53760dcc78d4786bdd6e6acf02b6fe13e045757d075a"
+    },
+    {
+      "id": "main-pr14",
+      "source": "https://github.com/Maneek21/deft-email/pull/14",
+      "package_url": null,
+      "package_sha256": "5edd0390addb97cd657f33f8c8d4ddda53003064a63aa4bfa0adc70750254fcc",
+      "manifest_version": "1.9.1-preview.1",
+      "manifest_fixture_sha256": "0ac8b6253e4c9ab74afffdb1736a15b83897a151ff198e60bdb1f3132a1c0d9b",
+      "connection_fixture_sha256": "7a9dbeb1a13bda1e40965e0feb9f47af09eaeb4c030ebe578a8e62793420cc77"
+    }
+  ],
+  "build": {
+    "main_commit": "84cc9a17bce40dd1721adfdd364886e36062ad5f",
+    "pr14_commit": "61b3019b1ca2ea7dbdbe19b775764991c4959f9b",
+    "commands": [
+      "npm ci --prefix app --ignore-scripts",
+      "pnpm --dir runtime install --frozen-lockfile --ignore-scripts",
+      "npm --prefix app run build"
+    ],
+    "main_and_pr14_app_packages_identical": true
+  },
+  "connection_source": "Raw JSON registry entry extracted from docs/setup.md in each published corresponding-source asset or pinned build commit. Public placeholders retained verbatim. Actual deployment registry/secrets are private and not release assets.",
+  "before_changed_paths": [
+    [],
+    [
+      "/manifest/experiences/0/artifact_digest"
+    ],
+    [],
+    [
+      "/manifest/experiences/0/artifact_digest"
+    ]
+  ],
+  "after_changed_paths": [
+    [],
+    [],
+    [],
+    []
+  ],
+  "connection_changed_paths": [
+    [],
+    [],
+    [],
+    []
+  ]
+}

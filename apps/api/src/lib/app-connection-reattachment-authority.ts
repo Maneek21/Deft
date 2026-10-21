@@ -104,12 +104,14 @@ export async function appConnectionReattachmentRuntimeAuthority(raw: unknown, au
   const caller = { org_id: locator.org_id, user_id: locator.owner_user_id, sid: metadata.web_session_id,
     access_expires_at: metadata.access_expires_at.getTime() };
   let expiry = caller.access_expires_at;
-  const guard: WebAuthorityGuard = Object.assign(async (tx: Parameters<WebAuthorityGuard>[0]) => {
+  const historicalWebGuard: WebAuthorityGuard = Object.assign(async (tx: Parameters<WebAuthorityGuard>[0]) => {
     const [session] = await tx.select().from(webSessions).where(and(eq(webSessions.id, caller.sid),
       eq(webSessions.org_id, caller.org_id), eq(webSessions.user_id, caller.user_id))).limit(1).for('share');
     if (!session || session.revoked_at) throw denied();
     expiry = Math.min(expiry, session.expires_at.getTime()); if (expiry <= Date.now()) throw denied();
   }, { current_web_session_expires_at: () => new Date(expiry) });
+  const { retainedContinuityGuard } = await import('./app-upgrade-trust-continuity.js');
+  const guard = await retainedContinuityGuard(locator.org_id, record.session_id) ?? historicalWebGuard;
   const current = await currentAppConnectionReadAuthority(caller,
     { installation_id: record.scope.installation_id, target_key: record.scope.target_key }, guard);
   if ((registry.protocol(current.scope,current.profile)==='v2')!==(input.schema_version==='deft.app_connection_reattach_runtime.v2')

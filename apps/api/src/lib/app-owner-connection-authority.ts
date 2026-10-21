@@ -47,9 +47,9 @@ export async function loadOwnerConnectionAdmission(tx: AppRunTransaction, orgId:
   if (!row || row.state !== 'active' || row.revoked_at || row.app_installation_id !== reviewed.installation.id) throw ownerConnectionDenied();
   const snapshot = OwnerConnectionAdmissionSnapshotSchema.parse(row.snapshot);
   const policy = reviewed.manifest.owner_connections?.find(item => item.key === row.policy_key);
-  const profile = policy ? await resolveOwnerConnectionProfile(orgId, reviewed.installation.id, policy, row.operator_user_id) : undefined;
+  const profile = policy ? await resolveOwnerConnectionProfile(orgId, reviewed.installation.id, policy, row.operator_user_id, tx) : undefined;
   if (profile ? snapshot.connection_profile_digest !== connectionProfileDigest(profile)
-    || snapshot.connection_transport_digest !== await ownerConnectionTransportDigest(orgId, reviewed.installation.id, profile)
+    || snapshot.connection_transport_digest !== await ownerConnectionTransportDigest(orgId, reviewed.installation.id, profile, tx)
     || digestAppGrantValue(snapshot.connection_profile) !== digestAppGrantValue(profile)
     : snapshot.connection_profile !== undefined || snapshot.connection_profile_digest !== undefined) throw ownerConnectionDenied();
   if (!policy || digestAppGrantValue(snapshot) !== row.review_digest || snapshot.org_id !== orgId

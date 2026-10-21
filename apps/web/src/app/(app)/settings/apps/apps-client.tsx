@@ -6,6 +6,7 @@ import { AppWindow, Check, Copy, FileUp, KeyRound, Loader2, Power, ShieldCheck, 
 import { PageHeader } from '@/components/page-header';
 import { EmptyState } from '@/components/empty-state';
 import { AttachmentAppUpgrade } from '@/components/apps/attachment-app-upgrade';
+import { InstallationUpgradeTrust } from '@/components/apps/installation-upgrade-trust';
 import { attachmentUpgradeInspectionTarget,attachmentUpgradeStageRequest,parseAttachmentUpgradeStaged,type AttachmentUpgradeTarget } from '@/lib/app-attachment-upgrade';
 import { ConnectedAppManagement } from '@/components/apps/connected-app-management';
 import { ResourceAppReview } from '@/components/apps/resource-app-review';
@@ -161,6 +162,7 @@ export function AppsClient({ selectedId }: { selectedId?: string } = {}) {
           : selectedApp ? <>
             <Link href="/settings/apps" className="deft-pill min-h-11">← All Apps</Link>
             <AppCard key={selectedApp.id} app={selectedApp} canManage={canManage} busy={busy === selectedApp.id} onActivate={() => void activate(selectedApp)} onEnable={() => void enable(selectedApp)} onDisable={() => void disable(selectedApp)} onChooseUpgrade={() => choosePackage(selectedApp)} attachmentUpgrade={attachmentUpgrade?.installation_id===selectedApp.id?attachmentUpgrade.target:undefined} />
+            {canManage && ['3', '4', '5', '6', '7'].includes(selectedApp.manifest.schema_version) && <InstallationUpgradeTrust key={selectedApp.id} installationId={selectedApp.id} />}
             {selectedApp.manifest.schema_version === '6' && <PublicCancellationOwnerPanel installationId={selectedApp.id} />}
           </> : <section aria-label="Installed Apps" className="space-y-3">
             <label className="block text-xs font-medium">

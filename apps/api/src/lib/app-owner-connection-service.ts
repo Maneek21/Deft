@@ -130,7 +130,7 @@ export class AppOwnerConnectionService {
     if (!policy || !descriptor || version.id !== input.expected_app_version_id || version.package_digest !== input.expected_package_digest
       || grant.snapshot_digest !== input.expected_grant_snapshot_digest || installation.lifecycle_epoch !== input.expected_lifecycle_epoch
       || installation.grant_epoch !== input.expected_grant_epoch) throw stale();
-    const connectionProfile = await resolveOwnerConnectionProfile(actor.org_id, installation.id, policy, input.operator_user_id);
+    const connectionProfile = await resolveOwnerConnectionProfile(actor.org_id, installation.id, policy, input.operator_user_id, tx);
     const actions = runtimeActionDescriptors(manifest).filter(action => policy.action_keys.includes(action.action_key))
       .map(action => ({ action_key: action.action_key, contract_digest: action.contract_digest }))
       .sort((a,b) => a.action_key < b.action_key ? -1 : a.action_key > b.action_key ? 1 : 0);
@@ -140,7 +140,7 @@ export class AppOwnerConnectionService {
       grant_epoch: installation.grant_epoch, operator_user_id: input.operator_user_id, policy, policy_digest: digestAppGrantValue(policy),
       resource_descriptor_digest: await digestResourceSyncDescriptorV2(descriptor), actions, limits: input.limits,
       ...(connectionProfile ? { connection_profile: connectionProfile, connection_profile_digest: connectionProfileDigest(connectionProfile),
-        connection_transport_digest: await ownerConnectionTransportDigest(actor.org_id, installation.id, connectionProfile) } : {}) });
+        connection_transport_digest: await ownerConnectionTransportDigest(actor.org_id, installation.id, connectionProfile, tx) } : {}) });
     return { snapshot, review_digest: digestAppGrantValue(snapshot) };
   }
   async reviewAdmission(actor: ModuleActor, raw: unknown, guard: WebAuthorityGuard) {

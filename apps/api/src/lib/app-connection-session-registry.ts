@@ -17,6 +17,7 @@ import { AppConnectionProfileSchema, AppConnectionRuntimeRequestSchema, AppConne
   canonicalAppConnectionProfileJson, type AppConnectionProfile, type AppConnectionSessionScope,
   type AppConnectionRegisteredRuntime, type OwnerConnectionPolicyDeclaration } from '@deft/app-kit';
 import { AppError } from './app-errors.js';
+import type { AppRunTransaction } from './app-run-repository.js';
 import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit';
 
 const unavailable = () => new AppError('Reviewed connection runtime unavailable', 'APP_CONNECTION_PROFILE_UNAVAILABLE', 503);
@@ -37,7 +38,7 @@ type Entry = z.infer<typeof AppConnectionSessionRegistryConfigSchema>['entries']
 export function connectionProfileDigest(profile: AppConnectionProfile) {
   return `sha256:${createHash('sha256').update(canonicalAppConnectionProfileJson(profile)).digest('hex')}`;
 }
-function transportDigest(entry: Entry) {
+export function connectionTransportEntryDigest(entry: Entry) {
   return `sha256:${createHash('sha256').update(JSON.stringify({ endpoint: entry.endpoint,
     runtime_auth_token_sha256: createHash('sha256').update(entry.runtime_auth_token).digest('hex'),
     authority_token_sha256: entry.authority_token_sha256 })).digest('hex')}`;
@@ -46,15 +47,19 @@ function transportDigest(entry: Entry) {
 /** Data-only deployment review. No author URL, module loader or provider key. */
 export class AppConnectionSessionRegistry {
   private readonly entries: readonly Entry[];
-  constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch) {
+  constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch, trustedSuccessors: readonly Entry[] = []) {
     const parsed = AppConnectionSessionRegistryConfigSchema.parse(raw);
+    // Successors are internal, independently validated audit proofs; public config keeps its original bound.
+    if (trustedSuccessors.length > 256) throw unavailable();
+    const entrySchema = AppConnectionSessionRegistryConfigSchema.shape.entries.element;
+    parsed.entries.push(...trustedSuccessors.map(entry => entrySchema.parse(entry)));
     const identities = parsed.entries.map(entry => `${entry.org_id}:${entry.runtime_registration_id}:${entry.runtime_epoch}`);
     if (new Set(identities).size !== identities.length) throw unavailable();
     const reviews = new Map<string, string>();
     for (const entry of parsed.entries) {
       const key = JSON.stringify([entry.org_id, entry.installation_id, entry.profile.key, entry.profile.operator_user_id,
         entry.profile.resource_key, entry.profile.runtime_requirement_key, entry.profile.action_keys]);
-      const reviewed = `${connectionProfileDigest(entry.profile)}:${transportDigest(entry)}:${entry.connection_protocol??'v1'}`;
+      const reviewed = `${connectionProfileDigest(entry.profile)}:${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`;
       if (reviews.has(key) && reviews.get(key) !== reviewed) throw unavailable();
       reviews.set(key, reviewed);
     }
@@ -65,7 +70,7 @@ export class AppConnectionSessionRegistry {
       && entry.profile.key === policy.provider_profile_key && (!operatorId || entry.profile.operator_user_id === operatorId)
       && entry.profile.resource_key === policy.resource_key && entry.profile.runtime_requirement_key === policy.runtime_requirement_key
       && JSON.stringify(entry.profile.action_keys) === JSON.stringify(policy.action_keys));
-    if (!entries.length || new Set(entries.map(entry => `${connectionProfileDigest(entry.profile)}:${transportDigest(entry)}:${entry.connection_protocol??'v1'}`)).size !== 1) throw unavailable();
+    if (!entries.length || new Set(entries.map(entry => `${connectionProfileDigest(entry.profile)}:${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`)).size !== 1) throw unavailable();
     const profile = entries[0]!.profile;
     if (profile.resource_key !== policy.resource_key || profile.runtime_requirement_key !== policy.runtime_requirement_key
       || JSON.stringify(profile.action_keys) !== JSON.stringify(policy.action_keys)) throw unavailable();
@@ -74,7 +79,7 @@ export class AppConnectionSessionRegistry {
   transportDigest(orgId: string, installationId: string, profile: AppConnectionProfile) {
     const entries = this.entries.filter(entry => entry.org_id === orgId && entry.installation_id === installationId
       && connectionProfileDigest(entry.profile) === connectionProfileDigest(profile));
-    const digests = new Set(entries.map(transportDigest));
+    const digests = new Set(entries.map(connectionTransportEntryDigest));
     if (digests.size !== 1) throw unavailable();
     return digests.values().next().value!;
   }
@@ -98,7 +103,7 @@ export class AppConnectionSessionRegistry {
   reviewedProtocol(orgId:string,installationId:string,profile:AppConnectionProfile):'v1'|'v2'|'credential_form.v1'{
     const entries=this.entries.filter(entry=>entry.org_id===orgId&&entry.installation_id===installationId
       &&connectionProfileDigest(entry.profile)===connectionProfileDigest(profile));
-    const reviews=new Set(entries.map(entry=>`${transportDigest(entry)}:${entry.connection_protocol??'v1'}`));
+    const reviews=new Set(entries.map(entry=>`${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`));
     if(reviews.size!==1)throw unavailable();return entries[0]!.connection_protocol??'v1';
   }
   assertReady(scope:AppConnectionSessionScope,profile:AppConnectionProfile){
@@ -248,16 +253,21 @@ export async function readBoundedConnectionJson(stream: ReadableStream<Uint8Arra
   finally { signal?.removeEventListener('abort', cancel); reader.releaseLock(); }
 }
 
-export async function loadAppConnectionSessionRegistry(path: string | undefined) {
+/** Only an explicitly supplied authority transaction is reused. Callers without
+ * one retain an independent committed-state proof read. */
+export async function loadAppConnectionSessionRegistry(path: string | undefined, transaction?: AppRunTransaction) {
   if (!path) return new AppConnectionSessionRegistry({ schema_version: 'deft.app_connection_http_registrations.v1', entries: [] });
   try {
     if (!isAbsolute(path)) throw unavailable();
     const stat = await lstat(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 131072
       || process.platform !== 'win32' && (stat.mode & 0o077) !== 0) throw unavailable();
-    return new AppConnectionSessionRegistry(JSON.parse(await readFile(path, 'utf8')));
+    const config = AppConnectionSessionRegistryConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+    const { trustedUpgradeRegistryEntries } = await import('./app-upgrade-trust-registry.js');
+    const successors = await trustedUpgradeRegistryEntries(config.entries, transaction).catch(() => []);
+    return new AppConnectionSessionRegistry(config, fetch, successors);
   } catch { throw unavailable(); }
 }
 // Reread deployment review on each authority check; replacement/removal revokes
 // access without waiting for an API restart. Credentials never enter responses.
-export const getAppConnectionSessionRegistry = () => loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG);
+export const getAppConnectionSessionRegistry = (transaction?: AppRunTransaction) => loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG, transaction);

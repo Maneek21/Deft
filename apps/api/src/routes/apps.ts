@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { APP_LIMITS, AppDigestSchema } from '@deft/app-kit';
 import type { AuthUser } from '../middleware/auth.js';
@@ -41,6 +42,7 @@ import {
 import { AppRunError } from '../lib/app-run-errors.js';
 import { appHttpFailure } from './app-http-errors.js';
 import { appNativeRoutes } from './app-native.js';
+import { installationUpgradeTrust, UpgradeTrustUpdateSchema } from '../lib/app-upgrade-trust-policy.js';
 
 import { appAttachmentRoutes } from './app-attachments.js';
 export const appRoutes = new Hono();
@@ -101,6 +103,23 @@ function managerFromContext(c: Context) {
     throw new Error('APP_MANAGER_REQUIRED');
   }
   return actor;
+}
+
+for (const method of ['get', 'put'] as const) {
+  appRoutes[method]('/:installationId/upgrade-trust', bodyLimit({ maxSize: 1024 }), async c => {
+    c.header('Cache-Control', 'no-store');
+    try {
+      const user = c.get('user') as AuthUser;
+      if (!user?.sid) throw new ResourceSyncWebAuthenticationError('Administrator web session required');
+      const { actor, guard } = await resourceSyncWebAuthority(c.req.header('authorization'),
+        { org_id: user.org_id, user_id: user.id, sid: user.sid });
+      const change = method === 'put' ? UpgradeTrustUpdateSchema.parse(await c.req.json()) : undefined;
+      return c.json(await installationUpgradeTrust(actor, IdSchema.parse(c.req.param('installationId')), guard, change));
+    } catch (error) {
+      if (error instanceof SyntaxError) return c.json({ error: 'Invalid upgrade trust request', code: 'VALIDATION_ERROR' }, 400);
+      return failure(c, error);
+    }
+  });
 }
 
 async function boundedPackageBody(c: Context): Promise<string> {
