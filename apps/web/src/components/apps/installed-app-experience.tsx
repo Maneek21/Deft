@@ -74,6 +74,9 @@ import {createRecordIntake} from '@/lib/app-experience-record-intake';
 import type {ExperienceMailtoSuggestion} from '@/lib/app-experience-mailto';
 const root = '/api/app-experiences';
 const livePath = (id: string) => `${root}/sessions/${encodeURIComponent(id)}/live`;
+const byteLimit = (bytes: number) => bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : bytes >= 1024 ? `${+(bytes / 1024).toFixed(1)} KB` : `${bytes} bytes`;
+const recordStoreLimit = (store: Readonly<{ max_record_bytes: number; max_files: number; max_total_file_bytes: number }>) =>
+  `Up to ${byteLimit(store.max_record_bytes)} per record; ${store.max_files < 1 ? 'no files' : `up to ${store.max_files} ${store.max_files === 1 ? 'file' : 'files'} (${byteLimit(store.max_total_file_bytes)} total)`}.`;
 // A known session belongs to this page even before its Worker starts. Keep the
 // bounded, bodyless retirement request alive when the document is unloading.
 const retireSession = (id: string) => api.fetch(`${root}/sessions/${encodeURIComponent(id)}`, {
@@ -1157,10 +1160,11 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
     return () => { clear(); document.removeEventListener('visibilitychange', hidden); removeEventListener('pagehide', clear); };
   }, []);
 
-  const privateAccessReview = session && !error && (session.bundle.resource_keys.length > 0 || !!session.bundle.state_keys?.length || !!session.bundle.record_store_keys?.length) && !exposure ? <section aria-label="Experience private access" className="mx-auto w-full max-w-3xl shrink-0 space-y-4 overflow-y-auto px-5 py-6 text-sm" style={{ maxHeight: 'calc(100% - 100px)' }}>
+  const privateAccessReview = session && !error && (session.bundle.resource_keys.length > 0 || !!session.bundle.state_keys?.length || !!session.bundle.record_store_keys?.length) && !exposure ? <section aria-label="Experience private access" className="mx-auto w-full max-w-3xl shrink-0 space-y-4 overflow-y-auto px-5 pt-6 text-sm" style={{ maxHeight: 'calc(100% - 100px)' }}>
       {review ? <><h2 className="text-lg font-semibold">Allow private access?</h2>
           <p><span className="font-medium">{review.snapshot.app_name}</span> can use the access listed below until you revoke it or its permissions change. Technical sessions refresh automatically while you are signed in.</p>
           <p>This permission does not authorize autonomous actions. Actions requested by agents follow their separate approval policy.</p>
+          <p>Creating or editing app-owned records needs a separate review, and any action that uses a saved record needs its own review of that exact record.</p>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2"><div><dt className="text-xs text-muted-foreground">App</dt><dd>{review.snapshot.app_name} {review.snapshot.app_version}</dd></div>
             <div><dt className="text-xs text-muted-foreground">Owner</dt><dd>{review.snapshot.owner_label}</dd></div></dl>
           {review.snapshot.resources.map(resource => <div key={resource.resource_key} className="min-w-0 space-y-2 border-t py-3" style={{ borderColor: 'var(--ghost-border)' }}>
@@ -1169,9 +1173,9 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
             <details><summary className="min-h-11 cursor-pointer py-3 text-xs">Review {resource.allowed_fields.length} fields and read limits</summary>
               <div className="space-y-2 pb-2 text-xs" style={{ color: 'var(--on-surface-variant)' }}>
                 <p>Record type: {resource.resource_type}</p><p className="break-words">Permitted fields: {resource.allowed_fields.join(', ')}.</p>
-            {resource.content_policy?.document && <p>Read current document content, up to {resource.content_policy.document.max_characters.toLocaleString()} characters. Additional reviewed fields: {Object.keys(resource.content_policy.document.metadata_schema?.properties ?? {}).join(', ') || 'None'}. {resource.content_policy.document.formats?.includes('html')?'Message formatting is sanitized. Active content is blocked; external images are blocked by default and load only when you choose.':'Reviewed document text is shown as plain text.'}</p>}
-                {resource.content_policy?.source && <p>Read and download original message files, up to {resource.content_policy.source.max_bytes.toLocaleString()} bytes each, from this account. Deft can show sanitized formatting and embedded images from these files. External images load only when you choose.</p>}
-            {resource.content_policy?.triage_options && <p>Read names of up to {resource.content_policy.triage_options.max_options} folders or labels for mailbox actions.</p>}
+            {resource.content_policy?.document && <p>Read current document content, up to {resource.content_policy.document.max_characters.toLocaleString()} characters. Additional reviewed fields: {Object.keys(resource.content_policy.document.metadata_schema?.properties ?? {}).join(', ') || 'None'}. {resource.content_policy.document.formats?.includes('html')?'Formatting is sanitized. Active content is blocked; external images are blocked by default and load only when you choose.':'Reviewed document text is shown as plain text.'}</p>}
+                {resource.content_policy?.source && <p>Read and download original source files, up to {byteLimit(resource.content_policy.source.max_bytes)} each, from this account. Deft can show sanitized formatting and embedded images from these files. External images load only when you choose.</p>}
+            {resource.content_policy?.triage_options && <p>Read names of up to {resource.content_policy.triage_options.max_options} organizing destinations used by app actions.</p>}
             {!!resource.content_policy?.search_filters?.length && <p>Search this account using: {resource.content_policy.search_filters.map(field=>field.replaceAll('_',' ')).join(', ')}.</p>}
             {resource.allowed_operations.includes('search') && <p>Literal search examines the complete saved approved fields within the app’s reviewed limits, with at most 240 characters per matching excerpt.</p>}
                 <p>At most 10 {resource.allowed_operations.includes('search') ? 'summaries or search matches' : 'summaries'} per page; 32 scalar fields; 4096 characters per string; 60 KiB per response.</p>
@@ -1183,18 +1187,20 @@ export function InstalledAppExperience({ installationId, experienceKey }: {
               {state.files && <p>Files: up to {state.files.max_files_per_record} per record; {state.files.max_file_bytes.toLocaleString()} bytes each; {state.files.max_total_bytes_per_record.toLocaleString()} bytes per record. Types: {state.files.allowed_media_types.join(', ')}. Files cannot outlive their saved record.</p>}
               {state.action_payloads?.map(payload => <p key={payload.action_key}>Captured payload for {payload.action_key}: {payload.max_payload_bytes.toLocaleString()} bytes per action. Current action authority and confirmation remain required.</p>)}
             </div></details></div>)}
-          {review.snapshot.record_stores?.map(store=><div key={store.key} className="space-y-2 border-t py-3" style={{borderColor:'var(--ghost-border)'}}><p className="font-medium">Use app-owned {store.key.replaceAll('_',' ')} records</p>
-            <p>The connected app runtime stores these records. A separate human review enables creating or editing them for this account. Sending requires a separate review of the exact saved message.</p>
-            <p className="text-xs">Up to {store.max_record_bytes.toLocaleString()} bytes per complete record; {store.max_files} files; {store.max_total_file_bytes.toLocaleString()} file bytes per record.</p>
-            {store.resource_content&&<p className="text-xs">Current source presentation up to {store.resource_content.max_presentation_bytes.toLocaleString()} bytes; original files up to {store.resource_content.max_source_bytes.toLocaleString()} bytes. Formatting is sanitized and external images load only with your choice.</p>}</div>)}
+          {review.snapshot.record_stores?.map(store=><div key={store.key} className="space-y-2 border-t py-3" style={{borderColor:'var(--ghost-border)'}}><p className="font-medium">Use saved {store.key.replaceAll('_',' ')}</p>
+            <p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Stored by the connected app runtime. {recordStoreLimit(store)}</p>
+            {store.resource_content&&<p className="text-xs" style={{ color: 'var(--on-surface-variant)' }}>Source previews up to {byteLimit(store.resource_content.max_presentation_bytes)}; original files up to {byteLimit(store.resource_content.max_source_bytes)}. Formatting is sanitized and external images load only with your choice.</p>}</div>)}
           <details className="border-t pt-3" style={{ borderColor: 'var(--ghost-border)' }}><summary className="min-h-11 cursor-pointer py-3 text-xs">Verified app and access details</summary>
             <div className="space-y-2 pb-3 text-xs"><p>Screen: {review.snapshot.experience_label}</p><p className="break-all font-mono">{review.snapshot.artifact_digest}</p>
               <p>Access is limited to this verified app version and the listed fields. Provider credentials and internal provider metadata are excluded. Changed permissions require a new review.</p></div></details>
-          <div className="flex flex-wrap gap-2"><button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => void acceptExposure()}>Allow listed private access</button>
-            <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => { reviewGeneration.current += 1; setReview(null); }}>Cancel private access review</button></div></>
-          : <><p>Grant this app access to the exact private fields and saved data you choose. You can revoke access at any time.</p>
-            <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy || !!error} onClick={() => void prepareExposure()}>Review private access</button></>}
-      {exposureBusy && <p role="status">Checking private access…</p>}
+          <div className="sticky bottom-0 -mx-5 flex flex-wrap items-center gap-2 border-t px-5 py-3" style={{ borderColor: 'var(--ghost-border)', background: 'var(--surface)' }}>
+            <button className="deft-pill min-h-11 font-semibold" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => void acceptExposure()}>Allow listed private access</button>
+            <button className="deft-pill min-h-11" style={{ minHeight: 44 }} disabled={exposureBusy} onClick={() => { reviewGeneration.current += 1; setReview(null); }}>Cancel private access review</button>
+            {exposureBusy && <p role="status" className="text-xs">Checking private access…</p>}</div></>
+          : <div className="space-y-3 pb-6"><h2 className="text-lg font-semibold">Private access needed</h2>
+            <p>This app needs your approval before it can show your saved data. Review exactly which fields and records it can use. You can revoke access at any time.</p>
+            <button className="deft-pill min-h-11 font-semibold" style={{ minHeight: 44 }} disabled={exposureBusy || !!error} onClick={() => void prepareExposure()}>Review private access</button>
+            {exposureBusy && <p role="status">Checking private access…</p>}</div>}
     </section> : null;
 
   return <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
