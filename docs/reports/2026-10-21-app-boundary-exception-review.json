@@ -1,7 +1,7 @@
 {
   "schema": "deft.app_boundary_exception_review.v1",
   "base_gate_commit": "38bc405eb922ed6e2feb4e9377ffe420c52fbe73",
-  "integration_kit_commit": "8a19a5630997dfdb2a859772fdeb06a042550f9a",
+  "integration_kit_commit": "b956d9bad093b6b705b88980ff68d01806beff7a",
   "before": 1269,
   "retained_exactly": 1005,
   "removed": 264,
