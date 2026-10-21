@@ -19,6 +19,7 @@ import { currentConsentContinuationSourceLocators } from './app-connection-curre
 import { currentAppConnectionReadAuthority } from './app-connection-session-authority.js';
 import { appConnectionUpgradeSourceIsAvailable } from './app-connection-upgrade-fence.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
+import { REATTACH_PHASE_MS } from './app-connection-reattachment-deadline.js';
 
 export type UpgradeTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const denied = () => new AppError('Automatic upgrade continuity requires review', 'APP_REVIEW_REQUIRED', 409);
@@ -174,7 +175,7 @@ export function continuityGuard(proof: UpgradeContinuityProof): WebAuthorityGuar
   return Object.assign(async (tx: UpgradeTx) => { await assertContinuityProof(tx, proof); },
     { current_web_session_expires_at: () => new Date(proof.issuance_expires_at) });
 }
-export async function retainedContinuityGuard(orgId: string, sessionId: string): Promise<WebAuthorityGuard | null> {
+export async function retainedContinuityGuard(orgId: string, sessionId: string, readOnlyStatus = false): Promise<WebAuthorityGuard | null> {
   return db.transaction(async tx => {
     const rows = await tx.select({ metadata: auditLog.metadata }).from(auditLog).where(and(eq(auditLog.org_id, orgId), eq(auditLog.action, UPGRADE_PROOF_ACTION),
       eq(auditLog.entity_id, sessionId), eq(auditLog.actor_type, 'system'))).limit(2);
@@ -182,6 +183,19 @@ export async function retainedContinuityGuard(orgId: string, sessionId: string):
     if (rows.length !== 1) throw denied();
     const proof = UpgradeContinuityProofSchema.parse(rows[0]!.metadata);
     if (proof.request_id !== sessionId || proof.org_id !== orgId) throw denied();
-    await assertContinuityProof(tx, proof); return continuityGuard(proof);
+    if (!readOnlyStatus) {
+      await assertContinuityProof(tx, proof); return continuityGuard(proof);
+    }
+    // A lost acknowledgement remains queryable after issuance expires. This is
+    // status authority only: the validated runtime operation cannot prepare or
+    // activate custody, and current trust, source approvals and roles still win.
+    await assertContinuityProof(tx, proof, true, false);
+    const deadline = Math.min(Date.now() + REATTACH_PHASE_MS,
+      appConsentDeadline(proof.source_scope.consent_expires_at, proof.source_scope.consent_lifetime));
+    return Object.assign(async (currentTx: UpgradeTx) => {
+      if (Date.now() >= deadline) throw denied();
+      await assertContinuityProof(currentTx, proof, true, false);
+      if (Date.now() >= deadline) throw denied();
+    }, { current_web_session_expires_at: () => new Date(deadline) });
   });
 }

@@ -37,7 +37,8 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
   app.route('/api/app-resource-observations', observations.appResourceObservationRoutes);
   app.route('/api/app-experiences', (await import('../src/routes/app-experiences.js')).appExperienceRoutes);
   const entries: any[] = [], installed: any[] = [], dispatches: any[] = [], authorityChecks: string[] = [];
-  let failDelivery = false;
+  let failDelivery = false,losePrepareReply = false;
+  const preparedReplies=new Map<string,any>();
   const digest = (value: unknown) => 'sha256:' + createHash('sha256').update(kit.canonicalConnectionReattachmentJson(value)).digest('hex');
   const generations = new Map<string, number>();
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
@@ -75,8 +76,13 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     const verdict = await checked.json() as any;
     assert.equal(checked.status, 200, JSON.stringify(verdict)); authorityChecks.push(path);
     const generation = generations.get(account.account_ref) ?? 1;
-    if (body.operation === 'prepare') return reply({ schema_version: body.schema_version, session_id: body.session_id,
-      state: 'eligible', account, custody_generation: generation, custody_digest: 'sha256:' + 'c'.repeat(64) });
+    if (body.operation === 'prepare') {
+      const eligible={schema_version:body.schema_version,session_id:body.session_id,state:'eligible',account,custody_generation:generation,custody_digest:'sha256:'+'c'.repeat(64)};
+      if(reattach){preparedReplies.set(body.session_id,eligible);if(losePrepareReply){losePrepareReply=false;throw Error('synthetic lost prepare acknowledgement');}}
+      return reply(eligible);
+    }
+    if(reattach&&body.operation==='status'&&preparedReplies.has(body.session_id))return reply(preparedReplies.get(body.session_id));
+    if(reattach&&body.operation==='activate')preparedReplies.delete(body.session_id);
     const runtime_session_ref = randomUUID(), custody_generation = reattach ? generation + 1 : generation;
     const result: any = { schema_version: body.schema_version, session_id: body.session_id, state: 'connected', account, runtime_session_ref, custody_generation, receipt_digest: 'sha256:' + '0'.repeat(64) };
     if (reattach) {
@@ -277,14 +283,22 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     const source = await open(), consent = await call(source + '/access/review', f.ownerWeb.accessToken, {});
     await call(source + '/access/accept', f.ownerWeb.accessToken,
       { review_token: consent.review_token, review_digest: consent.review_digest, accept_exposure: true });
+    // A competing read-only acquisition can hit the documented bounded-lock
+    // response on a slow machine. Retry only that explicit retryable response;
+    // acceptance/revocation and every authorization failure remain single-shot.
+    const acquire=async(path:string)=>{for(let attempt=0;attempt<6;attempt++){
+      const response=await app.request(path+'/access/acquire',{method:'POST',headers:{authorization:'Bearer '+f.ownerWeb.accessToken,'content-type':'application/json'},body:'{}'});
+      const body=await response.json() as any;if(response.ok)return body;
+      assert.ok(response.status===503&&body.code==='APP_EXPERIENCE_BUSY'&&body.retryable===true,JSON.stringify(body));
+      await new Promise(done=>setTimeout(done,25));
+    }throw Error('private access remained busy after bounded retries');};
     let current = source;
     for (const number of [1, 2]) {
       const next = await upgrade(f, number);
       assert.equal(next.result.upgrade_continuity[0].state, 'installed');
       current = await open();
       const other = await open();
-      const [acquired, concurrent] = await Promise.all([call(current + '/access/acquire', f.ownerWeb.accessToken, {}),
-        call(other + '/access/acquire', f.ownerWeb.accessToken, {})]);
+      const [acquired, concurrent] = await Promise.all([acquire(current),acquire(other)]);
       assert.equal(concurrent.grant_status, 'active');assert.equal(concurrent.grant.id, acquired.grant.id, 'concurrent tabs reuse one carried permission');
       assert.equal(acquired.grant_status, 'active', 'the existing exact private permission follows the completed trusted upgrade');
       const [grant] = await db.select().from(s.appExperienceConsentGrants).where(eq(s.appExperienceConsentGrants.id, acquired.grant.id));
@@ -292,8 +306,8 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     }
     const racing = await open();
     await Promise.all([call(current + '/access', f.ownerWeb.accessToken, undefined, 'DELETE'),
-      call(racing + '/access/acquire', f.ownerWeb.accessToken, {})]);
-    const revoked = await call(await open() + '/access/acquire', f.ownerWeb.accessToken, {});
+      acquire(racing)]);
+    const revoked = await acquire(await open());
     assert.equal(revoked.grant_status, 'review_required', 'revocation must never become automatic re-approval');
     const issued = await db.select().from(s.auditLog).where(and(eq(s.auditLog.org_id, f.org), eq(s.auditLog.action, 'app.upgrade_continuity.experience_consent_issued')));
     assert.equal(issued.length, 2, 'two upgrades issue two permissions; concurrent tabs and revocation do not issue more');
@@ -309,6 +323,24 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
         eq(s.appDataConsents.connection_session_id, next.result.upgrade_continuity[0].session_id), eq(s.appDataConsents.state, 'active')));
       assert.equal(consents.length, 2); assert.ok(consents.every(row => row.expires_at === null));
     }
+  });
+  await t.test('expired trusted issuance permits current read-only status but cannot activate or outlive revoked trust', async t => {
+    const f=await fixture();losePrepareReply=true;const next=await upgrade(f,1),sessionId=next.result.upgrade_continuity[0].session_id;
+    assert.equal(next.result.upgrade_continuity[0].state,'recovery_required');
+    const [pending]=await db.select().from(s.appConnectionSessions).where(eq(s.appConnectionSessions.session_id,sessionId));
+    assert.equal((pending!.record as any).callback_consumed,false);
+    const realNow=Date.now();t.mock.method(Date,'now',()=>realNow+360000);
+    const status=await call('/api/app-connection-sessions/reattach/status',f.ownerWeb.accessToken,{session_id:sessionId});
+    assert.equal(status.state,'not_connected','read-only original status closes the expired, unactivated prepare');
+    const [closed]=await db.select().from(s.appConnectionSessions).where(eq(s.appConnectionSessions.session_id,sessionId));
+    assert.equal((closed!.record as any).callback_consumed,false);assert.equal((closed!.record as any).runtime_session_ref,null);
+    const {retainedContinuityGuard}=await import('../src/lib/app-upgrade-trust-continuity.js');
+    const readOnly=await retainedContinuityGuard(f.org,sessionId,true);
+    assert.ok(readOnly&&readOnly.current_web_session_expires_at().getTime()>Date.now()&&readOnly.current_web_session_expires_at().getTime()<=Date.now()+120000);
+    await assert.rejects(retainedContinuityGuard(f.org,sessionId),'expired issuance never regains activation authority');
+    assert.equal(installed.filter(item=>item.scope.org_id===f.org).length,0,'status issues no channel or permission');
+    await call(`/api/apps/${f.installation.id}/upgrade-trust`,f.adminWeb.accessToken,{trusted:false,expected_revision:1},'PUT');
+    await assert.rejects(retainedContinuityGuard(f.org,sessionId,true),'current trust revocation still denies status recovery');
   });
   await t.test('untrusted upgrade retains existing manual recovery behavior', async () => {
     const f = await fixture(false), before = dispatches.length, next = await upgrade(f, 1);
