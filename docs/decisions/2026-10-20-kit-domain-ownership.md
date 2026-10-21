@@ -67,7 +67,7 @@ budget corpus and runs it in its CI alongside app/Runtime tests.
 
 Rollback restores previous app and Kit tarballs, without relaxing Host validation
 or migrating retained data. alpha.42 is packed for certification only; publishing
-it and releasing Host 133 belong to the coordinated Host release job. The Email
+it and releasing Host 134 belong to the coordinated Host release job. The Email
 PR remains unmerged until instructed and must receive the release-flow tarball
 before approval to merge; a local certification candidate is not a publication.
 
@@ -81,7 +81,7 @@ identities; retaining production domain code in core would leave the ownership
 boundary unresolved. The additive alpha.42 entries preserve wire versions and
 rollback through prior App/Kit archives.
 
-Host133 must publish the real alpha.42 archive plus its source-commit, digest and
+Host134 must publish the real alpha.42 archive plus its source-commit, digest and
 integrity record. Email #12 stays blocked until it adopts those exact released
 bytes. Acceptance requires packed legacy consumer types, non-mail Worker/tool
 graphs, independent Host safety checks and full protected CI on this port.

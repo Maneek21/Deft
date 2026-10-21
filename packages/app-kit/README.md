@@ -30,7 +30,7 @@ Persistent permission does not make requests indefinite: continuation reviews la
 
 ## alpha.42 ownership and compatibility
 
-alpha.42 is prepared for the coordinated Host 133 release. Its clean public
+alpha.42 is prepared for the coordinated Host 134 release. Its clean public
 entry points separate generic contracts from historical author-tool compatibility:
 
 | Purpose | Entry point |
