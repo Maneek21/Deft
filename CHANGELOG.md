@@ -10,6 +10,25 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.131 candidate — publication pending
+
+Connect-once platform integration. Schema advances directly from128 to131; Author Kit remains the immutable alpha.41, and Runtime wire contracts remain unchanged.
+
+#### Changed
+
+- Queue a bounded durable successor after each incomplete resource-sync page, reusing ordinary current admission, cursor and attempt fences instead of waiting for the idle scanner (#399).
+- Offer one explicit until-revoked initial connection choice for the declared account, private-record and background metadata purposes; provider effects remain separate (#402).
+- Let an authenticated, scoped Runtime deployment reacquire fresh short sessions from its current reviewed until-revoked authority without a live browser or hand-copied token (#401).
+- Add default-off trust per installation for compatible automatic upgrades. Compare raw authority strictly, preserve finite deadlines and revocation, and deliver fresh version-bound custody and channels over the authenticated Runtime transport (#400).
+- Continue an already-approved exact private Experience permission through a completed trusted upgrade. Serialize acquisition, explicit acceptance and revocation across tabs; never recreate a revoked scope (#400).
+- Keep receipt-proven retained connection history out of current upgrade-source nomination, preserving the preview.130 renewal fix (#400).
+- Make the private-access review easier to read, with visible approval controls and clear storage limits (#389).
+
+#### Database
+
+- Apply only the final schema131 persistent-upgrade guard directly from the published schema128 function. Remove the unpublished intermediate130 replacement; preserve all historical migration bytes and the frozen128 manifest. Fresh bootstrap, exact lineage and no-op upgrade checks remain required.
+
+
 ### 0.3.0-preview.130 candidate — publication pending
 
 Restores account-permission renewal after a successful connection upgrade retains its historical source. Schema remains128, Author Kit remains alpha.41, and Runtime protocols are unchanged.
