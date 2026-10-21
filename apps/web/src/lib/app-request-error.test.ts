@@ -49,7 +49,7 @@ test('account-target deadlines and unstructured authentication failures give the
 test('expected Host store access denial stays with the feature while Runtime denials remain visible',async()=>{
  const notices:string[]=[];
  const optional=Response.json({error:'App access denied',code:'APP_ACCESS_DENIED'},{status:403});
- assert.equal(await reportAppRequestFailure(optional,()=>true,message=>notices.push(message)),optional);assert.deepEqual(notices,[]);
+ assert.equal(await reportAppRequestFailure(optional,()=>true,message=>notices.push(message)),optional);assert.equal(notices.length,0);
  assert.equal((await optional.json()).code,'APP_ACCESS_DENIED');
  const runtime=Response.json({error:'The app Runtime could not confirm current permission for this data.',code:'APP_RUNTIME_ACCESS_DENIED',
   details:{runtime_code:'EMAIL_DATA_AUTHORITY_DENIED'}},{status:403});
