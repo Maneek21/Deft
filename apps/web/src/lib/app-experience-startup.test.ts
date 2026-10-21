@@ -1,6 +1,35 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createExperienceStartup, experienceStartupStatus} from './app-experience-startup';
+import {createExperienceSuspension} from './app-experience-suspension';
+
+test('a hidden opening waits for current authority before spending its visible startup budget', async t => {
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const failures:string[]=[];let hidden=true,allowed=false,starts=0;
+  const startup=createExperienceStartup(phase=>failures.push(phase),{hidden:()=>hidden});
+  const suspension=createExperienceSuspension({current:()=>true,hidden:()=>hidden,live:async()=>allowed,
+    flush:()=>{},clear:()=>startup.pause(),restore:()=>{startup.resume();starts++;},end:()=>startup.dispose()});
+  startup.ready();
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(failures,[],'a background tab cannot fail before its Worker may start');
+  hidden=false;allowed=true;
+  assert.equal(await suspension.show(),true);assert.equal(starts,1);
+  startup.started();t.mock.timers.tick(29_999);assert.deepEqual(failures,[]);
+  startup.view();t.mock.timers.tick(60_000);assert.deepEqual(failures,[]);
+  suspension.dispose();startup.dispose();
+});
+
+test('visibility pauses retain one finite startup budget across repeated returns', t => {
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const failures:string[]=[];const startup=createExperienceStartup(phase=>failures.push(phase));
+  t.mock.timers.tick(12_000);startup.pause();startup.pause();
+  t.mock.timers.tick(60_000);assert.deepEqual(failures,[]);
+  startup.resume();startup.resume();t.mock.timers.tick(8_000);startup.pause();
+  t.mock.timers.tick(60_000);assert.deepEqual(failures,[]);
+  startup.ready();startup.resume();t.mock.timers.tick(9_999);assert.deepEqual(failures,[]);
+  t.mock.timers.tick(1);assert.deepEqual(failures,['worker_start']);
+  startup.resume();t.mock.timers.tick(60_000);assert.deepEqual(failures,['worker_start']);
+});
 
 test('startup deadline identifies the last acknowledged phase and never retries', t => {
   t.mock.timers.enable({apis:['setTimeout']});

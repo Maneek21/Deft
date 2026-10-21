@@ -1,4 +1,8 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import vm from 'node:vm';import ts from 'typescript';
+const errorsText=readFileSync(new URL('../../lib/app-request-error.ts',import.meta.url),'utf8');
+const errorsContext={exports:{},Response,TextDecoder,Uint8Array,Error,TypeError};
+vm.runInNewContext(ts.transpileModule(errorsText,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,errorsContext);
+const {AppRequestError,readAppRequestError,appRequestFailureMessage}=errorsContext.exports;
 const text=readFileSync(new URL('./runtime-app-setup.tsx',import.meta.url),'utf8'),tree=ts.createSourceFile('setup.tsx',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
 const targetWorkspace=tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='TargetWorkspace');
 const code=ts.transpileModule(targetWorkspace.getText(tree)+';globalThis.render=TargetWorkspace;',{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
@@ -12,4 +16,32 @@ test('normal owner target selection remounts review workspace and sequences cata
  nodes.find(n=>n.type==='select').props.onChange({target:{value:'two'}});nodes=render();const selected=nodes.find(n=>n.type===Workspace);assert.equal(selected.props.key,'two');assert.equal(selected.props.target.target_key,'fresh_mailbox');
  values[2]=true;nodes=render();assert.equal(nodes.some(n=>n.type===Workspace),false);
  values[2]=false;values[3]='Account targets unavailable';nodes=render();assert.equal(nodes.some(n=>n.type===Workspace),false);assert.ok(nodes.some(n=>n.props?.role==='alert'));
+});
+
+async function failedCatalog(request){
+ const values=[],effects=[];let index=0;
+ const ctx={globalThis:{},AbortController,Error,TypeError,setTimeout,clearTimeout,encodeURIComponent,AppRequestError,appRequestFailureMessage,
+  api:{getAccessToken:()=> 'same-session',fetch:request},
+  json:async response=>{if(!response.ok)throw await readAppRequestError(response,'Runtime setup is unavailable.');return response.json();},
+  parseRuntimeSetupTargets:()=>null,isSameWebSession:(before,after)=>before===after,
+  useState:initial=>{const i=index++;values[i]=initial;return [initial,value=>{values[i]=typeof value==='function'?value(values[i]):value;}];},
+  useEffect:effect=>effects.push(effect),React:{Fragment:'fragment',createElement:()=>null}};
+ vm.runInNewContext(code,ctx);ctx.globalThis.render({app:{id:'app',version_id:'version'},operatorId:'owner'});
+ const cleanup=effects[0]();
+ try{await new Promise(resolve=>setImmediate(resolve));return {error:values[3],loading:values[2],targets:values[0]};}finally{cleanup();}
+}
+
+test('account target alert retains the actual public Host failure reason',async()=>{
+ const reason='App access is busy. Please try again.';
+ const state=await failedCatalog(async()=>Response.json({error:reason,code:'APP_EXPERIENCE_BUSY',retryable:true},{status:503}));
+ assert.equal(state.error,reason+' (APP_EXPERIENCE_BUSY)');assert.equal(state.loading,false);assert.equal(state.targets.length,0);
+});
+
+test('account target alert distinguishes bounded timeout, network, and invalid catalog failures',async()=>{
+ const timeout=Object.assign(new Error('private timeout diagnostic'),{name:'AbortError'});
+ assert.match((await failedCatalog(async()=>{throw timeout;})).error,/timed out/i);
+ assert.match((await failedCatalog(async()=>{throw new TypeError('private transport diagnostic');})).error,/reach Deft/i);
+ assert.equal((await failedCatalog(async()=>Response.json({unexpected:true}))).error,'Account target list changed. Reload targets. (APP_TARGET_CATALOG_CHANGED)');
+ const long='Public Host reason. '+ 'a'.repeat(1000);
+ assert.equal((await failedCatalog(async()=>Response.json({error:long,code:'APP_STALE'},{status:409}))).error,'Runtime setup is unavailable. (APP_HTTP_409)');
 });

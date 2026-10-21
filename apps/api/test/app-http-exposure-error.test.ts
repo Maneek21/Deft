@@ -13,7 +13,7 @@ for (const reason of ['acquisition', 'deadline'] as const) {
     const response = await app.request('/prepare', { method: 'POST' });
     assert.equal(response.status, 503);
     assert.equal(response.headers.get('retry-after'), '1');
-    assert.deepEqual(await response.json(), { error: 'App access is busy. Please try again.', code: 'APP_EXPERIENCE_BUSY', retryable: true });
+    assert.deepEqual(await response.json(), { error: 'App access is busy. Please try again.', code: 'APP_EXPERIENCE_BUSY', retryable: true, details: { reason } });
   });
 }
 

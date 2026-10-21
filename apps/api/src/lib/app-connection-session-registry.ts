@@ -17,6 +17,7 @@ import { AppConnectionProfileSchema, AppConnectionRuntimeRequestSchema, AppConne
   canonicalAppConnectionProfileJson, type AppConnectionProfile, type AppConnectionSessionScope,
   type AppConnectionRegisteredRuntime, type OwnerConnectionPolicyDeclaration } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
+import { appRuntimeResponseError } from './app-runtime-response-error.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import {AppRecordChangeRuntimeRequestSchema,type AppRecordChangeRuntimeRequest,APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataRuntimeRequestSchema,AppDataResultSchema,AppDataBinaryMetadataSchema,frameAppData,parseAppDataFrame,type AppDataRuntimeRequest} from '@deft/app-kit/core';
 
@@ -141,7 +142,11 @@ export class AppConnectionSessionRegistry {
       const response=await this.fetcher(new URL('/v1/data',entry.endpoint),{method:'POST',redirect:'error',signal,
         headers:{Authorization:`Bearer ${entry.runtime_auth_token}`,'Content-Type':bytes===undefined?'application/json':APP_DATA_FRAME_MEDIA_TYPE,
           Accept:`application/json, ${APP_DATA_FRAME_MEDIA_TYPE}`},body:body as BodyInit});
-      if(!response.ok||response.redirected){void response.body?.cancel().catch(()=>undefined);throw unavailable();}
+      if(!response.ok||response.redirected){
+        const error=await appRuntimeResponseError(response,signal);
+        if(error.details?.runtime_code)console.warn('[app-runtime] data request denied',{code:error.code,runtime_code:error.details.runtime_code,status:error.status,operation:input.operation,request_id:input.request_id});
+        throw error;
+      }
       const type=response.headers.get('content-type')??'';
       if(/^application\/json(?:\s*;|$)/iu.test(type))return {result:AppDataResultSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(await readBoundedAppDataBytes(response.body,APP_DATA_LIMITS.result_json_bytes,signal))))};
       if(input.schema_version==='deft.app_data_runtime.v2'||type!==APP_DATA_FRAME_MEDIA_TYPE){void response.body?.cancel().catch(()=>undefined);throw unavailable();}

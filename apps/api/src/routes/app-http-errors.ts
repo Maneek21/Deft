@@ -34,7 +34,7 @@ export function appHttpFailure(
 ): Response {
   if (error instanceof ExperienceExposureBusyError) {
     c.header('Retry-After', '1');
-    return c.json({ error: error.message, code: error.code, retryable: error.retryable }, 503);
+    return c.json({ error: error.message, code: error.code, retryable: error.retryable, details: { reason: error.reason } }, 503);
   }
   if (error instanceof ExperienceExposureError) {
     return c.json({ error: error.message, code: error.code }, error.status);

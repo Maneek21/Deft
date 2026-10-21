@@ -105,10 +105,12 @@ jobs:
         run: >-
           pnpm --filter @deft/web exec tsx --test
           src/lib/app-experience-*.test.ts
+          src/lib/app-request-error.test.ts
           src/components/apps/integrations/source-nomination.test.ts
           src/lib/app-experience-bootstrap-browser.test.mjs
           src/lib/app-connection-reattachment.test.ts
           src/lib/app-runtime-setup.test.ts
+          src/components/apps/runtime-app-setup-selection.test.mjs
           src/lib/private-state-adoption.test.ts
           src/lib/action-batch-review.test.ts
           src/lib/app-navigation.test.ts

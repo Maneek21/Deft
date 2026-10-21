@@ -250,10 +250,13 @@ function assertLifecycleAccess(actor: ModuleActor): void {
  * Keep this as the first row lock taken by every human lifecycle mutation.
  * Role changes then serialize before installation and record locks instead of
  * leaving a demotion/disable TOCTOU window.
+ * Informational readers can explicitly use a shared lock: they retain the same
+ * revocation fence without serializing compatible current-authority readers.
  */
 export async function assertCurrentModuleManagerWithExecutor(
   executor: DbExecutor,
   actor: ModuleActor,
+  membershipLock: 'update' | 'share' = 'update',
 ): Promise<void> {
   assertLifecycleAccess(actor);
   if (actor.kind !== 'human') {
@@ -276,7 +279,7 @@ export async function assertCurrentModuleManagerWithExecutor(
       eq(orgMembers.user_id, actor.actor_id),
     ))
     .limit(1)
-    .for('update');
+    .for(membershipLock);
 
   if (
     !membership
