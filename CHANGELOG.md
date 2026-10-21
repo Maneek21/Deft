@@ -10,6 +10,13 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### 0.3.0-preview.133 candidate â€” publication pending
+
+- Allow the three retained-account review, activation and status UI requests150seconds of transport time for the bounded120-second server phase and its fresh surrounding checks. Ordinary requests retain35seconds. Server authorization, consent lifetimes and revocation checks remain unchanged.
+- Correct the live follow-up failure paired with the separately released Runtime socket-budget correction. Add a client regression that waits past35seconds across all three retained operations while ordinary context still aborts.
+
+Schema remains131, with no migrations or sealed Author Kit changes. Includes the intervening release roadmap documentation update.
+
 ### 0.3.0-preview.132 candidate — publication pending
 
 Corrects the live connect-once acceptance failure found after preview.131. Revalidating multiple declared purposes can exhaust a thirty-second reattachment phase even when every authority check succeeds.

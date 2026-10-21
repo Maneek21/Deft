@@ -161,3 +161,29 @@ test('ordinary status readback of exact closure receipt resolves an unstarted lo
  const requestId=f.calls[0].body.request_id;f.setAnswer(path=>{assert.ok(path.endsWith('/reattach/status'));return {schema_version:'deft.app_connection_unstarted_review_closed.v1',session_id:requestId,scope,state:'not_started',provider_dispatched:false};});
  const receipt=await f.flow.checkExisting('sender');assert.equal(receipt.schema_version,'deft.app_connection_unstarted_review_closed.v1');assert.equal(f.flow.existingPending('sender'),false);assert.equal(f.calls.length,2);
 });
+
+test('slow retained review, status and activation survive the ordinary client timeout; ordinary context does not',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ t.mock.method(AbortSignal,'timeout',(ms:number)=>{const controller=new AbortController();setTimeout(()=>controller.abort(new DOMException('test timeout','TimeoutError')),ms);return controller.signal;});
+ const f=fixture(true),original=f.ports.fetch;
+ let entered:()=>void=()=>{};
+ f.ports.fetch=async(path,init)=>{
+  entered();
+  await new Promise<void>((resolve,reject)=>{setTimeout(resolve,45000);init.signal!.addEventListener('abort',()=>reject(init.signal!.reason),{once:true});});
+  return original(path,init);
+ };
+ // An ordinary catalog read must still stop at35seconds.
+ const loading=f.flow.load(),rejected=assert.rejects(loading);t.mock.timers.tick(35001);await rejected;
+ f.ports.fetch=original;await f.flow.load();
+ const slow=async(operation:()=>Promise<unknown>)=>{
+  let ready!:()=>void;const started=new Promise<void>(resolve=>{ready=resolve;});entered=ready;
+  f.ports.fetch=async(path,init)=>{
+   entered();await new Promise<void>((resolve,reject)=>{setTimeout(resolve,45000);init.signal!.addEventListener('abort',()=>reject(init.signal!.reason),{once:true});});
+   return original(path,init);
+  };
+  const pending=operation();await started;t.mock.timers.tick(45000);return pending;
+ };
+ await slow(()=>f.flow.reviewExisting('sender'));
+ await slow(()=>f.flow.checkExisting('sender'));
+ assert.equal(resultState(await slow(()=>f.flow.activateExisting('sender')) as ExistingAccountResult),'connected');
+});

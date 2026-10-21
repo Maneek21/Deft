@@ -70,7 +70,11 @@ function readPending(ports:Ports):Pending|null{
 }
 const check=(ports:Ports)=>{validIdentity(ports.identity);if(!ports.current())throw Error('Account setup access ended.');};
 async function json(ports:Ports,path:string,init:RequestInit,maxBytes=65536){
- check(ports);const response=await ports.fetch(path,{...init,cache:'no-store',signal:AbortSignal.timeout(35_000)});check(ports);
+ // Retained phases may spend120seconds revalidating multiple purposes. Allow
+ // transport time for fresh surrounding checks; server permission deadlines
+ // remain binding. Ordinary requests keep their35-second transport limit.
+ const retained=init.method==='POST'&&/^\/api\/app-connection-sessions\/reattach\/(?:review|activate|status)$/.test(path);
+ check(ports);const response=await ports.fetch(path,{...init,cache:'no-store',signal:AbortSignal.timeout(retained?150_000:35_000)});check(ports);
  if(!response.body)fail();const reader=response.body.getReader();let size=0;const chunks:Uint8Array[]=[];
  try{for(;;){const next=await reader.read();check(ports);if(next.done)break;size+=next.value.length;if(size>maxBytes)fail();chunks.push(next.value);}
   const bytes=new Uint8Array(size);let n=0;for(const chunk of chunks){bytes.set(chunk,n);n+=chunk.length;}const value=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes)) as unknown;

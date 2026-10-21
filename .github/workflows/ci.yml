@@ -77,6 +77,7 @@ jobs:
           src/lib/app-experience-*.test.ts
           src/components/apps/integrations/source-nomination.test.ts
           src/lib/app-experience-bootstrap-browser.test.mjs
+          src/lib/app-connection-reattachment.test.ts
           src/lib/app-runtime-setup.test.ts
           src/lib/private-state-adoption.test.ts
           src/lib/action-batch-review.test.ts
