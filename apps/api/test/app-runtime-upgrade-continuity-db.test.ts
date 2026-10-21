@@ -35,6 +35,7 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
   const app = new Hono(); app.use('/api/apps/*', authMiddleware); app.route('/api/apps', appRoutes);
   app.route('/api/app-owner-connections', owner.appOwnerConnectionRoutes); app.route('/api/app-connection-sessions', connectionRoutes.appConnectionSessionRoutes);
   app.route('/api/app-resource-observations', observations.appResourceObservationRoutes);
+  app.route('/api/app-experiences', (await import('../src/routes/app-experiences.js')).appExperienceRoutes);
   const entries: any[] = [], installed: any[] = [], dispatches: any[] = [], authorityChecks: string[] = [];
   let failDelivery = false;
   const digest = (value: unknown) => 'sha256:' + createHash('sha256').update(kit.canonicalConnectionReattachmentJson(value)).digest('hex');
@@ -270,6 +271,30 @@ test('trusted upgrade continuity through public Host APIs, PostgreSQL and authen
     assert.ok(authorityChecks.filter(path => path === 'reattach-authority').length >= 4, 'actual Runtime authority hook validates both prepare and activation');
     assert.equal(await db.transaction(tx => actionAuthority.loadLiveRuntimeAuthority(tx, f.org, old.session_id,
       actionAuthority.hashAppRuntimeToken(old.session_token), () => new Date())), null, 'late old-version worker has no commit/disclosure authority');
+  });
+  await t.test('trusted upgrades also carry the exact approved private Experience gate without review and never resurrect a revoked scope', async () => {
+    const f = await fixture();
+    const open = async () => {
+      const created = await call(`/api/app-experiences/${f.installation.id}/main/sessions`, f.ownerWeb.accessToken,
+        { resource_target_key: f.connected.scope.target_key });
+      return `/api/app-experiences/sessions/${created.pin.session_id}`;
+    };
+    const source = await open(), consent = await call(source + '/access/review', f.ownerWeb.accessToken, {});
+    await call(source + '/access/accept', f.ownerWeb.accessToken,
+      { review_token: consent.review_token, review_digest: consent.review_digest, accept_exposure: true });
+    let current = source;
+    for (const number of [1, 2]) {
+      const next = await upgrade(f, number);
+      assert.equal(next.result.upgrade_continuity[0].state, 'installed');
+      current = await open();
+      const acquired = await call(current + '/access/acquire', f.ownerWeb.accessToken, {});
+      assert.equal(acquired.grant_status, 'active', 'the existing exact private permission follows the completed trusted upgrade');
+      const [grant] = await db.select().from(s.appExperienceConsentGrants).where(eq(s.appExperienceConsentGrants.id, acquired.grant.id));
+      assert.equal(grant!.app_version_id, next.result.installation.active_version_id);
+    }
+    await call(current + '/access', f.ownerWeb.accessToken, undefined, 'DELETE');
+    const revoked = await call(await open() + '/access/acquire', f.ownerWeb.accessToken, {});
+    assert.equal(revoked.grant_status, 'review_required', 'revocation must never become automatic re-approval');
   });
   await t.test('shared operator and two private-store approvals retain their actual principals across two upgrades', async () => {
     const f = await fixture(true, true, true, true);

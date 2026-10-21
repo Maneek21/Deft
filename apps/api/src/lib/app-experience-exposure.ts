@@ -587,7 +587,7 @@ export class AppExperienceExposureService {
 
         const scope = experienceConsentScope(this.snapshot(caller, context, this.clock(), new Date(caller.access_expires_at!)));
 
-        const [grant] = await tx.select().from(appExperienceConsentGrants).where(and(
+        let [grant] = await tx.select().from(appExperienceConsentGrants).where(and(
 
           eq(appExperienceConsentGrants.org_id, caller.org_id), eq(appExperienceConsentGrants.owner_user_id, caller.user_id),
 
@@ -596,6 +596,11 @@ export class AppExperienceExposureService {
           eq(appExperienceConsentGrants.experience_key, context.session.experience_key),
 
           eq(appExperienceConsentGrants.scope_digest, experienceConsentDigest(scope)), isNull(appExperienceConsentGrants.revoked_at))).limit(1).for('share');
+
+        if (!grant) {
+          const { acquireTrustedUpgradeExperienceConsent } = await import('./app-upgrade-experience-consent.js');
+          grant = await acquireTrustedUpgradeExperienceConsent(tx, scope) ?? undefined;
+        }
 
         if (grant) {
 
