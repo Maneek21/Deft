@@ -1,4 +1,5 @@
 import {traceExperienceRead} from './app-experience-read-trace';
+import {readAppRequestError} from './app-request-error';
 import {experienceAuthorityResponse,ExperienceAuthorityUnavailable} from './app-experience-connection';
 import {appConsentDeadline} from '../../../../packages/app-kit/src/consent-lifetime';
 import {createRecordSeedLocator} from './app-experience-record-seed';
@@ -38,15 +39,30 @@ export function createExperienceDataClient(options:{installationId:string;target
   const exact=options.targetKey?candidates.filter(target=>target.target_key===options.targetKey):candidates;
   const targets=options.targetKey?exact:candidates;if(targets.length!==1)throw Error('Choose a connected account');const expected=options.accountRef?.();if(expected!==undefined&&targets[0].account.account_ref!==expected)throw Error('Source account changed');return targets[0];};
  const request=async(storeKey:string,operation:AppDataRequest['operation'],input:Record<string,unknown>,signal:AbortSignal,requestId:string=crypto.randomUUID(),upload?:File,allowSettled=false,selected?:Awaited<ReturnType<typeof select>>):Promise<AppDataResult>=>{
-  check(signal);const target=selected??await select(storeKey,signal),data=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input});
+  check(signal);let target=selected??await select(storeKey,signal),data=AppDataRequestSchema.parse({schema_version:'deft.app_data_request.v1',request_id:requestId,operation,input});
   // A target may be reused only by its immediate trusted operation. Recheck
   // local account pins at dispatch and disclosure; Runtime still independently
   // verifies current authority for this exact request.
   const targetCurrent=()=>{const expected=options.accountRef?.();if(options.targetKey!==undefined&&target.target_key!==options.targetKey||expected!==undefined&&target.account.account_ref!==expected||!target.stores.some(store=>store.declaration.key===storeKey))throw Error('App data account or target changed');};targetCurrent();
   let frame:Uint8Array|undefined,bytes:Uint8Array|undefined;
   try{if(upload){bytes=new Uint8Array(await upload.arrayBuffer());frame=frameAppData(data,bytes);}
-   const response=await traceExperienceRead(signal,'data.request',()=>options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/${upload?'binary':'requests'}`,{
+   const dispatch=()=>traceExperienceRead(signal,'data.request',()=>options.fetch(`/api/app-data/connections/${encodeURIComponent(target.session_id)}/${upload?'binary':'requests'}`,{
     method:'POST',signal,headers:{'Content-Type':upload?APP_DATA_FRAME_MEDIA_TYPE:'application/json'},body:frame?new Uint8Array(frame).buffer:JSON.stringify(data)}),requestId);
+   let response=await dispatch();
+   if(!upload&&['resource_list','record_list'].includes(operation)&&!response.ok){
+    const error=await readAppRequestError(response.clone(),'App data could not be loaded.');
+    const authorityChanged=response.status===403&&error.code==='APP_RUNTIME_ACCESS_DENIED'&&/^[A-Z][A-Z0-9]{0,23}_RUNTIME_AUTHORITY_DENIED$/u.test(error.runtimeCode??'');
+    const unavailable=error.retryable&&['APP_PROVIDER_UNAVAILABLE','APP_RUNTIME_UNAVAILABLE','APP_EXPERIENCE_BUSY'].includes(error.code);
+    if(authorityChanged||unavailable){
+     check(signal);const fresh=await select(storeKey,signal);
+     const pins=(value:typeof target)=>canonicalAppDataJson({session_id:value.session_id,target_key:value.target_key,resource_key:value.resource_key,account_ref:value.account.account_ref,stores:value.stores});
+     if(pins(fresh)!==pins(target))throw Error('App data retry authority changed');
+     target=fresh;targetCurrent();check(signal);
+     // Reads get one new invocation after fresh, identical authority. The
+     // original journal remains immutable; writes are never replayed here.
+     void response.body?.cancel().catch(()=>{});requestId=crypto.randomUUID();data={...data,request_id:requestId};response=await dispatch();
+    }
+   }
    if(response.headers.get('content-type')?.split(';')[0]!=='application/json')throw Error('App data result unavailable');
    const resultBytes=await traceExperienceRead(signal,'data.body',()=>boundedBytes(response,APP_DATA_LIMITS.result_json_bytes,signal));try{const result=AppDataResultSchema.parse(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(resultBytes)));check(signal);targetCurrent();
     if(result.request_id!==requestId||result.operation!==operation||result.input_digest!==await appDataInputDigest(operation,input)||result.outcome!=='completed'&&!(allowSettled&&['conflict','not_found'].includes(result.outcome))||result.record&&input.store_key!==undefined&&result.record.store_key!==input.store_key)throw Error('App data result not confirmed');return result;
@@ -127,7 +143,14 @@ export function createExperienceDataClient(options:{installationId:string;target
  const seedRows=new Map<string,{record:ExperienceRecordRow;accountId:string;resourceTargetKey:string}>(),seedLocators=new Map<string,ReturnType<typeof createRecordSeedLocator>>();
  const ports:ExperienceRecordFormPorts={
   ...changePorts,
-  ...(options.principal?{resolveSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{if(!node.seed)return node;const target=await select(node.store_key,signal),scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id};const locator=createRecordSeedLocator({scope,authorize:async()=>{const current=await select(node.store_key,signal),store=current.stores.find(item=>item.declaration.key===node.store_key);if(current.account.account_ref!==scope.accountId||!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now())throw Error('Seed visibility ended');await request(node.store_key,'connection_metadata',{store_key:node.store_key},signal,undefined,undefined,false,current);}});const record_id=await locator.reserve(node.record_id);seedLocators.set(record_id,locator);return {...node,record_id};},recoveryScope:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{const target=await select(node.store_key,signal),store=target.stores.find(v=>v.declaration.key===node.store_key);if(!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now())throw Error('Recovery visibility ended');if(!node.seed||!seedRows.has(node.record_id))await request(node.store_key,'record_read',locator(node),signal);check(signal);return {...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,recordId:node.record_id,resourceTargetKey:target.target_key};},
+  ...(options.principal?{resolveSeed:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{if(!node.seed)return node;const target=await select(node.store_key,signal),scope={...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,resourceTargetKey:target.target_key,formId:node.id+(Object.hasOwn(node.seed.value,'record_seed')?':'+await sha(new TextEncoder().encode(canonicalAppDataJson(node.seed.value))):'')};const pinnedStore=target.stores.find(item=>item.declaration.key===node.store_key);const locator=createRecordSeedLocator({scope,authorize:async()=>{
+   if(!pinnedStore?.consent||appConsentDeadline(pinnedStore.consent.expires_at,pinnedStore.consent.consent_lifetime)<=Date.now())throw Error('Seed visibility ended');
+   // Both reads independently authorize the pinned account. The fresh target
+   // must still match every original pin before browser storage can be used.
+   const [current]=await Promise.all([select(node.store_key,signal),request(node.store_key,'connection_metadata',{store_key:node.store_key},signal,undefined,undefined,false,target)]);check(signal);
+   const store=current.stores.find(item=>item.declaration.key===node.store_key);
+   if(current.account.account_ref!==scope.accountId||current.session_id!==target.session_id||current.target_key!==target.target_key||current.resource_key!==target.resource_key||!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now()||canonicalAppDataJson(store)!==canonicalAppDataJson(pinnedStore))throw Error('Seed visibility ended');
+  }});const record_id=await locator.reserve(node.record_id);seedLocators.set(record_id,locator);return {...node,record_id};},recoveryScope:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{const target=await select(node.store_key,signal),store=target.stores.find(v=>v.declaration.key===node.store_key);if(!store?.consent||appConsentDeadline(store.consent.expires_at,store.consent.consent_lifetime)<=Date.now())throw Error('Recovery visibility ended');if(!node.seed||!seedRows.has(node.record_id))await request(node.store_key,'record_read',locator(node),signal);check(signal);return {...options.principal!,installationId:options.installationId,accountId:target.account.account_ref,stateKey:node.store_key,recordId:node.record_id,resourceTargetKey:target.target_key};},
    recoverySnapshot:async(node:ExperienceRecordFormNode,signal:AbortSignal)=>{const target=await recordTarget(node,signal),accountId=target.account.account_ref,resourceTargetKey=target.target_key;
     // One fresh authority path and exact record read; seed defaults and identities are not recovery evidence.
     const result=await request(node.store_key,'record_read',locator(node),signal,crypto.randomUUID(),undefined,!!node.seed,target);check(signal);
@@ -152,11 +175,25 @@ export function createExperienceDataClient(options:{installationId:string;target
   },
   load:async(node,signal)=>{const target=await recordTarget(node,signal);
    if(node.profile.schema_version!=='deft.record_form_profile.v2'&&'seed' in node&&node.seed){const seedNode=node as ExperienceRecordFormNode;
-    const read=await request(seedNode.store_key,'record_read',locator(node),signal,crypto.randomUUID(),undefined,true,target);
+    // Existence, current identities and optional defaults are independent
+    // read-only preflights. Run them together; each retains its own authority
+    // checks and nothing is disclosed until all current checks have settled.
+    const hydrate=Object.hasOwn(seedNode.seed!.value,'record_seed');
+    const defaultValue=async()=>{if(!seedNode.initial_change)return {value:undefined,notice:''};try{
+     const pin=(current:Awaited<ReturnType<typeof select>>)=>{if(current.session_id!==target.session_id||current.target_key!==target.target_key||current.account.account_ref!==target.account.account_ref)throw Error('Seed default account changed');};
+     pin((await changeTarget(seedNode,seedNode.initial_change,signal)).target);
+     const source=await request(seedNode.initial_change.source_store_key,'connection_metadata',{store_key:seedNode.initial_change.source_store_key,seed:{operation_key:seedNode.initial_change.operation_key,destination_store_key:seedNode.store_key,value:seedNode.seed!.value}},signal);
+     pin((await changeTarget(seedNode,seedNode.initial_change,signal)).target);return {value:source.record_seed_value,notice:''};
+    }catch{return {value:undefined,notice:recordFormLabels(seedNode.profile).initial_change_unavailable};}};
+    const [existing,identity,defaults]=await Promise.allSettled([
+     request(seedNode.store_key,'record_read',locator(node),signal,crypto.randomUUID(),undefined,true,target),
+     request(seedNode.store_key,'connection_metadata',{store_key:seedNode.store_key,...(hydrate?{seed:{operation_key:'record_seed',destination_store_key:seedNode.store_key,value:seedNode.seed!.value}}:{})},signal),
+     defaultValue(),
+    ]);check(signal);if(existing.status==='rejected')throw existing.reason;const read=existing.value;
     if(read.outcome==='completed'){const record=row(read,seedNode.record_id);await seedLocators.get(seedNode.record_id)?.confirmed(seedNode.record_id);seedLocators.delete(seedNode.record_id);seedRows.delete(seedNode.record_id);return {record,identities:read.identities??[],primaryIdentity:read.primary_identity??null};}
-    if(read.outcome!=='not_found')throw Error('Seed record unavailable');
-    const metadata=await request(seedNode.store_key,'connection_metadata',{store_key:seedNode.store_key},signal);let initial=seedNode.seed!.value,initialNotice='';
-    if(seedNode.initial_change){try{await changeTarget(seedNode,seedNode.initial_change,signal);const source=await request(seedNode.initial_change.source_store_key,'connection_metadata',{store_key:seedNode.initial_change.source_store_key,seed:{operation_key:seedNode.initial_change.operation_key,destination_store_key:seedNode.store_key,value:seedNode.seed!.value}},signal);await changeTarget(seedNode,seedNode.initial_change,signal);if(source.record_seed_value)initial=source.record_seed_value;}catch{initialNotice=recordFormLabels(seedNode.profile).initial_change_unavailable;}}
+    if(read.outcome!=='not_found')throw Error('Seed record unavailable');if(identity.status==='rejected')throw identity.reason;const metadata=identity.value;
+    if(hydrate&&!metadata.record_seed_value)throw Error('Source seed unavailable');if(defaults.status==='rejected')throw defaults.reason;
+    const initial=defaults.value.value??metadata.record_seed_value??seedNode.seed!.value,initialNotice=defaults.value.notice;
     validateRecordFormValue(initial,seedNode.profile);if(recordFormFiles(initial,seedNode.profile).length)throw Error('Seed files must be empty');for(const field of recordFormFields(seedNode.profile)){if(field.kind!=='verified_identity')continue;const identity=recordFormIdentity(initial,field);if(identity&&!metadata.identities?.some(item=>item.address===identity))throw Error('Seed identity changed');}
     const record:ExperienceRecordRow={record_id:seedNode.record_id,revision:0,content_digest:await sha(new TextEncoder().encode(canonicalAppDataJson(initial))),status:'draft',value:initial,files:[],summary:{initial_value_notice:initialNotice}};seedRows.set(seedNode.record_id,{record:structuredClone(record),accountId:target.account.account_ref,resourceTargetKey:target.target_key});return {record,identities:metadata.identities??[],primaryIdentity:metadata.primary_identity??null};
    }

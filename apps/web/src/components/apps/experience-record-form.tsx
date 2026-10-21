@@ -109,16 +109,23 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  const [recoveryState,setRecoveryState]=useState<RecordRecoveryState|null>(null);
  const eventPort=useRef(emit);eventPort.current=emit;
  const [state,setState]=useState<ExperienceRecordWriterState|null>(null),[identities,setIdentities]=useState<readonly RecordFormIdentity[]>([]);
+ const [openAttempt,setOpenAttempt]=useState(0),[openingUnavailable,setOpeningUnavailable]=useState(false);
  const [primaryIdentity,setPrimaryIdentity]=useState<RecordFormIdentity|null>(null);const [notice,setNotice]=useState('Opening draft...'),[optionalVisibility,setOptionalVisibility]=useState<Record<string,boolean>>({}),[identityOpen,setIdentityOpen]=useState<string|null>(null),[fileBusy,setFileBusy]=useState(false),[copyUnconfirmed,setCopyUnconfirmed]=useState(false),[changeBusy,setChangeBusy]=useState(false),[reviewBusy,setReviewBusy]=useState(false),[submitted,setSubmitted]=useState(false);
  const initialChange=useRef<ReturnType<typeof createInitialRecordChange>|null>(null);const [initialUnknown,setInitialUnknown]=useState(false);
  const writer=useRef<ReturnType<typeof createExperienceRecordWriter>|null>(null),timer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined),imagePort=useRef<ComposeImagePort|null>(null);
  const [imageGeneration,setImageGeneration]=useState(0),pendingImage=useRef<{fileId:string;alt:string}|null>(null),latest=useRef(state);latest.current=state;
  const current=()=>context.current()&&!context.signal.aborted;
- const preview=useMemo(()=>createInlinePreviews({current,read:(file,signal)=>{const row=writer.current?.snapshot.row;if(!row)throw Error('Draft unavailable');return ports.readFile(node,row,file,signal);},denied:()=>setNotice('File access ended.')}),[]);
- useEffect(()=>{let alive=true;let renewal:ReturnType<typeof setInterval>|undefined;void (async()=>{if(node.seed&&ports.resolveSeed){const previous=node.record_id,resolved=await ports.resolveSeed(node,context.signal);if(!alive||!current())throw Error('Seed scope ended');resolvedSeed.current=resolved;node=resolved;if(previous!==resolved.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:resolved.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');if(!alive||!current())throw Error('Seed scope ended');}return ports.load(node,context.signal);})().then(async({record,identities,primaryIdentity})=>{
-  if(!alive||!current())return;const mode=experienceRecordFormMode(node,record);recordCopySource(node,record);setIdentities(identities);setPrimaryIdentity(primaryIdentity??null);const initialNotice=typeof record.summary?.initial_value_notice==='string'?record.summary.initial_value_notice:'';
-  if(mode==='readonly'){setNotice(initialNotice);setState({row:record,value:record.value,dirty:false,state:'saved',notice:'Read-only'});registerWriter?.(()=>Promise.resolve(true));return;}
-  if(ports.recoveryScope){setNotice('Checking browser recovery…');const scope=await ports.recoveryScope(node,context.signal);if(!alive||!current())return;recoveryScope.current=scope;
+ const preview=useMemo(()=>createInlinePreviews({current,read:(file,signal)=>{const row=writer.current?.snapshot.row;if(!row)throw Error('Draft unavailable');return ports.readFile(node,row,file,signal);},denied:()=>setNotice('File access ended.')}),[openAttempt]);
+ useEffect(()=>{let alive=true;let renewal:ReturnType<typeof setInterval>|undefined;const opening=new AbortController(),openingSignal=AbortSignal.any([context.signal,opening.signal]);
+ const openingCurrent=()=>alive&&current()&&!opening.signal.aborted;
+ setOpeningUnavailable(false);setNotice('Opening draft...');
+ // Fresh account, seed and recovery checks remain mandatory, but an unavailable
+ // port cannot leave this surface permanently pending. Retry repeats the reads.
+ const openingTimer=setTimeout(()=>{if(!openingCurrent())return;opening.abort();writer.current?.dispose();recovery.current?.dispose();setState(null);setOpeningUnavailable(true);setNotice('This draft is taking too long to open. Retry to check its current status.');},30000);
+ void (async()=>{if(node.seed&&ports.resolveSeed){const previous=node.record_id,resolved=await ports.resolveSeed(node,openingSignal);if(!openingCurrent())throw Error('Seed scope ended');resolvedSeed.current=resolved;node=resolved;if(previous!==resolved.record_id&&await eventPort.current({kind:'input',node_id:node.id,record_id:resolved.record_id,record_revision:0,content_digest:'sha256:'+'0'.repeat(64),record_state:'saved',valid:true,dirty:false,record_seed:true,expected_seed_record_id:previous})!==true)throw Error('Seed delivery unavailable');if(!openingCurrent())throw Error('Seed scope ended');}return ports.load(node,openingSignal);})().then(async({record,identities,primaryIdentity})=>{
+  if(!openingCurrent())return;const mode=experienceRecordFormMode(node,record);recordCopySource(node,record);setIdentities(identities);setPrimaryIdentity(primaryIdentity??null);const initialNotice=typeof record.summary?.initial_value_notice==='string'?record.summary.initial_value_notice:'';
+  if(mode==='readonly'){clearTimeout(openingTimer);setNotice(initialNotice);setState({row:record,value:record.value,dirty:false,state:'saved',notice:'Read-only'});registerWriter?.(()=>Promise.resolve(true));return;}
+  if(ports.recoveryScope){setNotice('Checking browser recovery…');const scope=await ports.recoveryScope(node,openingSignal);if(!openingCurrent())return;recoveryScope.current=scope;
    recovery.current=createRecordBrowserRecovery({scope,allowUnsavedSeed:!!node.seed,maxBytes:node.profile.max_record_bytes,validate:value=>validateRecordFormValue(value,node.profile),validateRestore:(value,row)=>{if(JSON.stringify(recordFormFiles(value,node.profile))!==JSON.stringify(recordFormFiles(row.value,node.profile)))throw Error('Recovery file custody changed');},current,
     prove:async signal=>{const proofSignal=AbortSignal.any([context.signal,signal]);if(ports.recoverySnapshot){const proof=await ports.recoverySnapshot(node,proofSignal);return {scope:proof.scope,row:proof.record};}return {scope:await ports.recoveryScope!(node,proofSignal),row:(await ports.load(node,proofSignal)).record};},change:setRecoveryState});
   }
@@ -128,26 +135,26 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
    beforeSave:async attempt=>{if(recovery.current)await recovery.current.beforeSave(attempt,writer.current!.snapshot);},
    change:next=>{if(!current())return;if(['saved','unsaved'].includes(next.state)&&!writer.current?.recoveryAttempt)recovery.current?.saved();recovery.current?.record(next);setState(next);let valid=true;try{validateRecordFormValue(next.value,node.profile);}catch{valid=false;}
     void eventPort.current({kind:'input',node_id:node.id,record_id:node.record_id,record_revision:next.row.revision,content_digest:next.row.revision===0?'sha256:'+'0'.repeat(64):next.row.content_digest,record_state:next.state,valid,dirty:next.dirty});}});
-  if(recovery.current){const candidate=await recovery.current.start(record);if(!alive||!current())return;
+  if(recovery.current){const candidate=await recovery.current.start(record);if(!openingCurrent())return;
    if(candidate?.submission?.purpose==='save')writer.current.restoreRecovery(candidate.value.content,candidate.submission.attempt);
    else if(candidate?.submission?.purpose==='send')writer.current.blockRecovery();
    renewal=setInterval(()=>void recovery.current?.renew(),30000);
   }
-  const loaded=writer.current.snapshot;setState(loaded);setNotice(initialNotice);
+  const loaded=writer.current.snapshot;clearTimeout(openingTimer);setState(loaded);setNotice(initialNotice);
   let loadedValid=true;try{validateRecordFormValue(loaded.value,node.profile);}catch{loadedValid=false;}
   void eventPort.current({kind:'input',node_id:node.id,record_id:loaded.row.record_id,record_revision:loaded.row.revision,content_digest:loaded.row.revision===0?'sha256:'+'0'.repeat(64):loaded.row.content_digest,record_state:loaded.state,valid:loadedValid,dirty:loaded.dirty});
   registerWriter?.(()=>writer.current!.save());
   if(!node.seed&&node.initial_change&&ports.initialSource&&ports.prepareChange&&ports.applyChange&&ports.changeStatus){initialChange.current=createInitialRecordChange({node,writer:()=>writer.current,ports:ports as InitialChangePorts,current,signal:context.signal,
    change:(busy,text,unknown)=>{setChangeBusy(busy);setInitialUnknown(unknown);if(text)setNotice(text);}});void initialChange.current.start();}
- }).catch(()=>{if(alive&&current())setNotice('This saved draft is unavailable. Reopen it to check its current revision.');});
- return()=>{alive=false;clearTimeout(timer.current);clearInterval(renewal);recovery.current?.dispose();registerWriter?.(null);initialChange.current?.dispose();writer.current?.dispose();preview.dispose();};},[]);
+ }).catch(()=>{clearTimeout(openingTimer);if(openingCurrent()){setOpeningUnavailable(true);setNotice('This draft is unavailable. Retry to check its current status.');}});
+ return()=>{alive=false;opening.abort();clearTimeout(openingTimer);clearTimeout(timer.current);clearInterval(renewal);recovery.current?.dispose();registerWriter?.(null);initialChange.current?.dispose();writer.current?.dispose();preview.dispose();};},[openAttempt]);
  const edit=(next:Record<string,unknown>)=>{if(!current()||!writer.current?.edit(next))return;clearTimeout(timer.current);timer.current=setTimeout(()=>void writer.current?.save(),650);};
  const register=useRef((port:ComposeImagePort|null,previous?:ComposeImagePort)=>{if(!port&&previous&&imagePort.current!==previous)return;imagePort.current=port;if(port&&pendingImage.current)setImageGeneration(value=>value+1);}).current;
  useEffect(()=>{const pending=pendingImage.current;if(!pending||!state||fileBusy||!imagePort.current)return;
   if(imagePort.current.insert(pending.fileId,pending.alt))pendingImage.current=null;
  },[state?.row.revision,fileBusy,imageGeneration]);
  const labels=recordFormLabels(node.profile);
- if(!state)return <p role="status" className="py-4 text-sm text-[var(--muted)]">{notice}</p>;
+ if(!state)return <div><p role="status" className="py-4 text-sm text-[var(--muted)]">{notice}</p>{openingUnavailable&&<button type="button" className={pill} disabled={!!node.disabled||!current()} onClick={()=>setOpenAttempt(attempt=>attempt+1)}>Retry opening draft</button>}</div>;
  if(state.row.status!=='draft')return <RecordSurface label={node.label}>
   <p role="status" className="text-sm">{state.row.status==='submitted'?'Submitted record':'Archived record'} / {labels.readonly}</p>
   <ExperienceRecordPreview value={state.value} node={node} row={state.row} ports={ports} signal={context.signal} current={current}/>{typeof state.row.summary?.future_submission_id==='string'&&ports.review&&<button type="button" className={pill} disabled={reviewBusy||!current()} onClick={async()=>{setReviewBusy(true);try{await ports.review!(node,state.row,context.signal);if(current())ports.reopenSubmitted?.();}finally{if(current())setReviewBusy(false);}}}>{labels.scheduled}</button>}</RecordSurface>;

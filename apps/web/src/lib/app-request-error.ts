@@ -1,4 +1,5 @@
 import type { ExperienceStartupPhase } from './app-experience-startup';
+import {AppDataRequestSchema} from '../../../../packages/app-kit/src/app-data';
 
 // Only declared public Host errors can supply display text. Details, stacks and
 // arbitrary exceptions never enter the owner-facing failure message.
@@ -41,8 +42,16 @@ export function appRequestFailureMessage(error:unknown,fallback:string):string{
 }
 
 /** Host-only notice: the original response and Worker protocol stay unchanged. */
-export async function reportAppRequestFailure(response:Response,current:()=>boolean,notice:(message:string)=>void):Promise<Response>{
+export async function reportAppRequestFailure(response:Response,current:()=>boolean,notice:(message:string)=>void,request?:RequestInit):Promise<Response>{
  if(!response.ok){
+  // A list read can finish after its screen closes or while an account status
+  // check briefly withholds authority. Its caller retries or reports locally;
+  // it must not leave a Runtime-outage banner on an unrelated healthy screen.
+  if(request?.method==='POST'&&typeof request.body==='string'){
+   let intent:unknown;try{intent=JSON.parse(request.body);}catch{}
+   const parsed=AppDataRequestSchema.safeParse(intent);
+   if(parsed.success&&['resource_list','record_list'].includes(parsed.data.operation))return response;
+  }
   const error=await readAppRequestError(response.clone(),'App data could not be loaded.');
   // Optional stores can have no existing consent. Their existing feature-level
   // access state handles this denial; it is not an app-wide connection failure.
