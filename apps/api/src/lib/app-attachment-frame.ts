@@ -1,4 +1,4 @@
-import { AttachmentStageHeaderSchema, RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit';
+import { AttachmentStageHeaderSchema, RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit/core';
 
 /** Parses only the small header before custody reserves the exact identity and
  * bytes. The binary allocation/read callback runs after that reservation. */

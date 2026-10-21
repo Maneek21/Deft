@@ -1,4 +1,4 @@
-import {AppPreparedEffectInputSchema,AppPreparedEffectReceiptSchema,type RecordStoreDeclaration} from '@deft/app-kit';
+import {AppPreparedEffectInputSchema,AppPreparedEffectReceiptSchema,type RecordStoreDeclaration} from '@deft/app-kit/core';
 
 /** Inspection can report only the already accepted, exact original effect.
  * It cannot infer provider behavior or nominate a replacement execution. */

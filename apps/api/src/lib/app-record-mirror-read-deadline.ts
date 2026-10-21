@@ -1,4 +1,4 @@
-import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
 import {AppError} from './app-errors.js';
 export type RecordMirrorReadDeadlinePins={data_consent_expires_at:string|null;consent_lifetime?:AppConsentLifetime;scope:{consent_expires_at:string|null;consent_lifetime?:AppConsentLifetime}};
 /** Persistent grant bounds do not extend the finite operation/window itself. */

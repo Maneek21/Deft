@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
-import {canonicalAppDataJson,AppDataOperationInputSchema,AppDataPreparedRecordActionSchema,AppDataPreparedResourceActionSchema} from '@deft/app-kit';
+import {canonicalAppDataJson,AppDataOperationInputSchema,AppDataPreparedRecordActionSchema,AppDataPreparedResourceActionSchema} from '@deft/app-kit/core';
 import {AppIntegrationToolDeclarationSchema,AppIntegrationToolRuntimeRequestSchema,AppIntegrationToolRuntimeAuthorityRequestSchema} from '../../../../packages/app-kit/src/app-integration-tools.js';
 export const integrationDigest=(value:unknown)=>'sha256:'+createHash('sha256').update(canonicalAppDataJson(value)).digest('hex');
 const digest=z.string().regex(/^sha256:[a-f0-9]{64}$/u),id=z.uuid(),key=z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u);

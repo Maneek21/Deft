@@ -373,6 +373,16 @@ jobs:
           # No API, database, credentials or runtime feature overrides are supplied.
           node scripts/verify-release-browser-profile.mjs
 
+      - name: Package the released Author Kit
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.sha }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          pnpm --dir packages/app-kit pack --pack-destination "$GITHUB_WORKSPACE/dist" --json
+          node scripts/prepare-author-kit-release.mjs
+
       - name: Collect portable release assets
         shell: bash
         run: |

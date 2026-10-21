@@ -1,5 +1,5 @@
 import {and,eq,inArray,gt,asc} from 'drizzle-orm';
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {appResourceProjections,appSyncCheckpoints} from '@deft/db/schema';
 import {AppResourceSyncSecretService} from './app-resource-sync-secrets.js';
 import type {AppRunKeyProvider} from './app-run-keyrings.js';

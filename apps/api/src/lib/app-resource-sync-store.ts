@@ -1,5 +1,5 @@
 import { SyncDescriptorV2Schema, SyncRequestV2Schema, parseSyncPageV2, digestResourceSyncDescriptorV2,
-  canonicalAttachmentJson, appConsentDeadline, appConsentExpiryValid, type SyncPageV2 } from '@deft/app-kit';
+  canonicalAttachmentJson, appConsentDeadline, appConsentExpiryValid, type SyncPageV2 } from '@deft/app-kit/core';
 import { retainedAttachmentMetadataCapacity } from './app-attachment-capacity.js';
 import type { AppAttachmentPageLinker, AttachmentAppliedParent } from './app-attachment-page-linker.js';
 import { createHash, randomUUID } from 'node:crypto';

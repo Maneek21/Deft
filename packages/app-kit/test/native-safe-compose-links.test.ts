@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {canonicalNativeComposeLink,parseNativeSafeComposeHtml,nativeSafeComposeHtmlFromEditorDocument,nativeComposeDraftFromEditorDocument,parseSafeComposeHtml,safeComposeHtmlFromEditorDocument} from '../src/safe-compose-html.js';
+import {canonicalNativeComposeLink,parseNativeSafeComposeHtml,nativeSafeComposeHtmlFromEditorDocument,nativeComposeDraftFromEditorDocument,parseSafeComposeHtml,safeComposeHtmlFromEditorDocument} from '../src/examples/email/safe-compose-html.js';
 const link=(href:string)=>({type:'link',attrs:{href,target:null,rel:null,class:null,title:null}});
 const text=(value:string,marks:unknown[]=[])=>({type:'text',text:value,marks});
 const doc=(...content:unknown[])=>({type:'doc',content:[{type:'paragraph',content}]});

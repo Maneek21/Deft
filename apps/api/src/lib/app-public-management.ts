@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { parseRuntimeAppManifest, parseNativeAppManifest, PublicActionDeclarationSchema,
-  NativePublicActionDeclarationSchema, PublicBudgetPolicySchema, PublicHmacPolicySchema } from '@deft/app-kit';
+  NativePublicActionDeclarationSchema, PublicBudgetPolicySchema, PublicHmacPolicySchema } from '@deft/app-kit/core';
 import { appModuleBindings, appNativeBindings, appPublicEndpoints, appPublicHmacKeys, appVersions, moduleInstallations,
   moduleVersions, users } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';

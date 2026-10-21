@@ -1,6 +1,6 @@
 import {retainPreparedRecordActionReceipt} from './app-prepared-record-action-receipt.js';
 import {AppFutureRecordActionControls} from './app-future-record-action-controls.js';
-import {AppFutureExecutionWindowSchema} from '@deft/app-kit';
+import {AppFutureExecutionWindowSchema} from '@deft/app-kit/core';
 import {captureFutureRecordActionReview} from './app-future-record-action-review.js';
 import {admitFutureRecordAction} from './app-future-record-action-service.js';
 import type {ReviewedFutureRecordActionTicket} from './app-future-record-action-review.js';

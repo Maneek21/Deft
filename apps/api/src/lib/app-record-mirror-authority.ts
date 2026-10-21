@@ -1,10 +1,10 @@
-import {appConsentDeadline,AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit';
+import {appConsentDeadline,AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit/core';
 import {discloseRecordMirrorRead} from './app-record-mirror-read-deadline.js';
 import {z} from 'zod';
 import {and,eq,sql} from 'drizzle-orm';
 import {isDeepStrictEqual} from 'node:util';
 import {AppConnectionSessionScopeSchema,AppConnectionActionConsentSchema,AppDataConnectionSchema,
- AppDataConsentSnapshotSchema,AppRecordMirrorDeclarationSchema,parseAttachmentAppManifest} from '@deft/app-kit';
+ AppDataConsentSnapshotSchema,AppRecordMirrorDeclarationSchema,parseAttachmentAppManifest} from '@deft/app-kit/core';
 import {appDataConsents} from '@deft/db/schema';
 import type {AppRunTransaction} from './app-run-repository.js';
 import {resourceObservationBindingAuthority,loadObservationConnection} from './app-resource-observation-authority.js';

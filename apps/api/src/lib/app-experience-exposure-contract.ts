@@ -1,8 +1,8 @@
-import {AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit';
+import {AppConsentExpirySchema,AppConsentLifetimeSchema,appConsentExpiryValid} from '@deft/app-kit/core';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalCapabilityJson } from '@deft/shared';
-import { PrivateStateDeclarationSchema, ResourceContentPolicySchema, RecordStoreDeclarationSchema, DeftExperienceRendererProfileSchema } from '@deft/app-kit';
+import { PrivateStateDeclarationSchema, ResourceContentPolicySchema, RecordStoreDeclarationSchema, DeftExperienceRendererProfileSchema } from '@deft/app-kit/core';
 import type { AppRunKeyProvider } from './app-run-keyrings.js';
 
 export const EXPOSURE_VERSION = 'deft.experience_resource_exposure.v1' as const;

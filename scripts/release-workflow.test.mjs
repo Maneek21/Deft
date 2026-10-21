@@ -8,8 +8,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { readReleaseBrowserProfile } from './resolve-release-browser-profile.mjs';
 
-const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const compose = readFileSync(new URL('../docker-compose.yml', import.meta.url), 'utf8');
 const generatorUrl = new URL('./generate-release-manifest.mjs', import.meta.url);
 const generator = readFileSync(generatorUrl, 'utf8');

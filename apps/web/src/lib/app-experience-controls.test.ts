@@ -2,20 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createExperienceFileController,selectedExperienceFilePolicy,validateExperienceRichtextEdit} from './app-experience-controls';
 import {parseExperienceView} from './app-experience-bridge';
-import {plainTextToNativeComposeHtml,parseNativeSafeComposeHtml} from '../../../../packages/app-kit/src/safe-compose-html';
-import {createDeftFileFieldNode,createDeftRichtextFieldNode} from '../../../../packages/app-kit/src/experience-sdk';
+import {plainTextToRichtextHtml,parseTrustedRichtextHtml} from '../../../../packages/app-kit/src/safe-rich-text';
+import {createDeftFileFieldNode,createDeftRichtextFieldNode} from '../../../../packages/app-kit/src/experience-core';
 const record='11111111-1111-4111-8111-111111111111';
 const fileNode=createDeftFileFieldNode({id:'files',label:'Attachments',state_key:'drafts',record_id:record,expected_revision:1,
   profile:{profile_version:'deft.file_field.v1',max_files:2,max_file_bytes:1024,max_total_bytes:2048,purpose:'attachment'}},['file_field.v1']);
 const policy={max_file_bytes:2097152,max_files_per_record:8,max_total_bytes_per_record:8388608,allowed_media_types:['text/plain']};
 const empty={schema_version:'deft.private_files.v1',draft:{record_id:record,revision:1},files:[]};
 test('paired generic rich draft saves/reopens exact leading/tab/blank text and links',()=>{
-  const plain='  lead\tvalue\n\ntrailing  ',html=plainTextToNativeComposeHtml(plain);
+  const plain='  lead\tvalue\n\ntrailing  ',html=plainTextToRichtextHtml(plain);
   const node=createDeftRichtextFieldNode({id:'body',label:'Message',profile:{profile_version:'deft.richtext_field.v1',format:'safe_compose_html',
     max_characters:4096,max_bytes:16384,links:'host_validated',inline_images:'none'},value:{html,plain_text:plain}},['richtext_field.v1']);
   const saved=JSON.stringify({body:node.value.plain_text,body_html:node.value.html});
-  const reopened=JSON.parse(saved);assert.equal(reopened.body,plain);assert.equal(parseNativeSafeComposeHtml(reopened.body_html).plainText,plain);
-  const linked=parseNativeSafeComposeHtml('<p>  <a href="https://example.test/notes">notes</a>  </p>');
+  const reopened=JSON.parse(saved);assert.equal(reopened.body,plain);assert.equal(parseTrustedRichtextHtml(reopened.body_html).plainText,plain);
+  const linked=parseTrustedRichtextHtml('<p>  <a href="https://example.test/notes">notes</a>  </p>');
   assert.deepEqual(validateExperienceRichtextEdit(node,linked),{html:linked.html,plain_text:linked.plainText});
   assert.throws(()=>validateExperienceRichtextEdit(node,{html:'<p>other</p>',plainText:plain}));
   assert.throws(()=>validateExperienceRichtextEdit(node,{html:'',plainText:'x'.repeat(4097)}));

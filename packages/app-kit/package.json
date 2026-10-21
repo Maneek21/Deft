@@ -1,6 +1,6 @@
 {
   "name": "@deft/app-kit",
-  "version": "0.1.0-alpha.41",
+  "version": "0.1.0-alpha.42",
   "description": "Portable authoring and packaging contract for declarative Deft apps.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -23,6 +23,26 @@
     "./experimental/resource-sync": {
       "types": "./dist/experimental/resource-sync.d.ts",
       "import": "./dist/experimental/resource-sync.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./experience/core": {
+      "types": "./dist/experience-core.d.ts",
+      "import": "./dist/experience-core.js"
+    },
+    "./examples/email": {
+      "types": "./dist/examples/email/index.d.ts",
+      "import": "./dist/examples/email/index.js"
+    },
+    "./examples/email/register": {
+      "types": "./dist/examples/email/register.d.ts",
+      "import": "./dist/examples/email/register.js"
+    },
+    "./examples/email/cli": {
+      "types": "./dist/examples/email/cli.d.ts",
+      "import": "./dist/examples/email/cli.js"
     }
   },
   "bin": {
@@ -44,5 +64,10 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "sideEffects": [
+    "./dist/examples/email/sandbox.js",
+    "./dist/examples/email/templates.js",
+    "./dist/examples/email/register.js"
+  ]
 }

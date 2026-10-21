@@ -1,7 +1,7 @@
 import {Hono,type Context} from 'hono';
 import type {UnofficialStatusCode} from 'hono/utils/http-status';
 import {z} from 'zod';
-import {APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataResolveInputSchema,parseAppDataFrame,frameAppData} from '@deft/app-kit';
+import {APP_DATA_FRAME_MEDIA_TYPE,APP_DATA_LIMITS,AppDataResolveInputSchema,parseAppDataFrame,frameAppData} from '@deft/app-kit/core';
 import {AppDataService} from '../lib/app-data-service.js';
 import {appRecordMirrorRuntime} from '../lib/app-record-mirror-runtime.js';
 import {appDataRuntimeAuthority} from '../lib/app-data-authority.js';

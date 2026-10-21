@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { serialize, deserialize } from 'node:v8';
-import { verifyDeftAppPackageJson } from '@deft/app-kit';
+import { verifyDeftAppPackageJson } from '@deft/app-kit/core';
 
 // Only deterministic public package validation is retained. Current authority,
 // manifest selection, digest comparisons and feature gates remain at the caller.

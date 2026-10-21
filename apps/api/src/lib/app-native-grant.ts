@@ -1,4 +1,4 @@
-import { type DeftAppManifestV6 } from '@deft/app-kit';
+import { type DeftAppManifestV6 } from '@deft/app-kit/core';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { nativeActionDescriptors } from './app-native-contract.js';
 import { runtimeActionDescriptors } from './app-runtime-review.js';

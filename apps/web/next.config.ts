@@ -38,10 +38,12 @@ const nextConfig: NextConfig = {
   // source-to-source requests to their existing .ts files for Turbopack.
   turbopack: {
     resolveAlias: {
-      './mailbox-list.js': '../../packages/app-kit/src/mailbox-list.ts',
+      './structured-address.js': '../../packages/app-kit/src/structured-address.ts',
       './resource-record-list.js': '../../packages/app-kit/src/resource-record-list.ts',
       './runtime-authoring.js': '../../packages/app-kit/src/runtime-authoring.ts',
-      './safe-compose-html.js': '../../packages/app-kit/src/safe-compose-html.ts',
+      './safe-rich-text.js': '../../packages/app-kit/src/safe-rich-text.ts',
+      './safe-uri.js': '../../packages/app-kit/src/safe-uri.ts',
+      './safe-raster.js': '../../packages/app-kit/src/safe-raster.ts',
     },
   },
   allowedDevOrigins: ['localhost', '127.0.0.1'],

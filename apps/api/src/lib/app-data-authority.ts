@@ -1,9 +1,9 @@
 import {collectAppDataContext} from './app-data-context-collection.js';
 import {withAppDataDiagnostic,measureAppDataPhase} from './app-data-diagnostics.js';
-import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
 import {validateContinuationCarrier} from './app-connection-consent-continuation-fence.js';
 import {validateStoredFormConnection} from './app-connection-form-fence.js';
-import {AppRecordChangeAuthorityRequestSchema,AppRecordChangeAuthorityResultSchema} from '@deft/app-kit';
+import {AppRecordChangeAuthorityRequestSchema,AppRecordChangeAuthorityResultSchema} from '@deft/app-kit/core';
 import {verifiedRetainedPreparedRecordAction} from './app-data-prepared-effect.js';
 import {sameRecordChangeAuthority} from './app-data-record-change-guards.js';
 import {and,eq,sql,desc} from 'drizzle-orm';
@@ -11,7 +11,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
 import {AppDataConnectionSchema,AppDataConsentSnapshotSchema,AppDataRuntimeAuthorityRequestSchema,AppDataRuntimeAuthorityResultSchema,
   canonicalAppDataJson,parseAttachmentAppManifest,AppResourceActionReleasedInputSchema,
-  type AppDataResult} from '@deft/app-kit';
+  type AppDataResult} from '@deft/app-kit/core';
 import {appVersions,appGrantSnapshots,webSessions,users,orgMembers,appDataInvocations} from '@deft/db/schema';
 import {db} from './db.js';
 import {AppError} from './app-errors.js';

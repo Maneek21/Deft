@@ -1,4 +1,4 @@
-import {AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit';
+import {AppDataRuntimeAuthorityRequestSchema} from '@deft/app-kit/core';
 type RecordRef={store_key:string;record_id:string;revision:number;content_digest:string};
 type Authority={scope:{org_id:string;owner_user_id:string;installation_id:string;target_key:string;resource_key:string};connection:{account_ref:string}};
 type Row={org_id:string;owner_user_id:string;request_id:string;state:string;revision:number;operation:string;context:unknown;result:unknown};

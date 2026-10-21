@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';import test from 'node:test';
 import {DeftExperienceRecordFormV2NodeSchema,type DeftExperienceRecordFormV2Node} from '../../../../packages/app-kit/src/app-data';
-import {createDeftRecordFormV2Node} from '../../../../packages/app-kit/src/experience-sdk';
+import {createDeftRecordFormV2Node} from '../../../../packages/app-kit/src/experience-core';
 import {parseExperienceView} from './app-experience-bridge';
 import {recordFieldsMode,validateRecordFields,recordChoiceValue,recordChoiceEdit} from './app-experience-record-fields';
 import {createExperienceRecordWriter,type ExperienceRecordRow} from './app-experience-record-writer';

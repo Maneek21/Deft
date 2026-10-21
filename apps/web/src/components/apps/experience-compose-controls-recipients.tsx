@@ -3,14 +3,14 @@
 import { useId, useState } from 'react';
 import { X } from 'lucide-react';
 import { composeAddressLabel, parseComposeAddresses, selectedComposeIdentity, type ComposeAddress, type ComposeIdentityOption } from '@/lib/app-experience-compose-controls';
-import { formatMailboxList, parseMailboxList, type MailboxAddress } from '../../../../../packages/app-kit/src/mailbox-list';
+import { formatAddressList, parseAddressList, type StructuredAddress } from '../../../../../packages/app-kit/src/structured-address';
 
 const control = 'w-full min-h-11 rounded-lg border border-[var(--outline-variant)] px-3 py-2 bg-transparent outline-none focus:border-[var(--primary)] disabled:opacity-60';
 const secondary = 'text-xs text-[var(--on-surface-variant)]';
 
-type MailboxEdit = { value: string; addresses: readonly MailboxAddress[]; pending: string };
-function mailboxEdit(value: string, maxItems: number): MailboxEdit {
-  try { return { value, addresses: parseMailboxList(value, { maxItems, allowEmpty: true }), pending: '' }; }
+type AddressEdit = { value: string; addresses: readonly StructuredAddress[]; pending: string };
+function addressEdit(value: string, maxItems: number): AddressEdit {
+  try { return { value, addresses: parseAddressList(value, { maxItems, allowEmpty: true }), pending: '' }; }
   catch { return { value, addresses: [], pending: value }; }
 }
 
@@ -21,14 +21,14 @@ export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, m
   label: string; value: string; maxItems?: number; maxLength?: number; disabled?: boolean; onChange: (value: string) => void;
 }) {
   const id = useId();
-  const [edit, setEdit] = useState(() => mailboxEdit(value, maxItems));
+  const [edit, setEdit] = useState(() => addressEdit(value, maxItems));
   const [notice, setNotice] = useState('');
   // External recovery replacement is displayed immediately; it cannot retain
   // chip state from a previous saved version or overwrite that replacement.
-  const current = edit.value === value ? edit : mailboxEdit(value, maxItems);
+  const current = edit.value === value ? edit : addressEdit(value, maxItems);
   const visibleNotice = edit.value === value ? notice : '';
-  const write = (addresses: readonly MailboxAddress[], pending: string) => {
-    const committed = formatMailboxList(addresses);
+  const write = (addresses: readonly StructuredAddress[], pending: string) => {
+    const committed = formatAddressList(addresses);
     const next = committed && pending ? `${committed}, ${pending}` : committed || pending;
     setEdit({ value: next, addresses, pending });
     if (next !== value) onChange(next);
@@ -37,12 +37,12 @@ export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, m
     if (disabled || !current.pending.trim()) return;
     try {
       if (current.value.length > maxLength) throw Error('Limit');
-      const addresses = parseMailboxList(current.value, { maxItems, allowEmpty: true });
+      const addresses = parseAddressList(current.value, { maxItems, allowEmpty: true });
       write(addresses, ''); setNotice('');
     } catch { setNotice(`Check ${label.toLowerCase()}. Your input is kept for correction.`); }
   };
   let invalid = current.value.length > maxLength;
-  try { parseMailboxList(current.value, { maxItems, allowEmpty: true }); } catch { invalid = true; }
+  try { parseAddressList(current.value, { maxItems, allowEmpty: true }); } catch { invalid = true; }
   return <div className="min-w-0">
     <div className="flex min-w-0 items-start gap-3">
       <label htmlFor={id} className="w-14 shrink-0 py-3.5 text-xs text-[var(--on-surface-variant)]">{label}</label>
@@ -62,7 +62,7 @@ export function ExperienceComposeMailboxControl({ label, value, maxItems = 32, m
             if (event.key === 'Enter') { event.preventDefault(); commit(); }
             if (event.key === ',' || event.key === ';') {
               // Invalid/incomplete quoted names keep their punctuation as text.
-              try { parseMailboxList(current.pending, { maxItems }); } catch { return; }
+              try { parseAddressList(current.pending, { maxItems }); } catch { return; }
               event.preventDefault(); commit();
             }
           }} />

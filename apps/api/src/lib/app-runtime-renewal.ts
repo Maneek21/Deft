@@ -1,4 +1,4 @@
-import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
 import {and,eq} from 'drizzle-orm';
 import {orgMembers,users,webSessions,appResourceBindings,type appRuntimeBindings,type appRuntimeRegistrations} from '@deft/db/schema';
 import {loadRuntimeOwnerTarget} from './app-runtime-owner-target.js';

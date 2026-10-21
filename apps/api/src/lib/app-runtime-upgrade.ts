@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appModuleBindings, appDependencyLocks,
   appRuns, appPublicIngress, appPublicEndpoints, moduleInstallations, moduleVersions, users, auditLog, appNativeBindings } from '@deft/db/schema';
-import { AppDigestSchema, parseRuntimeAppManifest, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit';
+import { AppDigestSchema, parseRuntimeAppManifest, parseResourceAppManifest, parseNativeAppManifest, parseAttachmentAppManifest } from '@deft/app-kit/core';
 import { parseSupportedDeftModuleManifest, type ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';

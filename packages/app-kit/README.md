@@ -1,6 +1,6 @@
 # `@deft/app-kit`
 
-The current authoring Kit is `0.1.0-alpha.41`, adding domain-neutral source nomination v3 while retaining the optional App-owned `background_refresh_description` in experience bundles and targeted resource Refresh. Bundles using the new field require Host `0.3.0-preview.127` or newer. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.16` on alpha.35, Host `0.3.0-preview.122` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
+The current authoring Kit is `0.1.0-alpha.42`, isolating app-owned domain helpers and retaining domain-neutral source nomination v3 while retaining the optional App-owned `background_refresh_description` in experience bundles and targeted resource Refresh. Bundles using the new field require Host `0.3.0-preview.127` or newer. It retains alpha.35 persistent permission and alpha.33 provider-independent principal identifiers, declared resource source types/search fields, `record_form.v3`, and one sealed supplemental effect per action. Email grammar and provider outcomes belong to the independent Email Runtime. The [Email compatibility manifest](https://github.com/Maneek21/deft-email/releases/download/v1.9.0-preview.16/compatibility.json) pairs App `1.9.0-preview.13` on alpha.38 with Runtime `0.4.0-preview.16` on alpha.35, Host `0.3.0-preview.122` and schema 120. The two Kit versions are deliberate. Existing sealed older packages and their exact proofs remain historical inputs.
 
 Record form v3 declares scalar fields, optional mailbox-list pill controls, verified identities, trusted rich text/files, labels and review captions. Field names do not select product behavior. Existing record revision, content digest, source reference, unsaved seed and action fences still apply. A Runtime independently validates domain data before preparing an effect.
 
@@ -27,6 +27,30 @@ Alpha.35 aligns the packed JavaScript with the reviewed source, including existi
 A signed owner policy may opt in with `allow_until_revoked: true`. An existing connected account can then receive a fresh consent-continuation review with `consent_lifetime: 'until_revoked'` and `consent_expires_at: null`. Initial account enrollment remains finite. Data and observation grants use the same explicit mode with `expires_at: null`; null without the mode, or the mode with a finite deadline, is invalid. Existing finite grants omit the mode and retain their original bytes and limits.
 
 Persistent permission does not make requests indefinite: continuation reviews last two minutes, data/observation reviews five minutes, and technical channel leases remain finite (at most fifteen minutes). The existing credential can renew only while its Host lease and current account, installation, custody and human membership remain valid. Revocation still denies subsequent use. `appConsentDeadline`, `appConsentIsCurrent` and `appConsentWithin` validate these pairs; only explicit mode plus null represents a persistent durable deadline. Exact-message Send review remains separate. Alpha.35 persistent grants require a compatible Host with the additive consent migration and a Runtime that understands explicit lifetimes; alpha.33 archives remain unchanged. Contract tests do not establish live provider acceptance.
+
+## alpha.42 ownership and compatibility
+
+alpha.42 is prepared for the coordinated Host 133 release. Its clean public
+entry points separate generic contracts from historical author-tool compatibility:
+
+| Purpose | Entry point |
+| --- | --- |
+| Generic authoring and Host contracts | `@deft/app-kit/core` |
+| Generic Worker SDK | `@deft/app-kit/experience/core` |
+| Educational sandbox schemas, policy and vectors | `@deft/app-kit/examples/email` |
+| Educational connected templates and CLI | `@deft/app-kit/examples/email/register` (Node preload) |
+
+Production address, compose/signature-body, CID and raster helpers are maintained
+in deft-email's `runtime/domain` author/runtime library. The old root and
+`/experience` helper names remain deprecated re-exports until **next breaking Kit
+alpha**. Their declarations name the replacement. The Host imports the clean
+entries and independently validates rich text, URI targets, file references and
+image limits; it never delegates that safety decision to the app's parser.
+
+The default `deft` CLI has no sandbox templates or conformance payload. Load the
+explicit example CLI for historical Protocol 1/2 authoring fixtures. Importing
+the clean core registers no private operation, and the Host does not load the
+educational example. Existing Runtime Protocol 3–7 wire versions are retained.
 
 ## Module validation
 
@@ -65,12 +89,12 @@ link:
 mkdir connected-campaigns
 cd connected-campaigns
 pnpm init
-pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.41.tgz
+pnpm add --save-dev /absolute/path/to/artifacts/deft-app-kit-0.1.0-alpha.42.tgz
 ```
 
 The installed binary is available as `pnpm exec deft`.
 
-This review candidate is `0.1.0-alpha.41`. Package metadata,
+This review candidate is `0.1.0-alpha.42`. Package metadata,
 `DEFT_APP_KIT_VERSION`, and CLI compatibility output use that identity. Alpha.35
 retains connection v2 sessions and independent action consents, reviewed
 same-account upgrade/reattachment, consent continuation and credential repair,
@@ -127,7 +151,7 @@ all lower numbers are supported.
 Import the browser-only SDK into the Worker from its public leaf entry:
 
 ```ts
-import { createDeftExperienceSdk } from '@deft/app-kit/experience';
+import { createDeftExperienceSdk } from '@deft/app-kit/experience/core';
 
 const sdk = createDeftExperienceSdk(port, sessionId);
 ```
@@ -223,22 +247,24 @@ The protocol 1/2 connected templates and `sandbox_email_send` examples below ret
 ```sh
 # Protocol v0; omitting --template remains the byte-identical default.
 pnpm exec deft app init --template declarative
-
-# Or, in a different empty directory, Protocol v1 connected scaffolding.
-pnpm exec deft app init --template connected
-
-# Or add one requested-only bounded daily action declaration.
-pnpm exec deft app init --template connected-automation
-
 pnpm exec deft app check
 pnpm exec deft app build
 pnpm exec deft app permissions diff
-pnpm exec deft app simulate-automation --fixture fixtures/ordinary-ready.json
-pnpm exec deft app doctor --url http://localhost:3001
-pnpm exec deft app install-local --url http://localhost:3001
+
+# In a different empty directory, load the optional Protocol v1 fixture.
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app init --template connected
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app check
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app build
+
+# Or, in another empty directory, load the optional bounded v2 fixture.
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app init --template connected-automation
+NODE_OPTIONS="--import=@deft/app-kit/examples/email/register" pnpm exec deft app simulate-automation --fixture fixtures/ordinary-ready.json
 ```
 
-`init` accepts only `declarative`, `connected`, or `connected-automation`.
+The default CLI supports `declarative`, `runtime` and `installed` scaffolding.
+The optional preload additionally registers `connected` and
+`connected-automation`. Historical developer-host checks and local installation
+still require that Host to advertise and admit the selected protocol.
 `check` validates and builds in memory without writing generated artifacts.
 `build` writes the deterministic
 package, lockfile, and requested-authority report:
@@ -348,7 +374,7 @@ Older Hosts reject the required capability before mounting; deploy a compatible
 Host before upgrading the App. Existing alpha35 Apps remain supported.
 
 ```ts
-import { createDeftMenuNode } from '@deft/app-kit/experience';
+import { createDeftMenuNode } from '@deft/app-kit/experience/core';
 const menu = createDeftMenuNode({
   id: 'document_actions', label: 'Document actions', icon: 'more',
   items: [

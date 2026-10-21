@@ -7,7 +7,7 @@ import {ExperienceResourceActionPreview} from '../components/apps/experience-res
 import {composerInputDigest} from './app-experience-compose-files';
 import {experienceActionDialogKeys} from './app-experience-action-confirmation';
 import {parseExperienceView,createExperienceBridge,type ExperiencePin,type ExperiencePort} from './app-experience-bridge';
-import {createDeftExperienceSdk} from '../../../../packages/app-kit/src/experience-sdk';
+import {createDeftExperienceSdk} from '../../../../packages/app-kit/src/experience-core';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto,configurable:true});
 const id=(n:number)=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0'),digest='sha256:'+'a'.repeat(64);
 const request={action_key:'change_records',store_key:'drafts',resource_key:'mail',operation_key:'archive',sources:[{resource_key:'mail',record_id:id(1),content_digest:digest}]};

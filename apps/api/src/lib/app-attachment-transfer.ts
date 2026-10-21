@@ -1,4 +1,4 @@
-import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit';
+import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 
 /** HTTP completion is bounded even if an adapter ignores abort. Its occupied

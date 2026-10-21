@@ -1,6 +1,6 @@
 import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit';
+import { RESOURCE_ATTACHMENT_LIMITS } from '@deft/app-kit/core';
 import { LocalFileStore } from './file-store.js';
 
 export interface AppAttachmentObjectStore {

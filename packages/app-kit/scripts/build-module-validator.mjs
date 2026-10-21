@@ -1,11 +1,18 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Remove only retired generated entry points. Packed-consumer tests build the
+// same package, so deleting the entire output directory races active readers.
+const buildRoot = resolve(packageRoot, 'dist');
+if (dirname(buildRoot) !== packageRoot) throw new Error('Unexpected build output path');
+for (const name of ['safe-compose-html','mailbox-list','native-compose-raster']) {
+  for (const suffix of ['.js','.js.map','.d.ts','.d.ts.map']) await rm(resolve(buildRoot,name+suffix), {force:true});
+}
 const packageIdentity = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));
-const declaredIdentity = (await readFile(resolve(packageRoot, 'src/index.ts'), 'utf8'))
+const declaredIdentity = (await readFile(resolve(packageRoot, 'src/core.ts'), 'utf8'))
   .match(/export const DEFT_APP_KIT_VERSION = '([^']+)' as const;/)?.[1];
 if (declaredIdentity !== packageIdentity.version) {
   throw new Error('App Kit package and public compatibility versions must match');

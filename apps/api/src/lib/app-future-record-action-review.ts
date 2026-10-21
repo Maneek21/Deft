@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import {AppPreparedFutureReleaseSchema,type AppDataPreparedRecordAction} from '@deft/app-kit';
+import {AppPreparedFutureReleaseSchema,type AppDataPreparedRecordAction} from '@deft/app-kit/core';
 import {ReviewedFutureRecordActionAuthoritySchema,currentFutureRecordActionAuthority} from './app-future-record-action-authority.js';
 import type {CurrentAppDataAuthority} from './app-data-authority.js';
 import {appDataDigest,appDataDenied} from './app-data-authority.js';

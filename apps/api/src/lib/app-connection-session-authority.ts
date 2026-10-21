@@ -1,9 +1,9 @@
-import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit/core';
 import {selectAdmittedConnectionPolicy} from './app-connection-admitted-policy.js';
 import { and, eq } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
 import { parseAttachmentAppManifest, AppConnectionRuntimeAuthorityRequestSchema, AppConnectionRuntimeAuthorityResultSchema,
-  type AppConnectionSessionScope, type AppConnectionActionConsent } from '@deft/app-kit';
+  type AppConnectionSessionScope, type AppConnectionActionConsent } from '@deft/app-kit/core';
 import { appRuntimeBindings, webSessions } from '@deft/db/schema';
 import {currentConnectionBindingLocators} from './app-connection-current-locators.js';
 import { db } from './db.js';

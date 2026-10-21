@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {samplePrivateAccessClock} from './app-private-access-clock.js';
 import {sql} from 'drizzle-orm';
-import {AppResourceActionBatchPrepareSchema,AppResourceActionBatchReviewSchema,AppResourceActionBatchConfirmSchema,AppResourceActionSourcesSchema} from '@deft/app-kit';
+import {AppResourceActionBatchPrepareSchema,AppResourceActionBatchReviewSchema,AppResourceActionBatchConfirmSchema,AppResourceActionSourcesSchema} from '@deft/app-kit/core';
 import {AppDataResourceActionService} from './app-data-resource-action-service.js';
 import {AppDataService} from './app-data-service.js';
 import {AppExperienceHumanActionService,type HumanActionAuthorityPort} from './app-experience-human-action-service.js';

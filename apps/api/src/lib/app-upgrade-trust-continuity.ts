@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppConnectionProfileSchema, AppConnectionSessionScopeSchema, appConsentDeadline,
-  AppDataConsentSnapshotSchema } from '@deft/app-kit';
+  AppDataConsentSnapshotSchema } from '@deft/app-kit/core';
 import { appInstallations, appVersions, appResourceBindings, appRuntimeBindings,
   appRuntimeRegistrations, appOwnerConnectionAdmissions, appConnectionSessions, orgMembers, users, auditLog } from '@deft/db/schema';
 import { appResourceObservationConsents } from '../../../../packages/db/src/resource-observation-schema.js';

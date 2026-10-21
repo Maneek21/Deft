@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SyncDescriptorV2Schema, SyncPageV2Schema, SyncRequestV2Schema, type SyncDescriptorV2 } from '@deft/app-kit';
+import { SyncDescriptorV2Schema, SyncPageV2Schema, SyncRequestV2Schema, type SyncDescriptorV2 } from '@deft/app-kit/core';
 import { createCapabilityProviderDiscoverySnapshot } from '@deft/shared';
 
 /** Safe declaration snapshot; parser/retained owner policy remain enforcement. */

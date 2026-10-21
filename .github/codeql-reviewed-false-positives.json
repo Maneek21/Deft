@@ -5,7 +5,7 @@
   "sources": {
     "examples/apps/email/fixtures/launch-stage0/verify.test.mjs": "134b1e413cdfade7efbc67e9c246f916c28a0e525ae8a199fba263ed0f8c7322",
     "apps/api/src/lib/agent-actions.ts": "4a7f5aa4d57ce4914d7791f5e770c32bd2d8d804833f99c34b44b3059b7f5354",
-    "apps/api/src/lib/app-installed-tool-discovery.ts": "93b3d4f08c6cddab370110785f454090e46e4f88587da1c9e92db0220f8a8bb6",
+    "apps/api/src/lib/app-installed-tool-discovery.ts": "26fbe1a9e9b3775cc2d24c31e01b7ed99435291204c8f1f124e39f9e2e2c38f2",
     "apps/api/src/lib/app-integration-tool-runtime.ts": "1b897ed319e33e4154592191affdc8bf97ef51e0fbaa3677e9fcce6529fa1d46",
     "apps/api/src/lib/document-send.ts": "eed5824a4f4b82e08da04ef787e13454e462a6a00af02e0683a16798d8727668",
     "apps/api/src/lib/oauth-mcp.ts": "79019274595ac322b86aa2d6492b1b42e0434d8c8a962cdd049d4ff7600baaed",
@@ -377,6 +377,14 @@
         "apps/web/src/lib/app-connection-session-flow.ts"
       ],
       "justification": "This regex is an assertion over a fixed returned OAuth fixture URL, not the authorization-origin allowlist. Production connection begin parses URL and requires exact reviewed origin and callback state; the current production flow source is pinned below. Persistent durable scope parsing does not loosen OAuth navigation: Begin and callback deadlines remain finite, and exact parsed authorization origin plus a single exact callback-state parameter are still required."
+    }
+  ],
+  "source_updates": [
+    {
+      "path": "apps/api/src/lib/app-installed-tool-discovery.ts",
+      "previous_sha256": "93b3d4f08c6cddab370110785f454090e46e4f88587da1c9e92db0220f8a8bb6",
+      "sha256": "26fbe1a9e9b3775cc2d24c31e01b7ed99435291204c8f1f124e39f9e2e2c38f2",
+      "reason": "FP-004 re-reviewed: only the trusted Kit import changes to /core. The SHA-256 request UUID, canonical input, org/user/principal fences and immutable target checks are byte-identical; no finding fingerprint, query, location or disposition is broadened."
     }
   ]
 }

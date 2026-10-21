@@ -3,7 +3,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { appInstallations, appVersions, appGrantSnapshots, appModuleBindings, moduleInstallations, auditLog } from '@deft/db/schema';
 import { parseRuntimeAppManifest, parseResourceAppManifest, RUNTIME_ACTION_HOST_POLICY, AppDigestSchema,
-  RuntimePrivateCapabilitySchema, type RuntimeAppManifest, type DeftAppManifestV5, type DeftAppManifestV6, type DeftAppPackage } from '@deft/app-kit';
+  RuntimePrivateCapabilitySchema, type RuntimeAppManifest, type DeftAppManifestV5, type DeftAppManifestV6, type DeftAppPackage } from '@deft/app-kit/core';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';
 import { AppError } from './app-errors.js';

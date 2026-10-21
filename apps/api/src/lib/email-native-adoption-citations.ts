@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {sql} from 'drizzle-orm';
 import {z} from 'zod';
-import {canonicalAppDataJson} from '@deft/app-kit';
+import {canonicalAppDataJson} from '@deft/app-kit/core';
 import {db} from './db.js';
 import {getAppIntegrationCaptureRuntime} from './app-integration-capture-service.js';
 import type {AppIntegrationSourceCaller} from './app-integration-source.js';

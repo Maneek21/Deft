@@ -1,5 +1,5 @@
 import {sql} from 'drizzle-orm';
-import {AppFutureRecordActionLookupSchema,AppFutureRecordActionCancelSchema} from '@deft/app-kit';
+import {AppFutureRecordActionLookupSchema,AppFutureRecordActionCancelSchema} from '@deft/app-kit/core';
 import {db} from './db.js';
 import {appDataDenied,appDataDigest} from './app-data-authority.js';
 import {PostgresFutureRecordActionStore,type FutureReleaseRow} from './app-future-record-action-store.js';

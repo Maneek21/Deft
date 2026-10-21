@@ -1,4 +1,4 @@
-import {parseNativeSafeComposeHtml} from '../../../../packages/app-kit/src/safe-compose-html';
+import {parseTrustedRichtextHtml} from '../../../../packages/app-kit/src/safe-rich-text';
 import type {ExperienceRecordValue,ExperienceRecordRow} from './app-experience-record-writer';
 import type {DeftExperienceRecordFormNode,DeftExperienceRecordFormV3Node,DeftExperienceRecordFormV3Profile} from '../../../../packages/app-kit/src/app-data';
 
@@ -48,7 +48,7 @@ export function validateRecordFormValue(value:ExperienceRecordValue,profile:Reco
  const files=recordFormFiles(value,profile),rich=profile.richtext;
  if(rich){const html=recordFormString(value,rich.html_field),plain=recordFormString(value,rich.plain_field);
   if(html.length>rich.max_characters||plain.length>rich.max_characters||!plain.isWellFormed()||/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(plain))throw Error('Record text unavailable');
-  if(html&&parseNativeSafeComposeHtml(html,{maxCharacters:rich.max_characters,inlineAttachments:rich.inline_images==='host_files'?files:[]}).plainText!==plain)throw Error('Record text pair changed');
+  if(html&&parseTrustedRichtextHtml(html,{maxCharacters:rich.max_characters,inlineAttachments:rich.inline_images==='host_files'?files:[]}).plainText!==plain)throw Error('Record text pair changed');
  }
  for(const field of recordFormFields(profile)){const saved=value[field.field];
   if(field.kind==='text'&&(typeof saved!=='string'||!saved.isWellFormed()||saved.length>field.max_characters||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(saved)||field.format==='mailbox_list'&&/[\r\n]/u.test(saved)||field.required&&!saved.trim()))throw Error('Record field needs correction');

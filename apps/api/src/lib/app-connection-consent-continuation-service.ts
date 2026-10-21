@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import {createHash,randomBytes} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {and,eq,sql} from 'drizzle-orm';
@@ -7,7 +7,7 @@ import {AppConnectionConsentContinuationReviewRequestSchema,AppConnectionConsent
  AppConnectionConsentContinuationRuntimeRequestSchema,AppConnectionSessionViewSchema,
  appConnectionConsentContinuationPins,appConnectionConsentContinuationReviewValue,appConnectionConsentContinuationReceiptValue,
  canonicalConnectionConsentContinuationJson,validateAppConnectionConsentContinuationResult,
- type AppConnectionConsentContinuationRuntimeRequest} from '@deft/app-kit';
+ type AppConnectionConsentContinuationRuntimeRequest} from '@deft/app-kit/core';
 import {appConnectionSessions,appResourceBindings} from '@deft/db/schema';
 import {db} from './db.js';
 import {PostgresConsentContinuationStore,ConsentContinuationRecordSchema,continuationDenied,

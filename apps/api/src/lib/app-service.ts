@@ -18,7 +18,7 @@ import {
   type DeftAppManifestV0,
   type DeftAppPackage,
   type DeftAppPackageV0,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import {
   parseSupportedDeftModuleManifest as parseDeftModuleManifest,
   type ModuleActor,
@@ -364,7 +364,7 @@ export async function stageAppUpgrade(
     if (runtimeUpgrade) options.assertAdmission?.(inspected.manifest as Parameters<NonNullable<RuntimeAppReviewOptions['assertAdmission']>>[0]);
     if (attachmentUpgrade) {
       const { loadReviewedAttachmentApp, assertAttachmentManifestAdmission, assertAttachmentCompositionActionsEnabled } = await import('./app-attachment-authority.js');
-      const { parseAttachmentAppManifest } = await import('@deft/app-kit');
+      const { parseAttachmentAppManifest } = await import('@deft/app-kit/core');
       const current = await loadReviewedAttachmentApp(tx, actor.org_id, installationId);
       if (!current.composition || current.version.id !== activeVersion.id) throw new AppError('Reviewed composition upgrade required', 'APP_PROTOCOL_UNSUPPORTED', 409);
       const manifest = parseAttachmentAppManifest(inspected.manifest);

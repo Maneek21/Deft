@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {AppDataPreparedRecordActionSchema,canonicalAppDataJson,canonicalAppPreparedEffectJson,parseAppPreparedEffectDetails,
-  type AppDataPreparedRecordAction,type RecordStoreDeclaration} from '@deft/app-kit';
+  type AppDataPreparedRecordAction,type RecordStoreDeclaration} from '@deft/app-kit/core';
 
 /** The declaration is reviewed content. Current action authority is checked
  * independently by the host, and current custody by the external executor. */

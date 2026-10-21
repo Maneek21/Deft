@@ -1,5 +1,5 @@
 import {isDeepStrictEqual} from 'node:util';
-import type {OwnerConnectionPolicyDeclaration} from '@deft/app-kit';
+import type {OwnerConnectionPolicyDeclaration} from '@deft/app-kit/core';
 /** The caller supplies an already validated current registration admission.
  * Shared resources do not nominate a profile; the exact reviewed policy does. */
 export function selectAdmittedConnectionPolicy(policies:readonly OwnerConnectionPolicyDeclaration[],admitted:OwnerConnectionPolicyDeclaration,current:{resource_key:string;runtime_requirement_key:string}){

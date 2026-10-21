@@ -3,7 +3,7 @@ import test from 'node:test';
 import {createExperienceAccountRouting,type AccountChild} from './app-experience-account-routing';
 import {createExperienceBridge,type ExperiencePort} from './app-experience-bridge';
 import {createExperienceDataClient,appDataInputDigest} from './app-experience-data-client';
-import {createDeftExperienceSdk} from '../../../../packages/app-kit/src/experience-sdk';
+import {createDeftExperienceSdk} from '../../../../packages/app-kit/src/experience-core';
 import {AppDataRequestSchema} from '../../../../packages/app-kit/src/app-data';
 
 const signal=()=>new AbortController().signal;

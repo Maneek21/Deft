@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppDigestSchema, parseNativeAppManifest, type DeftAppPackage } from '@deft/app-kit';
+import { AppDigestSchema, parseNativeAppManifest, type DeftAppPackage } from '@deft/app-kit/core';
 import { appInstallations, appVersions, appGrantSnapshots, appModuleBindings, moduleInstallations, auditLog } from '@deft/db/schema';
 import type { ModuleActor } from '@deft/shared/modules';
 import { db } from './db.js';

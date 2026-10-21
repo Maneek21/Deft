@@ -174,7 +174,7 @@ const moduleRef = {
 };
 const compatibility = {
   schema: 'deft.app_developer.compatibility.v1',
-  app_kit: { package: '@deft/app-kit', versions: ['0.1.0-alpha.1', '0.1.0-alpha.2'] },
+  app_kit: { package: '@deft/app-kit/core', versions: ['0.1.0-alpha.1', '0.1.0-alpha.2'] },
   protocol_flows: {
     '0': { package_format: 'deft.app.package.v0', install_mode: 'stage_and_activate' },
     '1': { package_format: 'deft.app.package.v1', install_mode: 'stage_only' },

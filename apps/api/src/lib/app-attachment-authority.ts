@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { AppDigestSchema, parseAttachmentAppManifest, type DeftAppManifestV7 } from '@deft/app-kit';
+import { AppDigestSchema, parseAttachmentAppManifest, type DeftAppManifestV7 } from '@deft/app-kit/core';
 import { appInstallations, appVersions, appGrantSnapshots, users } from '@deft/db/schema';
 import type { AppRunTransaction } from './app-run-repository.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';

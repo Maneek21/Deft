@@ -7,7 +7,7 @@ import { AppConnectionReattachmentService } from './app-connection-reattachment-
 import { productionAppConnectionReattachmentPorts } from './app-connection-reattachment-authority.js';
 import { AppResourceObservationService } from './app-resource-observation-service.js';
 import { ResourceObservationSnapshotSchema } from '../../../../packages/app-kit/src/resource-observation.js';
-import { AppDataConsentSnapshotSchema } from '@deft/app-kit';
+import { AppDataConsentSnapshotSchema } from '@deft/app-kit/core';
 import { AppDataService } from './app-data-service.js';
 import { getAppAttachmentRuntime } from './app-attachment-runtime.js';
 import { db } from './db.js';

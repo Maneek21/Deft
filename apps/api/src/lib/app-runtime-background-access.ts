@@ -1,4 +1,4 @@
-import { appConsentDeadline } from '@deft/app-kit';
+import { appConsentDeadline } from '@deft/app-kit/core';
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { appRuntimeBindings, appRuntimeRegistrations } from '@deft/db/schema';
@@ -8,7 +8,7 @@ import { env, isAppOwnerConnectionsEnabled } from './env.js';
 import type { ModuleActor } from '@deft/shared/modules';
 import type { ExperienceCaller } from './app-experience-service.js';
 import type { WebAuthorityGuard } from './app-resource-sync-web-authority.js';
-import type { AppConnectionSessionScope } from '@deft/app-kit';
+import type { AppConnectionSessionScope } from '@deft/app-kit/core';
 
 // After an App upgrade the reviewed bindings move to the new version, but the
 // Runtime still holds sessions for the old ones. A current owner re-establishes

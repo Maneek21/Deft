@@ -1,6 +1,6 @@
 import {createCipheriv,createDecipheriv,randomBytes} from 'node:crypto';
 import {z} from 'zod';
-import {AppRecordMirrorReviewRequestSchema} from '@deft/app-kit';
+import {AppRecordMirrorReviewRequestSchema} from '@deft/app-kit/core';
 import type {AppRunKeyProvider} from './app-run-keyrings.js';
 import {appDataDigest,appDataDenied} from './app-data-authority.js';
 import {ReviewedRecordMirrorAuthoritySchema} from './app-record-mirror-authority.js';

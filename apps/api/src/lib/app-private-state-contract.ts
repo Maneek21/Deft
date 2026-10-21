@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { PrivateStateDeclarationSchema, type PrivateStateDeclaration } from '@deft/app-kit';
-import { parseRuntimeObjectInput } from '@deft/app-kit';
+import { PrivateStateDeclarationSchema, type PrivateStateDeclaration } from '@deft/app-kit/core';
+import { parseRuntimeObjectInput } from '@deft/app-kit/core';
 import { AppError } from './app-errors.js';
 
 const identity = z.string().uuid();

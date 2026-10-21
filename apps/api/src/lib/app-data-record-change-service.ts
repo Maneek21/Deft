@@ -1,5 +1,5 @@
 import {AppDataRequestSchema,AppDataResultSchema,AppRecordChangeRuntimeRequestSchema,AppRecordChangeAuthorityRequestSchema,AppRecordPrepareChangeInputSchema,AppRecordApplyChangeInputSchema,canonicalAppDataJson,
- type AppDataRequest,type AppRecordChangeRuntimeRequest,type AppRecordChangeAuthorityRequest} from '@deft/app-kit';
+ type AppDataRequest,type AppRecordChangeRuntimeRequest,type AppRecordChangeAuthorityRequest} from '@deft/app-kit/core';
 import {AppError} from './app-errors.js';
 import type {CurrentAppDataAuthority} from './app-data-authority.js';
 import {recordChangeAuthorities,sameRecordChangeAuthority,verifyPreparedRecordChange,recordChangeDigest} from './app-data-record-change-guards.js';

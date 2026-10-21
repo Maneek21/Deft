@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {pathToFileURL} from 'node:url';
-import {parseSafeComposeHtml,parseNativeSafeComposeHtml} from '@deft/app-kit/experience';
+import {parseBasicRichtextHtml,parseTrustedRichtextHtml} from '@deft/app-kit/experience/core';
 
 // The saved-source probe selects exact pre-change consumers without overwriting
 // authoring files. Normal repository runs always import the current consumers.
@@ -36,7 +36,7 @@ test('native signature preferences use destination-aware plain text without wide
  assert.deepEqual(SignaturePreferencesSchema.parse(preferences),preferences);
  assert.equal(SignaturePreferencesSchema.safeParse({identities:[{...preferences.identities[0],plain:'Read the guide.'}]}).success,false);
  assert.equal(SignaturePreferencesSchema.safeParse({identities:[{...preferences.identities[0],html:'<p><a href="https://user:pass@example.test/">unsafe</a></p>'}]}).success,false);
- assert.throws(()=>parseSafeComposeHtml(html));assert.equal(parseNativeSafeComposeHtml(html).plainText,body);
+ assert.throws(()=>parseBasicRichtextHtml(html));assert.equal(parseTrustedRichtextHtml(html).plainText,body);
 });
 
 test('actual native draft create and reopen preserve linked managed content under current draft authority',async()=>{
@@ -69,9 +69,9 @@ test('native long formatted body and template retain exact pair while whole JSON
  for(const size of [20,96,220]){const text='x'.repeat(size*1024),rich='<p><strong>'+text+'</strong></p>';
   const draft=EmailDraftContentSchema.parse(content({body:text,body_html:rich}));assert.equal(draft.body_html,rich);
   const template={title:'Long',subject:'',body:text,body_html:rich};assert.deepEqual(EmailTemplateContentSchema.parse(template),template);
-  assert.throws(()=>parseSafeComposeHtml(rich));assert.equal(parseNativeSafeComposeHtml(rich).plainText,text);
+  assert.throws(()=>parseBasicRichtextHtml(rich));assert.equal(parseTrustedRichtextHtml(rich).plainText,text);
  }
- const text='😀'.repeat(100000),rich='<p>'+text+'</p>';assert.equal(parseNativeSafeComposeHtml(rich).plainText,text);
+ const text='😀'.repeat(100000),rich='<p>'+text+'</p>';assert.equal(parseTrustedRichtextHtml(rich).plainText,text);
  assert.equal(EmailDraftContentSchema.safeParse(content({body:text,body_html:rich})).success,false);
  assert.equal(EmailTemplateContentSchema.safeParse({title:'Large pair',subject:'',body:text,body_html:rich}).success,false);
  assert.equal(SignaturePreferencesSchema.safeParse({identities:[{address:'owner@example.test',plain:'x'.repeat(2049),html:'<p>'+ 'x'.repeat(2049)+'</p>',placement:'both'}]}).success,false);

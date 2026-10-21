@@ -8,7 +8,7 @@ import { experienceRunState } from './app-experience-run-presentation.js';
 import { experienceAgentPolicy } from './app-experience-human-action-agent-policy.js';
 import { and, eq, or, isNull, sql } from 'drizzle-orm';
 import { agentActions, appRuns, appRunHumanAuthorizations, appPrivateStateRecords } from '@deft/db/schema';
-import { RuntimeObjectSchema, parseRuntimeObjectInput, type PrivateStateDeclaration, type RuntimeObjectContract } from '@deft/app-kit';
+import { RuntimeObjectSchema, parseRuntimeObjectInput, type PrivateStateDeclaration, type RuntimeObjectContract } from '@deft/app-kit/core';
 import { AppRunError } from './app-run-errors.js';
 import type { AppRunRuntime } from './app-run-runtime.js';
 import type { AppRunSafeView, AppRunTransaction } from './app-run-repository.js';

@@ -7,15 +7,15 @@ const Html=z.string().max(16_384);
 export const SignatureEntrySchema=z.strictObject({address:z.string().email().max(320),plain:Text,html:Html,placement:z.enum(['new','reply','both','none'])});
 export const SignaturePreferencesSchema=z.strictObject({identities:z.array(SignatureEntrySchema).max(32)}).superRefine((v,ctx)=>{
  const seen=new Set<string>();for(const item of v.identities){const key=normalize(item.address);if(seen.has(key))ctx.addIssue({code:'custom',message:'Duplicate sender identity'});seen.add(key);
-  if(item.html){try{const {parseSafeComposeHtml}=requireSafeCompose();const parsed=parseSafeComposeHtml(item.html,{maxCharacters:16_384,maxBytes:65_536});
+  if(item.html){try{const {parseBasicRichtextHtml}=requireSafeCompose();const parsed=parseBasicRichtextHtml(item.html,{maxCharacters:16_384,maxBytes:65_536});
    if(!item.plain||parsed.plainText!==item.plain)ctx.addIssue({code:'custom',message:'Signature rich and plain text must match'});
   }catch{ctx.addIssue({code:'custom',message:'Signature HTML is invalid'});}}
  }
  if(Buffer.byteLength(JSON.stringify(v),'utf8')>64*1024)ctx.addIssue({code:'custom',message:'Signature preferences exceed size limit'});
 });
 // Kept synchronous to match the existing safe compose parser.
-import {parseNativeSafeComposeHtml as parseSafeComposeHtml} from '@deft/app-kit/experience';
-function requireSafeCompose(){return {parseSafeComposeHtml};}
+import {parseTrustedRichtextHtml as parseBasicRichtextHtml} from '@deft/app-kit/experience/core';
+function requireSafeCompose(){return {parseBasicRichtextHtml};}
 export type SignaturePreferences=Readonly<z.infer<typeof SignaturePreferencesSchema>>;
 export const normalize=(address:string)=>address.trim().toLocaleLowerCase('en-US');
 export const signatureIdentityKey=(address:string)=>createHash('sha256').update(normalize(address),'utf8').digest('hex');

@@ -15,13 +15,13 @@ import {createExperienceRecordWriter,experienceRecordSubmissionEvent,type Experi
 import {prepareRecordFormFile,recordFormFiles,recordFormString,validateRecordFormValue,experienceRecordFormMode,type RecordFormFile,type RecordFormIdentity,recordFormFields,recordFormIdentity,recordFormLabels,type RecordFormNode,type RecordFormProfile} from '@/lib/app-experience-record-form';
 import {createInlinePreviews,inlineImageExtension} from '@/lib/app-experience-inline-images';
 import {plainToRich,richEditorView} from '@/lib/app-experience-rich-mode';
-import {nativeComposeImageCid,parseNativeSafeComposeHtml} from '../../../../../packages/app-kit/src/safe-compose-html';
+import {richtextImageReference,parseTrustedRichtextHtml} from '../../../../../packages/app-kit/src/safe-rich-text';
 import {recordChoiceEdit} from '@/lib/app-experience-record-fields';
 import {ExperienceRecordFields} from './experience-record-fields';
 import type {DeftExperienceRecordFormV2Node,DeftExperienceRecordFormNode} from '../../../../../packages/app-kit/src/app-data';
 import {ExperienceComposeRichEditor,type ComposeImagePort} from './experience-compose-controls-rich-editor';
 import {ExperienceComposeMailboxControl,ExperienceFilePicker} from './experience-compose-controls';
-import {parseMailboxList} from '../../../../../packages/app-kit/src/mailbox-list';
+import {parseAddressList} from '../../../../../packages/app-kit/src/structured-address';
 
 export type ExperienceRecordFormNode=RecordFormNode;
 export type ExperienceRecordFormReference=ExperienceRecordFormNode|DeftExperienceRecordFormV2Node;
@@ -75,8 +75,8 @@ function RecordBody({value,files,profile,disabled,presentationOnly=false,onChang
  useEffect(()=>{if(rich||presentationOnly)return;let active=true;const port:ComposeImagePort={insert(fileId,alt){
   if(!active||ref.current.disabled||!ref.current.files.some(file=>file.file_id===fileId))return false;
   try{const escape=(text:string)=>text.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-   const pair=plainToRich(ref.current.value.plainText),html=pair.html+'<p><img src="cid:'+nativeComposeImageCid(fileId)+'" alt="'+escape(alt)+'"></p>';
-   ref.current.onChange(parseNativeSafeComposeHtml(html,{inlineAttachments:ref.current.files}));return true;}catch{return false;}}};
+   const pair=plainToRich(ref.current.value.plainText),html=pair.html+'<p><img src="cid:'+richtextImageReference(fileId)+'" alt="'+escape(alt)+'"></p>';
+   ref.current.onChange(parseTrustedRichtextHtml(html,{inlineAttachments:ref.current.files}));return true;}catch{return false;}}};
   register(port);return()=>{active=false;register(null,port);};
  },[!!rich,register,presentationOnly]);
  if(rich)return <ExperienceComposeRichEditor label={richtext.label} value={rich} preserveWhitespace hostLinks
@@ -160,7 +160,7 @@ export function ExperienceRecordForm({node,ports,context,emit,registerWriter}:{n
  const body=rich?{html:recordFormString(value,rich.html_field),plainText:recordFormString(value,rich.plain_field)}:null;
  const optionalFields=fields.filter(field=>field.kind==='text'&&field.optional);
  const optionalExpanded=(field:string)=>optionalVisibility[field]??Boolean(recordFormString(value,field));
- const valueCount=(field:typeof fields[number])=>{const text=recordFormString(value,field.field);if(field.kind==='text'&&field.format==='mailbox_list'){try{return parseMailboxList(text,{maxItems:32,allowEmpty:true}).length;}catch{return null;}}return text?1:0;};
+ const valueCount=(field:typeof fields[number])=>{const text=recordFormString(value,field.field);if(field.kind==='text'&&field.format==='mailbox_list'){try{return parseAddressList(text,{maxItems:32,allowEmpty:true}).length;}catch{return null;}}return text?1:0;};
  const changeBody=(next:{html:string;plainText:string})=>{if(rich)edit({...writer.current!.snapshot.value,[rich.html_field]:next.html,[rich.plain_field]:next.plainText});};
  async function upload(selected:readonly File[],inline=false){if(!current()||disabled||selected.length!==1){setNotice('Select one file at a time.');return;}setFileBusy(true);setNotice('');
   try{const file=await prepareRecordFormFile(selected[0],profile,files);if(inline&&!['image/png','image/jpeg','image/gif','image/webp'].includes(file.media_type))throw Error('Choose a PNG, JPEG, GIF or WebP image.');

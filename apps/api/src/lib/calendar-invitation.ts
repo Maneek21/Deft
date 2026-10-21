@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import ical, {type VEvent} from 'node-ical';
-import {parseMailboxList} from '../../../../packages/app-kit/src/mailbox-list.js';
+import {parseAddressList} from '../../../../packages/app-kit/src/structured-address.js';
 
 export type CalendarTime=Readonly<{value:string;value_type:'date'|'date_time';time_zone:string|null;instant:string|null}>;
 export type CalendarAttendee=Readonly<{address:string;name:string;partstat:string;role:string;kind:string;rsvp:boolean|null;delegated:boolean}>;
@@ -33,7 +33,7 @@ function property(line:string):Property{
 function mailbox(value:unknown):string{
  if(typeof value!=='string'||!/^mailto:/iu.test(value))return fail('CALENDAR_ADDRESS_INVALID');
  const address=value.slice(7);if(/[?%]/u.test(address))return fail('CALENDAR_ADDRESS_INVALID');
- try{const row=parseMailboxList(address,{maxItems:1})[0]!;if(row.displayName)return fail('CALENDAR_ADDRESS_INVALID');return row.address.toLowerCase();}catch{return fail('CALENDAR_ADDRESS_INVALID');}
+ try{const row=parseAddressList(address,{maxItems:1})[0]!;if(row.displayName)return fail('CALENDAR_ADDRESS_INVALID');return row.address.toLowerCase();}catch{return fail('CALENDAR_ADDRESS_INVALID');}
 }
 const textValue=(value:unknown,max:number):string=>{
  const raw=typeof value==='string'?value:value&&typeof value==='object'&&'val' in value?(value as {val:unknown}).val:'';

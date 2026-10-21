@@ -1,10 +1,10 @@
-import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit';
+import {appConsentDeadline,appConsentExpiryValid} from '@deft/app-kit/core';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   appResourceBindings, appRuntimeRegistrations, appRuntimeSessions,
   capabilityProviderSnapshots, orgMembers, users,
 } from '@deft/db/schema';
-import { SyncDescriptorV2Schema, digestResourceSyncDescriptorV2 } from '@deft/app-kit';
+import { SyncDescriptorV2Schema, digestResourceSyncDescriptorV2 } from '@deft/app-kit/core';
 import { parseAttachmentConsentPolicy } from './app-attachment-policy.js';
 import { attachmentFinalAuthorityIsCurrent } from './app-attachment-authority.js';
 import { assertOwnerConnectionRegistration } from './app-owner-connection-authority.js';

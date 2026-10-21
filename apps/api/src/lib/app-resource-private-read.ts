@@ -1,4 +1,4 @@
-import {appConsentDeadline} from '@deft/app-kit';
+import {appConsentDeadline} from '@deft/app-kit/core';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';

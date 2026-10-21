@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AppDigestSchema, NATIVE_CALENDAR_CONTRACTS, NATIVE_ACTION_HOST_POLICY, type DeftAppManifestV6 } from '@deft/app-kit';
+import { AppDigestSchema, NATIVE_CALENDAR_CONTRACTS, NATIVE_ACTION_HOST_POLICY, type DeftAppManifestV6 } from '@deft/app-kit/core';
 import { AppRunNativeOperationIdentitySchema, CapabilityJsonObjectSchema } from '@deft/shared';
 import { digestAppGrantValue } from './app-grant-service.js';
 import { HistoricalCreatePolicySchema } from './app-public-cancellation-contract.js';

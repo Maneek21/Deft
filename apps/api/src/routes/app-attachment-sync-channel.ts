@@ -4,7 +4,7 @@ import { appAttachmentSyncChannelEnabled } from '../lib/app-attachment-sync-chan
 import { getAppAttachmentRuntime } from '../lib/app-attachment-runtime.js';
 import { readAttachmentFrame } from '../lib/app-attachment-frame.js';
 import { AppError } from '../lib/app-errors.js';
-import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 } from '@deft/app-kit';
+import { APP_RESOURCE_SYNC_CHANNEL_VERSION_V3 } from '@deft/app-kit/core';
 import { markAuthenticatedResourceSyncHeartbeat } from '../middleware/app-resource-sync-limits.js';
 import { RESOURCE_SYNC_CLAIM_BUDGET_MS } from '../lib/app-resource-sync-claim-budget.js';
 const APP_RESOURCE_SYNC_AUDIENCE='app_resource_sync' as const;

@@ -2,7 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { appResourceBindings, appRuntimeRegistrations, appInstallations, auditLog } from '@deft/db/schema';
 import { db } from './db.js';
-import { appConsentDeadline } from '@deft/app-kit';
+import { appConsentDeadline } from '@deft/app-kit/core';
 import { assertContinuityProof, readContinuityProof, UPGRADE_ALIAS_ACTION, type UpgradeTx } from './app-upgrade-trust-continuity.js';
 import { AppConnectionSessionRegistryConfigSchema, connectionProfileDigest, connectionTransportEntryDigest } from './app-connection-session-registry.js';
 

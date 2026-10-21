@@ -1,4 +1,4 @@
-import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,appConsentExpiryValid,type AppConsentLifetime} from '@deft/app-kit/core';
 import { loadLiveAttachmentSyncBindingAuthority,loadConsentContinuationBindingIdentity } from './app-attachment-sync-authority.js';
 import type { AppRunTransaction } from './app-run-repository.js';
 import { AppError } from './app-errors.js';

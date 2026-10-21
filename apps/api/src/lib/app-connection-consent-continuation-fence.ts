@@ -4,7 +4,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {appConnectionConsentContinuations as journals} from '@deft/db/schema';
 import {ConsentContinuationRecordSchema,continuationDenied} from './app-connection-consent-continuation-store.js';
 import {continuationRequest,continuationDigest} from './app-connection-consent-continuation-service.js';
-import {appConnectionConsentContinuationReceiptValue} from '@deft/app-kit';
+import {appConnectionConsentContinuationReceiptValue} from '@deft/app-kit/core';
 import type {AppRunTransaction} from './app-run-repository.js';
 import type {AppConnectionSessionRecord} from './app-connection-session-service.js';
 export async function continuationSourceIsAvailable(tx:AppRunTransaction,q:{org_id:string;owner_user_id?:string;session_id?:string;resource_binding_id?:string;continuation_session_id?:string}){

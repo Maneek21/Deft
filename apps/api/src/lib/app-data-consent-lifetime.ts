@@ -1,4 +1,4 @@
-import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit';
+import {appConsentDeadline,type AppConsentLifetime} from '@deft/app-kit/core';
 import {AppError} from './app-errors.js';
 
 /** Only explicitly reviewed persistent account/policy grants admit a persistent

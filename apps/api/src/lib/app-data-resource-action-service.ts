@@ -3,7 +3,7 @@ import type {AppRunSafeView,AppRunTransaction} from './app-run-repository.js';
 import type {HumanActionAuthority} from './app-experience-human-action-service.js';
 import {isDeepStrictEqual} from 'node:util';
 import {AppResourceActionPrepareSchema,AppResourceActionReviewSchema,AppResourceActionReleasedInputSchema,
-  AppDataPreparedResourceActionSchema} from '@deft/app-kit';
+  AppDataPreparedResourceActionSchema} from '@deft/app-kit/core';
 import {AppDataActionService} from './app-data-action-service.js';
 import {appDataDenied,appDataDigest} from './app-data-authority.js';
 import {HumanActionConfirmSchema,humanActionDigest,openHumanActionTicket} from './app-experience-human-action-contract.js';

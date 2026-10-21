@@ -1,5 +1,5 @@
 import { and, desc, eq } from 'drizzle-orm';
-import { parseNativeCalendarInput, parseNativeCalendarResult } from '@deft/app-kit';
+import { parseNativeCalendarInput, parseNativeCalendarResult } from '@deft/app-kit/core';
 import { AppRunRetainedProviderResultSchema, parseAppRunReceiptEnvelope } from '@deft/shared';
 import { appGrantSnapshots, appRunAttempts, appRunReceipts, appRuns, appVersions, nativeCreateRequests } from '@deft/db/schema';
 import { nativeStale } from './app-native-authority.js';

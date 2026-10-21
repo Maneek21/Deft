@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql, and, eq } from 'drizzle-orm';
 import { appExperienceConsentGrants, agentEmployees, mcpTokens, oauthAccessTokens, oauthGrants, agentActions, appVersions, appGrantSnapshots, appRuntimeAgentPolicies } from '@deft/db/schema';
-import { RuntimeObjectSchema, parseRuntimeObjectInput } from '@deft/app-kit';
+import { RuntimeObjectSchema, parseRuntimeObjectInput } from '@deft/app-kit/core';
 import { AppRunError } from './app-run-errors.js';
 import { getAppRunRuntime, type AppRunRuntime } from './app-run-runtime.js';
 import type { AppRunTransaction } from './app-run-repository.js';

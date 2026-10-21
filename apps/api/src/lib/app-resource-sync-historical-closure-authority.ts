@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { appVersions, appGrantSnapshots, appResourceBindings, appRuntimeRegistrations,
   appOwnerConnectionAdmissions, capabilityProviderSnapshots, appConnectionSessions } from '@deft/db/schema';
 import { parseAttachmentAppManifest, digestResourceSyncDescriptorV2, SyncDescriptorV2Schema, ResourceObservationSnapshotSchema,
-  appConsentDeadline } from '@deft/app-kit';
+  appConsentDeadline } from '@deft/app-kit/core';
 import { CapabilityProviderDiscoverySnapshotSchema, canonicalCapabilityJson } from '@deft/shared';
 import { appResourceObservationConsents, appResourceObservationRuns } from '../../../../packages/db/src/resource-observation-schema.js';
 import type { AppRunTransaction } from './app-run-repository.js';

@@ -1,4 +1,4 @@
-import type {AppDataOperationInput,AppDataRecord,RecordStoreDeclaration} from '@deft/app-kit';
+import type {AppDataOperationInput,AppDataRecord,RecordStoreDeclaration} from '@deft/app-kit/core';
 /** Nested source nominations must stay inside the reviewed store resource. */
 export function appDataSourceWithinStore(operation:AppDataOperationInput,resourceKey:string,store:RecordStoreDeclaration){
  if(operation.operation==='file_copy')return !!store.resource_content&&operation.input.source.resource_key===resourceKey;

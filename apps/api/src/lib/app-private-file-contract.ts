@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AttachmentPolicy } from '@deft/app-kit';
+import type { AttachmentPolicy } from '@deft/app-kit/core';
 
 const uuid = z.string().uuid();
 const key = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/);

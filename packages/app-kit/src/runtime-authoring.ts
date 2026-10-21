@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { parseMailboxList } from './mailbox-list.js';
-import { parseSafeComposeHtml } from './safe-compose-html.js';
+import { parseAddressList } from './structured-address.js';
+import { parseBasicRichtextHtml } from './safe-rich-text.js';
 import { parseResourceRecordList } from './resource-record-list.js';
 
 const key = z.string().min(1).max(48).regex(/^[a-z][a-z0-9_]*$/)
@@ -66,13 +66,13 @@ export function parseRuntimeObjectInput(contract: RuntimeObjectContract, value: 
       .min(definition.minLength ?? 0).max(definition.maxLength).regex(/^[^\r\n\0]*$/u);
     if (definition.type === 'string' && definition.format === 'mailbox_list') validator = z.string()
       .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
-        try { parseMailboxList(text, { maxItems: definition.maxItems, allowEmpty: (definition.minLength ?? 0) === 0 }); }
-        catch { ctx.addIssue({ code: 'custom', message: 'Enter a valid bounded mailbox list' }); }
+        try { parseAddressList(text, { maxItems: definition.maxItems, allowEmpty: (definition.minLength ?? 0) === 0 }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a valid bounded address list' }); }
       });
     if (definition.type === 'string' && definition.format === 'safe_html') validator = z.string()
       .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
-        try { parseSafeComposeHtml(text, { maxCharacters: definition.maxLength }); }
-        catch { ctx.addIssue({ code: 'custom', message: 'Enter a canonical bounded compose document' }); }
+        try { parseBasicRichtextHtml(text, { maxCharacters: definition.maxLength }); }
+        catch { ctx.addIssue({ code: 'custom', message: 'Enter a canonical bounded rich-text document' }); }
       });
     if (definition.type === 'string' && definition.format === 'resource_record_list') validator = z.string()
       .min(definition.minLength ?? 0).max(definition.maxLength).superRefine((text, ctx) => {
@@ -84,8 +84,8 @@ export function parseRuntimeObjectInput(contract: RuntimeObjectContract, value: 
   return z.strictObject(shape).superRefine((input, ctx) => {
     for (const [name, definition] of Object.entries(schema.properties)) if (definition.type === 'string' && definition.format === 'safe_html'
       && typeof input[name] === 'string' && input[name] !== '') {
-      try { if (parseSafeComposeHtml(input[name] as string).plainText !== input[definition.plainTextKey!])
-        ctx.addIssue({ code: 'custom', path: [definition.plainTextKey!], message: 'Plain input must exactly match the compose document' }); }
+      try { if (parseBasicRichtextHtml(input[name] as string).plainText !== input[definition.plainTextKey!])
+        ctx.addIssue({ code: 'custom', path: [definition.plainTextKey!], message: 'Plain input must exactly match the rich-text document' }); }
       catch { /* The field validator reports malformed HTML. */ }
     }
   }).parse(value) as Record<string, string | number | boolean>;

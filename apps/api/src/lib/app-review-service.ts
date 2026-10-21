@@ -20,7 +20,7 @@ import {
   DEFT_APP_DEVELOPER_COMPATIBILITY,
   projectDeftAppRequestedAuthority,
   type DeftAppPrivateInterfaceDescriptorV1,
-} from '@deft/app-kit';
+} from '@deft/app-kit/core';
 import type { MCPTool, MCPToolOverride } from '@deft/mcp';
 import {
   CapabilityProviderDiscoverySnapshotSchema,
@@ -1397,6 +1397,8 @@ export async function activateConnectedAppInstallation(
         operation_schema_digest: binding.operation_schema_digest,
         connector_authorization_version: binding.connector_authorization_version,
         ...privateInterface.host_policy,
+        // The historical column's existing SQL constraint remains authoritative.
+        egress_class: sql`${privateInterface.host_policy.egress_class}`,
         canonical_binding: binding.canonical_binding,
         binding_digest: binding.binding_digest,
       });

@@ -1,4 +1,4 @@
-import { AttachmentPolicySchema, RESOURCE_ATTACHMENT_LIMITS, type AttachmentPolicy } from '@deft/app-kit';
+import { AttachmentPolicySchema, RESOURCE_ATTACHMENT_LIMITS, type AttachmentPolicy } from '@deft/app-kit/core';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AppResourceSyncConsentRequestSchema } from './app-resource-sync-policy.js';

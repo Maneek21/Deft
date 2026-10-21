@@ -6,11 +6,11 @@ import StarterKit from '@tiptap/starter-kit';
 import {Extension,type AnyExtension} from '@tiptap/core';
 import {Plugin} from '@tiptap/pm/state';
 import { Bold, Italic, List, ListOrdered, Link2 } from 'lucide-react';
-import { type NativeComposeInlineAttachment, NATIVE_COMPOSE_BODY_LIMITS, parseSafeComposeHtml, parseNativeSafeComposeHtml, canonicalNativeComposeLink, nativeSafeComposeHtmlFromEditorDocument, nativeComposeDraftFromEditorDocument, plainTextToNativeComposeHtml, plainTextToSafeComposeHtml, safeComposeHtmlFromEditorDocument } from '../../../../../packages/app-kit/src/safe-compose-html';
+import { type RichtextInlineFile, RICH_TEXT_LIMITS, parseBasicRichtextHtml, parseTrustedRichtextHtml, canonicalRichtextLink, trustedRichtextHtmlFromEditorDocument, trustedRichtextDraftFromEditorDocument, plainTextToRichtextHtml, plainTextToBasicRichtextHtml, basicRichtextHtmlFromEditorDocument } from '../../../../../packages/app-kit/src/safe-rich-text';
 import { ExperienceComposePlainEditor } from './experience-compose-controls-editor';
 
 export type ComposeImagePort={insert:(fileId:string,alt:string)=>boolean};
-type HostImages={files:readonly NativeComposeInlineAttachment[];extension:AnyExtension;register:(port:ComposeImagePort|null,previous?:ComposeImagePort)=>void};
+type HostImages={files:readonly RichtextInlineFile[];extension:AnyExtension;register:(port:ComposeImagePort|null,previous?:ComposeImagePort)=>void};
 type Value = Readonly<{ html: string; plainText: string }>;
 const button = 'rounded-full px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] disabled:opacity-50';
 /** Only a reviewed paired scalar contract enables this editor. Clipboard HTML
@@ -21,13 +21,13 @@ export function ExperienceComposeRichEditor({label,value,onChange,maxCharacters,
   disabled=disabled||presentationOnly;
   const id=useId(), [notice,setNotice]=useState(''), [hardNotice,setHardNotice]=useState(''), [,redraw]=useState(0);
   const hydrated=useRef(false), mounted=useRef(true);
-  const docPair=useRef<{doc:object;value:Value;files?:readonly NativeComposeInlineAttachment[]}|null>(null),published=useRef<{doc:object;value:Value;files?:readonly NativeComposeInlineAttachment[]}|null>(null);
+  const docPair=useRef<{doc:object;value:Value;files?:readonly RichtextInlineFile[]}|null>(null),published=useRef<{doc:object;value:Value;files?:readonly RichtextInlineFile[]}|null>(null);
   type LinkEdit={value:Value;doc:object;from:number;to:number;text:string;href:string;existing:boolean};
   const [linkEdit,setLinkEdit]=useState<LinkEdit|null>(null),[linkURL,setLinkURL]=useState('');
   const linkOwner=useRef<LinkEdit|null>(null),linkPanel=useRef<HTMLDivElement|null>(null),linkInput=useRef<HTMLInputElement|null>(null);
   const imageOptions={inlineAttachments:hostImages?.files};
-  const parseHtml=hostLinks?(html:string,options={})=>parseNativeSafeComposeHtml(html,{...options,...imageOptions}):parseSafeComposeHtml;
-  const fromDocument=hostLinks?(doc:unknown)=>nativeSafeComposeHtmlFromEditorDocument(doc,imageOptions):safeComposeHtmlFromEditorDocument;
+  const parseHtml=hostLinks?(html:string,options={})=>parseTrustedRichtextHtml(html,{...options,...imageOptions}):parseBasicRichtextHtml;
+  const fromDocument=hostLinks?(doc:unknown)=>trustedRichtextHtmlFromEditorDocument(doc,imageOptions):basicRichtextHtmlFromEditorDocument;
   const closeLink=(focus=false)=>{linkOwner.current=null;if(mounted.current)setLinkEdit(null);if(focus&&mounted.current&&!latest.current.disabled)editor?.commands.focus();};
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;linkOwner.current=null;};},[]);
   useEffect(()=>{if(!linkEdit)return;linkInput.current?.focus();
@@ -43,24 +43,24 @@ export function ExperienceComposeRichEditor({label,value,onChange,maxCharacters,
   const boundedDocument=useMemo(()=>Extension.create({name:'hostComposeBoundedDraft',addProseMirrorPlugins(){return [new Plugin({filterTransaction(transaction){
     if((!latest.current.hostLinks&&!latest.current.validateValue)||!transaction.docChanged)return true;
     if(!mounted.current||latest.current.disabled&&transaction.getMeta('preventUpdate')!==true)return false;
-    try{const next=latest.current.hostLinks?nativeComposeDraftFromEditorDocument(transaction.doc.toJSON(),{inlineAttachments:latest.current.hostImages?.files}):safeComposeHtmlFromEditorDocument(transaction.doc.toJSON());latest.current.validateValue?.(next);docPair.current={doc:transaction.doc,value:next,files:latest.current.hostImages?.files};if(mounted.current)setHardNotice('');return true;}
+    try{const next=latest.current.hostLinks?trustedRichtextDraftFromEditorDocument(transaction.doc.toJSON(),{inlineAttachments:latest.current.hostImages?.files}):basicRichtextHtmlFromEditorDocument(transaction.doc.toJSON());latest.current.validateValue?.(next);docPair.current={doc:transaction.doc,value:next,files:latest.current.hostImages?.files};if(mounted.current)setHardNotice('');return true;}
     catch{if(mounted.current)setHardNotice(rejectedEdit);return false;}
   }})];}}),[]);
   const editor=useEditor({immediatelyRender:false,extensions:[StarterKit.configure({blockquote:false,code:false,codeBlock:false,
-    heading:false,horizontalRule:false,link:hostLinks?{autolink:false,linkOnPaste:false,openOnClick:false,HTMLAttributes:{target:null,rel:null,class:null,title:null},isAllowedUri:(url:string)=>{try{return canonicalNativeComposeLink(url)===url;}catch{return false;}}}:false,strike:false,underline:false,trailingNode:false,orderedList:{keepMarks:true}}),...((hostLinks||validateValue)?[boundedDocument,...(hostImages?[hostImages.extension]:[])]:[])],
+    heading:false,horizontalRule:false,link:hostLinks?{autolink:false,linkOnPaste:false,openOnClick:false,HTMLAttributes:{target:null,rel:null,class:null,title:null},isAllowedUri:(url:string)=>{try{return canonicalRichtextLink(url)===url;}catch{return false;}}}:false,strike:false,underline:false,trailingNode:false,orderedList:{keepMarks:true}}),...((hostLinks||validateValue)?[boundedDocument,...(hostImages?[hostImages.extension]:[])]:[])],
     content:'',editable:!disabled,
     editorProps:{attributes:{class:'deft-editor px-1 py-4 text-[0.9375rem] leading-7 outline-none'+(hostLinks?' [&_a]:text-[var(--primary)] [&_a]:underline [&_a]:underline-offset-2 [&_a:focus-visible]:outline [&_a:focus-visible]:outline-2 [&_a:focus-visible]:outline-[var(--primary)] [&_a:focus-visible]:outline-offset-2':''),style:'min-height:clamp(12rem,35dvh,24rem);',role:presentationOnly?'document':'textbox','aria-multiline':presentationOnly?'false':'true','aria-label':label},
       handlePaste(view,event){event.preventDefault();if(latest.current.disabled)return true;
-        const raw=event.clipboardData?.getData('text/plain')??'',text=latest.current.preserveWhitespace?raw.replace(/\r\n?/gu,'\n'):raw,before=view.state.doc;if(latest.current.hostLinks&&text.length>NATIVE_COMPOSE_BODY_LIMITS.maxPlainCharacters){setHardNotice(rejectedEdit);return true;}if(text)view.dispatch(view.state.tr.insertText(text));
+        const raw=event.clipboardData?.getData('text/plain')??'',text=latest.current.preserveWhitespace?raw.replace(/\r\n?/gu,'\n'):raw,before=view.state.doc;if(latest.current.hostLinks&&text.length>RICH_TEXT_LIMITS.maxPlainCharacters){setHardNotice(rejectedEdit);return true;}if(text)view.dispatch(view.state.tr.insertText(text));
         if(!latest.current.hostLinks||view.state.doc!==before)setNotice('Pasted as text. Apply formatting with the editor controls.');return true;},
       handleDrop(_view,event){event.preventDefault();setNotice('Use the attachment control to add files.');return true;}},
     onUpdate({editor:e}){if(!hydrated.current||latest.current.disabled||latest.current.value.html===''||latest.current.hostLinks&&!mounted.current)return;
       if(latest.current.hostLinks){
-        try{const next=docPair.current?.doc===e.state.doc&&docPair.current.files===latest.current.hostImages?.files?docPair.current.value:nativeComposeDraftFromEditorDocument(e.getJSON(),{inlineAttachments:latest.current.hostImages?.files});
+        try{const next=docPair.current?.doc===e.state.doc&&docPair.current.files===latest.current.hostImages?.files?docPair.current.value:trustedRichtextDraftFromEditorDocument(e.getJSON(),{inlineAttachments:latest.current.hostImages?.files});
           docPair.current={doc:e.state.doc,value:next,files:latest.current.hostImages?.files};published.current={doc:e.state.doc,value:next,files:latest.current.hostImages?.files};latest.current.onChange(next);
           setNotice(next.html.length>latest.current.maxCharacters||next.plainText.length>latest.current.maxPlainCharacters?'This draft needs correction before it can be sent.':'');}
         catch{setHardNotice(rejectedEdit);}
-      }else{try{latest.current.onChange(safeComposeHtmlFromEditorDocument(e.getJSON()));setNotice('');}
+      }else{try{latest.current.onChange(basicRichtextHtmlFromEditorDocument(e.getJSON()));setNotice('');}
         catch{latest.current.onChange({html:e.getHTML(),plainText:e.getText({blockSeparator:'\n'})});setNotice('This draft needs correction before it can be sent.');}}
       redraw(count=>count+1);},onSelectionUpdate(){redraw(count=>count+1);},
   });
@@ -82,9 +82,9 @@ export function ExperienceComposeRichEditor({label,value,onChange,maxCharacters,
   const [imageEdit,setImageEdit]=useState<{doc:object;from:number;fileId:string}|null>(null),[imageAlt,setImageAlt]=useState('');
   const selectedImage=editor&&'node' in editor.state.selection?(editor.state.selection as unknown as {node:{type:{name:string};attrs:{fileId:string;alt:string}}}).node:null;
   const changeImage=(remove=false)=>{if(!imageEdit||!editor||latest.current.disabled||!mounted.current||editor.state.doc!==imageEdit.doc||editor.state.selection.from!==imageEdit.from){setImageEdit(null);return;}
-   try{const transaction=remove?editor.state.tr.deleteSelection():editor.state.tr.setNodeMarkup(imageEdit.from,undefined,{fileId:imageEdit.fileId,alt:imageAlt});nativeSafeComposeHtmlFromEditorDocument(transaction.doc.toJSON(),{inlineAttachments:latest.current.hostImages?.files});editor.view.dispatch(transaction);setImageEdit(null);editor.commands.focus();}catch{setNotice('Use an image description within the message limits.');}
+   try{const transaction=remove?editor.state.tr.deleteSelection():editor.state.tr.setNodeMarkup(imageEdit.from,undefined,{fileId:imageEdit.fileId,alt:imageAlt});trustedRichtextHtmlFromEditorDocument(transaction.doc.toJSON(),{inlineAttachments:latest.current.hostImages?.files});editor.view.dispatch(transaction);setImageEdit(null);editor.commands.focus();}catch{setNotice('Use an image description within the message limits.');}
   };
-  const enableRich=()=>{try{const html=hostLinks?plainTextToNativeComposeHtml(value.plainText,{maxCharacters}):plainTextToSafeComposeHtml(value.plainText);parseHtml(html,{maxCharacters});
+  const enableRich=()=>{try{const html=hostLinks?plainTextToRichtextHtml(value.plainText,{maxCharacters}):plainTextToBasicRichtextHtml(value.plainText);parseHtml(html,{maxCharacters});
     onChange({html:html||'<p></p>',plainText:value.plainText});setNotice('');}catch{setNotice('Shorten the message before adding formatting.');}};
   if(presentationOnly)return <div role="document" aria-label={label} className="min-w-0 whitespace-pre-wrap break-words text-[0.9375rem] leading-7">
     {error?<><p role="status" className="text-xs text-[var(--muted)]">Formatting unavailable. Saved text is shown.</p><div>{value.plainText}</div></>:value.html===''?value.plainText:<EditorContent editor={editor}/>}
@@ -97,7 +97,7 @@ export function ExperienceComposeRichEditor({label,value,onChange,maxCharacters,
   </div>;
   const openLink=()=>{
     if(!mounted.current||!hostLinks||!latest.current.hostLinks||!editor||latest.current.disabled||!hydrated.current||error)return;
-    try{if(parseNativeSafeComposeHtml(latest.current.value.html,{maxCharacters,inlineAttachments:latest.current.hostImages?.files}).plainText!==latest.current.value.plainText)return;}catch{return;}
+    try{if(parseTrustedRichtextHtml(latest.current.value.html,{maxCharacters,inlineAttachments:latest.current.hostImages?.files}).plainText!==latest.current.value.plainText)return;}catch{return;}
     const existing=editor.isActive('link');if(existing)editor.chain().extendMarkRange('link').run();
     const {from,to}=editor.state.selection;if(from===to){setNotice('Select text to add a link.');return;}
     const href=existing?String(editor.getAttributes('link').href??''):'';
@@ -110,8 +110,8 @@ export function ExperienceComposeRichEditor({label,value,onChange,maxCharacters,
     try{
       const mark=editor.schema.marks.link;if(!mark)throw Error();
       const transaction=editor.state.tr.removeMark(owner.from,owner.to,mark);
-      if(!remove)transaction.addMark(owner.from,owner.to,mark.create({href:canonicalNativeComposeLink(linkURL)}));
-      const next=nativeSafeComposeHtmlFromEditorDocument(transaction.doc.toJSON(),{inlineAttachments:latest.current.hostImages?.files});
+      if(!remove)transaction.addMark(owner.from,owner.to,mark.create({href:canonicalRichtextLink(linkURL)}));
+      const next=trustedRichtextHtmlFromEditorDocument(transaction.doc.toJSON(),{inlineAttachments:latest.current.hostImages?.files});
       if(next.html.length>maxCharacters||next.plainText.length>maxPlainCharacters)throw Error();
       linkOwner.current=null;setLinkEdit(null);editor.view.dispatch(transaction);editor.commands.focus();setNotice('');
     }catch{setNotice('Use a valid http, https or mailto link within the formatting limit.');}
