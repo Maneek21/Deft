@@ -18,3 +18,9 @@ test('only generated Host diagnostic suffixes fold; arbitrary messages stay lite
  assert.doesNotMatch(html,/<script>/);
  assert.doesNotMatch(html,/<details/);
 });
+
+
+test('generic data and runtime failures use plain language while retaining diagnostic codes',()=>{
+ assert.deepEqual(appRequestNoticeParts('App data request unavailable (APP_PROVIDER_UNAVAILABLE)'),{message:'The app data is temporarily unavailable. Try again shortly.',details:'APP_PROVIDER_UNAVAILABLE'});
+ assert.equal(appRequestNoticeParts('The app Runtime is unavailable (APP_RUNTIME_UNAVAILABLE; EXAMPLE_RUNTIME_UNAVAILABLE)').message,'The app is temporarily unavailable. Try again shortly.');
+});
