@@ -59,8 +59,10 @@ export function connectionTransportEntryDigest(entry: Entry) {
 /** Data-only deployment review. No author URL, module loader or provider key. */
 export class AppConnectionSessionRegistry {
   private readonly entries: readonly Entry[];
+  private readonly transportRoots: readonly Entry[];
   constructor(raw: unknown, private readonly fetcher: typeof fetch = fetch, trustedSuccessors: readonly Entry[] = []) {
     const parsed = AppConnectionSessionRegistryConfigSchema.parse(raw);
+    const rootCount=parsed.entries.length;
     // Successors are internal, independently validated audit proofs; public config keeps its original bound.
     if (trustedSuccessors.length > 256) throw unavailable();
     const entrySchema = AppConnectionSessionRegistryConfigSchema.shape.entries.element;
@@ -76,6 +78,7 @@ export class AppConnectionSessionRegistry {
       reviews.set(key, reviewed);
     }
     this.entries = Object.freeze(parsed.entries.map(entry => Object.freeze({ ...entry, profile: Object.freeze(entry.profile) })));
+    this.transportRoots=Object.freeze(this.entries.slice(0,rootCount));
   }
   profile(orgId: string, installationId: string, policy: OwnerConnectionPolicyDeclaration, operatorId?: string) {
     const entries = this.entries.filter(entry => entry.org_id === orgId && entry.installation_id === installationId
@@ -101,6 +104,21 @@ export class AppConnectionSessionRegistry {
       && entry.profile.operator_user_id === scope.operator_user_id && connectionProfileDigest(entry.profile) === scope.profile_digest);
     if (entries.length !== 1 || profile && connectionProfileDigest(profile) !== scope.profile_digest) throw unavailable();
     return entries[0]!;
+  }
+  /** Credential-only entry admission. This does not establish an owner,
+   * registration/epoch, invocation or operation authority. It never considers
+   * trusted aliases: callers must independently run the full current graph and
+   * fresh exact authenticate() before returning any allowed proof. */
+  preauthenticateTransport(scope:Pick<AppConnectionSessionScope,'org_id'|'installation_id'|'operator_user_id'|'profile_digest'>,
+    authorization:string|undefined){
+    const denied=()=>new AppError('Connection runtime authentication denied','APP_ACCESS_DENIED',403);
+    const token=/^Bearer ([A-Za-z0-9_-]{43,256})$/u.exec(authorization??'')?.[1];
+    if(!token)throw denied();
+    const entries=this.transportRoots.filter(entry=>entry.org_id===scope.org_id&&entry.installation_id===scope.installation_id
+      &&entry.profile.operator_user_id===scope.operator_user_id&&connectionProfileDigest(entry.profile)===scope.profile_digest);
+    if(!entries.length||new Set(entries.map(entry=>`${connectionTransportEntryDigest(entry)}:${entry.connection_protocol??'v1'}`)).size!==1)throw denied();
+    const expected=Buffer.from(entries[0]!.authority_token_sha256.slice(7),'hex');
+    if(!timingSafeEqual(expected,createHash('sha256').update(token).digest()))throw denied();
   }
   authenticate(scope: AppConnectionSessionScope, authorization: string | undefined) {
     const denied = () => new AppError('Connection runtime authentication denied', 'APP_ACCESS_DENIED', 403);
@@ -271,7 +289,8 @@ export async function readBoundedConnectionJson(stream: ReadableStream<Uint8Arra
 
 /** Only an explicitly supplied authority transaction is reused. Callers without
  * one retain an independent committed-state proof read. */
-export async function loadAppConnectionSessionRegistry(path: string | undefined, transaction?: AppRunTransaction) {
+export async function loadAppConnectionSessionRegistry(path: string | undefined, transaction?: AppRunTransaction,
+  options:Readonly<{trustedSuccessors?:boolean}>={}) {
   if (!path) return new AppConnectionSessionRegistry({ schema_version: 'deft.app_connection_http_registrations.v1', entries: [] });
   try {
     if (!isAbsolute(path)) throw unavailable();
@@ -279,6 +298,7 @@ export async function loadAppConnectionSessionRegistry(path: string | undefined,
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 131072
       || process.platform !== 'win32' && (stat.mode & 0o077) !== 0) throw unavailable();
     const config = AppConnectionSessionRegistryConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+    if(options.trustedSuccessors===false)return new AppConnectionSessionRegistry(config);
     const { trustedUpgradeRegistryEntries } = await import('./app-upgrade-trust-registry.js');
     const successors = await trustedUpgradeRegistryEntries(config.entries, transaction).catch(() => []);
     return new AppConnectionSessionRegistry(config, fetch, successors);
@@ -287,3 +307,11 @@ export async function loadAppConnectionSessionRegistry(path: string | undefined,
 // Reread deployment review on each authority check; replacement/removal revokes
 // access without waiting for an API restart. Credentials never enter responses.
 export const getAppConnectionSessionRegistry = (transaction?: AppRunTransaction) => loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG, transaction);
+
+/** Fresh static deployment credential check only; no proof/result/registry is
+ * retained. Full current authority and final exact authentication stay required. */
+export async function preauthenticateAppConnectionTransport(
+  scope:Pick<AppConnectionSessionScope,'org_id'|'installation_id'|'operator_user_id'|'profile_digest'>,authorization:string|undefined){
+  const registry=await loadAppConnectionSessionRegistry(process.env.DEFT_APP_CONNECTION_HTTP_CONFIG,undefined,{trustedSuccessors:false});
+  registry.preauthenticateTransport(scope,authorization);
+}

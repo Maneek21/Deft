@@ -117,6 +117,7 @@ export function createPostgresAppIntegrationDataGateway(options:{policyAuthority
     WHERE request_id=${id} AND state='inflight'`);}
  };
  const gateway=createAppIntegrationDataGateway({account,journal,
+  async preauthenticate(scope,authorization){await (await import('./app-connection-session-registry.js')).preauthenticateAppConnectionTransport(scope,authorization);},
   async authenticate(scope,authorization){(await getAppConnectionSessionRegistry()).authenticate(scope,authorization);},
   async transport(reviewed,request,signal){return (await getAppConnectionSessionRegistry()).dataRuntime(reviewed.scope,reviewed.profile as Parameters<Awaited<ReturnType<typeof getAppConnectionSessionRegistry>>['dataRuntime']>[1]).request(request,signal);}
  });

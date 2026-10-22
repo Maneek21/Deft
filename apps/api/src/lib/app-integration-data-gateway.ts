@@ -14,6 +14,8 @@ export interface AppIntegrationDataGatewayPorts<Tx>{
  account(caller:AppIntegrationSourceCaller,target:AppIntegrationAccountScope,purpose:AppIntegrationSourcePurpose,tx?:Tx):Promise<AppIntegrationCurrentAccount>;
  journal:{begin(row:AppIntegrationInvocation):Promise<boolean>;read(id:string):Promise<AppIntegrationInvocation|null>;
   finish(id:string,state:'completed'|'indeterminate'):Promise<void>};
+ /** Optional credential-only entry check; never replaces current account authority or final authenticate. */
+ preauthenticate?(scope:AppDataRuntimeRequest['scope'],authorization:string|undefined):Promise<void>;
  authenticate(scope:AppDataRuntimeRequest['scope'],authorization:string|undefined):Promise<void>;
  transport(account:AppIntegrationCurrentAccount,request:AppDataRuntimeRequest,signal:AbortSignal):Promise<{result?:{request_id:string;operation:string;input_digest:string;outcome:string}}>;clock?:()=>number;
 }
@@ -68,7 +70,8 @@ export function createAppIntegrationDataGateway<Tx>(ports:AppIntegrationDataGate
    finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
   },
   async callback(raw:unknown,authorization:string|undefined){const input=AppDataRuntimeAuthorityRequestSchema.parse(raw);
-   await ports.authenticate(input.scope,authorization);const row=await retained(input.request_id);
+   if(ports.preauthenticate)await ports.preauthenticate(input.scope,authorization);else await ports.authenticate(input.scope,authorization);
+   const row=await retained(input.request_id);
    if(!isDeepStrictEqual(row.context,input))throw denied();const account=await same(row);
    const after=await retained(input.request_id);if(!isDeepStrictEqual(after,row))throw denied();await ports.authenticate(input.scope,authorization);
    return AppDataRuntimeAuthorityResultSchema.parse({...input,allowed:true,expires_at:new Date(Math.min(Date.parse(input.expires_at),account.expires_at,row.authority_expires_at)).toISOString()});

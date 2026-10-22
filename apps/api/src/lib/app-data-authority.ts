@@ -17,7 +17,7 @@ import {appVersions,appGrantSnapshots,webSessions,users,orgMembers,appDataInvoca
 import {db} from './db.js';
 import {AppError} from './app-errors.js';
 import {currentAppConnectionReadAuthority,type CurrentAppConnectionReviewedDeclarations} from './app-connection-session-authority.js';
-import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection} from './app-data-read-authority.js';
+import {appDataConnectionActionSelection,appDataRuntimeConnectionActionSelection,appDataRuntimeUsesTransportPreauthentication} from './app-data-read-authority.js';
 import {readSavedAppDataConnection} from './app-data-connection-read.js';
 import {getAppConnectionSessionRegistry} from './app-connection-session-registry.js';
 import {appDataConsentConnections} from './app-data-consent-repair.js';
@@ -137,7 +137,9 @@ export async function appDataRuntimeAuthority(raw:unknown,authorization:string|u
 async function appDataRuntimeAuthorityOwned(raw:unknown,authorization:string|undefined){
  if(raw&&typeof raw==='object'&&(raw as Record<string,unknown>).schema_version==='deft.app_data_authority.v2')return appRecordChangeRuntimeAuthority(raw,authorization);
  const delegated=await (await import('./app-integration-runtime-gateway.js')).maybeAppIntegrationDataRuntimeAuthority(raw,authorization);if(delegated)return delegated;
- const input=AppDataRuntimeAuthorityRequestSchema.parse(raw);const registry=await getAppConnectionSessionRegistry();registry.authenticate(input.scope,authorization);
+ const input=AppDataRuntimeAuthorityRequestSchema.parse(raw);
+ if(appDataRuntimeUsesTransportPreauthentication(input.operation))await (await import('./app-connection-session-registry.js')).preauthenticateAppConnectionTransport(input.scope,authorization);
+ else (await getAppConnectionSessionRegistry()).authenticate(input.scope,authorization);
  const owner={org_id:input.scope.org_id,user_id:input.scope.owner_user_id},store=new PostgresAppDataStore(owner),row=await store.invocation(input.request_id);
  if(!row||row.state!=='inflight'||!isDeepStrictEqual({...row.context,expires_at:input.expires_at},input)
   ||Date.parse(input.expires_at)>row.expires_at.getTime()||row.expires_at.getTime()<=Date.now())throw appDataDenied();
